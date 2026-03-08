@@ -1,0 +1,22 @@
+[Unit]
+Description=Jira Data Consistency Check
+After=network-online.target webapp.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=data-ops
+WorkingDirectory=/opt/data-analyst/repo
+ExecStart=/opt/data-analyst/.venv/bin/python scripts/jira_consistency_check.py --auto-fix --max-age-days 30
+EnvironmentFile=/opt/data-analyst/.env
+EnvironmentFile=/opt/data-analyst/repo/.env
+ProtectSystem=strict
+ReadWritePaths=/data/src_data /opt/data-analyst/logs
+PrivateTmp=true
+TimeoutStartSec=600
+StandardOutput=append:/opt/data-analyst/logs/jira-consistency.log
+StandardError=append:/opt/data-analyst/logs/jira-consistency.log
+
+[Install]
+WantedBy=multi-user.target

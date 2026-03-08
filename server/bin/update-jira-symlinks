@@ -1,0 +1,49 @@
+#!/bin/bash
+# Add Jira attachments symlink to all existing analyst home directories
+# Run this once after enabling Jira integration
+#
+# Usage: sudo update-jira-symlinks
+
+set -euo pipefail
+
+if [[ $EUID -ne 0 ]]; then
+    echo "This script must be run as root (use sudo)"
+    exit 1
+fi
+
+JIRA_ATTACHMENTS="/data/src_data/raw/jira/attachments"
+
+if [[ ! -d "$JIRA_ATTACHMENTS" ]]; then
+    echo "Jira attachments directory not found: $JIRA_ATTACHMENTS"
+    echo "Make sure Jira backfill has run at least once."
+    exit 1
+fi
+
+echo "Adding jira_attachments symlink to analyst home directories..."
+
+# Find all users in dataread group (analysts)
+for username in $(getent group dataread | cut -d: -f4 | tr ',' '\n'); do
+    home_dir="/home/${username}"
+    server_dir="${home_dir}/server"
+    symlink="${server_dir}/jira_attachments"
+
+    # Skip if home doesn't exist or server dir doesn't exist
+    if [[ ! -d "$server_dir" ]]; then
+        echo "  Skipping $username (no server/ directory)"
+        continue
+    fi
+
+    # Skip if symlink already exists
+    if [[ -L "$symlink" ]]; then
+        echo "  Skipping $username (symlink already exists)"
+        continue
+    fi
+
+    # Create symlink
+    ln -sf "$JIRA_ATTACHMENTS" "$symlink"
+    chown -h "${username}:${username}" "$symlink"
+    echo "  Added symlink for $username"
+done
+
+echo ""
+echo "Done. Analysts can now access Jira attachments at ~/server/jira_attachments/"

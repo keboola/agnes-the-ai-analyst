@@ -1,0 +1,290 @@
+#!/usr/bin/env python3
+"""
+Notification runner - executes user notification scripts and sends results.
+
+Finds Python scripts in ~/workspace/notifications/, runs each one,
+and sends notifications via the bot's unix socket API.
+
+Usage:
+    notify-runner
+    # Or in crontab:
+    */5 * * * * /usr/local/bin/notify-runner >> ~/.notifications/logs/cron.log 2>&1
+"""
+
+import json
+import logging
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import httpx
+
+# Configuration
+SOCKET_PATH = "/run/notify-bot/bot.sock"
+WS_GATEWAY_SOCKET_PATH = "/run/ws-gateway/ws.sock"
+SCRIPT_TIMEOUT_SECONDS = 60
+NOTIFICATIONS_DIR = Path.home() / "user" / "notifications"
+STATE_DIR = Path.home() / ".notifications" / "state"
+LOG_DIR = Path.home() / ".notifications" / "logs"
+
+COOLDOWN_MAP = {
+    "1m": 60,
+    "5m": 300,
+    "10m": 600,
+    "15m": 900,
+    "30m": 1800,
+    "1h": 3600,
+    "2h": 7200,
+    "4h": 14400,
+    "6h": 21600,
+    "12h": 43200,
+    "1d": 86400,
+}
+DEFAULT_COOLDOWN = "1h"
+
+# Setup logging
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [notify-runner] %(levelname)s: %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(LOG_DIR / "runner.log", mode="a"),
+    ],
+)
+logger = logging.getLogger("notify-runner")
+
+
+def get_username() -> str:
+    """Get the current system username."""
+    return os.environ.get("USER", os.environ.get("LOGNAME", "unknown"))
+
+
+def parse_cooldown(cooldown_str: str) -> int:
+    """Parse cooldown string like '30m', '1h', '1d' to seconds."""
+    cooldown_str = cooldown_str.strip().lower()
+    if cooldown_str in COOLDOWN_MAP:
+        return COOLDOWN_MAP[cooldown_str]
+
+    # Try parsing as Xm, Xh, Xd
+    match = re.match(r"^(\d+)(m|h|d)$", cooldown_str)
+    if match:
+        value = int(match.group(1))
+        unit = match.group(2)
+        multiplier = {"m": 60, "h": 3600, "d": 86400}
+        return value * multiplier[unit]
+
+    return COOLDOWN_MAP[DEFAULT_COOLDOWN]
+
+
+def check_cooldown(script_name: str, cooldown_seconds: int) -> bool:
+    """Check if the script is still in cooldown. Returns True if OK to send."""
+    state_file = STATE_DIR / f"{script_name}.json"
+    try:
+        with open(state_file, "r") as f:
+            state = json.load(f)
+        last_sent = state.get("last_sent", 0)
+        return (time.time() - last_sent) >= cooldown_seconds
+    except (FileNotFoundError, json.JSONDecodeError, KeyError):
+        return True
+
+
+def update_cooldown(script_name: str) -> None:
+    """Record that a notification was sent."""
+    state_file = STATE_DIR / f"{script_name}.json"
+    with open(state_file, "w") as f:
+        json.dump({"last_sent": time.time()}, f)
+
+
+def run_script(script_path: Path) -> dict | None:
+    """Run a notification script and parse its JSON output."""
+    try:
+        result = subprocess.run(
+            [sys.executable, str(script_path)],
+            capture_output=True,
+            text=True,
+            timeout=SCRIPT_TIMEOUT_SECONDS,
+            cwd=str(Path.home()),
+        )
+
+        if result.returncode != 0:
+            logger.warning(
+                f"Script {script_path.name} exited with code {result.returncode}: "
+                f"{result.stderr[:500]}"
+            )
+            return None
+
+        if result.stderr:
+            logger.debug(f"Script {script_path.name} stderr: {result.stderr[:500]}")
+
+        stdout = result.stdout.strip()
+        if not stdout:
+            return None
+
+        return json.loads(stdout)
+
+    except subprocess.TimeoutExpired:
+        logger.error(f"Script {script_path.name} timed out after {SCRIPT_TIMEOUT_SECONDS}s")
+        return None
+    except json.JSONDecodeError as e:
+        logger.error(f"Script {script_path.name} returned invalid JSON: {e}")
+        return None
+    except Exception:
+        logger.exception(f"Error running script {script_path.name}")
+        return None
+
+
+def send_text(username: str, text: str, parse_mode: str = "Markdown") -> bool:
+    """Send a text notification via bot socket."""
+    try:
+        transport = httpx.HTTPTransport(uds=SOCKET_PATH)
+        with httpx.Client(transport=transport, timeout=30) as client:
+            resp = client.post(
+                "http://localhost/send",
+                json={
+                    "user": username,
+                    "text": text,
+                    "parse_mode": parse_mode,
+                },
+            )
+            return resp.status_code == 200
+    except Exception:
+        logger.exception("Failed to send text notification")
+        return False
+
+
+def send_photo(username: str, photo_path: str, caption: str = "") -> bool:
+    """Send a photo notification via bot socket."""
+    try:
+        transport = httpx.HTTPTransport(uds=SOCKET_PATH)
+        with httpx.Client(transport=transport, timeout=60) as client:
+            resp = client.post(
+                "http://localhost/send_photo",
+                json={
+                    "user": username,
+                    "photo_path": photo_path,
+                    "caption": caption,
+                },
+            )
+            return resp.status_code == 200
+    except Exception:
+        logger.exception("Failed to send photo notification")
+        return False
+
+
+def dispatch_to_ws_gateway(username: str, output: dict) -> None:
+    """Dispatch notification to WebSocket gateway for desktop app clients."""
+    if not os.path.exists(WS_GATEWAY_SOCKET_PATH):
+        return
+    try:
+        import uuid
+
+        transport = httpx.HTTPTransport(uds=WS_GATEWAY_SOCKET_PATH)
+        with httpx.Client(transport=transport, timeout=10) as client:
+            notification = {
+                "id": str(uuid.uuid4()),
+                "title": output.get("title", ""),
+                "message": output.get("message", ""),
+                "script": Path(output.get("_script_name", "")).stem if output.get("_script_name") else None,
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }
+            image_path = output.get("image_path", "")
+            if image_path and os.path.isfile(image_path):
+                filename = os.path.basename(image_path)
+                notification["image_url"] = f"/api/notifications/images/{filename}"
+            client.post(
+                "http://localhost/dispatch",
+                json={"user": username, "notification": notification},
+            )
+    except Exception:
+        logger.debug("WS gateway dispatch failed (gateway may not be running)")
+
+
+def format_message(output: dict) -> str:
+    """Format notification output into a Telegram message."""
+    parts = []
+    title = output.get("title", "")
+    message = output.get("message", "")
+
+    if title:
+        parts.append(f"*{title}*")
+    if message:
+        parts.append(message)
+
+    return "\n".join(parts) if parts else ""
+
+
+def process_script(script_path: Path, username: str) -> None:
+    """Run a single notification script and handle its output."""
+    script_name = script_path.stem
+    logger.info(f"Running {script_name}...")
+
+    output = run_script(script_path)
+    if output is None:
+        return
+
+    if not output.get("notify", False):
+        logger.info(f"{script_name}: notify=false, skipping")
+        return
+
+    # Check cooldown
+    cooldown_str = output.get("cooldown", DEFAULT_COOLDOWN)
+    cooldown_seconds = parse_cooldown(cooldown_str)
+
+    if not check_cooldown(script_name, cooldown_seconds):
+        logger.info(f"{script_name}: in cooldown, skipping")
+        return
+
+    # Send notification
+    text = format_message(output)
+    image_path = output.get("image_path", "")
+
+    sent = False
+
+    if image_path and os.path.isfile(image_path):
+        # Send photo with caption
+        sent = send_photo(username, image_path, caption=text)
+    elif text:
+        sent = send_text(username, text)
+    else:
+        logger.warning(f"{script_name}: notify=true but no message or image")
+        return
+
+    if sent:
+        update_cooldown(script_name)
+        logger.info(f"{script_name}: notification sent")
+        # Also dispatch to WebSocket gateway for desktop app
+        dispatch_to_ws_gateway(username, output)
+    else:
+        logger.error(f"{script_name}: failed to send notification")
+
+
+def main() -> None:
+    """Main entry point."""
+    username = get_username()
+    logger.info(f"Starting notify-runner for user '{username}'")
+
+    if not NOTIFICATIONS_DIR.is_dir():
+        logger.info(f"No notifications directory at {NOTIFICATIONS_DIR}")
+        return
+
+    scripts = sorted(NOTIFICATIONS_DIR.glob("*.py"))
+    if not scripts:
+        logger.info("No notification scripts found")
+        return
+
+    logger.info(f"Found {len(scripts)} script(s)")
+
+    for script_path in scripts:
+        process_script(script_path, username)
+
+    logger.info("Done")
+
+
+if __name__ == "__main__":
+    main()

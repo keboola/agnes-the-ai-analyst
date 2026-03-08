@@ -1,0 +1,107 @@
+#!/bin/bash
+# Add data analyst with read access to data
+# Usage: sudo add-analyst username "ssh-public-key" [--private]
+
+set -euo pipefail
+
+if [[ $EUID -ne 0 ]]; then
+    echo "This script must be run as root (use sudo)"
+    exit 1
+fi
+
+if [[ $# -lt 2 ]]; then
+    echo "Usage: sudo add-analyst username \"ssh-public-key\" [--private]"
+    echo ""
+    echo "Options:"
+    echo "  --private    Grant access to private/sensitive data"
+    echo ""
+    echo "Examples:"
+    echo "  sudo add-analyst novak \"ssh-rsa AAAAB3... novak@example.com\""
+    echo "  sudo add-analyst ceo \"ssh-rsa AAAAB3... ceo@example.com\" --private"
+    exit 1
+fi
+
+USERNAME="$1"
+SSH_KEY="$2"
+PRIVATE_ACCESS=false
+
+if [[ "${3:-}" == "--private" ]]; then
+    PRIVATE_ACCESS=true
+fi
+
+# Check if user already exists
+if id "$USERNAME" &>/dev/null; then
+    echo "Error: User '$USERNAME' already exists"
+    exit 1
+fi
+
+echo "Creating analyst user: $USERNAME"
+
+# Create user with home directory
+useradd -m -s /bin/bash "$USERNAME"
+
+# Add to dataread group (public data access)
+usermod -aG dataread "$USERNAME"
+
+# Optionally add to data-private group
+if [[ "$PRIVATE_ACCESS" == true ]]; then
+    usermod -aG data-private "$USERNAME"
+fi
+
+# Set up SSH key
+mkdir -p "/home/${USERNAME}/.ssh"
+echo "$SSH_KEY" > "/home/${USERNAME}/.ssh/authorized_keys"
+chmod 700 "/home/${USERNAME}/.ssh"
+chmod 600 "/home/${USERNAME}/.ssh/authorized_keys"
+chown -R "${USERNAME}:${USERNAME}" "/home/${USERNAME}/.ssh"
+
+# Create server/ directory with symlinks to shared read-only data
+mkdir -p "/home/${USERNAME}/server"
+ln -sf /data/docs "/home/${USERNAME}/server/docs"
+ln -sf /data/scripts "/home/${USERNAME}/server/scripts"
+ln -sf /data/examples "/home/${USERNAME}/server/examples"
+ln -sf /data/src_data/parquet "/home/${USERNAME}/server/parquet"
+ln -sf /data/src_data/metadata "/home/${USERNAME}/server/metadata"
+
+# Jira attachments (optional dataset - symlink only if directory exists)
+if [[ -d /data/src_data/raw/jira/attachments ]]; then
+    ln -sf /data/src_data/raw/jira/attachments "/home/${USERNAME}/server/jira_attachments"
+fi
+
+# Create user/ directories (writable by user)
+mkdir -p "/home/${USERNAME}/user/notifications"
+mkdir -p "/home/${USERNAME}/user/artifacts"
+mkdir -p "/home/${USERNAME}/user/scripts"
+mkdir -p "/home/${USERNAME}/user/parquet"
+mkdir -p "/home/${USERNAME}/user/sessions"
+mkdir -p "/home/${USERNAME}/user/duckdb"
+
+# Create notifications runner state directories
+mkdir -p "/home/${USERNAME}/.notifications/state"
+mkdir -p "/home/${USERNAME}/.notifications/logs"
+
+
+# Set ownership
+chown -R "${USERNAME}:${USERNAME}" "/home/${USERNAME}/server"
+chown -R "${USERNAME}:${USERNAME}" "/home/${USERNAME}/user"
+chown -R "${USERNAME}:${USERNAME}" "/home/${USERNAME}/.notifications"
+
+# Build per-user DuckDB from shared parquet files
+if [[ -x /data/scripts/setup_views.sh ]]; then
+    echo "Building DuckDB database..."
+    sudo -u "$USERNAME" bash -c "cd /home/${USERNAME} && /data/scripts/setup_views.sh" || true
+fi
+
+echo ""
+if [[ "$PRIVATE_ACCESS" == true ]]; then
+    echo "Privileged analyst '$USERNAME' created successfully"
+    echo "  - Added to group: dataread (public data access)"
+    echo "  - Added to group: data-private (private data access)"
+else
+    echo "Standard analyst '$USERNAME' created successfully"
+    echo "  - Added to group: dataread (public data access)"
+fi
+echo "  - Server data: /home/${USERNAME}/server/ (read-only symlinks)"
+echo "  - User workspace: /home/${USERNAME}/user/ (your files)"
+echo "  - DuckDB: /home/${USERNAME}/user/duckdb/analytics.duckdb"
+

@@ -1,0 +1,13 @@
+#!/bin/bash
+# Read-only crontab wrapper for the calling user.
+#
+# Designed to be called via sudo -u <user> to read that user's crontab
+# without www-data needing direct access.
+#
+# sudoers entry required:
+#   www-data ALL=(ALL) NOPASSWD: /usr/local/bin/user-crontab
+#
+# Usage:
+#   sudo -u someuser /usr/local/bin/user-crontab
+
+exec crontab -l

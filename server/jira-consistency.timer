@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Jira consistency check every 30 minutes
+Requires=jira-consistency.service
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=30min
+RandomizedDelaySec=60
+Persistent=true
+
+[Install]
+WantedBy=timers.target

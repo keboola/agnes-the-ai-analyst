@@ -1,0 +1,16 @@
+#!/bin/bash
+# Wrapper script for the session transcript collector
+# This script is called by systemd timer every 6 hours
+
+set -euo pipefail
+
+APP_DIR="/opt/data-analyst"
+REPO_DIR="${APP_DIR}/repo"
+VENV_PYTHON="${APP_DIR}/.venv/bin/python"
+
+cd "$REPO_DIR"
+
+# No environment variables needed - pure file operations
+
+# Run the collector
+exec "$VENV_PYTHON" -m server.session_collector "$@"

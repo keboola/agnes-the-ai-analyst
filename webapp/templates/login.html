@@ -1,0 +1,127 @@
+{% extends "base_login.html" %}
+
+{% block title %}Login - Data Analyst Portal{% endblock %}
+
+{% block content %}
+<div class="login-page">
+    <div class="login-split">
+        <!-- Left: Features & Value Proposition -->
+        <div class="login-features">
+            <div class="features-content">
+                <h1 class="features-title">{{ config.INSTANCE_NAME }}</h1>
+                <p class="features-subtitle">
+                    Your local AI agent works with centralized data, shared context, and corporate memory that learns from everyone.
+                </p>
+
+                <div class="feature-cards">
+                    <div class="feature-card">
+                        <div class="feature-icon feature-icon-data">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <ellipse cx="12" cy="5" rx="9" ry="3"/>
+                                <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
+                                <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+                            </svg>
+                        </div>
+                        <div class="feature-text">
+                            <h3>Unified Data Access</h3>
+                            <p>Synced data from central server with semantic layer, metrics definitions, and full documentation.</p>
+                        </div>
+                    </div>
+
+                    <div class="feature-card">
+                        <div class="feature-icon feature-icon-memory">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M12 2a4 4 0 0 1 4 4c0 1.1-.9 2-2 2h-4c-1.1 0-2-.9-2-2a4 4 0 0 1 4-4z"/>
+                                <path d="M12 8v8"/>
+                                <path d="M8 12h8"/>
+                                <circle cx="12" cy="19" r="3"/>
+                            </svg>
+                        </div>
+                        <div class="feature-text">
+                            <h3>Corporate Memory</h3>
+                            <p>Shared context across all users. When someone discovers something, everyone's AI knows it.</p>
+                        </div>
+                    </div>
+
+                    <div class="feature-card">
+                        <div class="feature-icon feature-icon-auto">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+                            </svg>
+                        </div>
+                        <div class="feature-text">
+                            <h3>Instant Automation</h3>
+                            <p>Turn any analysis into automated scripts. Runs without AI - fast, cheap, and repeatable.</p>
+                        </div>
+                    </div>
+
+                    <div class="feature-card">
+                        <div class="feature-icon feature-icon-notif">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+                                <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+                            </svg>
+                        </div>
+                        <div class="feature-text">
+                            <h3>Smart Notifications</h3>
+                            <p>Your AI agent can set up alerts and deploy them to the cloud. Server monitors 24/7.</p>
+                        </div>
+                    </div>
+
+                    <div class="feature-card">
+                        <div class="feature-icon feature-icon-performance">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M3 3v18h18"/>
+                                <path d="M18 17V9"/>
+                                <path d="M13 17v-6"/>
+                                <path d="M8 17v-3"/>
+                                <polyline points="7 7 12 3 17 6 22 2"/>
+                            </svg>
+                        </div>
+                        <div class="feature-text">
+                            <h3>Performance Intelligence</h3>
+                            <p>Track how data and AI drive measurable business outcomes. Real-time visibility into team maturity, process improvements, and ROI across departments.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right: Login Card -->
+        <div class="login-card-wrapper">
+            <div class="login-card">
+                <h2>Sign In</h2>
+                <p class="login-description">
+                    Access your AI data analysis workspace
+                </p>
+
+                <a href="{{ url_for('auth.login_google') }}" class="btn btn-google">
+                    <svg class="google-icon" viewBox="0 0 24 24" width="24" height="24">
+                        <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                        <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                        <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
+                        <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+                    </svg>
+                    Sign in with Google
+                </a>
+
+                <p class="login-note">
+                    For <strong>@{{ config.ALLOWED_DOMAIN }}</strong> email addresses.
+                </p>
+
+                <div class="divider">
+                    <span>or</span>
+                </div>
+
+                <a href="{{ url_for('password_auth.login_email') }}" class="btn btn-secondary" style="width: 100%; max-width: 280px;">
+                    Sign in with Email
+                </a>
+
+                <p class="login-note">
+                    For external users (investors, partners).
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

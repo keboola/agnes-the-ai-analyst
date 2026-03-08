@@ -1,0 +1,19 @@
+# Sudoers configuration for webapp (www-data user)
+# Install with: sudo cp /opt/data-analyst/repo/server/sudoers-webapp /etc/sudoers.d/webapp
+# Validate with: sudo visudo -cf /etc/sudoers.d/webapp
+
+# Allow www-data (webapp) to run add-analyst without password
+# This enables the self-service portal to create analyst accounts
+www-data ALL=(ALL) NOPASSWD: /usr/local/bin/add-analyst
+
+# Allow www-data (webapp) to list/run notification scripts as dataread group members only
+# Used by POST /api/desktop/scripts/* endpoints via notify-scripts helper
+www-data ALL=(dataread) NOPASSWD: /usr/local/bin/notify-scripts
+
+# Allow www-data (webapp) to read user crontabs (read-only wrapper)
+# Used by account widget on dashboard to show cron schedule
+www-data ALL=(ALL) NOPASSWD: /usr/local/bin/user-crontab
+
+# Allow www-data (webapp) to install corporate memory rules to user home dirs
+# Called after voting to write .claude_rules/*.md files with correct ownership
+www-data ALL=(ALL) NOPASSWD: /usr/local/bin/install-user-rules

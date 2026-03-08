@@ -1,0 +1,31 @@
+#!/bin/bash
+# Wrapper script for the corporate memory knowledge collector
+# This script is called by systemd timer every 30 minutes
+
+set -euo pipefail
+
+APP_DIR="/opt/data-analyst"
+REPO_DIR="${APP_DIR}/repo"
+VENV_PYTHON="${APP_DIR}/.venv/bin/python"
+LOG_DIR="/data/corporate-memory"
+
+# Ensure log directory exists
+mkdir -p "$LOG_DIR"
+
+cd "$REPO_DIR"
+
+# Load environment variables
+if [[ -f "${APP_DIR}/.env" ]]; then
+    set -a
+    source "${APP_DIR}/.env"
+    set +a
+fi
+
+if [[ -f "${REPO_DIR}/.env" ]]; then
+    set -a
+    source "${REPO_DIR}/.env"
+    set +a
+fi
+
+# Run the collector
+exec "$VENV_PYTHON" -m server.corporate_memory.collector "$@"

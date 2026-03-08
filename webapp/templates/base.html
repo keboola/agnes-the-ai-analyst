@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Data Analyst Portal{% endblock %}</title>
+    <link rel="stylesheet" href="{{ static_url('style.css') }}">
+    <link rel="stylesheet" href="{{ static_url('style-custom.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">
+                <h1>Data Analyst Portal</h1>
+                <p class="subtitle">{{ config.INSTANCE_SUBTITLE }}</p>
+            </div>
+            {% if session.user %}
+            <nav>
+                <span class="user-info">
+                    {% if session.user.picture %}
+                    <img src="{{ session.user.picture }}" alt="Profile" class="avatar">
+                    {% endif %}
+                    {{ session.user.email }}
+                </span>
+                <a href="{{ url_for('auth.logout') }}" class="btn btn-secondary btn-sm">Logout</a>
+            </nav>
+            {% endif %}
+        </header>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+        <div class="flash-messages">
+            {% for category, message in messages %}
+            <div class="flash flash-{{ category }}">
+                {{ message }}
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+        {% endwith %}
+
+        <main>
+            {% block content %}{% endblock %}
+        </main>
+
+        <footer>
+            <p>&copy; {{ now().year if now is defined else 2024 }} {{ config.INSTANCE_COPYRIGHT or 'AI Data Analyst' }}</p>
+        </footer>
+    </div>
+</body>
+</html>

@@ -1,0 +1,2905 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Data Catalog - Data Analyst Portal</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            /* Colors - Design System */
+            --primary: #0073D1;
+            --primary-light: rgba(0, 115, 209, 0.1);
+            --text-primary: #1A253C;
+            --text-secondary: #6B7280;
+            --background: #F5F7FA;
+            --surface: #FFFFFF;
+            --border: #E5E7EB;
+            --border-light: #F3F4F6;
+            --success: #10B77F;
+            --warning: #F59F0A;
+            --error: #EA580C;
+
+            /* Typography */
+            --font-primary: 'Inter', system-ui, sans-serif;
+            --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+            /* Shadows */
+            --shadow-sm: rgba(0, 0, 0, 0.05) 0px 1px 2px 0px;
+            --shadow-md: rgba(0, 0, 0, 0.1) 0px 4px 6px -1px;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: var(--font-primary);
+            font-size: 14px;
+            color: var(--text-primary);
+            background: var(--background);
+            line-height: 1.5;
+        }
+
+        /* ── Header (dashboard-style) ── */
+        .header {
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            padding: 0 32px;
+            height: 72px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .header-back {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 32px;
+            height: 32px;
+            border-radius: 6px;
+            color: var(--text-secondary);
+            text-decoration: none;
+            transition: all 0.15s ease;
+        }
+
+        .header-back:hover {
+            background: var(--border-light);
+            color: var(--text-primary);
+        }
+
+        .header-logo-group {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 2px;
+        }
+
+        .header-logo svg {
+            display: block;
+        }
+
+        .header-subtitle {
+            font-size: 11px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            letter-spacing: 0.4px;
+            text-transform: uppercase;
+            margin-top: 2px;
+        }
+
+        .header-right {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        /* ── Page Title ── */
+        .page-title {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 32px 24px 24px;
+        }
+
+        .page-title h1 {
+            font-size: 24px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 4px;
+        }
+
+        .page-title p {
+            font-size: 14px;
+            color: var(--text-secondary);
+        }
+
+        /* ── Source Cards ── */
+        .source-cards {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 0 24px 32px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .source-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: var(--shadow-sm);
+        }
+
+        .source-card-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            padding: 20px 24px;
+            gap: 16px;
+        }
+
+        .source-card-left {
+            display: flex;
+            gap: 14px;
+            flex: 1;
+            min-width: 0;
+        }
+
+        .source-card-icon {
+            width: 42px;
+            height: 42px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .source-card-icon.primary {
+            background: var(--primary-light);
+        }
+
+        .source-card-icon.jira {
+            background: rgba(107, 114, 128, 0.1);
+        }
+
+        .source-card-info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .source-card-name {
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 2px;
+        }
+
+        .source-card-desc {
+            font-size: 13px;
+            color: var(--text-secondary);
+            margin-bottom: 6px;
+        }
+
+        .source-card-meta {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .source-card-right {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-shrink: 0;
+        }
+
+        /* ── Toggle Switch ── */
+        .toggle-switch {
+            position: relative;
+            width: 36px;
+            height: 20px;
+        }
+
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #E5E7EB;
+            transition: .2s;
+            border-radius: 20px;
+        }
+
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 14px;
+            width: 14px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: .2s;
+            border-radius: 50%;
+        }
+
+        input:checked + .toggle-slider {
+            background-color: var(--primary);
+        }
+
+        input:checked + .toggle-slider:before {
+            transform: translateX(16px);
+        }
+
+        .toggle-switch.locked .toggle-slider {
+            cursor: not-allowed;
+            background-color: var(--primary);
+            opacity: 0.6;
+        }
+
+        .toggle-switch.locked .toggle-slider:before {
+            transform: translateX(16px);
+        }
+
+        input:disabled + .toggle-slider {
+            cursor: not-allowed;
+            opacity: 0.6;
+        }
+
+        /* ── Badges ── */
+        .badge-included {
+            flex-shrink: 0;
+            font-size: 11px;
+            font-weight: 500;
+            color: var(--primary);
+            background: var(--primary-light);
+            border-radius: 6px;
+            padding: 4px 10px;
+            white-space: nowrap;
+        }
+
+        .badge-subscribed {
+            flex-shrink: 0;
+            font-size: 11px;
+            font-weight: 500;
+            color: var(--primary);
+            background: var(--primary-light);
+            border-radius: 6px;
+            padding: 4px 10px;
+            white-space: nowrap;
+        }
+
+        .badge-unsubscribed {
+            flex-shrink: 0;
+            font-size: 11px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            background: var(--border-light);
+            border-radius: 6px;
+            padding: 4px 10px;
+            white-space: nowrap;
+        }
+
+        /* ── Accordion ── */
+        .accordion-category {
+            border-top: 1px solid var(--border-light);
+        }
+
+        .accordion-trigger {
+            width: 100%;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 24px;
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-family: var(--font-primary);
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--text-primary);
+            text-align: left;
+            transition: background 0.1s ease;
+        }
+
+        .accordion-trigger:hover {
+            background: var(--border-light);
+        }
+
+        .accordion-chevron {
+            width: 16px;
+            height: 16px;
+            color: var(--text-secondary);
+            transition: transform 0.2s ease;
+            flex-shrink: 0;
+        }
+
+        .accordion-trigger.expanded .accordion-chevron {
+            transform: rotate(90deg);
+        }
+
+        .accordion-count {
+            font-size: 11px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            background: var(--border-light);
+            padding: 1px 7px;
+            border-radius: 9999px;
+            margin-left: auto;
+        }
+
+        .accordion-content {
+            display: none;
+        }
+
+        .accordion-content.expanded {
+            display: block;
+        }
+
+        /* ── Table Rows inside Accordion ── */
+        .table-row {
+            display: flex;
+            align-items: center;
+            padding: 10px 24px 10px 50px;
+            border-top: 1px solid var(--border-light);
+            cursor: pointer;
+            transition: background 0.1s ease;
+        }
+
+        .table-row:hover {
+            background: rgba(243, 244, 246, 0.5);
+        }
+
+        .table-row-left {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .table-row-name {
+            font-weight: 500;
+            font-family: var(--font-mono);
+            font-size: 13px;
+            color: var(--text-primary);
+        }
+
+        .table-row-desc {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-top: 1px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .table-row-right {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-shrink: 0;
+            margin-left: 16px;
+        }
+
+        .rows-badge {
+            font-size: 12px;
+            font-weight: 500;
+            padding: 2px 8px;
+            border-radius: 4px;
+            background: var(--border-light);
+            color: var(--text-secondary);
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+        }
+
+        .rows-badge.large {
+            background: rgba(245, 159, 10, 0.1);
+            color: #B45309;
+        }
+
+        .profile-link {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 11px;
+            color: var(--primary);
+            opacity: 0.4;
+            transition: opacity 0.15s;
+            white-space: nowrap;
+        }
+
+        .table-row:hover .profile-link {
+            opacity: 1;
+        }
+
+        /* ── Jira Unsubscribed State ── */
+        .source-card-unsubscribed {
+            padding: 16px 24px;
+            border-top: 1px solid var(--border-light);
+            font-size: 13px;
+            color: var(--text-secondary);
+            background: var(--border-light);
+        }
+
+        /* ── Jira Attachments Option ── */
+        .jira-attachment-option {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 14px 24px;
+            border-top: 1px solid var(--border-light);
+            background: var(--background);
+        }
+
+        .jira-attachment-label {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .jira-attachment-label span:first-child {
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-primary);
+        }
+
+        .jira-attachment-label span:last-child {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        /* ── Footer ── */
+        .footer {
+            text-align: center;
+            padding: 24px;
+            color: var(--text-secondary);
+            font-size: 12px;
+        }
+
+        .footer a {
+            color: var(--primary);
+            text-decoration: none;
+        }
+
+        .footer a:hover {
+            text-decoration: underline;
+        }
+
+        /* ── Responsive ── */
+        @media (max-width: 640px) {
+            .source-card-header {
+                flex-direction: column;
+            }
+
+            .source-card-right {
+                align-self: flex-end;
+            }
+
+            .table-row {
+                padding-left: 24px;
+            }
+
+            .table-row-desc {
+                white-space: normal;
+            }
+        }
+
+        /* ═══════════════════════════════════════════════ */
+        /* Profiler Modal - preserved from original        */
+        /* ═══════════════════════════════════════════════ */
+        .profiler-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            padding: 40px 24px;
+            overflow: hidden;
+        }
+
+        .profiler-overlay.active {
+            display: flex;
+            align-items: flex-start;
+            justify-content: center;
+        }
+
+        .profiler-modal {
+            max-width: 1100px;
+            width: 100%;
+            max-height: calc(100vh - 80px);
+            background: var(--surface);
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .profiler-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 24px;
+            border-bottom: 1px solid var(--border);
+            background: var(--background);
+        }
+
+        .profiler-header-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .profiler-header h2 {
+            font-size: 20px;
+            font-weight: 600;
+            font-family: var(--font-mono);
+        }
+
+        .profiler-close {
+            width: 32px;
+            height: 32px;
+            border: none;
+            background: none;
+            cursor: pointer;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-secondary);
+            transition: all 0.15s;
+        }
+
+        .profiler-close:hover {
+            background: var(--border-light);
+            color: var(--text-primary);
+        }
+
+        .profiler-body {
+            padding: 24px;
+            overflow-y: auto;
+            overflow-x: hidden;
+            flex: 1;
+            min-height: 0;
+        }
+
+        /* Alert badges */
+        .alert-badge {
+            display: inline-flex;
+            align-items: center;
+            font-size: 11px;
+            font-weight: 600;
+            padding: 2px 8px;
+            border-radius: 4px;
+            text-transform: uppercase;
+            letter-spacing: 0.02em;
+        }
+
+        .alert-badge.constant { background: #FEF3C7; color: #92400E; }
+        .alert-badge.unique { background: #EDE9FE; color: #5B21B6; }
+        .alert-badge.high_missing { background: #FEE2E2; color: #991B1B; }
+        .alert-badge.missing { background: #FEF3C7; color: #92400E; }
+        .alert-badge.imbalance { background: #DBEAFE; color: #1E40AF; }
+        .alert-badge.zeros { background: #DBEAFE; color: #1E40AF; }
+        .alert-badge.high_cardinality { background: #E0E7FF; color: #3730A3; }
+
+        /* Quality badge */
+        .quality-badge {
+            font-size: 12px;
+            font-weight: 600;
+            padding: 3px 10px;
+            border-radius: 9999px;
+        }
+
+        .quality-badge.good { background: #D1FAE5; color: #065F46; }
+        .quality-badge.warning { background: #FEF3C7; color: #92400E; }
+        .quality-badge.poor { background: #FEE2E2; color: #991B1B; }
+
+        /* Profiler navigation tabs */
+        .profiler-tabs {
+            display: flex;
+            gap: 0;
+            border-bottom: 1px solid var(--border);
+            padding: 0 24px;
+            flex-shrink: 0;
+        }
+
+        .profiler-tab {
+            padding: 10px 20px;
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            background: none;
+            border: none;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            transition: all 0.15s;
+        }
+
+        .profiler-tab:hover {
+            color: var(--text-primary);
+            background: var(--border-light);
+        }
+
+        .profiler-tab.active {
+            color: var(--primary);
+            border-bottom-color: var(--primary);
+        }
+
+        .profiler-tab .tab-count {
+            font-size: 11px;
+            font-weight: 600;
+            background: var(--border-light);
+            padding: 1px 6px;
+            border-radius: 9999px;
+            margin-left: 6px;
+        }
+
+        .profiler-tab.active .tab-count {
+            background: rgba(0, 115, 209, 0.1);
+            color: var(--primary);
+        }
+
+        .profiler-section {
+            display: none;
+        }
+
+        .profiler-section.active {
+            display: block;
+        }
+
+        /* Overview section */
+        .overview-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+            margin-bottom: 24px;
+        }
+
+        .overview-stats-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .overview-stats-table td {
+            padding: 8px 12px;
+            font-size: 13px;
+            border-bottom: 1px solid var(--border-light);
+        }
+
+        .overview-stats-table td:first-child {
+            font-weight: 500;
+            color: var(--text-primary);
+            width: 55%;
+        }
+
+        .overview-stats-table td:last-child {
+            color: var(--text-secondary);
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .overview-stats-table .highlight {
+            color: #DC2626;
+            font-weight: 500;
+        }
+
+        .overview-title {
+            font-size: 15px;
+            font-weight: 600;
+            margin-bottom: 12px;
+            color: var(--text-primary);
+        }
+
+        /* Variable cards */
+        .variable-card {
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            margin-bottom: 16px;
+            overflow: hidden;
+        }
+
+        .variable-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 16px;
+            background: var(--background);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .variable-name {
+            font-weight: 600;
+            font-family: var(--font-mono);
+            font-size: 14px;
+            color: var(--primary);
+        }
+
+        .variable-type {
+            font-size: 11px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            background: var(--border-light);
+            padding: 2px 8px;
+            border-radius: 4px;
+        }
+
+        .variable-body {
+            display: grid;
+            grid-template-columns: auto 1fr;
+            gap: 0;
+        }
+
+        .variable-stats {
+            padding: 12px 16px;
+            min-width: 0;
+        }
+
+        .variable-stats table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .variable-stats td {
+            padding: 4px 0;
+            font-size: 13px;
+            white-space: nowrap;
+        }
+
+        .variable-stats td:first-child {
+            color: var(--text-secondary);
+            padding-right: 12px;
+        }
+
+        .variable-stats td:last-child {
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .variable-chart {
+            padding: 12px 16px;
+            display: flex;
+            align-items: flex-start;
+            justify-content: center;
+            min-height: 120px;
+            min-width: 0;
+        }
+
+        .variable-chart canvas {
+            max-width: 100%;
+            max-height: 150px;
+        }
+
+        /* Numeric range bar visualization */
+        .num-viz {
+            width: 100%;
+            font-size: 12px;
+        }
+
+        .num-range {
+            margin-bottom: 10px;
+        }
+
+        .num-range-labels {
+            display: flex;
+            justify-content: space-between;
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-bottom: 4px;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .num-range-track {
+            position: relative;
+            height: 14px;
+            background: var(--border-light);
+            border-radius: 7px;
+            margin-bottom: 6px;
+        }
+
+        .num-range-whisker {
+            position: absolute;
+            top: 0;
+            height: 100%;
+            background: rgba(0, 115, 209, 0.15);
+            border-radius: 7px;
+        }
+
+        .num-range-iqr {
+            position: absolute;
+            top: 0;
+            height: 100%;
+            background: rgba(0, 115, 209, 0.45);
+            border-radius: 5px;
+        }
+
+        .num-range-marker {
+            position: absolute;
+            top: -3px;
+            width: 2px;
+            height: 20px;
+            border-radius: 1px;
+        }
+
+        .num-range-legend {
+            display: flex;
+            gap: 10px;
+            font-size: 10px;
+            color: var(--text-secondary);
+            margin-top: 2px;
+            position: relative;
+            overflow: visible;
+        }
+
+        .num-range-legend span::before {
+            content: '';
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 2px;
+            margin-right: 3px;
+            vertical-align: middle;
+        }
+
+        .num-range-legend .legend-mean::before { background: #DC2626; }
+        .num-range-legend .legend-median::before { background: #059669; }
+        .num-range-legend .legend-iqr::before { background: rgba(0, 115, 209, 0.45); }
+
+        .num-constant {
+            text-align: center;
+            padding: 12px 0;
+            color: var(--text-secondary);
+            font-size: 13px;
+        }
+
+        .num-constant strong {
+            color: var(--text-primary);
+            font-variant-numeric: tabular-nums;
+        }
+
+        .num-stats-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 10px;
+        }
+
+        .num-stat {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            background: var(--border-light);
+            border-radius: 10px;
+            padding: 3px 8px;
+            font-size: 11px;
+            line-height: 1.3;
+            cursor: help;
+            position: relative;
+        }
+
+        /* Tooltip trigger styling */
+        [data-tip] {
+            cursor: help;
+        }
+
+        /* Floating tooltip element (appended to body via JS) */
+        .tip-box {
+            position: fixed;
+            background: var(--text-primary);
+            color: #fff;
+            font-size: 11px;
+            font-weight: 400;
+            font-family: var(--font-primary);
+            line-height: 1.4;
+            padding: 6px 10px;
+            border-radius: 6px;
+            max-width: 260px;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.15s ease;
+            z-index: 9999;
+        }
+
+        .tip-box.visible {
+            opacity: 1;
+        }
+
+        .num-stat-label {
+            color: var(--text-secondary);
+        }
+
+        .num-stat-value {
+            font-weight: 500;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .num-stat.alert-zeros .num-stat-value {
+            color: #DC2626;
+        }
+
+        /* Categorical bar chart */
+        .cat-bars {
+            width: 100%;
+            padding: 8px 0;
+        }
+
+        .cat-bar-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 4px;
+            font-size: 12px;
+        }
+
+        .cat-bar-label {
+            width: 100px;
+            text-align: right;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            color: var(--text-secondary);
+            flex-shrink: 0;
+        }
+
+        .cat-bar-track {
+            flex: 1;
+            height: 18px;
+            background: var(--border-light);
+            border-radius: 2px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .cat-bar-fill {
+            height: 100%;
+            background: var(--primary);
+            border-radius: 2px;
+            display: flex;
+            align-items: center;
+            padding: 0 6px;
+            min-width: 30px;
+        }
+
+        .cat-bar-count {
+            font-size: 11px;
+            font-weight: 500;
+            color: white;
+            white-space: nowrap;
+        }
+
+        .cat-bar-count.outside {
+            color: var(--text-secondary);
+            margin-left: 6px;
+        }
+
+        /* Boolean bar */
+        .bool-bar {
+            display: flex;
+            height: 24px;
+            border-radius: 4px;
+            overflow: hidden;
+            width: 100%;
+            margin-top: 8px;
+        }
+
+        .bool-bar .true-part {
+            background: var(--primary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        .bool-bar .false-part {
+            background: #E5E7EB;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-secondary);
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        /* Insights list */
+        .insight-group {
+            margin-bottom: 16px;
+            border-radius: 8px;
+            border: 1px solid var(--border-light);
+            overflow: hidden;
+        }
+        .insight-group.border-imbalance { border-left: 3px solid #3B82F6; }
+        .insight-group.border-unique { border-left: 3px solid #7C3AED; }
+        .insight-group.border-high_missing { border-left: 3px solid #DC2626; }
+        .insight-group.border-missing { border-left: 3px solid #D97706; }
+        .insight-group.border-zeros { border-left: 3px solid #3B82F6; }
+        .insight-group.border-high_cardinality { border-left: 3px solid #4338CA; }
+        .insight-group.border-constant { border-left: 3px solid #D97706; }
+
+        .insight-group-header {
+            display: flex;
+            align-items: baseline;
+            gap: 10px;
+            padding: 10px 16px;
+            background: var(--background);
+        }
+
+        .alert-explanation {
+            font-size: 12px;
+            color: var(--text-secondary);
+            line-height: 1.4;
+        }
+
+        .insight-items {
+            padding: 0;
+        }
+
+        .insight-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 7px 16px;
+            border-top: 1px solid var(--border-light);
+            font-size: 13px;
+        }
+
+        .insight-col {
+            font-weight: 500;
+            font-family: var(--font-mono);
+            color: var(--primary);
+            cursor: pointer;
+            text-decoration: none;
+        }
+
+        .insight-col:hover {
+            text-decoration: underline;
+        }
+
+        .insight-detail {
+            color: var(--text-secondary);
+            font-size: 12px;
+        }
+
+        .variable-highlight {
+            animation: highlightPulse 2s ease-out;
+        }
+
+        @keyframes highlightPulse {
+            0% { box-shadow: 0 0 0 3px rgba(0, 115, 209, 0.4); }
+            100% { box-shadow: none; }
+        }
+
+        /* Missing values chart */
+        .missing-chart-container {
+            height: 200px;
+            margin-bottom: 24px;
+        }
+
+        /* Relationships */
+        .relationship-card {
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 12px;
+        }
+
+        .relationship-header {
+            font-size: 13px;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .relationship-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 0;
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .relationship-table-link {
+            font-family: var(--font-mono);
+            font-weight: 500;
+            color: var(--primary);
+            cursor: pointer;
+            text-decoration: none;
+        }
+
+        .relationship-table-link:hover {
+            text-decoration: underline;
+        }
+
+        .relationship-direction {
+            font-size: 11px;
+            padding: 1px 6px;
+            border-radius: 4px;
+            font-weight: 500;
+        }
+
+        .relationship-direction.belongs_to { background: #DBEAFE; color: #1E40AF; }
+        .relationship-direction.has_many { background: #D1FAE5; color: #065F46; }
+
+        /* Relationship Mermaid diagram */
+        .relationship-diagram-wrap {
+            background: var(--background);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 16px;
+            overflow-x: auto;
+        }
+
+        .relationship-diagram-wrap .mermaid {
+            display: flex;
+            justify-content: center;
+        }
+
+        .relationship-diagram-wrap svg {
+            max-width: 100%;
+            height: auto;
+        }
+
+        .relationship-diagram-wrap svg .node.clickable-node {
+            cursor: pointer;
+        }
+
+        .relationship-diagram-wrap svg .node.clickable-node:hover {
+            filter: brightness(0.92);
+            transition: filter 0.15s ease;
+        }
+
+        .relationship-legend {
+            display: flex;
+            gap: 16px;
+            justify-content: center;
+            margin-top: 10px;
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+
+        .relationship-legend-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .relationship-legend-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        .relationship-legend-dot.current { background: #2563eb; }
+        .relationship-legend-dot.parent { background: #DBEAFE; border: 1px solid #93C5FD; }
+        .relationship-legend-dot.child { background: #D1FAE5; border: 1px solid #6EE7B7; }
+        .relationship-legend-dot.metric { background: #FEF3C7; border: 1px solid #FCD34D; }
+
+        /* Metrics badges */
+        .metric-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 12px;
+            font-weight: 500;
+            padding: 4px 10px;
+            background: rgba(0, 115, 209, 0.08);
+            color: var(--primary);
+            border-radius: 6px;
+            margin: 4px 4px 4px 0;
+        }
+
+        /* Sample data table */
+        .sample-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+            overflow-x: auto;
+            display: block;
+        }
+
+        .sample-table th {
+            font-weight: 600;
+            background: var(--background);
+            padding: 8px 12px;
+            border: 1px solid var(--border);
+            white-space: nowrap;
+            font-family: var(--font-mono);
+            font-size: 11px;
+        }
+
+        .sample-table td {
+            padding: 6px 12px;
+            border: 1px solid var(--border-light);
+            max-width: 200px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-variant-numeric: tabular-nums;
+        }
+
+        /* Loading spinner */
+        .profiler-loading {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 60px;
+            color: var(--text-secondary);
+            gap: 12px;
+        }
+
+        .spinner {
+            width: 32px;
+            height: 32px;
+            border: 3px solid var(--border);
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Empty state */
+        .profiler-empty {
+            text-align: center;
+            padding: 48px;
+            color: var(--text-secondary);
+        }
+
+        .profiler-empty p {
+            margin-top: 8px;
+            font-size: 13px;
+        }
+    </style>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/metric_modal.css') }}">
+    <!-- Prism.js for SQL syntax highlighting -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+    <!-- ═══════════════ HEADER ═══════════════ -->
+    <header class="header">
+        <div class="header-left">
+            <a href="{{ url_for('dashboard') }}" class="header-back" title="Back to Dashboard">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M19 12H5M12 19l-7-7 7-7"/>
+                </svg>
+            </a>
+            <div class="header-logo-group">
+                <div class="header-logo">
+                    <svg width="120" height="30" viewBox="0 0 395 100" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M390.16321,40.175397 C393.472414,43.4361562 395,48.2443368 395,54.1631395 L395,76.4805472 C395,79.3112789 392.794993,81.45803 389.993855,81.45803 C387.019974,81.45803 384.984322,79.39593 384.984322,77.0798767 L384.984322,75.3631531 C381.929151,79.0539397 377.25833,81.9727085 370.382501,81.9727085 C361.979087,81.9727085 354.507127,77.0798767 354.507127,67.9815799 L354.507127,67.8122778 C354.507127,58.0266143 362.063765,53.2218197 373.014284,53.2218197 C378.023816,53.2218197 381.587053,53.9938374 385.069,55.1078455 L385.069,53.9938374 C385.069,47.5569702 381.163665,44.1235228 373.949126,44.1235228 C370.04379,44.1235228 366.819264,44.8108895 364.014739,45.9248976 C363.421995,46.0975858 362.913929,46.1822368 362.402475,46.1822368 C360.028113,46.1822368 358.073752,44.296211 358.073752,41.8921207 C358.073752,40.0027088 359.347304,38.3740223 360.87489,37.7746927 C365.118936,36.1426201 369.447659,35.1132631 375.307356,35.1132631 C382.013829,35.1132631 387.019974,36.9146379 390.16321,40.175397 Z M385.238356,64.7208208 L385.238356,61.6327498 C382.606573,60.6033928 379.124626,59.827989 375.053323,59.827989 C368.431527,59.827989 364.526192,62.6621068 364.526192,67.3822504 L364.526192,67.5515525 C364.526192,71.9297058 368.346849,74.4184472 373.268317,74.4184472 C380.059468,74.4184472 385.238356,70.4703213 385.238356,64.7208208 Z M343.983384,17.9494125 C346.869199,17.9494125 349.162271,20.2654658 349.162271,23.0961975 L349.162271,76.307859 C349.162271,79.2266278 346.869199,81.45803 343.983384,81.45803 C341.182246,81.45803 338.889174,79.2266278 338.889174,76.307859 L338.889174,23.0961975 C338.889174,20.2654658 341.097568,17.9494125 343.983384,17.9494125 Z M309.096174,34.7678868 C322.847832,34.7678868 332.948187,45.325568 332.948187,58.2839535 L332.948187,58.4566417 C332.948187,71.3303762 322.763154,82.0573596 308.926819,82.0573596 C295.259839,82.0573596 285.156097,71.4996783 285.156097,58.6293299 L285.156097,58.4566417 C285.156097,45.4982562 295.344517,34.7678868 309.096174,34.7678868 Z M322.678476,58.6293299 L322.678476,58.4566417 C322.678476,50.472353 316.991522,43.8661836 308.926819,43.8661836 C300.69276,43.8661836 295.429195,50.3910879 295.429195,58.2839535 L295.429195,58.4566417 C295.429195,66.3528934 301.116148,72.9624488 309.096174,72.9624488 C317.414911,72.9624488 322.678476,66.4375444 322.678476,58.6293299 Z M258.418269,34.7678868 C272.169926,34.7678868 282.270281,45.325568 282.270281,58.2839535 L282.270281,58.4566417 C282.270281,71.3303762 272.085248,82.0573596 258.248913,82.0573596 C244.581934,82.0573596 234.478191,71.4996783 234.478191,58.6293299 L234.478191,58.4566417 C234.478191,45.4982562 244.666611,34.7678868 258.418269,34.7678868 Z M272.000571,58.6293299 L272.000571,58.4566417 C272.000571,50.472353 266.313617,43.8661836 258.248913,43.8661836 C250.014854,43.8661836 244.751289,50.3910879 244.751289,58.2839535 L244.751289,58.4566417 C244.751289,66.3528934 250.438243,72.9624488 258.418269,72.9624488 C266.737005,72.9624488 272.000571,66.4375444 272.000571,58.6293299 Z M210.626179,34.7678868 C221.15331,34.7678868 231.426407,43.1788169 231.426407,58.2839535 L231.426407,58.4566417 C231.426407,73.4737412 221.237987,81.9727085 210.626179,81.9727085 C203.157606,81.9727085 198.490172,78.1938848 195.346936,73.9918058 L195.346936,76.307859 C195.346936,79.1385907 193.057251,81.45803 190.168048,81.45803 C187.36691,81.45803 185.077225,79.1385907 185.077225,76.307859 L185.077225,23.0961975 C185.077225,20.1774286 187.282232,17.9494125 190.168048,17.9494125 C193.057251,17.9494125 195.346936,20.1774286 195.346936,23.0961975 L195.346936,43.266854 C198.659527,38.5467105 203.326962,34.7678868 210.626179,34.7678868 Z M220.983954,58.4566417 L220.983954,58.2839535 C220.983954,49.5310331 215.127645,43.7781465 208.167139,43.7781465 C201.206632,43.7781465 195.092903,49.6156841 195.092903,58.2839535 L195.092903,58.4566417 C195.092903,67.1249111 201.206632,72.9624488 208.167139,72.9624488 C215.212323,72.9624488 220.983954,67.3822504 220.983954,58.4566417 Z M158.339397,34.7678868 C172.599121,34.7678868 179.644305,46.6122642 179.644305,57.0819084 C179.644305,60.0006772 177.439297,62.0593912 174.807515,62.0593912 L146.708069,62.0593912 C147.812266,69.4409643 152.991154,73.5617783 159.61295,73.5617783 C163.941673,73.5617783 167.335555,72.0177429 170.221371,69.6136525 C170.986857,69.014323 171.664279,68.6689466 172.853154,68.6689466 C175.146226,68.6689466 176.927844,70.4703213 176.927844,72.8744117 C176.927844,74.1611079 176.3351,75.278502 175.569614,76.0505198 C171.494923,79.7413063 166.404101,82.0573596 159.440207,82.0573596 C146.454036,82.0573596 136.438359,72.5324214 136.438359,58.5412928 L136.438359,58.3719907 C136.438359,45.4102191 145.519194,34.7678868 158.339397,34.7678868 Z M146.623392,55.1958826 L169.628627,55.1958826 C168.947818,48.49829 165.04587,43.266854 158.254719,43.266854 C151.971635,43.266854 147.558233,48.1562997 146.623392,55.1958826 Z M114.621998,47.384282 L134.65674,72.5324214 C135.503517,73.6464294 136.099648,74.6757864 136.099648,76.307859 C136.099648,79.2266278 133.806576,81.45803 130.836082,81.45803 C128.797044,81.45803 127.523491,80.428673 126.422681,78.9692886 L107.322781,54.3358277 L97.645814,63.7761149 L97.645814,76.2198219 C97.645814,79.1385907 95.3527421,81.45803 92.4669263,81.45803 C89.4964329,81.45803 87.2033609,79.1385907 87.2033609,76.2198219 L87.2033609,25.7576271 C87.2033609,22.8388582 89.4964329,20.522805 92.4669263,20.522805 C95.3527421,20.522805 97.645814,22.8388582 97.645814,25.7576271 L97.645814,51.1631057 L125.82655,22.4968679 C127.015425,21.2067856 128.288977,20.522805 130.155274,20.522805 C133.04109,20.522805 134.995451,22.8388582 134.995451,25.4156367 C134.995451,27.0443233 134.314642,28.2463685 133.129154,29.3637626 L114.621998,47.384282 Z M29.0196247,62.5097349 C15.2069994,62.5097349 4.64599757,45.6777165 4.64599757,24.3591914 C4.64599757,3.04405242 13.4457034,0 29.0196247,0 C44.5935459,0 52.6311525,3.04405242 52.6311525,24.3591914 C52.6311525,45.6777165 41.5790201,62.5097349 29.0196247,62.5097349 Z M56.7160044,81.9659364 C57.8506855,83.8519622 57.207135,86.2865269 55.2832579,87.397149 C54.6363203,87.7696137 53.9284148,87.9456879 53.2306706,87.9456879 C51.8453435,87.9456879 50.4938876,87.2481631 49.7385625,85.9919412 C48.4345261,83.831646 47.1000056,82.2943826 45.5961298,80.8891748 C44.092254,79.4907392 42.3851517,78.2379034 40.4307905,76.7785189 C39.4756262,76.070836 38.5238489,75.4579623 37.5754587,74.9365117 C37.6872333,75.1396743 37.7990079,75.3462229 37.9141695,75.5595436 C40.6577268,80.7198727 43.4893488,87.8813531 43.5028972,96.03833 C43.5028972,98.2257136 41.6907946,100 39.4553035,100 C37.2164253,100 35.4043227,98.2257136 35.4043227,96.03833 C35.4178711,89.8350997 33.1959285,83.8688924 30.8520499,79.4467206 C30.0933378,78.0042664 29.3278515,76.7311143 28.6368815,75.6678969 C27.9831697,76.6803237 27.2583287,77.8823689 26.5334876,79.236786 C24.1523509,83.679274 21.8558919,89.7402905 21.8694403,96.03833 C21.8694403,98.2257136 20.0573377,100 17.8218466,100 C15.5863555,100 13.7742529,98.2257136 13.7742529,96.03833 C13.7878013,87.8813531 16.6160362,80.7198727 19.3629806,75.5595436 C19.4747551,75.3462229 19.5865297,75.1396743 19.7016913,74.9365117 C18.7499141,75.4579623 17.8015239,76.070836 16.8463595,76.7785189 C14.8886113,78.2379034 13.181509,79.4907392 11.6810203,80.8891748 C10.1771445,82.2943826 8.83923692,83.831646 7.53520045,85.9953273 C6.40051937,87.8813531 3.91776941,88.507771 1.99389223,87.397149 C0.0666279455,86.2865269 -0.573535412,83.8519622 0.561145671,81.9659364 C2.25469953,79.1453628 4.15825406,76.944435 6.1092281,75.1362882 C8.06358925,73.3247554 10.0314988,71.8958453 11.9418276,70.4669353 C12.8461853,69.7897267 13.7742529,69.1666949 14.722643,68.6012257 C13.7742529,68.0357566 12.8461853,67.4093387 11.9418276,66.7321302 C7.57245863,63.471371 3.77551089,59.0729015 0.561145671,53.7331121 C-0.573535412,51.8437003 0.0666279455,49.4125216 1.99389223,48.3018996 C3.91776941,47.1912776 6.40051937,47.8176955 7.53520045,49.7037213 C10.319403,54.3324417 13.4795745,57.9148749 16.8429724,60.4205465 C20.4502422,63.0921342 23.9931568,64.4160769 27.6376847,64.6260116 C27.9696213,64.6158535 28.3049449,64.6056953 28.6368815,64.6056953 C28.9722052,64.6056953 29.3041417,64.6158535 29.6360783,64.6260116 C33.2806062,64.4160769 36.8269079,63.0921342 40.4307905,60.4205465 C43.7941885,57.9148749 46.9577471,54.3324417 49.7385625,49.7037213 C50.8766307,47.8176955 53.3559936,47.1912776 55.2832579,48.3018996 C57.207135,49.4125216 57.8506855,51.8437003 56.7160044,53.7297261 C53.5016392,59.0729015 49.7013043,63.471371 45.3319354,66.7321302 C44.4275776,67.4093387 43.4995101,68.0357566 42.5545071,68.6012257 C43.4995101,69.1666949 44.4275776,69.7897267 45.3319354,70.4669353 C47.2456513,71.8958453 49.2101737,73.3247554 51.167922,75.1362882 C53.118896,76.944435 55.0190635,79.1453628 56.7160044,81.9659364 Z M23.3123482,48.6845224 C21.0768571,48.6845224 19.2647545,50.4621948 19.2647545,52.6495784 C19.2647545,54.8437341 21.0768571,56.6180205 23.3123482,56.6180205 C25.5478393,56.6180205 27.3599419,54.8437341 27.3599419,52.6495784 C27.3599419,50.4621948 25.5478393,48.6845224 23.3123482,48.6845224 Z M33.9614148,48.6845224 C31.7259237,48.6845224 29.9138211,50.4621948 29.9138211,52.6495784 C29.9138211,54.8437341 31.7259237,56.6180205 33.9614148,56.6180205 C36.1969059,56.6180205 38.0090085,54.8437341 38.0090085,52.6495784 C38.0090085,50.4621948 36.1969059,48.6845224 33.9614148,48.6845224 Z" fill="#0073D1" fill-rule="nonzero"/>
+                    </svg>
+                </div>
+                <span class="header-subtitle">Data Catalog</span>
+            </div>
+        </div>
+        <div class="header-right">
+            {% if data_stats.last_updated %}Last sync: {{ data_stats.last_updated }}{% endif %}
+        </div>
+    </header>
+
+    <!-- ═══════════════ PAGE TITLE ═══════════════ -->
+    <div class="page-title">
+        <h1>Data Catalog</h1>
+        <p>Browse available data sources and manage your subscriptions</p>
+    </div>
+
+    <!-- ═══════════════ SOURCE CARDS ═══════════════ -->
+    <div class="source-cards">
+
+        <!-- ── Card 1: Core Business Data ── -->
+        <div class="source-card">
+            <div class="source-card-header">
+                <div class="source-card-left">
+                    <div class="source-card-icon primary">
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#0073D1" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                            <polyline points="14 2 14 8 20 8"/>
+                            <line x1="16" y1="13" x2="8" y2="13"/>
+                            <line x1="16" y1="17" x2="8" y2="17"/>
+                            <polyline points="10 9 9 9 8 9"/>
+                        </svg>
+                    </div>
+                    <div class="source-card-info">
+                        <div class="source-card-name">Core Business Data</div>
+                        <div class="source-card-desc">Core business data from internal systems</div>
+                        <div class="source-card-meta">{{ data_stats.tables }} tables &middot; ~{{ data_stats.rows_display }} rows total</div>
+                    </div>
+                </div>
+                <div class="source-card-right">
+                    <span class="badge-included">Always included</span>
+                    <label class="toggle-switch locked">
+                        <input type="checkbox" checked disabled>
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+            </div>
+
+            {% for category in catalog_data %}
+            <div class="accordion-category">
+                <button class="accordion-trigger" onclick="toggleAccordion(this)">
+                    <svg class="accordion-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="9 18 15 12 9 6"/>
+                    </svg>
+                    {{ category.name }}
+                    <span class="accordion-count">{{ category.count }} tables</span>
+                </button>
+                <div class="accordion-content">
+                    {% for table in category.tables %}
+                    <div class="table-row" onclick="openProfiler('{{ table.name }}')">
+                        <div class="table-row-left">
+                            <div class="table-row-name">{{ table.name }}</div>
+                            <div class="table-row-desc">{{ table.description }}</div>
+                        </div>
+                        <div class="table-row-right">
+                            <span class="rows-badge{{ ' large' if table.rows_large }}">{{ table.rows_display }}</span>
+                            <span class="profile-link">
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+                                Profile
+                            </span>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+
+        <!-- ── Card: Business Metrics ── -->
+        <div class="source-card">
+            <div class="source-card-header">
+                <div class="source-card-left">
+                    <div class="source-card-icon primary">
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#0073D1" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M3 3v18h18"/>
+                            <path d="M18.7 8l-5.1 5.2-2.8-2.7L7 14.3"/>
+                        </svg>
+                    </div>
+                    <div class="source-card-info">
+                        <div class="source-card-name">Business Metrics</div>
+                        <div class="source-card-desc">Standardized metric definitions for revenue, usage, KPIs, and financial reporting</div>
+                        <div class="source-card-meta">18 metrics &middot; 4 categories</div>
+                    </div>
+                </div>
+                <div class="source-card-right">
+                    <span class="badge-included">Always included</span>
+                    <label class="toggle-switch locked">
+                        <input type="checkbox" checked disabled>
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+            </div>
+
+            <!-- Finance Category -->
+            <div class="accordion-category">
+                <button class="accordion-trigger" onclick="toggleAccordion(this)">
+                    <svg class="accordion-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="9 18 15 12 9 6"/>
+                    </svg>
+                    <span class="category-tag finance">Finance</span>
+                    <span class="accordion-count">1 metric</span>
+                </button>
+                <div class="accordion-content">
+                    <div class="table-row" onclick="openMetricModal('finance/infra_cost.yml')">
+                        <div class="table-row-left">
+                            <div class="table-row-name">infra_cost</div>
+                            <div class="table-row-desc">Monthly infrastructure cost from cloud providers (GCP, AWS, Azure) and data warehouses (Snowflake, BigQuery)</div>
+                        </div>
+                        <div class="table-row-right">
+                            <span class="rows-badge">monthly</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Product Usage Category -->
+            <div class="accordion-category">
+                <button class="accordion-trigger" onclick="toggleAccordion(this)">
+                    <svg class="accordion-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="9 18 15 12 9 6"/>
+                    </svg>
+                    <span class="category-tag telemetry">Product Usage</span>
+                    <span class="accordion-count">3 metrics</span>
+                </button>
+                <div class="accordion-content">
+                    <div class="table-row" onclick="openMetricModal('product_usage/usage_value.yml')">
+                        <div class="table-row-left">
+                            <div class="table-row-name">usage_value</div>
+                            <div class="table-row-desc">Platform usage consumption aggregated per company and metric type with conditional aggregation</div>
+                        </div>
+                        <div class="table-row-right">
+                            <span class="rows-badge">monthly</span>
+                        </div>
+                    </div>
+                    <div class="table-row" onclick="openMetricModal('product_usage/contract_limit_value.yml')">
+                        <div class="table-row-left">
+                            <div class="table-row-name">contract_limit_value</div>
+                            <div class="table-row-desc">Monthly contracted limits for usage metrics per company</div>
+                        </div>
+                        <div class="table-row-right">
+                            <span class="rows-badge">monthly</span>
+                        </div>
+                    </div>
+                    <div class="table-row" onclick="openMetricModal('product_usage/usage_vs_limit.yml')">
+                        <div class="table-row-left">
+                            <div class="table-row-name">usage_vs_limit</div>
+                            <div class="table-row-desc">Comparison of actual usage against contracted limits, identifies overage risk and unpaid usage</div>
+                        </div>
+                        <div class="table-row-right">
+                            <span class="rows-badge">monthly</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Sales & Revenue Category -->
+            <div class="accordion-category">
+                <button class="accordion-trigger" onclick="toggleAccordion(this)">
+                    <svg class="accordion-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="9 18 15 12 9 6"/>
+                    </svg>
+                    <span class="category-tag sales">Sales &amp; Revenue</span>
+                    <span class="accordion-count">4 metrics</span>
+                </button>
+                <div class="accordion-content">
+                    <div class="table-row" onclick="openMetricModal('sales_revenue/product_revenue.yml')">
+                        <div class="table-row-left">
+                            <div class="table-row-name">product_revenue</div>
+                            <div class="table-row-desc">Monthly recurring revenue broken down by individual contract lines (product level)</div>
+                        </div>
+                        <div class="table-row-right">
+                            <span class="rows-badge">monthly</span>
+                        </div>
+                    </div>
+                    <div class="table-row" onclick="openMetricModal('sales_revenue/mrr.yml')">
+                        <div class="table-row-left">
+                            <div class="table-row-name">mrr</div>
+                            <div class="table-row-desc">Total monthly recurring revenue aggregated at company level - PRIMARY MRR metric</div>
+                        </div>
+                        <div class="table-row-right">
+                            <span class="rows-badge">monthly</span>
+                        </div>
+                    </div>
+                    <div class="table-row" onclick="openMetricModal('sales_revenue/new_arr.yml')">
+                        <div class="table-row-left">
+                            <div class="table-row-name">new_arr</div>
+                            <div class="table-row-desc">Annual Recurring Revenue from truly new customers (first month of revenue)</div>
+                        </div>
+                        <div class="table-row-right">
+                            <span class="rows-badge">monthly</span>
+                        </div>
+                    </div>
+                    <div class="table-row" onclick="openMetricModal('sales_revenue/upsell_expansion.yml')">
+                        <div class="table-row-left">
+                            <div class="table-row-name">upsell_expansion</div>
+                            <div class="table-row-desc">Revenue expansion from existing customers upgrading their contracts</div>
+                        </div>
+                        <div class="table-row-right">
+                            <span class="rows-badge">monthly</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Weekly Leadership KPIs Category -->
+            <div class="accordion-category">
+                <button class="accordion-trigger" onclick="toggleAccordion(this)">
+                    <svg class="accordion-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="9 18 15 12 9 6"/>
+                    </svg>
+                    <span class="category-tag sales">Weekly Leadership KPIs</span>
+                    <span class="accordion-count">10 metrics</span>
+                </button>
+                <div class="accordion-content">
+                    <div class="table-row" onclick="openMetricModal('weekly_leadership_kpis/top_risk_churn_count.yml')">
+                        <div class="table-row-left">
+                            <div class="table-row-name">top_risk_churn_count</div>
+                            <div class="table-row-desc">Weekly count of active customers flagged as high churn risk (CSM opinion = RED) • Customer Success</div>
+                        </div>
+                        <div class="table-row-right">
+                            <span class="rows-badge">weekly</span>
+                        </div>
+                    </div>
+                    <div class="table-row" onclick="openMetricModal('weekly_leadership_kpis/top_risk_churn_usd.yml')">
+                        <div class="table-row-left">
+                            <div class="table-row-name">top_risk_churn_usd</div>
+                            <div class="table-row-desc">Weekly ARR of active customers flagged as high churn risk • Customer Success</div>
+                        </div>
+                        <div class="table-row-right">
+                            <span class="rows-badge">weekly</span>
+                        </div>
+                    </div>
+                    <div class="table-row" onclick="openMetricModal('weekly_leadership_kpis/demo.yml')">
+                        <div class="table-row-left">
+                            <div class="table-row-name">demo</div>
+                            <div class="table-row-desc">Weekly count and ARR of New Business opportunities moved to Demo stage • Sales</div>
+                        </div>
+                        <div class="table-row-right">
+                            <span class="rows-badge">weekly</span>
+                        </div>
+                    </div>
+                    <div class="table-row" onclick="openMetricModal('weekly_leadership_kpis/negotiation.yml')">
+                        <div class="table-row-left">
+                            <div class="table-row-name">negotiation</div>
+                            <div class="table-row-desc">Weekly count and ARR of New Business opportunities moved to Negotiation stage • Sales</div>
+                        </div>
+                        <div class="table-row-right">
+                            <span class="rows-badge">weekly</span>
+                        </div>
+                    </div>
+                    <div class="table-row" onclick="openMetricModal('weekly_leadership_kpis/closed_won.yml')">
+                        <div class="table-row-left">
+                            <div class="table-row-name">closed_won</div>
+                            <div class="table-row-desc">Weekly count and ARR of New Business opportunities closed successfully • Sales</div>
+                        </div>
+                        <div class="table-row-right">
+                            <span class="rows-badge">weekly</span>
+                        </div>
+                    </div>
+                    <div class="table-row" onclick="openMetricModal('weekly_leadership_kpis/revenue_upsells_ytd.yml')">
+                        <div class="table-row-left">
+                            <div class="table-row-name">revenue_upsells_ytd</div>
+                            <div class="table-row-desc">Year-to-Date cumulative revenue upsells based on contract signing dates • Sales</div>
+                        </div>
+                        <div class="table-row-right">
+                            <span class="rows-badge">weekly YTD</span>
+                        </div>
+                    </div>
+                    <div class="table-row" onclick="openMetricModal('weekly_leadership_kpis/revenue_downsells_ytd.yml')">
+                        <div class="table-row-left">
+                            <div class="table-row-name">revenue_downsells_ytd</div>
+                            <div class="table-row-desc">Year-to-Date cumulative revenue downsells based on contract signing dates • Sales</div>
+                        </div>
+                        <div class="table-row-right">
+                            <span class="rows-badge">weekly YTD</span>
+                        </div>
+                    </div>
+                    <div class="table-row" onclick="openMetricModal('weekly_leadership_kpis/net_retention_rate.yml')">
+                        <div class="table-row-left">
+                            <div class="table-row-name">net_retention_rate</div>
+                            <div class="table-row-desc">Net Dollar Retention Rate (LTM) - measures revenue retention and expansion from existing customers • Finance</div>
+                        </div>
+                        <div class="table-row-right">
+                            <span class="rows-badge">weekly</span>
+                        </div>
+                    </div>
+                    <div class="table-row" onclick="openMetricModal('weekly_leadership_kpis/credits_consumption_trend.yml')">
+                        <div class="table-row-left">
+                            <div class="table-row-name">credits_consumption_trend</div>
+                            <div class="table-row-desc">Week-over-week percentage change in total credits consumption for customers aged 90+ days • Product</div>
+                        </div>
+                        <div class="table-row-right">
+                            <span class="rows-badge">weekly</span>
+                        </div>
+                    </div>
+                    <div class="table-row" onclick="openMetricModal('weekly_leadership_kpis/accounts_at_risk.yml')">
+                        <div class="table-row-left">
+                            <div class="table-row-name">accounts_at_risk</div>
+                            <div class="table-row-desc">Number of customer accounts showing concerning usage decline patterns (2 consecutive weeks of 25%+ job decline) • Product</div>
+                        </div>
+                        <div class="table-row-right">
+                            <span class="rows-badge">weekly</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── Card 2: Support Data (Jira) ── -->
+        <div class="source-card" id="jiraCard">
+            <div class="source-card-header">
+                <div class="source-card-left">
+                    <div class="source-card-icon jira">
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#6B7280" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="10"/>
+                            <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
+                            <line x1="12" y1="17" x2="12.01" y2="17"/>
+                        </svg>
+                    </div>
+                    <div class="source-card-info">
+                        <div class="source-card-name">Support Data (Jira)</div>
+                        <div class="source-card-desc">Customer support tickets, comments, and change history</div>
+                        <div class="source-card-meta">6 tables &middot; Real-time via webhooks</div>
+                    </div>
+                </div>
+                <div class="source-card-right">
+                    <span id="jiraBadge" class="{{ 'badge-subscribed' if sync_settings and sync_settings.datasets.jira else 'badge-unsubscribed' }}">
+                        {{ 'Subscribed' if sync_settings and sync_settings.datasets.jira else 'Not subscribed' }}
+                    </span>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="toggle-jira" onchange="updateJiraSubscription()" {{ 'checked' if sync_settings and sync_settings.datasets.jira }}>
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+            </div>
+
+            <!-- Unsubscribed info -->
+            <div id="jiraUnsubscribed" class="source-card-unsubscribed" style="{{ 'display:none' if sync_settings and sync_settings.datasets.jira }}">
+                Enable this data source to get access to Jira support ticket data. Includes issues, comments, attachments metadata, and field change history. Data is synced in real-time via webhooks.
+            </div>
+
+            <!-- Jira accordion (visible only when subscribed) -->
+            <div id="jiraAccordion" style="{{ '' if sync_settings and sync_settings.datasets.jira else 'display:none' }}">
+                <div class="accordion-category">
+                    <button class="accordion-trigger" onclick="toggleAccordion(this)">
+                        <svg class="accordion-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="9 18 15 12 9 6"/>
+                        </svg>
+                        Support
+                        <span class="accordion-count">6 tables</span>
+                    </button>
+                    <div class="accordion-content">
+                        <div class="table-row" onclick="openProfiler('jira_issues')">
+                            <div class="table-row-left">
+                                <div class="table-row-name">jira_issues</div>
+                                <div class="table-row-desc">Support tickets from SUPPORT project. Key fields: issue_key, summary, status, priority, assignee, severity.</div>
+                            </div>
+                            <div class="table-row-right">
+                                <span class="rows-badge">Real-time</span>
+                                <span class="profile-link">
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+                                    Profile
+                                </span>
+                            </div>
+                        </div>
+                        <div class="table-row" onclick="openProfiler('jira_comments')">
+                            <div class="table-row-left">
+                                <div class="table-row-name">jira_comments</div>
+                                <div class="table-row-desc">Comments on support tickets. Key fields: comment_id, issue_key, author_email, body, created_at.</div>
+                            </div>
+                            <div class="table-row-right">
+                                <span class="rows-badge">Real-time</span>
+                                <span class="profile-link">
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+                                    Profile
+                                </span>
+                            </div>
+                        </div>
+                        <div class="table-row" onclick="openProfiler('jira_attachments')">
+                            <div class="table-row-left">
+                                <div class="table-row-name">jira_attachments</div>
+                                <div class="table-row-desc">Attachment metadata with local file paths. Key fields: attachment_id, issue_key, filename, size_bytes, mime_type.</div>
+                            </div>
+                            <div class="table-row-right">
+                                <span class="rows-badge">Real-time</span>
+                                <span class="profile-link">
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+                                    Profile
+                                </span>
+                            </div>
+                        </div>
+                        <div class="table-row" onclick="openProfiler('jira_changelog')">
+                            <div class="table-row-left">
+                                <div class="table-row-name">jira_changelog</div>
+                                <div class="table-row-desc">History of all field changes on issues. Key fields: change_id, issue_key, field_name, from_value, to_value.</div>
+                            </div>
+                            <div class="table-row-right">
+                                <span class="rows-badge">Real-time</span>
+                                <span class="profile-link">
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+                                    Profile
+                                </span>
+                            </div>
+                        </div>
+                        <div class="table-row" onclick="openProfiler('jira_issuelinks')">
+                            <div class="table-row-left">
+                                <div class="table-row-name">jira_issuelinks</div>
+                                <div class="table-row-desc">Links between issues (blocks, duplicates, relates to). Key fields: issue_key, link_type, direction, linked_issue_key.</div>
+                            </div>
+                            <div class="table-row-right">
+                                <span class="rows-badge">Real-time</span>
+                                <span class="profile-link">
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+                                    Profile
+                                </span>
+                            </div>
+                        </div>
+                        <div class="table-row" onclick="openProfiler('jira_remote_links')">
+                            <div class="table-row-left">
+                                <div class="table-row-name">jira_remote_links</div>
+                                <div class="table-row-desc">External links (Confluence, Slack, etc.). Key fields: issue_key, url, title, application_name.</div>
+                            </div>
+                            <div class="table-row-right">
+                                <span class="rows-badge">Real-time</span>
+                                <span class="profile-link">
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+                                    Profile
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Attachments toggle option -->
+                <div class="jira-attachment-option">
+                    <div class="jira-attachment-label">
+                        <span>Include attachment files</span>
+                        <span>~4,200 MB+ of images, logs, and documents</span>
+                    </div>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="toggle-jira_attachments" onchange="updateJiraSubscription()" {{ 'checked' if sync_settings and sync_settings.datasets.jira_attachments }} {{ '' if sync_settings and sync_settings.datasets.jira else 'disabled' }}>
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── Card 3: Platform Telemetry ── -->
+        <div class="source-card" id="telemetryExpertCard">
+            <div class="source-card-header">
+                <div class="source-card-left">
+                    <div class="source-card-icon telemetry-expert">
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#6B7280" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+                            <line x1="8" y1="21" x2="16" y2="21"/>
+                            <line x1="12" y1="17" x2="12" y2="21"/>
+                        </svg>
+                    </div>
+                    <div class="source-card-info">
+                        <div class="source-card-name">Platform Telemetry</div>
+                        <div class="source-card-desc">Component registry, configurations, and job execution history</div>
+                        <div class="source-card-meta">3 tables &middot; ~100 MB</div>
+                    </div>
+                </div>
+                <div class="source-card-right">
+                    <span id="telemetryExpertBadge" class="{{ 'badge-subscribed' if sync_settings and sync_settings.datasets.kbc_telemetry_expert else 'badge-unsubscribed' }}">
+                        {{ 'Subscribed' if sync_settings and sync_settings.datasets.kbc_telemetry_expert else 'Not subscribed' }}
+                    </span>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="toggle-kbc_telemetry_expert" onchange="updateTelemetryExpertSubscription()" {{ 'checked' if sync_settings and sync_settings.datasets.kbc_telemetry_expert }}>
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+            </div>
+
+            <!-- Unsubscribed info -->
+            <div id="telemetryExpertUnsubscribed" class="source-card-unsubscribed" style="{{ 'display:none' if sync_settings and sync_settings.datasets.kbc_telemetry_expert }}">
+                Enable this data source to get detailed platform telemetry. Includes component definitions, project configurations, and job execution history with timing, credits, and error details.
+            </div>
+
+            <!-- Telemetry Expert accordion (visible only when subscribed) -->
+            <div id="telemetryExpertAccordion" style="{{ '' if sync_settings and sync_settings.datasets.kbc_telemetry_expert else 'display:none' }}">
+                <div class="accordion-category">
+                    <button class="accordion-trigger" onclick="toggleAccordion(this)">
+                        <svg class="accordion-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="9 18 15 12 9 6"/>
+                        </svg>
+                        Telemetry Expert
+                        <span class="accordion-count">3 tables</span>
+                    </button>
+                    <div class="accordion-content">
+                        <div class="table-row" onclick="openProfiler('kbc_component')">
+                            <div class="table-row-left">
+                                <div class="table-row-name">kbc_component</div>
+                                <div class="table-row-desc">Master data for platform components - registry of extractors, writers, transformations, and other component types.</div>
+                            </div>
+                            <div class="table-row-right">
+                                <span class="rows-badge">Full refresh</span>
+                                <span class="profile-link">
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+                                    Profile
+                                </span>
+                            </div>
+                        </div>
+                        <div class="table-row" onclick="openProfiler('kbc_component_configuration')">
+                            <div class="table-row-left">
+                                <div class="table-row-name">kbc_component_configuration</div>
+                                <div class="table-row-desc">Component configurations within projects - tracks all component setups across projects.</div>
+                            </div>
+                            <div class="table-row-right">
+                                <span class="rows-badge">Incremental</span>
+                                <span class="profile-link">
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+                                    Profile
+                                </span>
+                            </div>
+                        </div>
+                        <div class="table-row" onclick="openProfiler('kbc_job')">
+                            <div class="table-row-left">
+                                <div class="table-row-name">kbc_job</div>
+                                <div class="table-row-desc">Job execution history - tracks all component runs with timing, status, credits, and error details. Last 180 days.</div>
+                            </div>
+                            <div class="table-row-right">
+                                <span class="rows-badge">Incremental</span>
+                                <span class="profile-link">
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+                                    Profile
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- ═══════════════ PROFILER MODAL (preserved 1:1) ═══════════════ -->
+    <div id="profilerOverlay" class="profiler-overlay" onclick="if(event.target===this)closeProfiler()">
+        <div class="profiler-modal">
+            <div class="profiler-header">
+                <div class="profiler-header-left">
+                    <h2 id="profilerTitle">-</h2>
+                    <span id="profilerQuality" class="quality-badge"></span>
+                    <span id="profilerAlertSummary"></span>
+                </div>
+                <button class="profiler-close" onclick="closeProfiler()">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M18 6L6 18M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+            <!-- Tabs (outside scrollable body so they stay fixed) -->
+            <div class="profiler-tabs" id="profilerTabs" style="display:none;">
+                <button class="profiler-tab active" onclick="switchTab('overview')">Overview</button>
+                <button class="profiler-tab" onclick="switchTab('variables')" id="tabVariables">Columns</button>
+                <button class="profiler-tab" onclick="switchTab('alerts')" id="tabAlerts">Insights</button>
+                <button class="profiler-tab" onclick="switchTab('missing')" id="tabMissing">Missing Values</button>
+                <button class="profiler-tab" onclick="switchTab('relationships')" id="tabRelationships">Relationships</button>
+                <button class="profiler-tab" onclick="switchTab('sample')" id="tabSample">Sample</button>
+            </div>
+            <div class="profiler-body">
+                <div id="profilerLoading" class="profiler-loading">
+                    <div class="spinner"></div>
+                    <span>Loading profile data...</span>
+                </div>
+                <div id="profilerContent" style="display:none;">
+
+                    <!-- Overview Section -->
+                    <div id="sectionOverview" class="profiler-section active"></div>
+
+                    <!-- Variables Section -->
+                    <div id="sectionVariables" class="profiler-section"></div>
+
+                    <!-- Alerts Section -->
+                    <div id="sectionAlerts" class="profiler-section"></div>
+
+                    <!-- Missing Values Section -->
+                    <div id="sectionMissing" class="profiler-section">
+                        <div class="missing-chart-container">
+                            <canvas id="missingChart"></canvas>
+                        </div>
+                    </div>
+
+                    <!-- Relationships Section -->
+                    <div id="sectionRelationships" class="profiler-section"></div>
+
+                    <!-- Sample Section -->
+                    <div id="sectionSample" class="profiler-section"></div>
+                </div>
+                <div id="profilerError" class="profiler-empty" style="display:none;">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary)" stroke-width="1.5" opacity="0.5"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+                    <p id="profilerErrorMsg">Profile data not available for this table.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <footer class="footer">
+        <p>&copy; {{ config.INSTANCE_COPYRIGHT or 'AI Data Analyst' }} &middot; Updated daily</p>
+    </footer>
+
+<script>
+/* ═══════════════ ACCORDION ═══════════════ */
+function toggleAccordion(trigger) {
+    const content = trigger.nextElementSibling;
+    const isExpanded = trigger.classList.contains('expanded');
+
+    if (isExpanded) {
+        trigger.classList.remove('expanded');
+        content.classList.remove('expanded');
+    } else {
+        trigger.classList.add('expanded');
+        content.classList.add('expanded');
+    }
+}
+
+/* ═══════════════ DATASET SUBSCRIPTIONS ═══════════════ */
+function collectAllDatasets() {
+    const jiraToggle = document.getElementById('toggle-jira');
+    const attachmentsToggle = document.getElementById('toggle-jira_attachments');
+    const telemetryExpertToggle = document.getElementById('toggle-kbc_telemetry_expert');
+    return {
+        jira: jiraToggle.checked,
+        jira_attachments: attachmentsToggle.checked,
+        kbc_telemetry_expert: telemetryExpertToggle.checked
+    };
+}
+
+async function saveAllDatasets() {
+    try {
+        await fetch('/api/sync-settings', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({datasets: collectAllDatasets()})
+        });
+    } catch (e) {
+        console.error('Failed to update settings:', e);
+    }
+}
+
+async function updateJiraSubscription() {
+    const jiraToggle = document.getElementById('toggle-jira');
+    const attachmentsToggle = document.getElementById('toggle-jira_attachments');
+    const jiraBadge = document.getElementById('jiraBadge');
+    const jiraUnsubscribed = document.getElementById('jiraUnsubscribed');
+    const jiraAccordion = document.getElementById('jiraAccordion');
+
+    // Handle dependency: jira_attachments requires jira
+    if (!jiraToggle.checked) {
+        attachmentsToggle.checked = false;
+        attachmentsToggle.disabled = true;
+    } else {
+        attachmentsToggle.disabled = false;
+    }
+
+    // Update UI immediately
+    if (jiraToggle.checked) {
+        jiraBadge.className = 'badge-subscribed';
+        jiraBadge.textContent = 'Subscribed';
+        jiraUnsubscribed.style.display = 'none';
+        jiraAccordion.style.display = '';
+    } else {
+        jiraBadge.className = 'badge-unsubscribed';
+        jiraBadge.textContent = 'Not subscribed';
+        jiraUnsubscribed.style.display = '';
+        jiraAccordion.style.display = 'none';
+    }
+
+    await saveAllDatasets();
+}
+
+async function updateTelemetryExpertSubscription() {
+    const toggle = document.getElementById('toggle-kbc_telemetry_expert');
+    const badge = document.getElementById('telemetryExpertBadge');
+    const unsubscribed = document.getElementById('telemetryExpertUnsubscribed');
+    const accordion = document.getElementById('telemetryExpertAccordion');
+
+    if (toggle.checked) {
+        badge.className = 'badge-subscribed';
+        badge.textContent = 'Subscribed';
+        unsubscribed.style.display = 'none';
+        accordion.style.display = '';
+    } else {
+        badge.className = 'badge-unsubscribed';
+        badge.textContent = 'Not subscribed';
+        unsubscribed.style.display = '';
+        accordion.style.display = 'none';
+    }
+
+    await saveAllDatasets();
+}
+
+/* ═══════════════ PROFILER (preserved 1:1) ═══════════════ */
+let currentCharts = [];
+let currentProfile = null;
+let mermaidDiagramRendered = false;
+let currentDiagramNodeMap = {};
+
+function openProfiler(tableName, initialTab) {
+    const overlay = document.getElementById('profilerOverlay');
+    const loading = document.getElementById('profilerLoading');
+    const content = document.getElementById('profilerContent');
+    const error = document.getElementById('profilerError');
+
+    overlay.classList.add('active');
+    loading.style.display = 'flex';
+    content.style.display = 'none';
+    document.getElementById('profilerTabs').style.display = 'none';
+    error.style.display = 'none';
+    document.body.style.overflow = 'hidden';
+
+    document.getElementById('profilerTitle').textContent = tableName;
+
+    fetch(`/api/catalog/profile/${tableName}`)
+        .then(r => {
+            if (!r.ok) throw new Error('not found');
+            return r.json();
+        })
+        .then(data => {
+            currentProfile = data;
+            loading.style.display = 'none';
+            content.style.display = 'block';
+            document.getElementById('profilerTabs').style.display = 'flex';
+            renderProfile(data, initialTab);
+        })
+        .catch(err => {
+            loading.style.display = 'none';
+            document.getElementById('profilerTabs').style.display = 'none';
+            error.style.display = 'block';
+        });
+}
+
+function closeProfiler() {
+    document.getElementById('profilerOverlay').classList.remove('active');
+    document.getElementById('profilerTabs').style.display = 'none';
+    document.body.style.overflow = '';
+    destroyCharts();
+    currentProfile = null;
+    mermaidDiagramRendered = false;
+    currentDiagramNodeMap = {};
+}
+
+function destroyCharts() {
+    currentCharts.forEach(c => c.destroy());
+    currentCharts = [];
+}
+
+function switchTab(tabName) {
+    document.querySelectorAll('.profiler-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.profiler-section').forEach(s => s.classList.remove('active'));
+    event.target.classList.add('active');
+    document.getElementById('section' + tabName.charAt(0).toUpperCase() + tabName.slice(1)).classList.add('active');
+
+    // Lazy-render Mermaid diagram when Relationships tab is first shown
+    if (tabName === 'relationships' && !mermaidDiagramRendered && typeof mermaid !== 'undefined') {
+        const mermaidEl = document.querySelector('#sectionRelationships .mermaid');
+        if (mermaidEl && !mermaidEl.getAttribute('data-processed')) {
+            mermaid.run({ nodes: [mermaidEl] }).then(() => {
+                attachDiagramClickHandlers();
+            });
+            mermaidDiagramRendered = true;
+        }
+    }
+}
+
+function navigateToVariable(columnName) {
+    // Switch to Columns tab
+    document.querySelectorAll('.profiler-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.profiler-section').forEach(s => s.classList.remove('active'));
+    const varTab = document.querySelector('#tabVariables');
+    if (varTab) varTab.classList.add('active');
+    document.getElementById('sectionVariables').classList.add('active');
+
+    // Scroll to the variable card within the modal body
+    const card = document.getElementById('var_' + columnName);
+    if (card) {
+        // Use scrollIntoView within the scrollable .profiler-body container
+        setTimeout(() => {
+            card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            card.classList.add('variable-highlight');
+            setTimeout(() => card.classList.remove('variable-highlight'), 2000);
+        }, 50);
+    }
+}
+
+function navigateToInsight(insightType) {
+    // Switch to Insights tab
+    document.querySelectorAll('.profiler-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.profiler-section').forEach(s => s.classList.remove('active'));
+    const tab = document.querySelector('#tabAlerts');
+    if (tab) tab.classList.add('active');
+    document.getElementById('sectionAlerts').classList.add('active');
+
+    const group = document.getElementById('insight_' + insightType);
+    if (group) {
+        setTimeout(() => {
+            group.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            group.classList.add('variable-highlight');
+            setTimeout(() => group.classList.remove('variable-highlight'), 2000);
+        }, 50);
+    }
+}
+
+function formatNumber(n) {
+    if (n === null || n === undefined) return '-';
+    if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+    if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+    if (Math.abs(n) >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+    if (Number.isInteger(n)) return n.toLocaleString();
+    return Number(n).toFixed(2);
+}
+
+const INSIGHT_TOOLTIPS = {
+    unique: "Every value in this column is different. This is typical for ID columns and usually means this column can uniquely identify each row.",
+    high_cardinality: "This column has a very large number of distinct values. It may be an ID or free-text field. Not ideal for grouping or filtering in reports.",
+    high_missing: "Most values in this column are empty. Consider whether this data is collected consistently or if this column is only relevant for specific records.",
+    missing: "Some values in this column are empty. Check if the gaps are expected (e.g. optional fields) or indicate a data collection issue.",
+    zeros: "A large portion of values are zero. This may be normal (e.g. no change periods) or could indicate missing data entered as zero.",
+    imbalance: "One value dominates this column (appears in 90%+ of rows). This is normal for status or flag columns but limits analytical usefulness.",
+    constant: "This column has the same value in every row. It provides no analytical value and can usually be ignored in analysis.",
+};
+
+function renderAlertBadge(alert, clickable) {
+    const tooltip = INSIGHT_TOOLTIPS[alert] || '';
+    const label = alert.replace('_', ' ');
+    if (clickable) {
+        return `<span class="alert-badge ${alert}" title="${tooltip}" style="cursor:pointer;" onclick="event.stopPropagation();navigateToInsight('${alert}')">${label}</span>`;
+    }
+    return `<span class="alert-badge ${alert}" title="${tooltip}">${label}</span>`;
+}
+
+function renderProfile(data, initialTab) {
+    destroyCharts();
+
+    // Header badges
+    const quality = data.avg_completeness || 0;
+    const qBadge = document.getElementById('profilerQuality');
+    qBadge.textContent = quality.toFixed(1) + '% complete';
+    qBadge.className = 'quality-badge ' + (quality >= 95 ? 'good' : quality >= 80 ? 'warning' : 'poor');
+
+    const alertCount = (data.alerts || []).length;
+    document.getElementById('profilerAlertSummary').innerHTML = alertCount > 0
+        ? `<span class="alert-badge imbalance">${alertCount} insight${alertCount > 1 ? 's' : ''}</span>`
+        : '';
+
+    // Tab counts
+    const cols = data.columns || [];
+    document.getElementById('tabVariables').innerHTML = `Columns <span class="tab-count">${cols.length}</span>`;
+    document.getElementById('tabAlerts').innerHTML = `Insights <span class="tab-count">${alertCount}</span>`;
+
+    renderOverview(data);
+    renderVariables(data);
+    renderAlerts(data);
+    renderMissing(data);
+    renderRelationships(data);
+    renderSample(data);
+
+    // Set active tab (default: overview)
+    const targetTab = initialTab || 'overview';
+    document.querySelectorAll('.profiler-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.profiler-section').forEach(s => s.classList.remove('active'));
+
+    const targetSection = document.getElementById('section' + targetTab.charAt(0).toUpperCase() + targetTab.slice(1));
+    if (targetSection) {
+        targetSection.classList.add('active');
+        // Activate matching tab button
+        document.querySelectorAll('.profiler-tab').forEach(t => {
+            if (t.getAttribute('onclick') && t.getAttribute('onclick').includes("'" + targetTab + "'")) {
+                t.classList.add('active');
+            }
+        });
+        // Trigger lazy Mermaid render if opening relationships tab directly
+        if (targetTab === 'relationships' && !mermaidDiagramRendered && typeof mermaid !== 'undefined') {
+            const mermaidEl = document.querySelector('#sectionRelationships .mermaid');
+            if (mermaidEl && !mermaidEl.getAttribute('data-processed')) {
+                mermaid.run({ nodes: [mermaidEl] }).then(() => {
+                    attachDiagramClickHandlers();
+                });
+                mermaidDiagramRendered = true;
+            }
+        }
+    } else {
+        // Fallback to overview
+        document.querySelector('.profiler-tab').classList.add('active');
+        document.getElementById('sectionOverview').classList.add('active');
+    }
+}
+
+function renderOverview(data) {
+    const vt = data.variable_types || {};
+    const vtHtml = Object.entries(vt).map(([t, c]) =>
+        `<tr><td>${t}</td><td>${c}</td></tr>`
+    ).join('');
+
+    const missingPct = data.missing_cells_pct || 0;
+    const missingClass = missingPct > 20 ? ' class="highlight"' : '';
+
+    const dr = data.date_range;
+    const dateRow = dr ? `<tr><td>Date Coverage</td><td>${dr.earliest} to ${dr.latest}</td></tr>` : '';
+
+    document.getElementById('sectionOverview').innerHTML = `
+        <div class="overview-grid">
+            <div>
+                <div class="overview-title">Dataset Statistics</div>
+                <table class="overview-stats-table">
+                    <tr><td>Number of variables</td><td>${data.column_count || 0}</td></tr>
+                    <tr><td>Number of observations</td><td>${formatNumber(data.row_count || 0)}</td></tr>
+                    <tr><td>Missing cells</td><td${missingClass}>${formatNumber(data.missing_cells || 0)}</td></tr>
+                    <tr><td>Missing cells (%)</td><td${missingClass}>${missingPct.toFixed(1)}%</td></tr>
+                    <tr><td>Duplicate rows</td><td>${formatNumber(data.duplicate_rows || 0)}</td></tr>
+                    <tr><td>File size</td><td>${(data.file_size_mb || 0).toFixed(2)} MB</td></tr>
+                    ${dateRow}
+                    <tr><td>Last sync</td><td>${data.last_sync ? data.last_sync.substring(0, 16).replace('T', ' ') : '-'}</td></tr>
+                </table>
+            </div>
+            <div>
+                <div class="overview-title">Variable Types</div>
+                <table class="overview-stats-table">${vtHtml}</table>
+                ${data.description ? `<div style="margin-top:16px;"><div class="overview-title">Description</div><p style="font-size:13px;color:var(--text-secondary);">${data.description}</p></div>` : ''}
+                ${(data.used_by_metrics || []).length > 0 ? `<div style="margin-top:16px;"><div class="overview-title">Used by Metrics</div><div>${data.used_by_metrics.map(m => m.file ? `<a class="metric-badge" style="cursor:pointer;text-decoration:none;" onclick="openMetricModal('${m.file}')">${m.name}</a>` : `<span class="metric-badge">${typeof m === 'string' ? m : m.name}</span>`).join('')}</div></div>` : ''}
+            </div>
+        </div>`;
+}
+
+function buildNumericViz(ns, idx) {
+    const hasRange = ns.min != null && ns.max != null;
+    const isConstant = hasRange && ns.min === ns.max;
+
+    let rangeHtml = '';
+
+    if (isConstant) {
+        rangeHtml = `<div class="num-constant">Constant value: <strong>${formatNumber(ns.min)}</strong></div>`;
+    } else if (hasRange) {
+        const range = ns.max - ns.min;
+        const pos = (val) => Math.max(0, Math.min(100, ((val - ns.min) / range) * 100));
+
+        // Whisker (p5 -> p95)
+        let whiskerHtml = '';
+        if (ns.p5 != null && ns.p95 != null) {
+            const wLeft = pos(ns.p5);
+            const wWidth = pos(ns.p95) - wLeft;
+            whiskerHtml = `<div class="num-range-whisker" style="left:${wLeft}%;width:${wWidth}%"></div>`;
+        }
+
+        // IQR box (p25 -> p75)
+        let iqrHtml = '';
+        if (ns.p25 != null && ns.p75 != null) {
+            const iLeft = pos(ns.p25);
+            const iWidth = pos(ns.p75) - iLeft;
+            iqrHtml = `<div class="num-range-iqr" style="left:${iLeft}%;width:${iWidth}%"></div>`;
+        }
+
+        // Mean marker (red)
+        let meanMarker = '';
+        if (ns.mean != null) {
+            meanMarker = `<div class="num-range-marker" style="left:${pos(ns.mean)}%;background:#DC2626;transform:translateX(-50%)"></div>`;
+        }
+
+        // Median marker (green)
+        let medianMarker = '';
+        if (ns.median != null) {
+            medianMarker = `<div class="num-range-marker" style="left:${pos(ns.median)}%;background:#059669;transform:translateX(-50%)"></div>`;
+        }
+
+        rangeHtml = `<div class="num-range">
+            <div class="num-range-labels">
+                <span>${formatNumber(ns.min)}</span>
+                <span>${formatNumber(ns.max)}</span>
+            </div>
+            <div class="num-range-track">
+                ${whiskerHtml}${iqrHtml}${meanMarker}${medianMarker}
+            </div>
+            <div class="num-range-legend">
+                <span class="legend-mean" data-tip="Average value. If far from Median, data is skewed by extreme values.">Mean</span>
+                <span class="legend-median" data-tip="Middle value. Half of records are above, half below this point.">Median</span>
+                <span class="legend-iqr" data-tip="Where 50% of your data falls. Narrow = consistent values, wide = high variation.">Typical range</span>
+            </div>
+        </div>`;
+    }
+
+    // Stat pills with business-friendly tooltips
+    const PILL_TIPS = {
+        mean: 'Average value across all rows. Useful for understanding the typical size, but can be skewed by extreme values.',
+        median: 'The middle value when sorted. More reliable than Mean when data has outliers \u2014 if Mean and Median differ a lot, you have skewed data.',
+        std: 'Standard Deviation \u2014 how spread out the values are. Low = values cluster near the mean. High = wide variation across records.',
+        zeros: 'How many records have value zero. High percentage may indicate missing data entered as zero, or genuinely inactive records.',
+        negative: 'Records with negative values. Could indicate returns, corrections, or data entry errors depending on the business context.',
+    };
+    const pills = [];
+    if (ns.mean != null) pills.push(`<span class="num-stat" data-tip="${PILL_TIPS.mean}"><span class="num-stat-label">Mean</span><span class="num-stat-value">${formatNumber(ns.mean)}</span></span>`);
+    if (ns.median != null) pills.push(`<span class="num-stat" data-tip="${PILL_TIPS.median}"><span class="num-stat-label">Median</span><span class="num-stat-value">${formatNumber(ns.median)}</span></span>`);
+    if (ns.stddev != null) pills.push(`<span class="num-stat" data-tip="${PILL_TIPS.std}"><span class="num-stat-label">Std</span><span class="num-stat-value">${formatNumber(ns.stddev)}</span></span>`);
+    if (ns.zeros) {
+        const alertClass = ns.zeros_pct > 50 ? ' alert-zeros' : '';
+        pills.push(`<span class="num-stat${alertClass}" data-tip="${PILL_TIPS.zeros}"><span class="num-stat-label">Zeros</span><span class="num-stat-value">${formatNumber(ns.zeros)} (${ns.zeros_pct.toFixed(1)}%)</span></span>`);
+    }
+    if (ns.negative) {
+        pills.push(`<span class="num-stat" data-tip="${PILL_TIPS.negative}"><span class="num-stat-label">Negative</span><span class="num-stat-value">${formatNumber(ns.negative)} (${ns.negative_pct.toFixed(1)}%)</span></span>`);
+    }
+
+    return `<div class="num-viz">
+        ${rangeHtml}
+        <div style="height:140px;"><canvas id="hist_${idx}"></canvas></div>
+        <div class="num-stats-row">${pills.join('')}</div>
+    </div>`;
+}
+
+function renderVariables(data) {
+    const cols = data.columns || [];
+    let html = '';
+
+    cols.forEach((col, idx) => {
+        const alerts = (col.alerts || []).map(a => renderAlertBadge(a, true)).join(' ');
+        const type = col.type || 'STRING';
+        const simplifiedType = type.includes('TIMESTAMP') ? 'DateTime' :
+            type === 'DATE' ? 'Date' :
+            type === 'BOOLEAN' ? 'Boolean' :
+            type === 'NUMERIC' || type.includes('INT') || type.includes('FLOAT') || type.includes('DOUBLE') ? 'Numeric' :
+            'Text';
+
+        const missingPct = 100 - (col.completeness_pct || 100);
+        const missingClass = missingPct > 30 ? ' class="highlight"' : missingPct > 5 ? ' style="color:#B45309;"' : '';
+
+        const distinctPct = col.unique_pct || 0;
+        const distinctClass = distinctPct >= 99.9 ? ' style="color:#DC2626;"' : '';
+
+        let chartHtml = '';
+
+        // Categorical bar chart
+        if (col.string_stats && col.string_stats.top_values && col.string_stats.top_values.length > 0) {
+            const topVals = col.string_stats.top_values.slice(0, 8);
+            const maxCount = topVals[0].count;
+            chartHtml = '<div class="cat-bars">' + topVals.map(v => {
+                const pct = (v.count / maxCount) * 100;
+                const label = v.value.length > 15 ? v.value.substring(0, 15) + '...' : v.value;
+                const countStr = formatNumber(v.count);
+                const showInside = pct > 25;
+                return `<div class="cat-bar-row">
+                    <span class="cat-bar-label" title="${v.value}">${label}</span>
+                    <div class="cat-bar-track">
+                        <div class="cat-bar-fill" style="width:${Math.max(pct, 3)}%">
+                            ${showInside ? `<span class="cat-bar-count">${countStr}</span>` : ''}
+                        </div>
+                    </div>
+                    ${!showInside ? `<span class="cat-bar-count outside">${countStr}</span>` : ''}
+                </div>`;
+            }).join('') + '</div>';
+        }
+
+        // Numeric stats with range bar visualization
+        if (col.numeric_stats) {
+            const ns = col.numeric_stats;
+            chartHtml = buildNumericViz(ns, idx);
+        }
+
+        // Date stats - labels beside chart for maximum chart size
+        if (col.date_stats) {
+            const ds = col.date_stats;
+            chartHtml = `<div style="display:flex;gap:16px;align-items:stretch;width:100%;padding:8px 0;">
+                <div style="font-size:12px;min-width:130px;flex-shrink:0;display:flex;flex-direction:column;justify-content:center;gap:6px;">
+                    <div><span style="color:var(--text-secondary);display:block;font-size:10px;">Earliest</span><span style="font-weight:500;">${ds.earliest}</span></div>
+                    <div><span style="color:var(--text-secondary);display:block;font-size:10px;">Latest</span><span style="font-weight:500;">${ds.latest}</span></div>
+                    <div><span style="color:var(--text-secondary);display:block;font-size:10px;">Span</span><span style="font-weight:500;">${formatNumber(ds.span_days)} days</span></div>
+                </div>
+                <div style="flex:1;min-height:140px;"><canvas id="datehist_${idx}"></canvas></div>
+            </div>`;
+        }
+
+        // Boolean bar
+        if (col.boolean_stats) {
+            const bs = col.boolean_stats;
+            const truePct = bs.true_pct || 0;
+            chartHtml = `<div style="padding:8px 0;width:100%;">
+                <div class="bool-bar">
+                    <div class="true-part" style="width:${truePct}%">${truePct > 15 ? `True ${truePct.toFixed(1)}%` : ''}</div>
+                    <div class="false-part" style="width:${100 - truePct}%">${(100 - truePct) > 15 ? `False ${(100 - truePct).toFixed(1)}%` : ''}</div>
+                </div>
+                <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-secondary);margin-top:4px;">
+                    <span>True: ${formatNumber(bs.true_count)}</span>
+                    <span>False: ${formatNumber(bs.false_count)}</span>
+                </div>
+            </div>`;
+        }
+
+        // Fallback: sample values
+        if (!chartHtml && col.sample_values && col.sample_values.length > 0) {
+            chartHtml = `<div style="font-size:12px;padding:8px 0;color:var(--text-secondary);overflow:hidden;width:100%;">
+                <div style="font-weight:500;margin-bottom:4px;">Sample values</div>
+                ${col.sample_values.slice(0, 5).map(v => `<div style="font-family:var(--font-mono);font-size:11px;padding:2px 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${String(v).replace(/"/g, '&quot;')}">${v}</div>`).join('')}
+            </div>`;
+        }
+
+        html += `
+        <div class="variable-card" id="var_${col.name}">
+            <div class="variable-header">
+                <span class="variable-name">${col.name}</span>
+                <span class="variable-type">${simplifiedType}</span>
+                ${col.is_primary_key ? '<span class="alert-badge unique">PK</span>' : ''}
+                ${alerts}
+            </div>
+            <div class="variable-body">
+                <div class="variable-stats">
+                    <table>
+                        <tr><td>Distinct</td><td${distinctClass}>${formatNumber(col.unique_count)}</td></tr>
+                        <tr><td>Distinct (%)</td><td${distinctClass}>${distinctPct.toFixed(1)}%</td></tr>
+                        <tr><td>Missing</td><td${missingClass}>${formatNumber(col.null_count || 0)}</td></tr>
+                        <tr><td>Missing (%)</td><td${missingClass}>${missingPct.toFixed(1)}%</td></tr>
+                    </table>
+                </div>
+                <div class="variable-chart">${chartHtml}</div>
+            </div>
+        </div>`;
+    });
+
+    document.getElementById('sectionVariables').innerHTML = html;
+
+    // Render Chart.js histograms for numeric columns
+    cols.forEach((col, idx) => {
+        if (col.numeric_stats && col.numeric_stats.histogram) {
+            const canvas = document.getElementById(`hist_${idx}`);
+            if (canvas) {
+                const h = col.numeric_stats.histogram;
+                const chart = new Chart(canvas, {
+                    type: 'bar',
+                    data: {
+                        labels: h.bins || h.counts.map((_, i) => i),
+                        datasets: [{
+                            data: h.counts,
+                            backgroundColor: 'rgba(0, 115, 209, 0.6)',
+                            borderRadius: 2,
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { display: false } },
+                        scales: {
+                            x: { display: false },
+                            y: { display: false }
+                        }
+                    }
+                });
+                currentCharts.push(chart);
+            }
+        }
+
+        if (col.date_stats && col.date_stats.histogram) {
+            const canvas = document.getElementById(`datehist_${idx}`);
+            if (canvas) {
+                const h = col.date_stats.histogram;
+                const chart = new Chart(canvas, {
+                    type: 'bar',
+                    data: {
+                        labels: h.bins || h.counts.map((_, i) => i),
+                        datasets: [{
+                            data: h.counts,
+                            backgroundColor: 'rgba(0, 115, 209, 0.6)',
+                            borderRadius: 2,
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { display: false } },
+                        scales: {
+                            x: { ticks: { maxTicksLimit: 6, font: { size: 9 } } },
+                            y: { display: false }
+                        }
+                    }
+                });
+                currentCharts.push(chart);
+            }
+        }
+    });
+}
+
+function extractInsightDetail(alert) {
+    // Strip column name prefix from message to avoid redundancy
+    const msg = alert.message || '';
+    const col = alert.column || '';
+    const rest = msg.startsWith(col) ? msg.substring(col.length).trim() : msg;
+    // Clean up leading connectors like "is", "has"
+    return rest.replace(/^(is|has)\s+/, '');
+}
+
+function renderAlerts(data) {
+    const alerts = data.alerts || [];
+    if (alerts.length === 0) {
+        document.getElementById('sectionAlerts').innerHTML = '<div class="profiler-empty"><p>No data quality insights detected.</p></div>';
+        return;
+    }
+
+    // Group alerts by type for cleaner display
+    const byType = {};
+    alerts.forEach(a => {
+        if (!byType[a.type]) byType[a.type] = [];
+        byType[a.type].push(a);
+    });
+
+    let html = '';
+    Object.entries(byType).forEach(([type, items]) => {
+        const tip = INSIGHT_TOOLTIPS[type] || '';
+        html += `<div class="insight-group border-${type}" id="insight_${type}">
+            <div class="insight-group-header">
+                ${renderAlertBadge(type)}
+                ${tip ? `<span class="alert-explanation">${tip}</span>` : ''}
+            </div>
+            <div class="insight-items">`;
+        items.forEach(a => {
+            const detail = extractInsightDetail(a);
+            html += `<div class="insight-item">
+                    <a class="insight-col" onclick="navigateToVariable('${a.column}')">${a.column}</a>
+                    <span class="insight-detail">${detail}</span>
+                </div>`;
+        });
+        html += '</div></div>';
+    });
+    document.getElementById('sectionAlerts').innerHTML = html;
+}
+
+function renderMissing(data) {
+    const cols = (data.columns || []).filter(c => c.completeness_pct !== undefined);
+    if (cols.length === 0) return;
+
+    const canvas = document.getElementById('missingChart');
+    if (!canvas) return;
+
+    const sorted = [...cols].sort((a, b) => (a.completeness_pct || 0) - (b.completeness_pct || 0));
+
+    const chart = new Chart(canvas, {
+        type: 'bar',
+        data: {
+            labels: sorted.map(c => c.name),
+            datasets: [{
+                label: 'Completeness %',
+                data: sorted.map(c => c.completeness_pct || 0),
+                backgroundColor: sorted.map(c => {
+                    const pct = c.completeness_pct || 0;
+                    return pct >= 95 ? 'rgba(16, 183, 127, 0.6)' :
+                           pct >= 80 ? 'rgba(245, 159, 10, 0.6)' :
+                           'rgba(220, 38, 38, 0.6)';
+                }),
+                borderRadius: 2,
+            }]
+        },
+        options: {
+            indexAxis: 'y',
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+                x: { min: 0, max: 100, ticks: { callback: v => v + '%' } },
+                y: { ticks: { font: { size: 10, family: "'Inter', sans-serif" } } }
+            }
+        }
+    });
+    currentCharts.push(chart);
+
+    // Adjust canvas container height based on column count
+    canvas.parentElement.style.height = Math.max(200, cols.length * 22 + 40) + 'px';
+}
+
+function sanitizeMermaidId(name) {
+    return 'n_' + name.replace(/[^a-zA-Z0-9_]/g, '_');
+}
+
+function truncateLabel(text, max) {
+    return text.length > max ? text.substring(0, max) + '...' : text;
+}
+
+function buildMermaidDiagram(tableName, relations, metrics) {
+    const MAX_NODES = 15;
+    const parents = relations.filter(r => r.direction === 'belongs_to');
+    const children = relations.filter(r => r.direction === 'has_many');
+    const metricsList = metrics || [];
+
+    const currentId = sanitizeMermaidId(tableName);
+    const nodeMap = {};  // sanitizedId -> {type, name, file?}
+    let lines = ['flowchart LR'];
+
+    // Current table node (bold box)
+    lines.push(`    ${currentId}["<b>${tableName}</b>"]`);
+    nodeMap[currentId] = { type: 'current', name: tableName };
+
+    let nodeCount = 1;
+    let overflowParents = 0;
+    let overflowChildren = 0;
+    const renderedParentIds = [];
+    const renderedChildIds = [];
+
+    // Parent nodes (belongs_to) - current --> parent
+    parents.forEach(r => {
+        if (nodeCount >= MAX_NODES) { overflowParents++; return; }
+        const pid = sanitizeMermaidId(r.table);
+        const label = truncateLabel(r.join_column, 20);
+        lines.push(`    ${currentId} -->|"${label}"| ${pid}["${r.table}"]`);
+        renderedParentIds.push(pid);
+        nodeMap[pid] = { type: 'table', name: r.table };
+        nodeCount++;
+    });
+
+    // Child nodes (has_many) - child --> current
+    children.forEach(r => {
+        if (nodeCount >= MAX_NODES) { overflowChildren++; return; }
+        const cid = sanitizeMermaidId(r.table);
+        const label = truncateLabel(r.foreign_column || r.join_column, 20);
+        lines.push(`    ${cid}["${r.table}"] -->|"${label}"| ${currentId}`);
+        renderedChildIds.push(cid);
+        nodeMap[cid] = { type: 'table', name: r.table };
+        nodeCount++;
+    });
+
+    // Metric nodes - current table -.-> metric (dashed)
+    const renderedMetricIds = [];
+    let overflowMetrics = 0;
+    metricsList.forEach(m => {
+        if (nodeCount >= MAX_NODES) { overflowMetrics++; return; }
+        const mid = sanitizeMermaidId('metric_' + m.name);
+        lines.push(`    ${currentId} -.->|"metric"| ${mid}("${truncateLabel(m.name, 20)}")`);
+        renderedMetricIds.push(mid);
+        nodeMap[mid] = { type: 'metric', name: m.name, file: m.file };
+        nodeCount++;
+    });
+
+    // Overflow nodes
+    if (overflowParents > 0) {
+        lines.push(`    ${currentId} -.->|" "| n_more_parents("+${overflowParents} more")`);
+        lines.push(`    style n_more_parents stroke-dasharray: 5 5,fill:#f8fafc,color:#94a3b8`);
+    }
+    if (overflowChildren > 0) {
+        lines.push(`    n_more_children("+${overflowChildren} more") -.->|" "| ${currentId}`);
+        lines.push(`    style n_more_children stroke-dasharray: 5 5,fill:#f8fafc,color:#94a3b8`);
+    }
+    if (overflowMetrics > 0) {
+        lines.push(`    ${currentId} -.->|" "| n_more_metrics("+${overflowMetrics} more")`);
+        lines.push(`    style n_more_metrics stroke-dasharray: 5 5,fill:#f8fafc,color:#94a3b8`);
+    }
+
+    // Styling - only for actually rendered nodes
+    lines.push(`    style ${currentId} fill:#2563eb,stroke:#1d4ed8,color:#fff,font-weight:bold`);
+    renderedParentIds.forEach(pid => {
+        lines.push(`    style ${pid} fill:#dbeafe,stroke:#93c5fd,color:#1e40af`);
+    });
+    renderedChildIds.forEach(cid => {
+        lines.push(`    style ${cid} fill:#d1fae5,stroke:#6ee7b7,color:#065f46`);
+    });
+    renderedMetricIds.forEach(mid => {
+        lines.push(`    style ${mid} fill:#fef3c7,stroke:#fcd34d,color:#92400e`);
+    });
+
+    return { diagram: lines.join('\n'), nodeMap };
+}
+
+function attachDiagramClickHandlers() {
+    const wrap = document.querySelector('.relationship-diagram-wrap');
+    if (!wrap) return;
+
+    const svg = wrap.querySelector('svg');
+    if (!svg) return;
+
+    svg.querySelectorAll('.node').forEach(node => {
+        // Mermaid node IDs: "flowchart-n_contract_line-0"
+        const match = node.id.match(/^flowchart-(.+?)-\d+$/);
+        if (!match) return;
+
+        const sanitizedId = match[1];
+        const entry = currentDiagramNodeMap[sanitizedId];
+        if (!entry || entry.type === 'current') return;
+
+        node.classList.add('clickable-node');
+        if (entry.type === 'metric' && entry.file) {
+            node.addEventListener('click', () => {
+                openMetricModal(entry.file);
+            });
+        } else if (entry.type === 'table') {
+            node.addEventListener('click', () => {
+                closeProfiler();
+                setTimeout(() => openProfiler(entry.name, 'relationships'), 300);
+            });
+        }
+    });
+}
+
+function renderRelationships(data) {
+    const rels = data.related_tables || [];
+    const metrics = data.used_by_metrics || [];
+
+    if (rels.length === 0 && metrics.length === 0) {
+        document.getElementById('sectionRelationships').innerHTML = '<div class="profiler-empty"><p>No relationships or metric references found.</p></div>';
+        return;
+    }
+
+    let html = '';
+
+    // Mermaid diagram (relationships + metrics)
+    if (rels.length > 0 || metrics.length > 0) {
+        const tableName = document.getElementById('profilerTitle').textContent;
+        const result = buildMermaidDiagram(tableName, rels, metrics);
+        currentDiagramNodeMap = result.nodeMap;
+
+        let legendHtml = '<span class="relationship-legend-item"><span class="relationship-legend-dot current"></span> Current table</span>';
+        if (rels.some(r => r.direction === 'belongs_to'))
+            legendHtml += '<span class="relationship-legend-item"><span class="relationship-legend-dot parent"></span> References (belongs_to)</span>';
+        if (rels.some(r => r.direction === 'has_many'))
+            legendHtml += '<span class="relationship-legend-item"><span class="relationship-legend-dot child"></span> Referenced by (has_many)</span>';
+        if (metrics.length > 0)
+            legendHtml += '<span class="relationship-legend-item"><span class="relationship-legend-dot metric"></span> Business Metric</span>';
+
+        html += `<div class="relationship-diagram-wrap">
+            <pre class="mermaid">${result.diagram}</pre>
+            <div class="relationship-legend">${legendHtml}</div>
+        </div>`;
+
+        const outgoing = rels.filter(r => r.direction === 'belongs_to');
+        const incoming = rels.filter(r => r.direction === 'has_many');
+
+        if (outgoing.length > 0) {
+            html += '<div class="relationship-card"><div class="relationship-header">References (belongs to)</div>';
+            outgoing.forEach(r => {
+                html += `<div class="relationship-item">
+                    <span class="relationship-direction belongs_to">belongs_to</span>
+                    <a class="relationship-table-link" onclick="closeProfiler();setTimeout(()=>openProfiler('${r.table}'),300)">${r.table}</a>
+                    <span>via ${r.join_column} → ${r.foreign_column || r.join_column}</span>
+                </div>`;
+            });
+            html += '</div>';
+        }
+
+        if (incoming.length > 0) {
+            html += '<div class="relationship-card"><div class="relationship-header">Referenced by (has many)</div>';
+            incoming.forEach(r => {
+                html += `<div class="relationship-item">
+                    <span class="relationship-direction has_many">has_many</span>
+                    <a class="relationship-table-link" onclick="closeProfiler();setTimeout(()=>openProfiler('${r.table}'),300)">${r.table}</a>
+                    <span>via ${r.foreign_column || r.join_column}</span>
+                </div>`;
+            });
+            html += '</div>';
+        }
+    }
+
+    if (metrics.length > 0) {
+        html += '<div class="relationship-card"><div class="relationship-header">Used by Business Metrics</div>';
+        html += '<div>' + metrics.map(m => {
+            if (m.file) {
+                return `<a class="metric-badge" style="cursor:pointer;text-decoration:none;" onclick="openMetricModal('${m.file}')">${m.name}</a>`;
+            }
+            return `<span class="metric-badge">${m.name}</span>`;
+        }).join('') + '</div>';
+        html += '</div>';
+    }
+
+    document.getElementById('sectionRelationships').innerHTML = html;
+    mermaidDiagramRendered = false;
+}
+
+function renderSample(data) {
+    const rows = data.sample_rows || [];
+    if (rows.length === 0) {
+        document.getElementById('sectionSample').innerHTML = '<div class="profiler-empty"><p>No sample data available.</p></div>';
+        return;
+    }
+
+    const cols = Object.keys(rows[0]);
+    let html = '<div style="overflow-x:auto;"><table class="sample-table"><thead><tr>';
+    html += cols.map(c => `<th>${c}</th>`).join('');
+    html += '</tr></thead><tbody>';
+    rows.forEach(row => {
+        html += '<tr>' + cols.map(c => {
+            const v = row[c];
+            const display = v === null ? '<span style="color:#D1D5DB;">null</span>' :
+                String(v).length > 50 ? String(v).substring(0, 50) + '...' : String(v);
+            return `<td title="${String(v || '')}">${display}</td>`;
+        }).join('') + '</tr>';
+    });
+    html += '</tbody></table></div>';
+    document.getElementById('sectionSample').innerHTML = html;
+}
+
+// Close on Escape
+document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeProfiler();
+});
+
+// Floating tooltip for [data-tip] elements
+(function() {
+    const box = document.createElement('div');
+    box.className = 'tip-box';
+    document.body.appendChild(box);
+    let timer = null;
+
+    document.addEventListener('mouseover', e => {
+        const el = e.target.closest('[data-tip]');
+        if (!el) return;
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+            box.textContent = el.getAttribute('data-tip');
+            box.classList.add('visible');
+            const r = el.getBoundingClientRect();
+            let top = r.bottom + 6;
+            let left = r.left + r.width / 2;
+            // Measure box to avoid right edge overflow
+            box.style.left = '0px';
+            box.style.top = '0px';
+            const bw = box.offsetWidth;
+            left = Math.max(8, Math.min(left - bw / 2, window.innerWidth - bw - 8));
+            // If below viewport, flip above
+            if (top + box.offsetHeight > window.innerHeight - 8) {
+                top = r.top - box.offsetHeight - 6;
+            }
+            box.style.left = left + 'px';
+            box.style.top = top + 'px';
+        }, 400);
+    });
+
+    document.addEventListener('mouseout', e => {
+        const el = e.target.closest('[data-tip]');
+        if (!el) return;
+        clearTimeout(timer);
+        box.classList.remove('visible');
+    });
+})();
+</script>
+
+<!-- ═══════════════ METRIC MODAL ═══════════════ -->
+<div id="metricModalOverlay" class="metric-modal-overlay">
+    <div id="metricModal" class="metric-modal" onclick="event.stopPropagation()">
+        <!-- Header -->
+        <div class="metric-modal-header">
+            <div class="metric-modal-title-section">
+                <h2 id="metricModalTitle" class="metric-modal-title"></h2>
+                <div id="metricModalMetadata" class="metric-metadata-chips"></div>
+            </div>
+            <button class="metric-modal-close" onclick="closeMetricModal()" aria-label="Close modal">
+                <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+            </button>
+        </div>
+
+        <!-- Tabs -->
+        <nav class="metric-tabs">
+            <button class="metric-tab active" data-tab="tabOverview" onclick="switchMetricTab('tabOverview')">
+                Overview
+            </button>
+            <button class="metric-tab" data-tab="tabHowToUse" onclick="switchMetricTab('tabHowToUse')">
+                How to Use
+            </button>
+            <button class="metric-tab" data-tab="tabSQLExamples" onclick="switchMetricTab('tabSQLExamples')">
+                SQL Examples
+            </button>
+            <button class="metric-tab" data-tab="tabTechnical" onclick="switchMetricTab('tabTechnical')">
+                Metric Details
+            </button>
+        </nav>
+
+        <!-- Body -->
+        <div id="metricModalBody" class="metric-modal-body">
+            <!-- Content loaded dynamically -->
+        </div>
+    </div>
+</div>
+
+<!-- Prism.js for SQL syntax highlighting -->
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-sql.min.js"></script>
+<script src="{{ url_for('static', filename='js/metric_modal.js') }}"></script>
+
+<!-- Mermaid.js for relationship diagrams -->
+<script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({
+        startOnLoad: false,
+        theme: 'base',
+        themeVariables: {
+            fontFamily: 'Inter, system-ui, sans-serif',
+            fontSize: '13px',
+            primaryColor: '#dbeafe',
+            primaryBorderColor: '#2563eb',
+            primaryTextColor: '#1e40af',
+            lineColor: '#94a3b8',
+            secondaryColor: '#f1f5f9',
+            tertiaryColor: '#f5f7fa',
+            edgeLabelBackground: '#f1f5f9',
+        },
+        flowchart: {
+            curve: 'basis',
+            padding: 12,
+            htmlLabels: true,
+            useMaxWidth: true,
+        },
+    });
+    // Expose mermaid globally for lazy rendering
+    window.mermaid = mermaid;
+</script>
+</body>
+</html>

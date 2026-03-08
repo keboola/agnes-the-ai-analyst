@@ -1,0 +1,68 @@
+# AI Data Analyst - Instance Configuration
+# Copy this file to instance.yaml and fill in your values.
+# instance.yaml is gitignored - never commit it.
+
+# Instance branding
+instance:
+  name: "AI Data Analyst"           # Display name (used in emails, UI title)
+  subtitle: "Your Organization"      # Shown in header (e.g., "Acme Corp Internal")
+  copyright: "Your Organization"     # Footer copyright text
+
+# Authentication
+auth:
+  # Google OAuth domain restriction (e.g., "acme.com")
+  allowed_domain: ""
+
+# Email settings (for password auth)
+email:
+  from_address: "noreply@example.com"
+  from_name: "AI Data Analyst"
+
+# Server connection
+server:
+  host: ""                           # Server IP address
+  hostname: ""                       # Server DNS name (e.g., "data.acme.com")
+
+# Desktop app
+desktop:
+  jwt_issuer: "data-analyst"
+  url_scheme: "data-analyst"
+
+# Data source adapter
+data_source:
+  type: "keboola"                    # Options: keboola, csv, bigquery (future)
+
+# User display names (for Corporate Memory avatars)
+# Maps server username to display info
+users:
+  # example_user:
+  #   name: "John Doe"
+  #   initials: "JD"
+
+# Username mapping (webapp email-derived username -> server home dir name)
+# Only needed when they differ
+username_mapping:
+  # john.doe: john
+
+# Optional datasets (for sync settings UI)
+# Define available optional datasets that users can enable/disable
+datasets:
+  # dataset_key:
+  #   label: "Human-readable name"
+  #   description: "What this dataset contains"
+  #   size_hint: "~50 MB"
+  #   requires: null  # or another dataset key
+
+# Data catalog categories
+# Maps folder names to display categories
+catalog:
+  categories:
+    # folder_name:
+    #   label: "Display Name"
+    #   icon: "icon_type"
+  order: []  # Display order of folder names
+
+# Telegram bot
+telegram:
+  bot_username: ""                   # Bot @username on Telegram (e.g., "MyDataBot")
+  domain_suffix: ""                  # Domain for email derivation (e.g., "acme.com")

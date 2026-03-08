@@ -1,0 +1,40 @@
+# Data Description
+
+This file defines the tables available for synchronization and analysis.
+Copy this file to `data_description.md` and customize for your data sources.
+
+## Tables
+
+```yaml
+# Folder mapping: data source bucket -> local folder name
+folder_mapping:
+  "in.c-example": "example"
+
+tables:
+  - id: "in.c-example.customers"
+    name: "customers"
+    description: "Customer master data"
+    primary_key: "id"
+    sync_strategy: "full_refresh"
+
+  - id: "in.c-example.orders"
+    name: "orders"
+    description: "Order transactions with line items"
+    primary_key: "id"
+    sync_strategy: "incremental"
+    incremental_window_days: 7
+    partition_by: "created_at"
+    partition_granularity: "month"
+```
+
+## Sync Strategies
+
+- **full_refresh**: Downloads entire table on each sync. Best for small reference tables.
+- **incremental**: Downloads only new/changed rows based on a date column. Best for large transactional tables.
+
+## Partition Granularity
+
+When using `partition_by`, data is split into separate Parquet files by time period:
+- **month**: One file per month (e.g., `orders/2024-01.parquet`)
+- **day**: One file per day (e.g., `events/2024-01-15.parquet`)
+- **none**: Single file (default)

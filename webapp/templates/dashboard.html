@@ -1,0 +1,2357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - Data Analyst Portal</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style-custom.css') }}">
+    <style>
+        /* ── Header ── */
+        .header {
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            padding: 0 32px;
+            height: 72px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .header-left {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 2px;
+        }
+
+        .header-logo svg {
+            display: block;
+        }
+
+        .header-subtitle {
+            font-size: 11px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            letter-spacing: 0.4px;
+            text-transform: uppercase;
+            margin-top: 2px;
+        }
+
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .header-email {
+            font-size: 13px;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        .avatar {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: var(--primary-light);
+            color: var(--primary);
+            font-size: 13px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            letter-spacing: 0.3px;
+        }
+
+        .avatar-img {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            border: 2px solid var(--border);
+        }
+
+        .btn-logout {
+            font-family: var(--font-primary);
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            background: none;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 6px 14px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            text-decoration: none;
+        }
+
+        .btn-logout:hover {
+            color: var(--text-primary);
+            border-color: #D1D5DB;
+            background: var(--border-light);
+        }
+
+        /* ── Main Container ── */
+        .main {
+            max-width: 1280px;
+            margin: 0 auto;
+            padding: 28px 32px 48px;
+        }
+
+        /* ── Stats Row ── */
+        .stats-row {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 16px;
+            margin-bottom: 28px;
+        }
+
+        .stat-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px 22px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+        }
+
+        .stat-label {
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .stat-value {
+            font-size: 28px;
+            font-weight: 700;
+            color: var(--text-primary);
+            letter-spacing: -0.5px;
+            line-height: 1.2;
+        }
+
+        /* ── Credit Line ── */
+        .credit-line {
+            text-align: center;
+            font-size: 12px;
+            color: #9CA3AF;
+            margin-bottom: 20px;
+        }
+
+        .credit-line .heart {
+            color: #EF4444;
+        }
+
+        .credit-line strong {
+            color: #6B7280;
+            font-weight: 500;
+        }
+
+        /* ── Two-Column Layout ── */
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: 1fr 400px;
+            grid-template-rows: auto auto;
+            gap: 24px;
+        }
+
+        .left-column {
+            grid-row: 1 / 3;
+            display: grid;
+            grid-template-rows: subgrid;
+            gap: 24px;
+        }
+
+        .right-column {
+            grid-row: 1 / 3;
+            display: grid;
+            grid-template-rows: subgrid;
+            gap: 24px;
+            position: sticky;
+            top: 24px;
+        }
+
+        /* ── Card Base ── */
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+            overflow: hidden;
+        }
+
+        .card-header {
+            padding: 22px 24px 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .card-header-left {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .card-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .card-body {
+            padding: 20px 24px 24px;
+        }
+
+        /* ── Section Title ── */
+        .section-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            margin-bottom: 16px;
+        }
+
+        /* ── Data Source Cards ── */
+        .data-source {
+            padding: 22px 24px;
+            border-bottom: 1px solid var(--border-light);
+        }
+
+        .data-source:last-of-type {
+            border-bottom: none;
+        }
+
+        .data-source-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            margin-bottom: 12px;
+        }
+
+        .data-source-info {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+
+        .data-source-icon {
+            width: 44px;
+            height: 44px;
+            border-radius: 10px;
+            background: var(--border-light);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .data-source-icon svg {
+            color: #6B7280;
+        }
+
+        .data-source-icon.realtime {
+            background: rgba(16, 183, 127, 0.1);
+        }
+
+        .data-source-icon.realtime svg {
+            color: var(--success);
+        }
+
+        .data-source-icon.disabled {
+            background: #F3F4F6;
+        }
+
+        .data-source-icon.disabled svg {
+            color: #9CA3AF;
+        }
+
+        .data-source-name {
+            font-size: 15px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 4px;
+        }
+
+        .data-source-status {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .status-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: var(--success);
+            flex-shrink: 0;
+        }
+
+        .status-dot--live {
+            animation: pulse-dot 2s ease-in-out infinite;
+        }
+
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(16, 183, 127, 0.4); }
+            50% { opacity: 0.8; box-shadow: 0 0 0 4px rgba(16, 183, 127, 0); }
+        }
+
+        .data-source-details {
+            font-size: 13px;
+            color: var(--text-secondary);
+            line-height: 1.6;
+            margin-left: 58px;
+        }
+
+        .badge-included {
+            flex-shrink: 0;
+            font-size: 11px;
+            font-weight: 500;
+            color: #059669;
+            background: rgba(16, 183, 127, 0.1);
+            border-radius: 6px;
+            padding: 4px 10px;
+            white-space: nowrap;
+            align-self: center;
+        }
+
+        .badge-subscribed {
+            flex-shrink: 0;
+            font-size: 11px;
+            font-weight: 500;
+            color: var(--primary);
+            background: var(--primary-light);
+            border-radius: 6px;
+            padding: 4px 10px;
+            white-space: nowrap;
+            align-self: center;
+        }
+
+        .badge-disabled {
+            flex-shrink: 0;
+            font-size: 11px;
+            font-weight: 500;
+            color: #9CA3AF;
+            background: #F3F4F6;
+            border-radius: 6px;
+            padding: 4px 10px;
+            white-space: nowrap;
+            align-self: center;
+        }
+
+        /* ── Toggles inside data source ── */
+        .data-source-toggles {
+            display: flex;
+            gap: 16px;
+            margin-left: 58px;
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid var(--border-light);
+        }
+
+        .toggle-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .toggle-switch {
+            position: relative;
+            width: 36px;
+            height: 20px;
+        }
+
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #E5E7EB;
+            transition: .2s;
+            border-radius: 20px;
+        }
+
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 14px;
+            width: 14px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: .2s;
+            border-radius: 50%;
+        }
+
+        input:checked + .toggle-slider {
+            background-color: var(--primary);
+        }
+
+        input:checked + .toggle-slider:before {
+            transform: translateX(16px);
+        }
+
+        /* Disabled/locked toggle */
+        .toggle-switch.locked .toggle-slider {
+            cursor: not-allowed;
+            background-color: #9CA3AF;
+        }
+
+        .toggle-switch.locked .toggle-slider:before {
+            transform: translateX(16px);
+        }
+
+        input:disabled + .toggle-slider {
+            cursor: not-allowed;
+            opacity: 0.6;
+        }
+
+        .toggle-label {
+            font-size: 12px;
+            color: var(--text-primary);
+            font-weight: 500;
+        }
+
+        .toggle-label.locked {
+            color: var(--text-secondary);
+        }
+
+        /* ── Catalog CTA ── */
+        .catalog-cta {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 18px 24px;
+            border-top: 1px solid var(--border-light);
+            background: var(--primary-light);
+            border-radius: 0 0 12px 12px;
+        }
+
+        .catalog-cta-text {
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .catalog-cta-link {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--primary);
+            text-decoration: none;
+            white-space: nowrap;
+            transition: gap 0.15s ease;
+        }
+
+        .catalog-cta-link:hover {
+            gap: 10px;
+        }
+
+        /* ── Corporate Memory Widget ── */
+        .memory-card {
+            border-left: 3px solid var(--warning);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .memory-card .card-header {
+            background: rgba(245, 159, 10, 0.08);
+            padding: 22px 24px;
+        }
+
+        .memory-icon {
+            width: 28px;
+            height: 28px;
+            background: var(--warning);
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .badge-beta {
+            font-size: 10px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            background: var(--border-light);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 2px 7px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .memory-stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 12px;
+            padding: 20px 24px;
+        }
+
+        .memory-stat {
+            text-align: center;
+            padding: 14px 8px;
+            border-radius: 8px;
+            background: var(--border-light);
+        }
+
+        .memory-stat--highlight {
+            background: rgba(245, 159, 10, 0.1);
+        }
+
+        .memory-stat-value {
+            font-size: 22px;
+            font-weight: 700;
+            color: var(--text-primary);
+            line-height: 1.2;
+        }
+
+        .memory-stat--highlight .memory-stat-value {
+            color: #D97706;
+        }
+
+        .memory-stat-label {
+            font-size: 11px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            margin-top: 2px;
+        }
+
+        .memory-description {
+            margin: 0 24px 20px;
+            padding: 14px 16px;
+            border-left: 3px solid rgba(245, 159, 10, 0.4);
+            background: rgba(245, 159, 10, 0.04);
+            border-radius: 0 8px 8px 0;
+            font-size: 13px;
+            color: var(--text-secondary);
+            line-height: 1.6;
+            flex: 1;
+        }
+
+        .memory-description strong {
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+
+        .memory-description code {
+            background: rgba(0, 0, 0, 0.06);
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-family: var(--font-mono);
+            font-size: 12px;
+        }
+
+        .memory-footer {
+            padding: 16px 24px;
+            border-top: 1px solid var(--border-light);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-top: auto;
+        }
+
+        .memory-sync {
+            font-size: 12px;
+            color: var(--text-secondary);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .memory-sync .sync-icon {
+            color: var(--success);
+        }
+
+        .btn-memory {
+            font-family: var(--font-primary);
+            font-size: 13px;
+            font-weight: 600;
+            color: #92400E;
+            background: rgba(245, 159, 10, 0.15);
+            border: none;
+            border-radius: 8px;
+            padding: 8px 16px;
+            cursor: pointer;
+            transition: background 0.15s ease;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .btn-memory:hover {
+            background: rgba(245, 159, 10, 0.25);
+        }
+
+        /* ── Activity Center Widget ── */
+        .activity-card {
+            border-left: 3px solid #10B981;
+        }
+
+        .activity-card .card-header {
+            background: rgba(16, 185, 129, 0.08);
+            padding: 22px 24px;
+        }
+
+        .activity-icon {
+            width: 28px;
+            height: 28px;
+            background: #10B981;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .badge-demo {
+            font-size: 10px;
+            font-weight: 600;
+            color: #92400E;
+            background: rgba(245, 159, 10, 0.15);
+            border: 1px solid rgba(245, 159, 10, 0.3);
+            border-radius: 4px;
+            padding: 2px 7px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .activity-stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 12px;
+            padding: 20px 24px;
+        }
+
+        .activity-stat {
+            text-align: center;
+            padding: 14px 8px;
+            border-radius: 8px;
+            background: var(--border-light);
+        }
+
+        .activity-stat--highlight {
+            background: rgba(16, 185, 129, 0.1);
+        }
+
+        .activity-stat-value {
+            font-size: 22px;
+            font-weight: 700;
+            color: var(--text-primary);
+            line-height: 1.2;
+        }
+
+        .activity-stat--highlight .activity-stat-value {
+            color: #059669;
+        }
+
+        .activity-stat-label {
+            font-size: 11px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            margin-top: 2px;
+        }
+
+        .activity-maturity-bar {
+            margin: 0 24px 16px;
+        }
+
+        .activity-maturity-label {
+            font-size: 11px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+        }
+
+        .maturity-bar {
+            display: flex;
+            height: 8px;
+            border-radius: 4px;
+            overflow: hidden;
+            gap: 2px;
+        }
+
+        .maturity-segment {
+            transition: flex 0.3s ease;
+        }
+
+        .maturity-segment--optimized { background: #10B981; }
+        .maturity-segment--mature { background: #3B82F6; }
+        .maturity-segment--developing { background: #F59E0B; }
+        .maturity-segment--early { background: #9CA3AF; }
+
+        .maturity-legend {
+            display: flex;
+            gap: 12px;
+            margin-top: 8px;
+            flex-wrap: wrap;
+        }
+
+        .maturity-legend-item {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 10px;
+            color: var(--text-secondary);
+        }
+
+        .maturity-legend-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        .activity-description {
+            margin: 0 24px 20px;
+            padding: 14px 16px;
+            border-left: 3px solid rgba(16, 185, 129, 0.4);
+            background: rgba(16, 185, 129, 0.04);
+            border-radius: 0 8px 8px 0;
+            font-size: 13px;
+            color: var(--text-secondary);
+            line-height: 1.6;
+        }
+
+        .activity-description strong {
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+
+        .activity-footer {
+            padding: 16px 24px;
+            border-top: 1px solid var(--border-light);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .activity-trend {
+            font-size: 12px;
+            color: #059669;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .btn-activity {
+            font-family: var(--font-primary);
+            font-size: 13px;
+            font-weight: 600;
+            color: #065F46;
+            background: rgba(16, 185, 129, 0.15);
+            border: none;
+            border-radius: 8px;
+            padding: 8px 16px;
+            cursor: pointer;
+            transition: background 0.15s ease;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .btn-activity:hover {
+            background: rgba(16, 185, 129, 0.25);
+        }
+
+        /* ── Bottom Cards Row ── */
+        .bottom-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+        }
+
+        /* ── Notifications Card ── */
+        .notif-channels {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .notif-channel {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 16px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: var(--surface);
+        }
+
+        .notif-channel-icon {
+            width: 38px;
+            height: 38px;
+            border-radius: 8px;
+            background: var(--border-light);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .notif-channel-icon.telegram {
+            background: rgba(25, 118, 210, 0.1);
+            color: #1976D2;
+        }
+
+        .notif-channel-icon.desktop {
+            background: rgba(124, 58, 237, 0.1);
+            color: #7C3AED;
+        }
+
+        .notif-channel-icon svg {
+            color: inherit;
+        }
+
+        .notif-channel-name {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 2px;
+        }
+
+        .notif-status {
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        .notif-status--active {
+            color: var(--success);
+        }
+
+        .notif-status--inactive {
+            color: #9CA3AF;
+        }
+
+        .link-manage {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--primary);
+            text-decoration: none;
+            cursor: pointer;
+        }
+
+        .link-manage:hover {
+            text-decoration: underline;
+        }
+
+        .link-manage.active {
+            color: var(--text-secondary);
+        }
+
+        .notif-badge {
+            margin-left: auto;
+            flex-shrink: 0;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 500;
+            white-space: nowrap;
+        }
+
+        .notif-badge.active {
+            background: rgba(16, 183, 127, 0.1);
+            color: #059669;
+        }
+
+        .notif-unlink {
+            display: none;
+            margin-left: auto;
+            flex-shrink: 0;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 500;
+            background: rgba(239, 68, 68, 0.1);
+            color: #EF4444;
+            border: 1px solid rgba(239, 68, 68, 0.2);
+            cursor: pointer;
+            transition: background 0.15s;
+            white-space: nowrap;
+        }
+
+        .notif-unlink:hover {
+            background: rgba(239, 68, 68, 0.2);
+        }
+
+        .notif-unlink.visible,
+        .notif-managing .notif-unlink {
+            display: inline-block;
+        }
+
+        .notif-managing .notif-badge {
+            display: none;
+        }
+
+        .notif-link {
+            display: none;
+            margin-left: auto;
+            flex-shrink: 0;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 500;
+            background: rgba(37, 99, 235, 0.1);
+            color: #2563EB;
+            border: 1px solid rgba(37, 99, 235, 0.2);
+            cursor: pointer;
+            transition: background 0.15s;
+            white-space: nowrap;
+        }
+
+        .notif-link:hover {
+            background: rgba(37, 99, 235, 0.2);
+        }
+
+        .notif-managing .notif-link {
+            display: inline-block;
+        }
+
+        .telegram-verify {
+            display: none;
+            margin-top: 12px;
+            padding: 12px;
+            background: var(--background);
+            border-radius: 8px;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .telegram-verify.visible {
+            display: block;
+        }
+
+        .telegram-verify ol {
+            margin: 8px 0 12px 18px;
+            line-height: 1.8;
+        }
+
+        .telegram-verify-row {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .telegram-verify-row input {
+            width: 120px;
+            padding: 6px 10px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-family: var(--font-mono);
+            font-size: 13px;
+            text-align: center;
+        }
+
+        .telegram-verify-row button {
+            padding: 6px 14px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 500;
+            background: var(--primary);
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+
+        .telegram-verify-row button:hover {
+            opacity: 0.9;
+        }
+
+        .telegram-verify-error {
+            color: var(--error);
+            font-size: 11px;
+            margin-top: 6px;
+            display: none;
+        }
+
+        /* ── Account Card ── */
+        .account-grid {
+            display: flex;
+            flex-direction: column;
+            gap: 18px;
+        }
+
+        .account-row {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+        }
+
+        .account-label {
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            width: 90px;
+            flex-shrink: 0;
+            padding-top: 2px;
+        }
+
+        .account-value {
+            font-size: 14px;
+            color: var(--text-primary);
+            font-weight: 500;
+        }
+
+        .account-value--mono {
+            font-family: var(--font-mono);
+            font-size: 13px;
+        }
+
+        .badge-role {
+            display: inline-block;
+            font-size: 11px;
+            font-weight: 600;
+            border-radius: 4px;
+            padding: 3px 10px;
+            letter-spacing: 0.3px;
+        }
+
+        .badge-role.admin {
+            color: #EA580C;
+            background: rgba(234, 88, 12, 0.1);
+        }
+
+        .badge-role.privileged {
+            color: #7C3AED;
+            background: rgba(124, 58, 237, 0.1);
+        }
+
+        .badge-role.analyst {
+            color: var(--primary);
+            background: var(--primary-light);
+        }
+
+        .badge-role.default {
+            color: var(--text-secondary);
+            background: var(--border-light);
+        }
+
+        .badge-group {
+            display: inline-block;
+            font-size: 11px;
+            font-weight: 500;
+            font-family: var(--font-mono);
+            color: var(--text-secondary);
+            background: var(--border-light);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 2px 8px;
+            margin-right: 6px;
+            margin-bottom: 4px;
+        }
+
+        .account-scripts {
+            list-style: none;
+            padding: 0;
+            flex: 1;
+        }
+
+        .account-scripts li {
+            font-size: 13px;
+            color: var(--text-primary);
+            padding: 6px 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .account-scripts li + li {
+            border-top: 1px solid var(--border-light);
+        }
+
+        .script-name {
+            font-family: var(--font-mono);
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        .script-time {
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+
+        .cron-line {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-top: 6px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .cron-line svg {
+            width: 12px;
+            height: 12px;
+            opacity: 0.5;
+        }
+
+        .account-empty {
+            font-size: 12px;
+            color: var(--text-secondary);
+            font-style: italic;
+        }
+
+        .account-hint {
+            font-size: 11px;
+            color: var(--text-secondary);
+            opacity: 0.7;
+            margin-top: 2px;
+        }
+
+        .account-hint code {
+            background: var(--background);
+            padding: 1px 5px;
+            border-radius: 3px;
+            font-family: var(--font-mono);
+            font-size: 10px;
+        }
+
+        .sync-datasets {
+            display: flex;
+            gap: 4px;
+            margin-top: 6px;
+        }
+
+        .dataset-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            background: rgba(16, 183, 127, 0.1);
+            color: var(--success);
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 500;
+        }
+
+        /* ── Setup Banner ── */
+        .setup-banner {
+            background: linear-gradient(135deg, #0073D1 0%, #0056A3 100%);
+            border-radius: 12px;
+            padding: 32px 36px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-top: 28px;
+            box-shadow: 0 4px 16px rgba(0, 115, 209, 0.25);
+        }
+
+        .setup-banner-text {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .setup-banner-title {
+            font-size: 18px;
+            font-weight: 700;
+            color: #FFFFFF;
+        }
+
+        .setup-banner-desc {
+            font-size: 14px;
+            color: rgba(255, 255, 255, 0.75);
+        }
+
+        .btn-setup {
+            font-family: var(--font-primary);
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--primary);
+            background: #FFFFFF;
+            border: none;
+            border-radius: 8px;
+            padding: 12px 24px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            white-space: nowrap;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        .btn-setup:hover {
+            background: #F0F7FF;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        }
+
+        .btn-setup.copied {
+            background: var(--success);
+            color: white;
+        }
+
+        /* ── Support Banner ── */
+        .support-banner {
+            text-align: center;
+            padding: 16px;
+            font-size: 13px;
+            color: var(--text-secondary);
+            margin-top: 24px;
+        }
+
+        .support-banner .heart {
+            color: #EF4444;
+        }
+
+        .slack-badge {
+            display: inline-block;
+            margin-left: 8px;
+            padding: 2px 8px;
+            background: var(--background);
+            border-radius: 4px;
+            color: var(--text-primary);
+            text-decoration: none;
+            font-size: 12px;
+        }
+
+        .slack-badge:hover {
+            background: var(--border);
+        }
+
+        /* ── Footer ── */
+        .footer {
+            text-align: center;
+            padding: 32px;
+            font-size: 12px;
+            color: #9CA3AF;
+        }
+
+        /* ── Flash Messages ── */
+        .flash-messages {
+            max-width: 1280px;
+            margin: 0 auto;
+            padding: 16px 32px 0;
+        }
+
+        .flash {
+            padding: 12px 16px;
+            border-radius: 8px;
+            margin-bottom: 12px;
+            font-size: 13px;
+        }
+
+        .flash-success {
+            background: rgba(16, 183, 127, 0.1);
+            color: var(--success);
+            border-left: 3px solid var(--success);
+        }
+
+        .flash-error {
+            background: rgba(234, 88, 12, 0.1);
+            color: var(--error);
+            border-left: 3px solid var(--error);
+        }
+
+        /* ── New User Layout ── */
+        .new-user-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+        }
+
+        .setup-card {
+            padding: 32px;
+        }
+
+        .setup-card h3 {
+            font-size: 18px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin: 0 0 12px 0;
+        }
+
+        .setup-description {
+            color: var(--text-secondary);
+            margin-bottom: 24px;
+        }
+
+        .setup-steps {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .step-item {
+            padding-left: 40px;
+            position: relative;
+        }
+
+        .step-number {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 28px;
+            height: 28px;
+            background: var(--primary);
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .step-header strong {
+            font-size: 14px;
+            color: var(--text-primary);
+        }
+
+        .step-body {
+            margin-top: 8px;
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .code-block-wrapper {
+            position: relative;
+            margin-top: 8px;
+        }
+
+        .code-block {
+            display: block;
+            background: var(--background);
+            padding: 12px 16px;
+            border-radius: 6px;
+            font-family: var(--font-mono);
+            font-size: 13px;
+            color: var(--text-primary);
+        }
+
+        .btn-copy-code {
+            position: absolute;
+            right: 8px;
+            top: 50%;
+            transform: translateY(-50%);
+            padding: 6px;
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            border-radius: 4px;
+        }
+
+        .btn-copy-code:hover {
+            background: var(--border);
+        }
+
+        .btn-copy-code.copied {
+            color: var(--success);
+        }
+
+        .btn-copy-v2 {
+            display: inline-flex;
+            align-items: center;
+            padding: 12px 24px;
+            background: var(--primary);
+            color: white;
+            font-size: 14px;
+            font-weight: 600;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .btn-copy-v2:hover {
+            background: #005BA3;
+        }
+
+        .btn-copy-v2.copied {
+            background: var(--success);
+        }
+
+        .helper-text {
+            margin-top: 24px;
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        /* ── Registration Card ── */
+        .registration-card h3 {
+            font-size: 18px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin: 0 0 16px 0;
+        }
+
+        .info-box-v2 {
+            background: var(--background);
+            padding: 12px 16px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+        }
+
+        .username-preview {
+            font-family: var(--font-mono);
+            font-weight: 600;
+            color: var(--primary);
+            margin-left: 8px;
+        }
+
+        .form-v2 {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .form-group-v2 label {
+            display: block;
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-primary);
+            margin-bottom: 6px;
+        }
+
+        .form-group-v2 textarea {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-family: var(--font-mono);
+            font-size: 13px;
+            resize: vertical;
+        }
+
+        .form-group-v2 textarea:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 2px rgba(0, 115, 209, 0.1);
+        }
+
+        .form-row-v2 {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .form-info-v2 {
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .form-info-v2 code {
+            background: var(--background);
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-family: var(--font-mono);
+            color: var(--text-primary);
+        }
+
+        .btn-v2 {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 8px 16px;
+            font-size: 14px;
+            font-weight: 500;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.15s;
+            text-decoration: none;
+            border: none;
+        }
+
+        .btn-primary-v2 {
+            background: var(--primary);
+            color: white;
+        }
+
+        .btn-primary-v2:hover {
+            background: #005BA3;
+        }
+
+        .help-text-v2 {
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        /* ── Alert ── */
+        .alert-v2 {
+            padding: 20px;
+            border-radius: 8px;
+            display: flex;
+            gap: 16px;
+        }
+
+        .alert-error-v2 {
+            background: rgba(234, 88, 12, 0.1);
+            border-left: 3px solid var(--error);
+        }
+
+        .alert-icon {
+            width: 24px;
+            height: 24px;
+            background: var(--error);
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            flex-shrink: 0;
+        }
+
+        .alert-v2 h4 {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin: 0 0 8px 0;
+        }
+
+        .alert-v2 p {
+            font-size: 13px;
+            color: var(--text-secondary);
+            margin: 4px 0;
+        }
+
+        .beta-badge {
+            display: inline-block;
+            padding: 2px 7px;
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            background: #F3F4F6;
+            color: #9CA3AF;
+            border: 1px solid #E5E7EB;
+            vertical-align: middle;
+            margin-left: 6px;
+        }
+
+        /* ── Responsive ── */
+        @media (max-width: 1100px) {
+            .dashboard-grid {
+                grid-template-columns: 1fr;
+                grid-template-rows: auto;
+            }
+
+            .left-column,
+            .right-column {
+                grid-row: auto;
+                grid-template-rows: auto;
+                position: static;
+            }
+
+            .stats-row {
+                grid-template-columns: repeat(3, 1fr);
+            }
+        }
+
+        @media (max-width: 700px) {
+            .header {
+                padding: 0 16px;
+            }
+
+            .main {
+                padding: 20px 16px 40px;
+            }
+
+            .stats-row {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .bottom-row {
+                grid-template-columns: 1fr;
+            }
+
+            .setup-banner {
+                flex-direction: column;
+                gap: 20px;
+                text-align: center;
+                padding: 28px 24px;
+            }
+
+            .new-user-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- ═══════════════ HEADER ═══════════════ -->
+    <header class="header">
+        <div class="header-left">
+            <div class="header-logo">
+                <svg width="120" height="30" viewBox="0 0 395 100" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M390.16321,40.175397 C393.472414,43.4361562 395,48.2443368 395,54.1631395 L395,76.4805472 C395,79.3112789 392.794993,81.45803 389.993855,81.45803 C387.019974,81.45803 384.984322,79.39593 384.984322,77.0798767 L384.984322,75.3631531 C381.929151,79.0539397 377.25833,81.9727085 370.382501,81.9727085 C361.979087,81.9727085 354.507127,77.0798767 354.507127,67.9815799 L354.507127,67.8122778 C354.507127,58.0266143 362.063765,53.2218197 373.014284,53.2218197 C378.023816,53.2218197 381.587053,53.9938374 385.069,55.1078455 L385.069,53.9938374 C385.069,47.5569702 381.163665,44.1235228 373.949126,44.1235228 C370.04379,44.1235228 366.819264,44.8108895 364.014739,45.9248976 C363.421995,46.0975858 362.913929,46.1822368 362.402475,46.1822368 C360.028113,46.1822368 358.073752,44.296211 358.073752,41.8921207 C358.073752,40.0027088 359.347304,38.3740223 360.87489,37.7746927 C365.118936,36.1426201 369.447659,35.1132631 375.307356,35.1132631 C382.013829,35.1132631 387.019974,36.9146379 390.16321,40.175397 Z M385.238356,64.7208208 L385.238356,61.6327498 C382.606573,60.6033928 379.124626,59.827989 375.053323,59.827989 C368.431527,59.827989 364.526192,62.6621068 364.526192,67.3822504 L364.526192,67.5515525 C364.526192,71.9297058 368.346849,74.4184472 373.268317,74.4184472 C380.059468,74.4184472 385.238356,70.4703213 385.238356,64.7208208 Z M343.983384,17.9494125 C346.869199,17.9494125 349.162271,20.2654658 349.162271,23.0961975 L349.162271,76.307859 C349.162271,79.2266278 346.869199,81.45803 343.983384,81.45803 C341.182246,81.45803 338.889174,79.2266278 338.889174,76.307859 L338.889174,23.0961975 C338.889174,20.2654658 341.097568,17.9494125 343.983384,17.9494125 Z M309.096174,34.7678868 C322.847832,34.7678868 332.948187,45.325568 332.948187,58.2839535 L332.948187,58.4566417 C332.948187,71.3303762 322.763154,82.0573596 308.926819,82.0573596 C295.259839,82.0573596 285.156097,71.4996783 285.156097,58.6293299 L285.156097,58.4566417 C285.156097,45.4982562 295.344517,34.7678868 309.096174,34.7678868 Z M322.678476,58.6293299 L322.678476,58.4566417 C322.678476,50.472353 316.991522,43.8661836 308.926819,43.8661836 C300.69276,43.8661836 295.429195,50.3910879 295.429195,58.2839535 L295.429195,58.4566417 C295.429195,66.3528934 301.116148,72.9624488 309.096174,72.9624488 C317.414911,72.9624488 322.678476,66.4375444 322.678476,58.6293299 Z M258.418269,34.7678868 C272.169926,34.7678868 282.270281,45.325568 282.270281,58.2839535 L282.270281,58.4566417 C282.270281,71.3303762 272.085248,82.0573596 258.248913,82.0573596 C244.581934,82.0573596 234.478191,71.4996783 234.478191,58.6293299 L234.478191,58.4566417 C234.478191,45.4982562 244.666611,34.7678868 258.418269,34.7678868 Z M272.000571,58.6293299 L272.000571,58.4566417 C272.000571,50.472353 266.313617,43.8661836 258.248913,43.8661836 C250.014854,43.8661836 244.751289,50.3910879 244.751289,58.2839535 L244.751289,58.4566417 C244.751289,66.3528934 250.438243,72.9624488 258.418269,72.9624488 C266.737005,72.9624488 272.000571,66.4375444 272.000571,58.6293299 Z M210.626179,34.7678868 C221.15331,34.7678868 231.426407,43.1788169 231.426407,58.2839535 L231.426407,58.4566417 C231.426407,73.4737412 221.237987,81.9727085 210.626179,81.9727085 C203.157606,81.9727085 198.490172,78.1938848 195.346936,73.9918058 L195.346936,76.307859 C195.346936,79.1385907 193.057251,81.45803 190.168048,81.45803 C187.36691,81.45803 185.077225,79.1385907 185.077225,76.307859 L185.077225,23.0961975 C185.077225,20.1774286 187.282232,17.9494125 190.168048,17.9494125 C193.057251,17.9494125 195.346936,20.1774286 195.346936,23.0961975 L195.346936,43.266854 C198.659527,38.5467105 203.326962,34.7678868 210.626179,34.7678868 Z M220.983954,58.4566417 L220.983954,58.2839535 C220.983954,49.5310331 215.127645,43.7781465 208.167139,43.7781465 C201.206632,43.7781465 195.092903,49.6156841 195.092903,58.2839535 L195.092903,58.4566417 C195.092903,67.1249111 201.206632,72.9624488 208.167139,72.9624488 C215.212323,72.9624488 220.983954,67.3822504 220.983954,58.4566417 Z M158.339397,34.7678868 C172.599121,34.7678868 179.644305,46.6122642 179.644305,57.0819084 C179.644305,60.0006772 177.439297,62.0593912 174.807515,62.0593912 L146.708069,62.0593912 C147.812266,69.4409643 152.991154,73.5617783 159.61295,73.5617783 C163.941673,73.5617783 167.335555,72.0177429 170.221371,69.6136525 C170.986857,69.014323 171.664279,68.6689466 172.853154,68.6689466 C175.146226,68.6689466 176.927844,70.4703213 176.927844,72.8744117 C176.927844,74.1611079 176.3351,75.278502 175.569614,76.0505198 C171.494923,79.7413063 166.404101,82.0573596 159.440207,82.0573596 C146.454036,82.0573596 136.438359,72.5324214 136.438359,58.5412928 L136.438359,58.3719907 C136.438359,45.4102191 145.519194,34.7678868 158.339397,34.7678868 Z M146.623392,55.1958826 L169.628627,55.1958826 C168.947818,48.49829 165.04587,43.266854 158.254719,43.266854 C151.971635,43.266854 147.558233,48.1562997 146.623392,55.1958826 Z M114.621998,47.384282 L134.65674,72.5324214 C135.503517,73.6464294 136.099648,74.6757864 136.099648,76.307859 C136.099648,79.2266278 133.806576,81.45803 130.836082,81.45803 C128.797044,81.45803 127.523491,80.428673 126.422681,78.9692886 L107.322781,54.3358277 L97.645814,63.7761149 L97.645814,76.2198219 C97.645814,79.1385907 95.3527421,81.45803 92.4669263,81.45803 C89.4964329,81.45803 87.2033609,79.1385907 87.2033609,76.2198219 L87.2033609,25.7576271 C87.2033609,22.8388582 89.4964329,20.522805 92.4669263,20.522805 C95.3527421,20.522805 97.645814,22.8388582 97.645814,25.7576271 L97.645814,51.1631057 L125.82655,22.4968679 C127.015425,21.2067856 128.288977,20.522805 130.155274,20.522805 C133.04109,20.522805 134.995451,22.8388582 134.995451,25.4156367 C134.995451,27.0443233 134.314642,28.2463685 133.129154,29.3637626 L114.621998,47.384282 Z M29.0196247,62.5097349 C15.2069994,62.5097349 4.64599757,45.6777165 4.64599757,24.3591914 C4.64599757,3.04405242 13.4457034,0 29.0196247,0 C44.5935459,0 52.6311525,3.04405242 52.6311525,24.3591914 C52.6311525,45.6777165 41.5790201,62.5097349 29.0196247,62.5097349 Z M56.7160044,81.9659364 C57.8506855,83.8519622 57.207135,86.2865269 55.2832579,87.397149 C54.6363203,87.7696137 53.9284148,87.9456879 53.2306706,87.9456879 C51.8453435,87.9456879 50.4938876,87.2481631 49.7385625,85.9919412 C48.4345261,83.831646 47.1000056,82.2943826 45.5961298,80.8891748 C44.092254,79.4907392 42.3851517,78.2379034 40.4307905,76.7785189 C39.4756262,76.070836 38.5238489,75.4579623 37.5754587,74.9365117 C37.6872333,75.1396743 37.7990079,75.3462229 37.9141695,75.5595436 C40.6577268,80.7198727 43.4893488,87.8813531 43.5028972,96.03833 C43.5028972,98.2257136 41.6907946,100 39.4553035,100 C37.2164253,100 35.4043227,98.2257136 35.4043227,96.03833 C35.4178711,89.8350997 33.1959285,83.8688924 30.8520499,79.4467206 C30.0933378,78.0042664 29.3278515,76.7311143 28.6368815,75.6678969 C27.9831697,76.6803237 27.2583287,77.8823689 26.5334876,79.236786 C24.1523509,83.679274 21.8558919,89.7402905 21.8694403,96.03833 C21.8694403,98.2257136 20.0573377,100 17.8218466,100 C15.5863555,100 13.7742529,98.2257136 13.7742529,96.03833 C13.7878013,87.8813531 16.6160362,80.7198727 19.3629806,75.5595436 C19.4747551,75.3462229 19.5865297,75.1396743 19.7016913,74.9365117 C18.7499141,75.4579623 17.8015239,76.070836 16.8463595,76.7785189 C14.8886113,78.2379034 13.181509,79.4907392 11.6810203,80.8891748 C10.1771445,82.2943826 8.83923692,83.831646 7.53520045,85.9953273 C6.40051937,87.8813531 3.91776941,88.507771 1.99389223,87.397149 C0.0666279455,86.2865269 -0.573535412,83.8519622 0.561145671,81.9659364 C2.25469953,79.1453628 4.15825406,76.944435 6.1092281,75.1362882 C8.06358925,73.3247554 10.0314988,71.8958453 11.9418276,70.4669353 C12.8461853,69.7897267 13.7742529,69.1666949 14.722643,68.6012257 C13.7742529,68.0357566 12.8461853,67.4093387 11.9418276,66.7321302 C7.57245863,63.471371 3.77551089,59.0729015 0.561145671,53.7331121 C-0.573535412,51.8437003 0.0666279455,49.4125216 1.99389223,48.3018996 C3.91776941,47.1912776 6.40051937,47.8176955 7.53520045,49.7037213 C10.319403,54.3324417 13.4795745,57.9148749 16.8429724,60.4205465 C20.4502422,63.0921342 23.9931568,64.4160769 27.6376847,64.6260116 C27.9696213,64.6158535 28.3049449,64.6056953 28.6368815,64.6056953 C28.9722052,64.6056953 29.3041417,64.6158535 29.6360783,64.6260116 C33.2806062,64.4160769 36.8269079,63.0921342 40.4307905,60.4205465 C43.7941885,57.9148749 46.9577471,54.3324417 49.7385625,49.7037213 C50.8766307,47.8176955 53.3559936,47.1912776 55.2832579,48.3018996 C57.207135,49.4125216 57.8506855,51.8437003 56.7160044,53.7297261 C53.5016392,59.0729015 49.7013043,63.471371 45.3319354,66.7321302 C44.4275776,67.4093387 43.4995101,68.0357566 42.5545071,68.6012257 C43.4995101,69.1666949 44.4275776,69.7897267 45.3319354,70.4669353 C47.2456513,71.8958453 49.2101737,73.3247554 51.167922,75.1362882 C53.118896,76.944435 55.0190635,79.1453628 56.7160044,81.9659364 Z M23.3123482,48.6845224 C21.0768571,48.6845224 19.2647545,50.4621948 19.2647545,52.6495784 C19.2647545,54.8437341 21.0768571,56.6180205 23.3123482,56.6180205 C25.5478393,56.6180205 27.3599419,54.8437341 27.3599419,52.6495784 C27.3599419,50.4621948 25.5478393,48.6845224 23.3123482,48.6845224 Z M33.9614148,48.6845224 C31.7259237,48.6845224 29.9138211,50.4621948 29.9138211,52.6495784 C29.9138211,54.8437341 31.7259237,56.6180205 33.9614148,56.6180205 C36.1969059,56.6180205 38.0090085,54.8437341 38.0090085,52.6495784 C38.0090085,50.4621948 36.1969059,48.6845224 33.9614148,48.6845224 Z" fill="#0073D1" fill-rule="nonzero"/>
+                </svg>
+            </div>
+            <span class="header-subtitle">Data Analyst Portal</span>
+        </div>
+        {% if session.user %}
+        <div class="header-right">
+            <span class="header-email">{{ session.user.email }}</span>
+            {% if session.user.picture %}
+            <img src="{{ session.user.picture }}" alt="Profile" class="avatar-img">
+            {% else %}
+            <div class="avatar">{{ (user.name or user.email)[:2] | upper }}</div>
+            {% endif %}
+            <a href="{{ url_for('auth.logout') }}" class="btn-logout">Logout</a>
+        </div>
+        {% endif %}
+    </header>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+    <div class="flash-messages">
+        {% for category, message in messages %}
+        <div class="flash flash-{{ category }}">
+            {{ message }}
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+    {% endwith %}
+
+    {% if user_info.exists %}
+    {# ── EXISTING USER ── #}
+
+    <main class="main">
+
+        <!-- ═══════════════ STATS ROW ═══════════════ -->
+        <div class="stats-row">
+            <div class="stat-card">
+                <span class="stat-label">Tables</span>
+                <span class="stat-value">{{ data_stats.tables }}</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-label">Columns</span>
+                <span class="stat-value">{{ data_stats.columns }}</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-label">Rows</span>
+                <span class="stat-value">{{ data_stats.rows_display }}</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-label">Data Size</span>
+                <span class="stat-value">{{ data_stats.size_display }}</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-label">Unstructured</span>
+                <span class="stat-value">{{ data_stats.unstructured_display }}</span>
+            </div>
+        </div>
+
+        <!-- Credit line -->
+        <div class="credit-line">
+            {{ config.INSTANCE_NAME }}
+        </div>
+
+        <!-- ═══════════════ DASHBOARD GRID ═══════════════ -->
+        <div class="dashboard-grid">
+
+            <!-- ── Left Column ── -->
+            <div class="left-column">
+
+                <!-- Your Data Card -->
+                <div class="card">
+                    <div class="card-header">
+                        <span class="section-title" style="margin-bottom: 0;">Your Data</span>
+                    </div>
+
+                    <!-- Core Business Data -->
+                    <div class="data-source">
+                        <div class="data-source-header">
+                            <div class="data-source-info">
+                                <div class="data-source-icon">
+                                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                        <ellipse cx="12" cy="5" rx="9" ry="3"/>
+                                        <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
+                                        <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+                                    </svg>
+                                </div>
+                                <div>
+                                    <div class="data-source-name">Core Business Data</div>
+                                    <div class="data-source-status">
+                                        <span class="status-dot"></span>
+                                        {% if data_stats.last_updated %}Synced {{ data_stats.last_updated }}{% else %}Not yet synced{% endif %}
+                                    </div>
+                                </div>
+                            </div>
+                            <span class="badge-included">Always included</span>
+                        </div>
+                        <div class="data-source-details">
+                            {% if catalog_data %}{% for cat in catalog_data %}{{ cat.name }} ({{ cat.count }} tables){% if not loop.last %}, {% endif %}{% endfor %} -- {{ data_stats.tables }} tables total{% else %}Finance, HR, Sales, KBC Telemetry -- {{ data_stats.tables }} tables total{% endif %}
+                        </div>
+                    </div>
+
+                    <!-- Support Data (Jira) -->
+                    <div class="data-source">
+                        <div class="data-source-header">
+                            <div class="data-source-info">
+                                <div class="data-source-icon">
+                                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
+                                        <circle cx="12" cy="12" r="10"/>
+                                        <line x1="12" y1="17" x2="12.01" y2="17"/>
+                                    </svg>
+                                </div>
+                                <div>
+                                    <div class="data-source-name">Support Data</div>
+                                    <div class="data-source-status">
+                                        {% if sync_settings and sync_settings.datasets.jira %}
+                                        <span class="status-dot status-dot--live"></span>
+                                        Live via webhooks
+                                        {% else %}
+                                        Not subscribed
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </div>
+                            {% if sync_settings and sync_settings.datasets.jira %}
+                            <span class="badge-subscribed">Subscribed</span>
+                            {% else %}
+                            <span class="badge-disabled">Not active</span>
+                            {% endif %}
+                        </div>
+                        <div class="data-source-details">
+                            6 tables: jira_issues, jira_comments, jira_attachments, jira_changelog, jira_issuelinks, jira_remote_links
+                        </div>
+                    </div>
+
+                    <!-- Optional dataset -->
+                    <div class="data-source">
+                        <div class="data-source-header">
+                            <div class="data-source-info">
+                                <div class="data-source-icon">
+                                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                        <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+                                        <line x1="8" y1="21" x2="16" y2="21"/>
+                                        <line x1="12" y1="17" x2="12" y2="21"/>
+                                    </svg>
+                                </div>
+                                <div>
+                                    <div class="data-source-name">Telemetry Expert</div>
+                                    <div class="data-source-status">
+                                        {% if sync_settings and sync_settings.datasets.kbc_telemetry_expert %}
+                                        <span class="status-dot"></span>
+                                        Components, configs &amp; jobs
+                                        {% else %}
+                                        Not subscribed
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </div>
+                            {% if sync_settings and sync_settings.datasets.kbc_telemetry_expert %}
+                            <span class="badge-subscribed">Subscribed</span>
+                            {% else %}
+                            <span class="badge-disabled">Not active</span>
+                            {% endif %}
+                        </div>
+                        <div class="data-source-details">
+                            3 tables: kbc_component, kbc_component_configuration, kbc_job
+                        </div>
+                    </div>
+
+                    <div class="catalog-cta">
+                        <div class="catalog-cta-text">Manage your data subscriptions or discover new data sources</div>
+                        <a href="{{ url_for('catalog') }}" class="catalog-cta-link">
+                            Open Data Catalog
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="9 18 15 12 9 6"/>
+                            </svg>
+                        </a>
+                    </div>
+                </div>
+
+                <!-- Bottom Row: Notifications + Account -->
+                <div class="bottom-row">
+
+                    <!-- Notifications Card -->
+                    <div class="card">
+                        <div class="card-header" style="padding-bottom: 0;">
+                            <span class="card-title">Notifications</span>
+                            <a class="link-manage" onclick="toggleNotifManage(this)">Manage</a>
+                        </div>
+                        <div class="card-body">
+                            <div class="notif-channels">
+                                <div class="notif-channel">
+                                    <div class="notif-channel-icon telegram">
+                                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M22 2L11 13"/>
+                                            <path d="M22 2L15 22L11 13L2 9L22 2Z"/>
+                                        </svg>
+                                    </div>
+                                    <div>
+                                        <div class="notif-channel-name">Telegram</div>
+                                        {% if not telegram_status.linked %}
+                                        <span class="notif-status notif-status--inactive">Not linked</span>
+                                        {% endif %}
+                                    </div>
+                                    {% if telegram_status.linked %}
+                                    <span class="notif-badge active">Active</span>
+                                    <button class="notif-unlink" onclick="unlinkChannel('telegram')">Unlink</button>
+                                    {% else %}
+                                    <button class="notif-link" onclick="showTelegramVerify()">Link</button>
+                                    {% endif %}
+                                </div>
+                                <div class="notif-channel">
+                                    <div class="notif-channel-icon desktop">
+                                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+                                            <line x1="8" y1="21" x2="16" y2="21"/>
+                                            <line x1="12" y1="17" x2="12" y2="21"/>
+                                        </svg>
+                                    </div>
+                                    <div style="min-width: 0;">
+                                        <div class="notif-channel-name">macOS App</div>
+                                        <span class="beta-badge" style="margin-left: 0;">private beta</span>
+                                        {% if not desktop_status.linked %}
+                                        <span class="notif-status notif-status--inactive">Not linked</span>
+                                        {% endif %}
+                                    </div>
+                                    {% if desktop_status.linked %}
+                                    <span class="notif-badge active">Active</span>
+                                    <button class="notif-unlink" onclick="unlinkChannel('desktop')">Unlink</button>
+                                    {% endif %}
+                                </div>
+                            </div>
+                            <div id="telegramVerify" class="telegram-verify">
+                                <ol>
+                                    <li>Message <code>/start</code> to <strong>@{{ config.TELEGRAM_BOT_USERNAME or 'your-bot' }}</strong> on Telegram</li>
+                                    <li>Enter the verification code below</li>
+                                </ol>
+                                <div class="telegram-verify-row">
+                                    <input type="text" id="verifyCode" placeholder="6-digit code" maxlength="6">
+                                    <button onclick="verifyTelegram()" id="verifyBtn">Verify</button>
+                                </div>
+                                <div id="telegramError" class="telegram-verify-error"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Account Card -->
+                    <div class="card">
+                        <div class="card-header" style="padding-bottom: 0;">
+                            <span class="card-title">Account</span>
+                        </div>
+                        <div class="card-body">
+                            <div class="account-grid">
+                                <div class="account-row">
+                                    <span class="account-label">Username</span>
+                                    <span class="account-value account-value--mono">{{ username }}</span>
+                                </div>
+                                <div class="account-row">
+                                    <span class="account-label">Role</span>
+                                    {% if user_info.is_admin %}
+                                    <span class="badge-role admin">Administrator</span>
+                                    {% elif user_info.is_privileged %}
+                                    <span class="badge-role privileged">Privileged Analyst</span>
+                                    {% elif user_info.is_analyst %}
+                                    <span class="badge-role analyst">Standard Analyst</span>
+                                    {% else %}
+                                    <span class="badge-role default">User</span>
+                                    {% endif %}
+                                </div>
+                                <div class="account-row">
+                                    <span class="account-label">Groups</span>
+                                    <div>
+                                        {% for group in user_info.groups %}
+                                        <span class="badge-group">{{ group }}</span>
+                                        {% endfor %}
+                                    </div>
+                                </div>
+
+                                {% if account_details %}
+                                <div class="account-row">
+                                    <span class="account-label">Scripts</span>
+                                    <div style="flex: 1;">
+                                        {% if account_details.notification_scripts %}
+                                        <ul class="account-scripts">
+                                            {% for script in account_details.notification_scripts %}
+                                            <li>
+                                                <span class="script-name">{{ script.stem }}</span>
+                                                <span class="script-time">{{ script.last_run or 'never' }}</span>
+                                            </li>
+                                            {% endfor %}
+                                        </ul>
+                                        {% if account_details.cron_schedule %}
+                                        <div class="cron-line">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                                            {{ account_details.cron_schedule }}
+                                        </div>
+                                        {% endif %}
+                                        {% else %}
+                                        <div class="account-empty">No scripts configured</div>
+                                        <div class="account-hint">Add <code>.py</code> scripts to <code>~/user/notifications/</code></div>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                                <div class="account-row">
+                                    <span class="account-label">Last Sync</span>
+                                    <div>
+                                        {% if account_details.last_sync_display %}
+                                        <span class="account-value" style="font-size: 13px; color: var(--text-secondary);">{{ account_details.last_sync_display }}</span>
+                                        {% else %}
+                                        <div class="account-empty">Not yet synced</div>
+                                        <div class="account-hint">Run <code>bash server/scripts/sync_data.sh</code></div>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+
+                </div><!-- /bottom-row -->
+            </div><!-- /left-column -->
+
+            <!-- ── Right Column ── -->
+            <div class="right-column">
+
+                <!-- Corporate Memory Widget -->
+                <div class="card memory-card">
+                    <div class="card-header">
+                        <div class="card-header-left">
+                            <div class="memory-icon">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                                    <path d="M2 17l10 5 10-5"/>
+                                    <path d="M2 12l10 5 10-5"/>
+                                </svg>
+                            </div>
+                            <span class="card-title">Corporate Memory</span>
+                        </div>
+                        <span class="badge-beta">private beta</span>
+                    </div>
+
+                    <div class="memory-stats">
+                        <div class="memory-stat">
+                            <div class="memory-stat-value" id="memoryContributors">0</div>
+                            <div class="memory-stat-label">Contributors</div>
+                        </div>
+                        <div class="memory-stat">
+                            <div class="memory-stat-value" id="memoryKnowledgeCount">0</div>
+                            <div class="memory-stat-label">Knowledge Items</div>
+                        </div>
+                        <div class="memory-stat memory-stat--highlight">
+                            <div class="memory-stat-value" id="memoryYourRules">0</div>
+                            <div class="memory-stat-label">Your Rules</div>
+                        </div>
+                    </div>
+
+                    <div class="memory-description">
+                        <strong>Shared knowledge</strong> from your team's Claude Code sessions.
+                        Upvote useful insights and they'll sync to your local <code>.claude/rules/</code>.
+                    </div>
+
+                    <div class="memory-footer">
+                        <div class="memory-sync">
+                            <span class="status-dot"></span>
+                            <span id="memorySyncStatus">Synced</span>
+                        </div>
+                        <a href="{{ url_for('corporate_memory') }}" class="btn-memory">
+                            Browse Knowledge
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M9 18l6-6-6-6"/>
+                            </svg>
+                        </a>
+                    </div>
+                </div>
+
+                <!-- Activity Center Widget -->
+                <div class="card activity-card">
+                    <div class="card-header">
+                        <div class="card-header-left">
+                            <div class="activity-icon">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <line x1="18" y1="20" x2="18" y2="10"/>
+                                    <line x1="12" y1="20" x2="12" y2="4"/>
+                                    <line x1="6" y1="20" x2="6" y2="14"/>
+                                </svg>
+                            </div>
+                            <span class="card-title">Activity Center</span>
+                        </div>
+                        <span class="badge-demo">demo</span>
+                    </div>
+
+                    <div class="activity-stats">
+                        <div class="activity-stat">
+                            <div class="activity-stat-value">{{ activity_summary.get('teams_active', 0) }}/{{ activity_summary.get('teams_total', 0) }}</div>
+                            <div class="activity-stat-label">Teams Active</div>
+                        </div>
+                        <div class="activity-stat">
+                            <div class="activity-stat-value">{{ activity_summary.get('business_processes_identified', 0) }}</div>
+                            <div class="activity-stat-label">Processes</div>
+                        </div>
+                        <div class="activity-stat activity-stat--highlight">
+                            <div class="activity-stat-value">{{ activity_summary.get('avg_success_rate', 0) }}%</div>
+                            <div class="activity-stat-label">Success Rate</div>
+                        </div>
+                    </div>
+
+                    {% set maturity = activity_summary.get('maturity_distribution', {}) %}
+                    {% set maturity_total = maturity.get('optimized', 0) + maturity.get('mature', 0) + maturity.get('developing', 0) + maturity.get('early', 0) %}
+                    <div class="activity-maturity-bar">
+                        <div class="activity-maturity-label">Process Maturity Distribution</div>
+                        {% if maturity_total > 0 %}
+                        <div class="maturity-bar">
+                            <div class="maturity-segment maturity-segment--optimized" style="flex: {{ maturity.get('optimized', 0) }}" title="Optimized: {{ maturity.get('optimized', 0) }}"></div>
+                            <div class="maturity-segment maturity-segment--mature" style="flex: {{ maturity.get('mature', 0) }}" title="Mature: {{ maturity.get('mature', 0) }}"></div>
+                            <div class="maturity-segment maturity-segment--developing" style="flex: {{ maturity.get('developing', 0) }}" title="Developing: {{ maturity.get('developing', 0) }}"></div>
+                            <div class="maturity-segment maturity-segment--early" style="flex: {{ maturity.get('early', 0) }}" title="Early: {{ maturity.get('early', 0) }}"></div>
+                        </div>
+                        <div class="maturity-legend">
+                            <span class="maturity-legend-item"><span class="maturity-legend-dot" style="background: #10B981"></span> Optimized ({{ maturity.get('optimized', 0) }})</span>
+                            <span class="maturity-legend-item"><span class="maturity-legend-dot" style="background: #3B82F6"></span> Mature ({{ maturity.get('mature', 0) }})</span>
+                            <span class="maturity-legend-item"><span class="maturity-legend-dot" style="background: #F59E0B"></span> Developing ({{ maturity.get('developing', 0) }})</span>
+                            <span class="maturity-legend-item"><span class="maturity-legend-dot" style="background: #9CA3AF"></span> Early ({{ maturity.get('early', 0) }})</span>
+                        </div>
+                        {% endif %}
+                    </div>
+
+                    <div class="activity-description">
+                        <strong>Strategic overview</strong> of how data powers business processes across {{ activity_summary.get('teams_total', 0) }} teams.
+                    </div>
+
+                    <div class="activity-footer">
+                        <span class="activity-trend">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/>
+                                <polyline points="17 6 23 6 23 12"/>
+                            </svg>
+                            {{ activity_summary.get('adoption_trend', '') }} adoption
+                        </span>
+                        <a href="{{ url_for('activity_center') }}" class="btn-activity">
+                            View Activity Center
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M9 18l6-6-6-6"/>
+                            </svg>
+                        </a>
+                    </div>
+                </div>
+
+            </div><!-- /right-column -->
+        </div><!-- /dashboard-grid -->
+
+        <!-- ═══════════════ SETUP BANNER ═══════════════ -->
+        <div class="setup-banner">
+            <div class="setup-banner-text">
+                <div class="setup-banner-title">Set up a new machine with Claude Code</div>
+                <div class="setup-banner-desc">Copy instructions and paste into Claude Code to configure your local environment.</div>
+            </div>
+            <button onclick="copyBootstrapInstructions()" class="btn-setup" id="bootstrapCopyBtn">
+                Copy Setup Instructions
+            </button>
+        </div>
+
+    </main>
+
+    {% else %}
+    {# ── NEW USER ── #}
+
+    <main class="main">
+        <div class="new-user-grid">
+            <!-- Setup Card -->
+            <div class="card setup-card">
+                <h3>Setup with your AI assistant (we love Claude Code)</h3>
+                <p class="setup-description">
+                    To get started, follow these steps to set up with Claude Code.
+                </p>
+                <div class="setup-steps">
+                    <div class="step-item">
+                        <span class="step-number">1</span>
+                        <div class="step-header">
+                            <strong>Create your project folder</strong>
+                        </div>
+                        <div class="step-body">
+                            <p>Open your terminal and create a new folder for the project:</p>
+                            <div class="code-block-wrapper">
+                                <code class="code-block" id="terminalCommand">mkdir -p data-analyst && cd data-analyst</code>
+                                <button onclick="copyCommand()" class="btn-copy-code" id="commandCopyBtn">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="step-item">
+                        <span class="step-number">2</span>
+                        <div class="step-header">
+                            <strong>Start Claude Code</strong>
+                        </div>
+                        <div class="step-body">
+                            <p>Launch Claude Code in your new project folder</p>
+                        </div>
+                    </div>
+                    <div class="step-item">
+                        <span class="step-number">3</span>
+                        <div class="step-header">
+                            <strong>Copy and paste setup instructions</strong>
+                        </div>
+                        <div class="step-body">
+                            <button onclick="copyBootstrapInstructions()" class="btn-copy-v2" id="bootstrapCopyBtn">
+                                Copy Setup Instructions
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <p class="helper-text">
+                    Claude Code will guide you through SSH key generation, account creation, and data synchronization.
+                </p>
+            </div>
+
+            <!-- Registration Card -->
+            {% if not username_available %}
+            <div class="alert-v2 alert-error-v2">
+                <span class="alert-icon">!</span>
+                <div>
+                    <h4>Username Not Available</h4>
+                    <p>{{ username_error }}</p>
+                    <p>Your email generates username <code>{{ username }}</code>, which cannot be used.</p>
+                    <p>Contact an administrator to create your account manually.</p>
+                </div>
+            </div>
+            {% else %}
+            <div class="card registration-card" style="padding: 24px;">
+                <h3>Create Your Account</h3>
+                <p class="help-text-v2">
+                    You're being guided here from <strong>Claude Code</strong> setup.
+                    Paste your SSH public key below to create your account.
+                </p>
+                <div class="info-box-v2">
+                    <strong>Your username will be:</strong>
+                    <span class="username-preview">{{ username }}</span>
+                </div>
+                <form action="{{ url_for('register') }}" method="post" class="form-v2">
+                    <div class="form-group-v2">
+                        <label for="ssh_key">Your SSH Public Key</label>
+                        <textarea name="ssh_key" id="ssh_key" rows="2"
+                            placeholder="ssh-ed25519 AAAA... or ssh-rsa AAAA..." required></textarea>
+                        <p class="help-text-v2">Claude Code should have shown you this key. Copy and paste it here.</p>
+                    </div>
+                    <div class="form-row-v2">
+                        <div class="form-info-v2">
+                            <span>Username:</span>
+                            <code>{{ username }}</code>
+                        </div>
+                        <button type="submit" class="btn-v2 btn-primary-v2">Create Account</button>
+                    </div>
+                </form>
+                <p class="help-text-v2" style="margin-top: 16px;">
+                    After creating your account, <strong>copy your username</strong> above and <strong>return to Claude Code</strong> to continue setup.
+                </p>
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- Support Banner -->
+        <div class="support-banner" style="margin-top: 24px;">
+            {{ config.INSTANCE_NAME }} - need help? Contact your platform team.
+        </div>
+    </main>
+    {% endif %}
+
+    <footer class="footer">
+        <p>&copy; {{ now().year if now is defined else 2024 }} {{ config.INSTANCE_COPYRIGHT or 'AI Data Analyst' }}</p>
+    </footer>
+
+    <script>
+    function copyCommand() {
+        const command = document.getElementById('terminalCommand').textContent;
+        const button = document.getElementById('commandCopyBtn');
+        const originalHTML = button.innerHTML;
+
+        navigator.clipboard.writeText(command).then(() => {
+            button.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+            button.classList.add('copied');
+
+            setTimeout(() => {
+                button.innerHTML = originalHTML;
+                button.classList.remove('copied');
+            }, 2000);
+        }).catch(err => {
+            console.error('Failed to copy:', err);
+        });
+    }
+
+    function copyBootstrapInstructions() {
+        const bootstrapYaml = {{ bootstrap_yaml | tojson }};
+        const instructions = `Set up Internal AI Data Analyst project according to the following YAML instruction:
+
+---
+${bootstrapYaml}
+---`;
+
+        const button = document.getElementById('bootstrapCopyBtn');
+
+        navigator.clipboard.writeText(instructions).then(() => {
+            button.textContent = 'Copied!';
+            button.classList.add('copied');
+
+            setTimeout(() => {
+                button.textContent = 'Copy Setup Instructions';
+                button.classList.remove('copied');
+            }, 2000);
+        }).catch(err => {
+            console.error('Failed to copy:', err);
+        });
+    }
+
+    async function updateSyncSettings() {
+        const jiraToggle = document.getElementById('toggle-jira');
+        const attachmentsToggle = document.getElementById('toggle-jira_attachments');
+
+        // Handle dependency: jira_attachments requires jira
+        if (!jiraToggle.checked) {
+            attachmentsToggle.checked = false;
+            attachmentsToggle.disabled = true;
+        } else {
+            attachmentsToggle.disabled = false;
+        }
+
+        const datasets = {
+            jira: jiraToggle.checked,
+            jira_attachments: attachmentsToggle.checked
+        };
+
+        try {
+            const resp = await fetch('/api/sync-settings', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({datasets: datasets})
+            });
+            if (resp.ok) {
+                // Reload to reflect real-time section change
+                location.reload();
+            }
+        } catch (e) {
+            console.error('Failed to update settings:', e);
+        }
+    }
+
+    // Load Corporate Memory stats
+    async function loadMemoryStats() {
+        try {
+            const resp = await fetch('/api/corporate-memory/stats');
+            if (resp.ok) {
+                const data = await resp.json();
+                document.getElementById('memoryKnowledgeCount').textContent = data.knowledge_count || 0;
+                document.getElementById('memoryContributors').textContent = data.contributors || 0;
+                document.getElementById('memoryYourRules').textContent = data.your_rules || 0;
+                // Show relative collection time
+                const el = document.getElementById('memorySyncStatus');
+                if (data.last_collection) {
+                    const ago = Date.now() - new Date(data.last_collection).getTime();
+                    const mins = Math.floor(ago / 60000);
+                    if (mins < 1) el.textContent = 'Compiled just now';
+                    else if (mins < 60) el.textContent = 'Compiled ' + mins + ' min ago';
+                    else if (mins < 1440) el.textContent = 'Compiled ' + Math.floor(mins / 60) + 'h ago';
+                    else el.textContent = 'Compiled ' + Math.floor(mins / 1440) + 'd ago';
+                }
+            }
+        } catch (e) {
+            // Silently fail - widget will show defaults
+            console.log('Could not load memory stats:', e);
+        }
+    }
+
+    // Load memory stats on page load (only for existing users)
+    {% if user_info.exists %}
+    document.addEventListener('DOMContentLoaded', loadMemoryStats);
+    {% endif %}
+
+    // Notification management
+    function toggleNotifManage(link) {
+        const channels = link.closest('.card').querySelector('.notif-channels');
+        const managing = channels.classList.toggle('notif-managing');
+        link.textContent = managing ? 'Done' : 'Manage';
+        link.classList.toggle('active', managing);
+        // Hide verify panel when exiting manage mode
+        if (!managing) {
+            document.getElementById('telegramVerify').classList.remove('visible');
+        }
+    }
+
+    function showTelegramVerify() {
+        document.getElementById('telegramVerify').classList.toggle('visible');
+    }
+
+    async function verifyTelegram() {
+        const code = document.getElementById('verifyCode').value.trim();
+        const errorEl = document.getElementById('telegramError');
+        const btn = document.getElementById('verifyBtn');
+        errorEl.style.display = 'none';
+
+        if (!code || code.length !== 6) {
+            errorEl.textContent = 'Please enter a 6-digit code.';
+            errorEl.style.display = 'block';
+            return;
+        }
+
+        btn.disabled = true;
+        btn.textContent = 'Verifying...';
+
+        try {
+            const resp = await fetch('/api/telegram/verify', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({code: code})
+            });
+            const data = await resp.json();
+
+            if (resp.ok) {
+                location.reload();
+            } else {
+                errorEl.textContent = data.error || 'Verification failed.';
+                errorEl.style.display = 'block';
+            }
+        } catch (e) {
+            errorEl.textContent = 'Network error. Please try again.';
+            errorEl.style.display = 'block';
+        }
+
+        btn.disabled = false;
+        btn.textContent = 'Verify';
+    }
+
+    async function unlinkChannel(channel) {
+        const label = channel === 'telegram' ? 'Telegram' : 'macOS App';
+        if (!confirm(`Unlink ${label}? You will stop receiving notifications.`)) return;
+        try {
+            const resp = await fetch(`/api/${channel}/unlink`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'}
+            });
+            if (resp.ok) {
+                location.reload();
+            } else {
+                const data = await resp.json();
+                alert(data.error || 'Failed to unlink.');
+            }
+        } catch (e) {
+            console.error('Unlink failed:', e);
+            alert('Failed to unlink. Please try again.');
+        }
+    }
+    </script>
+</body>
+</html>
