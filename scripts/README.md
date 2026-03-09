@@ -1,6 +1,6 @@
 # Scripts
 
-Helper scripts for working with Internal AI Data Analyst project.
+Helper scripts for working with AI Data Analyst project.
 
 These scripts are synced from the server into `server/scripts/` on the analyst's machine.
 

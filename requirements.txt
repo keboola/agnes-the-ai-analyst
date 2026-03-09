@@ -2,31 +2,31 @@
 kbcstorage>=0.9.0          # For Keboola adapter
 
 # Data processing
-# pandas - hlavní knihovna pro práci s tabulkovými daty
-# pyarrow - podpora pro Parquet formát a rychlé operace
+# pandas - core tabular data processing library
+# pyarrow - Parquet format support and fast operations
 # pytz - timezone support required by DuckDB for reading timezone-aware Parquet columns
 pandas>=2.0.0
 pyarrow>=12.0.0
 pytz>=2024.1
 
-# Analytická databáze
-# DuckDB - in-process SQL OLAP databáze pro analytické dotazy
+# Analytical database
+# DuckDB - in-process SQL OLAP database for analytical queries
 duckdb>=0.9.0
 
-# Konfigurace
-# python-dotenv - načítání environment variables z .env souborů
-# pyyaml - parsování YAML konfigurace z data_description.md
+# Configuration
+# python-dotenv - loading environment variables from .env files
+# pyyaml - parsing YAML configuration from data_description.md
 python-dotenv>=1.0.0
 pyyaml>=6.0
 
-# Progress tracking a logging
-# tqdm - progress bary pro dlouhotrvající operace (download, sync)
+# Progress tracking and logging
+# tqdm - progress bars for long-running operations (download, sync)
 tqdm>=4.65.0
 
 # Web application (Google SSO portal)
-# flask - web framework pro self-service portal
-# authlib - OAuth 2.0 / OpenID Connect knihovna pro Google SSO
-# gunicorn - WSGI server pro production deployment
+# flask - web framework for self-service portal
+# authlib - OAuth 2.0 / OpenID Connect library for Google SSO
+# gunicorn - WSGI server for production deployment
 flask>=3.0.0
 authlib>=1.3.0
 gunicorn>=21.0.0

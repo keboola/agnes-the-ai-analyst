@@ -23,10 +23,18 @@ apt-get update -qq
 apt-get install -y rsync
 echo "  rsync installed"
 
-# Create data-ops group if it doesn't exist
-if ! getent group data-ops > /dev/null 2>&1; then
-    echo "Creating data-ops group..."
-    groupadd data-ops
+# Create groups
+for group in data-ops dataread data-private; do
+    if ! getent group "$group" > /dev/null 2>&1; then
+        groupadd "$group"
+        echo "Created group: $group"
+    fi
+done
+
+# Create deploy user (for CI/CD automated deployment)
+if ! id deploy > /dev/null 2>&1; then
+    useradd -r -m -s /bin/bash -G data-ops deploy
+    echo "Created deploy user"
 fi
 
 # Create directory structure
@@ -87,9 +95,8 @@ echo "  remove-analyst - Remove user"
 echo "  list-analysts - List all analysts"
 echo ""
 echo "Next steps:"
-echo "  1. Add existing admins to data-ops group:"
-echo "     usermod -aG data-ops padak"
-echo "     usermod -aG data-ops matejkys"
+echo "  1. Add admin users to data-ops group:"
+echo "     usermod -aG data-ops <admin_username>"
 echo ""
 echo "  2. Set up GitHub Actions deploy key (see .github/workflows/deploy.yml)"
 echo ""

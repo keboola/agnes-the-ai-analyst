@@ -83,13 +83,10 @@ fi
 echo "Adding www-data to data-ops group..."
 usermod -aG data-ops www-data
 
-# Configure sudoers for www-data to run add-analyst
+# Install sudoers rules for www-data (from repo, includes all required rules)
 echo "Configuring sudoers..."
 SUDOERS_FILE="/etc/sudoers.d/webapp"
-cat > "$SUDOERS_FILE" << 'EOF'
-# Allow www-data (webapp) to run add-analyst without password
-www-data ALL=(ALL) NOPASSWD: /usr/local/bin/add-analyst
-EOF
+cp "${REPO_DIR}/server/sudoers-webapp" "$SUDOERS_FILE"
 chmod 440 "$SUDOERS_FILE"
 
 # Validate sudoers syntax

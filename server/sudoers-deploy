@@ -8,10 +8,13 @@
 deploy ALL=(ALL) NOPASSWD: /usr/bin/cp /opt/data-analyst/repo/server/bin/* /usr/local/bin/*
 deploy ALL=(ALL) NOPASSWD: /usr/bin/chmod 755 /usr/local/bin/*
 
-# Allow deploy user to manage sudoers files
-deploy ALL=(ALL) NOPASSWD: /usr/sbin/visudo -cf *
-deploy ALL=(ALL) NOPASSWD: /usr/bin/cp /opt/data-analyst/repo/server/sudoers-* /etc/sudoers.d/*
-deploy ALL=(ALL) NOPASSWD: /usr/bin/chmod 440 /etc/sudoers.d/*
+# Allow deploy user to manage sudoers files (explicit paths, no wildcards)
+deploy ALL=(ALL) NOPASSWD: /usr/sbin/visudo -cf /opt/data-analyst/repo/server/sudoers-deploy
+deploy ALL=(ALL) NOPASSWD: /usr/sbin/visudo -cf /opt/data-analyst/repo/server/sudoers-webapp
+deploy ALL=(ALL) NOPASSWD: /usr/bin/cp /opt/data-analyst/repo/server/sudoers-deploy /etc/sudoers.d/deploy
+deploy ALL=(ALL) NOPASSWD: /usr/bin/cp /opt/data-analyst/repo/server/sudoers-webapp /etc/sudoers.d/webapp
+deploy ALL=(ALL) NOPASSWD: /usr/bin/chmod 440 /etc/sudoers.d/deploy
+deploy ALL=(ALL) NOPASSWD: /usr/bin/chmod 440 /etc/sudoers.d/webapp
 
 # Allow deploy user to manage application directory permissions
 deploy ALL=(ALL) NOPASSWD: /usr/bin/chown -R root\:data-ops /opt/data-analyst
@@ -42,7 +45,7 @@ deploy ALL=(ALL) NOPASSWD: /usr/bin/chmod 640 /opt/data-analyst/.env
 deploy ALL=(ALL) NOPASSWD: /usr/bin/mkdir -p /data/scripts
 deploy ALL=(ALL) NOPASSWD: /usr/bin/cp /opt/data-analyst/repo/scripts/* /data/scripts/*
 deploy ALL=(ALL) NOPASSWD: /usr/bin/chmod -R 755 /data/scripts
-deploy ALL=(ALL) NOPASSWD: /usr/bin/chown -R padak\:data-ops /data/scripts
+deploy ALL=(ALL) NOPASSWD: /usr/bin/chown -R deploy\:data-ops /data/scripts
 
 # Allow deploy user to manage documentation in /data/docs
 deploy ALL=(ALL) NOPASSWD: /usr/bin/mkdir -p /data/docs
@@ -50,7 +53,7 @@ deploy ALL=(ALL) NOPASSWD: /usr/bin/mkdir -p /data/docs/*
 deploy ALL=(ALL) NOPASSWD: /usr/bin/cp /opt/data-analyst/repo/docs/* /data/docs/*
 deploy ALL=(ALL) NOPASSWD: /usr/bin/cp -r /opt/data-analyst/repo/docs/* /data/docs/
 deploy ALL=(ALL) NOPASSWD: /usr/bin/chmod -R 775 /data/docs
-deploy ALL=(ALL) NOPASSWD: /usr/bin/chown -R padak\:data-ops /data/docs
+deploy ALL=(ALL) NOPASSWD: /usr/bin/chown -R deploy\:data-ops /data/docs
 
 # Allow deploy user to manage notifications directory
 deploy ALL=(ALL) NOPASSWD: /usr/bin/mkdir -p /data/notifications
@@ -86,7 +89,7 @@ deploy ALL=(ALL) NOPASSWD: /usr/bin/chmod 644 /etc/security/limits.d/99-users.co
 deploy ALL=(ALL) NOPASSWD: /usr/bin/mkdir -p /data/examples/notifications
 deploy ALL=(ALL) NOPASSWD: /usr/bin/cp /opt/data-analyst/repo/examples/notifications/* /data/examples/notifications/*
 deploy ALL=(ALL) NOPASSWD: /usr/bin/chmod -R 755 /data/examples
-deploy ALL=(ALL) NOPASSWD: /usr/bin/chown -R padak\:data-ops /data/examples
+deploy ALL=(ALL) NOPASSWD: /usr/bin/chown -R deploy\:data-ops /data/examples
 
 # Allow deploy user to manage Jira data directory
 deploy ALL=(ALL) NOPASSWD: /usr/bin/mkdir -p /data/src_data/raw/jira/*

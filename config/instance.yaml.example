@@ -1,68 +1,93 @@
 # AI Data Analyst - Instance Configuration
-# Copy this file to instance.yaml and fill in your values.
-# instance.yaml is gitignored - never commit it.
+# ==========================================
+# This is the main configuration file for your instance.
+# Copy to instance.yaml and fill in your values.
+#
+# SECRET VALUES use ${ENV_VAR} syntax - actual values go in .env file.
+# Non-secret values are set directly here.
 
-# Instance branding
+# --- Instance branding ---
 instance:
-  name: "AI Data Analyst"           # Display name (used in emails, UI title)
-  subtitle: "Your Organization"      # Shown in header (e.g., "Acme Corp Internal")
-  copyright: "Your Organization"     # Footer copyright text
+  name: "AI Data Analyst"
+  subtitle: "Your Organization"
+  copyright: "Your Organization"
 
-# Authentication
+# --- Server ---
+server:
+  hostname: ""                    # DNS name (e.g., "data.acme.com")
+  host: ""                        # IP address
+  app_dir: "/opt/data-analyst"    # Installation directory
+
+# --- Admin users ---
+# Manage the server, own data files, get unlimited resource limits.
+# SSH keys are used by server/setup.sh during provisioning.
+admins:
+  - username: "admin"
+    ssh_public_key: "ssh-ed25519 AAAA..."
+
+# --- Deployment ---
+deployment:
+  method: "manual"                # manual | github_actions
+  repo_url: ""                    # e.g., "git@github.com:acme/ai-data-analyst.git"
+  branch: "main"
+
+# --- Authentication ---
 auth:
-  # Google OAuth domain restriction (e.g., "acme.com")
-  allowed_domain: ""
+  allowed_domain: ""              # Google OAuth domain (e.g., "acme.com")
+  google_client_id: "${GOOGLE_CLIENT_ID}"
+  google_client_secret: "${GOOGLE_CLIENT_SECRET}"
+  webapp_secret_key: "${WEBAPP_SECRET_KEY}"
 
-# Email settings (for password auth)
+# --- Data source ---
+data_source:
+  type: "keboola"                 # keboola | csv (bigquery planned)
+  keboola:
+    storage_token: "${KEBOOLA_STORAGE_TOKEN}"
+    stack_url: ""                 # e.g., "https://connection.keboola.com"
+    project_id: ""
+
+# --- Email (optional, for password auth) ---
 email:
   from_address: "noreply@example.com"
   from_name: "AI Data Analyst"
+  sendgrid_api_key: "${SENDGRID_API_KEY}"
 
-# Server connection
-server:
-  host: ""                           # Server IP address
-  hostname: ""                       # Server DNS name (e.g., "data.acme.com")
-
-# Desktop app
+# --- Desktop app (optional) ---
 desktop:
   jwt_issuer: "data-analyst"
+  jwt_secret: "${DESKTOP_JWT_SECRET}"
   url_scheme: "data-analyst"
 
-# Data source adapter
-data_source:
-  type: "keboola"                    # Options: keboola, csv, bigquery (future)
-
-# User display names (for Corporate Memory avatars)
-# Maps server username to display info
-users:
-  # example_user:
-  #   name: "John Doe"
-  #   initials: "JD"
-
-# Username mapping (webapp email-derived username -> server home dir name)
-# Only needed when they differ
-username_mapping:
-  # john.doe: john
-
-# Optional datasets (for sync settings UI)
-# Define available optional datasets that users can enable/disable
-datasets:
-  # dataset_key:
-  #   label: "Human-readable name"
-  #   description: "What this dataset contains"
-  #   size_hint: "~50 MB"
-  #   requires: null  # or another dataset key
-
-# Data catalog categories
-# Maps folder names to display categories
-catalog:
-  categories:
-    # folder_name:
-    #   label: "Display Name"
-    #   icon: "icon_type"
-  order: []  # Display order of folder names
-
-# Telegram bot
+# --- Telegram notifications (optional) ---
 telegram:
-  bot_username: ""                   # Bot @username on Telegram (e.g., "MyDataBot")
-  domain_suffix: ""                  # Domain for email derivation (e.g., "acme.com")
+  bot_token: "${TELEGRAM_BOT_TOKEN}"
+  bot_username: ""
+  domain_suffix: ""
+
+# --- Jira integration (optional) ---
+jira:
+  domain: ""
+  email: ""
+  api_token: "${JIRA_API_TOKEN}"
+  webhook_secret: "${JIRA_WEBHOOK_SECRET}"
+  sla_email: ""
+  sla_api_token: "${JIRA_SLA_API_TOKEN}"
+  cloud_id: ""
+
+# --- Corporate Memory AI (optional) ---
+ai:
+  anthropic_api_key: "${ANTHROPIC_API_KEY}"
+
+# --- User display (for Corporate Memory avatars) ---
+users: {}
+
+# --- Username mapping (webapp email -> server username, only if different) ---
+username_mapping: {}
+
+# --- Optional datasets (sync settings UI) ---
+datasets: {}
+
+# --- Data catalog ---
+catalog:
+  categories: {}
+  order: []

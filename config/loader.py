@@ -3,10 +3,15 @@ Instance configuration loader.
 
 Loads instance.yaml from CONFIG_DIR (env var) or ./config/ fallback.
 Used by both webapp and src modules for instance-specific settings.
+
+Supports ${ENV_VAR} syntax in YAML values for secret interpolation.
+Actual secret values are stored in .env (gitignored), while the YAML
+structure stays in instance.yaml.
 """
 
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +20,29 @@ import yaml
 logger = logging.getLogger(__name__)
 
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "./config"))
+
+_ENV_PATTERN = re.compile(r"\$\{([^}]+)\}")
+
+
+def _resolve_env_refs(value: Any) -> Any:
+    """Resolve ${ENV_VAR} references in config values.
+
+    Walks the config tree recursively. String values containing ${VAR}
+    are replaced with the corresponding environment variable value
+    (empty string if not set). Non-string values pass through unchanged.
+    """
+    if isinstance(value, str):
+
+        def replacer(match: re.Match) -> str:
+            env_key = match.group(1)
+            return os.environ.get(env_key, "")
+
+        return _ENV_PATTERN.sub(replacer, value)
+    if isinstance(value, dict):
+        return {k: _resolve_env_refs(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_resolve_env_refs(item) for item in value]
+    return value
 
 
 def load_instance_config() -> dict[str, Any]:
@@ -47,6 +75,7 @@ def load_instance_config() -> dict[str, Any]:
     if not config:
         raise ValueError("instance.yaml is empty")
 
+    config = _resolve_env_refs(config)
     _validate_config(config)
     logger.info("Instance config loaded from %s", path)
     return config

@@ -83,7 +83,7 @@ def _parse_sudoers_commands(sudoers_path: Path) -> list[dict]:
         if m:
             user = m.group(1)
             command = m.group(2).strip()
-            # Unescape sudoers backslash-colon (e.g., padak\:data-ops -> padak:data-ops)
+            # Unescape sudoers backslash-colon (e.g., deploy\:data-ops -> deploy:data-ops)
             command = command.replace("\\:", ":")
             # Check for deploy-guard: ignore in preceding comment
             ignored = False
@@ -536,9 +536,9 @@ class TestFileOwnership:
     # Explicit list of critical directories and their expected ownership.
     # Maintained manually - extend when new critical directories are added.
     CRITICAL_DIRS = {
-        "/data/scripts": {"owner": "padak", "group": "data-ops"},
-        "/data/docs": {"owner": "padak", "group": "data-ops"},
-        "/data/examples": {"owner": "padak", "group": "data-ops"},
+        "/data/scripts": {"owner": "deploy", "group": "data-ops"},
+        "/data/docs": {"owner": "deploy", "group": "data-ops"},
+        "/data/examples": {"owner": "deploy", "group": "data-ops"},
         "/data/notifications": {"owner": "deploy", "group": "data-ops"},
         "/data/auth": {"owner": "www-data", "group": "data-ops"},
         "/data/corporate-memory": {"owner": "deploy", "group": "data-ops"},

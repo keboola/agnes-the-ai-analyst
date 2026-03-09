@@ -68,6 +68,7 @@ htmlcov/
 dmypy.json
 .pyre/
 venv/
+.venv/
 env/
 ENV/
 env.bak/
@@ -108,6 +109,9 @@ target/
 # Instance configuration (contains secrets and instance-specific values)
 config/instance.yaml
 config/data_description.md
+
+# Instance-specific data description (generated per-instance)
+docs/data_description.md
 
 # Actual deploy workflow (created from .example, may contain secrets in comments)
 .github/workflows/deploy.yml

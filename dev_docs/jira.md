@@ -500,11 +500,11 @@ The SLA polling job runs every 15 minutes via systemd timer (`jira-sla-poll.time
 3. Updates raw JSON atomically (`tempfile.mkstemp()` + `os.fchmod(fd, 0o660)` + `os.replace()`)
 4. Triggers incremental Parquet transform (inside advisory file lock)
 
-**Self-healing:** The poll fetches `status`, `resolution`, `resolutiondate`, and `updated` alongside the SLA fields. If a ticket is resolved in Jira but still appears "open" in Parquet (e.g. due to a missed webhook), the poll automatically corrects the status in JSON and re-transforms to Parquet. Log output: `Self-healing: SUPPORT-XXXX is resolved in Jira`. This was added in response to [#203](https://github.com/keboola/internal_ai_data_analyst/issues/203) where 12 tickets were permanently stale after a permission bug prevented webhooks from updating JSON files.
+**Self-healing:** The poll fetches `status`, `resolution`, `resolutiondate`, and `updated` alongside the SLA fields. If a ticket is resolved in Jira but still appears "open" in Parquet (e.g. due to a missed webhook), the poll automatically corrects the status in JSON and re-transforms to Parquet. Log output: `Self-healing: SUPPORT-XXXX is resolved in Jira`. This was added in response to [#203](https://github.com/your-org/ai-data-analyst/issues/203) where 12 tickets were permanently stale after a permission bug prevented webhooks from updating JSON files.
 
 **File locking:** The entire read-modify-write + Parquet transform is wrapped in a per-issue advisory file lock (`src/jira_file_lock.py`) to prevent races with the webhook handler. The webhook handler (`webapp/jira_service.py`) uses the same lock. Different issue keys don't block each other.
 
-**Important — `mkstemp` and ACL:** The `issues/` directory uses POSIX ACLs with `default:mask::rwx`. `tempfile.mkstemp()` creates files with mode `0600`, which overrides the ACL mask to `---` and breaks group access for www-data (webhook handler) and deploy (batch transform). The `os.fchmod(fd, 0o660)` call immediately after `mkstemp()` restores the mask to `rw-`, preserving ACL-based access. See [#203](https://github.com/keboola/internal_ai_data_analyst/issues/203) for the full incident report.
+**Important — `mkstemp` and ACL:** The `issues/` directory uses POSIX ACLs with `default:mask::rwx`. `tempfile.mkstemp()` creates files with mode `0600`, which overrides the ACL mask to `---` and breaks group access for www-data (webhook handler) and deploy (batch transform). The `os.fchmod(fd, 0o660)` call immediately after `mkstemp()` restores the mask to `rw-`, preserving ACL-based access. See [#203](https://github.com/your-org/ai-data-analyst/issues/203) for the full incident report.
 
 ```bash
 # Manual run

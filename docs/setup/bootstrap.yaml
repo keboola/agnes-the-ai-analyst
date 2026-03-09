@@ -1,5 +1,5 @@
 version: "1.0"
-project_name: "internal_ai_data_analyst"
+project_name: "ai_data_analyst"
 project_dir: "."
 
 server:

@@ -83,13 +83,15 @@ sudo /usr/bin/cp "${REPO_DIR}"/scripts/sync_jira.sh /data/scripts/
 sudo /usr/bin/cp "${REPO_DIR}"/scripts/generate_user_sync_configs.py /data/scripts/
 sudo /usr/bin/cp "${REPO_DIR}"/scripts/collect_session.py /data/scripts/
 sudo /usr/bin/chmod -R 755 /data/scripts
-sudo /usr/bin/chown -R padak:data-ops /data/scripts
+sudo /usr/bin/chown -R deploy:data-ops /data/scripts
 log "  Scripts updated in /data/scripts/"
 
 # Update documentation in /data/docs
 log "Updating documentation..."
 sudo /usr/bin/mkdir -p /data/docs/setup
-sudo /usr/bin/cp "${REPO_DIR}"/docs/data_description.md /data/docs/
+if [[ -f "${REPO_DIR}/docs/data_description.md" ]]; then
+    sudo /usr/bin/cp "${REPO_DIR}"/docs/data_description.md /data/docs/
+fi
 sudo /usr/bin/cp "${REPO_DIR}"/docs/GETTING_STARTED.md /data/docs/
 if [[ -f "${REPO_DIR}/docs/notifications.md" ]]; then
     sudo /usr/bin/cp "${REPO_DIR}"/docs/notifications.md /data/docs/
@@ -114,7 +116,7 @@ if [[ -d "${REPO_DIR}/docs/datasets" ]]; then
     log "  Dataset docs (*.md) copied to /data/docs/datasets/"
 fi
 sudo /usr/bin/chmod -R 775 /data/docs
-sudo /usr/bin/chown -R padak:data-ops /data/docs
+sudo /usr/bin/chown -R deploy:data-ops /data/docs
 log "  Documentation updated in /data/docs/"
 
 # Deploy notify-runner to /usr/local/bin
@@ -254,7 +256,7 @@ for example in "${REPO_DIR}"/examples/notifications/*.py; do
     fi
 done
 sudo /usr/bin/chmod -R 755 /data/examples
-sudo /usr/bin/chown -R padak:data-ops /data/examples
+sudo /usr/bin/chown -R deploy:data-ops /data/examples
 
 # Update resource limits configuration
 log "Updating resource limits..."

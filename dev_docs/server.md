@@ -81,7 +81,7 @@ gcloud compute ssh data-broker-for-claude --project=kids-ai-data-analysis --zone
 /run/notify-bot/                # Systemd RuntimeDirectory (mode 0755)
 └── bot.sock                    # Unix socket for send API (mode 0666)
 
-/tmp/keboola_load/              # Keboola staging directory (root:data-ops, 2770 setgid)
+/tmp/data_analyst_staging/              # Keboola staging directory (root:data-ops, 2770 setgid)
 └── *.parquet                   # Temporary Parquet files during Keboola data load
 ```
 
@@ -145,7 +145,7 @@ except Exception:
     raise
 ```
 
-Use `0o660` for files accessed by services via data-ops group ACL, `0o644` for world-readable files (e.g., profiler output). See [#203](https://github.com/keboola/internal_ai_data_analyst/issues/203) for a production incident caused by missing `fchmod`.
+Use `0o660` for files accessed by services via data-ops group ACL, `0o644` for world-readable files (e.g., profiler output). See [#203](https://github.com/your-org/ai-data-analyst/issues/203) for a production incident caused by missing `fchmod`.
 
 **Per-issue file locking for concurrent writers:**
 
@@ -599,7 +599,7 @@ Application is automatically deployed via GitHub Actions when changes are pushed
      - `/data/corporate-memory/` (knowledge base)
      - `/data/user_sessions/` (session logs)
      - `/data/examples/` (example scripts)
-     - `/tmp/keboola_load/` (Keboola staging)
+     - `/tmp/data_analyst_staging/` (Keboola staging)
    - Deploys systemd units:
      - `notify-bot.service` (Telegram bot)
      - `ws-gateway.service` (WebSocket gateway)
@@ -640,7 +640,7 @@ The `deploy` user has limited sudo access defined in `/etc/sudoers.d/deploy`:
 - Can manage `/data/auth/` (password auth state)
 - Can manage `/data/corporate-memory/` (knowledge base)
 - Can manage `/data/user_sessions/` (session collector data)
-- Can manage `/tmp/keboola_load/` (Keboola staging directory)
+- Can manage `/tmp/data_analyst_staging/` (Keboola staging directory)
 
 **Special Permissions:**
 - Can run `notify-scripts` as any user (list/run notification scripts)
@@ -678,7 +678,7 @@ sudo cat /home/deploy/.ssh/id_ed25519.pub
 ```
 
 **3. Add Deploy Key to GitHub:**
-- Go to: https://github.com/keboola/internal_ai_data_analyst/settings/keys
+- Go to: https://github.com/your-org/ai-data-analyst/settings/keys
 - Click "Add deploy key"
 - Title: `data-broker-server`
 - Key: (paste public key from previous step)
@@ -688,7 +688,7 @@ sudo cat /home/deploy/.ssh/id_ed25519.pub
 ```bash
 sudo mkdir -p /opt/data-analyst
 sudo chown deploy:data-ops /opt/data-analyst
-sudo -u deploy git clone git@github.com:keboola/internal_ai_data_analyst.git /opt/data-analyst/repo
+sudo -u deploy git clone git@github.com:your-org/ai-data-analyst.git /opt/data-analyst/repo
 sudo git config --global --add safe.directory /opt/data-analyst/repo
 sudo -u deploy git config --global --add safe.directory /opt/data-analyst/repo
 sudo /opt/data-analyst/repo/server/setup.sh
@@ -1144,7 +1144,7 @@ cat ~/.notifications/logs/runner.log
 ### Known Issues
 
 **On-demand script execution security hardening (partially resolved):**
-The `notify-scripts` helper replaced direct `sudo -H -u ... /usr/bin/env ...` calls with a single auditable entry point. Services no longer need filesystem access to user home directories (750 permissions are preserved). The bot still requires `NoNewPrivileges=false` and `/tmp` in `ReadWritePaths` for sudo execution. A queue-based approach ([#51](https://github.com/keboola/internal_ai_data_analyst/issues/51)) could further improve this by having `notify-runner` pick up run requests from a queue instead of the bot calling sudo directly.
+The `notify-scripts` helper replaced direct `sudo -H -u ... /usr/bin/env ...` calls with a single auditable entry point. Services no longer need filesystem access to user home directories (750 permissions are preserved). The bot still requires `NoNewPrivileges=false` and `/tmp` in `ReadWritePaths` for sudo execution. A queue-based approach ([#51](https://github.com/your-org/ai-data-analyst/issues/51)) could further improve this by having `notify-runner` pick up run requests from a queue instead of the bot calling sudo directly.
 
 ## Data Sync Settings (Web Portal)
 
@@ -1510,7 +1510,7 @@ for row in result:
 - API token has read-only access to Jira (no write permissions needed)
 - Webhook events are logged for audit purposes
 - Multiple services write to `/data/src_data/raw/jira/`: webapp (www-data), SLA poll (root), consistency check (root), backfill scripts (admin users)
-- Concurrent writes to the same issue JSON are serialized via per-issue advisory file locking (`src/jira_file_lock.py`, `fcntl.flock`). Lock files in `issues/.locks/`. See [#203](https://github.com/keboola/internal_ai_data_analyst/issues/203).
+- Concurrent writes to the same issue JSON are serialized via per-issue advisory file locking (`src/jira_file_lock.py`, `fcntl.flock`). Lock files in `issues/.locks/`. See [#203](https://github.com/your-org/ai-data-analyst/issues/203).
 
 ## Data Profiler
 
@@ -1967,7 +1967,7 @@ The Corporate Memory page at `/corporate-memory` provides:
 - **No credentials stored**: Knowledge items are filtered before storage
 - **Source attribution**: Items track which users contributed (displayed as avatar initials)
 - **Read-only for analysts**: `/data/corporate-memory/` is only writable by data-ops group
-- **Atomic writes**: All JSON file updates use `tempfile.mkstemp()` + `os.replace()` to prevent corruption. **Critical:** always call `os.fchmod(fd, 0o660)` (or appropriate mode) immediately after `mkstemp()` — otherwise the default `0600` mode overrides the POSIX ACL mask to `---`, breaking group-based access for other services. See [#203](https://github.com/keboola/internal_ai_data_analyst/issues/203).
+- **Atomic writes**: All JSON file updates use `tempfile.mkstemp()` + `os.replace()` to prevent corruption. **Critical:** always call `os.fchmod(fd, 0o660)` (or appropriate mode) immediately after `mkstemp()` — otherwise the default `0600` mode overrides the POSIX ACL mask to `---`, breaking group-based access for other services. See [#203](https://github.com/your-org/ai-data-analyst/issues/203).
 
 ## Session Collector
 

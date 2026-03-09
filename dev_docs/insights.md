@@ -19,7 +19,7 @@ This is NOT a usage log. It is a **strategic command center** that:
 
 - **Current state**: Demo mockup with fictional data (DEMO badge in header)
 - **URL**: https://your-instance.example.com/activity-center (requires login)
-- **PR**: https://github.com/keboola/internal_ai_data_analyst/pull/122
+- **PR**: https://github.com/your-org/ai-data-analyst/pull/122
 - **Branch**: `feature/activity-center`
 - **Dashboard link**: Not added yet (UX placement decided, implementation pending)
 

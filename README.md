@@ -103,8 +103,7 @@ ai-data-analyst/
 │
 ├── docs/                          # User-facing documentation
 │   ├── QUICKSTART.md             # Setup guide
-│   ├── data_description.md       # Table schemas (single source of truth)
-│   └── metrics/                  # Business metric definitions
+│   └── data_description.md       # Table schemas (single source of truth)
 │
 ├── dev_docs/                      # Developer and operator documentation
 │   ├── server.md                 # Server administration
@@ -121,7 +120,7 @@ ai-data-analyst/
 | Adapter | Status | Description |
 |---------|--------|-------------|
 | Keboola Storage | Available | Pulls tables via the Keboola Storage API |
-| CSV | Available | Imports local or mounted CSV files |
+| CSV | Planned | Imports local or mounted CSV files |
 | BigQuery | Planned | Google BigQuery adapter |
 | Snowflake | Planned | Snowflake adapter |
 
@@ -152,7 +151,7 @@ Claude Code will connect to the local DuckDB database, write and execute SQL, an
 
 ## License
 
-This project is not yet released under a specific open-source license. A license will be added before public release. Until then, all rights are reserved.
+This project is licensed under the [MIT License](LICENSE).
 
 ---
 

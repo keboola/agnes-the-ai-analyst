@@ -84,11 +84,12 @@ class TestParseCronSchedule:
 class TestGetServerUsername:
     """Test webapp-to-server username mapping."""
 
+    @patch("webapp.account_service.WEBAPP_TO_SERVER_USERNAME", {"john.doe": "john"})
     def test_mapped_user(self):
-        assert _get_server_username("petr.simecek") == "petr"
+        assert _get_server_username("john.doe") == "john"
 
     def test_unmapped_user(self):
-        assert _get_server_username("dasa.damaskova") == "dasa.damaskova"
+        assert _get_server_username("jane.smith") == "jane.smith"
 
 
 class TestGetNotificationScripts:
@@ -198,6 +199,7 @@ class TestGetAccountDetails:
         assert result["last_sync_display"] is None
         assert result["sync_datasets_enabled"] == []
 
+    @patch("webapp.account_service.WEBAPP_TO_SERVER_USERNAME", {"john.doe": "john"})
     @patch("webapp.account_service._get_enabled_datasets")
     @patch("webapp.account_service._get_last_sync")
     @patch("webapp.account_service._get_cron_schedule")
@@ -208,8 +210,8 @@ class TestGetAccountDetails:
         mock_sync.return_value = None
         mock_datasets.return_value = []
 
-        get_account_details("petr.simecek")
-        # Verify server username mapping: petr.simecek -> petr
-        mock_scripts.assert_called_once_with("petr")
-        mock_cron.assert_called_once_with("petr")
-        mock_sync.assert_called_once_with("petr")
+        get_account_details("john.doe")
+        # Verify server username mapping: john.doe -> john
+        mock_scripts.assert_called_once_with("john")
+        mock_cron.assert_called_once_with("john")
+        mock_sync.assert_called_once_with("john")

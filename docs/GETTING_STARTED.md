@@ -1,10 +1,10 @@
-# Getting Started with Internal AI Data Analyst
+# Getting Started with AI Data Analyst
 
 Quick start guide for analysts who want to explore company data using AI.
 
 ## What is This?
 
-**Internal AI Data Analyst** gives you local access to your organization's data (sales, HR, finance, telemetry) so you can analyze it using Claude Code with natural language questions.
+**AI Data Analyst** gives you local access to your organization's data (sales, HR, finance, telemetry) so you can analyze it using Claude Code with natural language questions.
 
 Instead of writing SQL queries manually, you can ask Claude questions like:
 - "Which companies have the highest revenue?"
