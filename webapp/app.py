@@ -15,9 +15,9 @@ from pathlib import Path
 
 from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
 
-from .auth import auth_bp, init_oauth, login_required
+from .auth import auth_bp, login_required
 from .config import Config
-from .desktop_auth import desktop_bp, require_desktop_auth
+from .desktop_auth import require_desktop_auth
 from .notification_images import images_bp
 from .account_service import get_account_details
 from .sync_settings_service import get_sync_settings, update_sync_settings
@@ -29,14 +29,6 @@ try:
 except ImportError:
     JIRA_AVAILABLE = False
     jira_bp = None
-
-# Password auth is optional - requires SENDGRID_API_KEY
-try:
-    from .password_auth import password_auth_bp
-    PASSWORD_AUTH_AVAILABLE = True
-except ImportError:
-    PASSWORD_AUTH_AVAILABLE = False
-    password_auth_bp = None
 from .telegram_service import get_telegram_status, link_telegram, unlink_telegram
 from .corporate_memory_service import (
     get_knowledge,
@@ -73,17 +65,20 @@ def create_app() -> Flask:
         for error in errors:
             logger.warning(f"Configuration warning: {error}")
 
-    # Initialize OAuth
-    init_oauth(app)
-
-    # Register blueprints
+    # Register core auth blueprint (login_required, login page, logout)
     app.register_blueprint(auth_bp)
-    app.register_blueprint(desktop_bp)
+
+    # Auto-discover and register auth providers
+    from auth import discover_providers
+
+    for provider_instance in discover_providers():
+        provider_instance.init_app(app)
+        app.register_blueprint(provider_instance.get_blueprint())
+
+    # Register other blueprints
     app.register_blueprint(images_bp)
     if JIRA_AVAILABLE and jira_bp:
         app.register_blueprint(jira_bp)
-    if PASSWORD_AUTH_AVAILABLE and password_auth_bp:
-        app.register_blueprint(password_auth_bp)
 
     # Register main routes
     register_routes(app)

@@ -1,36 +1,25 @@
 """
-Google OAuth authentication module.
+Core authentication module - shared infrastructure.
 
-Handles Google Sign-In flow and domain validation.
+Provides:
+- login_required decorator (used by all auth methods)
+- validate_email_domain() (used by all auth providers)
+- /login route (dynamically renders available auth providers)
+- /logout route
+
+Auth provider-specific logic lives in auth/<provider>/provider.py.
 """
 
 import functools
 import logging
 
-from authlib.integrations.flask_client import OAuth
-from flask import Blueprint, current_app, flash, redirect, session, url_for
+from flask import Blueprint, flash, redirect, render_template, session, url_for
 
 from .config import Config
 
 logger = logging.getLogger(__name__)
 
 auth_bp = Blueprint("auth", __name__)
-oauth = OAuth()
-
-
-def init_oauth(app):
-    """Initialize OAuth with the Flask app."""
-    oauth.init_app(app)
-
-    oauth.register(
-        name="google",
-        client_id=Config.GOOGLE_CLIENT_ID,
-        client_secret=Config.GOOGLE_CLIENT_SECRET,
-        server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
-        client_kwargs={
-            "scope": "openid email profile",
-        },
-    )
 
 
 def login_required(f):
@@ -67,58 +56,19 @@ def validate_email_domain(email: str) -> bool:
 
 @auth_bp.route("/login")
 def login():
-    """Show login page or redirect to dashboard if already logged in."""
+    """Show login page with dynamically discovered auth providers."""
     if "user" in session:
         return redirect(url_for("dashboard"))
-    from flask import render_template
 
-    return render_template("login.html")
+    from auth import discover_providers
 
-
-@auth_bp.route("/login/google")
-def login_google():
-    """Initiate Google OAuth flow."""
-    redirect_uri = url_for("auth.authorize", _external=True)
-    return oauth.google.authorize_redirect(redirect_uri)
-
-
-@auth_bp.route("/authorize")
-def authorize():
-    """Handle OAuth callback from Google."""
-    try:
-        token = oauth.google.authorize_access_token()
-        userinfo = token.get("userinfo")
-
-        if not userinfo:
-            logger.warning("No userinfo in OAuth response")
-            flash("Failed to get user information from Google.", "error")
-            return redirect(url_for("auth.login"))
-
-        email = userinfo.get("email", "")
-        name = userinfo.get("name", "")
-
-        # Validate domain
-        if not validate_email_domain(email):
-            logger.warning(f"Login attempt from non-allowed domain: {email}")
-            flash(
-                f"Only @{Config.ALLOWED_DOMAIN} email addresses are allowed.", "error"
-            )
-            return redirect(url_for("auth.login"))
-
-        # Store user info in session
-        session["user"] = {
-            "email": email,
-            "name": name,
-            "picture": userinfo.get("picture", ""),
-        }
-
-        logger.info(f"User logged in: {email}")
-        return redirect(url_for("dashboard"))
-
-    except Exception as e:
-        logger.exception(f"OAuth error: {e}")
-        flash("Authentication failed. Please try again.", "error")
-        return redirect(url_for("auth.login"))
+    providers = discover_providers()
+    login_buttons = [
+        p.get_login_button()
+        for p in providers
+        if p.get_login_button().get("visible", True)
+    ]
+    return render_template("login.html", login_buttons=login_buttons)
 
 
 @auth_bp.route("/logout")
