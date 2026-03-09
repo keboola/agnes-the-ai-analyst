@@ -219,18 +219,18 @@ fi
 
 # Deploy Jira SLA polling systemd service and timer
 log "Deploying jira-sla-poll service and timer..."
-if [[ -f "${REPO_DIR}/server/jira-sla-poll.service" ]]; then
-    sudo /usr/bin/cp "${REPO_DIR}/server/jira-sla-poll.service" /etc/systemd/system/jira-sla-poll.service
-    sudo /usr/bin/cp "${REPO_DIR}/server/jira-sla-poll.timer" /etc/systemd/system/jira-sla-poll.timer
+if [[ -f "${REPO_DIR}/connectors/jira/systemd/jira-sla-poll.service" ]]; then
+    sudo /usr/bin/cp "${REPO_DIR}/connectors/jira/systemd/jira-sla-poll.service" /etc/systemd/system/jira-sla-poll.service
+    sudo /usr/bin/cp "${REPO_DIR}/connectors/jira/systemd/jira-sla-poll.timer" /etc/systemd/system/jira-sla-poll.timer
     sudo /usr/bin/systemctl daemon-reload
 fi
 
 # Deploy Jira consistency monitoring systemd service and timers
 log "Deploying jira-consistency service and timers..."
-if [[ -f "${REPO_DIR}/server/jira-consistency.service" ]]; then
-    sudo /usr/bin/cp "${REPO_DIR}/server/jira-consistency.service" /etc/systemd/system/jira-consistency.service
-    sudo /usr/bin/cp "${REPO_DIR}/server/jira-consistency.timer" /etc/systemd/system/jira-consistency.timer
-    sudo /usr/bin/cp "${REPO_DIR}/server/jira-consistency-deep.timer" /etc/systemd/system/jira-consistency-deep.timer
+if [[ -f "${REPO_DIR}/connectors/jira/systemd/jira-consistency.service" ]]; then
+    sudo /usr/bin/cp "${REPO_DIR}/connectors/jira/systemd/jira-consistency.service" /etc/systemd/system/jira-consistency.service
+    sudo /usr/bin/cp "${REPO_DIR}/connectors/jira/systemd/jira-consistency.timer" /etc/systemd/system/jira-consistency.timer
+    sudo /usr/bin/cp "${REPO_DIR}/connectors/jira/systemd/jira-consistency-deep.timer" /etc/systemd/system/jira-consistency-deep.timer
     sudo /usr/bin/systemctl daemon-reload
 
     # Create log file with correct permissions

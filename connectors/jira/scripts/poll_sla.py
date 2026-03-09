@@ -15,13 +15,13 @@ Designed to run as a systemd timer (every 15 min) via jira-sla-poll.timer.
 
 Usage:
     # On server:
-    python scripts/jira_poll_sla.py
+    python -m connectors.jira.scripts.poll_sla
 
     # Dry run (count open issues, don't fetch):
-    python scripts/jira_poll_sla.py --dry-run
+    python -m connectors.jira.scripts.poll_sla --dry-run
 
     # Verbose logging:
-    python scripts/jira_poll_sla.py --verbose
+    python -m connectors.jira.scripts.poll_sla --verbose
 
 Environment variables (loaded from .env):
     JIRA_SLA_EMAIL - Email for JSM service account authentication
@@ -44,16 +44,16 @@ import pandas as pd
 from dotenv import load_dotenv
 
 # Add project root to sys.path for imports
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.jira_backfill_sla import (
+from connectors.jira.scripts.backfill_sla import (
     SLA_FIELDS,
     has_valid_sla_data,
     load_config,
 )
-from src.incremental_jira_transform import transform_single_issue
-from src.jira_file_lock import issue_json_lock
+from connectors.jira.incremental_transform import transform_single_issue
+from connectors.jira.file_lock import issue_json_lock
 
 logging.basicConfig(
     level=logging.INFO,

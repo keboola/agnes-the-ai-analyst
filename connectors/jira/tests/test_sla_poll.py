@@ -1,5 +1,5 @@
 """
-Tests for scripts/jira_poll_sla.py - SLA polling and self-healing logic.
+Tests for connectors/jira/scripts/poll_sla.py - SLA polling and self-healing logic.
 
 Covers:
 - fetch_sla_and_status: API response parsing for SLA + status fields
@@ -14,9 +14,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 # Ensure project root is importable
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
 
-from scripts.jira_poll_sla import (
+from connectors.jira.scripts.poll_sla import (
     SLA_FIELDS,
     STATUS_FIELDS,
     fetch_sla_and_status,
@@ -68,7 +68,7 @@ def fake_issue_json_in_progress(tmp_path: Path) -> Path:
 class TestFetchSlaAndStatus:
     """Tests for the fetch_sla_and_status function."""
 
-    @patch("scripts.jira_poll_sla.httpx.Client")
+    @patch("connectors.jira.scripts.poll_sla.httpx.Client")
     def test_returns_all_sla_and_status_fields(self, mock_client_cls: MagicMock) -> None:
         """
         When the Jira API returns 200 with all requested fields,
@@ -145,8 +145,8 @@ class TestFetchSlaAndStatus:
 class TestUpdateIssueSlaHealing:
     """Tests for self-healing when API reports an issue as resolved."""
 
-    @patch("scripts.jira_poll_sla.transform_single_issue")
-    @patch("scripts.jira_poll_sla.fetch_sla_and_status")
+    @patch("connectors.jira.scripts.poll_sla.transform_single_issue")
+    @patch("connectors.jira.scripts.poll_sla.fetch_sla_and_status")
     def test_self_healing_returns_healed_and_updates_json(
         self,
         mock_fetch: MagicMock,
@@ -224,8 +224,8 @@ class TestUpdateIssueSlaHealing:
 class TestUpdateIssueSlaSkip:
     """Tests for the skip logic when SLA data is empty and status is not Done."""
 
-    @patch("scripts.jira_poll_sla.transform_single_issue")
-    @patch("scripts.jira_poll_sla.fetch_sla_and_status")
+    @patch("connectors.jira.scripts.poll_sla.transform_single_issue")
+    @patch("connectors.jira.scripts.poll_sla.fetch_sla_and_status")
     def test_skips_when_no_sla_data_and_not_resolved(
         self,
         mock_fetch: MagicMock,
@@ -272,8 +272,8 @@ class TestUpdateIssueSlaSkip:
 class TestUpdateIssueSlaJsonMissing:
     """Tests for missing JSON file handling."""
 
-    @patch("scripts.jira_poll_sla.transform_single_issue")
-    @patch("scripts.jira_poll_sla.fetch_sla_and_status")
+    @patch("connectors.jira.scripts.poll_sla.transform_single_issue")
+    @patch("connectors.jira.scripts.poll_sla.fetch_sla_and_status")
     def test_returns_skipped_when_json_file_missing(
         self,
         mock_fetch: MagicMock,

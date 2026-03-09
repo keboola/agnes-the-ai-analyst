@@ -21,7 +21,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = REPO_ROOT / "scripts"
 SYNC_DATA_SH = SCRIPTS_DIR / "sync_data.sh"
-SYNC_JIRA_SH = SCRIPTS_DIR / "sync_jira.sh"
+SYNC_JIRA_SH = REPO_ROOT / "connectors" / "jira" / "scripts" / "sync_jira.sh"
 SYNC_SCRIPTS = [SYNC_DATA_SH, SYNC_JIRA_SH]
 DIAG_DIR = REPO_ROOT / "data" / "sync_diagnostics"
 

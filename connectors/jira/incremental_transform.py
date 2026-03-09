@@ -16,8 +16,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 # Import transform functions from batch transform
-from .jira_file_lock import parquet_month_lock
-from .jira_transform import (
+from .file_lock import parquet_month_lock
+from .transform import (
     ATTACHMENTS_SCHEMA,
     CHANGELOG_SCHEMA,
     COMMENTS_SCHEMA,

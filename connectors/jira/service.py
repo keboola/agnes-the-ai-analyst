@@ -18,7 +18,7 @@ from typing import Any
 
 import httpx
 
-from .config import Config
+from webapp.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ def trigger_incremental_transform(issue_key: str, deleted: bool = False) -> bool
         True if transform succeeded, False otherwise
     """
     try:
-        from src.incremental_jira_transform import transform_single_issue
+        from connectors.jira.incremental_transform import transform_single_issue
 
         success = transform_single_issue(
             issue_key=issue_key,
@@ -262,7 +262,7 @@ class JiraService:
         file_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
-            from src.jira_file_lock import issue_json_lock
+            from connectors.jira.file_lock import issue_json_lock
 
             # Lock protects the JSON write + Parquet transform from concurrent
             # SLA poll writes. Attachment download stays outside the lock.
@@ -499,7 +499,7 @@ class JiraService:
         if file_path.exists():
             # Mark as deleted rather than removing
             try:
-                from src.jira_file_lock import issue_json_lock
+                from connectors.jira.file_lock import issue_json_lock
 
                 issues_dir = self.data_dir / "issues"
                 with issue_json_lock(issues_dir, issue_key):

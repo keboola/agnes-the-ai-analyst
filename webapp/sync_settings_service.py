@@ -105,9 +105,11 @@ def update_sync_settings(username: str, settings: dict) -> tuple[bool, str]:
     existing = all_settings.get(username, {}).get("datasets", dict(DEFAULT_SETTINGS))
     existing.update(settings)
 
-    # Validate dependencies on merged state
-    if existing.get("jira_attachments") and not existing.get("jira"):
-        return False, "Jira attachments require Jira to be enabled"
+    # Validate dependencies on merged state (from instance config)
+    for key, info in DATASET_INFO.items():
+        requires = info.get("requires") if isinstance(info, dict) else None
+        if requires and existing.get(key) and not existing.get(requires):
+            return False, f"{key} requires {requires} to be enabled"
 
     # Update user's settings
     all_settings[username] = {

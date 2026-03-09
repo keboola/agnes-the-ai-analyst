@@ -32,7 +32,7 @@ CUSTOM_FIELD_NAMES = {
     "customfield_10157": "satisfaction",  # Customer satisfaction (was: sla_info)
     "customfield_10323": "triage",  # Triage multi-select (was: team_tier)
     "customfield_10330": "context",  # Context field (was: root_cause)
-    "customfield_10325": "keboola_platform_url",  # Keboola platform URL (was: resolution_summary)
+    "customfield_10325": "custom_url",  # Custom URL (was: resolution_summary)
     "customfield_10350": "slack_link",  # Slack link (was: customer_type)
     "customfield_10475": "email_address",  # Email address (was: context)
     "customfield_10511": "configuration_item",  # Configuration item (was: categories)
@@ -80,7 +80,7 @@ ISSUES_SCHEMA = {
     "organizations": "string",
     "spam": "string",
     "context": "string",
-    "keboola_platform_url": "string",
+    "custom_url": "string",
     "slack_link": "string",
     "technical_issue_category": "string",
     "email_address": "string",
@@ -380,7 +380,7 @@ def transform_issue(raw_issue: dict) -> dict:
         "organizations": json.dumps(extract_option_list(fields.get("customfield_10002"))),
         "spam": extract_option_value(fields.get("customfield_10365")),
         "context": extract_text_from_adf(fields.get("customfield_10330")) or None,
-        "keboola_platform_url": fields.get("customfield_10325"),
+        "custom_url": fields.get("customfield_10325"),
         "slack_link": extract_option_value(fields.get("customfield_10350")),
         "technical_issue_category": extract_option_value(fields.get("customfield_10676")),
         "email_address": extract_option_value(fields.get("customfield_10475")),

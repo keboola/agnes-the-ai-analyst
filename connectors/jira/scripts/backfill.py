@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 """
-Jira Backfill Script - Download all historical SUPPORT tickets.
+Jira Backfill Script - Download all historical Jira issues.
 
-Downloads all issues from Jira SUPPORT project using JQL search with pagination.
+Downloads all issues from Jira using JQL search with pagination.
 Reuses the webapp's JiraService for consistent data handling.
 
 Usage:
     # On server (uses /opt/data-analyst/.env):
-    python scripts/jira_backfill.py
+    python -m connectors.jira.scripts.backfill
 
     # With custom settings:
-    python scripts/jira_backfill.py --jql "project = SUPPORT AND created >= 2025-01-01"
+    python -m connectors.jira.scripts.backfill --jql "project = MY_PROJECT AND created >= 2025-01-01"
 
     # Skip already downloaded issues:
-    python scripts/jira_backfill.py --skip-existing
+    python -m connectors.jira.scripts.backfill --skip-existing
 
     # Dry run (show what would be downloaded):
-    python scripts/jira_backfill.py --dry-run
+    python -m connectors.jira.scripts.backfill --dry-run
 
 Environment variables (loaded from .env or set manually):
     JIRA_DOMAIN - Jira Cloud domain (e.g., your-org.atlassian.net)
@@ -158,7 +158,7 @@ class JiraBackfill:
             jql: JQL query string
 
         Yields:
-            Issue keys (e.g., "SUPPORT-15190")
+            Issue keys (e.g., "PROJ-15190")
         """
         next_page_token = None
         total_fetched = 0
@@ -201,7 +201,7 @@ class JiraBackfill:
         Fetch complete issue data from Jira.
 
         Args:
-            issue_key: Issue key (e.g., "SUPPORT-123")
+            issue_key: Issue key (e.g., "PROJ-123")
 
         Returns:
             Issue data dict or None if fetch failed
@@ -245,7 +245,7 @@ class JiraBackfill:
         Fetch remote links for an issue from Jira.
 
         Args:
-            issue_key: Issue key (e.g., "SUPPORT-123")
+            issue_key: Issue key (e.g., "PROJ-123")
 
         Returns:
             List of remote link dicts, empty list on failure
@@ -504,7 +504,7 @@ class JiraBackfill:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Download all SUPPORT tickets from Jira",
+        description="Download all Jira issues",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -543,7 +543,7 @@ def main():
     )
     parser.add_argument(
         "--issue-keys",
-        help="Comma-separated list of specific issue keys to backfill (e.g., SUPPORT-15307,SUPPORT-15308)",
+        help="Comma-separated list of specific issue keys to backfill (e.g., PROJ-123,PROJ-456)",
     )
 
     args = parser.parse_args()

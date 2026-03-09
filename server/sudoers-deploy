@@ -113,8 +113,8 @@ deploy ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop corporate-memory.timer
 deploy ALL=(ALL) NOPASSWD: /usr/bin/systemctl is-enabled corporate-memory.timer
 
 # Allow deploy user to manage jira-sla-poll service and timer
-deploy ALL=(ALL) NOPASSWD: /usr/bin/cp /opt/data-analyst/repo/server/jira-sla-poll.service /etc/systemd/system/jira-sla-poll.service
-deploy ALL=(ALL) NOPASSWD: /usr/bin/cp /opt/data-analyst/repo/server/jira-sla-poll.timer /etc/systemd/system/jira-sla-poll.timer
+deploy ALL=(ALL) NOPASSWD: /usr/bin/cp /opt/data-analyst/repo/connectors/jira/systemd/jira-sla-poll.service /etc/systemd/system/jira-sla-poll.service
+deploy ALL=(ALL) NOPASSWD: /usr/bin/cp /opt/data-analyst/repo/connectors/jira/systemd/jira-sla-poll.timer /etc/systemd/system/jira-sla-poll.timer
 deploy ALL=(ALL) NOPASSWD: /usr/bin/systemctl enable jira-sla-poll.timer
 deploy ALL=(ALL) NOPASSWD: /usr/bin/systemctl start jira-sla-poll.timer
 deploy ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop jira-sla-poll.timer
@@ -132,9 +132,9 @@ deploy ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop session-collector.timer
 deploy ALL=(ALL) NOPASSWD: /usr/bin/systemctl is-enabled session-collector.timer
 
 # Allow deploy user to manage jira-consistency service and timers
-deploy ALL=(ALL) NOPASSWD: /usr/bin/cp /opt/data-analyst/repo/server/jira-consistency.service /etc/systemd/system/jira-consistency.service
-deploy ALL=(ALL) NOPASSWD: /usr/bin/cp /opt/data-analyst/repo/server/jira-consistency.timer /etc/systemd/system/jira-consistency.timer
-deploy ALL=(ALL) NOPASSWD: /usr/bin/cp /opt/data-analyst/repo/server/jira-consistency-deep.timer /etc/systemd/system/jira-consistency-deep.timer
+deploy ALL=(ALL) NOPASSWD: /usr/bin/cp /opt/data-analyst/repo/connectors/jira/systemd/jira-consistency.service /etc/systemd/system/jira-consistency.service
+deploy ALL=(ALL) NOPASSWD: /usr/bin/cp /opt/data-analyst/repo/connectors/jira/systemd/jira-consistency.timer /etc/systemd/system/jira-consistency.timer
+deploy ALL=(ALL) NOPASSWD: /usr/bin/cp /opt/data-analyst/repo/connectors/jira/systemd/jira-consistency-deep.timer /etc/systemd/system/jira-consistency-deep.timer
 deploy ALL=(ALL) NOPASSWD: /usr/bin/touch /opt/data-analyst/logs/jira-consistency.log
 deploy ALL=(ALL) NOPASSWD: /usr/bin/chown root\:data-ops /opt/data-analyst/logs/jira-consistency.log
 deploy ALL=(ALL) NOPASSWD: /usr/bin/chmod 664 /opt/data-analyst/logs/jira-consistency.log

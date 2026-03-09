@@ -60,55 +60,63 @@ METRICS_YML_PATH = DOCS_DIR / "metrics.yml"
 METRICS_DIR = DOCS_DIR / "metrics"
 DATA_DESCRIPTION_PATH = DOCS_DIR / "data_description.md"
 
-# Jira / Support tables - not in data_description.md but stored as partitioned parquet
-JIRA_PARQUET_DIR = PARQUET_DIR / "jira"
-JIRA_TABLES = [
-    {
-        "name": "jira_issues",
-        "subdir": "issues",
-        "description": "Support tickets from Jira SUPPORT project. Key fields: issue_key, summary, description, status, priority, assignee, created_at, resolved_at, severity, triage.",
-        "primary_key": "issue_key",
-        "foreign_keys": [],
-    },
-    {
-        "name": "jira_comments",
-        "subdir": "comments",
-        "description": "Comments on support tickets. Key fields: comment_id, issue_key, author_email, body, created_at.",
-        "primary_key": "comment_id",
-        "foreign_keys": [{"column": "issue_key", "references": "jira_issues.issue_key", "description": "Parent support ticket"}],
-    },
-    {
-        "name": "jira_attachments",
-        "subdir": "attachments",
-        "description": "Attachment metadata with local file paths. Key fields: attachment_id, issue_key, filename, local_path, size_bytes, mime_type.",
-        "primary_key": "attachment_id",
-        "foreign_keys": [{"column": "issue_key", "references": "jira_issues.issue_key", "description": "Parent support ticket"}],
-    },
-    {
-        "name": "jira_changelog",
-        "subdir": "changelog",
-        "description": "History of all field changes on issues. Key fields: change_id, issue_key, field_name, from_value, to_value, changed_at.",
-        "primary_key": "change_id",
-        "foreign_keys": [{"column": "issue_key", "references": "jira_issues.issue_key", "description": "Parent support ticket"}],
-    },
-    {
-        "name": "jira_issuelinks",
-        "subdir": "issuelinks",
-        "description": "Links between Jira issues (blocks, duplicates, relates to). Key fields: issue_key, link_id, link_type, direction, linked_issue_key.",
-        "primary_key": "link_id",
-        "foreign_keys": [
-            {"column": "issue_key", "references": "jira_issues.issue_key", "description": "Source support ticket"},
-            {"column": "linked_issue_key", "references": "jira_issues.issue_key", "description": "Target linked ticket"},
-        ],
-    },
-    {
-        "name": "jira_remote_links",
-        "subdir": "remote_links",
-        "description": "External links attached to issues (Confluence pages, Slack threads, etc.). Key fields: issue_key, remote_link_id, url, title.",
-        "primary_key": "remote_link_id",
-        "foreign_keys": [{"column": "issue_key", "references": "jira_issues.issue_key", "description": "Parent support ticket"}],
-    },
-]
+# Jira tables - loaded dynamically if Jira connector is enabled
+# The Jira connector stores partitioned parquet files in PARQUET_DIR/jira/
+def _load_jira_tables() -> tuple:
+    """Load Jira table definitions if the connector directory exists."""
+    jira_dir = PARQUET_DIR / "jira"
+    if not jira_dir.exists():
+        return jira_dir, []
+    return jira_dir, [
+        {
+            "name": "jira_issues",
+            "subdir": "issues",
+            "description": "Jira issues. Key fields: issue_key, summary, description, status, priority, assignee, created_at, resolved_at.",
+            "primary_key": "issue_key",
+            "foreign_keys": [],
+        },
+        {
+            "name": "jira_comments",
+            "subdir": "comments",
+            "description": "Comments on Jira issues. Key fields: comment_id, issue_key, author_email, body, created_at.",
+            "primary_key": "comment_id",
+            "foreign_keys": [{"column": "issue_key", "references": "jira_issues.issue_key", "description": "Parent issue"}],
+        },
+        {
+            "name": "jira_attachments",
+            "subdir": "attachments",
+            "description": "Attachment metadata with local file paths. Key fields: attachment_id, issue_key, filename, local_path, size_bytes, mime_type.",
+            "primary_key": "attachment_id",
+            "foreign_keys": [{"column": "issue_key", "references": "jira_issues.issue_key", "description": "Parent issue"}],
+        },
+        {
+            "name": "jira_changelog",
+            "subdir": "changelog",
+            "description": "History of all field changes on issues. Key fields: change_id, issue_key, field_name, from_value, to_value, changed_at.",
+            "primary_key": "change_id",
+            "foreign_keys": [{"column": "issue_key", "references": "jira_issues.issue_key", "description": "Parent issue"}],
+        },
+        {
+            "name": "jira_issuelinks",
+            "subdir": "issuelinks",
+            "description": "Links between Jira issues (blocks, duplicates, relates to). Key fields: issue_key, link_id, link_type, direction, linked_issue_key.",
+            "primary_key": "link_id",
+            "foreign_keys": [
+                {"column": "issue_key", "references": "jira_issues.issue_key", "description": "Source issue"},
+                {"column": "linked_issue_key", "references": "jira_issues.issue_key", "description": "Target linked issue"},
+            ],
+        },
+        {
+            "name": "jira_remote_links",
+            "subdir": "remote_links",
+            "description": "External links attached to issues (Confluence pages, Slack threads, etc.). Key fields: issue_key, remote_link_id, url, title.",
+            "primary_key": "remote_link_id",
+            "foreign_keys": [{"column": "issue_key", "references": "jira_issues.issue_key", "description": "Parent issue"}],
+        },
+    ]
+
+
+JIRA_PARQUET_DIR, JIRA_TABLES = _load_jira_tables()
 
 
 # ---------------------------------------------------------------------------

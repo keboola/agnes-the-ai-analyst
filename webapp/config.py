@@ -97,18 +97,17 @@ class Config:
     # Notification images directory
     NOTIFICATION_IMAGES_DIR = "/tmp"
 
-    # Jira webhook integration
+    # Jira connector (optional - loaded from connectors/jira/)
+    # These remain here for backward compatibility; the Jira connector
+    # reads them from this Config class.
+    JIRA_ENABLED = os.environ.get("JIRA_DOMAIN", "") != ""
     JIRA_WEBHOOK_SECRET = os.environ.get("JIRA_WEBHOOK_SECRET", "")
-    JIRA_DOMAIN = os.environ.get("JIRA_DOMAIN", "")  # e.g., "yourorg.atlassian.net"
+    JIRA_DOMAIN = os.environ.get("JIRA_DOMAIN", "")
     JIRA_EMAIL = os.environ.get("JIRA_EMAIL", "")
     JIRA_API_TOKEN = os.environ.get("JIRA_API_TOKEN", "")
-
-    # Jira SLA service account (JSM Agent licence required for SLA fields)
     JIRA_SLA_EMAIL = os.environ.get("JIRA_SLA_EMAIL", "")
     JIRA_SLA_API_TOKEN = os.environ.get("JIRA_SLA_API_TOKEN", "")
     JIRA_CLOUD_ID = os.environ.get("JIRA_CLOUD_ID", "")
-
-    # Jira data storage (raw data, will be processed to parquet later)
     JIRA_DATA_DIR = Path(os.environ.get("JIRA_DATA_DIR", "/data/src_data/raw/jira"))
 
     @classmethod

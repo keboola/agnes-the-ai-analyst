@@ -5,7 +5,7 @@ Returns detailed system status including:
 - Systemd services (webapp, telegram-bot, timers)
 - Disk space
 - System load
-- Last Jira webhook timestamp
+- Optional: Jira webhook timestamp (if Jira connector enabled)
 """
 
 import logging
@@ -13,6 +13,8 @@ import os
 import subprocess
 from datetime import datetime
 from pathlib import Path
+
+from .config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -22,11 +24,18 @@ CRITICAL_SERVICES = [
     "notify-bot.service",
 ]
 
-TIMERS_TO_MONITOR = [
-    "jira-consistency.timer",
+# Base timers (always monitored)
+_BASE_TIMERS = [
     "corporate-memory.timer",
+]
+
+# Jira timers (only if Jira connector is enabled)
+_JIRA_TIMERS = [
+    "jira-consistency.timer",
     "jira-sla-poll.timer",
 ]
+
+TIMERS_TO_MONITOR = _BASE_TIMERS + (_JIRA_TIMERS if Config.JIRA_ENABLED else [])
 
 
 def get_service_status(service_name: str) -> dict:
@@ -139,7 +148,6 @@ def health_check() -> tuple[dict, int]:
     timers = [get_service_status(t) for t in TIMERS_TO_MONITOR]
     disk = get_disk_usage()
     load = get_load_average()
-    jira = get_last_jira_webhook()
 
     # Overall health: all critical checks must pass
     all_healthy = (
@@ -155,8 +163,11 @@ def health_check() -> tuple[dict, int]:
         "timers": timers,
         "disk": disk,
         "load": load,
-        "jira_webhook": jira,
     }
+
+    # Include Jira webhook status only if connector is enabled
+    if Config.JIRA_ENABLED:
+        response["jira_webhook"] = get_last_jira_webhook()
 
     # Return 200 if healthy, 503 if degraded
     status_code = 200 if all_healthy else 503
