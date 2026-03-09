@@ -45,6 +45,29 @@ The script checks its own checksum before and after syncing scripts. If it detec
 **DuckDB corruption recovery:**
 If DuckDB file is corrupted (e.g., interrupted sync), it's automatically detected and recreated. All data is safe in parquet files - DuckDB only contains VIEW definitions.
 
+## Development Scripts
+
+### `dev_run.py`
+
+Flask development server with authentication bypass for local testing.
+
+```bash
+python3 scripts/dev_run.py
+```
+
+Starts a local Flask server at http://127.0.0.1:5000 with:
+- Auth bypass routes (`/dev-login`, `/dev-catalog`) - no OAuth required
+- Debug mode with hot reload
+
+### `test_sync.sh`
+
+Test rsync reliability with the data server.
+
+```bash
+bash scripts/test_sync.sh           # Full test sync
+bash scripts/test_sync.sh --dry-run # Preview only
+```
+
 ## Typical Workflow
 
 1. **First time setup**: Follow bootstrap.yaml instructions

@@ -95,7 +95,7 @@ logs/
 *.temp
 .cache/
 prototypes/*
-dev_scripts/metadata_writer/proposals/*
+scripts/metadata_writer/proposals/*
 
 # Build outputs
 dist/
