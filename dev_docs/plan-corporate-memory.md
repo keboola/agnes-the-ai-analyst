@@ -211,10 +211,10 @@ def deduplicate_and_merge(new_items: list, username: str):
 ```bash
 #!/bin/bash
 cd /opt/data-analyst/repo
-/opt/data-analyst/.venv/bin/python -m server.corporate_memory.collector
+/opt/data-analyst/.venv/bin/python -m services.corporate_memory
 ```
 
-**`server/corporate-memory.timer`** + **`server/corporate-memory.service`** - Systemd timer (30 min)
+**`services/corporate_memory/systemd/corporate-memory.timer`** + **`services/corporate_memory/systemd/corporate-memory.service`** - Systemd timer (30 min)
 
 ### 2. Webapp Backend
 

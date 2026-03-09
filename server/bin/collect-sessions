@@ -13,4 +13,4 @@ cd "$REPO_DIR"
 # No environment variables needed - pure file operations
 
 # Run the collector
-exec "$VENV_PYTHON" -m server.session_collector "$@"
+exec "$VENV_PYTHON" -m services.session_collector "$@"

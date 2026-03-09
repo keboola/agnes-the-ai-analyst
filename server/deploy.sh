@@ -195,56 +195,28 @@ if command -v setfacl &>/dev/null; then
     log "  ACL set for data-private group on private parquet directory"
 fi
 
-# Deploy notification bot systemd service
-log "Deploying notify-bot service..."
-if [[ -f "${REPO_DIR}/server/notify-bot.service" ]]; then
-    sudo /usr/bin/cp "${REPO_DIR}/server/notify-bot.service" /etc/systemd/system/notify-bot.service
+# Deploy systemd service and timer files from services/ and connectors/
+log "Deploying systemd service and timer files..."
+SYSTEMD_CHANGED=false
+for unit_file in "${REPO_DIR}"/services/*/systemd/*.service "${REPO_DIR}"/services/*/systemd/*.timer \
+                 "${REPO_DIR}"/connectors/*/systemd/*.service "${REPO_DIR}"/connectors/*/systemd/*.timer; do
+    if [[ -f "$unit_file" ]]; then
+        unit_name=$(basename "$unit_file")
+        sudo /usr/bin/cp "$unit_file" "/etc/systemd/system/${unit_name}"
+        log "  Installed /etc/systemd/system/${unit_name}"
+        SYSTEMD_CHANGED=true
+    fi
+done
+if [[ "$SYSTEMD_CHANGED" == "true" ]]; then
     sudo /usr/bin/systemctl daemon-reload
+    log "  systemd daemon-reload completed"
 fi
 
-# Deploy WebSocket gateway systemd service
-log "Deploying ws-gateway service..."
-if [[ -f "${REPO_DIR}/server/ws-gateway.service" ]]; then
-    sudo /usr/bin/cp "${REPO_DIR}/server/ws-gateway.service" /etc/systemd/system/ws-gateway.service
-    sudo /usr/bin/systemctl daemon-reload
-fi
-
-# Deploy corporate memory systemd service and timer
-log "Deploying corporate-memory service and timer..."
-if [[ -f "${REPO_DIR}/server/corporate-memory.service" ]]; then
-    sudo /usr/bin/cp "${REPO_DIR}/server/corporate-memory.service" /etc/systemd/system/corporate-memory.service
-    sudo /usr/bin/cp "${REPO_DIR}/server/corporate-memory.timer" /etc/systemd/system/corporate-memory.timer
-    sudo /usr/bin/systemctl daemon-reload
-fi
-
-# Deploy Jira SLA polling systemd service and timer
-log "Deploying jira-sla-poll service and timer..."
-if [[ -f "${REPO_DIR}/connectors/jira/systemd/jira-sla-poll.service" ]]; then
-    sudo /usr/bin/cp "${REPO_DIR}/connectors/jira/systemd/jira-sla-poll.service" /etc/systemd/system/jira-sla-poll.service
-    sudo /usr/bin/cp "${REPO_DIR}/connectors/jira/systemd/jira-sla-poll.timer" /etc/systemd/system/jira-sla-poll.timer
-    sudo /usr/bin/systemctl daemon-reload
-fi
-
-# Deploy Jira consistency monitoring systemd service and timers
-log "Deploying jira-consistency service and timers..."
-if [[ -f "${REPO_DIR}/connectors/jira/systemd/jira-consistency.service" ]]; then
-    sudo /usr/bin/cp "${REPO_DIR}/connectors/jira/systemd/jira-consistency.service" /etc/systemd/system/jira-consistency.service
-    sudo /usr/bin/cp "${REPO_DIR}/connectors/jira/systemd/jira-consistency.timer" /etc/systemd/system/jira-consistency.timer
-    sudo /usr/bin/cp "${REPO_DIR}/connectors/jira/systemd/jira-consistency-deep.timer" /etc/systemd/system/jira-consistency-deep.timer
-    sudo /usr/bin/systemctl daemon-reload
-
-    # Create log file with correct permissions
+# Post-install hooks for specific services
+if [[ -f "/etc/systemd/system/jira-consistency.service" ]]; then
     sudo /usr/bin/touch /opt/data-analyst/logs/jira-consistency.log
     sudo /usr/bin/chown root:data-ops /opt/data-analyst/logs/jira-consistency.log
     sudo /usr/bin/chmod 664 /opt/data-analyst/logs/jira-consistency.log
-fi
-
-# Deploy session collector systemd service and timer
-log "Deploying session-collector service and timer..."
-if [[ -f "${REPO_DIR}/server/session-collector.service" ]]; then
-    sudo /usr/bin/cp "${REPO_DIR}/server/session-collector.service" /etc/systemd/system/session-collector.service
-    sudo /usr/bin/cp "${REPO_DIR}/server/session-collector.timer" /etc/systemd/system/session-collector.timer
-    sudo /usr/bin/systemctl daemon-reload
 fi
 
 # Deploy example notification scripts to /data/examples

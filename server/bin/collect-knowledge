@@ -28,4 +28,4 @@ if [[ -f "${REPO_DIR}/.env" ]]; then
 fi
 
 # Run the collector
-exec "$VENV_PYTHON" -m server.corporate_memory.collector "$@"
+exec "$VENV_PYTHON" -m services.corporate_memory "$@"

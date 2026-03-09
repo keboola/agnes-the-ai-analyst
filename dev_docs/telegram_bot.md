@@ -42,7 +42,7 @@ Technical documentation for the notification engine (Phase 3, Issue #41).
 | `status.py` | Script listing via `notify-scripts list` helper |
 | `runner.py` | Script execution via `notify-scripts run` helper |
 | `dispatch.py` | WebSocket gateway dispatch for desktop app notifications |
-| `__main__.py` | Allows `python -m server.telegram_bot` |
+| `__main__.py` | Allows `python -m services.telegram_bot` |
 
 **Bot behavior (English):**
 - `/start` -> generates 6-digit verification code, valid 10 minutes

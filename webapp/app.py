@@ -636,7 +636,7 @@ def register_routes(app: Flask) -> None:
     def desktop_scripts():
         """List notification scripts for the authenticated desktop user."""
         username = require_desktop_auth()
-        from server.telegram_bot.status import get_script_list_structured
+        from services.telegram_bot.status import get_script_list_structured
         scripts = get_script_list_structured(username)
         return jsonify(scripts)
 
@@ -649,8 +649,8 @@ def register_routes(app: Flask) -> None:
         if not script_name:
             return jsonify({"error": "Missing 'name' field"}), 400
 
-        from server.telegram_bot.runner import run_user_script
-        from server.telegram_bot.dispatch import dispatch_to_ws_gateway
+        from services.telegram_bot.runner import run_user_script
+        from services.telegram_bot.dispatch import dispatch_to_ws_gateway
 
         output = run_user_script(username, script_name)
         if output is None:

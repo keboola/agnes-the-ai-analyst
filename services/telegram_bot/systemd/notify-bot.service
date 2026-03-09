@@ -8,7 +8,7 @@ Type=simple
 User=deploy
 Group=data-ops
 WorkingDirectory=/opt/data-analyst/repo
-ExecStart=/opt/data-analyst/.venv/bin/python -m server.telegram_bot.bot
+ExecStart=/opt/data-analyst/.venv/bin/python -m services.telegram_bot
 Restart=always
 RestartSec=10
 
