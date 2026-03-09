@@ -24,24 +24,43 @@ CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "./config"))
 _ENV_PATTERN = re.compile(r"\$\{([^}]+)\}")
 
 
-def _resolve_env_refs(value: Any) -> Any:
+def _resolve_env_refs(value: Any, _path: str = "") -> Any:
     """Resolve ${ENV_VAR} references in config values.
 
     Walks the config tree recursively. String values containing ${VAR}
-    are replaced with the corresponding environment variable value
-    (empty string if not set). Non-string values pass through unchanged.
+    are replaced with the corresponding environment variable value.
+    Logs a warning for unset variables so misconfiguration is visible.
+    Non-string values pass through unchanged.
     """
     if isinstance(value, str):
+        missing_vars: list[str] = []
 
         def replacer(match: re.Match) -> str:
             env_key = match.group(1)
-            return os.environ.get(env_key, "")
+            env_val = os.environ.get(env_key)
+            if env_val is None:
+                missing_vars.append(env_key)
+                return ""
+            return env_val
 
-        return _ENV_PATTERN.sub(replacer, value)
+        resolved = _ENV_PATTERN.sub(replacer, value)
+        for var in missing_vars:
+            logger.warning(
+                "Environment variable %s not set (referenced in config %s)",
+                var,
+                _path or "value",
+            )
+        return resolved
     if isinstance(value, dict):
-        return {k: _resolve_env_refs(v) for k, v in value.items()}
+        return {
+            k: _resolve_env_refs(v, _path=f"{_path}.{k}" if _path else k)
+            for k, v in value.items()
+        }
     if isinstance(value, list):
-        return [_resolve_env_refs(item) for item in value]
+        return [
+            _resolve_env_refs(item, _path=f"{_path}[{i}]")
+            for i, item in enumerate(value)
+        ]
     return value
 
 
@@ -94,8 +113,13 @@ def _validate_config(config: dict) -> None:
         ("server", "hostname"),
     ]
 
+    # Secret fields that must resolve to non-empty values (from .env)
+    required_secrets = [
+        ("auth", "webapp_secret_key"),
+    ]
+
     missing = []
-    for keys in required_paths:
+    for keys in required_paths + required_secrets:
         value = config
         path_str = ".".join(keys)
         for key in keys:
@@ -110,7 +134,7 @@ def _validate_config(config: dict) -> None:
     if missing:
         raise ValueError(
             f"Missing required instance config fields: {', '.join(missing)}. "
-            f"Check config/instance.yaml"
+            f"Check config/instance.yaml and .env"
         )
 
 

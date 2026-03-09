@@ -84,17 +84,15 @@ echo "Adding www-data to data-ops group..."
 usermod -aG data-ops www-data
 
 # Install sudoers rules for www-data (from repo, includes all required rules)
+# Validate BEFORE copying to prevent broken sudo if syntax is invalid
 echo "Configuring sudoers..."
 SUDOERS_FILE="/etc/sudoers.d/webapp"
-cp "${REPO_DIR}/server/sudoers-webapp" "$SUDOERS_FILE"
-chmod 440 "$SUDOERS_FILE"
-
-# Validate sudoers syntax
-if ! visudo -cf "$SUDOERS_FILE"; then
-    echo "ERROR: Invalid sudoers syntax"
-    rm -f "$SUDOERS_FILE"
+SUDOERS_SRC="${REPO_DIR}/server/sudoers-webapp"
+if ! visudo -cf "$SUDOERS_SRC"; then
+    echo "ERROR: Invalid sudoers syntax in $SUDOERS_SRC"
     exit 1
 fi
+install -m 440 "$SUDOERS_SRC" "$SUDOERS_FILE"
 
 # Install systemd service
 echo "Installing systemd service..."

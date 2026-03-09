@@ -4,7 +4,7 @@ Guide for exploring Claude Code session transcripts to identify friction points 
 
 ## Session Data Location
 
-**Server:** `data-broker-for-claude` (alias: `kids`)
+**Server:** `your-server` (alias: `kids`)
 **Path:** `/data/user_sessions/`
 
 Sessions are collected by systemd service `session-collector.timer` (runs every 30 minutes).
@@ -14,12 +14,12 @@ Sessions are collected by systemd service `session-collector.timer` (runs every 
 Sessions are organized by user:
 ```
 /data/user_sessions/
-├── petr/
+├── john/
 │   ├── 2026-02-10_49898dbe-5045-45f5-9177-2ff10917de4a.jsonl
 │   └── ...
-├── martin.matejka/
+├── mike.brown/
 │   └── ...
-└── jakub.sochan/
+└── sam.taylor/
     └── ...
 ```
 
@@ -29,10 +29,10 @@ Session files are owned by `root:data-ops` with `-rw-------` permissions, making
 
 ```bash
 # This FAILS
-scp kids:/data/user_sessions/petr/session.jsonl .
+scp kids:/data/user_sessions/john/session.jsonl .
 
 # Use this instead
-ssh kids "sudo cat /data/user_sessions/petr/session.jsonl" > session.jsonl
+ssh kids "sudo cat /data/user_sessions/john/session.jsonl" > session.jsonl
 ```
 
 ---
@@ -79,7 +79,7 @@ total_time = sum(event['data']['elapsedTimeSeconds'] for event in bash_events)
 
 **Example:**
 ```
-Session petr.hunka_2026-02-09_19c0a02f:
+Session john.doe_2026-02-09_19c0a02f:
   First event: 2026-02-05 16:06:52
   Last event:  2026-02-09 15:18:50
   Span: 3 days, 23 hours
@@ -166,7 +166,7 @@ for cmd_id, times in commands.items():
 **Example:**
 ```
 Issue #84 fixed: 2026-02-06 21:37:49
-Session file: petr.hunka_2026-02-09_19c0a02f.jsonl
+Session file: john.doe_2026-02-09_19c0a02f.jsonl
 File mtime: 2026-02-09 20:50 (within 48h filter)
 
 BUT: Session started 2026-02-05 15:56 (BEFORE fix!)
@@ -339,17 +339,17 @@ ssh kids "ls /data/user_sessions/ | wc -l"
 ssh kids "find /data/user_sessions -name '*.jsonl' -mtime -7"
 
 # Find sessions by user
-ssh kids "ls /data/user_sessions/ | grep '^petr-'"
+ssh kids "ls /data/user_sessions/ | grep '^john-'"
 ```
 
 ### Download Sessions for Local Analysis
 
 ```bash
 # Download specific session
-scp kids:/data/user_sessions/petr-2024-12-15-abc123.jsonl .
+scp kids:/data/user_sessions/john-2024-12-15-abc123.jsonl .
 
 # Download all sessions for a user
-scp kids:/data/user_sessions/petr-*.jsonl ./sessions/
+scp kids:/data/user_sessions/john-*.jsonl ./sessions/
 
 # Download recent sessions
 ssh kids "find /data/user_sessions -mtime -7" | xargs -I {} scp kids:{} ./sessions/
@@ -828,7 +828,7 @@ def calculate_active_time(session_file, gap_threshold_minutes=10):
     }
 
 # Example usage
-session = Path("~/session-analysis/raw/petr.hunka_2026-02-09_19c0a02f.jsonl").expanduser()
+session = Path("~/session-analysis/raw/john.doe_2026-02-09_19c0a02f.jsonl").expanduser()
 result = calculate_active_time(session)
 
 print(f"Total span: {result['total_span_hours']:.2f} hours")

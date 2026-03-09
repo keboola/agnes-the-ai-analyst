@@ -1,6 +1,6 @@
 # Disaster Recovery
 
-Recovery procedures for the Data Broker Server (`data-broker-for-claude`).
+Recovery procedures for the Data Broker Server (`your-server`).
 
 ## Overview
 
@@ -40,8 +40,8 @@ Disk Layout:
 1. **Create new VM** (same zone, attach existing disks):
    ```bash
    # Create new instance with existing disks
-   gcloud compute instances create data-broker-for-claude \
-     --project=kids-ai-data-analysis \
+   gcloud compute instances create your-server \
+     --project=your-gcp-project \
      --zone=europe-north1-a \
      --machine-type=e2-medium \
      --image-family=debian-12 \
@@ -50,13 +50,13 @@ Disk Layout:
      --tags=http-server,https-server
 
    # Attach existing data disks
-   gcloud compute instances attach-disk data-broker-for-claude \
-     --project=kids-ai-data-analysis \
+   gcloud compute instances attach-disk your-server \
+     --project=your-gcp-project \
      --zone=europe-north1-a \
      --disk=data-disk
 
-   gcloud compute instances attach-disk data-broker-for-claude \
-     --project=kids-ai-data-analysis \
+   gcloud compute instances attach-disk your-server \
+     --project=your-gcp-project \
      --zone=europe-north1-a \
      --disk=home-disk
    ```
@@ -159,19 +159,19 @@ Disk Layout:
 
 ```bash
 # Find latest snapshot
-gcloud compute snapshots list --project=kids-ai-data-analysis \
+gcloud compute snapshots list --project=your-gcp-project \
   --filter="sourceDisk:data-disk" --sort-by=~creationTimestamp --limit=5
 
 # Create new disk from snapshot
 gcloud compute disks create data-disk \
-  --project=kids-ai-data-analysis \
+  --project=your-gcp-project \
   --zone=europe-north1-a \
   --source-snapshot=SNAPSHOT_NAME \
   --type=pd-balanced
 
 # Attach to VM (may need to stop VM first)
-gcloud compute instances attach-disk data-broker-for-claude \
-  --project=kids-ai-data-analysis \
+gcloud compute instances attach-disk your-server \
+  --project=your-gcp-project \
   --zone=europe-north1-a \
   --disk=data-disk
 
@@ -184,7 +184,7 @@ ssh kids "sudo mount /dev/sdb /data"
 ```bash
 # Create fresh disk
 gcloud compute disks create data-disk \
-  --project=kids-ai-data-analysis \
+  --project=your-gcp-project \
   --zone=europe-north1-a \
   --size=30GB \
   --type=pd-balanced
@@ -209,19 +209,19 @@ ssh kids "cd /opt/data-analyst/repo && ./scripts/update.sh"
 
 ```bash
 # Find latest snapshot
-gcloud compute snapshots list --project=kids-ai-data-analysis \
+gcloud compute snapshots list --project=your-gcp-project \
   --filter="sourceDisk:home-disk" --sort-by=~creationTimestamp --limit=5
 
 # Create new disk from snapshot
 gcloud compute disks create home-disk \
-  --project=kids-ai-data-analysis \
+  --project=your-gcp-project \
   --zone=europe-north1-a \
   --source-snapshot=SNAPSHOT_NAME \
   --type=pd-balanced
 
 # Attach to VM
-gcloud compute instances attach-disk data-broker-for-claude \
-  --project=kids-ai-data-analysis \
+gcloud compute instances attach-disk your-server \
+  --project=your-gcp-project \
   --zone=europe-north1-a \
   --disk=home-disk
 

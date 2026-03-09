@@ -117,7 +117,7 @@ SKILLS_DIR = Path(os.environ.get("SC_SKILLS_DIR", "/data/docs/service_connector_
 # Username mapping (reuse existing pattern)
 WEBAPP_TO_SERVER_USERNAME = {
     # Add overrides here if webapp username != server username
-    # "dasa.damaskova": "dasa",
+    # "jane.smith": "jane",
 }
 
 
@@ -503,7 +503,7 @@ What each internal service needs to implement (simple Bearer + JSON):
 POST /api/internal/token-exchange
 Authorization: Bearer <shared_secret>
 Content-Type: application/json
-Body: {"user_email": "petr@your-domain.com", "ttl_days": 365}
+Body: {"user_email": "john@your-domain.com", "ttl_days": 365}
 Response: {"status": "ok", "api_key": "...", "token_id": "...", "expires_at": "..."}
 
 POST /api/internal/token-revoke

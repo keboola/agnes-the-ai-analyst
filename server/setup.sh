@@ -33,7 +33,7 @@ done
 
 # Create deploy user (for CI/CD automated deployment)
 if ! id deploy > /dev/null 2>&1; then
-    useradd -r -m -s /bin/bash -G data-ops deploy
+    useradd -r -m -s /usr/sbin/nologin -G data-ops deploy
     echo "Created deploy user"
 fi
 

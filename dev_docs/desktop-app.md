@@ -65,7 +65,7 @@ Server: `wss://your-instance.example.com/ws/notifications`
 
 ```
 Client -> Server: {"type":"auth","token":"eyJ..."}
-Server -> Client: {"type":"auth_ok","username":"petr"}
+Server -> Client: {"type":"auth_ok","username":"john"}
 Server -> Client: {"type":"notification","id":"uuid","title":"Revenue Drop","message":"...","image_url":"/api/notifications/images/abc.png","script":"revenue_check","timestamp":"2026-01-30T10:00:00Z"}
 Server -> Client: {"type":"ping"}
 Client -> Server: {"type":"pong"}

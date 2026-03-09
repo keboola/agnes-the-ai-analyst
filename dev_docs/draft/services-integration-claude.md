@@ -96,7 +96,7 @@ def _get_server_username(webapp_username) -> str               # Reuse WEBAPP_TO
 Storage format (`connections.json`):
 ```json
 {
-  "petr": {
+  "john": {
     "purchase_orders": {
       "connected": true,
       "api_key": "pk_live_abc123...",
@@ -126,7 +126,7 @@ What each external service needs to implement:
 ```
 POST /api/internal/token-exchange
 Authorization: Bearer <shared_secret>
-Body: {"user_email": "petr@your-domain.com", "ttl_days": 90}
+Body: {"user_email": "john@your-domain.com", "ttl_days": 90}
 Response: {"status": "ok", "api_key": "...", "token_id": "...", "expires_at": "..."}
 
 POST /api/internal/token-revoke

@@ -1,7 +1,7 @@
 # Security Audit Report: Data Broker Server
 
 **Date:** 2026-01-30
-**Server:** `data-broker-for-claude` (YOUR_SERVER_IP), Debian 12 (bookworm), GCP e2-medium
+**Server:** `your-server` (YOUR_SERVER_IP), Debian 12 (bookworm), GCP e2-medium
 **Auditors:** Claude Opus 4.5 (primary) + Perplexity Sonar (validation) + OpenAI Codex (second opinion)
 **Scope:** Linux server security, user isolation, CI/CD pipeline, notification system, desktop app attack surface
 **Status:** Read-only audit -- no changes were made to the server
@@ -44,8 +44,8 @@ These findings were independently validated by Perplexity (CVE references, Unix 
 
 | Parameter | Value |
 |-----------|-------|
-| Hostname | data-broker-for-claude |
-| GCP Project | kids-ai-data-analysis |
+| Hostname | your-server |
+| GCP Project | your-gcp-project |
 | Zone | europe-north1-a |
 | OS | Debian 12 (bookworm) |
 | External IP | YOUR_SERVER_IP |
@@ -55,9 +55,9 @@ These findings were independently validated by Perplexity (CVE references, Unix 
 
 | Group | Members | Purpose |
 |-------|---------|---------|
-| `dataread` | padak, matejkys, dasa, petr, fisa, dasa.damaskova, martin.lepka, pavel.dolezal, martin.matejka, jiri.manas | Public data read access |
-| `data-private` | padak, matejkys, dasa | Private/sensitive data access |
-| `data-ops` | deploy, padak, matejkys, dasa, www-data | Application deployment and operations |
+| `dataread` | admin1, admin2, admin3, john, analyst1, jane.smith, bob.jones, alice.wilson, mike.brown, tom.davis | Public data read access |
+| `data-private` | admin1, admin2, admin3 | Private/sensitive data access |
+| `data-ops` | deploy, admin1, admin2, admin3, www-data | Application deployment and operations |
 
 ### Services
 
@@ -203,7 +203,7 @@ Source: SentinelOne vulnerability database, Compass Security research on dangero
 
 #### Description
 
-The directory `/data/src_data/parquet/private/` is intended to be accessible only to members of the `data-private` group (3 privileged users: padak, matejkys, dasa). However, its POSIX ACL also grants access to the `dataread` group, which contains **all 10 analysts**:
+The directory `/data/src_data/parquet/private/` is intended to be accessible only to members of the `data-private` group (3 privileged users: admin1, admin2, admin3). However, its POSIX ACL also grants access to the `dataread` group, which contains **all 10 analysts**:
 
 ```
 # getfacl /data/src_data/parquet/private/
@@ -224,13 +224,13 @@ The POSIX ACL mask (`mask::rwx`) does not restrict the `dataread` entry because 
 
 #### Proof of Exploitation
 
-Tested directly on server with user `fisa` (standard analyst, member of `dataread` only, NOT `data-private`):
+Tested directly on server with user `analyst1` (standard analyst, member of `dataread` only, NOT `data-private`):
 
 ```bash
-$ sudo -u fisa ls -la /data/src_data/parquet/private/
+$ sudo -u analyst1 ls -la /data/src_data/parquet/private/
 total 16
-drwxrws---+ 2 padak data-ops 4096 Jan 21 14:29 .
-drwxrws---+ 7 padak data-ops 4096 Jan 23 18:29 ..
+drwxrws---+ 2 admin1 data-ops 4096 Jan 21 14:29 .
+drwxrws---+ 7 admin1 data-ops 4096 Jan 23 18:29 ..
 # Exit code: 0 (access granted)
 ```
 
@@ -265,7 +265,7 @@ sudo setfacl -R -m u::rwx,g::rwx,g:data-private:r-x,g:data-ops:rwx,o::--- /data/
 sudo setfacl -R -d -m u::rwx,g::rwx,g:data-private:r-x,g:data-ops:rwx,o::--- /data/src_data/parquet/private/
 
 # Verify:
-sudo -u fisa ls /data/src_data/parquet/private/
+sudo -u analyst1 ls /data/src_data/parquet/private/
 # Expected: "ls: cannot open directory 'private/': Permission denied"
 ```
 
@@ -461,7 +461,7 @@ The server may be reachable on port 25 from the internet, potentially allowing:
 
 ```
 # /etc/postfix/main.cf
-myhostname = data-broker-for-claude.c.kids-ai-data-analysis.internal
+myhostname = your-server.c.your-gcp-project.internal
 mydestination = $myhostname, localhost
 inet_interfaces = all
 
@@ -751,14 +751,14 @@ The following findings were identified by the OpenAI Codex second opinion review
    - `webapp/desktop_auth.py`, `webapp/user_service.py` (auth flows)
    - `.github/workflows/deploy.yml` (CI/CD configuration)
 
-2. **Live server inspection** (read-only, via SSH as padak):
+2. **Live server inspection** (read-only, via SSH as admin1):
    - File permissions: `ls -la`, `stat`, `getfacl` on all critical paths
    - Socket permissions: `/run/notify-bot/`, `/run/ws-gateway/`
    - Group memberships: `getent group` for dataread, data-private, data-ops
    - Service status: `systemctl list-units`
    - Network: `ss -tlnp`, iptables, SSH config, nginx config
    - Crontabs: all users checked
-   - Access control test: `sudo -u fisa ls` on private directory
+   - Access control test: `sudo -u analyst1 ls` on private directory
 
 3. **Validation**: Perplexity Sonar search for CVE references and best practices on:
    - Unix socket 0666 security (dirty_sock CVE-2019-7304)

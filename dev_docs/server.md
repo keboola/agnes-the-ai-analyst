@@ -6,8 +6,8 @@ Central server for distributing data to AI analytical systems.
 
 | Parameter | Value |
 |-----------|-------|
-| Name | data-broker-for-claude |
-| GCP Project | kids-ai-data-analysis |
+| Name | your-server |
+| GCP Project | your-gcp-project |
 | Zone | europe-north1-a |
 | Type | e2-medium |
 | OS | Debian 12 (bookworm) |
@@ -36,13 +36,13 @@ Requires SSH config:
 ```
 Host kids
   HostName YOUR_SERVER_IP
-  User padak
+  User admin1
   IdentityFile ~/.ssh/google_compute_engine
 ```
 
 Or via gcloud:
 ```bash
-gcloud compute ssh data-broker-for-claude --project=kids-ai-data-analysis --zone=europe-north1-a
+gcloud compute ssh your-server --project=your-gcp-project --zone=europe-north1-a
 ```
 
 ## Data Structure
@@ -62,7 +62,7 @@ gcloud compute ssh data-broker-for-claude --project=kids-ai-data-analysis --zone
 ├── docs/                   # Documentation (deployed from repo)
 │   └── schema.yml          # Auto-generated table schemas (from data sync)
 ├── scripts/                # Helper scripts (deployed from repo)
-├── examples/               # Example notification scripts (padak:data-ops, 755)
+├── examples/               # Example notification scripts (admin1:data-ops, 755)
 │   └── notifications/      # Example notification scripts for analysts
 ├── notifications/          # Notification data (deploy:data-ops, 2770 setgid)
 │   ├── telegram_users.json # username -> {chat_id, linked_at} mapping
@@ -116,7 +116,7 @@ Three-tier permission model:
 Data in `/data/src_data/` uses ACL for granular access:
 
 ```
-/data/src_data/          owner: padak, group: data-ops
+/data/src_data/          owner: admin1, group: data-ops
 ├── raw/                 data-ops: rwx, dataread: r-x
 ├── parquet/             data-ops: rwx, dataread: r-x
 │   └── private/         data-ops: rwx, data-private: r-x
@@ -211,20 +211,20 @@ sudo add-analyst novak "ssh-rsa AAAAB3... jan.novak@example.com"
 sudo add-analyst ceo "ssh-rsa AAAAB3... ceo@example.com" --private
 
 # Server administrator
-sudo add-admin matejkys "ssh-rsa AAAAB3... matejkys@example.com"
-sudo add-admin dasa "ssh-ed25519 AAAAC3... dasa@your-domain.com"
+sudo add-admin admin2 "ssh-rsa AAAAB3... admin2@example.com"
+sudo add-admin admin3 "ssh-ed25519 AAAAC3... admin3@your-domain.com"
 ```
 
 Output for admin:
 ```
-Admin matejkys created successfully
+Admin admin2 created successfully
   - Added to group: sudo (server administration)
   - Added to group: dataread (public data access)
   - Added to group: data-private (private data access)
   - Added to group: data-ops (application deployment)
   - Added to resource limits (unlimited)
-  - Workspace: /home/matejkys/workspace
-  - Data link: /home/matejkys/data -> /data/src_data
+  - Workspace: /home/admin2/workspace
+  - Data link: /home/admin2/data -> /data/src_data
 ```
 
 ## SSH Configuration
@@ -531,7 +531,7 @@ ssh kids "du -sh /data/*"
 
 | Disk | Mount | Size | Purpose | Backup |
 |------|-------|------|---------|--------|
-| `data-broker-for-claude` (sda) | `/` | 10 GB | OS, packages, app | Expendable (rebuild from git) |
+| `your-server` (sda) | `/` | 10 GB | OS, packages, app | Expendable (rebuild from git) |
 | `data-disk` (sdb) | `/data` | 30 GB | Parquet data, docs, scripts | Daily GCP snapshots |
 | `home-disk` (sdc) | `/home` | 30 GB | User homes, SSH keys, workspaces | Daily GCP snapshots |
 | `tmp-disk` (sdd) | `/tmp` | 100 GB | Temporary files | Expendable (not snapshotted) |
@@ -543,14 +543,14 @@ Both `data-disk` and `home-disk` have daily GCP snapshot schedules with 14-day r
 ```bash
 # Check snapshot schedule status
 gcloud compute resource-policies describe daily-backup \
-  --project=kids-ai-data-analysis --region=europe-north1
+  --project=your-gcp-project --region=europe-north1
 
 # List existing snapshots
-gcloud compute snapshots list --project=kids-ai-data-analysis
+gcloud compute snapshots list --project=your-gcp-project
 
 # Manual snapshot (if needed)
 gcloud compute disks snapshot data-disk home-disk \
-  --project=kids-ai-data-analysis \
+  --project=your-gcp-project \
   --zone=europe-north1-a \
   --snapshot-names=data-disk-$(date +%Y%m%d),home-disk-$(date +%Y%m%d)
 ```
@@ -696,9 +696,9 @@ sudo /opt/data-analyst/repo/server/setup.sh
 
 **5. Add existing admins to data-ops group:**
 ```bash
-sudo usermod -aG data-ops padak
-sudo usermod -aG data-ops matejkys
-sudo usermod -aG data-ops dasa
+sudo usermod -aG data-ops admin1
+sudo usermod -aG data-ops admin2
+sudo usermod -aG data-ops admin3
 ```
 
 ### GitHub Secrets Required
@@ -918,7 +918,7 @@ This is handled in `webapp/user_service.py` and `server/telegram_bot/runner.py`.
 Username is generated from email address: the part before `@` converted to lowercase.
 
 Examples:
-- `Petr.Simecek@your-domain.com` -> `petr.simecek`
+- `John.Doe@your-domain.com` -> `john.doe`
 - `john@your-domain.com` -> `john`
 
 If a username conflicts with a reserved system name or existing non-analyst account, the user sees an error and must contact an admin to create the account manually with a different username.
@@ -929,7 +929,7 @@ If a username conflicts with a reserved system name or existing non-analyst acco
 ```bash
 # Allow HTTP/HTTPS traffic (required for Let's Encrypt and webapp)
 gcloud compute firewall-rules create allow-http-data-broker \
-  --project=kids-ai-data-analysis \
+  --project=your-gcp-project \
   --direction=INGRESS \
   --priority=1000 \
   --network=default \
@@ -939,8 +939,8 @@ gcloud compute firewall-rules create allow-http-data-broker \
   --target-tags=http-server,https-server
 
 # Add tags to VM
-gcloud compute instances add-tags data-broker-for-claude \
-  --project=kids-ai-data-analysis \
+gcloud compute instances add-tags your-server \
+  --project=your-gcp-project \
   --zone=europe-north1-a \
   --tags=http-server,https-server
 ```
@@ -1192,7 +1192,7 @@ Users can configure which optional datasets to sync via the web portal at `https
 **sync_settings.json format:**
 ```json
 {
-  "petr.simecek": {
+  "john.doe": {
     "datasets": {
       "jira": true,
       "jira_attachments": false
@@ -1524,7 +1524,7 @@ Cron (update.sh, 3x daily)
   Step 3: python -m src.profiler      → profiles.json
                 │
                 ▼
-/data/src_data/metadata/profiles.json  (mode 644, padak:data-ops)
+/data/src_data/metadata/profiles.json  (mode 644, admin1:data-ops)
                 │
                 ▼
 Webapp: GET /api/catalog/profile/<table_name>
@@ -1756,23 +1756,23 @@ The webapp runs as `www-data` which cannot write to `/home/{user}/` directories 
 
 ### Username Mapping
 
-The webapp uses email-derived usernames (e.g., `petr.simecek`) while the server uses Linux home directory names (e.g., `petr`). Most users match, only Petr differs.
+The webapp uses email-derived usernames (e.g., `john.doe`) while the server uses Linux home directory names (e.g., `john`). Most users match directly; add overrides when they differ.
 
 Mapping is in `webapp/corporate_memory_service.py`:
 ```python
 WEBAPP_TO_SERVER_USERNAME = {
-    "petr.simecek": "petr",
+    "john.doe": "john",
 }
 ```
 
 Display names for avatars (initials + tooltip):
 ```python
 USER_DISPLAY_NAMES = {
-    "petr": {"name": "Petr Simecek", "initials": "PS"},
-    "dasa.damaskova": {"name": "Dasa Damaskova", "initials": "DD"},
-    "martin.matejka": {"name": "Martin Matejka", "initials": "MM"},
-    "jiri.manas": {"name": "Jiri Manas", "initials": "JM"},
-    "pavel.dolezal": {"name": "Pavel Dolezal", "initials": "PD"},
+    "john": {"name": "John Doe", "initials": "JD"},
+    "jane.smith": {"name": "Jane Smith", "initials": "DD"},
+    "mike.brown": {"name": "Mike Brown", "initials": "MM"},
+    "tom.davis": {"name": "Tom Davis", "initials": "JM"},
+    "alice.wilson": {"name": "Alice Wilson", "initials": "PD"},
 }
 ```
 
@@ -1802,7 +1802,7 @@ USER_DISPLAY_NAMES = {
       "content": "Always read schema before queries...",
       "category": "workflow",
       "tags": ["duckdb", "best-practices"],
-      "source_users": ["petr"],
+      "source_users": ["john"],
       "extracted_at": "2026-02-05T21:54:18Z",
       "updated_at": "2026-02-05T21:54:18Z"
     }
@@ -1817,7 +1817,7 @@ USER_DISPLAY_NAMES = {
 **votes.json structure:**
 ```json
 {
-  "petr": {
+  "john": {
     "km_abc123": 1,
     "km_def456": -1
   }
@@ -1940,7 +1940,7 @@ cat /data/corporate-memory/votes.json | python3 -m json.tool
 cat /data/corporate-memory/user_hashes.json | python3 -m json.tool
 
 # View a user's synced rules
-ls -la /home/petr/.claude_rules/
+ls -la /home/john/.claude_rules/
 ```
 
 ### Webapp Integration
@@ -2092,7 +2092,7 @@ Custom metrics derived from logs for trend analysis:
 - Real-time CPU, Memory, Disk, Network graphs
 - Systemd service failures
 - Health endpoint status
-- URL: https://console.cloud.google.com/monitoring/dashboards/custom/09cdd94b-a0ed-4458-952f-3cca2bd5ba6e?project=kids-ai-data-analysis
+- URL: https://console.cloud.google.com/monitoring/dashboards/custom/09cdd94b-a0ed-4458-952f-3cca2bd5ba6e?project=your-gcp-project
 
 ### Health Endpoint & Uptime Monitoring
 
@@ -2135,7 +2135,7 @@ Returns detailed server status in JSON format:
 ### Viewing Logs
 
 **Cloud Logging Console:**
-https://console.cloud.google.com/logs?project=kids-ai-data-analysis
+https://console.cloud.google.com/logs?project=your-gcp-project
 
 **Useful log queries:**
 
@@ -2168,7 +2168,7 @@ resource.labels.instance_id="656c1763-11a1-49bb-bbc3-9782acf15aef"
 ### Viewing Metrics
 
 **Cloud Monitoring Console:**
-https://console.cloud.google.com/monitoring?project=kids-ai-data-analysis
+https://console.cloud.google.com/monitoring?project=your-gcp-project
 
 **Metrics Explorer** - Useful metric queries:
 - CPU: `compute.googleapis.com/instance/cpu/utilization`
@@ -2191,21 +2191,21 @@ Significantly cheaper than Datadog (~$15-31/host/month).
 **List alert policies:**
 ```bash
 gcloud alpha monitoring policies list \
-  --project=kids-ai-data-analysis \
+  --project=your-gcp-project \
   --format="table(displayName,enabled,conditions[0].conditionThreshold.thresholdValue)"
 ```
 
 **Disable an alert:**
 ```bash
 gcloud alpha monitoring policies update POLICY_ID \
-  --project=kids-ai-data-analysis \
+  --project=your-gcp-project \
   --no-enabled
 ```
 
 **Add notification channel:**
 ```bash
 gcloud alpha monitoring channels create \
-  --project=kids-ai-data-analysis \
+  --project=your-gcp-project \
   --display-name="New Person" \
   --type=email \
   --channel-labels=email_address=person@your-domain.com
@@ -2234,7 +2234,7 @@ When investigating server issues (like the 2026-02-13 systemd-journald crash):
    ```bash
    # Export logs to file
    gcloud logging read "resource.labels.instance_id=\"656c1763-11a1-49bb-bbc3-9782acf15aef\"" \
-     --project=kids-ai-data-analysis \
+     --project=your-gcp-project \
      --limit=1000 \
      --format=json \
      --freshness=1d > server_logs.json

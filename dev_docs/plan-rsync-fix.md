@@ -2,7 +2,7 @@
 
 ## Problem
 
-Rsync from GCP server (34.88.8.46) hangs after 1-5 minutes. Process exists but has 0% CPU and no network activity. 100% reproducible with ~7000 parquet files.
+Rsync from GCP server (YOUR_SERVER_IP) hangs after 1-5 minutes. Process exists but has 0% CPU and no network activity. 100% reproducible with ~7000 parquet files.
 
 ## Root Cause Analysis
 
