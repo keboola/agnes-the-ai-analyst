@@ -33,11 +33,13 @@ Ask the user for:
 
 ```
 ├── src/                    # Core data sync engine
-│   ├── adapters/           # Data source adapters (Keboola, CSV, etc.)
 │   ├── config.py           # Configuration from data_description.md
-│   ├── data_sync.py        # Sync orchestration
+│   ├── data_sync.py        # Sync orchestration + DataSource ABC
 │   ├── parquet_manager.py  # Parquet file management
 │   └── profiler.py         # Data profiling
+├── connectors/             # Data source connectors
+│   ├── keboola/            # Keboola Storage connector
+│   └── jira/               # Jira webhook connector
 ├── webapp/                 # Flask web portal (login, dashboard, API)
 ├── server/                 # Server deployment (systemd, scripts)
 ├── scripts/                # Utility scripts (sync, DuckDB setup)
@@ -97,8 +99,8 @@ python -m src.data_sync
 
 ## Data Source Adapters
 
-The platform supports pluggable data sources via `src/adapters/`:
-- **Keboola** (`keboola`): Syncs from Keboola Storage API
+The platform supports pluggable data sources via `connectors/`:
+- **Keboola** (`keboola`): Syncs from Keboola Storage API (see `connectors/keboola/`)
 - **CSV** (`csv`): Import from local CSV files (planned)
 - **BigQuery** (`bigquery`): Query from Google BigQuery (planned)
 
@@ -136,11 +138,11 @@ When reopening the project in Claude Code:
 4. `inject_config()` context processor exposes `Config` to all Jinja templates
 5. Templates use `{{ config.INSTANCE_NAME }}`, `{{ config.INSTANCE_SUBTITLE }}`, etc.
 
-### Adapter Pattern
-- Factory: `src/adapters/__init__.py` -> `create_data_source(adapter_type, **kwargs)`
-- ABC: `DataSource` class in `src/data_sync.py` (lines 149-172)
-- Keboola: `src/adapters/keboola_adapter.py` -> thin facade wrapping `LocalKeboolaSource`
-- Core Keboola logic: `src/keboola_client.py` (788 lines, Keboola Storage API wrapper)
+### Connector Pattern
+- ABC: `DataSource` class in `src/data_sync.py`
+- Registry: `create_data_source()` in `src/data_sync.py` auto-discovers connectors in `connectors/`
+- Keboola: `connectors/keboola/adapter.py` -> `KeboolaDataSource` implementing `DataSource`
+- Core Keboola logic: `connectors/keboola/client.py` (Keboola Storage API wrapper)
 
 ### Server Patterns
 - Atomic JSON writes: `tempfile.mkstemp()` + `os.fchmod(fd, 0o660)` + `os.replace()`

@@ -1,5 +1,5 @@
 [Unit]
-Description=WebSocket Gateway for Keboola Data Analyst
+Description=WebSocket Gateway for Data Analyst
 After=network.target
 
 [Service]

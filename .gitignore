@@ -117,7 +117,7 @@ docs/data_description.md
 .github/workflows/deploy.yml
 
 # Project-specific: Data directory
-# Downloaded data from Keboola - never commit
+# Downloaded source data - never commit
 data/
 
 # Metadata tooling - entire folder

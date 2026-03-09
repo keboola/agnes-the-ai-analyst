@@ -82,13 +82,16 @@ ai-data-analyst/
 │   └── data_description.md.example  # Data schema template
 │
 ├── src/                           # Server-side Python code
-│   ├── adapters/                  # Data source adapters
-│   │   ├── base.py               # Adapter interface (ABC)
-│   │   └── keboola_adapter.py    # Keboola Storage adapter
-│   ├── data_sync.py              # Orchestrates data pull from sources
+│   ├── data_sync.py              # Orchestrates data pull + DataSource ABC
 │   ├── parquet_manager.py        # CSV to Parquet conversion
 │   ├── config.py                 # Configuration loader
 │   └── profiler.py               # Data profiling for catalog
+│
+├── connectors/                    # Data source connectors
+│   ├── keboola/                   # Keboola Storage connector
+│   │   ├── adapter.py            # KeboolaDataSource (implements DataSource)
+│   │   └── client.py             # Low-level Keboola API client
+│   └── jira/                      # Jira webhook connector
 │
 ├── webapp/                        # Flask web application
 │   └── ...                        # User onboarding, settings, catalog
@@ -124,7 +127,7 @@ ai-data-analyst/
 | BigQuery | Planned | Google BigQuery adapter |
 | Snowflake | Planned | Snowflake adapter |
 
-Adding a new adapter means implementing the `DataSource` interface in `src/adapters/` and setting `data_source.type` in `config/instance.yaml`. See `src/adapters/base.py` for the contract.
+Adding a new data source means creating a connector module in `connectors/` that implements the `DataSource` interface from `src/data_sync.py`, and setting `data_source.type` in `config/instance.yaml`. See `connectors/keboola/` for a reference implementation.
 
 ## Using with Claude Code
 

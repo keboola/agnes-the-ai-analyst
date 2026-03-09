@@ -32,18 +32,18 @@ The WebSocket gateway (`server/ws_gateway/`) runs as a separate systemd service 
 ## Building
 
 ```bash
-cd macos-app/KeboolaAnalyst
-xcodebuild -scheme KeboolaAnalyst -configuration Debug build
+cd macos-app/DataAnalyst
+xcodebuild -scheme DataAnalyst -configuration Debug build
 ```
 
 The built app is at:
 ```
-~/Library/Developer/Xcode/DerivedData/KeboolaAnalyst-*/Build/Products/Debug/KeboolaAnalyst.app
+~/Library/Developer/Xcode/DerivedData/DataAnalyst-*/Build/Products/Debug/DataAnalyst.app
 ```
 
 To run:
 ```bash
-open ~/Library/Developer/Xcode/DerivedData/KeboolaAnalyst-*/Build/Products/Debug/KeboolaAnalyst.app
+open ~/Library/Developer/Xcode/DerivedData/DataAnalyst-*/Build/Products/Debug/DataAnalyst.app
 ```
 
 ## Authentication Flow
@@ -52,7 +52,7 @@ open ~/Library/Developer/Xcode/DerivedData/KeboolaAnalyst-*/Build/Products/Debug
 2. Browser opens `https://your-instance.example.com/desktop/link`
 3. User authenticates via Google SSO (if not already logged in)
 4. User clicks **Authorize Desktop App**
-5. Webapp generates a JWT token (HS256, 30-day expiry) and redirects to `keboola-analyst://auth?token=eyJ...`
+5. Webapp generates a JWT token (HS256, 30-day expiry) and redirects to `data-analyst://auth?token=eyJ...`
 6. macOS app catches the custom URL scheme, stores the JWT in Keychain
 7. App connects to WebSocket gateway, sends `{"type":"auth","token":"..."}`
 8. Gateway validates JWT and confirms with `{"type":"auth_ok","username":"..."}`
@@ -86,7 +86,7 @@ Client -> Server: {"type":"pong"}
 - **Persistence**: notifications stored in UserDefaults between launches
 - **Keychain**: JWT token stored securely in macOS Keychain
 - **Run scripts**: execute notification scripts on-demand via webapp API, results arrive as WS notifications
-- **Logging**: `os.log` with subsystem `com.keboola.analyst`, category `WebSocket` -- view with `log show --predicate 'subsystem == "com.keboola.analyst"' --last 5m --info`
+- **Logging**: `os.log` with subsystem `com.dataanalyst`, category `WebSocket` -- view with `log show --predicate 'subsystem == "com.dataanalyst"' --last 5m --info`
 
 ## Server Components
 
@@ -161,12 +161,12 @@ location /ws/notifications {
 ## Project Structure
 
 ```
-macos-app/KeboolaAnalyst/
-  KeboolaAnalyst.xcodeproj/
-  KeboolaAnalyst/
+macos-app/DataAnalyst/
+  DataAnalyst.xcodeproj/
+  DataAnalyst/
     App/
-      KeboolaAnalystApp.swift       # @main, MenuBarExtra
-      AppDelegate.swift              # URL scheme handler (keboola-analyst://)
+      DataAnalystApp.swift       # @main, MenuBarExtra
+      AppDelegate.swift              # URL scheme handler (data-analyst://)
     Core/
       Config.swift                   # URLs, timeouts, keychain names
       KeychainService.swift          # JWT storage in Keychain
@@ -182,7 +182,7 @@ macos-app/KeboolaAnalyst/
       NotificationDetail.swift       # Full view with chart image
       SettingsView.swift             # Connection status, sign out
     Info.plist                       # URL scheme registration
-    KeboolaAnalyst.entitlements      # Network client permission
+    DataAnalyst.entitlements      # Network client permission
 ```
 
 ## Troubleshooting
@@ -208,7 +208,7 @@ sudo -u deploy curl -s --unix-socket /run/ws-gateway/ws.sock http://localhost/he
 ```
 If connections is 0, restart the app. Check app logs:
 ```bash
-/usr/bin/log show --predicate 'subsystem == "com.keboola.analyst"' --last 5m --info
+/usr/bin/log show --predicate 'subsystem == "com.dataanalyst"' --last 5m --info
 ```
 
 ### Script runs but no notification appears

@@ -10,7 +10,7 @@ Data Source (Keboola / CSV / BigQuery)
 |  Data Broker Server                      |
 |                                          |
 |  src/data_sync.py                        |
-|    -> src/adapters/*.py (fetch data)     |
+|    -> connectors/*.py (fetch data)       |
 |    -> src/parquet_manager.py (convert)   |
 |                                          |
 |  /data/src_data/parquet/   (output)      |
@@ -37,9 +37,8 @@ Pulls data from configured source, converts to Parquet.
 | File | Role |
 |------|------|
 | `src/data_sync.py` | Orchestration + `DataSource` ABC (line 149) |
-| `src/adapters/base.py` | Adapter interface |
-| `src/adapters/keboola_adapter.py` | Keboola Storage adapter |
-| `src/keboola_client.py` | Low-level Keboola API client |
+| `connectors/keboola/adapter.py` | Keboola data source |
+| `connectors/keboola/client.py` | Low-level Keboola API client |
 | `src/parquet_manager.py` | CSV -> typed Parquet conversion |
 | `src/config.py` | Reads `data_description.md` for table definitions |
 | `src/profiler.py` | Data profiling for catalog UI |
@@ -129,7 +128,7 @@ inject_config() context processor
 
 ## Key Patterns
 
-- **Adapter pattern**: Factory in `src/adapters/__init__.py`, ABC in `src/data_sync.py`
+- **Connector pattern**: Dynamic connector registry in `src/data_sync.py`, `connectors/keboola/` for reference
 - **Atomic writes**: `tempfile.mkstemp()` + `os.fchmod()` + `os.replace()` for JSON state files
 - **User home writes**: `sudo install -o {user} -g {user}` for writing to analyst home dirs
 - **Config interpolation**: `${ENV_VAR}` in YAML resolved at load time, missing vars logged as warnings

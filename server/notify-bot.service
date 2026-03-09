@@ -1,5 +1,5 @@
 [Unit]
-Description=Keboola Data Analyst Telegram Notification Bot
+Description=Data Analyst Telegram Notification Bot
 After=network-online.target
 Wants=network-online.target
 
@@ -12,7 +12,7 @@ ExecStart=/opt/data-analyst/.venv/bin/python -m server.telegram_bot.bot
 Restart=always
 RestartSec=10
 
-# Environment (webapp .env + Keboola .env with bot token)
+# Environment (webapp .env + sync .env with bot token)
 EnvironmentFile=/opt/data-analyst/.env
 EnvironmentFile=/opt/data-analyst/repo/.env
 

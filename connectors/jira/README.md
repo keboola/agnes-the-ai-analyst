@@ -73,7 +73,7 @@ Real-time sync of Jira support tickets for AI-powered analysis.
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                         ANALYST MACHINE                                     │
 │                                                                             │
-│  ~/keboola-analysis/                                                        │
+│  ~/data-analysis/                                                           │
 │  └── server/                                                                │
 │      └── parquet/                                                           │
 │          └── jira/           # Synced Parquet + attachments                 │
@@ -540,7 +540,7 @@ Jira data is an **optional dataset** - not synced by default to save bandwidth.
 **Enable Jira sync:**
 ```bash
 # Edit local config (created on first sync_data.sh run)
-nano ~/.config/keboola-analyst/sync.yaml
+nano ~/.config/data-analyst/sync.yaml
 
 # Change:
 datasets:
@@ -585,7 +585,7 @@ This is fast (only downloads files for one ticket) and keeps your local machine 
 If you need frequent access to attachments, enable full sync:
 
 ```yaml
-# ~/.config/keboola-analyst/sync.yaml
+# ~/.config/data-analyst/sync.yaml
 datasets:
   jira: true
   jira_attachments: true   # Syncs ~500MB+ of files

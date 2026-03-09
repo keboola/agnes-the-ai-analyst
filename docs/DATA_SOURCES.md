@@ -51,12 +51,12 @@ tables:
     sync_strategy: "full_refresh"
 ```
 
-## Writing a Custom Adapter
+## Writing a Custom Connector
 
-Create a new file in `src/adapters/`:
+Create a new connector module in `connectors/<name>/adapter.py`:
 
 ```python
-from ..data_sync import DataSource
+from src.data_sync import DataSource
 
 class MyDataSource(DataSource):
     def sync_table(self, table_config, sync_state):
@@ -65,9 +65,6 @@ class MyDataSource(DataSource):
         pass
 ```
 
-Register in `src/adapters/__init__.py`:
-```python
-if adapter_type == "my_source":
-    from .my_adapter import MyDataSource
-    return MyDataSource(**kwargs)
-```
+The `create_data_source()` function in `src/data_sync.py` auto-discovers connectors from the `connectors/` directory. Set `data_source.type` in `config/instance.yaml` to match the connector directory name (e.g., `keboola` for `connectors/keboola/`).
+
+See `connectors/keboola/` for a complete reference implementation.

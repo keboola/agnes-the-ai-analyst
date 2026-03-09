@@ -267,7 +267,7 @@ if [[ -f "${REPO_DIR}/server/limits-users.conf" ]]; then
 fi
 
 # Create data sync .env file from environment variables (passed from GitHub Actions)
-KEBOOLA_ENV_FILE="${REPO_DIR}/.env"
+SYNC_ENV_FILE="${REPO_DIR}/.env"
 if [[ -n "${KEBOOLA_STORAGE_TOKEN:-}" ]]; then
     log "Creating data sync .env file..."
     {
@@ -310,12 +310,12 @@ if [[ -n "${KEBOOLA_STORAGE_TOKEN:-}" ]]; then
         if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
             echo "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}"
         fi
-    } | sudo /usr/bin/tee "$KEBOOLA_ENV_FILE" > /dev/null
-    sudo /usr/bin/chown root:data-ops "$KEBOOLA_ENV_FILE"
-    sudo /usr/bin/chmod 640 "$KEBOOLA_ENV_FILE"
+    } | sudo /usr/bin/tee "$SYNC_ENV_FILE" > /dev/null
+    sudo /usr/bin/chown root:data-ops "$SYNC_ENV_FILE"
+    sudo /usr/bin/chmod 640 "$SYNC_ENV_FILE"
     log "  Data sync .env created with secure permissions (640)"
 else
-    log "  Skipping data sync .env creation (no KEBOOLA_STORAGE_TOKEN provided)"
+    log "  Skipping data sync .env creation (no sync credentials provided)"
 fi
 
 # Set correct permissions
@@ -325,8 +325,8 @@ sudo /usr/bin/chmod -R 770 "$APP_DIR"  # owner+group rwx, others none
 sudo /usr/bin/chmod -R g+s "$APP_DIR"  # setgid for new files
 
 # Restore .env permissions (may have been overwritten by chmod -R)
-if [[ -f "$KEBOOLA_ENV_FILE" ]]; then
-    sudo /usr/bin/chmod 640 "$KEBOOLA_ENV_FILE"
+if [[ -f "$SYNC_ENV_FILE" ]]; then
+    sudo /usr/bin/chmod 640 "$SYNC_ENV_FILE"
 fi
 
 # Update and restart webapp if running
