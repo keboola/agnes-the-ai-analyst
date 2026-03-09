@@ -13,7 +13,7 @@ Auth provider-specific logic lives in auth/<provider>/provider.py.
 import functools
 import logging
 
-from flask import Blueprint, flash, redirect, render_template, session, url_for
+from flask import Blueprint, flash, jsonify, redirect, render_template, request, session, url_for
 
 from .config import Config
 
@@ -29,6 +29,37 @@ def login_required(f):
     def decorated_function(*args, **kwargs):
         if "user" not in session:
             return redirect(url_for("auth.login"))
+        return f(*args, **kwargs)
+
+    return decorated_function
+
+
+def admin_required(f):
+    """Decorator to require admin privileges for a route.
+
+    Recomputes admin status server-side on every request.
+    Returns 403 JSON for API routes, redirect for HTML routes.
+    """
+
+    @functools.wraps(f)
+    def decorated_function(*args, **kwargs):
+        if "user" not in session:
+            if request.path.startswith("/api/"):
+                return jsonify({"error": "Authentication required"}), 401
+            return redirect(url_for("auth.login"))
+
+        from .user_service import check_user_exists, get_username_from_email
+
+        email = session.get("user", {}).get("email", "")
+        username = get_username_from_email(email)
+        user_info = check_user_exists(username)
+
+        if not user_info.is_admin:
+            if request.path.startswith("/api/"):
+                return jsonify({"error": "Admin access required"}), 403
+            flash("Admin access required.", "error")
+            return redirect(url_for("dashboard"))
+
         return f(*args, **kwargs)
 
     return decorated_function

@@ -1054,6 +1054,108 @@ def profile_table(
 
 
 # ---------------------------------------------------------------------------
+# Auto-profiling API
+# ---------------------------------------------------------------------------
+def profile_changed_tables(table_names: list[str]) -> dict:
+    """Profile only specified tables, preserve existing profiles for others.
+
+    Public API for auto-profiling after sync.
+
+    1. Load existing profiles.json
+    2. For each table_name in table_names: find parquet, call profile_table()
+    3. Merge new profiles into existing (preserve untouched tables)
+    4. Write atomically
+    Returns: {"success": int, "errors": int, "skipped": int}
+    """
+    success = 0
+    errors = 0
+    skipped = 0
+
+    # Parse data_description.md for table definitions and folder mapping
+    tables, folder_mapping = parse_data_description(DATA_DESCRIPTION_PATH)
+    if not tables:
+        logger.warning("profile_changed_tables: no tables in data_description.md")
+        return {"success": 0, "errors": 0, "skipped": len(table_names)}
+
+    # Build lookup by table name
+    table_by_name: Dict[str, TableInfo] = {t.name: t for t in tables}
+
+    # Load sync state and metrics
+    sync_state = load_sync_state(SYNC_STATE_PATH)
+    metrics_map = load_metrics(METRICS_YML_PATH)
+    metric_file_map = load_metric_file_map(METRICS_YML_PATH)
+
+    # Load existing profiles.json to preserve untouched tables
+    existing_profiles: Dict[str, Any] = {}
+    try:
+        if PROFILES_OUTPUT_PATH.exists():
+            with open(PROFILES_OUTPUT_PATH) as f:
+                existing_data = json.load(f)
+            existing_profiles = existing_data.get("tables", {})
+    except Exception as exc:
+        logger.warning("profile_changed_tables: could not load existing profiles: %s", exc)
+
+    # Profile each requested table
+    new_profiles: Dict[str, Any] = {}
+    for name in table_names:
+        table = table_by_name.get(name)
+        if table is None:
+            logger.warning("profile_changed_tables: table %r not found in data_description.md", name)
+            skipped += 1
+            continue
+
+        parquet_path = get_parquet_path(table, folder_mapping)
+
+        # Check parquet existence
+        if parquet_path.is_dir():
+            parquet_files = list(parquet_path.glob("*.parquet"))
+            if not parquet_files:
+                logger.warning("profile_changed_tables: no parquet files for %s in %s", name, parquet_path)
+                skipped += 1
+                continue
+        elif not parquet_path.exists():
+            logger.warning("profile_changed_tables: parquet not found for %s at %s", name, parquet_path)
+            skipped += 1
+            continue
+
+        try:
+            logger.info("Auto-profiling %s ...", name)
+            profile = profile_table(
+                table, parquet_path, tables, sync_state, metrics_map, metric_file_map
+            )
+            new_profiles[name] = profile
+            success += 1
+            logger.info(
+                "  %s: %d rows, %d cols, %d alerts",
+                name,
+                profile["row_count"],
+                profile["column_count"],
+                len(profile["alerts"]),
+            )
+        except Exception as exc:
+            logger.error("Auto-profiling failed for %s: %s", name, exc)
+            errors += 1
+
+    # Merge: existing profiles + newly profiled (new overwrite old)
+    merged = {**existing_profiles, **new_profiles}
+
+    # Write atomically
+    output = {
+        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "version": "1.0",
+        "tables": merged,
+    }
+    METADATA_DIR.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(PROFILES_OUTPUT_PATH, output)
+
+    logger.info(
+        "Auto-profiling complete: %d profiled, %d skipped, %d errors",
+        success, skipped, errors,
+    )
+    return {"success": success, "errors": errors, "skipped": skipped}
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main() -> None:

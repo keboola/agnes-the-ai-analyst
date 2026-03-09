@@ -754,6 +754,51 @@ class KeboolaClient:
                 output_path.unlink()
             raise
 
+    def discover_all_tables(self) -> List[Dict[str, Any]]:
+        """List all available tables in the Keboola project.
+
+        Tries tables.list(include=["columns","buckets"]) first.
+        Falls back to per-bucket listing if that fails.
+
+        Returns:
+            Normalized list of table dicts.
+        """
+        logger.info("Discovering all tables in Keboola project...")
+
+        try:
+            raw_tables = self.client.tables.list(include="columns,buckets")
+        except Exception as e:
+            logger.warning(f"tables.list() failed ({e}), falling back to per-bucket listing")
+            raw_tables = []
+            for bucket in self.client.buckets.list():
+                bucket_id = bucket["id"]
+                try:
+                    bucket_tables = self.client.buckets.list_tables(bucket_id, include="columns")
+                    for t in bucket_tables:
+                        t.setdefault("bucket", bucket)
+                    raw_tables.extend(bucket_tables)
+                except Exception as be:
+                    logger.warning(f"Could not list tables in bucket {bucket_id}: {be}")
+
+        result = []
+        for t in raw_tables:
+            bucket = t.get("bucket", {})
+            result.append({
+                "id": t.get("id", ""),
+                "name": t.get("name", ""),
+                "bucket_id": bucket.get("id", ""),
+                "bucket_name": bucket.get("name", bucket.get("id", "")),
+                "columns": t.get("columns", []),
+                "row_count": t.get("rowsCount", 0),
+                "size_bytes": t.get("dataSizeBytes", 0),
+                "primary_key": t.get("primaryKey", []),
+                "last_change": t.get("lastChangeDate"),
+                "last_import": t.get("lastImportDate"),
+            })
+
+        logger.info(f"Discovered {len(result)} tables")
+        return result
+
     def test_connection(self) -> bool:
         """
         Test connection to Keboola API.

@@ -15,12 +15,12 @@ from pathlib import Path
 
 from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
 
-from .auth import auth_bp, login_required
+from .auth import admin_required, auth_bp, login_required
 from .config import Config
 from .desktop_auth import require_desktop_auth
 from .notification_images import images_bp
 from .account_service import get_account_details
-from .sync_settings_service import get_sync_settings, update_sync_settings
+from .sync_settings_service import get_sync_settings, update_sync_settings, get_table_subscriptions, update_table_subscriptions
 
 # Jira connector is optional - only loaded if configured
 try:
@@ -396,6 +396,18 @@ def register_routes(app: Flask) -> None:
         # Load sync settings (for existing users)
         sync_settings = get_sync_settings(username) if user_info.exists else None
 
+        # Add subscription status to catalog tables
+        if user_info.exists:
+            subs = get_table_subscriptions(username)
+            table_mode = subs.get("table_mode", "all")
+            table_subs = subs.get("tables", {})
+            for cat in catalog_data:
+                for table in cat.get("tables", []):
+                    if table_mode == "all":
+                        table["subscribed"] = True
+                    else:
+                        table["subscribed"] = table_subs.get(table["name"], False)
+
         # Gather account widget details (notification scripts, cron, last sync)
         account_details = get_account_details(username) if user_info.exists else None
 
@@ -432,6 +444,18 @@ def register_routes(app: Flask) -> None:
         data_stats = _load_data_stats()
         catalog_data = _load_catalog_data()
         sync_settings = get_sync_settings(username)
+
+        # Add subscription status to catalog tables
+        subs = get_table_subscriptions(username)
+        table_mode = subs.get("table_mode", "all")
+        table_subs = subs.get("tables", {})
+        for cat in catalog_data:
+            for table in cat.get("tables", []):
+                if table_mode == "all":
+                    table["subscribed"] = True
+                else:
+                    table["subscribed"] = table_subs.get(table["name"], False)
+
         return render_template(
             "catalog.html",
             data_stats=data_stats,
@@ -686,6 +710,37 @@ def register_routes(app: Flask) -> None:
             return jsonify({"ok": True, "message": message})
         return jsonify({"error": message}), 400
 
+    @app.route("/api/table-subscriptions")
+    @login_required
+    def table_subscriptions_get():
+        """Get per-table subscriptions for current user."""
+        user = session.get("user", {})
+        email = user.get("email", "")
+        username = get_username_from_email(email)
+        subs = get_table_subscriptions(username)
+        return jsonify(subs)
+
+    @app.route("/api/table-subscriptions", methods=["POST"])
+    @login_required
+    def table_subscriptions_update():
+        """Update per-table subscriptions for current user."""
+        user = session.get("user", {})
+        email = user.get("email", "")
+        username = get_username_from_email(email)
+
+        data = request.get_json(silent=True) or {}
+        table_mode = data.get("table_mode", "all")
+        tables = data.get("tables", {})
+
+        if table_mode not in ("all", "explicit"):
+            return jsonify({"error": "table_mode must be 'all' or 'explicit'"}), 400
+
+        success, message = update_table_subscriptions(username, table_mode, tables)
+        if success:
+            logger.info(f"Table subscriptions updated for {username}")
+            return jsonify({"ok": True, "message": message})
+        return jsonify({"error": message}), 400
+
     # ─────────────────────────────────────────────────────────────────
     # Corporate Memory routes
     # ─────────────────────────────────────────────────────────────────
@@ -808,6 +863,215 @@ def register_routes(app: Flask) -> None:
 
         votes = get_user_votes(username)
         return jsonify({"votes": votes})
+
+    # ─────────────────────────────────────────────────────────────────
+    # Admin pages
+    # ─────────────────────────────────────────────────────────────────
+
+    @app.route("/admin/tables")
+    @login_required
+    @admin_required
+    def admin_tables():
+        """Admin table management page."""
+        return render_template("admin_tables.html")
+
+    # ─────────────────────────────────────────────────────────────────
+    # Admin API routes
+    # ─────────────────────────────────────────────────────────────────
+
+    @app.route("/api/admin/discover-tables")
+    @login_required
+    @admin_required
+    def admin_discover_tables():
+        """Discover all available tables from the data source."""
+        try:
+            from src.data_sync import create_data_source
+
+            ds = create_data_source()
+            raw_tables = ds.discover_tables()
+
+            # Check which tables are already registered
+            registered_ids = set()
+            try:
+                from src.table_registry import TableRegistry
+                registry = TableRegistry.default()
+                registered_ids = {t["id"] for t in registry.list_tables()}
+            except Exception:
+                pass
+
+            # Group by bucket
+            buckets: dict = {}
+            for t in raw_tables:
+                bid = t.get("bucket_id", "other")
+                if bid not in buckets:
+                    buckets[bid] = {
+                        "bucket_id": bid,
+                        "bucket_name": t.get("bucket_name", bid),
+                        "tables": [],
+                    }
+                t["is_registered"] = t["id"] in registered_ids
+                buckets[bid]["tables"].append(t)
+
+            return jsonify({
+                "ok": True,
+                "total": len(raw_tables),
+                "buckets": list(buckets.values()),
+            })
+
+        except Exception as e:
+            logger.error(f"Discovery failed: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/admin/registry")
+    @login_required
+    @admin_required
+    def admin_registry_list():
+        """Return the full table registry."""
+        try:
+            from src.table_registry import TableRegistry
+
+            registry = TableRegistry.default()
+            return jsonify({
+                "ok": True,
+                "version": registry.version,
+                "folder_mapping": registry.get_folder_mapping(),
+                "tables": registry.list_tables(),
+            })
+        except Exception as e:
+            logger.error(f"Registry list failed: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/admin/register-table", methods=["POST"])
+    @login_required
+    @admin_required
+    def admin_register_table():
+        """Register a new table from discovery results."""
+        from src.table_registry import ConflictError, TableRegistry
+
+        user = session.get("user", {})
+        email = user.get("email", "")
+
+        data = request.get_json(silent=True) or {}
+        if not data.get("id"):
+            return jsonify({"error": "Missing table 'id'"}), 400
+
+        try:
+            registry = TableRegistry.default()
+            registry.register_table(
+                table_def=data,
+                registered_by=email,
+                expected_version=data.get("version"),
+            )
+
+            # Regenerate data_description.md
+            docs_path = Path(os.path.dirname(__file__)) / ".." / "docs" / "data_description.md"
+            registry.generate_data_description_md(docs_path.resolve())
+
+            return jsonify({"ok": True, "version": registry.version})
+
+        except ConflictError as e:
+            return jsonify({"error": str(e)}), 409
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:
+            logger.error(f"Register table failed: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/admin/registry/<path:table_id>", methods=["PUT"])
+    @login_required
+    @admin_required
+    def admin_update_table(table_id):
+        """Update configuration of a registered table."""
+        from src.table_registry import ConflictError, TableRegistry
+
+        user = session.get("user", {})
+        email = user.get("email", "")
+
+        data = request.get_json(silent=True) or {}
+
+        try:
+            registry = TableRegistry.default()
+            registry.update_table(
+                table_id=table_id,
+                updates=data,
+                updated_by=email,
+                expected_version=data.pop("version", None),
+            )
+
+            # Regenerate data_description.md
+            docs_path = Path(os.path.dirname(__file__)) / ".." / "docs" / "data_description.md"
+            registry.generate_data_description_md(docs_path.resolve())
+
+            return jsonify({"ok": True, "version": registry.version})
+
+        except ConflictError as e:
+            return jsonify({"error": str(e)}), 409
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:
+            logger.error(f"Update table failed: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/admin/registry/<path:table_id>", methods=["DELETE"])
+    @login_required
+    @admin_required
+    def admin_unregister_table(table_id):
+        """Unregister a table and clean up subscriptions."""
+        from src.table_registry import ConflictError, TableRegistry
+
+        user = session.get("user", {})
+        email = user.get("email", "")
+
+        data = request.get_json(silent=True) or {}
+
+        try:
+            registry = TableRegistry.default()
+
+            # Get table name before deletion (for subscription cleanup)
+            table_info = registry.get_table(table_id)
+            table_name = table_info["name"] if table_info else None
+
+            registry.unregister_table(
+                table_id=table_id,
+                unregistered_by=email,
+                expected_version=data.get("version"),
+            )
+
+            # Clean up per-user subscriptions for removed table
+            if table_name:
+                try:
+                    _cleanup_table_subscriptions(table_name)
+                except Exception as ce:
+                    logger.warning(f"Subscription cleanup for {table_name} failed: {ce}")
+
+            # Regenerate data_description.md
+            docs_path = Path(os.path.dirname(__file__)) / ".." / "docs" / "data_description.md"
+            registry.generate_data_description_md(docs_path.resolve())
+
+            return jsonify({"ok": True, "version": registry.version})
+
+        except ConflictError as e:
+            return jsonify({"error": str(e)}), 409
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:
+            logger.error(f"Unregister table failed: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    def _cleanup_table_subscriptions(table_name: str) -> None:
+        """Remove a table from all users' per-table subscriptions."""
+        from webapp.sync_settings_service import _read_json, _write_json, SYNC_SETTINGS_FILE
+
+        all_settings = _read_json(SYNC_SETTINGS_FILE)
+        changed = False
+        for username, user_data in all_settings.items():
+            tables = user_data.get("tables", {})
+            if table_name in tables:
+                del tables[table_name]
+                changed = True
+        if changed:
+            _write_json(SYNC_SETTINGS_FILE, all_settings)
+            logger.info(f"Cleaned up subscriptions for removed table: {table_name}")
 
     @app.route("/health")
     def health():

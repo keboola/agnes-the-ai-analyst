@@ -111,17 +111,24 @@ def update_sync_settings(username: str, settings: dict) -> tuple[bool, str]:
         if requires and existing.get(key) and not existing.get(requires):
             return False, f"{key} requires {requires} to be enabled"
 
+    # Preserve existing table subscription settings
+    existing_user = all_settings.get(username, {})
+    table_mode = existing_user.get("table_mode", "all")
+    table_settings = existing_user.get("tables", {})
+
     # Update user's settings
     all_settings[username] = {
         "datasets": existing,
+        "table_mode": table_mode,
+        "tables": table_settings,
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
 
     # Write back
     _write_json(SYNC_SETTINGS_FILE, all_settings)
 
-    # Regenerate user's config file
-    success = _regenerate_user_config(username, existing)
+    # Regenerate user's config file (with table settings)
+    success = _regenerate_user_config(username, existing, table_mode, table_settings)
     if not success:
         logger.warning(f"Failed to regenerate config for {username}")
         # Don't fail - settings are saved, just config generation failed
@@ -130,13 +137,13 @@ def update_sync_settings(username: str, settings: dict) -> tuple[bool, str]:
     return True, "Settings saved. Changes take effect on next sync."
 
 
-def _regenerate_user_config(username: str, settings: dict) -> bool:
-    """Regenerate ~/.sync_settings.yaml for a user on the server.
+def _regenerate_user_config(username: str, settings: dict, table_mode: str = "all", table_settings: dict | None = None) -> bool:
+    """Regenerate ~/.sync_settings.yaml and ~/.sync_rsync_filter for a user on the server.
 
     Returns True on success, False on failure.
     """
     # Generate YAML content
-    yaml_content = generate_user_config_yaml(settings)
+    yaml_content = generate_user_config_yaml(settings, table_mode, table_settings)
 
     # Write to user's home directory on server
     user_config_path = f"/home/{username}/.sync_settings.yaml"
@@ -163,6 +170,12 @@ def _regenerate_user_config(username: str, settings: dict) -> bool:
             logger.error(f"Failed to install config for {username}: {result.stderr}")
             return False
 
+        # Generate and write rsync filter file
+        filter_ok = _write_rsync_filter(username, settings, table_mode, table_settings or {})
+        if not filter_ok:
+            logger.warning(f"Failed to write rsync filter for {username}")
+            # Don't fail overall - YAML config was written successfully
+
         return True
 
     except subprocess.TimeoutExpired:
@@ -173,11 +186,186 @@ def _regenerate_user_config(username: str, settings: dict) -> bool:
         return False
 
 
-def generate_user_config_yaml(settings: dict) -> str:
+def _write_rsync_filter(username: str, dataset_settings: dict, table_mode: str, table_settings: dict) -> bool:
+    """Write ~/.sync_rsync_filter for a user on the server.
+
+    Returns True on success, False on failure.
+    """
+    # Load folder_mapping from table registry (or instance config as fallback)
+    folder_mapping = {}
+    try:
+        from src.table_registry import TableRegistry
+        registry = TableRegistry.default()
+        folder_mapping = registry.get_folder_mapping()
+    except Exception:
+        try:
+            from config.loader import load_instance_config, get_instance_value
+            config = load_instance_config()
+            folder_mapping = get_instance_value(config, "folder_mapping", default={})
+        except Exception:
+            pass
+
+    # Generate filter content
+    filter_content = generate_rsync_filter(dataset_settings, table_mode, table_settings, folder_mapping)
+
+    user_filter_path = f"/home/{username}/.sync_rsync_filter"
+
+    try:
+        # Write filter to temp file, then install to user's home
+        # IMPORTANT: Must use /tmp/ explicitly - sudoers rule restrictions
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".filter", delete=False, dir="/tmp") as f:
+            f.write(filter_content)
+            tmp_path = f.name
+
+        result = subprocess.run(
+            ["/usr/bin/sudo", "-n", "/usr/bin/install", "-o", username, "-g", username, "-m", "644", tmp_path, user_filter_path],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        os.unlink(tmp_path)
+
+        if result.returncode != 0:
+            logger.error(f"Failed to install rsync filter for {username}: {result.stderr}")
+            return False
+
+        return True
+
+    except subprocess.TimeoutExpired:
+        logger.error(f"Timeout installing rsync filter for {username}")
+        return False
+    except Exception as e:
+        logger.error(f"Error installing rsync filter for {username}: {e}")
+        return False
+
+
+def get_table_subscriptions(username: str) -> dict:
+    """Get per-table subscription settings for a user.
+
+    Returns:
+        {"table_mode": "all"|"explicit", "tables": {"name": bool, ...}}
+    """
+    all_settings = _read_json(SYNC_SETTINGS_FILE)
+    user_settings = all_settings.get(username, {})
+
+    return {
+        "table_mode": user_settings.get("table_mode", "all"),
+        "tables": user_settings.get("tables", {}),
+    }
+
+
+def update_table_subscriptions(username: str, table_mode: str, table_settings: dict) -> tuple[bool, str]:
+    """Update per-table subscriptions for a user.
+
+    Args:
+        username: The username
+        table_mode: "all" or "explicit"
+        table_settings: Dict with table names as keys and bool as values
+
+    Returns:
+        (success, message)
+    """
+    # Validate table_mode
+    if table_mode not in ("all", "explicit"):
+        return False, f"Invalid table_mode: {table_mode}. Must be 'all' or 'explicit'"
+
+    # Validate table_settings values
+    for key, value in table_settings.items():
+        if not isinstance(value, bool):
+            return False, f"Invalid value for table '{key}': must be boolean"
+
+    # Read current settings and update
+    all_settings = _read_json(SYNC_SETTINGS_FILE)
+    if username not in all_settings:
+        all_settings[username] = {}
+
+    all_settings[username]["table_mode"] = table_mode
+    all_settings[username]["tables"] = table_settings
+    all_settings[username]["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    # Write back
+    _write_json(SYNC_SETTINGS_FILE, all_settings)
+
+    # Regenerate user's config file (with dataset + table settings)
+    dataset_settings = all_settings[username].get("datasets", dict(DEFAULT_SETTINGS))
+    success = _regenerate_user_config(username, dataset_settings, table_mode, table_settings)
+    if not success:
+        logger.warning(f"Failed to regenerate config for {username}")
+
+    logger.info(f"Updated table subscriptions for '{username}': mode={table_mode}, tables={table_settings}")
+    return True, "Table subscriptions saved. Changes take effect on next sync."
+
+
+def generate_rsync_filter(dataset_settings: dict, table_mode: str, table_settings: dict, folder_mapping: dict) -> str:
+    """Generate rsync filter file content for per-table sync.
+
+    Args:
+        dataset_settings: {"jira": True, ...}
+        table_mode: "all" or "explicit"
+        table_settings: {"company": True, "events": False, ...}
+        folder_mapping: {"in.c-crm": "crm", ...} from registry/config
+
+    Returns:
+        Rsync filter file content string.
+    """
+    if table_mode == "all":
+        # No filtering needed - include everything
+        lines = [
+            "# AUTO-GENERATED rsync filter for per-table sync",
+            "# table_mode: all",
+            "",
+            "# No filtering - all tables included",
+        ]
+        return "\n".join(lines) + "\n"
+
+    lines = [
+        "# AUTO-GENERATED rsync filter for per-table sync",
+        "# table_mode: explicit",
+        "",
+    ]
+
+    # Build reverse mapping: table_name -> folder
+    # We need to know which folder each table lives in
+    # folder_mapping is bucket_id -> folder_name
+    # We'll collect all unique folders
+    folders_used = set(folder_mapping.values()) if folder_mapping else set()
+
+    # Subscribed tables
+    subscribed = {name for name, enabled in table_settings.items() if enabled}
+    unsubscribed = {name for name, enabled in table_settings.items() if not enabled}
+
+    if subscribed:
+        lines.append("# Subscribed tables")
+        for name in sorted(subscribed):
+            # Include parquet file and partitioned directory
+            lines.append(f"+ **/{name}.parquet")
+            lines.append(f"+ **/{name}/***")
+        lines.append("")
+
+    if unsubscribed:
+        lines.append("# Excluded tables")
+        for name in sorted(unsubscribed):
+            lines.append(f"- **/{name}.parquet")
+            lines.append(f"- **/{name}/***")
+        lines.append("")
+
+    # Include folder structure but exclude unknown files
+    lines.append("# Include folder structure")
+    lines.append("+ */")
+    lines.append("- *")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+def generate_user_config_yaml(settings: dict, table_mode: str = "all", table_settings: dict | None = None) -> str:
     """Generate YAML content for sync config.
 
     Args:
         settings: Dict with dataset names and enabled status
+        table_mode: "all" or "explicit" (default "all")
+        table_settings: Dict with table names and subscription status (optional)
 
     Returns:
         YAML string content
@@ -192,6 +380,19 @@ def generate_user_config_yaml(settings: dict) -> str:
     for dataset, enabled in sorted(settings.items()):
         value = "true" if enabled else "false"
         lines.append(f"  {dataset}: {value}")
+
+    lines.append("")
+
+    # Per-table subscriptions
+    lines.append(f"table_mode: {table_mode}")
+
+    if table_settings:
+        lines.append("tables:")
+        for table_name, subscribed in sorted(table_settings.items()):
+            value = "true" if subscribed else "false"
+            lines.append(f"  {table_name}: {value}")
+    else:
+        lines.append("tables: {}")
 
     lines.append("")
     return "\n".join(lines)

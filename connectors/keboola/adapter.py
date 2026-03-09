@@ -107,6 +107,10 @@ class KeboolaDataSource(DataSource):
 
         return {"columns": result}
 
+    def discover_tables(self) -> List[Dict[str, Any]]:
+        """Discover all available tables from Keboola Storage."""
+        return self.keboola_client.discover_all_tables()
+
     def get_source_name(self) -> str:
         """Display name of this data source."""
         return "Keboola Storage API"

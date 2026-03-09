@@ -210,6 +210,14 @@ datasets:
   kbc_telemetry_expert: false
 DEFAULTS
     fi
+    # Download rsync filter for per-table sync
+    SYNC_FILTER_LOCAL="/tmp/.sync_rsync_filter_$(id -u)"
+    if scp -q data-analyst:~/.sync_rsync_filter "$SYNC_FILTER_LOCAL" 2>/dev/null; then
+        echo "   ✅ Filter file loaded"
+    else
+        # No filter file = no per-table filtering
+        rm -f "$SYNC_FILTER_LOCAL"
+    fi
     echo ""
 else
     # For dry-run, still need settings to show what would happen
@@ -221,6 +229,9 @@ datasets:
   kbc_telemetry_expert: false
 DEFAULTS
     fi
+    # Download rsync filter for dry-run too
+    SYNC_FILTER_LOCAL="/tmp/.sync_rsync_filter_$(id -u)"
+    scp -q data-analyst:~/.sync_rsync_filter "$SYNC_FILTER_LOCAL" 2>/dev/null || rm -f "$SYNC_FILTER_LOCAL"
 fi
 
 # --- Sync server/ content (read-only from server, --delete removes obsolete files) ---
@@ -275,7 +286,12 @@ fi
 # Optional datasets are synced by sub-scripts based on user config
 echo "📦 Syncing core parquet files..."
 if [[ "$USE_RSYNC" == true ]]; then
-    rsync_reliable -av --delete --progress --exclude='jira/' --exclude='kbc_telemetry_expert/' $DRY_RUN data-analyst:server/parquet/ ./server/parquet/
+    if [[ -f "$SYNC_FILTER_LOCAL" ]] && grep -q "table_mode: explicit" "$SYNC_FILTER_LOCAL" 2>/dev/null; then
+        echo "   Using per-table filter (explicit mode)"
+        rsync_reliable -av --delete --progress --filter="merge $SYNC_FILTER_LOCAL" $DRY_RUN data-analyst:server/parquet/ ./server/parquet/
+    else
+        rsync_reliable -av --delete --progress --exclude='jira/' --exclude='kbc_telemetry_expert/' $DRY_RUN data-analyst:server/parquet/ ./server/parquet/
+    fi
 else
     sync_from_server server/parquet ./server/parquet
 fi

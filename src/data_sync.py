@@ -162,6 +162,16 @@ class DataSource(ABC):
         """
         pass
 
+    def discover_tables(self) -> List[Dict[str, Any]]:
+        """List all available tables in the data source.
+
+        Returns list of dicts with at minimum:
+            id, name, bucket_id, columns, row_count, size_bytes,
+            primary_key, last_change
+        Default: empty list (source doesn't support discovery).
+        """
+        return []
+
     def get_column_metadata(self, table_id: str) -> Optional[Dict[str, Any]]:
         """Return processed column metadata for schema generation.
 
@@ -425,6 +435,24 @@ class DataSyncManager:
                 self._generate_schema_yaml()
             except Exception as e:
                 logger.warning(f"Failed to generate schema.yml: {e}")
+
+        # Auto-profile changed tables
+        if success_count > 0:
+            try:
+                from src.profiler import profile_changed_tables
+                changed = [
+                    self.config.get_table_config(tid).name
+                    for tid, r in results.items()
+                    if r.get("success") and self.config.get_table_config(tid)
+                ]
+                if changed:
+                    result = profile_changed_tables(changed)
+                    logger.info(
+                        f"Auto-profiling: {result['success']} profiled, "
+                        f"{result['errors']} errors, {result['skipped']} skipped"
+                    )
+            except Exception as e:
+                logger.warning(f"Auto-profiling failed (non-fatal): {e}")
 
         return results
 

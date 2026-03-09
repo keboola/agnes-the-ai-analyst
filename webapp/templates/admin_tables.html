@@ -1,0 +1,1336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Table Management - {{ config.INSTANCE_NAME }}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            /* Colors - Design System */
+            --primary: #0073D1;
+            --primary-light: rgba(0, 115, 209, 0.1);
+            --text-primary: #1A253C;
+            --text-secondary: #6B7280;
+            --background: #F5F7FA;
+            --surface: #FFFFFF;
+            --border: #E5E7EB;
+            --border-light: #F3F4F6;
+            --success: #10B77F;
+            --success-light: rgba(16, 183, 127, 0.1);
+            --warning: #F59F0A;
+            --error: #EA580C;
+            --error-light: rgba(234, 88, 12, 0.1);
+
+            /* Typography */
+            --font-primary: 'Inter', system-ui, sans-serif;
+            --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+            /* Shadows */
+            --shadow-sm: rgba(0, 0, 0, 0.05) 0px 1px 2px 0px;
+            --shadow-md: rgba(0, 0, 0, 0.1) 0px 4px 6px -1px;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: var(--font-primary);
+            font-size: 14px;
+            color: var(--text-primary);
+            background: var(--background);
+            line-height: 1.5;
+        }
+
+        /* ── Header (dashboard-style) ── */
+        .header {
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            padding: 0 32px;
+            height: 72px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .header-back {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 32px;
+            height: 32px;
+            border-radius: 6px;
+            color: var(--text-secondary);
+            text-decoration: none;
+            transition: all 0.15s ease;
+        }
+
+        .header-back:hover {
+            background: var(--border-light);
+            color: var(--text-primary);
+        }
+
+        .header-logo-group {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 2px;
+        }
+
+        .header-logo svg {
+            display: block;
+        }
+
+        .header-subtitle {
+            font-size: 11px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            letter-spacing: 0.4px;
+            text-transform: uppercase;
+            margin-top: 2px;
+        }
+
+        .header-right {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        /* ── Page Title ── */
+        .page-title {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 32px 24px 24px;
+        }
+
+        .page-title h1 {
+            font-size: 24px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 4px;
+        }
+
+        .page-title p {
+            font-size: 14px;
+            color: var(--text-secondary);
+        }
+
+        /* ── Content Layout ── */
+        .content {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 0 24px 32px;
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+        }
+
+        /* ── Panel (shared card style) ── */
+        .panel {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: var(--shadow-sm);
+        }
+
+        .panel-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 20px 24px;
+            border-bottom: 1px solid var(--border-light);
+        }
+
+        .panel-header-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .panel-header-icon {
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            background: var(--primary-light);
+        }
+
+        .panel-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .panel-subtitle {
+            font-size: 13px;
+            color: var(--text-secondary);
+            margin-top: 1px;
+        }
+
+        .panel-body {
+            padding: 20px 24px;
+        }
+
+        .panel-body-empty {
+            padding: 40px 24px;
+            text-align: center;
+            color: var(--text-secondary);
+            font-size: 13px;
+        }
+
+        /* ── Buttons ── */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 16px;
+            border: none;
+            border-radius: 8px;
+            font-family: var(--font-primary);
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            white-space: nowrap;
+        }
+
+        .btn-primary {
+            background: var(--primary);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #005FA8;
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .btn-secondary {
+            background: var(--border-light);
+            color: var(--text-primary);
+        }
+
+        .btn-secondary:hover {
+            background: var(--border);
+        }
+
+        .btn-danger {
+            background: var(--error-light);
+            color: var(--error);
+        }
+
+        .btn-danger:hover {
+            background: rgba(234, 88, 12, 0.2);
+        }
+
+        .btn-sm {
+            padding: 5px 10px;
+            font-size: 12px;
+            border-radius: 6px;
+        }
+
+        .btn-icon {
+            width: 28px;
+            height: 28px;
+            padding: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 6px;
+            background: none;
+            border: none;
+            cursor: pointer;
+            color: var(--text-secondary);
+            transition: all 0.15s ease;
+        }
+
+        .btn-icon:hover {
+            background: var(--border-light);
+            color: var(--text-primary);
+        }
+
+        .btn-icon.danger:hover {
+            background: var(--error-light);
+            color: var(--error);
+        }
+
+        /* ── Badges ── */
+        .badge {
+            flex-shrink: 0;
+            font-size: 11px;
+            font-weight: 500;
+            border-radius: 6px;
+            padding: 3px 8px;
+            white-space: nowrap;
+        }
+
+        .badge-registered {
+            color: #065F46;
+            background: #D1FAE5;
+        }
+
+        .badge-available {
+            color: var(--primary);
+            background: var(--primary-light);
+        }
+
+        /* ── Spinner ── */
+        .spinner {
+            display: inline-block;
+            width: 18px;
+            height: 18px;
+            border: 2px solid var(--border);
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .spinner-lg {
+            width: 32px;
+            height: 32px;
+            border-width: 3px;
+        }
+
+        /* ── Loading state ── */
+        .loading-state {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 12px;
+            padding: 40px 24px;
+            color: var(--text-secondary);
+            font-size: 13px;
+        }
+
+        /* ── Notification toast ── */
+        .toast {
+            position: fixed;
+            top: 84px;
+            right: 24px;
+            z-index: 200;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            box-shadow: var(--shadow-md);
+            padding: 12px 16px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 13px;
+            transform: translateX(120%);
+            transition: transform 0.3s ease;
+            max-width: 360px;
+        }
+
+        .toast.visible {
+            transform: translateX(0);
+        }
+
+        .toast-success {
+            border-left: 3px solid var(--success);
+        }
+
+        .toast-error {
+            border-left: 3px solid var(--error);
+        }
+
+        .toast-icon {
+            width: 20px;
+            height: 20px;
+            flex-shrink: 0;
+        }
+
+        /* ── Bucket accordion ── */
+        .bucket-group {
+            border-top: 1px solid var(--border-light);
+        }
+
+        .bucket-group:first-child {
+            border-top: none;
+        }
+
+        .bucket-trigger {
+            width: 100%;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 24px;
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-family: var(--font-primary);
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--text-primary);
+            text-align: left;
+            transition: background 0.1s ease;
+        }
+
+        .bucket-trigger:hover {
+            background: var(--border-light);
+        }
+
+        .bucket-chevron {
+            width: 16px;
+            height: 16px;
+            color: var(--text-secondary);
+            transition: transform 0.2s ease;
+            flex-shrink: 0;
+        }
+
+        .bucket-trigger.expanded .bucket-chevron {
+            transform: rotate(90deg);
+        }
+
+        .bucket-count {
+            font-size: 11px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            background: var(--border-light);
+            padding: 1px 7px;
+            border-radius: 9999px;
+            margin-left: auto;
+        }
+
+        .bucket-content {
+            display: none;
+        }
+
+        .bucket-content.expanded {
+            display: block;
+        }
+
+        /* ── Table row (discovery results) ── */
+        .table-item {
+            display: flex;
+            align-items: center;
+            padding: 10px 24px 10px 50px;
+            border-top: 1px solid var(--border-light);
+            gap: 12px;
+            transition: background 0.1s ease;
+        }
+
+        .table-item:hover {
+            background: rgba(243, 244, 246, 0.5);
+        }
+
+        .table-item-info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .table-item-name {
+            font-weight: 500;
+            font-family: var(--font-mono);
+            font-size: 13px;
+            color: var(--text-primary);
+        }
+
+        .table-item-meta {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-top: 1px;
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .table-item-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-shrink: 0;
+        }
+
+        /* ── Registry table ── */
+        .registry-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .registry-table th {
+            text-align: left;
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            padding: 10px 16px;
+            border-bottom: 1px solid var(--border);
+            background: var(--background);
+        }
+
+        .registry-table td {
+            padding: 12px 16px;
+            font-size: 13px;
+            border-bottom: 1px solid var(--border-light);
+            vertical-align: middle;
+        }
+
+        .registry-table tr:last-child td {
+            border-bottom: none;
+        }
+
+        .registry-table tr:hover td {
+            background: rgba(243, 244, 246, 0.5);
+        }
+
+        .registry-table .col-id {
+            font-family: var(--font-mono);
+            font-size: 12px;
+            max-width: 280px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .registry-table .col-strategy {
+            white-space: nowrap;
+        }
+
+        .registry-table .col-actions {
+            width: 80px;
+            text-align: right;
+        }
+
+        .strategy-badge {
+            font-size: 11px;
+            font-weight: 500;
+            padding: 2px 8px;
+            border-radius: 4px;
+            background: var(--border-light);
+            color: var(--text-secondary);
+        }
+
+        /* ── Modal overlay ── */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            padding: 40px 24px;
+            overflow-y: auto;
+        }
+
+        .modal-overlay.active {
+            display: flex;
+            align-items: flex-start;
+            justify-content: center;
+        }
+
+        .modal {
+            max-width: 560px;
+            width: 100%;
+            background: var(--surface);
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 24px;
+            border-bottom: 1px solid var(--border);
+            background: var(--background);
+        }
+
+        .modal-header h2 {
+            font-size: 18px;
+            font-weight: 600;
+        }
+
+        .modal-close {
+            width: 32px;
+            height: 32px;
+            border: none;
+            background: none;
+            cursor: pointer;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-secondary);
+            transition: all 0.15s;
+        }
+
+        .modal-close:hover {
+            background: var(--border-light);
+            color: var(--text-primary);
+        }
+
+        .modal-body {
+            padding: 24px;
+        }
+
+        .modal-footer {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            padding: 16px 24px;
+            border-top: 1px solid var(--border);
+            background: var(--background);
+        }
+
+        /* ── Form ── */
+        .form-group {
+            margin-bottom: 18px;
+        }
+
+        .form-group:last-child {
+            margin-bottom: 0;
+        }
+
+        .form-label {
+            display: block;
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-primary);
+            margin-bottom: 6px;
+        }
+
+        .form-label .optional {
+            font-weight: 400;
+            color: var(--text-secondary);
+            font-size: 12px;
+        }
+
+        .form-input,
+        .form-select,
+        .form-textarea {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-family: var(--font-primary);
+            font-size: 13px;
+            color: var(--text-primary);
+            background: var(--surface);
+            transition: border-color 0.15s;
+        }
+
+        .form-input:focus,
+        .form-select:focus,
+        .form-textarea:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(0, 115, 209, 0.1);
+        }
+
+        .form-input[readonly] {
+            background: var(--border-light);
+            color: var(--text-secondary);
+            cursor: not-allowed;
+        }
+
+        .form-textarea {
+            min-height: 80px;
+            resize: vertical;
+        }
+
+        .form-select {
+            cursor: pointer;
+            appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236B7280' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' xmlns='http://www.w3.org/2000/svg'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 12px center;
+            padding-right: 32px;
+        }
+
+        .form-hint {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-top: 4px;
+        }
+
+        /* ── Footer ── */
+        .footer {
+            text-align: center;
+            padding: 24px;
+            color: var(--text-secondary);
+            font-size: 12px;
+        }
+
+        .footer a {
+            color: var(--primary);
+            text-decoration: none;
+        }
+
+        .footer a:hover {
+            text-decoration: underline;
+        }
+
+        /* ── Responsive ── */
+        @media (max-width: 640px) {
+            .header {
+                padding: 0 16px;
+            }
+
+            .page-title {
+                padding: 24px 16px 16px;
+            }
+
+            .content {
+                padding: 0 16px 24px;
+            }
+
+            .panel-header {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 12px;
+            }
+
+            .table-item {
+                padding-left: 24px;
+                flex-wrap: wrap;
+            }
+
+            .table-item-meta {
+                flex-direction: column;
+                gap: 4px;
+            }
+
+            .registry-table .col-id {
+                max-width: 160px;
+            }
+
+            .modal {
+                margin: 16px;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- ═══════════════ HEADER ═══════════════ -->
+    <header class="header">
+        <div class="header-left">
+            <a href="{{ url_for('dashboard') }}" class="header-back" title="Back to Dashboard">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M19 12H5M12 19l-7-7 7-7"/>
+                </svg>
+            </a>
+            <div class="header-logo-group">
+                <div class="header-logo">
+                    <svg width="120" height="30" viewBox="0 0 395 100" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M390.16321,40.175397 C393.472414,43.4361562 395,48.2443368 395,54.1631395 L395,76.4805472 C395,79.3112789 392.794993,81.45803 389.993855,81.45803 C387.019974,81.45803 384.984322,79.39593 384.984322,77.0798767 L384.984322,75.3631531 C381.929151,79.0539397 377.25833,81.9727085 370.382501,81.9727085 C361.979087,81.9727085 354.507127,77.0798767 354.507127,67.9815799 L354.507127,67.8122778 C354.507127,58.0266143 362.063765,53.2218197 373.014284,53.2218197 C378.023816,53.2218197 381.587053,53.9938374 385.069,55.1078455 L385.069,53.9938374 C385.069,47.5569702 381.163665,44.1235228 373.949126,44.1235228 C370.04379,44.1235228 366.819264,44.8108895 364.014739,45.9248976 C363.421995,46.0975858 362.913929,46.1822368 362.402475,46.1822368 C360.028113,46.1822368 358.073752,44.296211 358.073752,41.8921207 C358.073752,40.0027088 359.347304,38.3740223 360.87489,37.7746927 C365.118936,36.1426201 369.447659,35.1132631 375.307356,35.1132631 C382.013829,35.1132631 387.019974,36.9146379 390.16321,40.175397 Z M385.238356,64.7208208 L385.238356,61.6327498 C382.606573,60.6033928 379.124626,59.827989 375.053323,59.827989 C368.431527,59.827989 364.526192,62.6621068 364.526192,67.3822504 L364.526192,67.5515525 C364.526192,71.9297058 368.346849,74.4184472 373.268317,74.4184472 C380.059468,74.4184472 385.238356,70.4703213 385.238356,64.7208208 Z M343.983384,17.9494125 C346.869199,17.9494125 349.162271,20.2654658 349.162271,23.0961975 L349.162271,76.307859 C349.162271,79.2266278 346.869199,81.45803 343.983384,81.45803 C341.182246,81.45803 338.889174,79.2266278 338.889174,76.307859 L338.889174,23.0961975 C338.889174,20.2654658 341.097568,17.9494125 343.983384,17.9494125 Z M309.096174,34.7678868 C322.847832,34.7678868 332.948187,45.325568 332.948187,58.2839535 L332.948187,58.4566417 C332.948187,71.3303762 322.763154,82.0573596 308.926819,82.0573596 C295.259839,82.0573596 285.156097,71.4996783 285.156097,58.6293299 L285.156097,58.4566417 C285.156097,45.4982562 295.344517,34.7678868 309.096174,34.7678868 Z M322.678476,58.6293299 L322.678476,58.4566417 C322.678476,50.472353 316.991522,43.8661836 308.926819,43.8661836 C300.69276,43.8661836 295.429195,50.3910879 295.429195,58.2839535 L295.429195,58.4566417 C295.429195,66.3528934 301.116148,72.9624488 309.096174,72.9624488 C317.414911,72.9624488 322.678476,66.4375444 322.678476,58.6293299 Z M258.418269,34.7678868 C272.169926,34.7678868 282.270281,45.325568 282.270281,58.2839535 L282.270281,58.4566417 C282.270281,71.3303762 272.085248,82.0573596 258.248913,82.0573596 C244.581934,82.0573596 234.478191,71.4996783 234.478191,58.6293299 L234.478191,58.4566417 C234.478191,45.4982562 244.666611,34.7678868 258.418269,34.7678868 Z M272.000571,58.6293299 L272.000571,58.4566417 C272.000571,50.472353 266.313617,43.8661836 258.248913,43.8661836 C250.014854,43.8661836 244.751289,50.3910879 244.751289,58.2839535 L244.751289,58.4566417 C244.751289,66.3528934 250.438243,72.9624488 258.418269,72.9624488 C266.737005,72.9624488 272.000571,66.4375444 272.000571,58.6293299 Z M210.626179,34.7678868 C221.15331,34.7678868 231.426407,43.1788169 231.426407,58.2839535 L231.426407,58.4566417 C231.426407,73.4737412 221.237987,81.9727085 210.626179,81.9727085 C203.157606,81.9727085 198.490172,78.1938848 195.346936,73.9918058 L195.346936,76.307859 C195.346936,79.1385907 193.057251,81.45803 190.168048,81.45803 C187.36691,81.45803 185.077225,79.1385907 185.077225,76.307859 L185.077225,23.0961975 C185.077225,20.1774286 187.282232,17.9494125 190.168048,17.9494125 C193.057251,17.9494125 195.346936,20.1774286 195.346936,23.0961975 L195.346936,43.266854 C198.659527,38.5467105 203.326962,34.7678868 210.626179,34.7678868 Z M220.983954,58.4566417 L220.983954,58.2839535 C220.983954,49.5310331 215.127645,43.7781465 208.167139,43.7781465 C201.206632,43.7781465 195.092903,49.6156841 195.092903,58.2839535 L195.092903,58.4566417 C195.092903,67.1249111 201.206632,72.9624488 208.167139,72.9624488 C215.212323,72.9624488 220.983954,67.3822504 220.983954,58.4566417 Z M158.339397,34.7678868 C172.599121,34.7678868 179.644305,46.6122642 179.644305,57.0819084 C179.644305,60.0006772 177.439297,62.0593912 174.807515,62.0593912 L146.708069,62.0593912 C147.812266,69.4409643 152.991154,73.5617783 159.61295,73.5617783 C163.941673,73.5617783 167.335555,72.0177429 170.221371,69.6136525 C170.986857,69.014323 171.664279,68.6689466 172.853154,68.6689466 C175.146226,68.6689466 176.927844,70.4703213 176.927844,72.8744117 C176.927844,74.1611079 176.3351,75.278502 175.569614,76.0505198 C171.494923,79.7413063 166.404101,82.0573596 159.440207,82.0573596 C146.454036,82.0573596 136.438359,72.5324214 136.438359,58.5412928 L136.438359,58.3719907 C136.438359,45.4102191 145.519194,34.7678868 158.339397,34.7678868 Z M146.623392,55.1958826 L169.628627,55.1958826 C168.947818,48.49829 165.04587,43.266854 158.254719,43.266854 C151.971635,43.266854 147.558233,48.1562997 146.623392,55.1958826 Z M114.621998,47.384282 L134.65674,72.5324214 C135.503517,73.6464294 136.099648,74.6757864 136.099648,76.307859 C136.099648,79.2266278 133.806576,81.45803 130.836082,81.45803 C128.797044,81.45803 127.523491,80.428673 126.422681,78.9692886 L107.322781,54.3358277 L97.645814,63.7761149 L97.645814,76.2198219 C97.645814,79.1385907 95.3527421,81.45803 92.4669263,81.45803 C89.4964329,81.45803 87.2033609,79.1385907 87.2033609,76.2198219 L87.2033609,25.7576271 C87.2033609,22.8388582 89.4964329,20.522805 92.4669263,20.522805 C95.3527421,20.522805 97.645814,22.8388582 97.645814,25.7576271 L97.645814,51.1631057 L125.82655,22.4968679 C127.015425,21.2067856 128.288977,20.522805 130.155274,20.522805 C133.04109,20.522805 134.995451,22.8388582 134.995451,25.4156367 C134.995451,27.0443233 134.314642,28.2463685 133.129154,29.3637626 L114.621998,47.384282 Z M29.0196247,62.5097349 C15.2069994,62.5097349 4.64599757,45.6777165 4.64599757,24.3591914 C4.64599757,3.04405242 13.4457034,0 29.0196247,0 C44.5935459,0 52.6311525,3.04405242 52.6311525,24.3591914 C52.6311525,45.6777165 41.5790201,62.5097349 29.0196247,62.5097349 Z M56.7160044,81.9659364 C57.8506855,83.8519622 57.207135,86.2865269 55.2832579,87.397149 C54.6363203,87.7696137 53.9284148,87.9456879 53.2306706,87.9456879 C51.8453435,87.9456879 50.4938876,87.2481631 49.7385625,85.9919412 C48.4345261,83.831646 47.1000056,82.2943826 45.5961298,80.8891748 C44.092254,79.4907392 42.3851517,78.2379034 40.4307905,76.7785189 C39.4756262,76.070836 38.5238489,75.4579623 37.5754587,74.9365117 C37.6872333,75.1396743 37.7990079,75.3462229 37.9141695,75.5595436 C40.6577268,80.7198727 43.4893488,87.8813531 43.5028972,96.03833 C43.5028972,98.2257136 41.6907946,100 39.4553035,100 C37.2164253,100 35.4043227,98.2257136 35.4043227,96.03833 C35.4178711,89.8350997 33.1959285,83.8688924 30.8520499,79.4467206 C30.0933378,78.0042664 29.3278515,76.7311143 28.6368815,75.6678969 C27.9831697,76.6803237 27.2583287,77.8823689 26.5334876,79.236786 C24.1523509,83.679274 21.8558919,89.7402905 21.8694403,96.03833 C21.8694403,98.2257136 20.0573377,100 17.8218466,100 C15.5863555,100 13.7742529,98.2257136 13.7742529,96.03833 C13.7878013,87.8813531 16.6160362,80.7198727 19.3629806,75.5595436 C19.4747551,75.3462229 19.5865297,75.1396743 19.7016913,74.9365117 C18.7499141,75.4579623 17.8015239,76.070836 16.8463595,76.7785189 C14.8886113,78.2379034 13.181509,79.4907392 11.6810203,80.8891748 C10.1771445,82.2943826 8.83923692,83.831646 7.53520045,85.9953273 C6.40051937,87.8813531 3.91776941,88.507771 1.99389223,87.397149 C0.0666279455,86.2865269 -0.573535412,83.8519622 0.561145671,81.9659364 C2.25469953,79.1453628 4.15825406,76.944435 6.1092281,75.1362882 C8.06358925,73.3247554 10.0314988,71.8958453 11.9418276,70.4669353 C12.8461853,69.7897267 13.7742529,69.1666949 14.722643,68.6012257 C13.7742529,68.0357566 12.8461853,67.4093387 11.9418276,66.7321302 C7.57245863,63.471371 3.77551089,59.0729015 0.561145671,53.7331121 C-0.573535412,51.8437003 0.0666279455,49.4125216 1.99389223,48.3018996 C3.91776941,47.1912776 6.40051937,47.8176955 7.53520045,49.7037213 C10.319403,54.3324417 13.4795745,57.9148749 16.8429724,60.4205465 C20.4502422,63.0921342 23.9931568,64.4160769 27.6376847,64.6260116 C27.9696213,64.6158535 28.3049449,64.6056953 28.6368815,64.6056953 C28.9722052,64.6056953 29.3041417,64.6158535 29.6360783,64.6260116 C33.2806062,64.4160769 36.8269079,63.0921342 40.4307905,60.4205465 C43.7941885,57.9148749 46.9577471,54.3324417 49.7385625,49.7037213 C50.8766307,47.8176955 53.3559936,47.1912776 55.2832579,48.3018996 C57.207135,49.4125216 57.8506855,51.8437003 56.7160044,53.7297261 C53.5016392,59.0729015 49.7013043,63.471371 45.3319354,66.7321302 C44.4275776,67.4093387 43.4995101,68.0357566 42.5545071,68.6012257 C43.4995101,69.1666949 44.4275776,69.7897267 45.3319354,70.4669353 C47.2456513,71.8958453 49.2101737,73.3247554 51.167922,75.1362882 C53.118896,76.944435 55.0190635,79.1453628 56.7160044,81.9659364 Z M23.3123482,48.6845224 C21.0768571,48.6845224 19.2647545,50.4621948 19.2647545,52.6495784 C19.2647545,54.8437341 21.0768571,56.6180205 23.3123482,56.6180205 C25.5478393,56.6180205 27.3599419,54.8437341 27.3599419,52.6495784 C27.3599419,50.4621948 25.5478393,48.6845224 23.3123482,48.6845224 Z M33.9614148,48.6845224 C31.7259237,48.6845224 29.9138211,50.4621948 29.9138211,52.6495784 C29.9138211,54.8437341 31.7259237,56.6180205 33.9614148,56.6180205 C36.1969059,56.6180205 38.0090085,54.8437341 38.0090085,52.6495784 C38.0090085,50.4621948 36.1969059,48.6845224 33.9614148,48.6845224 Z" fill="#0073D1" fill-rule="nonzero"/>
+                    </svg>
+                </div>
+                <span class="header-subtitle">Table Management</span>
+            </div>
+        </div>
+        <div class="header-right">
+            Admin
+        </div>
+    </header>
+
+    <!-- ═══════════════ PAGE TITLE ═══════════════ -->
+    <div class="page-title">
+        <h1>Table Management</h1>
+        <p>Discover, register, and manage data tables from your source</p>
+    </div>
+
+    <!-- ═══════════════ CONTENT ═══════════════ -->
+    <div class="content">
+
+        <!-- ── Discovery Panel ── -->
+        <div class="panel">
+            <div class="panel-header">
+                <div class="panel-header-left">
+                    <div class="panel-header-icon">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0073D1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="11" cy="11" r="8"/>
+                            <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                        </svg>
+                    </div>
+                    <div>
+                        <div class="panel-title">Discover Tables</div>
+                        <div class="panel-subtitle">Scan your data source for available tables</div>
+                    </div>
+                </div>
+                <button class="btn btn-primary" id="discoverBtn" onclick="discoverTables()">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="11" cy="11" r="8"/>
+                        <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                    </svg>
+                    Discover tables from source
+                </button>
+            </div>
+            <div id="discoveryResults">
+                <div class="panel-body-empty" id="discoveryEmpty">
+                    Click "Discover tables from source" to scan for available tables
+                </div>
+            </div>
+        </div>
+
+        <!-- ── Registry Panel ── -->
+        <div class="panel">
+            <div class="panel-header">
+                <div class="panel-header-left">
+                    <div class="panel-header-icon" style="background: var(--success-light);">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#10B77F" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                            <polyline points="14 2 14 8 20 8"/>
+                            <line x1="16" y1="13" x2="8" y2="13"/>
+                            <line x1="16" y1="17" x2="8" y2="17"/>
+                            <polyline points="10 9 9 9 8 9"/>
+                        </svg>
+                    </div>
+                    <div>
+                        <div class="panel-title">Registered Tables</div>
+                        <div class="panel-subtitle" id="registrySubtitle">Tables currently configured for sync</div>
+                    </div>
+                </div>
+                <button class="btn btn-secondary btn-sm" onclick="loadRegistry()">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="23 4 23 10 17 10"/>
+                        <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+                    </svg>
+                    Refresh
+                </button>
+            </div>
+            <div id="registryContent">
+                <div class="loading-state" id="registryLoading">
+                    <div class="spinner spinner-lg"></div>
+                    <span>Loading registry...</span>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- ═══════════════ REGISTRATION MODAL ═══════════════ -->
+    <div class="modal-overlay" id="registerModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h2>Register Table</h2>
+                <button class="modal-close" onclick="closeRegisterModal()">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18"/>
+                        <line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label class="form-label" for="regTableId">Table ID</label>
+                    <input type="text" class="form-input" id="regTableId" readonly>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="regTableName">Table Name</label>
+                    <input type="text" class="form-input" id="regTableName" readonly>
+                    <div class="form-hint">Derived from the source table identifier</div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="regStrategy">Sync Strategy</label>
+                    <select class="form-select" id="regStrategy">
+                        <option value="full_refresh">Full Refresh</option>
+                        <option value="incremental">Incremental</option>
+                        <option value="partitioned">Partitioned</option>
+                    </select>
+                    <div class="form-hint">How data should be synchronized from the source</div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="regPrimaryKey">Primary Key</label>
+                    <input type="text" class="form-input" id="regPrimaryKey" placeholder="e.g. id">
+                    <div class="form-hint">Comma-separated list of primary key columns</div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="regDescription">Description <span class="optional">(optional)</span></label>
+                    <textarea class="form-textarea" id="regDescription" placeholder="Brief description of the table contents..."></textarea>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="regDataset">Dataset Group <span class="optional">(optional)</span></label>
+                    <input type="text" class="form-input" id="regDataset" placeholder="e.g. crm, finance, marketing">
+                    <div class="form-hint">Logical grouping for catalog organization</div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeRegisterModal()">Cancel</button>
+                <button class="btn btn-primary" id="registerSubmitBtn" onclick="registerTable()">
+                    Register Table
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══════════════ EDIT MODAL ═══════════════ -->
+    <div class="modal-overlay" id="editModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h2>Edit Table</h2>
+                <button class="modal-close" onclick="closeEditModal()">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18"/>
+                        <line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label class="form-label" for="editTableId">Table ID</label>
+                    <input type="text" class="form-input" id="editTableId" readonly>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="editStrategy">Sync Strategy</label>
+                    <select class="form-select" id="editStrategy">
+                        <option value="full_refresh">Full Refresh</option>
+                        <option value="incremental">Incremental</option>
+                        <option value="partitioned">Partitioned</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="editPrimaryKey">Primary Key</label>
+                    <input type="text" class="form-input" id="editPrimaryKey" placeholder="e.g. id">
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="editDescription">Description <span class="optional">(optional)</span></label>
+                    <textarea class="form-textarea" id="editDescription" placeholder="Brief description of the table contents..."></textarea>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="editDataset">Dataset Group <span class="optional">(optional)</span></label>
+                    <input type="text" class="form-input" id="editDataset" placeholder="e.g. crm, finance, marketing">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeEditModal()">Cancel</button>
+                <button class="btn btn-primary" id="editSubmitBtn" onclick="saveTableEdit()">
+                    Save Changes
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══════════════ TOAST ═══════════════ -->
+    <div class="toast" id="toast">
+        <div class="toast-icon" id="toastIcon"></div>
+        <span id="toastMessage"></span>
+    </div>
+
+    <!-- ═══════════════ FOOTER ═══════════════ -->
+    <footer class="footer">
+        <a href="{{ url_for('dashboard') }}">Back to Dashboard</a>
+    </footer>
+
+    <script>
+    /* ═══════════════════════════════════════════════════════════════
+       Admin Tables - JavaScript
+       ═══════════════════════════════════════════════════════════════ */
+
+    // State
+    let discoveryData = null;
+    let registryData = null;
+    let registryVersion = null;
+    let currentEditTableId = null;
+
+    // ── Toast notification ──────────────────────────────────────
+
+    function showToast(message, type) {
+        var toast = document.getElementById('toast');
+        var icon = document.getElementById('toastIcon');
+        var msg = document.getElementById('toastMessage');
+
+        toast.className = 'toast toast-' + type;
+        msg.textContent = message;
+
+        if (type === 'success') {
+            icon.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#10B77F" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>';
+        } else {
+            icon.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#EA580C" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>';
+        }
+
+        // Show
+        requestAnimationFrame(function() {
+            toast.classList.add('visible');
+        });
+
+        // Hide after 4 seconds
+        setTimeout(function() {
+            toast.classList.remove('visible');
+        }, 4000);
+    }
+
+    // ── Format helpers ──────────────────────────────────────────
+
+    function formatNumber(n) {
+        if (n == null) return '-';
+        if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+        if (n >= 1000) return n.toLocaleString();
+        return String(n);
+    }
+
+    function formatSize(bytes) {
+        if (bytes == null || bytes === 0) return '-';
+        if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(1) + ' GB';
+        if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
+        if (bytes >= 1024) return (bytes / 1024).toFixed(1) + ' KB';
+        return bytes + ' B';
+    }
+
+    function escapeHtml(str) {
+        if (!str) return '';
+        var div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    }
+
+    // ── Discovery ───────────────────────────────────────────────
+
+    function discoverTables() {
+        var btn = document.getElementById('discoverBtn');
+        var resultsEl = document.getElementById('discoveryResults');
+
+        // Loading state
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span> Discovering...';
+        resultsEl.innerHTML = '<div class="loading-state"><div class="spinner spinner-lg"></div><span>Scanning data source for tables...</span></div>';
+
+        fetch('/api/admin/discover-tables')
+            .then(function(r) {
+                if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || 'Discovery failed'); });
+                return r.json();
+            })
+            .then(function(data) {
+                discoveryData = data;
+                renderDiscoveryResults(data);
+                showToast('Found ' + data.total + ' tables in ' + data.buckets.length + ' buckets', 'success');
+            })
+            .catch(function(err) {
+                resultsEl.innerHTML = '<div class="panel-body-empty" style="color: var(--error);">Discovery failed: ' + escapeHtml(err.message) + '</div>';
+                showToast('Discovery failed: ' + err.message, 'error');
+            })
+            .finally(function() {
+                btn.disabled = false;
+                btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> Discover tables from source';
+            });
+    }
+
+    function renderDiscoveryResults(data) {
+        var el = document.getElementById('discoveryResults');
+
+        if (!data.buckets || data.buckets.length === 0) {
+            el.innerHTML = '<div class="panel-body-empty">No tables found in data source</div>';
+            return;
+        }
+
+        var html = '';
+        data.buckets.forEach(function(bucket) {
+            var registeredCount = bucket.tables.filter(function(t) { return t.is_registered; }).length;
+
+            html += '<div class="bucket-group">';
+            html += '<button class="bucket-trigger expanded" onclick="toggleBucket(this)">';
+            html += '<svg class="bucket-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>';
+            html += escapeHtml(bucket.bucket_name || bucket.bucket_id);
+            html += '<span class="bucket-count">' + bucket.tables.length + ' tables';
+            if (registeredCount > 0) html += ' / ' + registeredCount + ' registered';
+            html += '</span>';
+            html += '</button>';
+            html += '<div class="bucket-content expanded">';
+
+            bucket.tables.forEach(function(table) {
+                html += '<div class="table-item">';
+                html += '<div class="table-item-info">';
+                html += '<div class="table-item-name">' + escapeHtml(table.name) + '</div>';
+                html += '<div class="table-item-meta">';
+                if (table.columns != null) html += '<span>' + table.columns + ' columns</span>';
+                if (table.row_count != null) html += '<span>' + formatNumber(table.row_count) + ' rows</span>';
+                if (table.size_bytes != null) html += '<span>' + formatSize(table.size_bytes) + '</span>';
+                html += '</div>';
+                html += '</div>';
+                html += '<div class="table-item-actions">';
+
+                if (table.is_registered) {
+                    html += '<span class="badge badge-registered">Registered</span>';
+                } else {
+                    html += '<span class="badge badge-available">Available</span>';
+                    html += '<button class="btn btn-primary btn-sm" onclick=\'openRegisterModal(' + JSON.stringify(table).replace(/'/g, "\\'") + ')\'>Register</button>';
+                }
+
+                html += '</div>';
+                html += '</div>';
+            });
+
+            html += '</div>';
+            html += '</div>';
+        });
+
+        el.innerHTML = html;
+    }
+
+    function toggleBucket(trigger) {
+        var content = trigger.nextElementSibling;
+        var isExpanded = trigger.classList.contains('expanded');
+
+        if (isExpanded) {
+            trigger.classList.remove('expanded');
+            content.classList.remove('expanded');
+        } else {
+            trigger.classList.add('expanded');
+            content.classList.add('expanded');
+        }
+    }
+
+    // ── Registration Modal ──────────────────────────────────────
+
+    function openRegisterModal(table) {
+        document.getElementById('regTableId').value = table.id || '';
+        document.getElementById('regTableName').value = table.name || '';
+        document.getElementById('regStrategy').value = 'full_refresh';
+        document.getElementById('regPrimaryKey').value = (table.primary_key || []).join(', ');
+        document.getElementById('regDescription').value = '';
+        document.getElementById('regDataset').value = '';
+        document.getElementById('registerSubmitBtn').disabled = false;
+        document.getElementById('registerModal').classList.add('active');
+    }
+
+    function closeRegisterModal() {
+        document.getElementById('registerModal').classList.remove('active');
+    }
+
+    function registerTable() {
+        var btn = document.getElementById('registerSubmitBtn');
+        btn.disabled = true;
+        btn.textContent = 'Registering...';
+
+        var pk = document.getElementById('regPrimaryKey').value.trim();
+        var primaryKey = pk ? pk.split(',').map(function(s) { return s.trim(); }).filter(Boolean) : [];
+
+        var payload = {
+            id: document.getElementById('regTableId').value,
+            name: document.getElementById('regTableName').value,
+            sync_strategy: document.getElementById('regStrategy').value,
+            primary_key: primaryKey,
+            description: document.getElementById('regDescription').value.trim(),
+            dataset: document.getElementById('regDataset').value.trim(),
+            version: registryVersion
+        };
+
+        fetch('/api/admin/register-table', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        })
+        .then(function(r) {
+            if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || 'Registration failed'); });
+            return r.json();
+        })
+        .then(function(data) {
+            registryVersion = data.version;
+            closeRegisterModal();
+            showToast('Table registered successfully', 'success');
+            // Refresh both panels
+            loadRegistry();
+            if (discoveryData) discoverTables();
+        })
+        .catch(function(err) {
+            showToast('Registration failed: ' + err.message, 'error');
+        })
+        .finally(function() {
+            btn.disabled = false;
+            btn.textContent = 'Register Table';
+        });
+    }
+
+    // ── Edit Modal ──────────────────────────────────────────────
+
+    function openEditModal(table) {
+        currentEditTableId = table.id;
+        document.getElementById('editTableId').value = table.id || '';
+        document.getElementById('editStrategy').value = table.sync_strategy || 'full_refresh';
+        document.getElementById('editPrimaryKey').value = (table.primary_key || []).join(', ');
+        document.getElementById('editDescription').value = table.description || '';
+        document.getElementById('editDataset').value = table.dataset || '';
+        document.getElementById('editSubmitBtn').disabled = false;
+        document.getElementById('editModal').classList.add('active');
+    }
+
+    function closeEditModal() {
+        document.getElementById('editModal').classList.remove('active');
+        currentEditTableId = null;
+    }
+
+    function saveTableEdit() {
+        if (!currentEditTableId) return;
+
+        var btn = document.getElementById('editSubmitBtn');
+        btn.disabled = true;
+        btn.textContent = 'Saving...';
+
+        var pk = document.getElementById('editPrimaryKey').value.trim();
+        var primaryKey = pk ? pk.split(',').map(function(s) { return s.trim(); }).filter(Boolean) : [];
+
+        var payload = {
+            sync_strategy: document.getElementById('editStrategy').value,
+            primary_key: primaryKey,
+            description: document.getElementById('editDescription').value.trim(),
+            dataset: document.getElementById('editDataset').value.trim(),
+            version: registryVersion
+        };
+
+        fetch('/api/admin/registry/' + encodeURIComponent(currentEditTableId), {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        })
+        .then(function(r) {
+            if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || 'Update failed'); });
+            return r.json();
+        })
+        .then(function(data) {
+            registryVersion = data.version;
+            closeEditModal();
+            showToast('Table updated successfully', 'success');
+            loadRegistry();
+        })
+        .catch(function(err) {
+            showToast('Update failed: ' + err.message, 'error');
+        })
+        .finally(function() {
+            btn.disabled = false;
+            btn.textContent = 'Save Changes';
+        });
+    }
+
+    // ── Registry ────────────────────────────────────────────────
+
+    function loadRegistry() {
+        var el = document.getElementById('registryContent');
+        el.innerHTML = '<div class="loading-state"><div class="spinner spinner-lg"></div><span>Loading registry...</span></div>';
+
+        fetch('/api/admin/registry')
+            .then(function(r) {
+                if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || 'Load failed'); });
+                return r.json();
+            })
+            .then(function(data) {
+                registryData = data;
+                registryVersion = data.version;
+                renderRegistry(data);
+            })
+            .catch(function(err) {
+                el.innerHTML = '<div class="panel-body-empty" style="color: var(--error);">Failed to load registry: ' + escapeHtml(err.message) + '</div>';
+            });
+    }
+
+    function renderRegistry(data) {
+        var el = document.getElementById('registryContent');
+        var tables = data.tables || [];
+        var subtitle = document.getElementById('registrySubtitle');
+
+        subtitle.textContent = tables.length + ' table' + (tables.length !== 1 ? 's' : '') + ' configured for sync';
+
+        if (tables.length === 0) {
+            el.innerHTML = '<div class="panel-body-empty">No tables registered yet. Use the discovery panel above to find and register tables.</div>';
+            return;
+        }
+
+        var html = '<table class="registry-table">';
+        html += '<thead><tr>';
+        html += '<th>Table ID</th>';
+        html += '<th>Strategy</th>';
+        html += '<th>Primary Key</th>';
+        html += '<th>Description</th>';
+        html += '<th class="col-actions">Actions</th>';
+        html += '</tr></thead>';
+        html += '<tbody>';
+
+        tables.forEach(function(table) {
+            html += '<tr>';
+            html += '<td class="col-id" title="' + escapeHtml(table.id) + '">' + escapeHtml(table.id) + '</td>';
+            html += '<td class="col-strategy"><span class="strategy-badge">' + escapeHtml(table.sync_strategy || 'full_refresh') + '</span></td>';
+            html += '<td>' + escapeHtml((table.primary_key || []).join(', ') || '-') + '</td>';
+            html += '<td>' + escapeHtml(table.description || '-') + '</td>';
+            html += '<td class="col-actions">';
+            html += '<button class="btn-icon" title="Edit" onclick=\'openEditModal(' + JSON.stringify(table).replace(/'/g, "\\'") + ')\'>';
+            html += '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>';
+            html += '</button>';
+            html += '<button class="btn-icon danger" title="Delete" onclick="deleteTable(\'' + escapeHtml(table.id).replace(/'/g, "\\'") + '\')">';
+            html += '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
+            html += '</button>';
+            html += '</td>';
+            html += '</tr>';
+        });
+
+        html += '</tbody></table>';
+        el.innerHTML = html;
+    }
+
+    function deleteTable(tableId) {
+        if (!confirm('Are you sure you want to unregister "' + tableId + '"?\n\nThis will remove it from sync and clean up user subscriptions.')) {
+            return;
+        }
+
+        fetch('/api/admin/registry/' + encodeURIComponent(tableId), {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ version: registryVersion })
+        })
+        .then(function(r) {
+            if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || 'Delete failed'); });
+            return r.json();
+        })
+        .then(function(data) {
+            registryVersion = data.version;
+            showToast('Table unregistered successfully', 'success');
+            loadRegistry();
+            if (discoveryData) discoverTables();
+        })
+        .catch(function(err) {
+            showToast('Delete failed: ' + err.message, 'error');
+        });
+    }
+
+    // ── Modal close on overlay click ────────────────────────────
+
+    document.getElementById('registerModal').addEventListener('click', function(e) {
+        if (e.target === this) closeRegisterModal();
+    });
+
+    document.getElementById('editModal').addEventListener('click', function(e) {
+        if (e.target === this) closeEditModal();
+    });
+
+    // Close modals on Escape key
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') {
+            closeRegisterModal();
+            closeEditModal();
+        }
+    });
+
+    // ── Initialize ──────────────────────────────────────────────
+
+    loadRegistry();
+
+    </script>
+</body>
+</html>
