@@ -44,12 +44,12 @@ cd "$REPO_DIR"
 echo ""
 echo "--- Phase 1: Download raw JSON ---"
 if $DRY_RUN; then
-    python scripts/jira_backfill.py --jql "$JQL" --dry-run
+    python -m connectors.jira.scripts.backfill --jql "$JQL" --dry-run
     echo "Dry run complete. Exiting."
     exit 0
 fi
 
-python scripts/jira_backfill.py --jql "$JQL" --skip-existing --parallel 4
+python -m connectors.jira.scripts.backfill --jql "$JQL" --skip-existing --parallel 4
 
 # --- Phase 2: Incremental Parquet transform ---
 echo ""

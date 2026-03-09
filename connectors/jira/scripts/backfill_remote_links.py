@@ -8,13 +8,13 @@ Parquet transform to extract remote_links table data.
 
 Usage:
     # On server (uses /opt/data-analyst/.env):
-    python scripts/jira_backfill_remote_links.py
+    python -m connectors.jira.scripts.backfill_remote_links
 
     # With parallel workers:
-    python scripts/jira_backfill_remote_links.py --parallel 4
+    python -m connectors.jira.scripts.backfill_remote_links --parallel 4
 
     # Dry run:
-    python scripts/jira_backfill_remote_links.py --dry-run
+    python -m connectors.jira.scripts.backfill_remote_links --dry-run
 
 Environment variables (loaded from .env):
     JIRA_DOMAIN - Jira Cloud domain

@@ -150,8 +150,8 @@ When reopening the project in Claude Code:
 
 ### Files NOT to modify (stable infrastructure)
 - `src/parquet_manager.py` - Parquet conversion engine
-- `src/jira_file_lock.py` - Advisory file locking
-- `src/incremental_jira_transform.py` - Jira monthly Parquet transform
+- `connectors/jira/file_lock.py` - Advisory file locking
+- `connectors/jira/incremental_transform.py` - Jira monthly Parquet transform
 - `server/ws_gateway/` - WebSocket notification gateway
 
 ## Git Commits & Pull Requests

@@ -12,7 +12,7 @@ Lock nesting order (always outer → inner to prevent deadlocks):
 Uses fcntl.flock() for POSIX advisory locking (works across processes).
 
 Usage:
-    from src.jira_file_lock import issue_json_lock, parquet_month_lock
+    from connectors.jira.file_lock import issue_json_lock, parquet_month_lock
 
     with issue_json_lock(issues_dir, "SUPPORT-1234"):
         # read JSON, modify, write

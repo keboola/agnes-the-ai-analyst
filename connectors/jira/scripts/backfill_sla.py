@@ -13,16 +13,16 @@ the domain-based URL (https://your-org.atlassian.net/rest/api/3/...).
 
 Usage:
     # On server:
-    python scripts/jira_backfill_sla.py
+    python -m connectors.jira.scripts.backfill_sla
 
     # With parallel workers:
-    python scripts/jira_backfill_sla.py --parallel 8
+    python -m connectors.jira.scripts.backfill_sla --parallel 8
 
     # Dry run (count files needing update):
-    python scripts/jira_backfill_sla.py --dry-run
+    python -m connectors.jira.scripts.backfill_sla --dry-run
 
     # Force re-fetch even if SLA data already present:
-    python scripts/jira_backfill_sla.py --force
+    python -m connectors.jira.scripts.backfill_sla --force
 
 Environment variables (loaded from .env):
     JIRA_SLA_EMAIL - Email for JSM service account authentication

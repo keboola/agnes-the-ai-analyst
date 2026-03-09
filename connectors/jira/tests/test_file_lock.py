@@ -1,4 +1,4 @@
-"""Tests for per-issue advisory file locking (src/jira_file_lock.py).
+"""Tests for per-issue advisory file locking (connectors/jira/file_lock.py).
 
 Verifies that issue_json_lock correctly:
 - Acquires and releases locks via context manager
@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from src.jira_file_lock import issue_json_lock
+from connectors.jira.file_lock import issue_json_lock
 
 
 class TestBasicLockUnlock:

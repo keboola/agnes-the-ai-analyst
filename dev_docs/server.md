@@ -152,7 +152,7 @@ Use `0o660` for files accessed by services via data-ops group ACL, `0o644` for w
 When multiple services write to the same JSON file (e.g., SLA poll and webhook handler both updating `/data/src_data/raw/jira/issues/SUPPORT-1234.json`), use advisory file locking to prevent races:
 
 ```python
-from src.jira_file_lock import issue_json_lock
+from connectors.jira.file_lock import issue_json_lock
 
 with issue_json_lock(issues_dir, issue_key):
     # read JSON, modify, atomic write, transform to Parquet
@@ -165,8 +165,8 @@ with issue_json_lock(issues_dir, issue_key):
 - The lock must cover the entire read-modify-write **and** the Parquet transform — otherwise another writer could overwrite the JSON between write and transform, causing the transform to read stale data
 
 Currently used by:
-- `scripts/jira_poll_sla.py` — wraps SLA+status update + `transform_single_issue()`
-- `webapp/jira_service.py` — wraps `save_issue()` JSON write + `trigger_incremental_transform()`, and `_handle_deletion()` read-modify-write + transform
+- `connectors/jira/scripts/poll_sla.py` — wraps SLA+status update + `transform_single_issue()`
+- `connectors/jira/service.py` — wraps `save_issue()` JSON write + `trigger_incremental_transform()`, and `_handle_deletion()` read-modify-write + transform
 
 Attachment downloads in `save_issue()` intentionally run **outside** the lock (can take tens of seconds and don't modify JSON).
 
@@ -1405,8 +1405,8 @@ SLA elapsed values (`first_response_elapsed_millis`, `time_to_resolution_elapsed
 |-----------|-------------|
 | `jira-sla-poll.service` | Oneshot service that polls open tickets for fresh SLA + status data |
 | `jira-sla-poll.timer` | Runs every 15 minutes (10min after boot, then every 15min) |
-| `scripts/jira_poll_sla.py` | Reads Parquet to find open issues, fetches SLA + status via cloud API |
-| `src/jira_file_lock.py` | Per-issue advisory file locking (shared with webhook handler) |
+| `connectors/jira/scripts/poll_sla.py` | Reads Parquet to find open issues, fetches SLA + status via cloud API |
+| `connectors/jira/file_lock.py` | Per-issue advisory file locking (shared with webhook handler) |
 
 **How it works:**
 1. Reads Parquet issues to find open tickets with SLA data (~49 tickets)
@@ -1428,7 +1428,7 @@ journalctl -u jira-sla-poll.service --since "1 hour ago"
 
 # Manual dry run (count open issues)
 cd /opt/data-analyst/repo
-/opt/data-analyst/.venv/bin/python scripts/jira_poll_sla.py --dry-run
+/opt/data-analyst/.venv/bin/python -m connectors.jira.scripts.poll_sla --dry-run
 ```
 
 **Requires:** `JIRA_SLA_EMAIL`, `JIRA_SLA_API_TOKEN`, `JIRA_CLOUD_ID` in `.env`. Timer is auto-enabled by `deploy.sh` when `JIRA_SLA_API_TOKEN` is set.
@@ -1442,7 +1442,7 @@ Automated check every 30 minutes to detect missing Jira issues caused by webhook
 | `jira-consistency.service` | Oneshot service that validates data consistency across all sources |
 | `jira-consistency.timer` | Runs every 30 minutes (10min after boot) |
 | `jira-consistency-deep.timer` | Weekly full history check (Sunday 3 AM) |
-| `scripts/jira_consistency_check.py` | Validation script with auto-backfill capability |
+| `connectors/jira/scripts/consistency_check.py` | Validation script with auto-backfill capability |
 
 **How it works:**
 1. Queries Jira API for all issue keys (last 30 days by default)
@@ -1470,10 +1470,10 @@ journalctl -u jira-consistency.service --since "1 hour ago"
 
 # Manual check (dry run)
 cd /opt/data-analyst/repo
-/opt/data-analyst/.venv/bin/python scripts/jira_consistency_check.py --dry-run --max-age-days 7
+/opt/data-analyst/.venv/bin/python -m connectors.jira.scripts.consistency_check --dry-run --max-age-days 7
 
 # Manual check with auto-fix
-/opt/data-analyst/.venv/bin/python scripts/jira_consistency_check.py --auto-fix --max-age-days 30
+/opt/data-analyst/.venv/bin/python -m connectors.jira.scripts.consistency_check --auto-fix --max-age-days 30
 
 # View consistency report
 cat /data/src_data/raw/jira/_consistency_report.json | python3 -m json.tool
@@ -1486,7 +1486,7 @@ jq -r '.discrepancies.missing_in_json[]' /data/src_data/raw/jira/_consistency_re
 
 # Backfill specific issues
 cd /opt/data-analyst/repo
-/opt/data-analyst/.venv/bin/python scripts/jira_backfill.py --issue-keys SUPPORT-15307,SUPPORT-15308
+/opt/data-analyst/.venv/bin/python -m connectors.jira.scripts.backfill --issue-keys SUPPORT-15307,SUPPORT-15308
 
 # Verify in Parquet
 /opt/data-analyst/.venv/bin/python -c "
@@ -1510,7 +1510,7 @@ for row in result:
 - API token has read-only access to Jira (no write permissions needed)
 - Webhook events are logged for audit purposes
 - Multiple services write to `/data/src_data/raw/jira/`: webapp (www-data), SLA poll (root), consistency check (root), backfill scripts (admin users)
-- Concurrent writes to the same issue JSON are serialized via per-issue advisory file locking (`src/jira_file_lock.py`, `fcntl.flock`). Lock files in `issues/.locks/`. See [#203](https://github.com/your-org/ai-data-analyst/issues/203).
+- Concurrent writes to the same issue JSON are serialized via per-issue advisory file locking (`connectors/jira/file_lock.py`, `fcntl.flock`). Lock files in `issues/.locks/`. See [#203](https://github.com/your-org/ai-data-analyst/issues/203).
 
 ## Data Profiler
 

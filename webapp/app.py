@@ -18,10 +18,17 @@ from flask import Flask, flash, jsonify, redirect, render_template, request, ses
 from .auth import auth_bp, init_oauth, login_required
 from .config import Config
 from .desktop_auth import desktop_bp, require_desktop_auth
-from .jira_webhook import jira_bp
 from .notification_images import images_bp
 from .account_service import get_account_details
 from .sync_settings_service import get_sync_settings, update_sync_settings
+
+# Jira connector is optional - only loaded if configured
+try:
+    from connectors.jira.webhook import jira_bp
+    JIRA_AVAILABLE = True
+except ImportError:
+    JIRA_AVAILABLE = False
+    jira_bp = None
 
 # Password auth is optional - requires SENDGRID_API_KEY
 try:
@@ -73,7 +80,8 @@ def create_app() -> Flask:
     app.register_blueprint(auth_bp)
     app.register_blueprint(desktop_bp)
     app.register_blueprint(images_bp)
-    app.register_blueprint(jira_bp)
+    if JIRA_AVAILABLE and jira_bp:
+        app.register_blueprint(jira_bp)
     if PASSWORD_AUTH_AVAILABLE and password_auth_bp:
         app.register_blueprint(password_auth_bp)
 

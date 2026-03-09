@@ -12,13 +12,13 @@ Runs every 30 minutes via systemd timer to detect webhook losses and transform f
 
 Usage:
     # Dry run (check only, no fixes)
-    python scripts/jira_consistency_check.py --dry-run --max-age-days 7
+    python -m connectors.jira.scripts.consistency_check --dry-run --max-age-days 7
 
     # Auto-fix mode (default)
-    python scripts/jira_consistency_check.py --auto-fix --max-age-days 30
+    python -m connectors.jira.scripts.consistency_check --auto-fix --max-age-days 30
 
     # Weekly deep check (full history)
-    python scripts/jira_consistency_check.py --auto-fix --max-age-days 365
+    python -m connectors.jira.scripts.consistency_check --auto-fix --max-age-days 365
 
 Environment variables (loaded from .env):
     JIRA_DOMAIN - Jira Cloud domain (e.g., your-org.atlassian.net)
@@ -353,7 +353,7 @@ class JiraConsistencyChecker:
         # Build command for targeted backfill (force re-download to fix corrupted files)
         cmd = [
             str(self.config.venv_python),
-            str(self.config.repo_dir / "scripts" / "jira_backfill.py"),
+            str(self.config.repo_dir / "connectors" / "jira" / "scripts" / "backfill.py"),
             "--issue-keys",
             ",".join(issue_keys),
             "--no-skip-existing",  # Force re-download even if files exist
@@ -406,7 +406,7 @@ class JiraConsistencyChecker:
                 cmd = [
                     str(self.config.venv_python),
                     "-m",
-                    "src.incremental_jira_transform",
+                    "connectors.jira.incremental_transform",
                     issue_key,
                     "--raw-dir", str(self.config.raw_dir),
                     "--output-dir", str(self.config.parquet_dir),

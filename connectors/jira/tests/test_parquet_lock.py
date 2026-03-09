@@ -1,4 +1,4 @@
-"""Tests for per-month Parquet advisory file locking (src/jira_file_lock.py).
+"""Tests for per-month Parquet advisory file locking (connectors/jira/file_lock.py).
 
 Verifies that parquet_month_lock correctly:
 - Acquires and releases locks via context manager
@@ -17,7 +17,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from src.jira_file_lock import parquet_month_lock
+from connectors.jira.file_lock import parquet_month_lock
 
 
 # ---------------------------------------------------------------------------
@@ -269,7 +269,7 @@ class TestParquetLockIntegration:
 
     def test_concurrent_transforms_no_data_loss(self, tmp_path: Path) -> None:
         """Simulate concurrent webhook transforms for same month."""
-        from src.incremental_jira_transform import transform_single_issue
+        from connectors.jira.incremental_transform import transform_single_issue
 
         raw_dir = tmp_path / "raw"
         issues_dir = raw_dir / "issues"
@@ -331,7 +331,7 @@ class TestParquetLockIntegration:
 
     def test_concurrent_transforms_different_months_independent(self, tmp_path: Path) -> None:
         """Issues in different months should not interfere with each other."""
-        from src.incremental_jira_transform import transform_single_issue
+        from connectors.jira.incremental_transform import transform_single_issue
 
         raw_dir = tmp_path / "raw"
         issues_dir = raw_dir / "issues"
