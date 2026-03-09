@@ -32,17 +32,26 @@ Ask the user for:
 ## Project Structure
 
 ```
-├── src/                    # Core data sync engine
+├── src/                    # Core data sync engine (vendor-neutral)
 │   ├── config.py           # Configuration from data_description.md
 │   ├── data_sync.py        # Sync orchestration + DataSource ABC
 │   ├── parquet_manager.py  # Parquet file management
 │   └── profiler.py         # Data profiling
-├── connectors/             # Data source connectors
+├── connectors/             # Data source connectors (pluggable)
 │   ├── keboola/            # Keboola Storage connector
 │   └── jira/               # Jira webhook connector
+├── auth/                   # Authentication providers (pluggable)
+│   ├── google/             # Google OAuth provider
+│   ├── password/           # Email/password provider
+│   └── desktop/            # Desktop JWT provider (API-only)
+├── services/               # Standalone services (own systemd units)
+│   ├── telegram_bot/       # Telegram notification bot
+│   ├── ws_gateway/         # WebSocket notification gateway
+│   ├── corporate_memory/   # AI knowledge aggregation
+│   └── session_collector/  # Claude Code session collector
 ├── webapp/                 # Flask web portal (login, dashboard, API)
-├── server/                 # Server deployment (systemd, scripts)
-├── scripts/                # Utility scripts (sync, DuckDB setup)
+├── server/                 # Deployment infrastructure only
+├── scripts/                # Utility scripts (sync, DuckDB setup, dev)
 ├── config/                 # Configuration templates
 │   ├── instance.yaml.example
 │   └── data_description.md.example
@@ -97,14 +106,22 @@ pytest tests/ -v
 python -m src.data_sync
 ```
 
-## Data Source Adapters
+## Extensibility
 
-The platform supports pluggable data sources via `connectors/`:
-- **Keboola** (`keboola`): Syncs from Keboola Storage API (see `connectors/keboola/`)
+### Data Sources
+Pluggable data source connectors in `connectors/`:
+- **Keboola** (`keboola`): Syncs from Keboola Storage API
 - **CSV** (`csv`): Import from local CSV files (planned)
-- **BigQuery** (`bigquery`): Query from Google BigQuery (planned)
+- New connector = `connectors/<name>/adapter.py` implementing `DataSource`
 
-Configure in `config/instance.yaml` under `data_source.type`.
+### Authentication
+Pluggable auth providers in `auth/`:
+- **Google** (`google`): OAuth via Google
+- **Password** (`password`): Email/password with magic links
+- **Desktop** (`desktop`): JWT for desktop app API
+- New provider = `auth/<name>/provider.py` implementing `AuthProvider`
+
+Configure data source in `config/instance.yaml` under `data_source.type`.
 
 ## Server Management
 
@@ -143,6 +160,17 @@ When reopening the project in Claude Code:
 - Registry: `create_data_source()` in `src/data_sync.py` auto-discovers connectors in `connectors/`
 - Keboola: `connectors/keboola/adapter.py` -> `KeboolaDataSource` implementing `DataSource`
 - Core Keboola logic: `connectors/keboola/client.py` (Keboola Storage API wrapper)
+
+### Auth Provider Pattern
+- ABC: `AuthProvider` class in `auth/__init__.py`
+- Discovery: `discover_providers()` scans `auth/*/provider.py`
+- Providers: google, password, desktop (each exports `provider` instance)
+- Session contract: all providers set `session["user"] = {"email", "name", "picture"}`
+
+### Service Pattern
+- Self-contained modules in `services/` with `__main__.py` for `python -m services.<name>`
+- Systemd files in `services/<name>/systemd/`, auto-discovered by `deploy.sh`
+- Services: telegram_bot, ws_gateway, corporate_memory, session_collector
 
 ### Server Patterns
 - Atomic JSON writes: `tempfile.mkstemp()` + `os.fchmod(fd, 0o660)` + `os.replace()`

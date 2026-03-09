@@ -40,7 +40,8 @@ flowchart TB
 
 ## Features
 
-- **Pluggable data sources** -- adapter interface supporting Keboola out of the box, CSV import, and extensible to BigQuery, Snowflake, and others.
+- **Pluggable data sources** -- connector interface supporting Keboola out of the box, CSV import, and extensible to BigQuery, Snowflake, and others.
+- **Pluggable authentication** -- auto-discovered auth providers (Google OAuth, email/password, desktop JWT, or custom).
 - **Automatic Parquet conversion** -- source data is converted to typed, partitioned Parquet files for efficient local querying.
 - **SSH-based distribution** -- analysts sync data securely via rsync; no cloud credentials leave the server.
 - **Claude Code as analyst interface** -- natural language queries against DuckDB, powered by Claude.
@@ -81,37 +82,43 @@ ai-data-analyst/
 │   ├── instance.yaml.example      # Main config template (copy to instance.yaml)
 │   └── data_description.md.example  # Data schema template
 │
-├── src/                           # Server-side Python code
+├── src/                           # Core data sync engine (vendor-neutral)
 │   ├── data_sync.py              # Orchestrates data pull + DataSource ABC
 │   ├── parquet_manager.py        # CSV to Parquet conversion
 │   ├── config.py                 # Configuration loader
 │   └── profiler.py               # Data profiling for catalog
 │
-├── connectors/                    # Data source connectors
+├── connectors/                    # Data source connectors (pluggable)
 │   ├── keboola/                   # Keboola Storage connector
 │   │   ├── adapter.py            # KeboolaDataSource (implements DataSource)
 │   │   └── client.py             # Low-level Keboola API client
 │   └── jira/                      # Jira webhook connector
 │
+├── auth/                          # Authentication providers (pluggable)
+│   ├── google/                    # Google OAuth provider
+│   ├── password/                  # Email/password provider
+│   └── desktop/                   # Desktop JWT provider (API-only)
+│
+├── services/                      # Standalone services (own systemd units)
+│   ├── telegram_bot/              # Telegram notification bot
+│   ├── ws_gateway/                # WebSocket notification gateway
+│   ├── corporate_memory/          # AI knowledge aggregation
+│   └── session_collector/         # Claude Code session collector
+│
 ├── webapp/                        # Flask web application
 │   └── ...                        # User onboarding, settings, catalog
 │
-├── server/                        # Deployment and server management
-│   ├── deploy.sh                  # Deployment script
-│   └── ...                        # Systemd units, sudoers, cron jobs
+├── server/                        # Deployment infrastructure only
+│   ├── deploy.sh                  # Deployment script (auto-discovers services)
+│   └── ...                        # Sudoers, nginx, setup scripts
 │
-├── scripts/                       # Analyst-facing helper scripts
+├── scripts/                       # Helper scripts
 │   ├── sync_data.sh              # Sync data from server
-│   └── setup_views.sh            # Initialize DuckDB views
+│   ├── setup_views.sh            # Initialize DuckDB views
+│   └── dev_run.py                # Dev server with auth bypass
 │
 ├── docs/                          # User-facing documentation
-│   ├── QUICKSTART.md             # Setup guide
-│   └── data_description.md       # Table schemas (single source of truth)
-│
 ├── dev_docs/                      # Developer and operator documentation
-│   ├── server.md                 # Server administration
-│   └── security.md               # Security model
-│
 ├── tests/                         # Test suite
 ├── requirements.txt               # Python dependencies
 ├── CLAUDE.md                      # Instructions for Claude Code

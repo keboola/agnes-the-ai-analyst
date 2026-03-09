@@ -64,20 +64,44 @@ Flask app for user onboarding, settings, and data catalog.
 | `config/.env.template` | Secret variable placeholders |
 | `docs/data_description.md` | Table schemas + sync strategies (not committed) |
 
-### 4. Server Infrastructure (`server/`)
+### 4. Auth Providers (`auth/`)
 
-Deployment, systemd services, security.
+Pluggable authentication via auto-discovered providers.
+
+| File | Role |
+|------|------|
+| `auth/__init__.py` | `AuthProvider` ABC + `discover_providers()` scanner |
+| `auth/google/provider.py` | Google OAuth (extracted from webapp/auth.py) |
+| `auth/password/provider.py` | Email/password (delegates to webapp/password_auth) |
+| `auth/desktop/provider.py` | Desktop JWT auth (API-only, hidden from login page) |
+
+To add a new provider: create `auth/<name>/provider.py` implementing `AuthProvider`, export a `provider` instance. No core changes needed.
+
+### 5. Standalone Services (`services/`)
+
+Self-contained services with own systemd units, auto-discovered by `deploy.sh`.
+
+| Directory | Role |
+|-----------|------|
+| `services/telegram_bot/` | Telegram notification bot + dispatch |
+| `services/ws_gateway/` | WebSocket gateway for desktop app |
+| `services/corporate_memory/` | AI knowledge aggregation from analyst sessions |
+| `services/session_collector/` | Claude Code session metadata collector |
+
+### 6. Server Infrastructure (`server/`)
+
+Deployment only -- no application code.
 
 | File | Role |
 |------|------|
 | `server/setup.sh` | Initial server provisioning (groups, users, dirs) |
 | `server/webapp-setup.sh` | Nginx, SSL, systemd for webapp |
-| `server/deploy.sh` | CI/CD deployment script |
+| `server/deploy.sh` | CI/CD deployment (auto-discovers `services/*/systemd/*`) |
 | `server/sudoers-deploy` | Least-privilege sudo rules for deploy user |
 | `server/sudoers-webapp` | Sudo rules for www-data (webapp) |
 | `server/bin/` | Management scripts (add-analyst, list-analysts, etc.) |
 
-### 5. Analyst Scripts (`scripts/`)
+### 7. Analyst Scripts (`scripts/`)
 
 Helper scripts synced to analyst machines.
 
@@ -129,6 +153,8 @@ inject_config() context processor
 ## Key Patterns
 
 - **Connector pattern**: Dynamic connector registry in `src/data_sync.py`, `connectors/keboola/` for reference
+- **Auth provider pattern**: Auto-discovered from `auth/*/provider.py`, each implements `AuthProvider` ABC
+- **Service pattern**: Self-contained modules in `services/` with own `__main__.py` and `systemd/` directory
 - **Atomic writes**: `tempfile.mkstemp()` + `os.fchmod()` + `os.replace()` for JSON state files
 - **User home writes**: `sudo install -o {user} -g {user}` for writing to analyst home dirs
 - **Config interpolation**: `${ENV_VAR}` in YAML resolved at load time, missing vars logged as warnings
