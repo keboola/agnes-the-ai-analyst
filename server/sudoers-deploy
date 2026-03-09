@@ -61,7 +61,7 @@ deploy ALL=(ALL) NOPASSWD: /usr/bin/chown deploy\:data-ops /data/notifications
 deploy ALL=(ALL) NOPASSWD: /usr/bin/chmod 2770 /data/notifications
 
 # Allow deploy user to manage notify-bot service
-deploy ALL=(ALL) NOPASSWD: /usr/bin/cp /opt/data-analyst/repo/server/notify-bot.service /etc/systemd/system/notify-bot.service
+deploy ALL=(ALL) NOPASSWD: /usr/bin/cp /opt/data-analyst/repo/services/telegram_bot/systemd/notify-bot.service /etc/systemd/system/notify-bot.service
 deploy ALL=(ALL) NOPASSWD: /usr/bin/systemctl daemon-reload
 deploy ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart notify-bot
 deploy ALL=(ALL) NOPASSWD: /usr/bin/systemctl start notify-bot
@@ -74,7 +74,7 @@ deploy ALL=(ALL) NOPASSWD: /usr/bin/systemctl is-active notify-bot
 deploy ALL=(%dataread) NOPASSWD: /usr/local/bin/notify-scripts
 
 # Allow deploy user to manage ws-gateway service
-deploy ALL=(ALL) NOPASSWD: /usr/bin/cp /opt/data-analyst/repo/server/ws-gateway.service /etc/systemd/system/ws-gateway.service
+deploy ALL=(ALL) NOPASSWD: /usr/bin/cp /opt/data-analyst/repo/services/ws_gateway/systemd/ws-gateway.service /etc/systemd/system/ws-gateway.service
 deploy ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart ws-gateway
 deploy ALL=(ALL) NOPASSWD: /usr/bin/systemctl start ws-gateway
 deploy ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop ws-gateway
@@ -105,8 +105,8 @@ deploy ALL=(ALL) NOPASSWD: /usr/bin/chmod 2770 /data/auth
 deploy ALL=(ALL) NOPASSWD: /usr/bin/mkdir -p /data/corporate-memory
 deploy ALL=(ALL) NOPASSWD: /usr/bin/chown deploy\:data-ops /data/corporate-memory
 deploy ALL=(ALL) NOPASSWD: /usr/bin/chmod 2770 /data/corporate-memory
-deploy ALL=(ALL) NOPASSWD: /usr/bin/cp /opt/data-analyst/repo/server/corporate-memory.service /etc/systemd/system/corporate-memory.service
-deploy ALL=(ALL) NOPASSWD: /usr/bin/cp /opt/data-analyst/repo/server/corporate-memory.timer /etc/systemd/system/corporate-memory.timer
+deploy ALL=(ALL) NOPASSWD: /usr/bin/cp /opt/data-analyst/repo/services/corporate_memory/systemd/corporate-memory.service /etc/systemd/system/corporate-memory.service
+deploy ALL=(ALL) NOPASSWD: /usr/bin/cp /opt/data-analyst/repo/services/corporate_memory/systemd/corporate-memory.timer /etc/systemd/system/corporate-memory.timer
 deploy ALL=(ALL) NOPASSWD: /usr/bin/systemctl enable corporate-memory.timer
 deploy ALL=(ALL) NOPASSWD: /usr/bin/systemctl start corporate-memory.timer
 deploy ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop corporate-memory.timer
@@ -124,8 +124,8 @@ deploy ALL=(ALL) NOPASSWD: /usr/bin/systemctl is-enabled jira-sla-poll.timer
 deploy ALL=(ALL) NOPASSWD: /usr/bin/mkdir -p /data/user_sessions
 deploy ALL=(ALL) NOPASSWD: /usr/bin/chown root\:data-ops /data/user_sessions
 deploy ALL=(ALL) NOPASSWD: /usr/bin/chmod 2770 /data/user_sessions
-deploy ALL=(ALL) NOPASSWD: /usr/bin/cp /opt/data-analyst/repo/server/session-collector.service /etc/systemd/system/session-collector.service
-deploy ALL=(ALL) NOPASSWD: /usr/bin/cp /opt/data-analyst/repo/server/session-collector.timer /etc/systemd/system/session-collector.timer
+deploy ALL=(ALL) NOPASSWD: /usr/bin/cp /opt/data-analyst/repo/services/session_collector/systemd/session-collector.service /etc/systemd/system/session-collector.service
+deploy ALL=(ALL) NOPASSWD: /usr/bin/cp /opt/data-analyst/repo/services/session_collector/systemd/session-collector.timer /etc/systemd/system/session-collector.timer
 deploy ALL=(ALL) NOPASSWD: /usr/bin/systemctl enable session-collector.timer
 deploy ALL=(ALL) NOPASSWD: /usr/bin/systemctl start session-collector.timer
 deploy ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop session-collector.timer

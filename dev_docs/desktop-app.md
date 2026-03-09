@@ -21,7 +21,7 @@ notify-runner (cron, every 5min)
 ```
 
 Notifications are delivered in parallel to both Telegram and the desktop app.
-The WebSocket gateway (`server/ws_gateway/`) runs as a separate systemd service alongside the existing Telegram bot.
+The WebSocket gateway (`services/ws_gateway/`) runs as a separate systemd service alongside the existing Telegram bot.
 
 ## Requirements
 
@@ -90,7 +90,7 @@ Client -> Server: {"type":"pong"}
 
 ## Server Components
 
-### WebSocket Gateway (`server/ws_gateway/`)
+### WebSocket Gateway (`services/ws_gateway/`)
 
 - `gateway.py` - main asyncio+aiohttp server with two listeners:
   - TCP WebSocket on `127.0.0.1:8765` (proxied by nginx)
@@ -121,7 +121,7 @@ Unlinking removes the entry from `desktop_users.json` but does not invalidate th
 
 ### Notification Dispatch
 
-Both `server/bin/notify-runner` and `server/telegram_bot/bot.py` dispatch notifications to the WebSocket gateway alongside Telegram delivery. The webapp API (`POST /api/desktop/scripts/run`) also dispatches via `server/telegram_bot/dispatch.py`. The dispatch is fire-and-forget - if the gateway is not running, it silently skips.
+Both `server/bin/notify-runner` and `services/telegram_bot/bot.py` dispatch notifications to the WebSocket gateway alongside Telegram delivery. The webapp API (`POST /api/desktop/scripts/run`) also dispatches via `services/telegram_bot/dispatch.py`. The dispatch is fire-and-forget - if the gateway is not running, it silently skips.
 
 Script execution (from webapp API and Telegram bot) uses the `notify-scripts` helper:
 ```bash

@@ -154,7 +154,7 @@ When reopening the project in Claude Code:
 - `src/parquet_manager.py` - Parquet conversion engine
 - `connectors/jira/file_lock.py` - Advisory file locking
 - `connectors/jira/incremental_transform.py` - Jira monthly Parquet transform
-- `server/ws_gateway/` - WebSocket notification gateway
+- `services/ws_gateway/` - WebSocket notification gateway
 
 ## Git Commits & Pull Requests
 

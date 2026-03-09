@@ -31,7 +31,7 @@ Technical documentation for the notification engine (Phase 3, Issue #41).
 
 ### 1. Telegram Bot Service
 
-**Source:** `server/telegram_bot/`
+**Source:** `services/telegram_bot/`
 
 | File | Purpose |
 |------|---------|
@@ -53,7 +53,7 @@ Technical documentation for the notification engine (Phase 3, Issue #41).
 - `POST /send_photo` - send photo with caption (`user`, `photo_path`, `caption`)
 - `GET /health` - health check
 
-**Systemd service:** `server/notify-bot.service`
+**Systemd service:** `services/telegram_bot/systemd/notify-bot.service`
 - User: `deploy`, Group: `data-ops`
 - EnvironmentFile: `/opt/data-analyst/.env` (contains `TELEGRAM_BOT_TOKEN`)
 - Restarts automatically on failure
@@ -170,7 +170,7 @@ Scripts output JSON to stdout:
 |--------|-------------|
 | `server/bin/notify-scripts` | `/usr/local/bin/notify-scripts` |
 | `server/bin/notify-runner` | `/usr/local/bin/notify-runner` |
-| `server/notify-bot.service` | `/etc/systemd/system/notify-bot.service` |
+| `services/telegram_bot/systemd/notify-bot.service` | `/etc/systemd/system/notify-bot.service` |
 | `examples/notifications/*.py` | `/data/docs/examples/notifications/` |
 | `docs/notifications.md` | `/data/docs/notifications.md` |
 

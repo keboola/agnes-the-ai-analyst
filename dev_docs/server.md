@@ -911,7 +911,7 @@ Gunicorn runs with a restricted PATH (only `/opt/data-analyst/.venv/bin`). There
 - `/usr/local/bin/add-analyst`
 - `/usr/local/bin/notify-scripts`
 
-This is handled in `webapp/user_service.py` and `server/telegram_bot/runner.py`.
+This is handled in `webapp/user_service.py` and `services/telegram_bot/runner.py`.
 
 ### Username Generation
 
@@ -1103,8 +1103,8 @@ sudo -u <username> /usr/local/bin/notify-scripts sync-status
 The `sync-status` command reads the mtime of `~/server/` directory. This is updated by `sync_data.sh` via `touch ~/server/` at the end of each sync. Each user has their own `~/server/` directory (containing symlinks to shared `/data/`), so timestamps are per-user.
 
 **Callers:**
-- `server/telegram_bot/status.py` - `/status` command and script list API
-- `server/telegram_bot/runner.py` - on-demand script execution (Telegram "Run" button, webapp API)
+- `services/telegram_bot/status.py` - `/status` command and script list API
+- `services/telegram_bot/runner.py` - on-demand script execution (Telegram "Run" button, webapp API)
 - `webapp/account_service.py` - Account card "Last Sync" display
 
 **Sudoers rules:**

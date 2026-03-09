@@ -193,7 +193,7 @@ def deduplicate_and_merge(new_items: list, username: str):
 
 ### 1. Server-side Collector
 
-**`server/corporate_memory/collector.py`** - Main collection logic:
+**`services/corporate_memory/collector.py`** - Main collection logic:
 - `collect_all()` - iteruje přes /home/*/CLAUDE.local.md
 - `should_process_user(username)` - kontrola hash změn (šetří tokeny)
 - `extract_knowledge(content)` - volá HAIKU API
@@ -202,7 +202,7 @@ def deduplicate_and_merge(new_items: list, username: str):
 - `save_knowledge(data)` - atomic JSON write
 - `update_user_hash(username, hash)` - uloží hash pro příští run
 
-**`server/corporate_memory/prompts.py`** - HAIKU prompts:
+**`services/corporate_memory/prompts.py`** - HAIKU prompts:
 - Prompt pro extrakci znalostí
 - Prompt pro AI filtering citlivých dat
 - Prompt pro merge podobných znalostí (optional)
@@ -301,9 +301,9 @@ rsync -avz data-analyst:~/.claude_rules/ .claude/rules/ 2>/dev/null || \
 ## Implementation Phases
 
 ### Phase 1: Server Infrastructure
-1. `server/corporate_memory/` Python modul
+1. `services/corporate_memory/` Python modul
 2. `server/bin/collect-knowledge` wrapper
-3. `server/corporate-memory.service` + `.timer`
+3. `services/corporate_memory/systemd/corporate-memory.service` + `.timer`
 4. Update `server/deploy.sh`
 5. Update sudoers
 
@@ -336,7 +336,7 @@ rsync -avz data-analyst:~/.claude_rules/ .claude/rules/ 2>/dev/null || \
 - **JSON I/O**: `webapp/telegram_service.py` - atomic writes with tempfile
 - **Dashboard widget**: `webapp/templates/dashboard.html` - KPI card pattern
 - **Sub-page**: `webapp/templates/catalog.html` - route + template pattern
-- **Systemd service**: `server/notify-bot.service` - timer pattern
+- **Systemd service**: `services/telegram_bot/systemd/notify-bot.service` - timer pattern
 - **Deploy**: `server/deploy.sh` - directory setup, script installation
 
 ## Verification

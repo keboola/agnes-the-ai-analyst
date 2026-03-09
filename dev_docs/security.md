@@ -342,7 +342,7 @@ Given that notifications go to both Telegram and the desktop app, and there is n
 
 #### Recommendations
 
-1. **Immediate**: Change socket permissions to `0660` or `0770` in the bot code (`server/telegram_bot/bot.py`) or systemd service file. The socket is currently set to `0666` by an `ExecStartPost` or in code -- update to restrict to `data-ops` group.
+1. **Immediate**: Change socket permissions to `0660` or `0770` in the bot code (`services/telegram_bot/bot.py`) or systemd service file. The socket is currently set to `0666` by an `ExecStartPost` or in code -- update to restrict to `data-ops` group.
 
 2. **Better**: Add `SO_PEERCRED` validation in the bot's HTTP handler to verify the caller's UID and ensure they can only send notifications for their own username.
 
@@ -413,7 +413,7 @@ The `username` parameter comes from webapp request data or Telegram bot callback
 
 #### Code Analysis
 
-In `server/telegram_bot/runner.py` (line 30):
+In `services/telegram_bot/runner.py` (line 30):
 ```python
 result = subprocess.run(
     ["/usr/bin/sudo", "-u", username, NOTIFY_SCRIPTS_BIN, "run", script_name],
@@ -638,7 +638,7 @@ All analyst home directories are `750`, but deploy's home is `755` (world-readab
 **Severity:** MEDIUM
 **Source:** Codex second opinion
 
-The WebSocket gateway (`server/ws_gateway/gateway.py`) validates JWT tokens but does not:
+The WebSocket gateway (`services/ws_gateway/gateway.py`) validates JWT tokens but does not:
 - Check the `Origin` header of WebSocket connections
 - Implement replay protection (a captured auth message could be replayed within token validity)
 - Bind tokens to specific connections or IP addresses
@@ -746,8 +746,8 @@ The following findings were identified by the OpenAI Codex second opinion review
    - `server/sudoers-deploy`, `server/sudoers-webapp` (privilege escalation)
    - `server/deploy.sh` (CI/CD pipeline)
    - `server/bin/notify-runner`, `server/bin/notify-scripts` (notification pipeline)
-   - `server/telegram_bot/` (bot service, dispatch, runner)
-   - `server/ws_gateway/` (WebSocket gateway, JWT auth)
+   - `services/telegram_bot/` (bot service, dispatch, runner)
+   - `services/ws_gateway/` (WebSocket gateway, JWT auth)
    - `webapp/desktop_auth.py`, `webapp/user_service.py` (auth flows)
    - `.github/workflows/deploy.yml` (CI/CD configuration)
 
