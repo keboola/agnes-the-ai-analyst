@@ -128,3 +128,7 @@ metadata_tooling/
 temp/
 docs/schema.yml
 docs/datasets/*/schema.yml
+
+# Agent-generated reports (not part of codebase)
+.audit/
+docs/AGENT-REPORTS/
