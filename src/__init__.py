@@ -6,9 +6,10 @@ and syncs to analysts via rsync.
 
 Main modules:
 - config: Configuration management and data_description.md parsing
-- adapters: Pluggable data source adapters (Keboola, CSV, etc.)
+- data_sync: Data synchronization orchestration and DataSource ABC
 - parquet_manager: CSV -> Parquet conversion and file management
-- data_sync: Data synchronization orchestration
+
+Data source connectors live in connectors/ (e.g. connectors/keboola/).
 
 Note: DuckDB management is handled by scripts/duckdb_manager.py (analyst-side)
 """

@@ -213,7 +213,7 @@ class Config:
                 f"Use config/.env.template as reference."
             )
 
-        # Load environment variables
+        # Read by connectors/keboola/ if enabled
         self.keboola_token = os.getenv("KEBOOLA_STORAGE_TOKEN")
         self.keboola_stack_url = os.getenv("KEBOOLA_STACK_URL")
         self.keboola_project_id = os.getenv("KEBOOLA_PROJECT_ID")
@@ -313,21 +313,9 @@ class Config:
         Raises:
             ValueError: If any required variable is missing
         """
-        if self.data_source in ("local", "keboola"):
-            required_vars = {
-                "KEBOOLA_STORAGE_TOKEN": self.keboola_token,
-                "KEBOOLA_STACK_URL": self.keboola_stack_url,
-                "KEBOOLA_PROJECT_ID": self.keboola_project_id,
-            }
-
-            missing = [name for name, value in required_vars.items() if not value]
-
-            if missing:
-                raise ValueError(
-                    f"Missing required environment variables for Keboola adapter: "
-                    f"{', '.join(missing)}. "
-                    f"Create .env file based on config/.env.template"
-                )
+        # Keboola env vars are validated by connectors/keboola/adapter.py at init time.
+        # No source-specific validation needed here.
+        pass
 
     def _parse_data_description(self) -> tuple[List[TableConfig], Dict[str, str]]:
         """

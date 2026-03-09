@@ -23,7 +23,7 @@ import requests
 from kbcstorage.client import Client
 from kbcstorage.tables import Tables
 
-from .config import get_config, TableConfig, WhereFilter
+from src.config import get_config, TableConfig, WhereFilter
 
 
 logger = logging.getLogger(__name__)
