@@ -142,6 +142,7 @@ Claude Code will connect to the local DuckDB database, write and execute SQL, an
 
 ## Documentation
 
+- **[Architecture](ARCHITECTURE.md)** -- System components, data flow, and key patterns
 - **[Quick Start](docs/QUICKSTART.md)** -- End-to-end setup for new deployments
 - **[Configuration](docs/CONFIGURATION.md)** -- All configuration options explained
 - **[Deployment](docs/DEPLOYMENT.md)** -- Server provisioning and deployment guide

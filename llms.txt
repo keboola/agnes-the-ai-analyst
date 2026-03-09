@@ -1,0 +1,47 @@
+# AI Data Analyst
+
+> A data distribution platform for AI analytical systems. Syncs data from configured sources (Keboola, CSV, BigQuery), converts to Parquet, and distributes to analysts who query locally using Claude Code and DuckDB.
+
+## Key Files
+
+- [README](README.md): Project overview, quick start, and feature list
+- [CLAUDE.md](CLAUDE.md): Claude Code project context and development instructions
+- [ARCHITECTURE.md](ARCHITECTURE.md): System architecture, data flow, and component overview
+
+## Documentation
+
+- [Quick Start](docs/QUICKSTART.md): End-to-end setup for new deployments
+- [Configuration](docs/CONFIGURATION.md): All instance.yaml options explained
+- [Deployment](docs/DEPLOYMENT.md): Server provisioning and deployment guide
+- [Data Sources](docs/DATA_SOURCES.md): Adapter system and data source configuration
+
+## Core Source Code
+
+- [src/data_sync.py](src/data_sync.py): Data sync orchestration and DataSource ABC
+- [src/adapters/](src/adapters/): Pluggable data source adapters (Keboola, CSV)
+- [src/parquet_manager.py](src/parquet_manager.py): CSV to Parquet conversion engine
+- [src/config.py](src/config.py): Runtime configuration from data_description.md
+- [config/loader.py](config/loader.py): Instance config loader with ${ENV_VAR} interpolation
+
+## Web Application
+
+- [webapp/app.py](webapp/app.py): Flask application entry point
+- [webapp/config.py](webapp/config.py): Webapp configuration from instance.yaml
+- [webapp/account_service.py](webapp/account_service.py): User account and sync management
+
+## Server Operations
+
+- [server/deploy.sh](server/deploy.sh): Deployment script
+- [server/setup.sh](server/setup.sh): Initial server provisioning
+- [server/webapp-setup.sh](server/webapp-setup.sh): Web application setup (Nginx, SSL, systemd)
+- [config/instance.yaml.example](config/instance.yaml.example): Configuration template
+
+## Configuration
+
+Instance config: `config/instance.yaml` (YAML with `${ENV_VAR}` references for secrets).
+Environment variables: `.env` file (never committed). See `config/.env.template`.
+Data schema: `docs/data_description.md` (YAML blocks in markdown).
+
+## Architecture Summary
+
+Data Source -> Source Adapter -> Parquet files on server -> rsync over SSH -> Analyst machine -> DuckDB views -> Claude Code queries
