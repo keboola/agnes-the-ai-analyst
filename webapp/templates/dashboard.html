@@ -1267,41 +1267,49 @@
 
         /* ── New User Layout ── */
         .new-user-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 24px;
+            max-width: 640px;
+            margin: 0 auto;
         }
 
         .setup-card {
-            padding: 32px;
+            padding: 36px 40px;
         }
 
         .setup-card h3 {
-            font-size: 18px;
-            font-weight: 600;
+            font-size: 20px;
+            font-weight: 700;
             color: var(--text-primary);
-            margin: 0 0 12px 0;
+            margin: 0 0 6px 0;
         }
 
         .setup-description {
             color: var(--text-secondary);
-            margin-bottom: 24px;
+            margin-bottom: 28px;
+            font-size: 14px;
         }
 
         .setup-steps {
             display: flex;
             flex-direction: column;
-            gap: 20px;
+            gap: 0;
         }
 
         .step-item {
-            padding-left: 40px;
+            padding-left: 44px;
+            padding-bottom: 24px;
             position: relative;
+            border-left: 2px solid var(--border);
+            margin-left: 13px;
+        }
+
+        .step-item:last-child {
+            border-left-color: transparent;
+            padding-bottom: 0;
         }
 
         .step-number {
             position: absolute;
-            left: 0;
+            left: -15px;
             top: 0;
             width: 28px;
             height: 28px;
@@ -1313,10 +1321,15 @@
             justify-content: center;
             font-size: 13px;
             font-weight: 600;
+            z-index: 1;
+        }
+
+        .step-item.step-done .step-number {
+            background: var(--success);
         }
 
         .step-header strong {
-            font-size: 14px;
+            font-size: 15px;
             color: var(--text-primary);
         }
 
@@ -1335,10 +1348,12 @@
             display: block;
             background: var(--background);
             padding: 12px 16px;
+            padding-right: 40px;
             border-radius: 6px;
             font-family: var(--font-mono);
             font-size: 13px;
             color: var(--text-primary);
+            overflow-x: auto;
         }
 
         .btn-copy-code {
@@ -1365,6 +1380,7 @@
         .btn-copy-v2 {
             display: inline-flex;
             align-items: center;
+            gap: 8px;
             padding: 12px 24px;
             background: var(--primary);
             color: white;
@@ -1388,6 +1404,38 @@
             margin-top: 24px;
             font-size: 13px;
             color: var(--text-secondary);
+        }
+
+        /* ── Inline registration in step 4 ── */
+        .step-registration {
+            background: var(--background);
+            border-radius: 8px;
+            padding: 20px;
+            margin-top: 12px;
+        }
+
+        .step-registration .info-box-v2 {
+            margin-bottom: 16px;
+        }
+
+        .step-registration .form-group-v2 textarea {
+            background: white;
+        }
+
+        .step-registration .form-row-v2 {
+            margin-top: 4px;
+        }
+
+        .step-success-msg {
+            margin-top: 12px;
+            padding: 12px 16px;
+            background: rgba(16, 183, 127, 0.08);
+            border-radius: 6px;
+            font-size: 13px;
+            color: var(--success);
+            display: flex;
+            align-items: center;
+            gap: 8px;
         }
 
         /* ── Registration Card ── */
@@ -1587,7 +1635,7 @@
             }
 
             .new-user-grid {
-                grid-template-columns: 1fr;
+                max-width: 100%;
             }
         }
     </style>
@@ -2068,19 +2116,33 @@
 
     <main class="main">
         <div class="new-user-grid">
-            <!-- Setup Card -->
             <div class="card setup-card">
-                <h3>Setup with your AI assistant</h3>
+                <h3>Get Started</h3>
                 <p class="setup-description">
-                    Follow these steps to set up your data analyst workspace.
+                    Set up your data analyst workspace in 5 steps.
                 </p>
+
+                {% if not username_available %}
+                <div class="alert-v2 alert-error-v2" style="margin-bottom: 24px;">
+                    <span class="alert-icon">!</span>
+                    <div>
+                        <h4>Username Not Available</h4>
+                        <p>{{ username_error }}</p>
+                        <p>Your email generates username <code>{{ username }}</code>, which cannot be used.</p>
+                        <p>Contact an administrator to create your account manually.</p>
+                    </div>
+                </div>
+                {% endif %}
+
                 <div class="setup-steps">
+                    {# ── Step 1: Create folder ── #}
                     <div class="step-item">
                         <span class="step-number">1</span>
                         <div class="step-header">
                             <strong>Create your project folder</strong>
                         </div>
                         <div class="step-body">
+                            <p>Open your terminal:</p>
                             <div class="code-block-wrapper">
                                 <code class="code-block">mkdir -p data-analyst && cd data-analyst</code>
                                 <button onclick="copyCode(this, 'mkdir -p data-analyst && cd data-analyst')" class="btn-copy-code">
@@ -2092,6 +2154,8 @@
                             </div>
                         </div>
                     </div>
+
+                    {# ── Step 2: SSH key ── #}
                     <div class="step-item">
                         <span class="step-number">2</span>
                         <div class="step-header">
@@ -2109,6 +2173,8 @@
                             </div>
                         </div>
                     </div>
+
+                    {# ── Step 3: Copy public key ── #}
                     <div class="step-item">
                         <span class="step-number">3</span>
                         <div class="step-header">
@@ -2124,24 +2190,49 @@
                                     </svg>
                                 </button>
                             </div>
-                            <p style="margin-top: 6px; font-style: italic;">Paste the key into the registration form &rarr;</p>
                         </div>
                     </div>
+
+                    {# ── Step 4: Create account (inline registration) ── #}
                     <div class="step-item">
                         <span class="step-number">4</span>
                         <div class="step-header">
                             <strong>Create your account</strong>
                         </div>
                         <div class="step-body">
-                            <p>Click <strong>Create Account</strong> in the form on the right.</p>
+                            {% if username_available %}
+                            <div class="step-registration">
+                                <div class="info-box-v2">
+                                    <strong>Your username:</strong>
+                                    <span class="username-preview">{{ username }}</span>
+                                </div>
+                                <form action="{{ url_for('register') }}" method="post" class="form-v2">
+                                    <div class="form-group-v2">
+                                        <label for="ssh_key">Paste your SSH public key here</label>
+                                        <textarea name="ssh_key" id="ssh_key" rows="2"
+                                            placeholder="ssh-ed25519 AAAA... or ssh-rsa AAAA..." required></textarea>
+                                    </div>
+                                    <div class="form-row-v2">
+                                        <div class="form-info-v2">
+                                            <span>Username:</span>
+                                            <code>{{ username }}</code>
+                                        </div>
+                                        <button type="submit" class="btn-v2 btn-primary-v2">Create Account</button>
+                                    </div>
+                                </form>
+                            </div>
+                            {% endif %}
                         </div>
                     </div>
+
+                    {# ── Step 5: Claude Code ── #}
                     <div class="step-item">
                         <span class="step-number">5</span>
                         <div class="step-header">
-                            <strong>Start Claude Code and set up workspace</strong>
+                            <strong>Start Claude Code</strong>
                         </div>
                         <div class="step-body">
+                            <p>Launch Claude Code in your project folder and paste the setup instructions:</p>
                             <div class="code-block-wrapper" style="margin-bottom: 12px;">
                                 <code class="code-block">claude</code>
                                 <button onclick="copyCode(this, 'claude')" class="btn-copy-code">
@@ -2151,64 +2242,23 @@
                                     </svg>
                                 </button>
                             </div>
-                            <p>Paste the setup instructions into Claude Code:</p>
                             <button onclick="copyBootstrapInstructions()" class="btn-copy-v2" id="bootstrapCopyBtn">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                                </svg>
                                 Copy Setup Instructions
                             </button>
+                            <div class="helper-text" style="margin-top: 16px;">
+                                <strong>Claude Code will:</strong> configure SSH, download data &amp; docs via rsync,
+                                set up Python + DuckDB, and create your project context.
+                            </div>
                         </div>
                     </div>
                 </div>
-                <div class="helper-text">
-                    <strong>Claude Code will:</strong> configure SSH, download data &amp; docs via rsync,
-                    set up Python + DuckDB, and create your project context.
-                </div>
             </div>
-
-            <!-- Registration Card -->
-            {% if not username_available %}
-            <div class="alert-v2 alert-error-v2">
-                <span class="alert-icon">!</span>
-                <div>
-                    <h4>Username Not Available</h4>
-                    <p>{{ username_error }}</p>
-                    <p>Your email generates username <code>{{ username }}</code>, which cannot be used.</p>
-                    <p>Contact an administrator to create your account manually.</p>
-                </div>
-            </div>
-            {% else %}
-            <div class="card registration-card" style="padding: 24px;">
-                <h3>Create Your Account</h3>
-                <p class="help-text-v2">
-                    You're being guided here from <strong>Claude Code</strong> setup.
-                    Paste your SSH public key below to create your account.
-                </p>
-                <div class="info-box-v2">
-                    <strong>Your username will be:</strong>
-                    <span class="username-preview">{{ username }}</span>
-                </div>
-                <form action="{{ url_for('register') }}" method="post" class="form-v2">
-                    <div class="form-group-v2">
-                        <label for="ssh_key">Your SSH Public Key</label>
-                        <textarea name="ssh_key" id="ssh_key" rows="2"
-                            placeholder="ssh-ed25519 AAAA... or ssh-rsa AAAA..." required></textarea>
-                        <p class="help-text-v2">Claude Code should have shown you this key. Copy and paste it here.</p>
-                    </div>
-                    <div class="form-row-v2">
-                        <div class="form-info-v2">
-                            <span>Username:</span>
-                            <code>{{ username }}</code>
-                        </div>
-                        <button type="submit" class="btn-v2 btn-primary-v2">Create Account</button>
-                    </div>
-                </form>
-                <p class="help-text-v2" style="margin-top: 16px;">
-                    After creating your account, <strong>copy your username</strong> above and <strong>return to Claude Code</strong> to continue setup.
-                </p>
-            </div>
-            {% endif %}
         </div>
 
-        <!-- Support Banner -->
         <div class="support-banner" style="margin-top: 24px;">
             {{ config.INSTANCE_NAME }} - need help? Contact your platform team.
         </div>
