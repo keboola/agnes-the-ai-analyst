@@ -56,6 +56,11 @@ Ask the user for:
 │   ├── instance.yaml.example
 │   └── data_description.md.example
 ├── docs/                   # Documentation
+│   └── metrics/            # Business metric YAML definitions
+│       ├── revenue/        # Revenue metrics (total_revenue, AOV, etc.)
+│       ├── customers/      # Customer metrics (count, repeat rate)
+│       ├── marketing/      # Marketing metrics (ROI, CPA, conversion)
+│       └── support/        # Support metrics (resolution time, CSAT)
 └── tests/                  # Test suite
 ```
 
@@ -127,6 +132,7 @@ Pluggable data source connectors in `connectors/`:
 Pluggable auth providers in `auth/`:
 - **Google** (`google`): OAuth via Google
 - **Email** (`email`): Email magic link (itsdangerous token, no password needed)
+- **Password** (`password`): Username/password authentication
 - **Desktop** (`desktop`): JWT for desktop app API
 - New provider = `auth/<name>/provider.py` implementing `AuthProvider`
 
@@ -151,7 +157,7 @@ uptime && free -h && df -h /data
 ## Returning Users
 
 When reopening the project in Claude Code:
-1. Sync latest data: `bash server/scripts/sync_data.sh`
+1. Sync latest data: `rsync -avz --no-perms --no-group data-analyst:server/parquet/ ./server/parquet/`
 2. Verify DuckDB: `ls -lh user/duckdb/analytics.duckdb`
 3. Start analyzing with Claude Code
 
@@ -182,6 +188,20 @@ When reopening the project in Claude Code:
 - Self-contained modules in `services/` with `__main__.py` for `python -m services.<name>`
 - Systemd files in `services/<name>/systemd/`, auto-discovered by `deploy.sh`
 - Services: telegram_bot, ws_gateway, corporate_memory, session_collector
+
+### Business Metrics Pattern
+- YAML definitions in `docs/metrics/{category}/{metric}.yml` (list with one dict)
+- `webapp/utils/metric_parser.py` - parses YAML, structures for modal UI, auto-discovers `sql_*` fields
+- `webapp/app.py` `_load_metrics_data()` - scans metrics dir, groups by category, returns ordered list
+- Catalog template renders dynamically via Jinja loop (no hardcoded metrics)
+- Profiler links metrics to tables via `used_by_metrics` in `profiles.json`
+- Production: metrics in instance repo deployed to `/data/docs/metrics/`
+- Sample/dev: OSS repo `docs/metrics/` (10 e-commerce metrics)
+
+### Table Registry Pattern
+- `src/table_registry.py` - central CRUD for registered tables with atomic JSON persistence
+- Audit logging for register/unregister operations
+- Generates `data_description.md` from registry state
 
 ### Server Patterns
 - Atomic JSON writes: `tempfile.mkstemp()` + `os.fchmod(fd, 0o660)` + `os.replace()`
