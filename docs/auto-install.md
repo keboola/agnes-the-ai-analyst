@@ -1,50 +1,74 @@
-# Automated Installation Log
+# Automated Installation Guide
 
-Step-by-step record of deploying the platform on a clean Ubuntu 24.04 VM (DigitalOcean).
+Step-by-step deployment of AI Data Analyst on a clean Ubuntu 24.04 VM.
 
-## Infrastructure
+Two repos are involved:
+- **OSS repo** (public/private): application code (`padak/tmp_oss`)
+- **Instance repo** (private): your config, secrets template, data schema (`padak/tmp_oss_cfg`)
 
-- **Provider**: DigitalOcean
-- **Droplet**: s-1vcpu-2gb (1 vCPU, 2GB RAM, 50GB disk)
-- **Region**: ams3 (Amsterdam)
-- **OS**: Ubuntu 24.04.3 LTS
-- **IP**: 165.22.199.226
+## Architecture on Server
 
-## Prerequisites Discovered
-
-1. **DigitalOcean API token needs `ssh_key` scope** to register SSH keys
-   - Without `ssh_keys` field in droplet creation, DO forces password expiry
-   - Cloud-init `user_data` cannot override this (DO scripts run after cloud-init)
-   - Solution: register key via `/v2/account/keys`, then reference in `ssh_keys` array
-
-2. **`python3-venv` must be installed** before `server/setup.sh`
-   - Ubuntu 24.04 doesn't include it by default
-   - Fix: `apt install python3.12-venv` before running setup
-
-## Step 0: Create GitHub Repo & Push
-
-```bash
-# Repo was created on GitHub: padak/tmp_oss (private)
-git remote add origin https://github.com/padak/tmp_oss.git
-git push -u origin main
+```
+/opt/data-analyst/
+├── repo/              # OSS repo clone
+│   ├── config/
+│   │   └── instance.yaml -> ../../instance/config/instance.yaml  (symlink)
+│   ├── webapp/
+│   ├── server/
+│   └── ...
+├── instance/          # Private instance repo clone
+│   ├── config/
+│   │   ├── instance.yaml          # Branding, auth domains, data source
+│   │   └── data_description.md    # Data schema (when configured)
+│   ├── docs/setup/                # Custom CLAUDE.md template, etc.
+│   ├── .env.example               # Secrets template
+│   └── README.md
+├── .env               # Secrets (not in git, from .env.example)
+├── .venv/             # Python virtual environment
+└── logs/              # Application logs
 ```
 
-## Step 1: VM Setup
+Key principle: OSS repo has no secrets/config. Instance repo has no code. Symlinks bridge them.
 
-### 1a: Create Droplet via API
+## Prerequisites
+
+1. **DigitalOcean API token** with `ssh_key` scope (or any Ubuntu 24.04 VM)
+2. **Two GitHub repos**: one for OSS code, one for private instance config
+3. **SSH key** on your local machine for server access
+
+### Known Issues
+
+- `python3-venv` must be installed before `server/setup.sh` (Ubuntu 24.04 omits it)
+- `webapp-setup.sh` generates SSL nginx config - use HTTP-only for IP-only deployments
+- DigitalOcean cloud-init cannot override password expiry; must use `ssh_keys` API field
+
+## Step 0: Create Repos
 
 ```bash
-# First: register SSH key (requires ssh_key scope)
+# Push OSS code to GitHub
+git remote add origin git@github.com:YOUR_ORG/YOUR_OSS_REPO.git
+git push -u origin main
+
+# Create private instance config repo on GitHub (empty, private)
+# We'll populate it from the server after setup
+```
+
+## Step 1: Provision VM
+
+### 1a: Create Droplet (DigitalOcean)
+
+```bash
+# Register SSH key (requires ssh_key scope on API token)
 curl -s -X POST -H 'Content-Type: application/json' \
     -H "Authorization: Bearer $DO_TOKEN" \
     -d '{"name":"my-key","public_key":"ssh-ed25519 AAAA..."}' \
     "https://api.digitalocean.com/v2/account/keys"
 
-# Get key ID from response, then create droplet
+# Create droplet with SSH key
 curl -s -X POST -H 'Content-Type: application/json' \
     -H "Authorization: Bearer $DO_TOKEN" \
     -d '{
-      "name":"oss-devel-1",
+      "name":"data-analyst-1",
       "size":"s-1vcpu-2gb",
       "region":"ams3",
       "image":"ubuntu-24-04-x64",
@@ -58,58 +82,79 @@ curl -s -X POST -H 'Content-Type: application/json' \
 ```bash
 ssh root@DROPLET_IP
 
-# Wait for apt lock to release (auto-updates run on first boot)
-# Then install python3-venv
-apt install -y python3.12-venv python3-pip
+# Wait for apt lock (auto-updates run on first boot)
+apt update && apt install -y python3.12-venv python3-pip
 ```
 
-### 1c: Clone Repo & Run Setup
+### 1c: Generate Deploy Keys
+
+Two separate keys - one per repo, for security isolation:
 
 ```bash
-# Generate deploy key on VM
-ssh-keygen -t ed25519 -f /root/.ssh/deploy_key -N ""
-# Add deploy_key.pub to GitHub repo as deploy key
+# Key for OSS repo
+ssh-keygen -t ed25519 -f /root/.ssh/deploy_key -N "" -C "oss-app@$(hostname)"
 
-# Configure SSH for GitHub
-cat > /root/.ssh/config << 'EOF'
-Host github.com
-  IdentityFile /root/.ssh/deploy_key
-  StrictHostKeyChecking no
-EOF
-
-# Clone and setup
-git clone git@github.com:YOUR_ORG/YOUR_REPO.git /opt/data-analyst/repo
-cd /opt/data-analyst/repo
-REPO_URL="git@github.com:YOUR_ORG/YOUR_REPO.git" bash server/setup.sh
+# Key for private instance config repo
+ssh-keygen -t ed25519 -f /root/.ssh/instance_key -N "" -C "instance-config@$(hostname)"
 ```
 
-### Step 1 Checklist Results
+Add each public key as a **deploy key** on its respective GitHub repo:
+- `deploy_key.pub` -> OSS repo Settings > Deploy Keys
+- `instance_key.pub` -> Instance repo Settings > Deploy Keys
 
-| # | Check | Result |
-|---|-------|--------|
-| 1.1 | Groups created | data-ops, dataread, data-private - OK |
-| 1.2 | Deploy user exists | uid=999(deploy), groups: deploy, data-ops - OK |
-| 1.3 | Directory structure | /opt/data-analyst/{repo,.venv,logs} - OK |
-| 1.4 | Python venv works | Flask 3.1.3 loaded - OK |
-| 1.5 | Management scripts | add-analyst, list-analysts, add-admin, remove-analyst - OK |
+Configure SSH to use the right key per repo:
+
+```bash
+cat > /root/.ssh/config << 'EOF'
+# OSS application repo
+Host github-oss
+  HostName github.com
+  IdentityFile /root/.ssh/deploy_key
+  StrictHostKeyChecking no
+
+# Instance config repo (private)
+Host github-cfg
+  HostName github.com
+  IdentityFile /root/.ssh/instance_key
+  StrictHostKeyChecking no
+EOF
+chmod 600 /root/.ssh/config
+```
+
+### 1d: Clone OSS Repo & Run Setup
+
+```bash
+git clone git@github-oss:YOUR_ORG/YOUR_OSS_REPO.git /opt/data-analyst/repo
+cd /opt/data-analyst/repo
+REPO_URL="git@github-oss:YOUR_ORG/YOUR_OSS_REPO.git" bash server/setup.sh
+```
+
+### Step 1 Checklist
+
+| # | Check | Expected |
+|---|-------|----------|
+| 1.1 | Groups | data-ops, dataread, data-private exist |
+| 1.2 | Deploy user | uid deploy, groups: deploy, data-ops |
+| 1.3 | Directories | /opt/data-analyst/{repo,.venv,logs} |
+| 1.4 | Python venv | Flask loads in .venv |
+| 1.5 | Scripts | add-analyst, list-analysts in /usr/local/bin |
 
 ## Step 2: Webapp Setup
 
 ### 2a: Run webapp-setup.sh
 
 ```bash
-export SERVER_HOSTNAME="165.22.199.226"  # or your domain
+export SERVER_HOSTNAME="your-domain-or-ip"
 bash server/webapp-setup.sh
 ```
 
-**Issue**: Nginx config assumes SSL/domain. For IP-only testing, replace with HTTP-only config:
+For IP-only (no SSL), replace nginx config:
 
 ```bash
 cat > /etc/nginx/sites-available/webapp << 'NGINX'
 server {
     listen 80;
     server_name _;
-
     location / {
         proxy_pass http://unix:/run/webapp/webapp.sock;
         proxy_set_header Host $host;
@@ -120,12 +165,10 @@ server {
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
     }
-
     location /static/ {
         alias /opt/data-analyst/repo/webapp/static/;
         expires 1d;
     }
-
     location /health {
         proxy_pass http://unix:/run/webapp/webapp.sock;
         proxy_set_header Host $host;
@@ -133,12 +176,11 @@ server {
     }
 }
 NGINX
-
 rm -f /etc/nginx/sites-enabled/default
 nginx -t && systemctl restart nginx
 ```
 
-### 2b: Configure .env
+### 2b: Create .env
 
 ```bash
 SECRET_KEY=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
@@ -147,8 +189,8 @@ cat > /opt/data-analyst/.env << EOF
 WEBAPP_SECRET_KEY="${SECRET_KEY}"
 SERVER_HOST="YOUR_IP"
 SERVER_HOSTNAME="YOUR_IP_OR_DOMAIN"
-GOOGLE_CLIENT_ID="your-google-client-id"
-GOOGLE_CLIENT_SECRET="your-google-client-secret"
+GOOGLE_CLIENT_ID="placeholder"
+GOOGLE_CLIENT_SECRET="placeholder"
 DATA_SOURCE="local"
 DATA_DIR="/data/src_data"
 EOF
@@ -172,49 +214,46 @@ systemctl start webapp
 systemctl enable webapp
 ```
 
-### Step 2 Checklist Results
+### Step 2 Checklist
 
-| # | Check | Result |
-|---|-------|--------|
-| 2.1 | Nginx running | active - OK |
-| 2.2 | Webapp running | active (gunicorn with 2 workers) - OK |
-| 2.3 | SSL cert | SKIPPED (IP-only, no domain) |
-| 2.4 | Health endpoint | Returns JSON with disk/load/services - OK |
-| 2.5 | Login page loads | HTTP 200 - OK |
+| # | Check | Expected |
+|---|-------|----------|
+| 2.1 | Nginx | active, port 80 |
+| 2.2 | Webapp | active (gunicorn) |
+| 2.3 | Health | `curl http://IP/health` returns JSON |
+| 2.4 | Login page | HTTP 200 at /login |
 
-## Issues Found & Fixes
+## Step 3: Instance Configuration (Private Repo)
 
-### Issue 1: `python3-venv` not installed
-- **Symptom**: `server/setup.sh` fails at venv creation
-- **Fix**: `apt install python3.12-venv` before running setup
-- **TODO**: Add to `server/setup.sh` package list
-
-### Issue 2: Nginx SSL config with IP address
-- **Symptom**: Nginx fails to start - no SSL cert for "YOUR_DOMAIN"
-- **Fix**: Replace nginx config with HTTP-only version for IP-only deployments
-- **TODO**: `webapp-setup.sh` should detect IP vs domain and generate appropriate config
-
-### Issue 3: DigitalOcean cloud-init limitations
-- **Symptom**: `user_data` cloud-init cannot prevent password expiry
-- **Fix**: Must use `ssh_keys` API field with registered key
-- **Lesson**: DO initialization scripts run after cloud-init and override password settings
-
-## Step 3: Instance Configuration
+### 3a: Clone Instance Repo
 
 ```bash
-cat > /opt/data-analyst/repo/config/instance.yaml << 'YAML'
+git clone git@github-cfg:YOUR_ORG/YOUR_INSTANCE_REPO.git /opt/data-analyst/instance
+chown -R root:data-ops /opt/data-analyst/instance
+chmod -R 770 /opt/data-analyst/instance
+```
+
+### 3b: Initialize Instance Config (if empty repo)
+
+If this is a fresh instance repo, create the initial config:
+
+```bash
+cd /opt/data-analyst/instance
+mkdir -p config docs/setup
+
+cat > config/instance.yaml << 'YAML'
 instance:
-  name: "OSS Data Analyst"
-  subtitle: "Test Deployment"
-  copyright: "Test"
+  name: "My Data Analyst"
+  subtitle: "My Organization"
+  copyright: "My Org"
 
 server:
-  hostname: "165.22.199.226"
-  host: "165.22.199.226"
+  hostname: "YOUR_IP_OR_DOMAIN"
+  host: "YOUR_IP"
   app_dir: "/opt/data-analyst"
 
 auth:
-  allowed_domain: "test.com"       # any domain for testing
+  allowed_domain: "mycompany.com"
   webapp_secret_key: "${WEBAPP_SECRET_KEY}"
 
 data_source:
@@ -224,103 +263,150 @@ catalog:
   categories: {}
 YAML
 
+# Create .env.example as a template for future deployments
+cat > .env.example << 'ENV'
+WEBAPP_SECRET_KEY="generate-with: python3 -c 'import secrets; print(secrets.token_hex(32))'"
+SERVER_HOST="server-ip"
+SERVER_HOSTNAME="server-ip-or-domain"
+GOOGLE_CLIENT_ID="placeholder"
+GOOGLE_CLIENT_SECRET="placeholder"
+DATA_SOURCE="local"
+DATA_DIR="/data/src_data"
+ENV
+
+cat > .gitignore << 'GI'
+.env
+.env.local
+*.swp
+*~
+.DS_Store
+GI
+
+git add -A && git commit -m "Initial instance config" && git push origin main
+```
+
+### 3c: Symlink Config into OSS Repo
+
+```bash
+# Remove any existing instance.yaml (from manual setup) and symlink
+rm -f /opt/data-analyst/repo/config/instance.yaml
+ln -s /opt/data-analyst/instance/config/instance.yaml /opt/data-analyst/repo/config/instance.yaml
+
+# Optional: symlink data_description.md when ready
+# ln -s /opt/data-analyst/instance/config/data_description.md /opt/data-analyst/repo/docs/data_description.md
+
 systemctl restart webapp
 ```
 
-### Step 3 Checklist Results
+### Step 3 Checklist
 
-| # | Check | Result |
-|---|-------|--------|
-| 3.1 | Config loads | OK - webapp starts without errors |
-| 3.2 | Instance name shown | "OSS Data Analyst" on login page |
+| # | Check | Expected |
+|---|-------|----------|
+| 3.1 | Instance repo | /opt/data-analyst/instance/ exists |
+| 3.2 | Symlink | config/instance.yaml -> ../../instance/config/instance.yaml |
+| 3.3 | Webapp loads | Instance name shown on login page |
 
-## Step 4: Authentication (Email Magic Link)
+## Step 4: Authentication
 
-No Google OAuth needed! The email magic link provider works without any external service.
+Email magic link works without any external service.
 
-### How it works
+1. Login page shows "Sign in with Email"
+2. User enters email with allowed domain
+3. Without SMTP: magic link shown in browser (dev mode)
+4. With SMTP: link sent via email
+5. Click link -> logged in -> dashboard
 
-1. Login page shows "Sign in with Email" button
-2. User enters email with allowed domain (e.g., `user@test.com`)
-3. System generates a signed magic link (valid 15 minutes)
-4. Without SMTP: link shown directly in browser (development mode)
-5. With SMTP: link sent via email
-6. Click link -> logged in, redirected to dashboard
+Optional: add Google OAuth by setting real `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`.
 
-### Test Results
+### Step 4 Checklist
 
-```bash
-# Login page shows both providers
-curl -s http://localhost/login | grep 'Sign in with'
-# Sign in with Google
-# Sign in with Email
+| # | Check | Expected |
+|---|-------|----------|
+| 4.1 | Email auth | "Sign in with Email" on login page |
+| 4.2 | Magic link | Generated for valid domain email |
+| 4.3 | Domain check | Rejects wrong domains |
+| 4.4 | Login flow | Magic link -> dashboard with session |
 
-# Email form accessible
-curl -s -o /dev/null -w "%{http_code}" http://localhost/login/email
-# 200
+## Step 5: Onboarding Flow (End-User)
 
-# Magic link generated (dev mode - shown in browser)
-curl -s -X POST -d "email=admin@test.com" http://localhost/login/email/send
-# Shows magic link URL
+After server is set up, analysts self-onboard via the webapp:
 
-# Click magic link -> redirect to dashboard
-curl -s -D - -L -c cookies.txt "http://localhost/login/email/verify/TOKEN"
-# HTTP 302 -> /dashboard -> HTTP 200
+1. Visit `http://YOUR_SERVER/login` and sign in with email
+2. Dashboard shows "Get Started" with 4 steps:
+   - Create project folder (`mkdir -p data-analyst && cd data-analyst`)
+   - Generate SSH key (`ssh-keygen -t ed25519 -f ~/.ssh/data_analyst_server -N ''`)
+   - Copy public key (`cat ~/.ssh/data_analyst_server.pub`)
+   - Paste key into form, click "Create Account"
+3. After account creation, dashboard shows "Set up your local environment"
+4. User runs `claude` in their project folder, pastes setup instructions
+5. Claude Code configures SSH, rsyncs data, sets up Python + DuckDB
+
+## Step 6: Data Source (Next)
+
+Configure a real data source in `instance/config/instance.yaml`:
+
+```yaml
+data_source:
+  type: "keboola"
+  keboola:
+    storage_token: "${KEBOOLA_STORAGE_TOKEN}"
+    stack_url: "https://connection.keboola.com"
+    project_id: "12345"
 ```
 
-### Step 4 Checklist Results
+Add the token to `.env` and create `config/data_description.md` with table schemas.
 
-| # | Check | Result |
-|---|-------|--------|
-| 4.1 | Email auth available | "Sign in with Email" shown on login page |
-| 4.2 | Magic link generated | Token URL generated for valid domain email |
-| 4.3 | Domain restriction | Rejects emails from wrong domain |
-| 4.4 | Login works | Magic link redirects to /dashboard with session |
-| 4.5 | Dev mode works | Link shown in browser when no SMTP configured |
+## Deployment Workflow (Ongoing)
 
-## Issues Found & Fixes
-
-### Issue 1: `python3-venv` not installed
-- **Symptom**: `server/setup.sh` fails at venv creation
-- **Fix**: `apt install python3.12-venv` before running setup
-- **TODO**: Add to `server/setup.sh` package list
-
-### Issue 2: Nginx SSL config with IP address
-- **Symptom**: Nginx fails to start - no SSL cert for "YOUR_DOMAIN"
-- **Fix**: Replace nginx config with HTTP-only version for IP-only deployments
-- **TODO**: `webapp-setup.sh` should detect IP vs domain and generate appropriate config
-
-### Issue 3: DigitalOcean cloud-init limitations
-- **Symptom**: `user_data` cloud-init cannot prevent password expiry
-- **Fix**: Must use `ssh_keys` API field with registered key
-- **Lesson**: DO initialization scripts run after cloud-init and override password settings
-
-## Current State
-
-- **Step 0**: GitHub repo created and pushed - DONE
-- **Step 1**: VM setup (groups, users, venv, scripts) - DONE
-- **Step 2**: Webapp (nginx, gunicorn, .env) - DONE
-- **Step 3**: Instance configuration - DONE
-- **Step 4**: Authentication (email magic link) - DONE
-- **Step 5+**: Discovery API, Table Registry, Data Sync - NEXT (needs data source)
-
-## Server Access
-
+### Update OSS code
 ```bash
-ssh -i ~/.ssh/id_ed25519 root@165.22.199.226
+cd /opt/data-analyst/repo && git pull
+bash server/deploy.sh   # restarts services, syncs scripts/docs
+```
+
+### Update instance config
+```bash
+cd /opt/data-analyst/instance && git pull
+systemctl restart webapp  # picks up new instance.yaml via symlink
+```
+
+### Both at once
+```bash
+cd /opt/data-analyst/repo && git pull
+cd /opt/data-analyst/instance && git pull
+bash server/deploy.sh
+```
+
+## Server Layout Summary
+
+```
+/opt/data-analyst/
+├── repo/           -> git@github-oss:ORG/OSS_REPO.git
+├── instance/       -> git@github-cfg:ORG/INSTANCE_REPO.git
+├── .env            # Secrets (not in git)
+├── .venv/          # Python
+└── logs/           # App logs
+
+/root/.ssh/
+├── deploy_key      # For OSS repo (github-oss alias)
+├── instance_key    # For instance repo (github-cfg alias)
+└── config          # Maps aliases to keys
+
+Symlinks:
+  repo/config/instance.yaml -> instance/config/instance.yaml
+  repo/docs/data_description.md -> instance/config/data_description.md (optional)
 ```
 
 ## Quick Verification
 
 ```bash
 # Health check
-curl http://165.22.199.226/health | python3 -m json.tool
+curl http://YOUR_IP/health | python3 -m json.tool
 
 # Login page
-curl -s -o /dev/null -w "%{http_code}" http://165.22.199.226/login
+curl -s -o /dev/null -w "%{http_code}" http://YOUR_IP/login
 # Expected: 200
 
-# Email auth form
-curl -s -o /dev/null -w "%{http_code}" http://165.22.199.226/login/email
-# Expected: 200
+# Instance config loaded
+curl -s http://YOUR_IP/login | grep 'YOUR_INSTANCE_NAME'
 ```
