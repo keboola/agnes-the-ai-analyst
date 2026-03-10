@@ -341,9 +341,63 @@ After server is set up, analysts self-onboard via the webapp:
 4. User runs `claude` in their project folder, pastes setup instructions
 5. Claude Code configures SSH, rsyncs data, sets up Python + DuckDB
 
-## Step 6: Data Source (Next)
+## Step 6: Sample Data (Try Without a Data Adapter)
 
-Configure a real data source in `instance/config/instance.yaml`:
+Before connecting a real data source, you can load sample data to verify the full pipeline
+(Parquet files, DuckDB, analyst rsync, Claude Code analysis).
+
+```bash
+cd /opt/data-analyst/repo
+
+# Install generator dependency
+/opt/data-analyst/.venv/bin/pip install faker
+
+# Generate synthetic e-commerce data (size m: ~20K orders, 100K sessions)
+/opt/data-analyst/.venv/bin/python scripts/generate_sample_data.py \
+    --size m --output /tmp/sample_csv --seed 42
+
+# Convert CSVs to Parquet and deploy to data directory
+/opt/data-analyst/.venv/bin/python -c "
+import pandas as pd
+from pathlib import Path
+
+csv_dir = Path('/tmp/sample_csv')
+parquet_dir = Path('/data/src_data/parquet')
+parquet_dir.mkdir(parents=True, exist_ok=True)
+
+for f in sorted(csv_dir.glob('*.csv')):
+    df = pd.read_csv(f)
+    out = parquet_dir / f'{f.stem}.parquet'
+    df.to_parquet(out, index=False)
+    print(f'  {f.stem}: {len(df):,} rows -> {out}')
+"
+
+# Set correct permissions
+chown -R root:data-ops /data/src_data/parquet
+chmod -R 2775 /data/src_data/parquet
+
+# Clean up temporary CSVs
+rm -rf /tmp/sample_csv
+```
+
+Available sizes: `xs` (50 customers, ~1 MB), `s` (500, ~15 MB), `m` (5K, ~150 MB), `l` (50K, ~1.5 GB).
+
+The sample data covers 9 tables: customers, products, campaigns, web_sessions, web_leads,
+orders, order_items, payments, support_tickets. See `docs/sample-data.md` for the full
+data model, table reference, and built-in analytical patterns.
+
+### Step 6 Checklist
+
+| # | Check | Expected |
+|---|-------|----------|
+| 6.1 | Parquet files | `ls /data/src_data/parquet/*.parquet` shows 9 files |
+| 6.2 | Permissions | Files owned by root:data-ops, group-readable |
+| 6.3 | Analyst sync | Analyst can rsync parquet files to local machine |
+| 6.4 | DuckDB loads | `SELECT count(*) FROM read_parquet('orders.parquet')` returns rows |
+
+## Step 7: Real Data Source (Production)
+
+When ready, replace sample data with a real data source adapter in `instance/config/instance.yaml`:
 
 ```yaml
 data_source:
@@ -355,6 +409,8 @@ data_source:
 ```
 
 Add the token to `.env` and create `config/data_description.md` with table schemas.
+
+Other planned adapters: BigQuery, CSV import.
 
 ## Deployment Workflow (Ongoing)
 

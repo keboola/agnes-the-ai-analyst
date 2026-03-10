@@ -42,7 +42,7 @@ Ask the user for:
 │   └── jira/               # Jira webhook connector
 ├── auth/                   # Authentication providers (pluggable)
 │   ├── google/             # Google OAuth provider
-│   ├── password/           # Email/password provider
+│   ├── email/              # Email magic link provider
 │   └── desktop/            # Desktop JWT provider (API-only)
 ├── services/               # Standalone services (own systemd units)
 │   ├── telegram_bot/       # Telegram notification bot
@@ -88,6 +88,15 @@ Environment variables go in `.env` (never committed to git).
 
 Data schema is defined in `docs/data_description.md` (YAML blocks in markdown).
 
+### Dual-Repo Deployment
+Production uses two repos on the server:
+- **OSS repo** (`/opt/data-analyst/repo/`): application code, no secrets or config
+- **Instance repo** (`/opt/data-analyst/instance/`): private config, secrets template, data schema
+
+Symlinks bridge them: `repo/config/instance.yaml -> instance/config/instance.yaml`.
+Each repo has its own SSH deploy key (github-oss / github-cfg aliases).
+See `docs/auto-install.md` for full setup guide.
+
 ## Development
 
 ```bash
@@ -117,7 +126,7 @@ Pluggable data source connectors in `connectors/`:
 ### Authentication
 Pluggable auth providers in `auth/`:
 - **Google** (`google`): OAuth via Google
-- **Password** (`password`): Email/password with magic links
+- **Email** (`email`): Email magic link (itsdangerous token, no password needed)
 - **Desktop** (`desktop`): JWT for desktop app API
 - New provider = `auth/<name>/provider.py` implementing `AuthProvider`
 
@@ -164,7 +173,9 @@ When reopening the project in Claude Code:
 ### Auth Provider Pattern
 - ABC: `AuthProvider` class in `auth/__init__.py`
 - Discovery: `discover_providers()` scans `auth/*/provider.py`
-- Providers: google, password, desktop (each exports `provider` instance)
+- Providers: google, email, desktop (each exports `provider` instance)
+- Email provider: uses `itsdangerous.URLSafeTimedSerializer` for magic link tokens
+- Multi-domain: `auth.allowed_domain` in instance.yaml supports comma-separated domains
 - Session contract: all providers set `session["user"] = {"email", "name", "picture"}`
 
 ### Service Pattern

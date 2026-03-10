@@ -52,3 +52,7 @@ sendgrid>=6.11.0
 # Corporate Memory knowledge extraction
 # anthropic - Claude API client for HAIKU-based knowledge extraction
 anthropic>=0.39.0
+
+# Sample data generation (development/testing)
+# faker - realistic synthetic data for demo datasets
+faker>=24.0.0
