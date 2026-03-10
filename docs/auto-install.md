@@ -374,7 +374,14 @@ config/instance.yaml ────────symlink──> repo/config/instance
               /api/catalog/profile/   _load_data_stats()
                (per-table stats,      (header: "9 tables,
                 columns, alerts,       ~217K rows total")
-                relationships)
+                relationships,
+                used_by_metrics)
+
+docs/metrics/*/*.yml ──────────────> _load_metrics_data()
+  (metric definitions,                     │
+   SQL examples,                           ▼
+   dimensions)              /catalog "Business Metrics" card
+                            /api/metrics/<path> (modal detail)
 ```
 
 Key files and their roles:
@@ -386,6 +393,7 @@ Key files and their roles:
 | `*.parquet` | `/data/src_data/parquet/` | Actual data files (flat or in subfolders) |
 | `profiles.json` | `/data/src_data/metadata/` | Profiler output: statistics, alerts, relationships per table |
 | `sync_state.json` | `/data/src_data/metadata/` | Sync process stats (optional; profiler provides fallback) |
+| `docs/metrics/*/*.yml` | OSS repo (sample) or instance repo (production) | Business metric definitions with SQL examples |
 
 **Folder mapping** serves dual purpose: maps table IDs to catalog categories for the UI,
 and maps to filesystem paths for the profiler. The profiler auto-detects flat layouts
@@ -482,7 +490,59 @@ ln -sf /opt/data-analyst/instance/config/data_description.md \
 systemctl restart webapp
 ```
 
-### 6c: Run Data Profiler
+### 6c: Business Metrics
+
+The Data Catalog includes a **Business Metrics** card that dynamically renders metric
+definitions from YAML files. The OSS repo ships with 10 sample e-commerce metrics in
+`docs/metrics/` (4 categories: revenue, customers, marketing, support) that align with
+the sample data generator tables.
+
+**How it works:**
+- Webapp scans `docs/metrics/*/*.yml` (production: `/data/docs/metrics/`)
+- Each YAML file defines one metric with SQL examples, dimensions, and notes
+- The profiler links metrics to tables via `used_by_metrics` in `profiles.json`
+- Clicking a metric opens a modal with Overview, How to Use, SQL Examples, and Technical tabs
+
+**For sample data:** metrics work out of the box - the OSS repo includes sample definitions.
+
+**For production:** create metric YAMLs in the **instance repo** and deploy them to
+`/data/docs/metrics/` on the server. The production path takes precedence over the OSS repo.
+
+```bash
+# Instance repo: create metric definitions
+mkdir -p /opt/data-analyst/instance/docs/metrics/{revenue,operations}
+# ... add your .yml files ...
+
+# Deploy metrics to server
+cp -r /opt/data-analyst/instance/docs/metrics/ /data/docs/metrics/
+chown -R root:data-ops /data/docs/metrics
+chmod -R 2775 /data/docs/metrics
+```
+
+Each metric YAML file follows this structure (list with one dict):
+
+```yaml
+- name: metric_name
+  display_name: Human Readable Name
+  category: revenue          # must match parent directory name
+  type: sum                  # sum, average, count_distinct, ratio
+  unit: USD
+  grain: monthly
+  time_column: order_date
+  table: orders              # primary table
+  tables: [orders, customers]  # optional: all referenced tables
+  expression: "SUM(total_amount)"
+  description: "What this metric measures..."
+  dimensions: [channel, region]
+  notes: ["Important context..."]
+  synonyms: [alias1, alias2]
+  sql: |
+    SELECT ... FROM ... GROUP BY ...
+  sql_by_channel: |           # any sql_* key is auto-discovered
+    SELECT ... GROUP BY channel
+```
+
+### 6d: Run Data Profiler
 
 The profiler reads parquet files + `data_description.md` and generates `profiles.json`
 with per-table statistics, column analysis, data quality alerts, and relationship maps.
@@ -498,7 +558,8 @@ The profiler provides:
 - **Overview**: row count, column count, file size, date coverage, missing cell %
 - **Columns**: type distribution, top values, histograms for numeric columns
 - **Insights**: data quality alerts (high missing %, imbalanced categories, high cardinality)
-- **Relationships**: FK diagram built from `foreign_keys` in `data_description.md`
+- **Relationships**: FK diagram built from `foreign_keys` in `data_description.md`, plus linked Business Metrics
+- **Used by Metrics**: shows which metric definitions reference this table (from `docs/metrics/`)
 - **Sample**: first 5 rows of the table
 
 Without `sync_state.json` (no data adapter running), the profiler computes file sizes
@@ -521,9 +582,12 @@ cd /opt/data-analyst/repo && /opt/data-analyst/.venv/bin/python -m src.profiler
 | 6.4 | Catalog header | "9 tables, ~217K+ rows total" (from profiles.json) |
 | 6.5 | Profile modal | Click "Profile" on any table → statistics, columns, insights |
 | 6.6 | Relationships | Orders profile → shows customers, order_items, payments links |
-| 6.7 | File sizes | Profile overview shows non-zero file size (e.g., 0.69 MB) |
-| 6.8 | Analyst sync | Analyst can rsync parquet files to local machine |
-| 6.9 | DuckDB loads | `SELECT count(*) FROM read_parquet('orders.parquet')` returns rows |
+| 6.7 | Used by Metrics | Orders overview → shows total_revenue, campaign_roi, etc. badges |
+| 6.8 | Business Metrics | `/catalog` shows "Business Metrics" card with 4 categories, 10 metrics |
+| 6.9 | Metric modal | Click any metric → modal with SQL examples, dimensions, notes |
+| 6.10 | File sizes | Profile overview shows non-zero file size (e.g., 0.69 MB) |
+| 6.11 | Analyst sync | Analyst can rsync parquet files to local machine |
+| 6.12 | DuckDB loads | `SELECT count(*) FROM read_parquet('orders.parquet')` returns rows |
 
 ## Step 7: Real Data Source (Production)
 
