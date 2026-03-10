@@ -379,13 +379,27 @@ def load_metric_file_map(path: Path) -> Dict[str, str]:
 
 
 def get_parquet_path(table: TableInfo, folder_mapping: Dict[str, str]) -> Path:
-    """Compute the Parquet file/directory path for a table."""
+    """Compute the Parquet file/directory path for a table.
+
+    Tries subfolder path first (Keboola-style: parquet/<folder>/<table>.parquet),
+    then falls back to flat path (parquet/<table>.parquet) for simple layouts.
+    """
     bucket_name = ".".join(table.id.split(".")[:-1])
     folder_name = folder_mapping.get(bucket_name, bucket_name)
     base = PARQUET_DIR / folder_name
     if table.is_partitioned():
-        return base / table.name  # directory
-    return base / f"{table.name}.parquet"
+        subfolder_path = base / table.name
+        if subfolder_path.is_dir():
+            return subfolder_path
+        # Fallback: flat layout (partitioned dir directly under PARQUET_DIR)
+        flat_path = PARQUET_DIR / table.name
+        return flat_path if flat_path.is_dir() else subfolder_path
+    subfolder_path = base / f"{table.name}.parquet"
+    if subfolder_path.exists():
+        return subfolder_path
+    # Fallback: flat layout (file directly in PARQUET_DIR)
+    flat_path = PARQUET_DIR / f"{table.name}.parquet"
+    return flat_path if flat_path.exists() else subfolder_path
 
 
 # ---------------------------------------------------------------------------
