@@ -526,6 +526,9 @@ def register_routes(app: Flask) -> None:
         # Activity Center summary for dashboard widget (empty fallback)
         activity_summary = {}
 
+        # Load business metrics for dashboard widget
+        metrics_data = _load_metrics_data()
+
         return render_template(
             "dashboard.html",
             user=user,
@@ -543,6 +546,7 @@ def register_routes(app: Flask) -> None:
             sync_settings=sync_settings,
             account_details=account_details,
             activity_summary=activity_summary,
+            metrics_data=metrics_data,
         )
 
     @app.route("/catalog")

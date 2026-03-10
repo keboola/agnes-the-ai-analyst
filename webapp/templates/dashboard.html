@@ -1957,6 +1957,33 @@
                         </div>
                     </div>
 
+                    {% if metrics_data %}
+                    {% set metrics_total = namespace(n=0) %}
+                    {% for c in metrics_data %}{% set metrics_total.n = metrics_total.n + c.metrics|length %}{% endfor %}
+                    <div class="data-source">
+                        <div class="data-source-header">
+                            <div class="data-source-info">
+                                <div class="data-source-icon">
+                                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M3 3v18h18"/>
+                                        <path d="M18.7 8l-5.1 5.2-2.8-2.7L7 14.3"/>
+                                    </svg>
+                                </div>
+                                <div>
+                                    <div class="data-source-name">Business Metrics</div>
+                                    <div class="data-source-status">
+                                        {{ metrics_total.n }} metrics across {{ metrics_data|length }} categories
+                                    </div>
+                                </div>
+                            </div>
+                            <span class="badge-included">Always included</span>
+                        </div>
+                        <div class="data-source-details">
+                            {% for c in metrics_data %}{{ c.label }} ({{ c.metrics|length }}){% if not loop.last %}, {% endif %}{% endfor %}
+                        </div>
+                    </div>
+                    {% endif %}
+
                     <div class="catalog-cta">
                         <div class="catalog-cta-text">Manage your data subscriptions or discover new data sources</div>
                         <a href="{{ url_for('catalog') }}" class="catalog-cta-link">
