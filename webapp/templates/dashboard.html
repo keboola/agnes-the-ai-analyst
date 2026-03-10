@@ -1149,58 +1149,127 @@
         }
 
         /* ── Setup Banner ── */
-        .setup-banner {
+        /* ── Environment Setup CTA (shown after account creation) ── */
+        .env-setup-cta {
             background: linear-gradient(135deg, #0073D1 0%, #0056A3 100%);
             border-radius: 12px;
-            padding: 32px 36px;
+            padding: 24px 32px;
+            margin-bottom: 24px;
+            box-shadow: 0 4px 16px rgba(0, 115, 209, 0.2);
+            color: white;
+        }
+
+        .env-setup-cta h3 {
+            font-size: 16px;
+            font-weight: 700;
+            margin: 0 0 4px 0;
+            color: white;
+        }
+
+        .env-setup-cta .env-subtitle {
+            font-size: 13px;
+            color: rgba(255, 255, 255, 0.7);
+            margin-bottom: 16px;
+        }
+
+        .env-setup-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .env-setup-row .code-pill {
+            background: rgba(255, 255, 255, 0.15);
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-family: var(--font-mono);
+            font-size: 14px;
+            color: white;
+        }
+
+        .env-setup-row .btn-setup {
+            font-family: var(--font-primary);
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--primary);
+            background: #FFFFFF;
+            border: none;
+            border-radius: 6px;
+            padding: 8px 20px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            white-space: nowrap;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .env-setup-row .btn-setup:hover {
+            background: #F0F7FF;
+        }
+
+        .env-setup-row .btn-setup.copied {
+            background: var(--success);
+            color: white;
+        }
+
+        .env-setup-row .env-hint {
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.6);
+            margin-left: auto;
+        }
+
+        /* ── Setup Banner (bottom, for returning users) ── */
+        .setup-banner {
+            background: var(--background);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 16px 24px;
             display: flex;
             align-items: center;
             justify-content: space-between;
-            margin-top: 28px;
-            box-shadow: 0 4px 16px rgba(0, 115, 209, 0.25);
+            margin-top: 24px;
         }
 
         .setup-banner-text {
             display: flex;
             flex-direction: column;
-            gap: 6px;
+            gap: 2px;
         }
 
         .setup-banner-title {
-            font-size: 18px;
-            font-weight: 700;
-            color: #FFFFFF;
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-primary);
         }
 
         .setup-banner-desc {
-            font-size: 14px;
-            color: rgba(255, 255, 255, 0.75);
+            font-size: 12px;
+            color: var(--text-secondary);
         }
 
-        .btn-setup {
+        .btn-setup-secondary {
             font-family: var(--font-primary);
-            font-size: 14px;
-            font-weight: 600;
+            font-size: 13px;
+            font-weight: 500;
             color: var(--primary);
-            background: #FFFFFF;
-            border: none;
-            border-radius: 8px;
-            padding: 12px 24px;
+            background: transparent;
+            border: 1px solid var(--primary);
+            border-radius: 6px;
+            padding: 6px 16px;
             cursor: pointer;
             transition: all 0.15s ease;
             white-space: nowrap;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
         }
 
-        .btn-setup:hover {
-            background: #F0F7FF;
-            transform: translateY(-1px);
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        .btn-setup-secondary:hover {
+            background: rgba(0, 115, 209, 0.05);
         }
 
-        .btn-setup.copied {
+        .btn-setup-secondary.copied {
             background: var(--success);
             color: white;
+            border-color: var(--success);
         }
 
         /* ── Support Banner ── */
@@ -1802,6 +1871,25 @@
 
     <main class="main">
 
+        {% if not account_details or not account_details.last_sync_display %}
+        <!-- ═══════════════ ENVIRONMENT SETUP CTA ═══════════════ -->
+        <div class="env-setup-cta">
+            <h3>Set up your local environment</h3>
+            <p class="env-subtitle">Run Claude Code in your project folder and paste the setup instructions to configure SSH, sync data, and initialize DuckDB.</p>
+            <div class="env-setup-row">
+                <span class="code-pill">cd data-analyst && claude</span>
+                <button onclick="copyBootstrapInstructions(this)" class="btn-setup" id="bootstrapCopyBtn">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                    </svg>
+                    Copy Setup Instructions
+                </button>
+                <span class="env-hint">Paste into Claude Code to complete setup</span>
+            </div>
+        </div>
+        {% endif %}
+
         <!-- ═══════════════ STATS ROW ═══════════════ -->
         <div class="stats-row">
             <div class="stat-card">
@@ -2221,10 +2309,10 @@
         <!-- ═══════════════ SETUP BANNER ═══════════════ -->
         <div class="setup-banner">
             <div class="setup-banner-text">
-                <div class="setup-banner-title">Set up a new machine with Claude Code</div>
-                <div class="setup-banner-desc">Copy instructions and paste into Claude Code to configure your local environment.</div>
+                <div class="setup-banner-title">Set up a new machine</div>
+                <div class="setup-banner-desc">Copy instructions and paste into Claude Code to configure another local environment.</div>
             </div>
-            <button onclick="copyBootstrapInstructions()" class="btn-setup" id="bootstrapCopyBtn">
+            <button onclick="copyBootstrapInstructions(this)" class="btn-setup-secondary" id="bootstrapCopyBtnBottom">
                 Copy Setup Instructions
             </button>
         </div>
@@ -2250,7 +2338,7 @@
             <div class="card setup-card">
                 <div class="setup-header">
                     <h3>Get Started</h3>
-                    <span class="setup-subtitle">Set up your workspace in 5 steps</span>
+                    <span class="setup-subtitle">Set up your workspace in 4 steps</span>
                 </div>
 
                 {# ── Steps 1-3: Terminal commands ── #}
@@ -2318,24 +2406,7 @@
                 </div>
                 {% endif %}
 
-                {# ── Step 5: Claude Code ── #}
-                <div class="onboard-section">
-                    <div class="onboard-label">
-                        <span class="step-num">5</span>
-                        <strong>Start Claude Code</strong>
-                    </div>
-                    <div class="claude-section">
-                        <span class="code-inline">claude</span>
-                        <button onclick="copyBootstrapInstructions()" class="btn-copy-v2" id="bootstrapCopyBtn">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                            </svg>
-                            Copy Setup Instructions
-                        </button>
-                        <span class="claude-hint">Paste into Claude Code &mdash; it will configure SSH, sync data, and set up DuckDB</span>
-                    </div>
-                </div>
+                {# Step 5 (Claude Code setup) appears on dashboard after account creation #}
             </div>
         </div>
 
@@ -2391,7 +2462,7 @@
         });
     }
 
-    function copyBootstrapInstructions() {
+    function copyBootstrapInstructions(btn) {
         var username = {{ username | tojson }};
         var serverHost = {{ server_host | tojson }};
         var serverHostname = {{ server_hostname | tojson }};
@@ -2419,12 +2490,13 @@
             + '7. Create CLAUDE.md from server/docs/setup/claude_md_template.txt '
             + '(substitute {username} with my username)\n';
 
-        var button = document.getElementById('bootstrapCopyBtn');
+        var button = btn || document.getElementById('bootstrapCopyBtn');
+        var origText = button.textContent;
         copyToClipboard(instructions).then(function() {
             button.textContent = 'Copied!';
             button.classList.add('copied');
             setTimeout(function() {
-                button.textContent = 'Copy Setup Instructions';
+                button.textContent = origText;
                 button.classList.remove('copied');
             }, 2000);
         });
