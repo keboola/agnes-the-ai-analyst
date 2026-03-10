@@ -32,11 +32,15 @@ deployment:
   branch: "main"
 
 # --- Authentication ---
+# At minimum, set allowed_domain and webapp_secret_key.
+# Email magic link auth works out of the box (no external service needed).
+# Google OAuth is optional - add credentials to enable it.
 auth:
-  allowed_domain: ""              # Google OAuth domain (e.g., "acme.com")
+  allowed_domain: ""              # Email domain for login (e.g., "acme.com")
+  webapp_secret_key: "${WEBAPP_SECRET_KEY}"
+  # Optional: Google OAuth (if not set, only email magic link is available)
   google_client_id: "${GOOGLE_CLIENT_ID}"
   google_client_secret: "${GOOGLE_CLIENT_SECRET}"
-  webapp_secret_key: "${WEBAPP_SECRET_KEY}"
 
 # --- Data source ---
 data_source:
@@ -46,11 +50,16 @@ data_source:
     stack_url: ""                 # e.g., "https://connection.keboola.com"
     project_id: ""
 
-# --- Email (optional, for password auth) ---
+# --- Email delivery (optional, for magic link auth) ---
+# Without SMTP, magic links are shown directly in browser (development mode).
+# For production, configure any SMTP relay (Gmail, Mailgun, SendGrid SMTP, etc.)
 email:
   from_address: "noreply@example.com"
   from_name: "AI Data Analyst"
-  sendgrid_api_key: "${SENDGRID_API_KEY}"
+  smtp_host: "${SMTP_HOST}"          # e.g., "smtp.gmail.com"
+  smtp_port: 587                     # 587 for STARTTLS, 465 for SSL
+  smtp_user: "${SMTP_USER}"
+  smtp_password: "${SMTP_PASSWORD}"
 
 # --- Desktop app (optional) ---
 desktop:

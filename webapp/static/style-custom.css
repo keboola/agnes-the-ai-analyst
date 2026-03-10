@@ -1771,6 +1771,33 @@ a.slack-badge:hover {
     transform: scale(0.98);
 }
 
+/* Email magic link button styling */
+.login-page .btn-email {
+    background-color: #4361ee;
+    color: white;
+    border: 1px solid #3a56d4;
+    padding: 14px 28px;
+    font-size: var(--text-base);
+    font-weight: var(--font-medium);
+    border-radius: var(--radius-md);
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    transition: all 0.2s ease;
+    cursor: pointer;
+}
+
+.login-page .btn-email:hover {
+    background-color: #3a56d4;
+    box-shadow: 0 2px 8px rgba(67, 97, 238, 0.3);
+}
+
+.login-page .btn-email:active {
+    transform: scale(0.98);
+}
+
 .login-page .btn-secondary {
     background-color: transparent;
     color: var(--text-secondary);

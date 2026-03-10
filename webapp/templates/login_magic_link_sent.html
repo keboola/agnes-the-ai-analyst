@@ -1,0 +1,64 @@
+{% extends "base_login.html" %}
+
+{% block title %}Check Your Email - {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block content %}
+<div class="login-page">
+    <div class="login-split">
+        <div class="login-features">
+            <div class="features-content">
+                <h1 class="features-title">{{ config.INSTANCE_NAME }}</h1>
+            </div>
+        </div>
+
+        <div class="login-card-wrapper">
+            <div class="login-card">
+                {% if console_mode %}
+                <h2>Development Mode</h2>
+                <p class="login-description">
+                    No SMTP server is configured. Use the link below to sign in.
+                </p>
+
+                <div style="background: #f0f4ff; border: 1px solid #c7d2fe; border-radius: 8px; padding: 16px; margin: 16px 0; word-break: break-all;">
+                    <p style="font-size: 12px; color: #666; margin: 0 0 8px 0;">Magic link for <strong>{{ email }}</strong>:</p>
+                    <a href="{{ magic_url }}" style="font-size: 14px; color: #4361ee;">{{ magic_url }}</a>
+                </div>
+
+                <p style="font-size: 13px; color: #888; margin-top: 12px;">
+                    To enable email delivery, configure SMTP settings in <code>.env</code>:
+                    <code>SMTP_HOST</code>, <code>SMTP_PORT</code>, <code>SMTP_USER</code>, <code>SMTP_PASSWORD</code>
+                </p>
+
+                {% else %}
+                <h2>Check Your Email</h2>
+                <p class="login-description">
+                    We sent a sign-in link to <strong>{{ email }}</strong>.
+                </p>
+
+                <div style="text-align: center; margin: 24px 0;">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#4361ee" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="2" y="4" width="20" height="16" rx="2"/>
+                        <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>
+                    </svg>
+                </div>
+
+                <p style="color: #666; font-size: 14px;">
+                    Click the link in the email to sign in. The link expires in 15 minutes.
+                </p>
+                <p style="color: #999; font-size: 13px;">
+                    Don't see it? Check your spam folder.
+                </p>
+                {% endif %}
+
+                <div class="divider">
+                    <span>or</span>
+                </div>
+
+                <a href="{{ url_for('email_auth.login_email_form') }}" class="btn btn-secondary" style="width: 100%; max-width: 280px;">
+                    Try a different email
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

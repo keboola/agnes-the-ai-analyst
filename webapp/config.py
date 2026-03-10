@@ -57,7 +57,17 @@ class Config:
         os.environ.get("PASSWORD_USERS_FILE", "/data/auth/password_users.json")
     )
 
-    # SendGrid email service
+    # SMTP email delivery (for magic link auth)
+    SMTP_HOST = os.environ.get("SMTP_HOST", "")
+    SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+    SMTP_USER = os.environ.get("SMTP_USER", "")
+    SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
+    SMTP_FROM = os.environ.get("SMTP_FROM",
+        os.environ.get("SMTP_USER",
+            _get(_instance, "email", "from_address", default="noreply@example.com")))
+    SMTP_USE_TLS = os.environ.get("SMTP_USE_TLS", "true").lower() == "true"
+
+    # SendGrid email service (legacy, for password auth)
     SENDGRID_API_KEY = os.environ.get("SENDGRID_API_KEY", "")
     EMAIL_FROM_ADDRESS = os.environ.get("EMAIL_FROM_ADDRESS",
         _get(_instance, "email", "from_address", default="noreply@example.com"))
