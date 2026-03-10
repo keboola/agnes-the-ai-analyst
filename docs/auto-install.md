@@ -292,8 +292,8 @@ git add -A && git commit -m "Initial instance config" && git push origin main
 rm -f /opt/data-analyst/repo/config/instance.yaml
 ln -s /opt/data-analyst/instance/config/instance.yaml /opt/data-analyst/repo/config/instance.yaml
 
-# Optional: symlink data_description.md when ready
-# ln -s /opt/data-analyst/instance/config/data_description.md /opt/data-analyst/repo/docs/data_description.md
+# Symlink data_description.md (for Data Catalog - add when ready in Step 6)
+ln -sf /opt/data-analyst/instance/config/data_description.md /opt/data-analyst/repo/docs/data_description.md
 
 systemctl restart webapp
 ```
@@ -344,7 +344,9 @@ After server is set up, analysts self-onboard via the webapp:
 ## Step 6: Sample Data (Try Without a Data Adapter)
 
 Before connecting a real data source, you can load sample data to verify the full pipeline
-(Parquet files, DuckDB, analyst rsync, Claude Code analysis).
+(Parquet files, Data Catalog, analyst rsync, Claude Code analysis).
+
+### 6a: Generate Parquet Files
 
 ```bash
 cd /opt/data-analyst/repo
@@ -363,10 +365,61 @@ chmod -R 2775 /data/src_data/parquet
 ```
 
 Available sizes: `xs` (50 customers, ~1 MB), `s` (500, ~15 MB), `m` (5K, ~150 MB), `l` (50K, ~1.5 GB).
+See `docs/sample-data.md` for the full data model and built-in analytical patterns.
 
-The sample data covers 9 tables: customers, products, campaigns, web_sessions, web_leads,
-orders, order_items, payments, support_tickets. See `docs/sample-data.md` for the full
-data model, table reference, and built-in analytical patterns.
+### 6b: Configure Data Catalog
+
+The Data Catalog reads from two files in the **instance repo**:
+
+1. **`config/data_description.md`** - table definitions with YAML block (tables, folder_mapping)
+2. **`config/instance.yaml`** - catalog categories (label, icon, order)
+
+Add `data_description.md` to the instance repo with the sample tables:
+
+```bash
+cd /opt/data-analyst/instance
+
+# Create data_description.md (see config/data_description.md.example in OSS repo)
+# Must contain a ```yaml block with folder_mapping + tables list
+
+# Add catalog categories to instance.yaml:
+cat >> config/instance.yaml << 'YAML'
+
+catalog:
+  categories:
+    customers:
+      label: "Customers"
+      icon: "users"
+    products:
+      label: "Product Catalog"
+      icon: "package"
+    marketing:
+      label: "Marketing & Campaigns"
+      icon: "megaphone"
+    web:
+      label: "Web Analytics"
+      icon: "globe"
+    sales:
+      label: "Sales & Orders"
+      icon: "shopping-cart"
+    support:
+      label: "Support & Tickets"
+      icon: "help-circle"
+  order: [customers, products, marketing, web, sales, support]
+YAML
+
+git add -A && git commit -m "Add sample data catalog" && git push origin main
+```
+
+Then symlink and restart:
+
+```bash
+# Symlink data_description.md into OSS repo (if not already done)
+ln -sf /opt/data-analyst/instance/config/data_description.md \
+       /opt/data-analyst/repo/docs/data_description.md
+
+systemctl restart webapp
+```
 
 ### Step 6 Checklist
 
@@ -374,8 +427,9 @@ data model, table reference, and built-in analytical patterns.
 |---|-------|----------|
 | 6.1 | Parquet files | `ls /data/src_data/parquet/*.parquet` shows 9 files |
 | 6.2 | Permissions | Files owned by root:data-ops, group-readable |
-| 6.3 | Analyst sync | Analyst can rsync parquet files to local machine |
-| 6.4 | DuckDB loads | `SELECT count(*) FROM read_parquet('orders.parquet')` returns rows |
+| 6.3 | Data Catalog | `/catalog` page shows 6 categories with 9 tables |
+| 6.4 | Analyst sync | Analyst can rsync parquet files to local machine |
+| 6.5 | DuckDB loads | `SELECT count(*) FROM read_parquet('orders.parquet')` returns rows |
 
 ## Step 7: Real Data Source (Production)
 
