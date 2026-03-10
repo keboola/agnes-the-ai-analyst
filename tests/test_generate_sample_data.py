@@ -171,3 +171,64 @@ class TestDeterminism:
         content1 = (dir1 / "customers.csv").read_text()
         content2 = (dir2 / "customers.csv").read_text()
         assert content1 != content2
+
+
+class TestParquetFormat:
+    """Test Parquet output format using project's ParquetManager."""
+
+    def test_parquet_format_creates_parquet_files(self, tmp_path: Path):
+        """--format parquet should produce .parquet files, no CSVs."""
+        out = tmp_path / "parquet_out"
+        gen = SampleDataGenerator(
+            size="xs", seed=42, output_dir=out, output_format="parquet",
+        )
+        gen.run()
+
+        parquet_files = {p.stem for p in out.glob("*.parquet")}
+        csv_files = list(out.glob("*.csv"))
+        expected = {
+            "customers", "products", "campaigns", "web_sessions",
+            "web_leads", "orders", "order_items", "payments",
+            "support_tickets",
+        }
+        assert expected == parquet_files
+        assert csv_files == [], "CSV files should be cleaned up in parquet mode"
+
+    def test_parquet_has_correct_types(self, tmp_path: Path):
+        """Parquet files should have proper column types from ParquetManager."""
+        import duckdb
+
+        out = tmp_path / "typed"
+        gen = SampleDataGenerator(
+            size="xs", seed=42, output_dir=out, output_format="parquet",
+        )
+        gen.run()
+
+        con = duckdb.connect()
+        # orders.created_at should be TIMESTAMP, not VARCHAR
+        schema = con.execute(
+            f"DESCRIBE SELECT * FROM read_parquet('{out}/orders.parquet')"
+        ).fetchall()
+        col_types = {row[0]: row[1] for row in schema}
+        assert col_types["created_at"] == "TIMESTAMP"
+        assert col_types["total_amount"] == "DOUBLE"
+
+        # customers.registration_date should be DATE
+        schema = con.execute(
+            f"DESCRIBE SELECT * FROM read_parquet('{out}/customers.parquet')"
+        ).fetchall()
+        col_types = {row[0]: row[1] for row in schema}
+        assert col_types["registration_date"] == "DATE"
+
+    def test_both_format_creates_csv_and_parquet(self, tmp_path: Path):
+        """--format both should produce CSVs + parquet/ subdirectory."""
+        out = tmp_path / "both_out"
+        gen = SampleDataGenerator(
+            size="xs", seed=42, output_dir=out, output_format="both",
+        )
+        gen.run()
+
+        csv_files = list(out.glob("*.csv"))
+        parquet_files = list((out / "parquet").glob("*.parquet"))
+        assert len(csv_files) == 9
+        assert len(parquet_files) == 9

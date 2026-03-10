@@ -172,25 +172,12 @@ To use sample data on a deployed server (instead of connecting a data adapter):
 # On the server
 cd /opt/data-analyst/repo
 
-# Generate CSVs
-.venv/bin/python scripts/generate_sample_data.py --size m --output /tmp/sample_csv
+# Generate Parquet files directly using project's ParquetManager
+# (snappy compression, proper column types, metadata embedding)
+/opt/data-analyst/.venv/bin/python scripts/generate_sample_data.py \
+    --size m --format parquet --output /data/src_data/parquet --seed 42
 
-# Convert to Parquet and deploy
-.venv/bin/python -c "
-import pandas as pd
-from pathlib import Path
-
-csv_dir = Path('/tmp/sample_csv')
-parquet_dir = Path('/data/src_data/parquet')
-parquet_dir.mkdir(parents=True, exist_ok=True)
-
-for f in sorted(csv_dir.glob('*.csv')):
-    df = pd.read_csv(f)
-    out = parquet_dir / f'{f.stem}.parquet'
-    df.to_parquet(out, index=False)
-    print(f'  {f.stem}: {len(df):,} rows -> {out}')
-"
-
-# Clean up CSVs
-rm -rf /tmp/sample_csv
+# Set correct permissions
+chown -R root:data-ops /data/src_data/parquet
+chmod -R 2775 /data/src_data/parquet
 ```

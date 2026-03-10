@@ -352,32 +352,14 @@ cd /opt/data-analyst/repo
 # Install generator dependency
 /opt/data-analyst/.venv/bin/pip install faker
 
-# Generate synthetic e-commerce data (size m: ~20K orders, 100K sessions)
+# Generate Parquet files directly (uses project's ParquetManager
+# for snappy compression, proper types, and metadata embedding)
 /opt/data-analyst/.venv/bin/python scripts/generate_sample_data.py \
-    --size m --output /tmp/sample_csv --seed 42
-
-# Convert CSVs to Parquet and deploy to data directory
-/opt/data-analyst/.venv/bin/python -c "
-import pandas as pd
-from pathlib import Path
-
-csv_dir = Path('/tmp/sample_csv')
-parquet_dir = Path('/data/src_data/parquet')
-parquet_dir.mkdir(parents=True, exist_ok=True)
-
-for f in sorted(csv_dir.glob('*.csv')):
-    df = pd.read_csv(f)
-    out = parquet_dir / f'{f.stem}.parquet'
-    df.to_parquet(out, index=False)
-    print(f'  {f.stem}: {len(df):,} rows -> {out}')
-"
+    --size m --format parquet --output /data/src_data/parquet --seed 42
 
 # Set correct permissions
 chown -R root:data-ops /data/src_data/parquet
 chmod -R 2775 /data/src_data/parquet
-
-# Clean up temporary CSVs
-rm -rf /tmp/sample_csv
 ```
 
 Available sizes: `xs` (50 customers, ~1 MB), `s` (500, ~15 MB), `m` (5K, ~150 MB), `l` (50K, ~1.5 GB).
