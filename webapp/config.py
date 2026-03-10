@@ -107,6 +107,11 @@ class Config:
     INSTANCE_SUBTITLE = _get(_instance, "instance", "subtitle", default="")
     INSTANCE_COPYRIGHT = _get(_instance, "instance", "copyright", default="")
 
+    # Theme colors (optional overrides from instance config)
+    THEME_PRIMARY = _get(_instance, "theme", "primary", default="")
+    THEME_PRIMARY_DARK = _get(_instance, "theme", "primary_dark", default="")
+    THEME_PRIMARY_LIGHT = _get(_instance, "theme", "primary_light", default="")
+
     # Telegram bot
     TELEGRAM_BOT_USERNAME = _get(_instance, "telegram", "bot_username", default="")
 
