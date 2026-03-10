@@ -2070,9 +2070,9 @@
         <div class="new-user-grid">
             <!-- Setup Card -->
             <div class="card setup-card">
-                <h3>Setup with your AI assistant (we love Claude Code)</h3>
+                <h3>Setup with your AI assistant</h3>
                 <p class="setup-description">
-                    To get started, follow these steps to set up with Claude Code.
+                    Follow these steps to set up your data analyst workspace.
                 </p>
                 <div class="setup-steps">
                     <div class="step-item">
@@ -2081,10 +2081,9 @@
                             <strong>Create your project folder</strong>
                         </div>
                         <div class="step-body">
-                            <p>Open your terminal and create a new folder for the project:</p>
                             <div class="code-block-wrapper">
-                                <code class="code-block" id="terminalCommand">mkdir -p data-analyst && cd data-analyst</code>
-                                <button onclick="copyCommand()" class="btn-copy-code" id="commandCopyBtn">
+                                <code class="code-block">mkdir -p data-analyst && cd data-analyst</code>
+                                <button onclick="copyCode(this, 'mkdir -p data-analyst && cd data-analyst')" class="btn-copy-code">
                                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                         <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
                                         <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
@@ -2096,27 +2095,73 @@
                     <div class="step-item">
                         <span class="step-number">2</span>
                         <div class="step-header">
-                            <strong>Start Claude Code</strong>
+                            <strong>Generate SSH key</strong>
                         </div>
                         <div class="step-body">
-                            <p>Launch Claude Code in your new project folder</p>
+                            <div class="code-block-wrapper">
+                                <code class="code-block">ssh-keygen -t ed25519 -f ~/.ssh/data_analyst_server -N ''</code>
+                                <button onclick="copyCode(this, &quot;ssh-keygen -t ed25519 -f ~/.ssh/data_analyst_server -N ''&quot;)" class="btn-copy-code">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                                    </svg>
+                                </button>
+                            </div>
                         </div>
                     </div>
                     <div class="step-item">
                         <span class="step-number">3</span>
                         <div class="step-header">
-                            <strong>Copy and paste setup instructions</strong>
+                            <strong>Copy your public key</strong>
                         </div>
                         <div class="step-body">
+                            <div class="code-block-wrapper">
+                                <code class="code-block">cat ~/.ssh/data_analyst_server.pub</code>
+                                <button onclick="copyCode(this, 'cat ~/.ssh/data_analyst_server.pub')" class="btn-copy-code">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                                    </svg>
+                                </button>
+                            </div>
+                            <p style="margin-top: 6px; font-style: italic;">Paste the key into the registration form &rarr;</p>
+                        </div>
+                    </div>
+                    <div class="step-item">
+                        <span class="step-number">4</span>
+                        <div class="step-header">
+                            <strong>Create your account</strong>
+                        </div>
+                        <div class="step-body">
+                            <p>Click <strong>Create Account</strong> in the form on the right.</p>
+                        </div>
+                    </div>
+                    <div class="step-item">
+                        <span class="step-number">5</span>
+                        <div class="step-header">
+                            <strong>Start Claude Code and set up workspace</strong>
+                        </div>
+                        <div class="step-body">
+                            <div class="code-block-wrapper" style="margin-bottom: 12px;">
+                                <code class="code-block">claude</code>
+                                <button onclick="copyCode(this, 'claude')" class="btn-copy-code">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                                    </svg>
+                                </button>
+                            </div>
+                            <p>Paste the setup instructions into Claude Code:</p>
                             <button onclick="copyBootstrapInstructions()" class="btn-copy-v2" id="bootstrapCopyBtn">
                                 Copy Setup Instructions
                             </button>
                         </div>
                     </div>
                 </div>
-                <p class="helper-text">
-                    Claude Code will guide you through SSH key generation, account creation, and data synchronization.
-                </p>
+                <div class="helper-text">
+                    <strong>Claude Code will:</strong> configure SSH, download data &amp; docs via rsync,
+                    set up Python + DuckDB, and create your project context.
+                </div>
             </div>
 
             <!-- Registration Card -->
@@ -2175,44 +2220,72 @@
     </footer>
 
     <script>
-    function copyCommand() {
-        const command = document.getElementById('terminalCommand').textContent;
-        const button = document.getElementById('commandCopyBtn');
-        const originalHTML = button.innerHTML;
+    function copyToClipboard(text) {
+        if (navigator.clipboard && window.isSecureContext) {
+            return navigator.clipboard.writeText(text);
+        }
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        ta.style.top = '-9999px';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        return new Promise(function(resolve, reject) {
+            document.execCommand('copy') ? resolve() : reject();
+            document.body.removeChild(ta);
+        });
+    }
 
-        navigator.clipboard.writeText(command).then(() => {
+    function copyCode(button, text) {
+        var originalHTML = button.innerHTML;
+        copyToClipboard(text).then(function() {
             button.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>';
             button.classList.add('copied');
-
-            setTimeout(() => {
+            setTimeout(function() {
                 button.innerHTML = originalHTML;
                 button.classList.remove('copied');
             }, 2000);
-        }).catch(err => {
-            console.error('Failed to copy:', err);
         });
     }
 
     function copyBootstrapInstructions() {
-        const bootstrapYaml = {{ bootstrap_yaml | tojson }};
-        const instructions = `Set up AI Data Analyst project according to the following YAML instruction:
+        var username = {{ username | tojson }};
+        var serverHost = {{ server_host | tojson }};
+        var serverHostname = {{ server_hostname | tojson }};
+        var webappUrl = serverHostname ? 'http://' + serverHostname : '';
 
----
-${bootstrapYaml}
----`;
+        var instructions = 'Set up my AI Data Analyst local environment.\n\n'
+            + 'Server: ' + serverHost + '\n'
+            + 'Webapp: ' + webappUrl + '\n'
+            + 'My username: ' + username + '\n'
+            + 'SSH key: ~/.ssh/data_analyst_server (already generated)\n\n'
+            + 'Please do the following:\n'
+            + '1. Add SSH config entry: Host data-analyst, HostName ' + serverHost
+            + ', User ' + username + ', IdentityFile ~/.ssh/data_analyst_server\n'
+            + '2. Test SSH connection (ssh data-analyst echo ok)\n'
+            + '3. Create project folders: server/ (docs, scripts, parquet, metadata, examples) '
+            + 'and user/ (duckdb, notifications, artifacts, scripts, parquet, sessions)\n'
+            + '4. Download everything from server via rsync:\n'
+            + '   rsync -avz data-analyst:server/scripts/ ./server/scripts/\n'
+            + '   rsync -avz data-analyst:server/docs/ ./server/docs/\n'
+            + '   rsync -avz data-analyst:server/examples/ ./server/examples/\n'
+            + '   rsync -avz data-analyst:server/metadata/ ./server/metadata/\n'
+            + '   rsync -avz --progress data-analyst:server/parquet/ ./server/parquet/\n'
+            + '5. Set up Python venv (.venv) with: pandas, pyarrow, duckdb, pyyaml, python-dotenv\n'
+            + '6. Run bash server/scripts/setup_views.sh to initialize DuckDB\n'
+            + '7. Create CLAUDE.md from server/docs/setup/claude_md_template.txt '
+            + '(substitute {username} with my username)\n';
 
-        const button = document.getElementById('bootstrapCopyBtn');
-
-        navigator.clipboard.writeText(instructions).then(() => {
+        var button = document.getElementById('bootstrapCopyBtn');
+        copyToClipboard(instructions).then(function() {
             button.textContent = 'Copied!';
             button.classList.add('copied');
-
-            setTimeout(() => {
+            setTimeout(function() {
                 button.textContent = 'Copy Setup Instructions';
                 button.classList.remove('copied');
             }, 2000);
-        }).catch(err => {
-            console.error('Failed to copy:', err);
         });
     }
 
