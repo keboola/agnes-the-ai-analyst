@@ -36,7 +36,7 @@ deployment:
 # Email magic link auth works out of the box (no external service needed).
 # Google OAuth is optional - add credentials to enable it.
 auth:
-  allowed_domain: ""              # Email domain for login (e.g., "acme.com")
+  allowed_domain: ""              # Email domain(s) for login, comma-separated (e.g., "acme.com" or "acme.com, partner.org")
   webapp_secret_key: "${WEBAPP_SECRET_KEY}"
   # Optional: Google OAuth (if not set, only email magic link is available)
   google_client_id: "${GOOGLE_CLIENT_ID}"

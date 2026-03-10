@@ -66,23 +66,23 @@ def admin_required(f):
 
 
 def validate_email_domain(email: str) -> bool:
-    """Check if email belongs to allowed domain or whitelist.
+    """Check if email belongs to an allowed domain or whitelist.
 
     Allows access for:
-    1. Configured allowed domain (for Google OAuth users)
-    2. Whitelisted emails (for password auth external users)
+    1. Any of the configured allowed domains (comma-separated in config)
+    2. Whitelisted emails (for individually approved external users)
     """
     if not email:
         return False
     email_lower = email.lower()
 
-    # Check whitelist first (for password auth users)
+    # Check whitelist first (individually approved emails)
     if email_lower in Config.ALLOWED_EMAILS:
         return True
 
-    # Check domain (for Google OAuth users)
+    # Check domain against all allowed domains
     domain = email_lower.split("@")[-1]
-    return domain == Config.ALLOWED_DOMAIN.lower()
+    return domain in Config.ALLOWED_DOMAINS
 
 
 @auth_bp.route("/login")

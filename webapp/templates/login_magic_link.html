@@ -27,7 +27,7 @@
                         <input type="email"
                                id="email"
                                name="email"
-                               placeholder="you@{{ allowed_domain or 'company.com' }}"
+                               placeholder="you@{{ allowed_domains[0] if allowed_domains else 'company.com' }}"
                                required
                                autocomplete="email"
                                autofocus
@@ -39,9 +39,9 @@
                     </button>
                 </form>
 
-                {% if allowed_domain %}
+                {% if allowed_domains %}
                 <p class="login-note">
-                    For <strong>@{{ allowed_domain }}</strong> email addresses.
+                    For {% for d in allowed_domains %}<strong>@{{ d }}</strong>{% if not loop.last %}, {% endif %}{% endfor %} email addresses.
                 </p>
                 {% endif %}
 

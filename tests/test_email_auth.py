@@ -73,8 +73,7 @@ class TestEmailAuthProvider:
         assert provider.get_display_name() == "Email"
 
     def test_login_button_properties(self, monkeypatch):
-        # Reload config with allowed domain set
-        monkeypatch.setattr("webapp.config.Config.ALLOWED_DOMAIN", "acme.com")
+        monkeypatch.setattr("webapp.config.Config.ALLOWED_DOMAINS", ["acme.com"])
         provider = EmailAuthProvider()
         button = provider.get_login_button()
         assert button["text"] == "Sign in with Email"
@@ -84,12 +83,19 @@ class TestEmailAuthProvider:
         assert "btn-email" in button["css_class"]
         assert "acme.com" in button["subtitle"]
 
+    def test_login_button_multiple_domains(self, monkeypatch):
+        monkeypatch.setattr("webapp.config.Config.ALLOWED_DOMAINS", ["acme.com", "partner.org"])
+        provider = EmailAuthProvider()
+        button = provider.get_login_button()
+        assert "acme.com" in button["subtitle"]
+        assert "partner.org" in button["subtitle"]
+
     def test_provider_available_with_domain(self, monkeypatch):
-        monkeypatch.setattr("webapp.config.Config.ALLOWED_DOMAIN", "acme.com")
+        monkeypatch.setattr("webapp.config.Config.ALLOWED_DOMAINS", ["acme.com"])
         provider = EmailAuthProvider()
         assert provider.is_available() is True
 
     def test_provider_unavailable_without_domain(self, monkeypatch):
-        monkeypatch.setattr("webapp.config.Config.ALLOWED_DOMAIN", "")
+        monkeypatch.setattr("webapp.config.Config.ALLOWED_DOMAINS", [])
         provider = EmailAuthProvider()
         assert provider.is_available() is False

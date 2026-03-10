@@ -59,8 +59,9 @@ def authorize():
         # Validate domain
         if not validate_email_domain(email):
             logger.warning(f"Login attempt from non-allowed domain: {email}")
+            domains_str = ", ".join(f"@{d}" for d in Config.ALLOWED_DOMAINS)
             flash(
-                f"Only @{Config.ALLOWED_DOMAIN} email addresses are allowed.", "error"
+                f"Only {domains_str} email addresses are allowed.", "error"
             )
             return redirect(url_for("auth.login"))
 
@@ -93,11 +94,16 @@ class GoogleAuthProvider(AuthProvider):
         return google_bp
 
     def get_login_button(self) -> dict:
+        domains = Config.ALLOWED_DOMAINS
+        if len(domains) > 1:
+            domain_str = ", ".join(f"@{d}" for d in domains)
+        else:
+            domain_str = f"@{domains[0]}" if domains else ""
         return {
             "text": "Sign in with Google",
             "url": "/login/google",
             "icon_html": _GOOGLE_ICON_HTML,
-            "subtitle": f'For <strong>@{Config.ALLOWED_DOMAIN}</strong> email addresses.',
+            "subtitle": f'For <strong>{domain_str}</strong> email addresses.' if domain_str else "",
             "order": 10,
             "css_class": "btn-google",
             "visible": True,

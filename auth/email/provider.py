@@ -161,7 +161,7 @@ def login_email_form():
     """Show email input form."""
     return render_template(
         "login_magic_link.html",
-        allowed_domain=Config.ALLOWED_DOMAIN,
+        allowed_domains=Config.ALLOWED_DOMAINS,
     )
 
 
@@ -175,8 +175,9 @@ def send_magic_link():
         return redirect(url_for("email_auth.login_email_form"))
 
     if not validate_email_domain(email):
+        domains_str = ", ".join(f"@{d}" for d in Config.ALLOWED_DOMAINS)
         flash(
-            f"Only @{Config.ALLOWED_DOMAIN} email addresses are allowed.",
+            f"Only {domains_str} email addresses are allowed.",
             "error",
         )
         return redirect(url_for("email_auth.login_email_form"))
@@ -248,21 +249,26 @@ class EmailAuthProvider(AuthProvider):
         return email_bp
 
     def get_login_button(self) -> dict:
-        domain = Config.ALLOWED_DOMAIN
-        subtitle = f'For <strong>@{domain}</strong> email addresses.' if domain else ""
+        domains = Config.ALLOWED_DOMAINS
+        if len(domains) > 1:
+            domain_str = ", ".join(f"@{d}" for d in domains)
+        elif domains:
+            domain_str = f"@{domains[0]}"
+        else:
+            domain_str = ""
         return {
             "text": "Sign in with Email",
             "url": "/login/email",
             "icon_html": _EMAIL_ICON_HTML,
-            "subtitle": subtitle,
+            "subtitle": f'For <strong>{domain_str}</strong> email addresses.' if domain_str else "",
             "order": 20,
             "css_class": "btn-email",
             "visible": True,
         }
 
     def is_available(self) -> bool:
-        """Available when allowed_domain is configured."""
-        return bool(Config.ALLOWED_DOMAIN)
+        """Available when at least one allowed domain is configured."""
+        return len(Config.ALLOWED_DOMAINS) > 0
 
     def init_app(self, app) -> None:
         """No additional initialization needed."""

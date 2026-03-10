@@ -44,8 +44,14 @@ class Config:
     GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
     GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 
-    # Domain restriction for Google OAuth (loaded from instance config)
+    # Domain restriction for login (loaded from instance config)
+    # Supports single domain string or comma-separated list
     ALLOWED_DOMAIN = _get(_instance, "auth", "allowed_domain", default="")
+    ALLOWED_DOMAINS = [
+        d.strip().lower()
+        for d in _get(_instance, "auth", "allowed_domain", default="").split(",")
+        if d.strip()
+    ]
 
     # Password authentication for external users (whitelisted emails)
     ALLOWED_EMAILS = [

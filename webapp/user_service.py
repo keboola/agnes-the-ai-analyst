@@ -40,27 +40,21 @@ RESERVED_USERNAMES = frozenset([
 
 def get_username_from_email(email: str) -> str:
     """
-    Extract username from email address.
+    Convert email address to a unique system username.
 
-    For allowed domain emails: takes the part before @ (e.g., john.doe@example.com -> john.doe)
-    For external emails: converts entire email to username (e.g., petr@simecek.org -> petr_simecek_org)
+    Always uses the full email to avoid collisions:
+        admin@test.com   -> admin_test_com
+        pavel@groupon.com -> pavel_groupon_com
+        john.doe@acme.com -> john_doe_acme_com
 
-    This prevents username collisions between internal and external users.
+    This ensures uniqueness across multiple domains and avoids
+    collisions with reserved system usernames like 'admin', 'test', etc.
     """
     if not email or "@" not in email:
         return ""
 
-    email_lower = email.lower()
-    local_part, domain = email_lower.rsplit("@", 1)
-
-    # Internal domain users: just use local part
-    from .config import Config
-    if domain == Config.ALLOWED_DOMAIN:
-        return local_part
-
-    # External users: convert entire email to safe username
-    # petr@simecek.org -> petr_simecek_org
-    safe_username = email_lower.replace("@", "_").replace(".", "_")
+    # Full email, normalized: replace @ and . with underscores
+    safe_username = email.lower().replace("@", "_").replace(".", "_")
     return safe_username
 
 
