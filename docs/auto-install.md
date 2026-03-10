@@ -344,7 +344,52 @@ After server is set up, analysts self-onboard via the webapp:
 ## Step 6: Sample Data (Try Without a Data Adapter)
 
 Before connecting a real data source, you can load sample data to verify the full pipeline
-(Parquet files, Data Catalog, analyst rsync, Claude Code analysis).
+(Parquet files, Data Catalog with profiling, analyst rsync, Claude Code analysis).
+
+### How the Data Catalog & Profiler Pipeline Works
+
+```
+Instance repo                        Server filesystem            Webapp
+─────────────                        ────────────────            ──────
+config/data_description.md ──symlink──> repo/docs/data_description.md
+  (tables, folder_mapping,                │
+   foreign_keys)                          │
+                                          ▼
+config/instance.yaml ────────symlink──> repo/config/instance.yaml
+  (catalog.categories,                    │
+   labels, icons, order)                  │
+                                          ▼
+                          /data/src_data/parquet/*.parquet
+                                          │
+                                ┌─────────┴──────────┐
+                                ▼                    ▼
+                     python -m src.profiler    _load_catalog_data()
+                                │                    │
+                                ▼                    ▼
+                  /data/src_data/metadata/     /catalog page
+                     profiles.json            (categories + tables)
+                                │
+                     ┌──────────┴──────────┐
+                     ▼                     ▼
+              /api/catalog/profile/   _load_data_stats()
+               (per-table stats,      (header: "9 tables,
+                columns, alerts,       ~217K rows total")
+                relationships)
+```
+
+Key files and their roles:
+
+| File | Location | Purpose |
+|------|----------|---------|
+| `data_description.md` | Instance repo | Table definitions, folder_mapping (bucket→category), foreign_keys |
+| `instance.yaml` | Instance repo | Catalog category labels, icons, display order |
+| `*.parquet` | `/data/src_data/parquet/` | Actual data files (flat or in subfolders) |
+| `profiles.json` | `/data/src_data/metadata/` | Profiler output: statistics, alerts, relationships per table |
+| `sync_state.json` | `/data/src_data/metadata/` | Sync process stats (optional; profiler provides fallback) |
+
+**Folder mapping** serves dual purpose: maps table IDs to catalog categories for the UI,
+and maps to filesystem paths for the profiler. The profiler auto-detects flat layouts
+(all parquet files in one directory) vs subfolder layouts (Keboola-style `parquet/<folder>/<table>.parquet`).
 
 ### 6a: Generate Parquet Files
 
@@ -371,8 +416,13 @@ See `docs/sample-data.md` for the full data model and built-in analytical patter
 
 The Data Catalog reads from two files in the **instance repo**:
 
-1. **`config/data_description.md`** - table definitions with YAML block (tables, folder_mapping)
-2. **`config/instance.yaml`** - catalog categories (label, icon, order)
+1. **`config/data_description.md`** - YAML block with `folder_mapping`, `tables` (id, name, description, primary_key, sync_strategy, foreign_keys)
+2. **`config/instance.yaml`** - `catalog.categories` with label, icon per category + `catalog.order`
+
+The `folder_mapping` maps bucket prefixes from table IDs to category names. Example:
+table ID `sample.sales.orders` → bucket `sample.sales` → folder `sales` → category "Sales & Orders".
+
+Tables with `foreign_keys` will show interactive relationship diagrams in the profiler modal.
 
 Add `data_description.md` to the instance repo with the sample tables:
 
@@ -380,7 +430,18 @@ Add `data_description.md` to the instance repo with the sample tables:
 cd /opt/data-analyst/instance
 
 # Create data_description.md (see config/data_description.md.example in OSS repo)
-# Must contain a ```yaml block with folder_mapping + tables list
+# Must contain a ```yaml block with:
+#   folder_mapping:  { "bucket.prefix": "category_key", ... }
+#   tables:          list of table definitions
+#
+# Each table needs: id, name, description, primary_key, sync_strategy
+# Optional: foreign_keys (for profiler Relationships tab)
+#
+# Example foreign_keys:
+#   foreign_keys:
+#     - column: "customer_id"
+#       references: "customers.customer_id"
+#       description: "Ordering customer"
 
 # Add catalog categories to instance.yaml:
 cat >> config/instance.yaml << 'YAML'
@@ -421,6 +482,35 @@ ln -sf /opt/data-analyst/instance/config/data_description.md \
 systemctl restart webapp
 ```
 
+### 6c: Run Data Profiler
+
+The profiler reads parquet files + `data_description.md` and generates `profiles.json`
+with per-table statistics, column analysis, data quality alerts, and relationship maps.
+
+```bash
+cd /opt/data-analyst/repo
+/opt/data-analyst/.venv/bin/python -m src.profiler
+```
+
+Output: `/data/src_data/metadata/profiles.json` (auto-created, readable by webapp).
+
+The profiler provides:
+- **Overview**: row count, column count, file size, date coverage, missing cell %
+- **Columns**: type distribution, top values, histograms for numeric columns
+- **Insights**: data quality alerts (high missing %, imbalanced categories, high cardinality)
+- **Relationships**: FK diagram built from `foreign_keys` in `data_description.md`
+- **Sample**: first 5 rows of the table
+
+Without `sync_state.json` (no data adapter running), the profiler computes file sizes
+directly from parquet files, and the catalog header derives table/row counts from `profiles.json`.
+
+To re-run after data changes:
+
+```bash
+cd /opt/data-analyst/repo && /opt/data-analyst/.venv/bin/python -m src.profiler
+# No webapp restart needed - profiles.json is read on each request
+```
+
 ### Step 6 Checklist
 
 | # | Check | Expected |
@@ -428,8 +518,12 @@ systemctl restart webapp
 | 6.1 | Parquet files | `ls /data/src_data/parquet/*.parquet` shows 9 files |
 | 6.2 | Permissions | Files owned by root:data-ops, group-readable |
 | 6.3 | Data Catalog | `/catalog` page shows 6 categories with 9 tables |
-| 6.4 | Analyst sync | Analyst can rsync parquet files to local machine |
-| 6.5 | DuckDB loads | `SELECT count(*) FROM read_parquet('orders.parquet')` returns rows |
+| 6.4 | Catalog header | "9 tables, ~217K+ rows total" (from profiles.json) |
+| 6.5 | Profile modal | Click "Profile" on any table → statistics, columns, insights |
+| 6.6 | Relationships | Orders profile → shows customers, order_items, payments links |
+| 6.7 | File sizes | Profile overview shows non-zero file size (e.g., 0.69 MB) |
+| 6.8 | Analyst sync | Analyst can rsync parquet files to local machine |
+| 6.9 | DuckDB loads | `SELECT count(*) FROM read_parquet('orders.parquet')` returns rows |
 
 ## Step 7: Real Data Source (Production)
 
