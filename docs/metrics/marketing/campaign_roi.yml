@@ -1,0 +1,55 @@
+- name: campaign_roi
+  display_name: Campaign ROI
+  category: marketing
+  type: ratio
+  unit: "%"
+  grain: monthly
+  time_column: start_date
+  table: campaigns
+  tables:
+    - campaigns
+    - orders
+    - web_leads
+  expression: "(SUM(attributed_revenue) - SUM(spend)) / NULLIF(SUM(spend), 0) * 100"
+  description: "Return on investment for marketing campaigns. Measures revenue generated relative to campaign spend. Negative ROI indicates underperforming campaigns that need optimization."
+  dimensions:
+    - campaign_type
+    - channel
+    - target_segment
+  notes:
+    - "Attribution uses last-touch model by default"
+    - "Joins campaigns to orders via utm_campaign tracking codes"
+    - "Web leads are attributed to campaigns via landing page tracking"
+    - "ROI above 300% is considered excellent for e-commerce"
+  synonyms:
+    - marketing_roi
+    - campaign_return
+    - roas
+  sql: |
+    SELECT
+        c.campaign_name,
+        c.campaign_type,
+        c.spend,
+        SUM(o.total_amount) AS attributed_revenue,
+        ROUND(
+            (SUM(o.total_amount) - c.spend) / NULLIF(c.spend, 0) * 100, 2
+        ) AS roi_pct
+    FROM campaigns c
+    LEFT JOIN orders o ON o.utm_campaign = c.campaign_id
+        AND o.status = 'completed'
+    GROUP BY 1, 2, 3
+    ORDER BY 5 DESC
+  sql_by_type: |
+    SELECT
+        c.campaign_type,
+        SUM(c.spend) AS total_spend,
+        SUM(o.total_amount) AS total_revenue,
+        ROUND(
+            (SUM(o.total_amount) - SUM(c.spend))
+            / NULLIF(SUM(c.spend), 0) * 100, 2
+        ) AS roi_pct
+    FROM campaigns c
+    LEFT JOIN orders o ON o.utm_campaign = c.campaign_id
+        AND o.status = 'completed'
+    GROUP BY 1
+    ORDER BY 4 DESC

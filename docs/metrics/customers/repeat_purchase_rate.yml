@@ -1,0 +1,66 @@
+- name: repeat_purchase_rate
+  display_name: Repeat Purchase Rate
+  category: customers
+  type: ratio
+  unit: "%"
+  grain: monthly
+  time_column: order_date
+  table: orders
+  tables:
+    - orders
+    - customers
+  expression: "COUNT(DISTINCT CASE WHEN order_number > 1 THEN customer_id END) / COUNT(DISTINCT customer_id)"
+  description: "Percentage of customers who made more than one purchase. Key loyalty and retention indicator. Higher rates signal strong product-market fit and customer satisfaction."
+  dimensions:
+    - customer_segment
+    - acquisition_channel
+    - product_category
+  notes:
+    - "Calculated over a rolling 12-month window by default"
+    - "Joins orders to customers via customer_id"
+    - "Order numbering is based on chronological order per customer"
+    - "Excludes cancelled and fully refunded orders"
+  synonyms:
+    - retention_rate
+    - repurchase_rate
+    - customer_loyalty_rate
+  sql: |
+    WITH customer_orders AS (
+        SELECT
+            customer_id,
+            COUNT(*) AS order_count
+        FROM orders
+        WHERE status = 'completed'
+            AND order_date >= CURRENT_DATE - INTERVAL '12 months'
+        GROUP BY 1
+    )
+    SELECT
+        ROUND(
+            COUNT(CASE WHEN order_count > 1 THEN 1 END) * 100.0
+            / COUNT(*), 2
+        ) AS repeat_purchase_rate_pct,
+        COUNT(*) AS total_customers,
+        COUNT(CASE WHEN order_count > 1 THEN 1 END) AS repeat_customers
+    FROM customer_orders
+  sql_by_channel: |
+    WITH customer_orders AS (
+        SELECT
+            o.customer_id,
+            c.acquisition_channel,
+            COUNT(*) AS order_count
+        FROM orders o
+        JOIN customers c ON o.customer_id = c.customer_id
+        WHERE o.status = 'completed'
+            AND o.order_date >= CURRENT_DATE - INTERVAL '12 months'
+        GROUP BY 1, 2
+    )
+    SELECT
+        acquisition_channel,
+        ROUND(
+            COUNT(CASE WHEN order_count > 1 THEN 1 END) * 100.0
+            / COUNT(*), 2
+        ) AS repeat_rate_pct,
+        COUNT(*) AS total_customers
+    FROM customer_orders
+    GROUP BY 1
+    ORDER BY 2 DESC

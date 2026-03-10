@@ -1,0 +1,46 @@
+- name: satisfaction_score
+  display_name: Customer Satisfaction Score
+  category: support
+  type: average
+  unit: score (1-5)
+  grain: monthly
+  time_column: created_at
+  table: support_tickets
+  expression: "AVG(satisfaction_score)"
+  description: "Average customer satisfaction rating on a 1-5 scale collected after ticket resolution. Measures customer perception of support quality and identifies areas for improvement."
+  dimensions:
+    - priority
+    - category
+    - agent
+    - resolution_type
+  notes:
+    - "Score is collected via post-resolution survey email"
+    - "Response rate is typically 25-35% of resolved tickets"
+    - "Score of 4+ is considered 'satisfied', below 3 is 'unsatisfied'"
+    - "Only tickets with a satisfaction response are included"
+  synonyms:
+    - csat
+    - customer_satisfaction
+    - satisfaction_rating
+  sql: |
+    SELECT
+        DATE_TRUNC('month', created_at) AS month,
+        ROUND(AVG(satisfaction_score), 2) AS avg_satisfaction,
+        COUNT(*) AS responses,
+        ROUND(
+            COUNT(CASE WHEN satisfaction_score >= 4 THEN 1 END) * 100.0
+            / COUNT(*), 1
+        ) AS pct_satisfied
+    FROM support_tickets
+    WHERE satisfaction_score IS NOT NULL
+    GROUP BY 1
+    ORDER BY 1
+  sql_by_category: |
+    SELECT
+        category,
+        ROUND(AVG(satisfaction_score), 2) AS avg_satisfaction,
+        COUNT(*) AS responses
+    FROM support_tickets
+    WHERE satisfaction_score IS NOT NULL
+    GROUP BY 1
+    ORDER BY 2 DESC

@@ -1374,6 +1374,9 @@
         </div>
 
         <!-- ── Card: Business Metrics ── -->
+        {% if metrics_data %}
+        {% set metrics_total = namespace(n=0) %}
+        {% for c in metrics_data %}{% set metrics_total.n = metrics_total.n + c.metrics|length %}{% endfor %}
         <div class="source-card">
             <div class="source-card-header">
                 <div class="source-card-left">
@@ -1385,8 +1388,8 @@
                     </div>
                     <div class="source-card-info">
                         <div class="source-card-name">Business Metrics</div>
-                        <div class="source-card-desc">Standardized metric definitions for revenue, usage, KPIs, and financial reporting</div>
-                        <div class="source-card-meta">18 metrics &middot; 4 categories</div>
+                        <div class="source-card-desc">Standardized metric definitions with SQL examples and documentation</div>
+                        <div class="source-card-meta">{{ metrics_total.n }} metrics &middot; {{ metrics_data|length }} categories</div>
                     </div>
                 </div>
                 <div class="source-card-right">
@@ -1398,220 +1401,32 @@
                 </div>
             </div>
 
-            <!-- Finance Category -->
+            {% for category in metrics_data %}
             <div class="accordion-category">
                 <button class="accordion-trigger" onclick="toggleAccordion(this)">
                     <svg class="accordion-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <polyline points="9 18 15 12 9 6"/>
                     </svg>
-                    <span class="category-tag finance">Finance</span>
-                    <span class="accordion-count">1 metric</span>
+                    <span class="category-tag {{ category.css }}">{{ category.label }}</span>
+                    <span class="accordion-count">{{ category.metrics|length }} metric{{ 's' if category.metrics|length != 1 }}</span>
                 </button>
                 <div class="accordion-content">
-                    <div class="table-row" onclick="openMetricModal('finance/infra_cost.yml')">
+                    {% for metric in category.metrics %}
+                    <div class="table-row" onclick="openMetricModal('{{ metric.path }}')">
                         <div class="table-row-left">
-                            <div class="table-row-name">infra_cost</div>
-                            <div class="table-row-desc">Monthly infrastructure cost from cloud providers (GCP, AWS, Azure) and data warehouses (Snowflake, BigQuery)</div>
+                            <div class="table-row-name">{{ metric.name }}</div>
+                            <div class="table-row-desc">{{ metric.description }}</div>
                         </div>
                         <div class="table-row-right">
-                            <span class="rows-badge">monthly</span>
+                            <span class="rows-badge">{{ metric.grain }}</span>
                         </div>
                     </div>
+                    {% endfor %}
                 </div>
             </div>
-
-            <!-- Product Usage Category -->
-            <div class="accordion-category">
-                <button class="accordion-trigger" onclick="toggleAccordion(this)">
-                    <svg class="accordion-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <polyline points="9 18 15 12 9 6"/>
-                    </svg>
-                    <span class="category-tag telemetry">Product Usage</span>
-                    <span class="accordion-count">3 metrics</span>
-                </button>
-                <div class="accordion-content">
-                    <div class="table-row" onclick="openMetricModal('product_usage/usage_value.yml')">
-                        <div class="table-row-left">
-                            <div class="table-row-name">usage_value</div>
-                            <div class="table-row-desc">Platform usage consumption aggregated per company and metric type with conditional aggregation</div>
-                        </div>
-                        <div class="table-row-right">
-                            <span class="rows-badge">monthly</span>
-                        </div>
-                    </div>
-                    <div class="table-row" onclick="openMetricModal('product_usage/contract_limit_value.yml')">
-                        <div class="table-row-left">
-                            <div class="table-row-name">contract_limit_value</div>
-                            <div class="table-row-desc">Monthly contracted limits for usage metrics per company</div>
-                        </div>
-                        <div class="table-row-right">
-                            <span class="rows-badge">monthly</span>
-                        </div>
-                    </div>
-                    <div class="table-row" onclick="openMetricModal('product_usage/usage_vs_limit.yml')">
-                        <div class="table-row-left">
-                            <div class="table-row-name">usage_vs_limit</div>
-                            <div class="table-row-desc">Comparison of actual usage against contracted limits, identifies overage risk and unpaid usage</div>
-                        </div>
-                        <div class="table-row-right">
-                            <span class="rows-badge">monthly</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Sales & Revenue Category -->
-            <div class="accordion-category">
-                <button class="accordion-trigger" onclick="toggleAccordion(this)">
-                    <svg class="accordion-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <polyline points="9 18 15 12 9 6"/>
-                    </svg>
-                    <span class="category-tag sales">Sales &amp; Revenue</span>
-                    <span class="accordion-count">4 metrics</span>
-                </button>
-                <div class="accordion-content">
-                    <div class="table-row" onclick="openMetricModal('sales_revenue/product_revenue.yml')">
-                        <div class="table-row-left">
-                            <div class="table-row-name">product_revenue</div>
-                            <div class="table-row-desc">Monthly recurring revenue broken down by individual contract lines (product level)</div>
-                        </div>
-                        <div class="table-row-right">
-                            <span class="rows-badge">monthly</span>
-                        </div>
-                    </div>
-                    <div class="table-row" onclick="openMetricModal('sales_revenue/mrr.yml')">
-                        <div class="table-row-left">
-                            <div class="table-row-name">mrr</div>
-                            <div class="table-row-desc">Total monthly recurring revenue aggregated at company level - PRIMARY MRR metric</div>
-                        </div>
-                        <div class="table-row-right">
-                            <span class="rows-badge">monthly</span>
-                        </div>
-                    </div>
-                    <div class="table-row" onclick="openMetricModal('sales_revenue/new_arr.yml')">
-                        <div class="table-row-left">
-                            <div class="table-row-name">new_arr</div>
-                            <div class="table-row-desc">Annual Recurring Revenue from truly new customers (first month of revenue)</div>
-                        </div>
-                        <div class="table-row-right">
-                            <span class="rows-badge">monthly</span>
-                        </div>
-                    </div>
-                    <div class="table-row" onclick="openMetricModal('sales_revenue/upsell_expansion.yml')">
-                        <div class="table-row-left">
-                            <div class="table-row-name">upsell_expansion</div>
-                            <div class="table-row-desc">Revenue expansion from existing customers upgrading their contracts</div>
-                        </div>
-                        <div class="table-row-right">
-                            <span class="rows-badge">monthly</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Weekly Leadership KPIs Category -->
-            <div class="accordion-category">
-                <button class="accordion-trigger" onclick="toggleAccordion(this)">
-                    <svg class="accordion-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <polyline points="9 18 15 12 9 6"/>
-                    </svg>
-                    <span class="category-tag sales">Weekly Leadership KPIs</span>
-                    <span class="accordion-count">10 metrics</span>
-                </button>
-                <div class="accordion-content">
-                    <div class="table-row" onclick="openMetricModal('weekly_leadership_kpis/top_risk_churn_count.yml')">
-                        <div class="table-row-left">
-                            <div class="table-row-name">top_risk_churn_count</div>
-                            <div class="table-row-desc">Weekly count of active customers flagged as high churn risk (CSM opinion = RED) • Customer Success</div>
-                        </div>
-                        <div class="table-row-right">
-                            <span class="rows-badge">weekly</span>
-                        </div>
-                    </div>
-                    <div class="table-row" onclick="openMetricModal('weekly_leadership_kpis/top_risk_churn_usd.yml')">
-                        <div class="table-row-left">
-                            <div class="table-row-name">top_risk_churn_usd</div>
-                            <div class="table-row-desc">Weekly ARR of active customers flagged as high churn risk • Customer Success</div>
-                        </div>
-                        <div class="table-row-right">
-                            <span class="rows-badge">weekly</span>
-                        </div>
-                    </div>
-                    <div class="table-row" onclick="openMetricModal('weekly_leadership_kpis/demo.yml')">
-                        <div class="table-row-left">
-                            <div class="table-row-name">demo</div>
-                            <div class="table-row-desc">Weekly count and ARR of New Business opportunities moved to Demo stage • Sales</div>
-                        </div>
-                        <div class="table-row-right">
-                            <span class="rows-badge">weekly</span>
-                        </div>
-                    </div>
-                    <div class="table-row" onclick="openMetricModal('weekly_leadership_kpis/negotiation.yml')">
-                        <div class="table-row-left">
-                            <div class="table-row-name">negotiation</div>
-                            <div class="table-row-desc">Weekly count and ARR of New Business opportunities moved to Negotiation stage • Sales</div>
-                        </div>
-                        <div class="table-row-right">
-                            <span class="rows-badge">weekly</span>
-                        </div>
-                    </div>
-                    <div class="table-row" onclick="openMetricModal('weekly_leadership_kpis/closed_won.yml')">
-                        <div class="table-row-left">
-                            <div class="table-row-name">closed_won</div>
-                            <div class="table-row-desc">Weekly count and ARR of New Business opportunities closed successfully • Sales</div>
-                        </div>
-                        <div class="table-row-right">
-                            <span class="rows-badge">weekly</span>
-                        </div>
-                    </div>
-                    <div class="table-row" onclick="openMetricModal('weekly_leadership_kpis/revenue_upsells_ytd.yml')">
-                        <div class="table-row-left">
-                            <div class="table-row-name">revenue_upsells_ytd</div>
-                            <div class="table-row-desc">Year-to-Date cumulative revenue upsells based on contract signing dates • Sales</div>
-                        </div>
-                        <div class="table-row-right">
-                            <span class="rows-badge">weekly YTD</span>
-                        </div>
-                    </div>
-                    <div class="table-row" onclick="openMetricModal('weekly_leadership_kpis/revenue_downsells_ytd.yml')">
-                        <div class="table-row-left">
-                            <div class="table-row-name">revenue_downsells_ytd</div>
-                            <div class="table-row-desc">Year-to-Date cumulative revenue downsells based on contract signing dates • Sales</div>
-                        </div>
-                        <div class="table-row-right">
-                            <span class="rows-badge">weekly YTD</span>
-                        </div>
-                    </div>
-                    <div class="table-row" onclick="openMetricModal('weekly_leadership_kpis/net_retention_rate.yml')">
-                        <div class="table-row-left">
-                            <div class="table-row-name">net_retention_rate</div>
-                            <div class="table-row-desc">Net Dollar Retention Rate (LTM) - measures revenue retention and expansion from existing customers • Finance</div>
-                        </div>
-                        <div class="table-row-right">
-                            <span class="rows-badge">weekly</span>
-                        </div>
-                    </div>
-                    <div class="table-row" onclick="openMetricModal('weekly_leadership_kpis/credits_consumption_trend.yml')">
-                        <div class="table-row-left">
-                            <div class="table-row-name">credits_consumption_trend</div>
-                            <div class="table-row-desc">Week-over-week percentage change in total credits consumption for customers aged 90+ days • Product</div>
-                        </div>
-                        <div class="table-row-right">
-                            <span class="rows-badge">weekly</span>
-                        </div>
-                    </div>
-                    <div class="table-row" onclick="openMetricModal('weekly_leadership_kpis/accounts_at_risk.yml')">
-                        <div class="table-row-left">
-                            <div class="table-row-name">accounts_at_risk</div>
-                            <div class="table-row-desc">Number of customer accounts showing concerning usage decline patterns (2 consecutive weeks of 25%+ job decline) • Product</div>
-                        </div>
-                        <div class="table-row-right">
-                            <span class="rows-badge">weekly</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
+            {% endfor %}
         </div>
+        {% endif %}
 
         <!-- ── Card 2: Support Data (Jira) ── -->
         <div class="source-card" id="jiraCard">

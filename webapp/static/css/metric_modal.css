@@ -117,6 +117,26 @@
     color: #78350F;
 }
 
+.metric-chip.category.revenue {
+    background: #EFF6FF;
+    color: #1E40AF;
+}
+
+.metric-chip.category.customers {
+    background: rgba(139, 92, 246, 0.1);
+    color: #7c3aed;
+}
+
+.metric-chip.category.marketing {
+    background: #FEF3C7;
+    color: #78350F;
+}
+
+.metric-chip.category.support {
+    background: rgba(234, 88, 12, 0.1);
+    color: #EA580C;
+}
+
 .metric-chip.grain,
 .metric-chip.unit {
     background: #F3F4F6;
@@ -205,6 +225,26 @@
 .metric-tab.active.category-telemetry {
     color: #78350F;
     border-bottom-color: #78350F;
+}
+
+.metric-tab.active.category-revenue {
+    color: #1E40AF;
+    border-bottom-color: #1E40AF;
+}
+
+.metric-tab.active.category-customers {
+    color: #7c3aed;
+    border-bottom-color: #7c3aed;
+}
+
+.metric-tab.active.category-marketing {
+    color: #78350F;
+    border-bottom-color: #78350F;
+}
+
+.metric-tab.active.category-support {
+    color: #EA580C;
+    border-bottom-color: #EA580C;
 }
 
 /* Modal Body */

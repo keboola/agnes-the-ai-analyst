@@ -112,7 +112,7 @@ function renderMetricModal(data) {
 
     // Apply category class to tabs
     document.querySelectorAll('.metric-tab').forEach(tab => {
-        tab.classList.remove('category-finance', 'category-telemetry', 'category-sales_revenue', 'category-weekly_leadership_kpis');
+        tab.className = tab.className.replace(/\bcategory-\w+/g, '');
         tab.classList.add(categoryClass);
     });
 
@@ -420,9 +420,13 @@ function formatCategory(category) {
         'finance': 'Finance',
         'product_usage': 'Product Usage',
         'sales_revenue': 'Sales & Revenue',
-        'weekly_leadership_kpis': 'Weekly Leadership KPIs'
+        'weekly_leadership_kpis': 'Weekly Leadership KPIs',
+        'revenue': 'Revenue',
+        'customers': 'Customers',
+        'marketing': 'Marketing',
+        'support': 'Support'
     };
-    return map[category] || category;
+    return map[category] || category.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
 }
 
 /**

@@ -1,0 +1,45 @@
+- name: average_order_value
+  display_name: Average Order Value
+  category: revenue
+  type: average
+  unit: USD
+  grain: monthly
+  time_column: order_date
+  table: orders
+  tables:
+    - orders
+    - customers
+  expression: "AVG(total_amount)"
+  description: "Average monetary value per order. Key indicator of customer purchasing behavior and pricing effectiveness. Joins to customers for segmentation."
+  dimensions:
+    - channel
+    - customer_segment
+    - product_category
+    - is_first_order
+  notes:
+    - "Calculated only on completed orders"
+    - "Joins to customers table via customer_id for segment analysis"
+    - "Useful to compare AOV by new vs returning customers"
+  synonyms:
+    - aov
+    - avg_basket_size
+  sql: |
+    SELECT
+        DATE_TRUNC('month', o.order_date) AS month,
+        AVG(o.total_amount) AS avg_order_value,
+        COUNT(*) AS order_count
+    FROM orders o
+    WHERE o.status = 'completed'
+    GROUP BY 1
+    ORDER BY 1
+  sql_by_segment: |
+    SELECT
+        DATE_TRUNC('month', o.order_date) AS month,
+        c.segment AS customer_segment,
+        AVG(o.total_amount) AS avg_order_value,
+        COUNT(*) AS order_count
+    FROM orders o
+    JOIN customers c ON o.customer_id = c.customer_id
+    WHERE o.status = 'completed'
+    GROUP BY 1, 2
+    ORDER BY 1, 3 DESC

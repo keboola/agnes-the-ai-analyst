@@ -17,7 +17,11 @@ class MetricParser:
         'finance': '#0d9668',
         'product_usage': '#b45309',
         'sales_revenue': '#0073D1',
-        'weekly_leadership_kpis': '#0073D1'
+        'weekly_leadership_kpis': '#0073D1',
+        'revenue': '#0073D1',
+        'customers': '#7c3aed',
+        'marketing': '#b45309',
+        'support': '#EA580C',
     }
 
     # Complexity keywords for SQL query classification
@@ -176,6 +180,21 @@ class MetricParser:
                 complexity = self._classify_sql_complexity(query)
 
                 sql_examples[field] = {
+                    'title': title,
+                    'query': query.strip(),
+                    'complexity': complexity
+                }
+
+        # Dynamic discovery: auto-detect sql_* keys not in the static map
+        for key in metric:
+            if key.startswith('sql_') and key not in sql_fields and metric[key]:
+                # Generate title from key: "sql_by_channel" -> "By Channel"
+                title_parts = key.replace('sql_', '').replace('_', ' ').title()
+                # Clean up "By X" pattern
+                title = title_parts if title_parts.startswith('By') else title_parts
+                query = metric[key]
+                complexity = self._classify_sql_complexity(query)
+                sql_examples[key] = {
                     'title': title,
                     'query': query.strip(),
                     'complexity': complexity

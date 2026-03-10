@@ -767,6 +767,9 @@ body {
 .category-tag.sales { background: rgba(0, 115, 209, 0.1); color: #0073D1; }
 .category-tag.telemetry { background: rgba(245, 159, 10, 0.1); color: #b45309; }
 .category-tag.support { background: rgba(234, 88, 12, 0.1); color: #EA580C; }
+.category-tag.revenue { background: rgba(0, 115, 209, 0.1); color: #0073D1; }
+.category-tag.customers { background: rgba(139, 92, 246, 0.1); color: #7c3aed; }
+.category-tag.marketing { background: rgba(245, 159, 10, 0.1); color: #b45309; }
 
 .data-highlights {
     display: flex;

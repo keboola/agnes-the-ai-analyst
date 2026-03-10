@@ -1,0 +1,41 @@
+- name: revenue_by_channel
+  display_name: Revenue by Channel
+  category: revenue
+  type: sum
+  unit: USD
+  grain: monthly
+  time_column: order_date
+  table: orders
+  expression: "SUM(total_amount) GROUP BY channel"
+  description: "Revenue breakdown by sales channel (web, mobile, in-store, marketplace). Identifies highest-performing channels and guides marketing spend allocation."
+  dimensions:
+    - channel
+    - region
+    - product_category
+  notes:
+    - "Channel is assigned at order creation and does not change"
+    - "Marketplace channel includes all third-party platforms (Amazon, eBay, etc.)"
+    - "Cross-channel attribution is not applied; each order is counted once"
+  synonyms:
+    - channel_revenue
+    - sales_by_channel
+  sql: |
+    SELECT
+        DATE_TRUNC('month', order_date) AS month,
+        channel,
+        SUM(total_amount) AS revenue,
+        COUNT(*) AS order_count
+    FROM orders
+    WHERE status = 'completed'
+    GROUP BY 1, 2
+    ORDER BY 1, 3 DESC
+  sql_by_region: |
+    SELECT
+        DATE_TRUNC('month', order_date) AS month,
+        channel,
+        region,
+        SUM(total_amount) AS revenue
+    FROM orders
+    WHERE status = 'completed'
+    GROUP BY 1, 2, 3
+    ORDER BY 1, 4 DESC

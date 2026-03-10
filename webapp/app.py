@@ -13,6 +13,8 @@ import os
 from datetime import datetime
 from pathlib import Path
 
+import yaml
+
 from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
 
 from .auth import admin_required, auth_bp, login_required
@@ -351,6 +353,80 @@ def _load_catalog_data() -> list:
     return catalog
 
 
+# Category metadata for Business Metrics card
+METRIC_CATEGORY_META = {
+    'revenue':    {'label': 'Revenue',    'css': 'sales',      'order': 1},
+    'customers':  {'label': 'Customers',  'css': 'hr',         'order': 2},
+    'marketing':  {'label': 'Marketing',  'css': 'telemetry',  'order': 3},
+    'support':    {'label': 'Support',    'css': 'support',    'order': 4},
+}
+
+
+def _load_metrics_data():
+    """Load business metric definitions for catalog display.
+
+    Returns list of category dicts ordered by METRIC_CATEGORY_META:
+    [{'key': 'revenue', 'label': 'Revenue', 'css': 'sales', 'metrics': [...]}, ...]
+    """
+    # Try production path first, fall back to local dev path
+    metrics_dir = Path("/data/docs/metrics")
+    if not metrics_dir.exists():
+        metrics_dir = Path(__file__).parent.parent / "docs" / "metrics"
+
+    if not metrics_dir.exists():
+        return []
+
+    categories = {}
+    for yml_file in sorted(metrics_dir.glob("*/*.yml")):
+        try:
+            with open(yml_file, 'r', encoding='utf-8') as f:
+                raw = yaml.safe_load(f)
+
+            if isinstance(raw, list) and raw:
+                metric = raw[0]
+            elif isinstance(raw, dict):
+                metric = raw
+            else:
+                continue
+
+            cat_key = yml_file.parent.name
+            if cat_key not in categories:
+                categories[cat_key] = []
+
+            categories[cat_key].append({
+                'name': metric.get('name', yml_file.stem),
+                'display_name': metric.get('display_name', yml_file.stem),
+                'description': metric.get('description', ''),
+                'grain': metric.get('grain', ''),
+                'path': f"{cat_key}/{yml_file.name}",
+            })
+        except Exception as e:
+            logger.warning(f"Could not parse metric {yml_file}: {e}")
+
+    # Build ordered result using METRIC_CATEGORY_META
+    result = []
+    for cat_key, meta in sorted(METRIC_CATEGORY_META.items(), key=lambda x: x[1]['order']):
+        if cat_key in categories:
+            result.append({
+                'key': cat_key,
+                'label': meta['label'],
+                'css': meta['css'],
+                'metrics': categories[cat_key],
+            })
+
+    # Add any unknown categories at the end
+    for cat_key, metrics in sorted(categories.items()):
+        if cat_key not in METRIC_CATEGORY_META:
+            result.append({
+                'key': cat_key,
+                'label': cat_key.replace('_', ' ').title(),
+                'css': cat_key,
+                'metrics': metrics,
+            })
+
+    return result
+
+
 def _send_welcome_message(username: str) -> None:
     """Send a welcome message to the user via bot socket after linking."""
     try:
@@ -492,11 +568,14 @@ def register_routes(app: Flask) -> None:
                 else:
                     table["subscribed"] = table_subs.get(table["name"], False)
 
+        metrics_data = _load_metrics_data()
+
         return render_template(
             "catalog.html",
             data_stats=data_stats,
             catalog_data=catalog_data,
             sync_settings=sync_settings,
+            metrics_data=metrics_data,
         )
 
     @app.route("/api/catalog/profile/<table_name>")

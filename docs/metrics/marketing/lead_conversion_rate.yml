@@ -1,0 +1,46 @@
+- name: lead_conversion_rate
+  display_name: Lead Conversion Rate
+  category: marketing
+  type: ratio
+  unit: "%"
+  grain: monthly
+  time_column: created_at
+  table: web_leads
+  expression: "COUNT(CASE WHEN status = 'converted' THEN 1 END) / COUNT(*) * 100"
+  description: "Percentage of web leads that convert to paying customers. Measures the effectiveness of the sales funnel from initial lead capture through purchase completion."
+  dimensions:
+    - source
+    - landing_page
+    - lead_score_tier
+  notes:
+    - "A lead is 'converted' when they complete their first purchase"
+    - "Conversion window is 90 days from lead creation"
+    - "Duplicate leads (same email) are deduplicated by earliest creation"
+  synonyms:
+    - conversion_rate
+    - lead_to_customer_rate
+    - funnel_conversion
+  sql: |
+    SELECT
+        DATE_TRUNC('month', created_at) AS month,
+        COUNT(*) AS total_leads,
+        COUNT(CASE WHEN status = 'converted' THEN 1 END) AS converted,
+        ROUND(
+            COUNT(CASE WHEN status = 'converted' THEN 1 END) * 100.0
+            / COUNT(*), 2
+        ) AS conversion_rate_pct
+    FROM web_leads
+    GROUP BY 1
+    ORDER BY 1
+  sql_by_source: |
+    SELECT
+        source,
+        COUNT(*) AS total_leads,
+        COUNT(CASE WHEN status = 'converted' THEN 1 END) AS converted,
+        ROUND(
+            COUNT(CASE WHEN status = 'converted' THEN 1 END) * 100.0
+            / COUNT(*), 2
+        ) AS conversion_rate_pct
+    FROM web_leads
+    GROUP BY 1
+    ORDER BY 4 DESC
