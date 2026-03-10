@@ -1022,6 +1022,19 @@ def profile_table(
     last_sync = table_sync.get("last_sync")
     sync_strategy_state = table_sync.get("strategy", table.sync_strategy)
 
+    # Compute file size from parquet if not in sync state
+    if file_size_mb is None:
+        try:
+            if parquet_path.is_dir():
+                total_bytes = sum(f.stat().st_size for f in parquet_path.glob("*.parquet"))
+            elif parquet_path.exists():
+                total_bytes = parquet_path.stat().st_size
+            else:
+                total_bytes = 0
+            file_size_mb = total_bytes / (1024 * 1024)
+        except OSError:
+            file_size_mb = None
+
     # Date range from first date column
     date_range = None
     if first_date_col:

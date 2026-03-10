@@ -198,6 +198,42 @@ def _load_data_stats() -> dict:
     except Exception as e:
         logger.warning(f"Could not load data stats from sync_state.json: {e}")
 
+    # Fallback: derive stats from profiles.json (covers sample data / no-sync setups)
+    try:
+        profiles_path = _resolve_metadata_path("profiles.json")
+        if profiles_path.exists():
+            with open(profiles_path) as f:
+                profiles = json.load(f)
+            tables_data = profiles.get("tables", {})
+            if tables_data:
+                total_tables = len(tables_data)
+                total_rows = sum(t.get("row_count", 0) for t in tables_data.values())
+                total_columns = sum(t.get("column_count", 0) for t in tables_data.values())
+                total_size_mb = sum(t.get("file_size_mb", 0) or 0 for t in tables_data.values())
+                if total_rows >= 1_000_000:
+                    rows_display = f"{total_rows / 1_000_000:.0f}M+"
+                elif total_rows >= 1_000:
+                    rows_display = f"{total_rows / 1_000:.0f}K+"
+                else:
+                    rows_display = str(total_rows)
+                size_mb = round(total_size_mb)
+                size_display = f"{size_mb / 1000:.1f} GB" if size_mb >= 1000 else f"{size_mb} MB"
+                return {
+                    "tables": total_tables,
+                    "columns": total_columns,
+                    "rows": total_rows,
+                    "rows_display": rows_display,
+                    "size_mb": size_mb,
+                    "size_display": size_display,
+                    "uncompressed_mb": 0,
+                    "unstructured_gb": 0,
+                    "unstructured_display": "",
+                    "last_updated": None,
+                    "highlights": {},
+                }
+    except Exception as e:
+        logger.warning(f"Could not load data stats from profiles.json: {e}")
+
     return dict(FALLBACK_DATA_STATS)
 
 
