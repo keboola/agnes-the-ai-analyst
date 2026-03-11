@@ -319,10 +319,14 @@ class BigQueryClient:
 
         query_job = self.client.query(sql, job_config=job_config)
 
+        # result() returns RowIterator which has to_arrow_iterable()
+        # (QueryJob itself only has to_arrow(), not to_arrow_iterable())
+        row_iter = query_job.result()
+
         # Try BQ Storage API first (faster, parallel gRPC streams).
         # Fall back to REST API if SA lacks bigquery.readsessions.create permission.
         try:
-            batch_iter = query_job.to_arrow_iterable()
+            batch_iter = row_iter.to_arrow_iterable()
             # Probe first batch to detect Storage API permission errors early
             first_batch = next(batch_iter, None)
             if first_batch is not None:
@@ -337,8 +341,9 @@ class BigQueryClient:
                 "falling back to REST API (streaming)"
             )
 
-        # Fallback: REST API streaming (same query_job, just different reader)
-        yield from query_job.to_arrow_iterable(create_bqstorage_client=False)
+        # Fallback: REST API streaming (re-execute query for fresh RowIterator)
+        row_iter = self.client.query(sql, job_config=job_config).result()
+        yield from row_iter.to_arrow_iterable(create_bqstorage_client=False)
 
     def read_table_streaming(
         self,
