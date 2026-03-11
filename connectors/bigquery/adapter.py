@@ -141,7 +141,11 @@ class BigQueryDataSource(DataSource):
         pyarrow_schema = self.bq_client.get_pyarrow_schema(table_config.id)
 
         # Read full table from BigQuery -> PyArrow
-        arrow_table = self.bq_client.read_table(table_config.id)
+        arrow_table = self.bq_client.read_table(
+            table_config.id,
+            columns=table_config.columns,
+            row_filter=table_config.row_filter,
+        )
 
         # Apply schema enforcement
         if date_columns:
@@ -226,6 +230,7 @@ class BigQueryDataSource(DataSource):
                 table_id=table_config.id,
                 incremental_column=table_config.incremental_column,
                 since_value=since_value,
+                columns=table_config.columns,
             )
 
             if new_data.num_rows == 0:
@@ -275,9 +280,14 @@ class BigQueryDataSource(DataSource):
                     table_id=table_config.id,
                     incremental_column=table_config.incremental_column,
                     since_value=since_dt.isoformat(),
+                    columns=table_config.columns,
                 )
             else:
-                arrow_table = self.bq_client.read_table(table_config.id)
+                arrow_table = self.bq_client.read_table(
+                    table_config.id,
+                    columns=table_config.columns,
+                    row_filter=table_config.row_filter,
+                )
 
             # Apply schema enforcement
             if date_columns:
@@ -349,9 +359,14 @@ class BigQueryDataSource(DataSource):
                 table_id=table_config.id,
                 partition_column=partition_col,
                 start=start_dt.isoformat(),
+                columns=table_config.columns,
             )
         else:
-            arrow_table = self.bq_client.read_table(table_config.id)
+            arrow_table = self.bq_client.read_table(
+                table_config.id,
+                columns=table_config.columns,
+                row_filter=table_config.row_filter,
+            )
 
         if arrow_table.num_rows == 0:
             logger.info("  -> No data to sync")

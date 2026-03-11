@@ -494,7 +494,9 @@ class TestFirstSyncDownloadsAll:
         assert result["success"] is True
         assert result["rows"] == 3
         # Should call read_table (full), not read_table_incremental
-        mock_bq_client.read_table.assert_called_once_with(table_config.id)
+        mock_bq_client.read_table.assert_called_once_with(
+            table_config.id, columns=None, row_filter=None,
+        )
         mock_bq_client.read_table_incremental.assert_not_called()
 
     def test_first_sync_with_max_history_days(

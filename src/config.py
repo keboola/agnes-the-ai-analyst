@@ -102,6 +102,8 @@ class TableConfig:
     dataset: Optional[str] = None
     initial_load_chunk_days: int = 30
     incremental_column: Optional[str] = None  # Column for timestamp-based incremental sync (BigQuery)
+    columns: Optional[List[str]] = None  # Subset of columns to sync (None = all)
+    row_filter: Optional[str] = None  # SQL WHERE clause for filtering (e.g., "event_date >= '2024-01-01'")
 
     def __post_init__(self):
         """Validate configuration after initialization."""
@@ -431,6 +433,8 @@ class Config:
                 dataset=table_data.get("dataset"),
                 initial_load_chunk_days=table_data.get("initial_load_chunk_days", 30),
                 incremental_column=table_data.get("incremental_column"),
+                columns=table_data.get("columns"),
+                row_filter=table_data.get("row_filter"),
             )
             table_configs.append(config)
 
