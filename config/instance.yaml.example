@@ -11,6 +11,8 @@ instance:
   name: "AI Data Analyst"
   subtitle: "Your Organization"
   copyright: "Your Organization"
+  # logo_svg: Full <svg> element for header logo (optional, default: Keboola logo)
+  # Example: '<svg width="120" height="30" viewBox="0 0 100 30" xmlns="http://www.w3.org/2000/svg"><text y="22" font-size="24" fill="#333">Logo</text></svg>'
 
 # --- Server ---
 server:
