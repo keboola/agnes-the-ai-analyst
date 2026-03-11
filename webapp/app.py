@@ -117,6 +117,41 @@ SYNC_STATE_PATH = Path("/data/src_data/metadata/sync_state.json")
 _DEV_METADATA_PATH = Path(__file__).parent.parent / "dev_data" / "metadata"
 
 
+def _build_activity_data() -> dict:
+    """Build activity data for the Activity Center page.
+
+    Returns a dict with the structure expected by activity_center.html.
+    Currently returns empty-state defaults; will be populated with real
+    data from query logs, user sessions, and corporate memory as those
+    data sources become available.
+    """
+    return {
+        "executive_summary": {
+            "active_today": 0,
+            "active_this_week": 0,
+            "teams_active": 0,
+            "business_processes_identified": 0,
+            "decisions_supported_this_week": 0,
+            "avg_success_rate": 0,
+            "adoption_trend": "-",
+        },
+        "maturity_roadmap": {
+            "summary": {
+                "overall_score": 0,
+                "optimized_count": 0,
+                "mature_count": 0,
+                "developing_count": 0,
+                "total_potential_value": "-",
+            },
+            "categories": [],
+        },
+        "business_processes": [],
+        "teams": [],
+        "activity_feed": [],
+        "data_opportunities": [],
+    }
+
+
 def _resolve_metadata_path(filename: str) -> Path:
     """Resolve metadata file path with dev fallback."""
     prod_path = SYNC_STATE_PATH.parent / filename
@@ -898,7 +933,7 @@ def register_routes(app: Flask) -> None:
     @login_required
     def activity_center():
         """Activity Center page - enterprise data intelligence overview."""
-        activity = {}
+        activity = _build_activity_data()
         return render_template("activity_center.html", activity=activity)
 
     @app.route("/api/corporate-memory/knowledge")
