@@ -101,6 +101,7 @@ class TableConfig:
     max_history_days: Optional[int] = None
     dataset: Optional[str] = None
     initial_load_chunk_days: int = 30
+    incremental_column: Optional[str] = None  # Column for timestamp-based incremental sync (BigQuery)
 
     def __post_init__(self):
         """Validate configuration after initialization."""
@@ -429,6 +430,7 @@ class Config:
                 max_history_days=table_data.get("max_history_days"),
                 dataset=table_data.get("dataset"),
                 initial_load_chunk_days=table_data.get("initial_load_chunk_days", 30),
+                incremental_column=table_data.get("incremental_column"),
             )
             table_configs.append(config)
 

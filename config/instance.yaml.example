@@ -44,13 +44,38 @@ auth:
   google_client_id: "${GOOGLE_CLIENT_ID}"
   google_client_secret: "${GOOGLE_CLIENT_SECRET}"
 
+# --- Theme (optional) ---
+# Customize colors, fonts, and shape to match your brand.
+# All values are optional - defaults provide a clean blue theme.
+# See docs/theme-reference.html for a visual guide.
+theme:
+  # primary: "#0073D1"              # Main brand color (buttons, links, accents)
+  # primary_dark: "#005BA3"         # Hover/active state of primary
+  # primary_light: "rgba(0, 115, 209, 0.1)"  # Light tint backgrounds
+  # text_primary: "#1A253C"         # Main text color
+  # text_secondary: "#6B7280"       # Muted/secondary text
+  # background: "#F5F7FA"           # Page background
+  # surface: "#FFFFFF"              # Card/panel background
+  # border: "#E5E7EB"              # Borders and dividers
+  # font_primary: "'Inter', system-ui, sans-serif"
+  # font_url: "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+  # radius: "6px"                   # Border radius (cards, buttons, inputs)
+  # success: "#10B77F"
+  # warning: "#F59F0A"
+  # error: "#EA580C"
+
 # --- Data source ---
 data_source:
-  type: "keboola"                 # keboola | csv (bigquery planned)
+  type: "keboola"                 # keboola | bigquery | local
   keboola:
     storage_token: "${KEBOOLA_STORAGE_TOKEN}"
     stack_url: ""                 # e.g., "https://connection.keboola.com"
     project_id: ""
+  bigquery:
+    project: "${BIGQUERY_PROJECT}"       # GCP project for job execution/billing
+    location: "${BIGQUERY_LOCATION}"     # BigQuery location (e.g., "us-central1", "US")
+    # Uses ADC (Application Default Credentials) - VM service account on GCP
+    # Data can live in a different project -- use fully-qualified table IDs in data_description.md
 
 # --- Email delivery (optional, for magic link auth) ---
 # Without SMTP, magic links are shown directly in browser (development mode).

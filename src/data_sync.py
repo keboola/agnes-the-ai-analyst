@@ -511,7 +511,7 @@ def create_data_source(source_type: str = None) -> DataSource:
 
     raise ValueError(
         f"Unknown data source: '{source_type}'. "
-        f"Available connectors: keboola. "
+        f"Available connectors: keboola, bigquery. "
         f"Create connectors/{source_type}/adapter.py to add a new one."
     )
 

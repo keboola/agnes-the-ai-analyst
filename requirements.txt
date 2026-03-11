@@ -1,5 +1,7 @@
 # Data source adapters (install only what you need)
 kbcstorage>=0.9.0          # For Keboola adapter
+google-cloud-bigquery>=3.0.0           # For BigQuery adapter
+google-cloud-bigquery-storage>=2.0.0   # For BigQuery adapter (fast Arrow transfer)
 
 # Data processing
 # pandas - core tabular data processing library
