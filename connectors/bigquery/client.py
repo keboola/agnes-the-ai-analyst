@@ -274,7 +274,20 @@ class BigQueryClient:
         logger.debug(f"Executing BQ query: {sql[:200]}...")
 
         query_job = self.client.query(sql, job_config=job_config)
-        arrow_table = query_job.to_arrow()
+
+        # Try BQ Storage API first (faster for large results).
+        # Fall back to REST API if SA lacks bigquery.readsessions.create permission.
+        try:
+            arrow_table = query_job.to_arrow()
+        except Exception as storage_err:
+            if "readsessions" in str(storage_err) or "PERMISSION_DENIED" in str(storage_err):
+                logger.warning(
+                    "BQ Storage API unavailable (missing readsessions permission), "
+                    "falling back to REST API"
+                )
+                arrow_table = query_job.to_arrow(create_bqstorage_client=False)
+            else:
+                raise
 
         logger.debug(f"Query returned {arrow_table.num_rows} rows, {arrow_table.num_columns} columns")
         return arrow_table
