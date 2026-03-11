@@ -292,6 +292,80 @@ class BigQueryClient:
         logger.debug(f"Query returned {arrow_table.num_rows} rows, {arrow_table.num_columns} columns")
         return arrow_table
 
+    def query_to_arrow_batches(
+        self,
+        sql: str,
+        params: Optional[List[bigquery.ScalarQueryParameter]] = None,
+    ):
+        """
+        Execute SQL query and yield results as streaming RecordBatches.
+
+        Unlike query_to_arrow(), this does NOT load entire result into memory.
+        Each RecordBatch is a small chunk (typically a few MB) that can be
+        written to disk immediately.
+
+        Args:
+            sql: SQL query string (use @param_name for parameterized values)
+            params: List of BigQuery query parameters
+
+        Yields:
+            pyarrow.RecordBatch objects
+        """
+        job_config = bigquery.QueryJobConfig()
+        if params:
+            job_config.query_parameters = params
+
+        logger.debug(f"Executing BQ query (streaming): {sql[:200]}...")
+
+        query_job = self.client.query(sql, job_config=job_config)
+
+        # Try BQ Storage API first (faster, parallel gRPC streams).
+        # Fall back to REST API if SA lacks bigquery.readsessions.create permission.
+        try:
+            batch_iter = query_job.to_arrow_iterable()
+            # Probe first batch to detect Storage API permission errors early
+            first_batch = next(batch_iter, None)
+            if first_batch is not None:
+                yield first_batch
+            yield from batch_iter
+            return
+        except Exception as storage_err:
+            if "readsessions" not in str(storage_err) and "PERMISSION_DENIED" not in str(storage_err):
+                raise
+            logger.warning(
+                "BQ Storage API unavailable (missing readsessions permission), "
+                "falling back to REST API (streaming)"
+            )
+
+        # Fallback: REST API streaming (same query_job, just different reader)
+        yield from query_job.to_arrow_iterable(create_bqstorage_client=False)
+
+    def read_table_streaming(
+        self,
+        table_id: str,
+        columns: Optional[List[str]] = None,
+        row_filter: Optional[str] = None,
+    ):
+        """
+        Read table as streaming RecordBatches (constant memory).
+
+        Args:
+            table_id: Full table ID (e.g., "project.dataset.table")
+            columns: Optional list of columns to select
+            row_filter: Optional SQL WHERE clause (without WHERE keyword)
+
+        Yields:
+            pyarrow.RecordBatch objects
+        """
+        select_cols = ", ".join(f"`{c}`" for c in columns) if columns else "*"
+
+        sql = f"SELECT {select_cols} FROM `{table_id}`"
+        if row_filter:
+            sql += f" WHERE {row_filter}"
+
+        logger.info(f"Streaming BQ table: {table_id} (filter: {row_filter or 'none'})")
+        yield from self.query_to_arrow_batches(sql)
+
     def read_table(
         self,
         table_id: str,

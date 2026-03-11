@@ -132,42 +132,66 @@ class BigQueryDataSource(DataSource):
 
     def _full_refresh(self, table_config: TableConfig) -> Dict[str, Any]:
         """
-        Full refresh: read entire table and replace Parquet file.
+        Full refresh: stream table from BQ and write to Parquet in batches.
+
+        Uses streaming (constant memory) instead of loading entire table into RAM.
+        Each RecordBatch from BQ is written directly to disk via ParquetWriter.
         """
-        logger.info(f"Full refresh: {table_config.name}")
+        logger.info(f"Full refresh (streaming): {table_config.name}")
 
         parquet_path = self.config.get_parquet_path(table_config)
         date_columns = self.bq_client.get_date_columns(table_config.id)
         pyarrow_schema = self.bq_client.get_pyarrow_schema(table_config.id)
 
-        # Read full table from BigQuery -> PyArrow
-        arrow_table = self.bq_client.read_table(
+        parquet_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Stream BQ results directly to Parquet file (constant memory)
+        writer = None
+        total_rows = 0
+        num_columns = 0
+
+        for batch in self.bq_client.read_table_streaming(
             table_config.id,
             columns=table_config.columns,
             row_filter=table_config.row_filter,
-        )
+        ):
+            if batch.num_rows == 0:
+                continue
 
-        # Apply schema enforcement
-        if date_columns:
-            arrow_table = convert_date_columns_to_date32(arrow_table, date_columns)
-        if pyarrow_schema:
-            arrow_table = apply_schema_to_table(arrow_table, pyarrow_schema)
+            # Convert batch to table for schema enforcement
+            chunk = pa.Table.from_batches([batch])
+            if date_columns:
+                chunk = convert_date_columns_to_date32(chunk, date_columns)
+            if pyarrow_schema:
+                chunk = apply_schema_to_table(chunk, pyarrow_schema)
 
-        # Write to Parquet
-        parquet_path.parent.mkdir(parents=True, exist_ok=True)
-        pq.write_table(arrow_table, parquet_path, compression="snappy")
+            if writer is None:
+                writer = pq.ParquetWriter(
+                    parquet_path, chunk.schema, compression="snappy",
+                )
+                num_columns = chunk.num_columns
 
-        file_size = parquet_path.stat().st_size
+            writer.write_table(chunk)
+            total_rows += chunk.num_rows
+
+            # Log progress every ~1M rows
+            if total_rows % 1_000_000 < chunk.num_rows:
+                logger.info(f"  -> {total_rows:,} rows written...")
+
+        if writer:
+            writer.close()
+
+        file_size = parquet_path.stat().st_size if parquet_path.exists() else 0
         logger.info(
-            f"Full refresh complete: {arrow_table.num_rows} rows, "
+            f"Full refresh complete: {total_rows:,} rows, "
             f"{file_size / 1024 / 1024:.2f} MB"
         )
 
         return {
-            "rows": arrow_table.num_rows,
-            "columns": arrow_table.num_columns,
+            "rows": total_rows,
+            "columns": num_columns,
             "file_size_bytes": file_size,
-            "uncompressed_bytes": _get_uncompressed_size(parquet_path),
+            "uncompressed_bytes": _get_uncompressed_size(parquet_path) if total_rows > 0 else 0,
         }
 
     def _incremental_sync(

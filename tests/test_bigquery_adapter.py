@@ -104,6 +104,11 @@ def _sample_arrow_table(ids: list[int], names: list[str]) -> pa.Table:
     return pa.table({"id": ids, "name": names})
 
 
+def _as_batches(arrow_table: pa.Table) -> list:
+    """Convert Arrow table to list of RecordBatches (mimics streaming from BQ)."""
+    return arrow_table.to_batches()
+
+
 def _create_adapter(mock_config, mock_bq_client):
     """Instantiate BigQueryDataSource with mocked dependencies.
 
@@ -124,13 +129,13 @@ def _create_adapter(mock_config, mock_bq_client):
 class TestFullRefresh:
 
     def test_writes_valid_parquet(self, mock_config, mock_bq_client, tmp_parquet_dir, sync_state):
-        """full_refresh should write a valid, readable Parquet file."""
+        """full_refresh should stream batches and write a valid Parquet file."""
         table_config = _make_table_config(sync_strategy="full_refresh")
         parquet_path = tmp_parquet_dir / "orders.parquet"
         mock_config.get_parquet_path.return_value = parquet_path
 
         arrow_data = _sample_arrow_table([1, 2, 3], ["Alice", "Bob", "Charlie"])
-        mock_bq_client.read_table.return_value = arrow_data
+        mock_bq_client.read_table_streaming.return_value = _as_batches(arrow_data)
 
         adapter = _create_adapter(mock_config, mock_bq_client)
         result = adapter.sync_table(table_config, sync_state)
@@ -145,35 +150,37 @@ class TestFullRefresh:
         assert read_back.column_names == ["id", "name"]
 
     def test_applies_date_columns(self, mock_config, mock_bq_client, tmp_parquet_dir, sync_state):
-        """full_refresh should call convert_date_columns_to_date32 when date columns exist."""
+        """full_refresh should call convert_date_columns_to_date32 per batch."""
         table_config = _make_table_config()
         parquet_path = tmp_parquet_dir / "orders.parquet"
         mock_config.get_parquet_path.return_value = parquet_path
 
         arrow_data = _sample_arrow_table([1], ["Alice"])
-        mock_bq_client.read_table.return_value = arrow_data
+        mock_bq_client.read_table_streaming.return_value = _as_batches(arrow_data)
         mock_bq_client.get_date_columns.return_value = ["created_at"]
 
         with patch("connectors.bigquery.adapter.convert_date_columns_to_date32", return_value=arrow_data) as mock_conv:
             adapter = _create_adapter(mock_config, mock_bq_client)
             adapter.sync_table(table_config, sync_state)
-            mock_conv.assert_called_once_with(arrow_data, ["created_at"])
+            mock_conv.assert_called_once()
+            assert mock_conv.call_args[0][1] == ["created_at"]
 
     def test_applies_pyarrow_schema(self, mock_config, mock_bq_client, tmp_parquet_dir, sync_state):
-        """full_refresh should call apply_schema_to_table when schema is available."""
+        """full_refresh should call apply_schema_to_table per batch."""
         table_config = _make_table_config()
         parquet_path = tmp_parquet_dir / "orders.parquet"
         mock_config.get_parquet_path.return_value = parquet_path
 
         arrow_data = _sample_arrow_table([1], ["Alice"])
-        mock_bq_client.read_table.return_value = arrow_data
+        mock_bq_client.read_table_streaming.return_value = _as_batches(arrow_data)
         schema = pa.schema([pa.field("id", pa.int64()), pa.field("name", pa.string())])
         mock_bq_client.get_pyarrow_schema.return_value = schema
 
         with patch("connectors.bigquery.adapter.apply_schema_to_table", return_value=arrow_data) as mock_apply:
             adapter = _create_adapter(mock_config, mock_bq_client)
             adapter.sync_table(table_config, sync_state)
-            mock_apply.assert_called_once_with(arrow_data, schema)
+            mock_apply.assert_called_once()
+            assert mock_apply.call_args[0][1] == schema
 
 
 # ---------------------------------------------------------------------------
@@ -396,7 +403,7 @@ class TestErrorHandling:
         """When BigQuery query raises, sync_table returns {success: False, error: ...}."""
         table_config = _make_table_config()
         mock_config.get_parquet_path.return_value = tmp_parquet_dir / "orders.parquet"
-        mock_bq_client.read_table.side_effect = RuntimeError("BigQuery API timeout")
+        mock_bq_client.read_table_streaming.side_effect = RuntimeError("BigQuery API timeout")
 
         adapter = _create_adapter(mock_config, mock_bq_client)
         result = adapter.sync_table(table_config, sync_state)
@@ -538,7 +545,7 @@ class TestSyncTableDispatch:
         """sync_strategy='full_refresh' should call _full_refresh."""
         table_config = _make_table_config(sync_strategy="full_refresh")
         mock_config.get_parquet_path.return_value = tmp_parquet_dir / "orders.parquet"
-        mock_bq_client.read_table.return_value = _sample_arrow_table([1], ["A"])
+        mock_bq_client.read_table_streaming.return_value = _as_batches(_sample_arrow_table([1], ["A"]))
 
         adapter = _create_adapter(mock_config, mock_bq_client)
 
@@ -610,7 +617,7 @@ class TestSyncTableDispatch:
             incremental_window_days=7,
         )
         mock_config.get_parquet_path.return_value = tmp_parquet_dir / "orders.parquet"
-        mock_bq_client.read_table.return_value = _sample_arrow_table([1], ["A"])
+        mock_bq_client.read_table_streaming.return_value = _as_batches(_sample_arrow_table([1], ["A"]))
 
         adapter = _create_adapter(mock_config, mock_bq_client)
 
@@ -708,7 +715,7 @@ class TestMetadataCacheClearing:
         table_config = _make_table_config()
         parquet_path = tmp_parquet_dir / "orders.parquet"
         mock_config.get_parquet_path.return_value = parquet_path
-        mock_bq_client.read_table.return_value = _sample_arrow_table([1], ["A"])
+        mock_bq_client.read_table_streaming.return_value = _as_batches(_sample_arrow_table([1], ["A"]))
 
         # Pre-populate cache
         mock_bq_client.metadata_cache[table_config.id] = {"some": "cached_data"}
@@ -728,7 +735,7 @@ class TestSyncStateUpdate:
         table_config = _make_table_config()
         parquet_path = tmp_parquet_dir / "orders.parquet"
         mock_config.get_parquet_path.return_value = parquet_path
-        mock_bq_client.read_table.return_value = _sample_arrow_table([1, 2], ["A", "B"])
+        mock_bq_client.read_table_streaming.return_value = _as_batches(_sample_arrow_table([1, 2], ["A", "B"]))
 
         adapter = _create_adapter(mock_config, mock_bq_client)
         adapter.sync_table(table_config, sync_state)
@@ -745,7 +752,7 @@ class TestSyncStateUpdate:
         """On sync failure, the sync state should NOT be updated."""
         table_config = _make_table_config()
         mock_config.get_parquet_path.return_value = tmp_parquet_dir / "orders.parquet"
-        mock_bq_client.read_table.side_effect = RuntimeError("boom")
+        mock_bq_client.read_table_streaming.side_effect = RuntimeError("boom")
 
         adapter = _create_adapter(mock_config, mock_bq_client)
         adapter.sync_table(table_config, sync_state)
