@@ -62,12 +62,13 @@
   /* -- Mockup wrapper -- */
   .mockup-wrap {
     background: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 10px;
-    overflow: hidden; margin-bottom: 32px;
+    margin-bottom: 32px;
   }
   .mockup-label {
     background: #F9FAFB; border-bottom: 1px solid #E5E7EB;
     padding: 10px 16px; font-size: 12px; font-weight: 600;
     color: #6B7280; text-transform: uppercase; letter-spacing: 0.05em;
+    border-radius: 10px 10px 0 0;
   }
   .mockup-body { padding: 32px; position: relative; }
 
@@ -271,8 +272,8 @@
       <div class="mock-page" style="position:relative; padding-top:44px;">
         <span class="anno bottom" style="top:10px; left:24px;">background <span class="hex">#F5F7FA</span></span>
         <span class="anno bottom" style="top:10px; right:24px;">radius <span class="hex">6px</span></span>
-        <div class="mock-card">
-          <span class="anno left" style="top:8px; left:-10px; transform:translateX(-100%);">surface <span class="hex">#FFF</span></span>
+        <span class="anno bottom" style="top:46px; left:50%; transform:translateX(-50%);">surface <span class="hex">#FFF</span></span>
+        <div class="mock-card" style="margin-top:8px;">
           <h4>Analysis Results</h4>
           <p>Revenue grew 12% quarter over quarter, driven by the enterprise segment.</p>
           <div style="margin-top:14px;">
@@ -281,10 +282,10 @@
           </div>
           <span class="anno top" style="bottom:-26px; left:20px;">primary <span class="hex">#0073D1</span></span>
         </div>
-        <div class="mock-card" style="margin-bottom:0;">
+        <div class="mock-card" style="margin-bottom:0; padding-bottom:40px;">
           <h4 style="color:#1A253C;">Primary heading text</h4>
           <p style="color:#6B7280;">Secondary descriptive text shown below.</p>
-          <span class="anno left" style="top:4px; right:-10px; left:auto; transform:translateX(100%);">text_primary <span class="hex">#1A253C</span></span>
+          <span class="anno top" style="bottom:8px; right:16px;">text_primary <span class="hex">#1A253C</span></span>
         </div>
       </div>
     </div>
