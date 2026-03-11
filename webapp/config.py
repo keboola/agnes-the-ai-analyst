@@ -115,10 +115,21 @@ class Config:
         '</svg>'
     ))
 
-    # Theme colors (optional overrides from instance config)
+    # Theme (optional overrides from instance config)
     THEME_PRIMARY = _get(_instance, "theme", "primary", default="")
     THEME_PRIMARY_DARK = _get(_instance, "theme", "primary_dark", default="")
     THEME_PRIMARY_LIGHT = _get(_instance, "theme", "primary_light", default="")
+    THEME_TEXT_PRIMARY = _get(_instance, "theme", "text_primary", default="")
+    THEME_TEXT_SECONDARY = _get(_instance, "theme", "text_secondary", default="")
+    THEME_BACKGROUND = _get(_instance, "theme", "background", default="")
+    THEME_SURFACE = _get(_instance, "theme", "surface", default="")
+    THEME_BORDER = _get(_instance, "theme", "border", default="")
+    THEME_FONT_PRIMARY = _get(_instance, "theme", "font_primary", default="")
+    THEME_FONT_URL = _get(_instance, "theme", "font_url", default="")
+    THEME_RADIUS = _get(_instance, "theme", "radius", default="")
+    THEME_SUCCESS = _get(_instance, "theme", "success", default="")
+    THEME_WARNING = _get(_instance, "theme", "warning", default="")
+    THEME_ERROR = _get(_instance, "theme", "error", default="")
 
     # Auth providers to disable (list of provider names, e.g., ["email", "password"])
     AUTH_DISABLED_PROVIDERS = _get(_instance, "auth", "disabled_providers", default=[])
@@ -141,6 +152,26 @@ class Config:
     JIRA_SLA_API_TOKEN = os.environ.get("JIRA_SLA_API_TOKEN", "")
     JIRA_CLOUD_ID = os.environ.get("JIRA_CLOUD_ID", "")
     JIRA_DATA_DIR = Path(os.environ.get("JIRA_DATA_DIR", "/data/src_data/raw/jira"))
+
+    @classmethod
+    def theme_overrides(cls) -> dict:
+        """Return non-empty theme CSS variable overrides."""
+        mapping = {
+            "--primary": cls.THEME_PRIMARY,
+            "--primary-dark": cls.THEME_PRIMARY_DARK,
+            "--primary-light": cls.THEME_PRIMARY_LIGHT,
+            "--text-primary": cls.THEME_TEXT_PRIMARY,
+            "--text-secondary": cls.THEME_TEXT_SECONDARY,
+            "--background": cls.THEME_BACKGROUND,
+            "--surface": cls.THEME_SURFACE,
+            "--border": cls.THEME_BORDER,
+            "--font-primary": cls.THEME_FONT_PRIMARY,
+            "--radius-md": cls.THEME_RADIUS,
+            "--success": cls.THEME_SUCCESS,
+            "--warning": cls.THEME_WARNING,
+            "--error": cls.THEME_ERROR,
+        }
+        return {k: v for k, v in mapping.items() if v}
 
     @classmethod
     def validate(cls) -> list[str]:

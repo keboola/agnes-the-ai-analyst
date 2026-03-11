@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Theme Configuration Reference - AI Data Analyst</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    background: #F0F2F5;
+    color: #1A253C;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .container { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+
+  /* -- Header -- */
+  .page-header {
+    background: #FFFFFF;
+    border-bottom: 1px solid #E5E7EB;
+    padding: 48px 0 40px;
+  }
+  .page-header h1 { font-size: 28px; font-weight: 700; margin-bottom: 8px; }
+  .page-header p { color: #6B7280; font-size: 15px; max-width: 680px; }
+  .page-header code {
+    background: #F3F4F6; padding: 2px 6px; border-radius: 4px;
+    font-size: 13px; color: #0073D1;
+  }
+
+  /* -- Sections -- */
+  section { padding: 48px 0; }
+  section + section { border-top: 1px solid #E5E7EB; }
+  .section-title {
+    font-size: 20px; font-weight: 700; margin-bottom: 6px;
+  }
+  .section-desc { color: #6B7280; font-size: 14px; margin-bottom: 28px; }
+
+  /* -- Annotation badge -- */
+  .anno {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+    background: #0073D1; color: #FFF; padding: 3px 8px;
+    border-radius: 4px; position: absolute; white-space: nowrap;
+    z-index: 2;
+  }
+  .anno::after {
+    content: ''; position: absolute; width: 0; height: 0;
+    border: 5px solid transparent;
+  }
+  .anno.bottom::after { border-top-color: #0073D1; top: 100%; left: 16px; }
+  .anno.top::after { border-bottom-color: #0073D1; bottom: 100%; left: 16px; }
+  .anno.left::after { border-right-color: #0073D1; right: 100%; top: 6px; }
+  .anno .hex {
+    background: rgba(255,255,255,0.25); padding: 1px 5px;
+    border-radius: 3px; font-weight: 500; font-family: monospace; font-size: 10px;
+  }
+
+  /* -- Mockup wrapper -- */
+  .mockup-wrap {
+    background: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 10px;
+    overflow: hidden; margin-bottom: 32px;
+  }
+  .mockup-label {
+    background: #F9FAFB; border-bottom: 1px solid #E5E7EB;
+    padding: 10px 16px; font-size: 12px; font-weight: 600;
+    color: #6B7280; text-transform: uppercase; letter-spacing: 0.05em;
+  }
+  .mockup-body { padding: 32px; position: relative; }
+
+  /* -- Header mockup internals -- */
+  .mock-header {
+    background: #FFFFFF; border: 2px dashed #E5E7EB;
+    border-radius: 8px; padding: 16px 24px;
+    display: flex; align-items: center; gap: 16px; position: relative;
+  }
+  .mock-logo {
+    width: 36px; height: 36px; border-radius: 8px; background: #0073D1;
+    display: flex; align-items: center; justify-content: center;
+    color: #FFF; font-weight: 700; font-size: 14px; flex-shrink: 0;
+  }
+  .mock-header-text h3 { font-size: 15px; font-weight: 600; color: #1A253C; }
+  .mock-header-text span { font-size: 12px; color: #6B7280; }
+  .mock-header-border {
+    position: absolute; bottom: -2px; left: 0; right: 0; height: 2px;
+    background: #E5E7EB;
+  }
+
+  /* -- Page layout mockup -- */
+  .mock-page {
+    background: #F5F7FA; border-radius: 8px; padding: 24px;
+    position: relative; min-height: 220px;
+  }
+  .mock-card {
+    background: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 6px;
+    padding: 20px; margin-bottom: 16px; position: relative;
+  }
+  .mock-card h4 { font-size: 14px; font-weight: 600; color: #1A253C; margin-bottom: 4px; }
+  .mock-card p { font-size: 12px; color: #6B7280; }
+  .mock-btn {
+    display: inline-block; background: #0073D1; color: #FFF;
+    padding: 8px 18px; border-radius: 6px; font-size: 13px;
+    font-weight: 600; border: none; cursor: default;
+  }
+  .mock-btn-outline {
+    display: inline-block; background: transparent; color: #0073D1;
+    padding: 8px 18px; border-radius: 6px; font-size: 13px;
+    font-weight: 600; border: 1px solid #0073D1; cursor: default;
+    margin-left: 8px;
+  }
+
+  /* -- Chat mockup -- */
+  .mock-chat {
+    background: #FFFFFF; border-radius: 8px; padding: 20px;
+    border: 1px solid #E5E7EB; position: relative;
+  }
+  .mock-input {
+    width: 100%; padding: 10px 14px; border: 1px solid #E5E7EB;
+    border-radius: 6px; font-size: 13px; font-family: inherit;
+    color: #1A253C; background: #FFFFFF; outline: none;
+  }
+  .mock-input:focus { border-color: #0073D1; }
+  .mock-bubble {
+    background: rgba(0, 115, 209, 0.1); border-radius: 6px;
+    padding: 12px 16px; font-size: 13px; color: #1A253C;
+    margin-bottom: 12px; max-width: 75%;
+  }
+  .mock-bubble.reply {
+    background: #F5F7FA; margin-left: auto;
+  }
+
+  /* -- Color swatch grid -- */
+  .swatch-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+    gap: 16px;
+  }
+  .swatch {
+    background: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 8px;
+    overflow: hidden;
+  }
+  .swatch-preview { height: 56px; }
+  .swatch-info { padding: 12px 14px; }
+  .swatch-key {
+    font-size: 13px; font-weight: 600; margin-bottom: 2px;
+  }
+  .swatch-var { font-size: 11px; color: #6B7280; font-family: monospace; }
+  .swatch-hex {
+    font-size: 11px; color: #6B7280; font-family: monospace; margin-top: 2px;
+  }
+
+  /* -- Typography samples -- */
+  .type-row {
+    display: flex; align-items: baseline; gap: 20px; padding: 14px 0;
+    border-bottom: 1px solid #F3F4F6;
+  }
+  .type-row:last-child { border-bottom: none; }
+  .type-weight {
+    flex-shrink: 0; width: 80px; font-size: 12px; color: #6B7280;
+    font-family: monospace;
+  }
+  .type-sample { font-size: 18px; color: #1A253C; }
+
+  /* -- Radius comparison -- */
+  .radius-grid {
+    display: flex; gap: 24px; flex-wrap: wrap;
+  }
+  .radius-card {
+    flex: 1; min-width: 140px; background: #FFFFFF;
+    border: 2px solid #0073D1; padding: 28px 20px;
+    text-align: center; font-size: 13px; font-weight: 600; color: #0073D1;
+  }
+  .radius-label {
+    display: block; font-size: 11px; color: #6B7280;
+    font-weight: 500; margin-top: 6px;
+  }
+
+  /* -- Status badges -- */
+  .status-row { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 12px; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 6px 14px; border-radius: 6px; font-size: 12px; font-weight: 600;
+  }
+  .badge-success { background: rgba(16,183,127,0.12); color: #0D9668; }
+  .badge-warning { background: rgba(245,159,10,0.12); color: #B97708; }
+  .badge-error   { background: rgba(234,88,12,0.12);  color: #C2410C; }
+  .badge-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+  }
+  .badge-success .badge-dot { background: #10B77F; }
+  .badge-warning .badge-dot { background: #F59F0A; }
+  .badge-error   .badge-dot { background: #EA580C; }
+
+  /* -- YAML code block -- */
+  .yaml-block {
+    background: #1E293B; color: #E2E8F0; border-radius: 8px;
+    padding: 24px 28px; font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    font-size: 13px; line-height: 1.7; overflow-x: auto; position: relative;
+  }
+  .yaml-block .key { color: #7DD3FC; }
+  .yaml-block .val { color: #FDE68A; }
+  .yaml-block .cmt { color: #64748B; }
+  .yaml-block .str { color: #86EFAC; }
+  .copy-btn {
+    position: absolute; top: 12px; right: 12px; background: rgba(255,255,255,0.1);
+    border: none; color: #94A3B8; padding: 5px 10px; border-radius: 4px;
+    font-size: 11px; cursor: pointer; font-family: inherit;
+  }
+  .copy-btn:hover { background: rgba(255,255,255,0.2); color: #FFF; }
+
+  /* -- Responsive -- */
+  @media (max-width: 640px) {
+    .mockup-body { padding: 20px; }
+    .swatch-grid { grid-template-columns: 1fr 1fr; }
+    .radius-grid { flex-direction: column; }
+    .anno { font-size: 10px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ============ PAGE HEADER ============ -->
+<header class="page-header">
+  <div class="container">
+    <h1>Theme Configuration Reference</h1>
+    <p>
+      Visual guide for configuring the AI Data Analyst appearance via
+      <code>instance.yaml</code> under the <code>theme:</code> key.
+      Each configurable property is mapped to a CSS variable that controls
+      the corresponding UI element shown below.
+    </p>
+  </div>
+</header>
+
+<main class="container">
+
+<!-- ============ SECTION 1: HEADER MOCKUP ============ -->
+<section>
+  <h2 class="section-title">Header Area</h2>
+  <p class="section-desc">The top navigation bar with logo, title, and subtitle.</p>
+
+  <div class="mockup-wrap">
+    <div class="mockup-label">App Header</div>
+    <div class="mockup-body" style="padding-top:52px; padding-bottom:24px;">
+      <span class="anno bottom" style="top:8px; left:32px;">surface <span class="hex">#FFFFFF</span></span>
+      <span class="anno bottom" style="top:8px; left:220px;">font_primary <span class="hex">Inter</span></span>
+      <div class="mock-header">
+        <div class="mock-logo">AI</div>
+        <div class="mock-header-text">
+          <h3>AI Data Analyst</h3>
+          <span>Ask questions about your data in natural language</span>
+        </div>
+        <div class="mock-header-border"></div>
+      </div>
+      <span class="anno top" style="bottom: 2px; left:70px;">text_secondary <span class="hex">#6B7280</span></span>
+      <span class="anno top" style="bottom: 2px; right:32px;">border <span class="hex">#E5E7EB</span></span>
+    </div>
+  </div>
+</section>
+
+<!-- ============ SECTION 2: PAGE LAYOUT MOCKUP ============ -->
+<section>
+  <h2 class="section-title">Page Layout</h2>
+  <p class="section-desc">Background, cards, buttons, and text hierarchy.</p>
+
+  <div class="mockup-wrap">
+    <div class="mockup-label">Page Structure</div>
+    <div class="mockup-body" style="padding:0;">
+      <div class="mock-page" style="position:relative; padding-top:44px;">
+        <span class="anno bottom" style="top:10px; left:24px;">background <span class="hex">#F5F7FA</span></span>
+        <span class="anno bottom" style="top:10px; right:24px;">radius <span class="hex">6px</span></span>
+        <div class="mock-card">
+          <span class="anno left" style="top:8px; left:-10px; transform:translateX(-100%);">surface <span class="hex">#FFF</span></span>
+          <h4>Analysis Results</h4>
+          <p>Revenue grew 12% quarter over quarter, driven by the enterprise segment.</p>
+          <div style="margin-top:14px;">
+            <span class="mock-btn">Run Query</span>
+            <span class="mock-btn-outline">Export</span>
+          </div>
+          <span class="anno top" style="bottom:-26px; left:20px;">primary <span class="hex">#0073D1</span></span>
+        </div>
+        <div class="mock-card" style="margin-bottom:0;">
+          <h4 style="color:#1A253C;">Primary heading text</h4>
+          <p style="color:#6B7280;">Secondary descriptive text shown below.</p>
+          <span class="anno left" style="top:4px; right:-10px; left:auto; transform:translateX(100%);">text_primary <span class="hex">#1A253C</span></span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ SECTION 3: CHAT / QUERY MOCKUP ============ -->
+<section>
+  <h2 class="section-title">Chat / Query Interface</h2>
+  <p class="section-desc">The conversational query area with input fields and response bubbles.</p>
+
+  <div class="mockup-wrap">
+    <div class="mockup-label">Chat Panel</div>
+    <div class="mockup-body" style="padding-top:20px;">
+      <div class="mock-chat" style="position:relative;">
+        <div class="mock-bubble">Show me monthly revenue for 2025 broken down by region.</div>
+        <div class="mock-bubble reply">Here is the revenue breakdown. The top region is North America at $4.2M.</div>
+        <div style="position:relative; margin-top:8px;">
+          <input class="mock-input" type="text" value="What about profit margins?" readonly>
+          <span class="anno top" style="bottom:-26px; left:0;">border <span class="hex">#E5E7EB</span></span>
+          <span class="anno top" style="bottom:-26px; right:0;">primary (focus) <span class="hex">#0073D1</span></span>
+        </div>
+      </div>
+      <span class="anno bottom" style="top:4px; left:64px;">primary_light <span class="hex">rgba(0,115,209,0.1)</span></span>
+    </div>
+  </div>
+</section>
+
+<!-- ============ SECTION 4: STATUS INDICATORS ============ -->
+<section>
+  <h2 class="section-title">Status Indicators</h2>
+  <p class="section-desc">Success, warning, and error states used in badges, alerts, and inline messages.</p>
+
+  <div class="mockup-wrap">
+    <div class="mockup-label">Status Badges</div>
+    <div class="mockup-body">
+      <div class="status-row">
+        <span class="badge badge-success"><span class="badge-dot"></span> Query completed &mdash; <code style="font-size:11px;background:none;padding:0;color:inherit;">success: #10B77F</code></span>
+        <span class="badge badge-warning"><span class="badge-dot"></span> Slow response &mdash; <code style="font-size:11px;background:none;padding:0;color:inherit;">warning: #F59F0A</code></span>
+        <span class="badge badge-error"><span class="badge-dot"></span> Connection lost &mdash; <code style="font-size:11px;background:none;padding:0;color:inherit;">error: #EA580C</code></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ SECTION 5: COLOR PALETTE GRID ============ -->
+<section>
+  <h2 class="section-title">Color Palette</h2>
+  <p class="section-desc">Every configurable color with its YAML key, CSS variable, and default value.</p>
+
+  <div class="swatch-grid">
+    <div class="swatch">
+      <div class="swatch-preview" style="background:#0073D1;"></div>
+      <div class="swatch-info">
+        <div class="swatch-key">primary</div>
+        <div class="swatch-var">--primary</div>
+        <div class="swatch-hex">#0073D1</div>
+      </div>
+    </div>
+    <div class="swatch">
+      <div class="swatch-preview" style="background:#005BA3;"></div>
+      <div class="swatch-info">
+        <div class="swatch-key">primary_dark</div>
+        <div class="swatch-var">--primary-dark</div>
+        <div class="swatch-hex">#005BA3</div>
+      </div>
+    </div>
+    <div class="swatch">
+      <div class="swatch-preview" style="background:rgba(0,115,209,0.1); border-bottom:1px solid #E5E7EB;"></div>
+      <div class="swatch-info">
+        <div class="swatch-key">primary_light</div>
+        <div class="swatch-var">--primary-light</div>
+        <div class="swatch-hex">rgba(0, 115, 209, 0.1)</div>
+      </div>
+    </div>
+    <div class="swatch">
+      <div class="swatch-preview" style="background:#1A253C;"></div>
+      <div class="swatch-info">
+        <div class="swatch-key">text_primary</div>
+        <div class="swatch-var">--text-primary</div>
+        <div class="swatch-hex">#1A253C</div>
+      </div>
+    </div>
+    <div class="swatch">
+      <div class="swatch-preview" style="background:#6B7280;"></div>
+      <div class="swatch-info">
+        <div class="swatch-key">text_secondary</div>
+        <div class="swatch-var">--text-secondary</div>
+        <div class="swatch-hex">#6B7280</div>
+      </div>
+    </div>
+    <div class="swatch">
+      <div class="swatch-preview" style="background:#F5F7FA; border-bottom:1px solid #E5E7EB;"></div>
+      <div class="swatch-info">
+        <div class="swatch-key">background</div>
+        <div class="swatch-var">--background</div>
+        <div class="swatch-hex">#F5F7FA</div>
+      </div>
+    </div>
+    <div class="swatch">
+      <div class="swatch-preview" style="background:#FFFFFF; border-bottom:1px solid #E5E7EB;"></div>
+      <div class="swatch-info">
+        <div class="swatch-key">surface</div>
+        <div class="swatch-var">--surface</div>
+        <div class="swatch-hex">#FFFFFF</div>
+      </div>
+    </div>
+    <div class="swatch">
+      <div class="swatch-preview" style="background:#E5E7EB;"></div>
+      <div class="swatch-info">
+        <div class="swatch-key">border</div>
+        <div class="swatch-var">--border</div>
+        <div class="swatch-hex">#E5E7EB</div>
+      </div>
+    </div>
+    <div class="swatch">
+      <div class="swatch-preview" style="background:#10B77F;"></div>
+      <div class="swatch-info">
+        <div class="swatch-key">success</div>
+        <div class="swatch-var">--success</div>
+        <div class="swatch-hex">#10B77F</div>
+      </div>
+    </div>
+    <div class="swatch">
+      <div class="swatch-preview" style="background:#F59F0A;"></div>
+      <div class="swatch-info">
+        <div class="swatch-key">warning</div>
+        <div class="swatch-var">--warning</div>
+        <div class="swatch-hex">#F59F0A</div>
+      </div>
+    </div>
+    <div class="swatch">
+      <div class="swatch-preview" style="background:#EA580C;"></div>
+      <div class="swatch-info">
+        <div class="swatch-key">error</div>
+        <div class="swatch-var">--error</div>
+        <div class="swatch-hex">#EA580C</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ SECTION 6: TYPOGRAPHY ============ -->
+<section>
+  <h2 class="section-title">Typography</h2>
+  <p class="section-desc">
+    Controlled by <code style="background:#F3F4F6;padding:2px 6px;border-radius:4px;font-size:12px;color:#0073D1;">font_primary</code>
+    (the font-family stack) and
+    <code style="background:#F3F4F6;padding:2px 6px;border-radius:4px;font-size:12px;color:#0073D1;">font_url</code>
+    (a Google Fonts URL to load the typeface).
+  </p>
+
+  <div class="mockup-wrap">
+    <div class="mockup-label">Font Weight Samples &mdash; Inter</div>
+    <div class="mockup-body" style="padding:20px 28px;">
+      <div class="type-row">
+        <span class="type-weight">400</span>
+        <span class="type-sample" style="font-weight:400;">The quick brown fox jumps over the lazy dog. 0123456789</span>
+      </div>
+      <div class="type-row">
+        <span class="type-weight">500</span>
+        <span class="type-sample" style="font-weight:500;">The quick brown fox jumps over the lazy dog. 0123456789</span>
+      </div>
+      <div class="type-row">
+        <span class="type-weight">600</span>
+        <span class="type-sample" style="font-weight:600;">The quick brown fox jumps over the lazy dog. 0123456789</span>
+      </div>
+      <div class="type-row">
+        <span class="type-weight">700</span>
+        <span class="type-sample" style="font-weight:700;">The quick brown fox jumps over the lazy dog. 0123456789</span>
+      </div>
+    </div>
+  </div>
+
+  <div style="background:#FFFFFF;border:1px solid #E5E7EB;border-radius:8px;padding:16px 20px;font-size:13px;color:#6B7280;">
+    <strong style="color:#1A253C;">Tip:</strong> To use a different font, set
+    <code style="background:#F3F4F6;padding:2px 5px;border-radius:3px;font-size:12px;">font_url</code>
+    to the Google Fonts stylesheet URL and
+    <code style="background:#F3F4F6;padding:2px 5px;border-radius:3px;font-size:12px;">font_primary</code>
+    to the corresponding family name with fallbacks, e.g.
+    <code style="background:#F3F4F6;padding:2px 5px;border-radius:3px;font-size:12px;">'Roboto', system-ui, sans-serif</code>.
+  </div>
+</section>
+
+<!-- ============ SECTION 7: BORDER RADIUS ============ -->
+<section>
+  <h2 class="section-title">Shape &amp; Border Radius</h2>
+  <p class="section-desc">
+    The <code style="background:#F3F4F6;padding:2px 6px;border-radius:4px;font-size:12px;color:#0073D1;">radius</code>
+    key sets <code style="background:#F3F4F6;padding:2px 6px;border-radius:4px;font-size:12px;color:#0073D1;">--radius-md</code>,
+    the base border-radius for cards, buttons, inputs, and badges.
+  </p>
+
+  <div class="radius-grid">
+    <div class="radius-card" style="border-radius:4px;">
+      4px
+      <span class="radius-label">Sharp / Compact</span>
+    </div>
+    <div class="radius-card" style="border-radius:6px; background:rgba(0,115,209,0.04);">
+      6px
+      <span class="radius-label">Default</span>
+    </div>
+    <div class="radius-card" style="border-radius:8px;">
+      8px
+      <span class="radius-label">Moderate</span>
+    </div>
+    <div class="radius-card" style="border-radius:12px;">
+      12px
+      <span class="radius-label">Rounded</span>
+    </div>
+    <div class="radius-card" style="border-radius:16px;">
+      16px
+      <span class="radius-label">Pill-like</span>
+    </div>
+  </div>
+</section>
+
+<!-- ============ SECTION 8: YAML QUICK START ============ -->
+<section>
+  <h2 class="section-title">Quick Start YAML</h2>
+  <p class="section-desc">
+    Copy this block into your <code style="background:#F3F4F6;padding:2px 6px;border-radius:4px;font-size:12px;color:#0073D1;">instance.yaml</code>
+    and adjust values to match your brand.
+  </p>
+
+  <div class="yaml-block" id="yaml-block">
+    <button class="copy-btn" onclick="copyYaml()">Copy</button>
+<span class="cmt"># instance.yaml - Theme configuration</span>
+<span class="cmt"># All keys are optional; defaults are shown below.</span>
+
+<span class="key">theme:</span>
+  <span class="cmt"># -- Brand colors --</span>
+  <span class="key">primary:</span>         <span class="str">"#0073D1"</span>       <span class="cmt"># Main accent: buttons, links, focus rings</span>
+  <span class="key">primary_dark:</span>    <span class="str">"#005BA3"</span>       <span class="cmt"># Hover / active state for primary elements</span>
+  <span class="key">primary_light:</span>   <span class="str">"rgba(0, 115, 209, 0.1)"</span>  <span class="cmt"># Tinted backgrounds (chat bubbles, highlights)</span>
+
+  <span class="cmt"># -- Text --</span>
+  <span class="key">text_primary:</span>    <span class="str">"#1A253C"</span>       <span class="cmt"># Headings and body text</span>
+  <span class="key">text_secondary:</span>  <span class="str">"#6B7280"</span>       <span class="cmt"># Descriptions, labels, meta text</span>
+
+  <span class="cmt"># -- Surfaces --</span>
+  <span class="key">background:</span>      <span class="str">"#F5F7FA"</span>       <span class="cmt"># Page background</span>
+  <span class="key">surface:</span>         <span class="str">"#FFFFFF"</span>       <span class="cmt"># Cards, panels, header, modals</span>
+  <span class="key">border:</span>          <span class="str">"#E5E7EB"</span>       <span class="cmt"># Borders and dividers</span>
+
+  <span class="cmt"># -- Typography --</span>
+  <span class="key">font_primary:</span>    <span class="str">"'Inter', system-ui, sans-serif"</span>
+  <span class="key">font_url:</span>        <span class="str">"https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap"</span>
+
+  <span class="cmt"># -- Shape --</span>
+  <span class="key">radius:</span>          <span class="str">"6px"</span>           <span class="cmt"># Base border-radius for UI elements</span>
+
+  <span class="cmt"># -- Status colors --</span>
+  <span class="key">success:</span>         <span class="str">"#10B77F"</span>       <span class="cmt"># Completed, positive states</span>
+  <span class="key">warning:</span>         <span class="str">"#F59F0A"</span>       <span class="cmt"># Slow queries, caution states</span>
+  <span class="key">error:</span>           <span class="str">"#EA580C"</span>       <span class="cmt"># Failures, validation errors</span>
+  </div>
+</section>
+
+<!-- ============ KEY REFERENCE TABLE ============ -->
+<section style="padding-bottom:64px;">
+  <h2 class="section-title">Full Key Reference</h2>
+  <p class="section-desc">Complete mapping of YAML keys to CSS custom properties.</p>
+
+  <div style="overflow-x:auto;">
+    <table style="width:100%;border-collapse:collapse;background:#FFF;border:1px solid #E5E7EB;border-radius:8px;overflow:hidden;font-size:13px;">
+      <thead>
+        <tr style="background:#F9FAFB;text-align:left;">
+          <th style="padding:10px 16px;font-weight:600;border-bottom:1px solid #E5E7EB;">YAML Key</th>
+          <th style="padding:10px 16px;font-weight:600;border-bottom:1px solid #E5E7EB;">CSS Variable</th>
+          <th style="padding:10px 16px;font-weight:600;border-bottom:1px solid #E5E7EB;">Default</th>
+          <th style="padding:10px 16px;font-weight:600;border-bottom:1px solid #E5E7EB;">Preview</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;">primary</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;color:#6B7280;">--primary</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;">#0073D1</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;"><span style="display:inline-block;width:32px;height:16px;border-radius:3px;background:#0073D1;vertical-align:middle;"></span></td></tr>
+        <tr><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;">primary_dark</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;color:#6B7280;">--primary-dark</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;">#005BA3</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;"><span style="display:inline-block;width:32px;height:16px;border-radius:3px;background:#005BA3;vertical-align:middle;"></span></td></tr>
+        <tr><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;">primary_light</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;color:#6B7280;">--primary-light</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;font-size:11px;">rgba(0,115,209,0.1)</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;"><span style="display:inline-block;width:32px;height:16px;border-radius:3px;background:rgba(0,115,209,0.1);border:1px solid #E5E7EB;vertical-align:middle;"></span></td></tr>
+        <tr><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;">text_primary</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;color:#6B7280;">--text-primary</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;">#1A253C</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;"><span style="display:inline-block;width:32px;height:16px;border-radius:3px;background:#1A253C;vertical-align:middle;"></span></td></tr>
+        <tr><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;">text_secondary</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;color:#6B7280;">--text-secondary</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;">#6B7280</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;"><span style="display:inline-block;width:32px;height:16px;border-radius:3px;background:#6B7280;vertical-align:middle;"></span></td></tr>
+        <tr><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;">background</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;color:#6B7280;">--background</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;">#F5F7FA</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;"><span style="display:inline-block;width:32px;height:16px;border-radius:3px;background:#F5F7FA;border:1px solid #E5E7EB;vertical-align:middle;"></span></td></tr>
+        <tr><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;">surface</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;color:#6B7280;">--surface</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;">#FFFFFF</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;"><span style="display:inline-block;width:32px;height:16px;border-radius:3px;background:#FFFFFF;border:1px solid #E5E7EB;vertical-align:middle;"></span></td></tr>
+        <tr><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;">border</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;color:#6B7280;">--border</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;">#E5E7EB</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;"><span style="display:inline-block;width:32px;height:16px;border-radius:3px;background:#E5E7EB;vertical-align:middle;"></span></td></tr>
+        <tr><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;">font_primary</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;color:#6B7280;">--font-primary</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-size:11px;">'Inter', system-ui, sans-serif</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-size:12px;color:#6B7280;">font stack</td></tr>
+        <tr><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;">font_url</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;color:#6B7280;">font_url</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-size:11px;">Google Fonts URL</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-size:12px;color:#6B7280;">external URL</td></tr>
+        <tr><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;">radius</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;color:#6B7280;">--radius-md</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;">6px</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;"><span style="display:inline-block;width:32px;height:16px;border-radius:6px;background:#0073D1;vertical-align:middle;"></span></td></tr>
+        <tr><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;">success</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;color:#6B7280;">--success</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;">#10B77F</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;"><span style="display:inline-block;width:32px;height:16px;border-radius:3px;background:#10B77F;vertical-align:middle;"></span></td></tr>
+        <tr><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;">warning</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;color:#6B7280;">--warning</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;font-family:monospace;">#F59F0A</td><td style="padding:8px 16px;border-bottom:1px solid #F3F4F6;"><span style="display:inline-block;width:32px;height:16px;border-radius:3px;background:#F59F0A;vertical-align:middle;"></span></td></tr>
+        <tr><td style="padding:8px 16px;font-family:monospace;">error</td><td style="padding:8px 16px;font-family:monospace;color:#6B7280;">--error</td><td style="padding:8px 16px;font-family:monospace;">#EA580C</td><td style="padding:8px 16px;"><span style="display:inline-block;width:32px;height:16px;border-radius:3px;background:#EA580C;vertical-align:middle;"></span></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+</main>
+
+<script>
+function copyYaml() {
+  var block = document.getElementById('yaml-block');
+  var text = block.innerText.replace('Copy\n', '').replace('Copy', '');
+  navigator.clipboard.writeText(text).then(function() {
+    var btn = block.querySelector('.copy-btn');
+    btn.textContent = 'Copied!';
+    setTimeout(function() { btn.textContent = 'Copy'; }, 2000);
+  });
+}
+</script>
+
+</body>
+</html>

@@ -6,15 +6,7 @@
     <title>{% block title %}Data Analyst Portal{% endblock %}</title>
     <link rel="stylesheet" href="{{ static_url('style.css') }}">
     <link rel="stylesheet" href="{{ static_url('style-custom.css') }}">
-    {% if config.THEME_PRIMARY %}
-    <style>
-        :root {
-            --primary: {{ config.THEME_PRIMARY }};
-            {% if config.THEME_PRIMARY_DARK %}--primary-dark: {{ config.THEME_PRIMARY_DARK }};{% endif %}
-            {% if config.THEME_PRIMARY_LIGHT %}--primary-light: {{ config.THEME_PRIMARY_LIGHT }};{% endif %}
-        }
-    </style>
-    {% endif %}
+    {% include '_theme.html' %}
 </head>
 <body>
     <div class="container">
