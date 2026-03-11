@@ -112,6 +112,9 @@ class Config:
     THEME_PRIMARY_DARK = _get(_instance, "theme", "primary_dark", default="")
     THEME_PRIMARY_LIGHT = _get(_instance, "theme", "primary_light", default="")
 
+    # Auth providers to disable (list of provider names, e.g., ["email", "password"])
+    AUTH_DISABLED_PROVIDERS = _get(_instance, "auth", "disabled_providers", default=[])
+
     # Telegram bot
     TELEGRAM_BOT_USERNAME = _get(_instance, "telegram", "bot_username", default="")
 

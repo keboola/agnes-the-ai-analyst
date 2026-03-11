@@ -68,7 +68,11 @@ def discover_providers() -> list[AuthProvider]:
     Each provider module must export a `provider` instance of AuthProvider.
     Providers are sorted by login button order.
     Only available providers (is_available() == True) are returned.
+    Providers listed in Config.AUTH_DISABLED_PROVIDERS are skipped.
     """
+    from webapp.config import Config
+
+    disabled = [name.lower() for name in (Config.AUTH_DISABLED_PROVIDERS or [])]
     providers = []
     auth_dir = Path(__file__).parent
 
@@ -83,7 +87,11 @@ def discover_providers() -> list[AuthProvider]:
             mod = importlib.import_module(f"auth.{subdir.name}.provider")
             provider_instance = getattr(mod, "provider", None)
             if provider_instance and isinstance(provider_instance, AuthProvider):
-                if provider_instance.is_available():
+                if provider_instance.get_name().lower() in disabled:
+                    logger.info(
+                        f"Auth provider disabled by config: {provider_instance.get_name()}"
+                    )
+                elif provider_instance.is_available():
                     providers.append(provider_instance)
                     logger.info(f"Auth provider loaded: {provider_instance.get_name()}")
                 else:
