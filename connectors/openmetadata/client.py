@@ -98,12 +98,11 @@ class OpenMetadataClient:
             List of metric dictionaries with:
             - id, name, fullyQualifiedName
             - description
-            - expression: metric calculation SQL/formula
+            - metricExpression: metric calculation SQL/formula
             - owners, tags
         """
         params = {
             "limit": limit,
-            "fields": "description,expression,owners,tags",
         }
 
         response = self._client.get("/api/v1/metrics", params=params)
@@ -117,23 +116,20 @@ class OpenMetadataClient:
         Fetch a specific metric by FQN from OpenMetadata.
 
         Args:
-            fqn: Fully qualified name (e.g., "catalog.metrics.total_revenue")
+            fqn: Fully qualified name (e.g., "Active2 Customers")
 
         Returns:
             Dictionary with metric metadata:
             - id, name, fullyQualifiedName
-            - description, expression
+            - description, metricExpression
             - owners, tags
 
         Raises:
             httpx.HTTPStatusError: If request fails (non-2xx status)
         """
         url = f"/api/v1/metrics/name/{fqn}"
-        params = {
-            "fields": "description,expression,owners,tags,displayName",
-        }
 
-        response = self._client.get(url, params=params)
+        response = self._client.get(url)
         response.raise_for_status()
 
         return response.json()

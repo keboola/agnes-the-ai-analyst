@@ -554,10 +554,10 @@ def _parse_om_metric(raw_metric: dict) -> dict:
     display_name = raw_metric.get("displayName", name)
     description = raw_metric.get("description", "") or ""
 
-    # Extract category and grain from tags
+    # Extract category from tags, grain from granularity field
     tags = raw_metric.get("tags", [])
     category = "general"
-    grain = ""
+    grain = raw_metric.get("granularity", "") or ""
 
     for tag in tags:
         tag_fqn = tag.get("tagFQN", "")
@@ -568,15 +568,11 @@ def _parse_om_metric(raw_metric: dict) -> dict:
         elif tag_fqn.startswith("Category."):
             category = tag_fqn.split(".", 1)[1]
 
-        # Extract grain from Grain.* tags
-        if tag_fqn.startswith("Grain."):
-            grain = tag_fqn.split(".", 1)[1]
-
     return {
         "name": name,
         "display_name": display_name,
         "description": description,
-        "grain": grain,
+        "grain": grain.lower() if grain else "",  # Normalize to lowercase
         "category": category,
         "path": f"catalog:{fqn}",  # Special prefix for JS routing
     }
@@ -659,7 +655,7 @@ def _build_om_metric_detail(raw_metric: dict) -> dict:
     Convert raw OpenMetadata metric into MetricParser-compatible JSON for modal.
 
     Maps OpenMetadata fields to MetricParser structure (name, display_name, category, metadata, etc.).
-    Extracts type, unit, grain from tags with standard prefixes.
+    Extracts type, unit, grain from OpenMetadata fields (metricType, unitOfMeasurement, granularity).
 
     Args:
         raw_metric: Raw metric dict from OpenMetadata
@@ -671,27 +667,30 @@ def _build_om_metric_detail(raw_metric: dict) -> dict:
     name = raw_metric.get("name", "")
     display_name = raw_metric.get("displayName", name)
     description = raw_metric.get("description", "") or ""
-    expression = raw_metric.get("expression", "") or ""
+
+    # OpenMetadata uses metricExpression instead of expression
+    expression = ""
+    metric_expr = raw_metric.get("metricExpression", {})
+    if isinstance(metric_expr, dict):
+        expression = metric_expr.get("expression", "") or ""
+    elif isinstance(metric_expr, str):
+        expression = metric_expr
+
     owners = raw_metric.get("owners", [])
 
-    # Extract metadata from tags
-    tags = raw_metric.get("tags", [])
-    metric_type = ""
-    unit = ""
-    grain = ""
+    # Extract metadata from OpenMetadata fields and tags
+    metric_type = raw_metric.get("metricType", "") or ""
+    unit = raw_metric.get("unitOfMeasurement", "") or ""
+    grain = raw_metric.get("granularity", "") or ""
     category = "general"
     dimensions = []
 
+    # Also check tags for category and dimensions
+    tags = raw_metric.get("tags", [])
     for tag in tags:
         tag_fqn = tag.get("tagFQN", "")
 
-        if tag_fqn.startswith("MetricType."):
-            metric_type = tag_fqn.split(".", 1)[1]
-        elif tag_fqn.startswith("Unit."):
-            unit = tag_fqn.split(".", 1)[1]
-        elif tag_fqn.startswith("Grain."):
-            grain = tag_fqn.split(".", 1)[1]
-        elif tag_fqn.startswith("MetricCategory."):
+        if tag_fqn.startswith("MetricCategory."):
             category = tag_fqn.split(".", 1)[1]
         elif tag_fqn.startswith("Dimension."):
             dimensions.append(tag_fqn.split(".", 1)[1])
