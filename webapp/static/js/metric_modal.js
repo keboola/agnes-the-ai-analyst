@@ -24,9 +24,13 @@ function openMetricModal(metricPath) {
     body.innerHTML = '<div class="metric-loading"><div class="metric-loading-spinner"></div><div class="metric-loading-text">Loading metric...</div></div>';
 
     // Route based on prefix: catalog:FQN uses /api/catalog/metrics, YAML paths use /api/metrics
-    const url = metricPath.startsWith('catalog:')
-        ? `/api/catalog/metrics/${metricPath.slice(8)}`  // Remove 'catalog:' prefix
-        : `/api/metrics/${metricPath}`;
+    let url;
+    if (metricPath.startsWith('catalog:')) {
+        const fqn = metricPath.slice(8);  // Remove 'catalog:' prefix
+        url = `/api/catalog/metrics/${encodeURIComponent(fqn)}`;  // URL-encode FQN
+    } else {
+        url = `/api/metrics/${metricPath}`;
+    }
 
     // Fetch metric data
     fetch(url)
