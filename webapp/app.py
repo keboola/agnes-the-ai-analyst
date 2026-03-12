@@ -48,6 +48,14 @@ from .user_service import (
     validate_ssh_key,
 )
 
+# Optional OpenMetadata catalog enrichment
+try:
+    from connectors.openmetadata.enricher import CatalogEnricher
+    _CATALOG_ENRICHER_AVAILABLE = True
+except ImportError:
+    _CATALOG_ENRICHER_AVAILABLE = False
+    CatalogEnricher = None
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -55,9 +63,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Global catalog enricher (initialized in create_app)
+_catalog_enricher = None
+
 
 def create_app() -> Flask:
     """Create and configure the Flask application."""
+    global _catalog_enricher
+
     app = Flask(__name__)
     app.config.from_object(Config)
 
@@ -66,6 +79,18 @@ def create_app() -> Flask:
     if errors and not app.debug:
         for error in errors:
             logger.warning(f"Configuration warning: {error}")
+
+    # Initialize OpenMetadata catalog enricher
+    if _CATALOG_ENRICHER_AVAILABLE:
+        try:
+            from config.loader import load_instance_config
+            instance_config = load_instance_config()
+            _catalog_enricher = CatalogEnricher(instance_config)
+            if _catalog_enricher.enabled:
+                logger.info("OpenMetadata catalog enricher initialized")
+        except Exception as e:
+            logger.warning(f"Failed to initialize catalog enricher: {e}")
+            _catalog_enricher = None
 
     # Register core auth blueprint (login_required, login page, logout)
     app.register_blueprint(auth_bp)
@@ -360,13 +385,41 @@ def _load_catalog_data() -> list:
             # Determine if "large" badge
             rows_large = rows >= 1_000_000
 
-            categories[folder].append({
+            table_info = {
                 "name": table.get("name", ""),
                 "description": table.get("description", ""),
                 "rows": rows,
                 "rows_display": rows_display,
                 "rows_large": rows_large,
-            })
+            }
+
+            # Enrich with catalog metadata (OpenMetadata)
+            if _catalog_enricher:
+                try:
+                    # Create minimal config for enrichment
+                    from src.config import TableConfig
+                    table_config = TableConfig(
+                        id=table_id,
+                        name=table.get("name", ""),
+                        description=table.get("description", ""),
+                        primary_key=table.get("primary_key", "id"),
+                        sync_strategy=table.get("sync_strategy", "full_refresh"),
+                        catalog_fqn=table.get("catalog_fqn"),
+                    )
+                    catalog_data = _catalog_enricher.enrich_table(table_config)
+                    if catalog_data:
+                        # Enrich table info with catalog data
+                        table_info["catalog_tags"] = catalog_data.tags
+                        table_info["catalog_tier"] = catalog_data.tier
+                        table_info["catalog_owners"] = catalog_data.owners
+                        table_info["catalog_url"] = catalog_data.catalog_url
+                        # Override description if catalog has one
+                        if catalog_data.description:
+                            table_info["description"] = catalog_data.description
+                except Exception as e:
+                    logger.warning(f"Error enriching {table.get('name')}: {e}")
+
+            categories[folder].append(table_info)
 
         # Build ordered catalog (from instance config or use discovered folders)
         try:

@@ -77,6 +77,14 @@ data_source:
     # Uses ADC (Application Default Credentials) - VM service account on GCP
     # Data can live in a different project -- use fully-qualified table IDs in data_description.md
 
+# --- OpenMetadata catalog (optional - Groupon-specific) ---
+# Enriches table and column metadata from OpenMetadata REST API.
+# If not configured, app works normally without catalog enrichment.
+# openmetadata:
+#   url: "https://your-catalog.example.com"
+#   token: "${OPENMETADATA_TOKEN}"        # JWT bearer token
+#   cache_ttl_seconds: 3600               # Cache TTL in seconds
+
 # --- Email delivery (optional, for magic link auth) ---
 # Without SMTP, magic links are shown directly in browser (development mode).
 # For production, configure any SMTP relay (Gmail, Mailgun, SendGrid SMTP, etc.)

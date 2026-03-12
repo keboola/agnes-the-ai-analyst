@@ -27,6 +27,8 @@ from datetime import datetime
 from tqdm import tqdm
 
 from .config import get_config, TableConfig
+from config.loader import load_instance_config
+from connectors.openmetadata.enricher import CatalogEnricher
 
 
 logger = logging.getLogger(__name__)
@@ -217,6 +219,14 @@ class DataSyncManager:
         )
         self.data_source = create_data_source()
 
+        # Initialize OpenMetadata catalog enricher
+        try:
+            instance_config = load_instance_config()
+            self.catalog_enricher = CatalogEnricher(instance_config)
+        except Exception as e:
+            logger.warning(f"Failed to initialize catalog enricher: {e}")
+            self.catalog_enricher = CatalogEnricher({})  # Disabled enricher
+
     def _generate_schema_yaml(self):
         """
         Generate schema.yml file with actual table schemas from Parquet files.
@@ -269,10 +279,14 @@ class DataSyncManager:
                 # Get column metadata from data source (if supported)
                 col_metadata = self.data_source.get_column_metadata(table_config.id)
 
+                # Enrich with catalog metadata (OpenMetadata)
+                catalog_data = self.catalog_enricher.enrich_table(table_config)
+
                 # Extract column information
                 columns = []
                 for field_item in arrow_schema:
                     col_name = field_item.name
+                    col_name_lower = col_name.lower()
                     pyarrow_type = str(field_item.type)
 
                     column_info = {
@@ -280,21 +294,35 @@ class DataSyncManager:
                         "type": pyarrow_type,
                     }
 
-                    # Add source type and description from connector metadata
+                    # Priority for description: catalog > BQ API > (nothing)
+                    description = None
+                    if catalog_data and col_name_lower in catalog_data.columns:
+                        description = catalog_data.columns[col_name_lower].description
+                    elif col_metadata and "columns" in col_metadata:
+                        col_meta = col_metadata["columns"].get(col_name, {})
+                        description = col_meta.get("description")
+
+                    if description:
+                        column_info["description"] = description
+
+                    # Add source type from connector metadata
                     if col_metadata and "columns" in col_metadata:
                         col_meta = col_metadata["columns"].get(col_name, {})
                         if "source_type" in col_meta:
                             column_info["source_type"] = col_meta["source_type"]
-                        if "description" in col_meta:
-                            column_info["description"] = col_meta["description"]
 
                     columns.append(column_info)
 
                 primary_key = table_config.get_primary_key_columns()
 
+                # Priority for table description: catalog > data_description.md
+                table_description = table_config.description
+                if catalog_data:
+                    table_description = catalog_data.description or table_description
+
                 table_info = {
                     "table_id": table_config.id,
-                    "description": table_config.description,
+                    "description": table_description,
                     "primary_key": primary_key,
                     "sync_strategy": table_config.sync_strategy,
                     "columns": columns,
