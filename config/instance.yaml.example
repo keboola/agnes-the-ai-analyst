@@ -163,3 +163,15 @@ datasets: {}
 catalog:
   categories: {}
   order: []
+
+# --- Data profiler (optional) ---
+# profiler:
+#   sample_size: 500000              # If table > this, sample this many rows; otherwise use all
+#   max_categorical_distinct: 50     # Treat as categorical if unique <= this
+#   top_values_limit: 10             # Top values per categorical column
+#   histogram_bins: 15               # Bins in histogram visualizations
+#   sample_rows_limit: 5             # Sample rows to show in UI "Sample" tab
+#   alert_high_missing_pct: 30.0     # Alert threshold for high missing %
+#   alert_missing_pct: 5.0           # Alert threshold for missing %
+#   alert_imbalance_pct: 60.0        # Alert threshold for imbalance %
+#   alert_high_cardinality: 50       # Alert threshold for high cardinality columns

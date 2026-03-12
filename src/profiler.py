@@ -32,21 +32,56 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Profiler configuration
+# Profiler configuration (loaded from instance.yaml, with defaults)
 # ---------------------------------------------------------------------------
-SAMPLE_SIZE = 500_000  # If table > this, sample this many rows; else use all
-MAX_CATEGORICAL_DISTINCT = 50  # Treat as categorical if unique <= this
-TOP_VALUES_LIMIT = 10  # Number of top values for categorical columns
-HISTOGRAM_BINS = 15  # Number of bins for numeric histograms
-SAMPLE_ROWS_LIMIT = 5  # Number of sample rows to include
-SAMPLE_VALUES_LIMIT = 5  # Number of sample distinct values per column
+def _load_profiler_config():
+    """Load profiler config from instance.yaml with sensible defaults."""
+    try:
+        from config.loader import load_instance_config, get_instance_value
+        config = load_instance_config()
+        profiler_cfg = config.get("profiler", {})
 
-# Alert thresholds
-ALERT_HIGH_MISSING_PCT = 30.0
-ALERT_MISSING_PCT = 5.0
-ALERT_IMBALANCE_PCT = 60.0
-ALERT_ZEROS_PCT = 50.0
-ALERT_HIGH_CARDINALITY = 50
+        return {
+            "sample_size": profiler_cfg.get("sample_size", 500_000),
+            "max_categorical_distinct": profiler_cfg.get("max_categorical_distinct", 50),
+            "top_values_limit": profiler_cfg.get("top_values_limit", 10),
+            "histogram_bins": profiler_cfg.get("histogram_bins", 15),
+            "sample_rows_limit": profiler_cfg.get("sample_rows_limit", 5),
+            "sample_values_limit": profiler_cfg.get("sample_values_limit", 5),
+            "alert_high_missing_pct": profiler_cfg.get("alert_high_missing_pct", 30.0),
+            "alert_missing_pct": profiler_cfg.get("alert_missing_pct", 5.0),
+            "alert_imbalance_pct": profiler_cfg.get("alert_imbalance_pct", 60.0),
+            "alert_high_cardinality": profiler_cfg.get("alert_high_cardinality", 50),
+        }
+    except Exception as e:
+        # Fallback to defaults if config loading fails
+        logger.warning(f"Could not load profiler config: {e}. Using defaults.")
+        return {
+            "sample_size": 500_000,
+            "max_categorical_distinct": 50,
+            "top_values_limit": 10,
+            "histogram_bins": 15,
+            "sample_rows_limit": 5,
+            "sample_values_limit": 5,
+            "alert_high_missing_pct": 30.0,
+            "alert_missing_pct": 5.0,
+            "alert_imbalance_pct": 60.0,
+            "alert_high_cardinality": 50,
+        }
+
+_cfg = _load_profiler_config()
+
+SAMPLE_SIZE = _cfg["sample_size"]
+MAX_CATEGORICAL_DISTINCT = _cfg["max_categorical_distinct"]
+TOP_VALUES_LIMIT = _cfg["top_values_limit"]
+HISTOGRAM_BINS = _cfg["histogram_bins"]
+SAMPLE_ROWS_LIMIT = _cfg["sample_rows_limit"]
+SAMPLE_VALUES_LIMIT = _cfg["sample_values_limit"]
+ALERT_HIGH_MISSING_PCT = _cfg["alert_high_missing_pct"]
+ALERT_MISSING_PCT = _cfg["alert_missing_pct"]
+ALERT_IMBALANCE_PCT = _cfg["alert_imbalance_pct"]
+ALERT_ZEROS_PCT = 50.0  # Not in config (rarely needed)
+ALERT_HIGH_CARDINALITY = _cfg["alert_high_cardinality"]
 
 # Paths - configurable via environment or defaults for server
 DATA_DIR = Path(os.environ.get("PROFILER_DATA_DIR", "/data/src_data"))
