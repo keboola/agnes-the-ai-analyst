@@ -221,8 +221,9 @@ class CatalogEnricher:
             if extension:
                 tier = extension.get("tier") or extension.get("Tier")
 
-            # Debug logging
-            logger.debug(f"Parsed catalog data: tags={tags}, owners={owners}, tier={tier}, extension_keys={list(extension.keys()) if extension else 'empty'}")
+            # Log if we found tier or tags (for debugging)
+            if tags or tier:
+                logger.info(f"Found catalog enrichment: tags={tags}, tier={tier}")
 
             # Build catalog URL
             fqn = raw.get("fullyQualifiedName", "")
