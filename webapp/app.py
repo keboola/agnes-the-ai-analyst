@@ -1015,7 +1015,7 @@ def register_routes(app: Flask) -> None:
         API endpoint to serve metric from OpenMetadata catalog as structured JSON.
 
         Args:
-            metric_fqn: Fully qualified name (e.g., "catalog.metrics.total_revenue")
+            metric_fqn: Fully qualified name (e.g., "Active2%20Customers" URL-encoded)
 
         Returns:
             JSON matching MetricParser format for modal rendering
@@ -1026,8 +1026,12 @@ def register_routes(app: Flask) -> None:
             return jsonify({"error": "Catalog not available"}), 503
 
         try:
+            # URL-decode FQN (Flask path parameter already decoded, but just in case)
+            from urllib.parse import unquote
+            fqn = unquote(metric_fqn)
+
             # Fetch metric from catalog
-            raw = _catalog_enricher._client.get_metric_by_fqn(metric_fqn)
+            raw = _catalog_enricher._client.get_metric_by_fqn(fqn)
 
             # Convert to MetricParser format
             metric_data = _build_om_metric_detail(raw)
