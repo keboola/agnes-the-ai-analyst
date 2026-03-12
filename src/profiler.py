@@ -34,8 +34,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Profiler configuration
 # ---------------------------------------------------------------------------
-SAMPLE_THRESHOLD = 500_000  # Sample tables larger than this
-SAMPLE_SIZE = 500_000
+SAMPLE_SIZE = 500_000  # If table > this, sample this many rows; else use all
 MAX_CATEGORICAL_DISTINCT = 50  # Treat as categorical if unique <= this
 TOP_VALUES_LIMIT = 10  # Number of top values for categorical columns
 HISTOGRAM_BINS = 15  # Number of bins for numeric histograms
@@ -689,7 +688,7 @@ def profile_table(
 
     # Materialize into temp table — reads parquet files once instead of per-query
     view_name = "tbl"
-    sampled = total_rows > SAMPLE_THRESHOLD
+    sampled = total_rows > SAMPLE_SIZE
     if sampled:
         con.execute(
             f"CREATE TEMP TABLE {view_name} AS SELECT * FROM {read_expr} USING SAMPLE {SAMPLE_SIZE} ROWS"
