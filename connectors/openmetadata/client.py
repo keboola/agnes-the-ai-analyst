@@ -10,8 +10,12 @@ Low-level HTTP wrapper for OpenMetadata REST API with these functions:
 
 import logging
 from typing import Dict, List, Optional, Any
+import warnings
 
 import httpx
+
+# Suppress SSL warnings for self-signed certificates
+warnings.filterwarnings("ignore", message="Unverified HTTPS request")
 
 
 logger = logging.getLogger(__name__)
@@ -50,6 +54,7 @@ class OpenMetadataClient:
                 "Content-Type": "application/json",
             },
             timeout=timeout,
+            verify=False,  # Allow self-signed certificates (internal networks)
         )
 
     def get_table(self, fqn: str) -> Dict[str, Any]:
