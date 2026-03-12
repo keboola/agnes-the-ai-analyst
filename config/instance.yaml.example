@@ -44,6 +44,34 @@ auth:
   google_client_id: "${GOOGLE_CLIENT_ID}"
   google_client_secret: "${GOOGLE_CLIENT_SECRET}"
 
+  # --- Webapp username shaping ---
+  #
+  # By default, a user's OS account is derived from their full email:
+  #   e.psimecek@acme.com  ->  e_psimecek_acme_com
+  #
+  # Two options let you control this:
+  #
+  # username_strip_domain: true
+  #   Use only the local part of the email (before @).
+  #   Safe when allowed_domain ensures all users share a single domain.
+  #   e.psimecek@acme.com  ->  e_psimecek
+  #   Keeps usernames short and readable.
+  #
+  # username_prefix: "myapp_"
+  #   Prepend a fixed string to every webapp-created account name.
+  #   Necessary when an external identity system (GCP OS Login, LDAP, SAML)
+  #   already creates OS accounts in /home/ using the same naming scheme.
+  #   Without a prefix, the webapp sees those existing OS accounts and refuses
+  #   to register new analyst accounts ("already in use by a system account").
+  #   With prefix "myapp_" and strip_domain true:
+  #     e.psimecek@acme.com  ->  myapp_e_psimecek
+  #   Linux enforces a 32-character username limit. Keep the prefix short.
+  #   Changing or removing either option later will invalidate all existing
+  #   analyst accounts. Use username_mapping (top-level) to bridge legacy accounts.
+  #
+  # username_strip_domain: false
+  # username_prefix: ""
+
 # --- Theme (optional) ---
 # Customize colors, fonts, and shape to match your brand.
 # All values are optional - defaults provide a clean blue theme.

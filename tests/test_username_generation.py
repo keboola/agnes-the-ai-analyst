@@ -2,7 +2,8 @@
 
 import pytest
 
-from webapp.user_service import get_username_from_email, RESERVED_USERNAMES
+from webapp.user_service import get_username_from_email, get_webapp_username, RESERVED_USERNAMES
+import webapp.user_service as user_service_module
 
 
 class TestGetUsernameFromEmail:
@@ -49,3 +50,52 @@ class TestGetUsernameFromEmail:
 
     def test_subdomain_email(self):
         assert get_username_from_email("user@mail.acme.co.uk") == "user_mail_acme_co_uk"
+
+
+class TestGetWebappUsername:
+    """Test get_webapp_username() with configurable prefix and domain stripping."""
+
+    def test_prefix_and_strip_domain(self, monkeypatch):
+        monkeypatch.setattr(user_service_module, "_USERNAME_PREFIX", "foundry_")
+        monkeypatch.setattr(user_service_module, "_USERNAME_STRIP_DOMAIN", True)
+        assert get_webapp_username("e.psimecek@groupon.com") == "foundry_e_psimecek"
+
+    def test_prefix_no_strip(self, monkeypatch):
+        monkeypatch.setattr(user_service_module, "_USERNAME_PREFIX", "foundry_")
+        monkeypatch.setattr(user_service_module, "_USERNAME_STRIP_DOMAIN", False)
+        assert get_webapp_username("e.psimecek@groupon.com") == "foundry_e_psimecek_groupon_com"
+
+    def test_no_prefix_strip_domain(self, monkeypatch):
+        monkeypatch.setattr(user_service_module, "_USERNAME_PREFIX", "")
+        monkeypatch.setattr(user_service_module, "_USERNAME_STRIP_DOMAIN", True)
+        assert get_webapp_username("e.psimecek@groupon.com") == "e_psimecek"
+
+    def test_legacy_no_options(self, monkeypatch):
+        monkeypatch.setattr(user_service_module, "_USERNAME_PREFIX", "")
+        monkeypatch.setattr(user_service_module, "_USERNAME_STRIP_DOMAIN", False)
+        assert get_webapp_username("e.psimecek@groupon.com") == "e_psimecek_groupon_com"
+
+    def test_empty_email(self, monkeypatch):
+        monkeypatch.setattr(user_service_module, "_USERNAME_PREFIX", "foundry_")
+        monkeypatch.setattr(user_service_module, "_USERNAME_STRIP_DOMAIN", True)
+        assert get_webapp_username("") == ""
+
+    def test_none_email(self, monkeypatch):
+        monkeypatch.setattr(user_service_module, "_USERNAME_PREFIX", "foundry_")
+        monkeypatch.setattr(user_service_module, "_USERNAME_STRIP_DOMAIN", True)
+        assert get_webapp_username(None) == ""
+
+    def test_no_at_sign(self, monkeypatch):
+        monkeypatch.setattr(user_service_module, "_USERNAME_PREFIX", "foundry_")
+        monkeypatch.setattr(user_service_module, "_USERNAME_STRIP_DOMAIN", True)
+        assert get_webapp_username("notanemail") == ""
+
+    def test_uppercase_normalized(self, monkeypatch):
+        monkeypatch.setattr(user_service_module, "_USERNAME_PREFIX", "app_")
+        monkeypatch.setattr(user_service_module, "_USERNAME_STRIP_DOMAIN", True)
+        assert get_webapp_username("John.Doe@ACME.COM") == "app_john_doe"
+
+    def test_strip_domain_multiple_dots(self, monkeypatch):
+        monkeypatch.setattr(user_service_module, "_USERNAME_PREFIX", "")
+        monkeypatch.setattr(user_service_module, "_USERNAME_STRIP_DOMAIN", True)
+        assert get_webapp_username("first.middle.last@company.com") == "first_middle_last"

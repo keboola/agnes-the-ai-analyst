@@ -48,10 +48,10 @@ def admin_required(f):
                 return jsonify({"error": "Authentication required"}), 401
             return redirect(url_for("auth.login"))
 
-        from .user_service import check_user_exists, get_username_from_email
+        from .user_service import check_user_exists, get_webapp_username
 
         email = session.get("user", {}).get("email", "")
-        username = get_username_from_email(email)
+        username = get_webapp_username(email)
         user_info = check_user_exists(username)
 
         if not user_info.is_admin:

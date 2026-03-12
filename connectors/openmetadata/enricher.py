@@ -221,13 +221,15 @@ class CatalogEnricher:
             if extension:
                 tier = extension.get("tier") or extension.get("Tier")
 
+            # Debug logging
+            logger.debug(f"Parsed catalog data: tags={tags}, owners={owners}, tier={tier}, extension_keys={list(extension.keys()) if extension else 'empty'}")
+
             # Build catalog URL
             fqn = raw.get("fullyQualifiedName", "")
             catalog_url = None
             if fqn:
-                # Parse base URL from FQN context (would need base_url from config ideally)
-                # For now, construct a reasonable path
-                catalog_url = f"{self._client.base_url}/explore/{fqn}"
+                # Link to table entity page in OpenMetadata
+                catalog_url = f"{self._client.base_url}/table/{fqn}"
 
             return CatalogTableData(
                 description=description,

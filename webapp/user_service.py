@@ -14,6 +14,21 @@ from dataclasses import dataclass
 logger = logging.getLogger(__name__)
 
 
+def _load_username_config() -> tuple[str, bool]:
+    """Load username_prefix and username_strip_domain from instance config."""
+    try:
+        from config.loader import load_instance_config, get_instance_value
+        config = load_instance_config()
+        prefix = get_instance_value(config, "auth", "username_prefix", default="") or ""
+        strip = get_instance_value(config, "auth", "username_strip_domain", default=False)
+        return prefix, bool(strip)
+    except Exception:
+        return "", False
+
+
+_USERNAME_PREFIX, _USERNAME_STRIP_DOMAIN = _load_username_config()
+
+
 @dataclass
 class UserInfo:
     """Information about an existing system user."""
@@ -56,6 +71,33 @@ def get_username_from_email(email: str) -> str:
     # Full email, normalized: replace @ and . with underscores
     safe_username = email.lower().replace("@", "_").replace(".", "_")
     return safe_username
+
+
+def get_webapp_username(email: str) -> str:
+    """Convert email to webapp username, applying configured prefix and domain stripping.
+
+    Controlled by two instance.yaml options under auth:
+      username_prefix: "foundry_"   -> prepend to every username
+      username_strip_domain: true   -> use only local part of email (safe on single-domain)
+
+    Examples (prefix="foundry_", strip_domain=true):
+        e.psimecek@groupon.com  ->  foundry_e_psimecek
+        john.doe@groupon.com    ->  foundry_john_doe
+
+    Examples (no prefix, no strip):
+        e.psimecek@groupon.com  ->  e_psimecek_groupon_com   (legacy behaviour)
+    """
+    if not email or "@" not in email:
+        return ""
+
+    if _USERNAME_STRIP_DOMAIN:
+        base = email.split("@")[0].lower().replace(".", "_")
+    else:
+        base = get_username_from_email(email)
+
+    if not base:
+        return ""
+    return f"{_USERNAME_PREFIX}{base}" if _USERNAME_PREFIX else base
 
 
 def is_username_available(username: str) -> tuple[bool, str]:
@@ -171,6 +213,9 @@ def create_user(username: str, ssh_key: str) -> tuple[bool, str]:
     # Validate inputs
     if not username or not re.match(r"^[a-z][a-z0-9._-]*$", username):
         return False, "Invalid username format"
+
+    if len(username) > 32:
+        return False, f"Username too long ({len(username)} chars, max 32). Check username_prefix in config."
 
     is_valid, error = validate_ssh_key(ssh_key)
     if not is_valid:

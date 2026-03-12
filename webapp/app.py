@@ -43,7 +43,7 @@ from .user_service import (
     UserInfo,
     check_user_exists,
     create_user,
-    get_username_from_email,
+    get_webapp_username,
     is_username_available,
     validate_ssh_key,
 )
@@ -562,7 +562,7 @@ def register_routes(app: Flask) -> None:
         """Show user dashboard with account info or registration form."""
         user = session.get("user", {})
         email = user.get("email", "")
-        username = get_username_from_email(email)
+        username = get_webapp_username(email)
 
         # Check if user exists on the system
         user_info = check_user_exists(username)
@@ -648,7 +648,7 @@ def register_routes(app: Flask) -> None:
         """Data catalog page."""
         user = session.get("user", {})
         email = user.get("email", "")
-        username = get_username_from_email(email)
+        username = get_webapp_username(email)
 
         data_stats = _load_data_stats()
         catalog_data = _load_catalog_data()
@@ -822,7 +822,7 @@ def register_routes(app: Flask) -> None:
         """Create a new analyst account."""
         user = session.get("user", {})
         email = user.get("email", "")
-        username = get_username_from_email(email)
+        username = get_webapp_username(email)
 
         # Check if user already exists
         user_info = check_user_exists(username)
@@ -858,7 +858,7 @@ def register_routes(app: Flask) -> None:
         """Verify a Telegram verification code and link the account."""
         user = session.get("user", {})
         email = user.get("email", "")
-        username = get_username_from_email(email)
+        username = get_webapp_username(email)
 
         data = request.get_json(silent=True) or {}
         code = data.get("code", "").strip()
@@ -880,7 +880,7 @@ def register_routes(app: Flask) -> None:
         """Unlink Telegram from the account."""
         user = session.get("user", {})
         email = user.get("email", "")
-        username = get_username_from_email(email)
+        username = get_webapp_username(email)
 
         success, message = unlink_telegram(username)
         if success:
@@ -894,7 +894,7 @@ def register_routes(app: Flask) -> None:
         """Get Telegram link status."""
         user = session.get("user", {})
         email = user.get("email", "")
-        username = get_username_from_email(email)
+        username = get_webapp_username(email)
         status = get_telegram_status(username)
         return jsonify(status)
 
@@ -951,7 +951,7 @@ def register_routes(app: Flask) -> None:
         """Get sync settings for current user."""
         user = session.get("user", {})
         email = user.get("email", "")
-        username = get_username_from_email(email)
+        username = get_webapp_username(email)
         settings = get_sync_settings(username)
         return jsonify(settings)
 
@@ -961,7 +961,7 @@ def register_routes(app: Flask) -> None:
         """Update sync settings for current user."""
         user = session.get("user", {})
         email = user.get("email", "")
-        username = get_username_from_email(email)
+        username = get_webapp_username(email)
 
         data = request.get_json(silent=True) or {}
         datasets = data.get("datasets", {})
@@ -981,7 +981,7 @@ def register_routes(app: Flask) -> None:
         """Get per-table subscriptions for current user."""
         user = session.get("user", {})
         email = user.get("email", "")
-        username = get_username_from_email(email)
+        username = get_webapp_username(email)
         subs = get_table_subscriptions(username)
         return jsonify(subs)
 
@@ -991,7 +991,7 @@ def register_routes(app: Flask) -> None:
         """Update per-table subscriptions for current user."""
         user = session.get("user", {})
         email = user.get("email", "")
-        username = get_username_from_email(email)
+        username = get_webapp_username(email)
 
         data = request.get_json(silent=True) or {}
         table_mode = data.get("table_mode", "all")
@@ -1016,7 +1016,7 @@ def register_routes(app: Flask) -> None:
         """Corporate Memory knowledge browser page."""
         user = session.get("user", {})
         email = user.get("email", "")
-        username = get_username_from_email(email)
+        username = get_webapp_username(email)
 
         # Get stats for header
         stats = get_memory_stats()
@@ -1061,7 +1061,7 @@ def register_routes(app: Flask) -> None:
         # Get username for my_rules filter
         user = session.get("user", {})
         email = user.get("email", "")
-        username = get_username_from_email(email)
+        username = get_webapp_username(email)
 
         # Limit per_page to reasonable maximum
         per_page = min(per_page, 100)
@@ -1083,7 +1083,7 @@ def register_routes(app: Flask) -> None:
         """Get corporate memory statistics for dashboard."""
         user = session.get("user", {})
         email = user.get("email", "")
-        username = get_username_from_email(email)
+        username = get_webapp_username(email)
 
         stats = get_memory_stats()
         user_stats = get_memory_user_stats(username)
@@ -1099,7 +1099,7 @@ def register_routes(app: Flask) -> None:
         """Vote on a knowledge item."""
         user = session.get("user", {})
         email = user.get("email", "")
-        username = get_username_from_email(email)
+        username = get_webapp_username(email)
 
         data = request.get_json(silent=True) or {}
         item_id = data.get("item_id")
@@ -1124,7 +1124,7 @@ def register_routes(app: Flask) -> None:
         """Get current user's votes."""
         user = session.get("user", {})
         email = user.get("email", "")
-        username = get_username_from_email(email)
+        username = get_webapp_username(email)
 
         votes = get_user_votes(username)
         return jsonify({"votes": votes})

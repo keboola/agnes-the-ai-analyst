@@ -20,7 +20,7 @@ from flask import Blueprint, abort, jsonify, render_template, request, session
 
 from .auth import login_required
 from .config import Config
-from .user_service import get_username_from_email
+from .user_service import get_webapp_username
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +132,7 @@ def desktop_link():
     """Render the desktop app authorization page."""
     user = session.get("user", {})
     email = user.get("email", "")
-    username = get_username_from_email(email)
+    username = get_webapp_username(email)
     return render_template("desktop_link.html", username=username)
 
 
@@ -142,7 +142,7 @@ def desktop_authorize():
     """Generate a JWT token for the desktop app and return a redirect URL."""
     user = session.get("user", {})
     email = user.get("email", "")
-    username = get_username_from_email(email)
+    username = get_webapp_username(email)
 
     token = _create_desktop_token(username)
     redirect_url = f"{Config.DESKTOP_URL_SCHEME}://auth?token={token}"
@@ -184,7 +184,7 @@ def desktop_unlink():
     """Unlink desktop app from the account."""
     user = session.get("user", {})
     email = user.get("email", "")
-    username = get_username_from_email(email)
+    username = get_webapp_username(email)
 
     success, message = unlink_desktop(username)
     if success:
