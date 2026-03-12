@@ -2410,7 +2410,7 @@ document.addEventListener('keydown', e => {
 <!-- Prism.js for SQL syntax highlighting -->
 <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-sql.min.js"></script>
-<script src="{{ url_for('static', filename='js/metric_modal.js') }}"></script>
+<script src="{{ url_for('static', filename='js/metric_modal.js', v=git_version) }}"></script>
 
 <!-- Mermaid.js for relationship diagrams -->
 <script type="module">

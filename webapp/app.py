@@ -73,6 +73,24 @@ logger = logging.getLogger(__name__)
 _catalog_enricher = None
 
 
+def get_git_commit_hash() -> str:
+    """Get current git commit hash for cache busting static assets."""
+    try:
+        import subprocess
+        result = subprocess.run(
+            ['git', 'rev-parse', '--short', 'HEAD'],
+            cwd=Path(__file__).parent.parent,
+            capture_output=True,
+            text=True,
+            timeout=2
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return "dev"
+
+
 def create_app() -> Flask:
     """Create and configure the Flask application."""
     global _catalog_enricher
@@ -894,6 +912,7 @@ def register_routes(app: Flask) -> None:
             catalog_data=catalog_data,
             sync_settings=sync_settings,
             metrics_data=metrics_data,
+            git_version=get_git_commit_hash(),
         )
 
     @app.route("/api/catalog/profile/<table_name>")
