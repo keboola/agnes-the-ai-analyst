@@ -9,7 +9,7 @@ let currentMetricData = null;
 
 /**
  * Open metric modal and load data
- * @param {string} metricPath - Path to metric YAML (e.g., 'finance/infra_cost.yml')
+ * @param {string} metricPath - Path to metric YAML (e.g., 'finance/infra_cost.yml') or catalog FQN (e.g., 'catalog:...')
  */
 function openMetricModal(metricPath) {
     currentMetricPath = metricPath;
@@ -23,8 +23,13 @@ function openMetricModal(metricPath) {
     // Show loading state
     body.innerHTML = '<div class="metric-loading"><div class="metric-loading-spinner"></div><div class="metric-loading-text">Loading metric...</div></div>';
 
+    // Route based on prefix: catalog:FQN uses /api/catalog/metrics, YAML paths use /api/metrics
+    const url = metricPath.startsWith('catalog:')
+        ? `/api/catalog/metrics/${metricPath.slice(8)}`  // Remove 'catalog:' prefix
+        : `/api/metrics/${metricPath}`;
+
     // Fetch metric data
-    fetch(`/api/metrics/${metricPath}`)
+    fetch(url)
         .then(response => {
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}: ${response.statusText}`);

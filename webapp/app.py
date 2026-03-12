@@ -56,6 +56,12 @@ except ImportError:
     _CATALOG_ENRICHER_AVAILABLE = False
     CatalogEnricher = None
 
+# Metric parser for modal detail rendering
+try:
+    from webapp.utils.metric_parser import MetricParser
+except ImportError:
+    MetricParser = None
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -458,9 +464,17 @@ METRIC_CATEGORY_META = {
 def _load_metrics_data():
     """Load business metric definitions for catalog display.
 
+    Prefers metrics from OpenMetadata catalog. Falls back to YAML files if catalog unavailable.
+
     Returns list of category dicts ordered by METRIC_CATEGORY_META:
-    [{'key': 'revenue', 'label': 'Revenue', 'css': 'sales', 'metrics': [...]}, ...]
+    [{'key': 'finance', 'label': 'Finance...', 'css': '...', 'metrics': [...]}, ...]
     """
+    # Try catalog first (Phase 2)
+    catalog_metrics = _load_metrics_from_catalog()
+    if catalog_metrics:
+        return catalog_metrics
+
+    # Fallback to YAML files if catalog unavailable
     # Try production path first, fall back to local dev path
     metrics_dir = Path("/data/docs/metrics")
     if not metrics_dir.exists():
@@ -518,6 +532,214 @@ def _load_metrics_data():
             })
 
     return result
+
+
+def _parse_om_metric(raw_metric: dict) -> dict:
+    """
+    Parse raw OpenMetadata metric dict into format for metric list display.
+
+    Extracts category, grain from tags with standard prefixes:
+    - Category: tagFQN like "MetricCategory.finance" or "Category.marketing"
+    - Grain: tagFQN like "Grain.monthly"
+
+    Args:
+        raw_metric: Raw metric dict from OpenMetadata (id, fullyQualifiedName, description, tags, etc.)
+
+    Returns:
+        Dict with keys: name, display_name, description, grain, path
+        (path = "catalog:{fullyQualifiedName}" for JS routing)
+    """
+    fqn = raw_metric.get("fullyQualifiedName", "")
+    name = raw_metric.get("name", "")
+    display_name = raw_metric.get("displayName", name)
+    description = raw_metric.get("description", "") or ""
+
+    # Extract category and grain from tags
+    tags = raw_metric.get("tags", [])
+    category = "general"
+    grain = ""
+
+    for tag in tags:
+        tag_fqn = tag.get("tagFQN", "")
+
+        # Extract category from MetricCategory.* or Category.* tags
+        if tag_fqn.startswith("MetricCategory."):
+            category = tag_fqn.split(".", 1)[1]
+        elif tag_fqn.startswith("Category."):
+            category = tag_fqn.split(".", 1)[1]
+
+        # Extract grain from Grain.* tags
+        if tag_fqn.startswith("Grain."):
+            grain = tag_fqn.split(".", 1)[1]
+
+    return {
+        "name": name,
+        "display_name": display_name,
+        "description": description,
+        "grain": grain,
+        "category": category,
+        "path": f"catalog:{fqn}",  # Special prefix for JS routing
+    }
+
+
+def _load_metrics_from_catalog() -> list:
+    """
+    Load business metrics from OpenMetadata catalog.
+
+    Groups metrics by category (from tags or fallback to "general").
+    Returns same structure as _load_metrics_data() for UI compatibility.
+
+    Returns:
+        List of category dicts with metrics:
+        [
+            {'key': 'finance', 'label': '...', 'css': '...', 'metrics': [...]},
+            {'key': 'marketing', 'label': '...', 'css': '...', 'metrics': [...]}
+        ]
+        Returns empty list if catalog disabled or fails.
+    """
+    global _catalog_enricher
+
+    if not _catalog_enricher or not _catalog_enricher.enabled:
+        return []
+
+    try:
+        # Fetch metrics from catalog
+        raw_metrics = _catalog_enricher.get_metrics()
+        if not raw_metrics:
+            logger.debug("No metrics found in catalog")
+            return []
+
+        # Parse each metric and group by category
+        categories = {}
+        for raw in raw_metrics:
+            try:
+                metric = _parse_om_metric(raw)
+                cat = metric["category"]
+
+                if cat not in categories:
+                    categories[cat] = []
+
+                categories[cat].append(metric)
+
+            except Exception as e:
+                logger.warning(f"Failed to parse metric {raw.get('name', '?')}: {e}")
+                continue
+
+        # Build result using METRIC_CATEGORY_META for order and labels
+        result = []
+        for cat_key, meta in sorted(METRIC_CATEGORY_META.items(), key=lambda x: x[1]["order"]):
+            if cat_key in categories:
+                result.append({
+                    "key": cat_key,
+                    "label": meta["label"],
+                    "css": meta["css"],
+                    "metrics": categories[cat_key],
+                })
+
+        # Add unknown categories at the end
+        for cat_key, metrics in sorted(categories.items()):
+            if cat_key not in METRIC_CATEGORY_META:
+                result.append({
+                    "key": cat_key,
+                    "label": cat_key.replace("_", " ").title(),
+                    "css": cat_key,
+                    "metrics": metrics,
+                })
+
+        logger.info(f"Loaded {sum(len(c['metrics']) for c in result)} metrics from catalog")
+        return result
+
+    except Exception as e:
+        logger.warning(f"Failed to load metrics from catalog: {e}")
+        return []
+
+
+def _build_om_metric_detail(raw_metric: dict) -> dict:
+    """
+    Convert raw OpenMetadata metric into MetricParser-compatible JSON for modal.
+
+    Maps OpenMetadata fields to MetricParser structure (name, display_name, category, metadata, etc.).
+    Extracts type, unit, grain from tags with standard prefixes.
+
+    Args:
+        raw_metric: Raw metric dict from OpenMetadata
+
+    Returns:
+        Dict matching MetricParser._structure_metric_data() format
+    """
+    fqn = raw_metric.get("fullyQualifiedName", "")
+    name = raw_metric.get("name", "")
+    display_name = raw_metric.get("displayName", name)
+    description = raw_metric.get("description", "") or ""
+    expression = raw_metric.get("expression", "") or ""
+    owners = raw_metric.get("owners", [])
+
+    # Extract metadata from tags
+    tags = raw_metric.get("tags", [])
+    metric_type = ""
+    unit = ""
+    grain = ""
+    category = "general"
+    dimensions = []
+
+    for tag in tags:
+        tag_fqn = tag.get("tagFQN", "")
+
+        if tag_fqn.startswith("MetricType."):
+            metric_type = tag_fqn.split(".", 1)[1]
+        elif tag_fqn.startswith("Unit."):
+            unit = tag_fqn.split(".", 1)[1]
+        elif tag_fqn.startswith("Grain."):
+            grain = tag_fqn.split(".", 1)[1]
+        elif tag_fqn.startswith("MetricCategory."):
+            category = tag_fqn.split(".", 1)[1]
+        elif tag_fqn.startswith("Dimension."):
+            dimensions.append(tag_fqn.split(".", 1)[1])
+
+    # Extract owner names
+    owner_names = []
+    for owner in owners:
+        name_val = owner.get("name") or owner.get("displayName", "")
+        if name_val:
+            owner_names.append(name_val)
+
+    # Build MetricParser-compatible structure
+    return {
+        "name": name,
+        "display_name": display_name,
+        "category": category,
+        "category_color": MetricParser.CATEGORY_COLORS.get(category, "#6B7280"),
+        "metadata": {
+            "type": metric_type,
+            "unit": unit,
+            "grain": grain,
+            "time_column": "",  # Not available in OpenMetadata
+        },
+        "overview": {
+            "description": description.strip(),
+            "key_insights": [],  # Not available in OpenMetadata
+        },
+        "validation": None,  # Not available in OpenMetadata
+        "dimensions": dimensions,
+        "notes": {
+            "all": [],  # Not available in OpenMetadata
+            "key_insights": [],
+        },
+        "sql_examples": {
+            "expression": {
+                "title": "Metric Expression",
+                "query": expression,
+                "complexity": "simple",
+            }
+        } if expression else {},
+        "technical": {
+            "table": "",  # Not available in OpenMetadata
+            "expression": expression,
+            "synonyms": [],
+            "data_sources": [],
+        },
+        "special_sections": {},
+    }
 
 
 def _send_welcome_message(username: str) -> None:
@@ -786,6 +1008,36 @@ def register_routes(app: Flask) -> None:
         except Exception as e:
             logger.error(f"Error parsing metric {metric_path}: {e}")
             return jsonify({"error": f"Failed to parse metric: {str(e)}"}), 500
+
+    @app.route("/api/catalog/metrics/<path:metric_fqn>")
+    @login_required
+    def api_catalog_metric(metric_fqn):
+        """
+        API endpoint to serve metric from OpenMetadata catalog as structured JSON.
+
+        Args:
+            metric_fqn: Fully qualified name (e.g., "catalog.metrics.total_revenue")
+
+        Returns:
+            JSON matching MetricParser format for modal rendering
+        """
+        global _catalog_enricher
+
+        if not _catalog_enricher or not _catalog_enricher.enabled:
+            return jsonify({"error": "Catalog not available"}), 503
+
+        try:
+            # Fetch metric from catalog
+            raw = _catalog_enricher._client.get_metric_by_fqn(metric_fqn)
+
+            # Convert to MetricParser format
+            metric_data = _build_om_metric_detail(raw)
+
+            return jsonify(metric_data)
+
+        except Exception as e:
+            logger.error(f"Error fetching catalog metric {metric_fqn}: {e}")
+            return jsonify({"error": f"Failed to fetch metric: {str(e)}"}), 500
 
     @app.route("/docs/metrics/<path:metric_path>")
     @login_required

@@ -301,6 +301,45 @@ class CatalogEnricher:
             "fetched_at": datetime.now(),
         }
 
+    def get_metrics(self, limit: int = 200) -> List[Dict[str, Any]]:
+        """
+        Fetch list of business metrics from OpenMetadata catalog.
+
+        Args:
+            limit: Maximum number of metrics to fetch (default: 200)
+
+        Returns:
+            List of metric dictionaries with id, name, fullyQualifiedName, description, etc.
+            Returns empty list if:
+            - enricher is disabled
+            - catalog unavailable
+            - HTTP request fails
+            Never raises exception (graceful degradation).
+        """
+        if not self.enabled or not self._client:
+            return []
+
+        try:
+            # Check cache first
+            cached = self._get_from_cache("__metrics_list__")
+            if cached is not None:
+                logger.debug("Catalog cache hit: metrics list")
+                return cached
+
+            # Fetch from API
+            logger.debug(f"Fetching {limit} metrics from catalog")
+            metrics = self._client.get_metrics(limit=limit)
+
+            # Cache the result (with TTL)
+            self._cache_entry("__metrics_list__", metrics)
+
+            logger.info(f"Loaded {len(metrics)} metrics from catalog")
+            return metrics
+
+        except Exception as e:
+            logger.warning(f"Failed to fetch metrics from catalog: {e}")
+            return []
+
     def clear_cache(self):
         """Manually clear all cached entries."""
         self._cache.clear()

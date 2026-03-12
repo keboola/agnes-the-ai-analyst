@@ -112,6 +112,32 @@ class OpenMetadataClient:
         data = response.json()
         return data.get("data", [])
 
+    def get_metric_by_fqn(self, fqn: str) -> Dict[str, Any]:
+        """
+        Fetch a specific metric by FQN from OpenMetadata.
+
+        Args:
+            fqn: Fully qualified name (e.g., "catalog.metrics.total_revenue")
+
+        Returns:
+            Dictionary with metric metadata:
+            - id, name, fullyQualifiedName
+            - description, expression
+            - owners, tags
+
+        Raises:
+            httpx.HTTPStatusError: If request fails (non-2xx status)
+        """
+        url = f"/api/v1/metrics/name/{fqn}"
+        params = {
+            "fields": "description,expression,owners,tags,displayName",
+        }
+
+        response = self._client.get(url, params=params)
+        response.raise_for_status()
+
+        return response.json()
+
     def close(self):
         """Close HTTP client session."""
         self._client.close()

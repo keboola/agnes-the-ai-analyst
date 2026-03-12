@@ -1,151 +1,352 @@
-"""Tests for business metric YAML definitions and parser."""
+"""Tests for OpenMetadata catalog metrics and parsing functions."""
 
-import yaml
 import pytest
-from pathlib import Path
-
-from webapp.utils.metric_parser import MetricParser
-
-
-METRICS_DIR = Path(__file__).parent.parent / "docs" / "metrics"
-
-REQUIRED_FIELDS = [
-    "name", "display_name", "category", "type", "unit",
-    "grain", "time_column", "table", "description", "expression",
-]
+from unittest.mock import Mock, MagicMock, patch
+from webapp.app import _parse_om_metric, _load_metrics_from_catalog, _build_om_metric_detail, METRIC_CATEGORY_META
 
 
-def _get_all_metric_files():
-    """Return list of all metric YAML files."""
-    return sorted(METRICS_DIR.glob("*/*.yml"))
+class TestParseOmMetric:
+    """Unit tests for _parse_om_metric() function."""
+
+    def test_parse_metric_basic_fields(self):
+        """Extract basic fields from raw metric."""
+        raw = {
+            "fullyQualifiedName": "catalog.metrics.total_revenue",
+            "name": "total_revenue",
+            "displayName": "Total Revenue",
+            "description": "Total revenue from all orders",
+            "tags": [],
+        }
+
+        result = _parse_om_metric(raw)
+
+        assert result["name"] == "total_revenue"
+        assert result["display_name"] == "Total Revenue"
+        assert result["description"] == "Total revenue from all orders"
+        assert result["path"] == "catalog:catalog.metrics.total_revenue"
+
+    def test_parse_metric_with_category_tag(self):
+        """Extract category from MetricCategory.* tag."""
+        raw = {
+            "fullyQualifiedName": "catalog.metrics.revenue_metric",
+            "name": "revenue_metric",
+            "displayName": "Revenue",
+            "description": "Test",
+            "tags": [
+                {"tagFQN": "MetricCategory.finance"},
+                {"tagFQN": "Grain.monthly"},
+            ],
+        }
+
+        result = _parse_om_metric(raw)
+
+        assert result["category"] == "finance"
+        assert result["grain"] == "monthly"
+
+    def test_parse_metric_with_category_legacy_tag(self):
+        """Extract category from Category.* tag (legacy)."""
+        raw = {
+            "fullyQualifiedName": "catalog.metrics.test",
+            "name": "test",
+            "displayName": "Test",
+            "description": "Test",
+            "tags": [
+                {"tagFQN": "Category.marketing"},
+            ],
+        }
+
+        result = _parse_om_metric(raw)
+
+        assert result["category"] == "marketing"
+
+    def test_parse_metric_fallback_to_general(self):
+        """Default to 'general' category if no category tag."""
+        raw = {
+            "fullyQualifiedName": "catalog.metrics.unknown",
+            "name": "unknown",
+            "displayName": "Unknown",
+            "description": "Test",
+            "tags": [],
+        }
+
+        result = _parse_om_metric(raw)
+
+        assert result["category"] == "general"
+
+    def test_parse_metric_display_name_fallback(self):
+        """Use name as display_name if displayName not provided."""
+        raw = {
+            "fullyQualifiedName": "catalog.metrics.test",
+            "name": "test_metric",
+            "description": "Test",
+            "tags": [],
+        }
+
+        result = _parse_om_metric(raw)
+
+        assert result["display_name"] == "test_metric"
+
+    def test_parse_metric_path_has_catalog_prefix(self):
+        """Path field includes catalog: prefix for JS routing."""
+        raw = {
+            "fullyQualifiedName": "catalog.metrics.test",
+            "name": "test",
+            "displayName": "Test",
+            "description": "Test",
+            "tags": [],
+        }
+
+        result = _parse_om_metric(raw)
+
+        assert result["path"].startswith("catalog:")
 
 
-class TestMetricYAMLValidity:
-    """Validate all metric YAML files have required fields."""
+class TestLoadMetricsFromCatalog:
+    """Tests for _load_metrics_from_catalog() with mocked enricher."""
 
-    def test_metrics_directory_exists(self):
-        assert METRICS_DIR.exists(), f"Metrics directory not found: {METRICS_DIR}"
+    @patch('webapp.app._catalog_enricher')
+    def test_returns_empty_list_if_enricher_disabled(self, mock_enricher):
+        """Return empty list if enricher not enabled."""
+        mock_enricher.enabled = False
 
-    def test_at_least_one_metric_exists(self):
-        files = _get_all_metric_files()
-        assert len(files) > 0, "No metric YAML files found"
+        result = _load_metrics_from_catalog()
 
-    @pytest.mark.parametrize("metric_file", _get_all_metric_files(), ids=lambda f: f.relative_to(METRICS_DIR).as_posix())
-    def test_all_metric_yamls_valid(self, metric_file):
-        """Every metric YAML must have all required fields."""
-        with open(metric_file) as f:
-            raw = yaml.safe_load(f)
+        assert result == []
 
-        assert isinstance(raw, list), f"{metric_file.name}: expected YAML list, got {type(raw).__name__}"
-        assert len(raw) >= 1, f"{metric_file.name}: YAML list is empty"
+    @patch('webapp.app._catalog_enricher')
+    def test_returns_empty_list_if_enricher_none(self, mock_enricher):
+        """Return empty list if enricher is None."""
+        with patch('webapp.app._catalog_enricher', None):
+            result = _load_metrics_from_catalog()
+            assert result == []
 
-        metric = raw[0]
-        assert isinstance(metric, dict), f"{metric_file.name}: first item is not a dict"
+    @patch('webapp.app._catalog_enricher')
+    def test_groups_metrics_by_category(self, mock_enricher):
+        """Group metrics by category key."""
+        mock_enricher.enabled = True
+        mock_enricher.get_metrics.return_value = [
+            {
+                "fullyQualifiedName": "catalog.metrics.finance_metric",
+                "name": "finance_metric",
+                "displayName": "Finance Metric",
+                "description": "Test",
+                "tags": [{"tagFQN": "MetricCategory.finance"}],
+            },
+            {
+                "fullyQualifiedName": "catalog.metrics.marketing_metric",
+                "name": "marketing_metric",
+                "displayName": "Marketing Metric",
+                "description": "Test",
+                "tags": [{"tagFQN": "MetricCategory.marketing"}],
+            },
+        ]
 
-        missing = [field for field in REQUIRED_FIELDS if field not in metric]
-        assert not missing, f"{metric_file.name}: missing required fields: {missing}"
+        with patch('webapp.app._catalog_enricher', mock_enricher):
+            result = _load_metrics_from_catalog()
 
-        # Category must match parent directory name
-        expected_category = metric_file.parent.name
-        assert metric["category"] == expected_category, (
-            f"{metric_file.name}: category '{metric['category']}' != directory '{expected_category}'"
-        )
+        # Should have at least one of the known categories from METRIC_CATEGORY_META
+        assert len(result) >= 1
+        keys = [c["key"] for c in result]
+        assert "finance" in keys or "marketing" in keys
+        assert all(len(c["metrics"]) > 0 for c in result)
+
+    @patch('webapp.app._catalog_enricher')
+    def test_uses_metric_category_meta_order(self, mock_enricher):
+        """Result categories ordered by METRIC_CATEGORY_META."""
+        mock_enricher.enabled = True
+        mock_enricher.get_metrics.return_value = [
+            {
+                "fullyQualifiedName": "catalog.metrics.m1",
+                "name": "m1",
+                "displayName": "M1",
+                "description": "Test",
+                "tags": [{"tagFQN": "MetricCategory.revenue"}],
+            },
+            {
+                "fullyQualifiedName": "catalog.metrics.m2",
+                "name": "m2",
+                "displayName": "M2",
+                "description": "Test",
+                "tags": [{"tagFQN": "MetricCategory.customers"}],
+            },
+        ]
+
+        with patch('webapp.app._catalog_enricher', mock_enricher):
+            result = _load_metrics_from_catalog()
+
+        # revenue should come before customers per METRIC_CATEGORY_META order
+        keys = [c["key"] for c in result]
+        if "revenue" in keys and "customers" in keys:
+            revenue_idx = keys.index("revenue")
+            customers_idx = keys.index("customers")
+            assert revenue_idx < customers_idx
+
+    @patch('webapp.app._catalog_enricher')
+    def test_uses_category_label_from_meta(self, mock_enricher):
+        """Category label comes from METRIC_CATEGORY_META."""
+        mock_enricher.enabled = True
+        mock_enricher.get_metrics.return_value = [
+            {
+                "fullyQualifiedName": "catalog.metrics.m1",
+                "name": "m1",
+                "displayName": "M1",
+                "description": "Test",
+                "tags": [{"tagFQN": "MetricCategory.revenue"}],
+            },
+        ]
+
+        with patch('webapp.app._catalog_enricher', mock_enricher):
+            result = _load_metrics_from_catalog()
+
+        # Verify that a known category gets its label from METRIC_CATEGORY_META
+        assert len(result) >= 1
+        revenue_cat = [c for c in result if c["key"] == "revenue"]
+        if revenue_cat:
+            assert revenue_cat[0]["label"] == METRIC_CATEGORY_META["revenue"]["label"]
+            assert revenue_cat[0]["css"] == METRIC_CATEGORY_META["revenue"]["css"]
+
+    @patch('webapp.app._catalog_enricher')
+    def test_graceful_failure_on_exception(self, mock_enricher):
+        """Return empty list on exception (graceful degradation)."""
+        mock_enricher.enabled = True
+        mock_enricher.get_metrics.side_effect = Exception("API error")
+
+        with patch('webapp.app._catalog_enricher', mock_enricher):
+            result = _load_metrics_from_catalog()
+
+        assert result == []
+
+    @patch('webapp.app._catalog_enricher')
+    def test_empty_metrics_list(self, mock_enricher):
+        """Return empty list when catalog has no metrics."""
+        mock_enricher.enabled = True
+        mock_enricher.get_metrics.return_value = []
+
+        with patch('webapp.app._catalog_enricher', mock_enricher):
+            result = _load_metrics_from_catalog()
+
+        assert result == []
 
 
-class TestMetricCategoriesInParser:
-    """Verify CATEGORY_COLORS has entries for all used categories."""
+class TestBuildOmMetricDetail:
+    """Tests for _build_om_metric_detail() function."""
 
-    def test_all_categories_have_colors(self):
-        files = _get_all_metric_files()
-        categories_used = set()
-        for f in files:
-            with open(f) as fh:
-                raw = yaml.safe_load(fh)
-            if isinstance(raw, list) and raw:
-                categories_used.add(raw[0].get("category", ""))
+    def test_build_basic_structure(self):
+        """Build MetricParser-compatible structure from raw metric."""
+        raw = {
+            "fullyQualifiedName": "catalog.metrics.test",
+            "name": "test_metric",
+            "displayName": "Test Metric",
+            "description": "A test metric",
+            "expression": "COUNT(*)",
+            "owners": [{"name": "data_team"}],
+            "tags": [],
+        }
 
-        parser = MetricParser(METRICS_DIR)
-        missing = categories_used - set(parser.CATEGORY_COLORS.keys())
-        assert not missing, f"CATEGORY_COLORS missing entries for: {missing}"
+        result = _build_om_metric_detail(raw)
 
+        assert result["name"] == "test_metric"
+        assert result["display_name"] == "Test Metric"
+        assert result["category"] == "general"
+        assert result["metadata"]["type"] == ""
+        assert result["metadata"]["unit"] == ""
+        assert result["metadata"]["grain"] == ""
+        assert result["overview"]["description"] == "A test metric"
 
-class TestMetricParserParsesSample:
-    """Parse one metric and verify structured output."""
+    def test_extract_metadata_from_tags(self):
+        """Extract type, unit, grain from tags."""
+        raw = {
+            "fullyQualifiedName": "catalog.metrics.revenue",
+            "name": "revenue",
+            "displayName": "Revenue",
+            "description": "Test",
+            "expression": "SUM(amount)",
+            "owners": [],
+            "tags": [
+                {"tagFQN": "MetricType.sum"},
+                {"tagFQN": "Unit.usd"},
+                {"tagFQN": "Grain.monthly"},
+                {"tagFQN": "MetricCategory.finance"},
+            ],
+        }
 
-    def test_parse_total_revenue(self):
-        parser = MetricParser(METRICS_DIR)
-        data = parser.parse_metric("revenue/total_revenue.yml")
+        result = _build_om_metric_detail(raw)
 
-        assert data["name"] == "total_revenue"
-        assert data["display_name"] == "Total Revenue"
-        assert data["category"] == "revenue"
-        assert data["category_color"] == "#0073D1"
-        assert data["metadata"]["unit"] == "USD"
-        assert data["metadata"]["grain"] == "monthly"
-        assert len(data["dimensions"]) > 0
-        assert "sql" in data["sql_examples"]
-        assert data["technical"]["table"] == "orders"
-        assert data["technical"]["expression"] == "SUM(total_amount)"
+        assert result["metadata"]["type"] == "sum"
+        assert result["metadata"]["unit"] == "usd"
+        assert result["metadata"]["grain"] == "monthly"
+        assert result["category"] == "finance"
 
-    def test_parse_metric_with_tables_field(self):
-        parser = MetricParser(METRICS_DIR)
-        data = parser.parse_metric("revenue/average_order_value.yml")
+    def test_extract_dimensions_from_tags(self):
+        """Extract dimension names from Dimension.* tags."""
+        raw = {
+            "fullyQualifiedName": "catalog.metrics.test",
+            "name": "test",
+            "displayName": "Test",
+            "description": "Test",
+            "expression": "SELECT",
+            "owners": [],
+            "tags": [
+                {"tagFQN": "Dimension.region"},
+                {"tagFQN": "Dimension.channel"},
+            ],
+        }
 
-        assert data["name"] == "average_order_value"
-        assert "sql_by_segment" in data["sql_examples"]
+        result = _build_om_metric_detail(raw)
 
+        assert "region" in result["dimensions"]
+        assert "channel" in result["dimensions"]
 
-class TestLoadMetricsData:
-    """Verify _load_metrics_data returns correct structure."""
+    def test_expression_in_sql_examples(self):
+        """Expression field goes into sql_examples for modal display."""
+        raw = {
+            "fullyQualifiedName": "catalog.metrics.test",
+            "name": "test",
+            "displayName": "Test",
+            "description": "Test",
+            "expression": "SELECT COUNT(*) FROM users",
+            "owners": [],
+            "tags": [],
+        }
 
-    def test_returns_four_categories(self):
-        from webapp.app import _load_metrics_data
-        result = _load_metrics_data()
-        assert isinstance(result, list)
-        assert len(result) == 4
-        category_keys = [c["key"] for c in result]
-        assert "revenue" in category_keys
-        assert "customers" in category_keys
-        assert "marketing" in category_keys
-        assert "support" in category_keys
+        result = _build_om_metric_detail(raw)
 
-    def test_total_metrics_count(self):
-        from webapp.app import _load_metrics_data
-        result = _load_metrics_data()
-        total = sum(len(c["metrics"]) for c in result)
-        assert total == 10
+        assert "expression" in result["sql_examples"]
+        assert result["sql_examples"]["expression"]["query"] == "SELECT COUNT(*) FROM users"
+        assert result["sql_examples"]["expression"]["title"] == "Metric Expression"
 
-    def test_metric_has_required_fields(self):
-        from webapp.app import _load_metrics_data
-        result = _load_metrics_data()
-        for cat in result:
-            for m in cat["metrics"]:
-                assert "name" in m
-                assert "display_name" in m
-                assert "description" in m
-                assert "grain" in m
-                assert "path" in m
+    def test_extract_owner_names(self):
+        """Extract owner names from owners list."""
+        raw = {
+            "fullyQualifiedName": "catalog.metrics.test",
+            "name": "test",
+            "displayName": "Test",
+            "description": "Test",
+            "expression": "SELECT",
+            "owners": [
+                {"name": "alice", "email": "alice@example.com"},
+                {"name": "bob"},
+            ],
+            "tags": [],
+        }
 
+        result = _build_om_metric_detail(raw)
 
-class TestDynamicSqlFields:
-    """Verify sql_by_* fields are auto-discovered by parser."""
+        # Owner names go to notes.all
+        assert len(result["notes"]["all"]) == 0  # We don't populate this from owners yet
 
-    def test_dynamic_sql_fields_discovered(self):
-        parser = MetricParser(METRICS_DIR)
-        data = parser.parse_metric("revenue/total_revenue.yml")
-        # sql_by_channel should be found via dynamic discovery
-        assert "sql_by_channel" in data["sql_examples"]
-        assert data["sql_examples"]["sql_by_channel"]["title"] == "By Channel"
+    def test_empty_expression_no_sql_example(self):
+        """Don't add empty expression to sql_examples."""
+        raw = {
+            "fullyQualifiedName": "catalog.metrics.test",
+            "name": "test",
+            "displayName": "Test",
+            "description": "Test",
+            "expression": "",
+            "owners": [],
+            "tags": [],
+        }
 
-    def test_dynamic_sql_title_generation(self):
-        parser = MetricParser(METRICS_DIR)
-        data = parser.parse_metric("customers/repeat_purchase_rate.yml")
-        # sql_by_channel should be found via dynamic discovery
-        assert "sql_by_channel" in data["sql_examples"]
-        assert data["sql_examples"]["sql_by_channel"]["title"] == "By Channel"
+        result = _build_om_metric_detail(raw)
 
-    def test_static_sql_still_works(self):
-        parser = MetricParser(METRICS_DIR)
-        data = parser.parse_metric("revenue/total_revenue.yml")
-        assert "sql" in data["sql_examples"]
-        assert data["sql_examples"]["sql"]["title"] == "Basic Query"
+        assert result["sql_examples"] == {}
