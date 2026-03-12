@@ -868,3 +868,151 @@ class TestCreateClient:
 
         assert isinstance(result, BigQueryClient)
         assert result.project_id == "factory-project"
+
+
+# ---------------------------------------------------------------------------
+# 14. read_table_partitioned_streaming yields RecordBatches
+# ---------------------------------------------------------------------------
+
+class TestReadTablePartitionedStreaming:
+    def test_streaming_yields_batches(self, client, mock_bq_client):
+        """read_table_partitioned_streaming yields RecordBatches, not a Table."""
+        batch1 = pa.record_batch({"a": [1, 2]})
+        batch2 = pa.record_batch({"a": [3, 4]})
+
+        mock_query_job = MagicMock()
+        mock_row_iter = MagicMock()
+        mock_row_iter.to_arrow_iterable.return_value = iter([batch1, batch2])
+        mock_query_job.result.return_value = mock_row_iter
+        mock_bq_client.query.return_value = mock_query_job
+
+        with patch("connectors.bigquery.client.bigquery") as mock_bq_module:
+            mock_bq_module.QueryJobConfig.return_value = MagicMock()
+            mock_bq_module.ScalarQueryParameter.return_value = MagicMock()
+            client.client = mock_bq_client
+            client.bqstorage_client = None  # disable Storage API for simplicity
+
+            batches = list(client.read_table_partitioned_streaming(
+                table_id="proj.dataset.events",
+                partition_column="event_date",
+                start="2025-01-01",
+            ))
+
+        assert len(batches) == 2
+        assert isinstance(batches[0], pa.RecordBatch)
+        assert isinstance(batches[1], pa.RecordBatch)
+
+    def test_streaming_with_date_column_type(self, client, mock_bq_client):
+        """With column_type='DATE', ScalarQueryParameter uses 'DATE' type."""
+        batch = pa.record_batch({"a": [1]})
+
+        mock_query_job = MagicMock()
+        mock_row_iter = MagicMock()
+        mock_row_iter.to_arrow_iterable.return_value = iter([batch])
+        mock_query_job.result.return_value = mock_row_iter
+        mock_bq_client.query.return_value = mock_query_job
+
+        with patch("connectors.bigquery.client.bigquery") as mock_bq_module:
+            mock_bq_module.QueryJobConfig.return_value = MagicMock()
+            mock_bq_module.ScalarQueryParameter.return_value = MagicMock()
+            client.client = mock_bq_client
+            client.bqstorage_client = None
+
+            list(client.read_table_partitioned_streaming(
+                table_id="proj.dataset.events",
+                partition_column="event_date",
+                start="2025-01-01",
+                column_type="DATE",
+            ))
+
+            # Verify ScalarQueryParameter was called with "DATE" type
+            mock_bq_module.ScalarQueryParameter.assert_called_once_with(
+                "start_value", "DATE", "2025-01-01"
+            )
+
+    def test_streaming_start_and_end(self, client, mock_bq_client):
+        """With start and end, both params are created with correct column_type."""
+        batch = pa.record_batch({"a": [1]})
+
+        mock_query_job = MagicMock()
+        mock_row_iter = MagicMock()
+        mock_row_iter.to_arrow_iterable.return_value = iter([batch])
+        mock_query_job.result.return_value = mock_row_iter
+        mock_bq_client.query.return_value = mock_query_job
+
+        with patch("connectors.bigquery.client.bigquery") as mock_bq_module:
+            mock_bq_module.QueryJobConfig.return_value = MagicMock()
+            mock_bq_module.ScalarQueryParameter.return_value = MagicMock()
+            client.client = mock_bq_client
+            client.bqstorage_client = None
+
+            list(client.read_table_partitioned_streaming(
+                table_id="proj.dataset.events",
+                partition_column="event_date",
+                start="2025-01-01",
+                end="2025-06-01",
+                column_type="DATE",
+            ))
+
+            sql = mock_bq_client.query.call_args[0][0]
+            assert "`event_date` >= @start_value" in sql
+            assert "`event_date` < @end_value" in sql
+
+            # Both parameters created with "DATE" type
+            assert mock_bq_module.ScalarQueryParameter.call_count == 2
+            calls = mock_bq_module.ScalarQueryParameter.call_args_list
+            assert calls[0].args == ("start_value", "DATE", "2025-01-01")
+            assert calls[1].args == ("end_value", "DATE", "2025-06-01")
+
+
+# ---------------------------------------------------------------------------
+# 15. read_table_partitioned column_type parameter
+# ---------------------------------------------------------------------------
+
+class TestReadTablePartitionedColumnType:
+    def test_date_column_type(self, client, mock_bq_client):
+        """read_table_partitioned with column_type='DATE' creates DATE params."""
+        mock_job = MagicMock()
+        mock_job.to_arrow.return_value = pa.table({"a": [1]})
+        mock_bq_client.query.return_value = mock_job
+
+        with patch("connectors.bigquery.client.bigquery") as mock_bq_module:
+            mock_bq_module.QueryJobConfig.return_value = MagicMock()
+            mock_bq_module.ScalarQueryParameter.return_value = MagicMock()
+            client.client = mock_bq_client
+
+            client.read_table_partitioned(
+                table_id="proj.dataset.events",
+                partition_column="event_date",
+                start="2025-01-01",
+                end="2025-06-01",
+                column_type="DATE",
+            )
+
+            # Both parameters should use "DATE" type
+            assert mock_bq_module.ScalarQueryParameter.call_count == 2
+            calls = mock_bq_module.ScalarQueryParameter.call_args_list
+            assert calls[0].args == ("start_value", "DATE", "2025-01-01")
+            assert calls[1].args == ("end_value", "DATE", "2025-06-01")
+
+    def test_default_column_type_is_timestamp(self, client, mock_bq_client):
+        """Default column_type is TIMESTAMP when not specified."""
+        mock_job = MagicMock()
+        mock_job.to_arrow.return_value = pa.table({"a": [1]})
+        mock_bq_client.query.return_value = mock_job
+
+        with patch("connectors.bigquery.client.bigquery") as mock_bq_module:
+            mock_bq_module.QueryJobConfig.return_value = MagicMock()
+            mock_bq_module.ScalarQueryParameter.return_value = MagicMock()
+            client.client = mock_bq_client
+
+            client.read_table_partitioned(
+                table_id="proj.dataset.events",
+                partition_column="created_at",
+                start="2025-01-01T00:00:00Z",
+            )
+
+            # Should default to "TIMESTAMP"
+            mock_bq_module.ScalarQueryParameter.assert_called_once_with(
+                "start_value", "TIMESTAMP", "2025-01-01T00:00:00Z"
+            )

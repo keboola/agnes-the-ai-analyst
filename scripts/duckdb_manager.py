@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-DuckDB Manager - Initialize and manage DuckDB database with views from parquet files.
+DuckDB Manager - Initialize and manage DuckDB database with views from parquet files
+and runtime BigQuery query registration for remote/hybrid tables.
 
-This script dynamically reads table configurations from docs/data_description.md
-and creates DuckDB views accordingly. No hardcoded table list needed!
+For BigQuery data sources, tables with query_mode="remote" or "hybrid" are queried
+at runtime via the Python BQ client and registered as in-memory Arrow tables in DuckDB.
+This avoids the DuckDB BigQuery extension limitation (cannot read BQ views).
 
 Usage:
     python3 scripts/duckdb_manager.py --reinit    # Initialize/reinitialize all views
@@ -11,13 +13,17 @@ Usage:
 """
 
 import duckdb
+import logging
 import os
 import sys
 import argparse
 import re
 import yaml
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
+
+
+logger = logging.getLogger(__name__)
 
 
 def find_project_root() -> Path:
@@ -157,17 +163,131 @@ def get_parquet_path(table_config: Dict, folder_mapping: Dict[str, str], data_di
         return parquet_dir / f"{table_name}.parquet"
 
 
-def init_duckdb(db_path="user/duckdb/analytics.duckdb", data_dir="server", verbose=True):
+def _get_bq_project_from_table_id(table_id: str) -> Optional[str]:
+    """Extract BQ project ID from a fully-qualified table ID.
+
+    Args:
+        table_id: e.g. "prj-grp-dataview-prod-1ff9.finance_unit_economics.unit_economics"
+
+    Returns:
+        Project ID or None if format doesn't match BQ convention
+    """
+    parts = table_id.split(".")
+    if len(parts) == 3 and "-" in parts[0]:
+        return parts[0]
+    return None
+
+
+def _create_bq_client(project: str):
+    """Create a BigQuery client. Separated for testability.
+
+    Args:
+        project: GCP project ID for billing
+
+    Returns:
+        google.cloud.bigquery.Client instance
+    """
+    from google.cloud import bigquery as bq_module
+
+    return bq_module.Client(project=project)
+
+
+def register_bq_table(
+    conn: duckdb.DuckDBPyConnection,
+    table_id: str,
+    view_name: str,
+    sql: str,
+    bq_project: Optional[str] = None,
+    _bq_client_factory=None,
+) -> int:
+    """
+    Execute a BigQuery SQL query and register the result as a DuckDB view.
+
+    Uses the Python BigQuery client (Query API) which supports BQ views,
+    unlike the DuckDB BigQuery extension (Storage Read API).
+    The result is held in memory as a PyArrow table -- no disk I/O.
+
+    Args:
+        conn: Open DuckDB connection
+        table_id: BQ table ID for logging (e.g., "project.dataset.table")
+        view_name: Name to register in DuckDB (e.g., "unit_economics_live")
+        sql: Full BigQuery SQL query to execute
+        bq_project: GCP project for billing. If None, uses BIGQUERY_PROJECT env var.
+        _bq_client_factory: Override BQ client creation (for testing)
+
+    Returns:
+        Number of rows in the result
+
+    Raises:
+        ImportError: If google-cloud-bigquery is not installed
+        ValueError: If bq_project is not set
+    """
+    project = bq_project or os.environ.get("BIGQUERY_PROJECT")
+    if not project:
+        raise ValueError(
+            "BigQuery project not set. "
+            "Pass bq_project or set BIGQUERY_PROJECT env var."
+        )
+
+    logger.info(f"Querying BQ: {table_id} -> {view_name}")
+    logger.debug(f"SQL: {sql[:200]}...")
+
+    factory = _bq_client_factory or _create_bq_client
+    client = factory(project)
+    job = client.query(sql)
+
+    # Use Query API (not Storage Read API) to support BQ views
+    try:
+        arrow_table = job.to_arrow()
+    except Exception as e:
+        if "readsessions" in str(e) or "PERMISSION_DENIED" in str(e):
+            logger.warning("BQ Storage API unavailable, falling back to REST")
+            arrow_table = job.to_arrow(create_bqstorage_client=False)
+        else:
+            raise
+
+    conn.register(view_name, arrow_table)
+    logger.info(
+        f"Registered {view_name}: {arrow_table.num_rows} rows, "
+        f"{arrow_table.num_columns} cols (in-memory)"
+    )
+
+    return arrow_table.num_rows
+
+
+def get_remote_tables(table_configs: List[Dict]) -> List[Dict]:
+    """Return table configs with query_mode 'remote' or 'hybrid'.
+
+    Args:
+        table_configs: List of table configuration dicts
+
+    Returns:
+        List of remote/hybrid table configs
+    """
+    return [
+        tc for tc in table_configs
+        if tc.get("query_mode") in ("remote", "hybrid")
+    ]
+
+
+def init_duckdb(
+    db_path="user/duckdb/analytics.duckdb",
+    data_dir="server",
+    verbose=True,
+    bq_project: Optional[str] = None,
+):
     """
     Initialize DuckDB database with views from parquet files.
 
-    Dynamically reads table configurations from docs/data_description.md
-    and creates views accordingly.
+    Creates DuckDB views for local/hybrid tables (from Parquet).
+    Remote tables are NOT pre-loaded -- they are registered at query time
+    via register_bq_table().
 
     Args:
         db_path: Path to DuckDB database file
         data_dir: Base data directory (e.g., "server" for analysts, "data" for server)
         verbose: Print progress messages
+        bq_project: BigQuery execution project (for informational purposes only)
 
     Returns:
         True if successful, False otherwise
@@ -176,29 +296,48 @@ def init_duckdb(db_path="user/duckdb/analytics.duckdb", data_dir="server", verbo
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
 
     if verbose:
-        print("🦆 Inicializuji DuckDB databázi...")
+        print("Initializing DuckDB database...")
 
     try:
         # Find project root and parse data_description.md
         project_root = find_project_root()
         if verbose:
-            print(f"   📂 Project root: {project_root}")
+            print(f"   Project root: {project_root}")
 
         table_configs, folder_mapping = parse_data_description(project_root)
         if verbose:
-            print(f"   📋 Načteno {len(table_configs)} tabulek z data_description.md")
+            print(f"   Loaded {len(table_configs)} tables from data_description.md")
+
+        # Separate tables by query_mode
+        local_tables = []
+        remote_tables = []
+        hybrid_tables = []
+
+        for tc in table_configs:
+            mode = tc.get("query_mode", "local")
+            if mode == "remote":
+                remote_tables.append(tc)
+            elif mode == "hybrid":
+                hybrid_tables.append(tc)
+            else:
+                local_tables.append(tc)
+
+        if verbose:
+            print(f"   Query modes: {len(local_tables)} local, "
+                  f"{len(remote_tables)} remote, {len(hybrid_tables)} hybrid")
 
         # Connect to database (creates if doesn't exist)
         conn = duckdb.connect(db_path)
 
-        # Create views
+        # Create local views from parquet files
         if verbose:
-            print("\n📊 Vytvářím views z parquet souborů...")
+            print("\n   Creating views from parquet files...")
 
         created_views = []
         skipped_views = []
 
-        for table_config in table_configs:
+        # Process local and hybrid tables (both have local parquet)
+        for table_config in local_tables + hybrid_tables:
             table_name = table_config['name']
 
             try:
@@ -209,7 +348,7 @@ def init_duckdb(db_path="user/duckdb/analytics.duckdb", data_dir="server", verbo
                 if not parquet_path.exists():
                     skipped_views.append(table_name)
                     if verbose:
-                        print(f"   ⚠️  Přeskakuji {table_name} - parquet neexistuje: {parquet_path}")
+                        print(f"   [SKIP] {table_name} - parquet not found: {parquet_path}")
                     continue
 
                 # Determine if partitioned
@@ -229,49 +368,65 @@ def init_duckdb(db_path="user/duckdb/analytics.duckdb", data_dir="server", verbo
                     if not partition_files:
                         skipped_views.append(table_name)
                         if verbose:
-                            print(f"   ⚠️  Přeskakuji {table_name} - žádné partition soubory")
+                            print(f"   [SKIP] {table_name} - no partition files")
                         continue
 
                     sql = f"CREATE OR REPLACE VIEW {table_name} AS SELECT * FROM read_parquet('{glob_pattern}', union_by_name=true)"
                     if verbose:
-                        print(f"   ✅ {table_name} ({len(partition_files)} partitions)")
+                        mode_label = "hybrid" if table_config.get("query_mode") == "hybrid" else "local"
+                        print(f"   [OK] {table_name} ({len(partition_files)} partitions, {mode_label})")
                 else:
                     # Single parquet file
                     sql = f"CREATE OR REPLACE VIEW {table_name} AS SELECT * FROM read_parquet('{parquet_path}')"
                     if verbose:
-                        print(f"   ✅ {table_name}")
+                        mode_label = "hybrid" if table_config.get("query_mode") == "hybrid" else "local"
+                        print(f"   [OK] {table_name} ({mode_label})")
 
                 conn.execute(sql)
                 created_views.append(table_name)
 
             except Exception as e:
                 if verbose:
-                    print(f"   ❌ Chyba při vytváření {table_name}: {e}")
+                    print(f"   [ERR] Error creating {table_name}: {e}")
                 return False
+
+        # Log remote tables (queried at runtime via register_bq_table)
+        if remote_tables:
+            if verbose:
+                print("\n   Remote tables (queried at runtime via BigQuery):")
+            for table_config in remote_tables:
+                table_name = table_config['name']
+                table_id = table_config['id']
+                if verbose:
+                    print(f"   [BQ] {table_name} -> {table_id}")
 
         # Display table list with row counts
         if verbose:
-            print(f"\n📋 Seznam dostupných tabulek ({len(created_views)} vytvořeno):")
+            print(f"\n   Available tables ({len(created_views)} local views):")
             tables = conn.execute("SHOW TABLES").fetchall()
             for table in tables:
                 try:
                     row_count = conn.execute(f"SELECT COUNT(*) FROM {table[0]}").fetchone()[0]
-                    print(f"   - {table[0]}: {row_count:,} řádků")
-                except Exception as e:
-                    print(f"   - {table[0]}: (chyba při počítání řádků)")
+                    print(f"   - {table[0]}: {row_count:,} rows (local)")
+                except Exception:
+                    print(f"   - {table[0]}: (error counting rows)")
+
+            if remote_tables:
+                print(f"\n   Remote tables ({len(remote_tables)}, loaded on demand):")
+                for tc in remote_tables:
+                    print(f"   - {tc['name']}: via BQ Query API (use date filters!)")
 
         # Close connection
         conn.close()
 
         if verbose:
-            print(f"\n✅ DuckDB databáze vytvořena: {db_path}")
-            print("💡 Můžeš začít analyzovat data pomocí DuckDB SQL dotazů")
+            print(f"\n   DuckDB database created: {db_path}")
 
         return True
 
     except Exception as e:
         if verbose:
-            print(f"\n❌ Chyba při inicializaci DuckDB: {e}")
+            print(f"\n   Error initializing DuckDB: {e}")
             import traceback
             traceback.print_exc()
         return False
@@ -298,6 +453,11 @@ def main():
         help='Base data directory (default: server, use "data" for server deployment)'
     )
     parser.add_argument(
+        '--bq-project',
+        default=None,
+        help='BigQuery execution project (informational only)'
+    )
+    parser.add_argument(
         '--quiet',
         action='store_true',
         help='Suppress progress messages'
@@ -314,7 +474,8 @@ def main():
     success = init_duckdb(
         db_path=args.db_path,
         data_dir=args.data_dir,
-        verbose=not args.quiet
+        verbose=not args.quiet,
+        bq_project=args.bq_project,
     )
 
     # Exit with appropriate code

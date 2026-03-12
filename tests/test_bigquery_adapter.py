@@ -9,6 +9,7 @@ so we install stub modules in sys.modules before importing the adapter.
 """
 
 import sys
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -83,6 +84,7 @@ def _make_table_config(
     partition_by: str | None = None,
     partition_granularity: str | None = None,
     max_history_days: int | None = None,
+    partition_column_type: str = "TIMESTAMP",
 ) -> TableConfig:
     """Helper to build a TableConfig with safe defaults."""
     return TableConfig(
@@ -96,6 +98,7 @@ def _make_table_config(
         partition_by=partition_by,
         partition_granularity=partition_granularity,
         max_history_days=max_history_days,
+        partition_column_type=partition_column_type,
     )
 
 
@@ -274,55 +277,217 @@ class TestIncrementalNoNewData:
 
 
 # ---------------------------------------------------------------------------
-# 4. partitioned_sync creates partition files
+# 4. partitioned_sync - per-day streaming behaviour
 # ---------------------------------------------------------------------------
 
 class TestPartitionedSync:
+    """Tests for the rewritten _partitioned_sync() that streams per-day from BQ."""
 
-    def test_creates_partition_files(self, mock_config, mock_bq_client, tmp_parquet_dir, sync_state):
-        """Partitioned sync should create separate Parquet files per partition key."""
-        import pandas as pd
-
+    def _setup_partition_config(
+        self,
+        mock_config,
+        tmp_parquet_dir,
+        *,
+        granularity: str = "day",
+        max_history_days: int | None = 3,
+        incremental_window_days: int | None = 2,
+        partition_column_type: str = "TIMESTAMP",
+    ):
+        """Common setup: create table config + wire mock_config partition paths."""
         table_config = _make_table_config(
-            sync_strategy="incremental",
-            incremental_column="created_at",
-            partition_by="created_at",
-            partition_granularity="month",
-            incremental_window_days=7,
+            sync_strategy="partitioned",
+            incremental_column="event_date",
+            partition_by="event_date",
+            partition_granularity=granularity,
+            max_history_days=max_history_days,
+            incremental_window_days=incremental_window_days,
+            partition_column_type=partition_column_type,
         )
 
-        # For partitioned tables, parquet_path is a directory
         partition_dir = tmp_parquet_dir / "orders"
         partition_dir.mkdir(parents=True, exist_ok=True)
         mock_config.get_parquet_path.return_value = partition_dir
 
-        # Configure partition paths
         def _partition_path(tc, key):
             return partition_dir / f"{key}.parquet"
         mock_config.get_partition_path.side_effect = _partition_path
 
-        # Build arrow table with timestamps in two months
-        ts_jan = [pd.Timestamp("2026-01-15 10:00:00", tz="UTC")]
-        ts_feb = [pd.Timestamp("2026-02-20 14:00:00", tz="UTC")]
-        arrow_data = pa.table({
-            "id": [1, 2],
-            "name": ["Jan_Order", "Feb_Order"],
-            "created_at": pa.array(ts_jan + ts_feb, type=pa.timestamp("us", tz="UTC")),
+        return table_config, partition_dir
+
+    @staticmethod
+    def _make_day_table(row_id: int, day: date) -> pa.Table:
+        """Build a one-row Arrow table for a given day."""
+        return pa.table({
+            "id": [row_id],
+            "event_date": pa.array([datetime(day.year, day.month, day.day)], type=pa.timestamp("us")),
         })
-        mock_bq_client.read_table.return_value = arrow_data
+
+    def test_creates_daily_partition_files(
+        self, mock_config, mock_bq_client, tmp_parquet_dir, sync_state
+    ):
+        """First sync with max_history_days creates one Parquet file per day with data."""
+        table_config, partition_dir = self._setup_partition_config(
+            mock_config, tmp_parquet_dir, max_history_days=3, granularity="day",
+        )
+
+        today = date.today()
+        day0 = today - timedelta(days=3)
+        day1 = today - timedelta(days=2)
+        # day2, day3 (today-1, today) will have no data
+
+        # Build per-day Arrow data for the two days that have rows
+        day0_table = self._make_day_table(1, day0)
+        day1_table = self._make_day_table(2, day1)
+
+        # read_table_partitioned_streaming is called once per partition date.
+        # We need to return data for day0 and day1, empty iterators for the rest.
+        def _streaming_side_effect(*, table_id, partition_column, start, end, columns, column_type):
+            start_date = date.fromisoformat(start)
+            if start_date == day0:
+                return iter(day0_table.to_batches())
+            if start_date == day1:
+                return iter(day1_table.to_batches())
+            return iter([])  # empty for other days
+
+        mock_bq_client.read_table_partitioned_streaming.side_effect = _streaming_side_effect
 
         adapter = _create_adapter(mock_config, mock_bq_client)
         result = adapter.sync_table(table_config, sync_state)
 
         assert result["success"] is True
 
-        # Should have created two partition files
-        partition_files = list(partition_dir.glob("*.parquet"))
+        # Should have exactly 2 partition files (days with data)
+        partition_files = sorted(partition_dir.glob("*.parquet"))
         assert len(partition_files) == 2
 
-        partition_names = sorted(f.stem for f in partition_files)
-        assert "2026_01" in partition_names
-        assert "2026_02" in partition_names
+        file_names = sorted(f.stem for f in partition_files)
+        assert day0.strftime("%Y_%m_%d") in file_names
+        assert day1.strftime("%Y_%m_%d") in file_names
+
+        # Verify content of each partition
+        t0 = pq.read_table(partition_dir / f"{day0.strftime('%Y_%m_%d')}.parquet")
+        assert t0.num_rows == 1
+        assert t0.column("id").to_pylist() == [1]
+
+    def test_incremental_sync_only_fetches_window(
+        self, mock_config, mock_bq_client, tmp_parquet_dir, sync_state
+    ):
+        """After a previous sync, only the incremental window of days is fetched."""
+        table_config, partition_dir = self._setup_partition_config(
+            mock_config, tmp_parquet_dir,
+            max_history_days=30,
+            incremental_window_days=2,
+            granularity="day",
+        )
+
+        # Simulate a previous sync 1 day ago
+        sync_time = (datetime.now() - timedelta(days=1)).isoformat()
+        sync_state.update_sync(
+            table_id=table_config.id,
+            table_name=table_config.name,
+            strategy="partitioned",
+            rows=100,
+            file_size_bytes=5000,
+        )
+
+        # Return empty for all calls -- we just want to verify the call count
+        mock_bq_client.read_table_partitioned_streaming.return_value = iter([])
+
+        adapter = _create_adapter(mock_config, mock_bq_client)
+        result = adapter.sync_table(table_config, sync_state)
+
+        assert result["success"] is True
+
+        # With incremental_window_days=2, it should go back 2 days from last_sync.
+        # The number of partition dates from (last_sync - 2 days) to today.
+        last_sync_str = sync_state.get_last_sync(table_config.id)
+        last_sync_dt = datetime.fromisoformat(last_sync_str)
+        start_date = (last_sync_dt - timedelta(days=2)).date()
+        today = date.today()
+        expected_days = (today - start_date).days + 1  # inclusive
+
+        actual_calls = mock_bq_client.read_table_partitioned_streaming.call_count
+        assert actual_calls == expected_days, (
+            f"Expected {expected_days} BQ calls (from {start_date} to {today}), got {actual_calls}"
+        )
+
+    def test_merges_with_existing_partition(
+        self, mock_config, mock_bq_client, tmp_parquet_dir, sync_state
+    ):
+        """New data for an existing partition merges and deduplicates on PK."""
+        table_config, partition_dir = self._setup_partition_config(
+            mock_config, tmp_parquet_dir, max_history_days=3, granularity="day",
+        )
+
+        today = date.today()
+        target_day = today - timedelta(days=1)
+        partition_key = target_day.strftime("%Y_%m_%d")
+        partition_path = partition_dir / f"{partition_key}.parquet"
+
+        # Pre-write an existing partition file with id=1
+        existing = pa.table({
+            "id": [1],
+            "event_date": pa.array(
+                [datetime(target_day.year, target_day.month, target_day.day)],
+                type=pa.timestamp("us"),
+            ),
+        })
+        pq.write_table(existing, partition_path, compression="snappy")
+
+        # New data: id=1 (update) + id=2 (new row)
+        new_data = pa.table({
+            "id": [1, 2],
+            "event_date": pa.array(
+                [
+                    datetime(target_day.year, target_day.month, target_day.day),
+                    datetime(target_day.year, target_day.month, target_day.day),
+                ],
+                type=pa.timestamp("us"),
+            ),
+        })
+
+        def _streaming_side_effect(*, table_id, partition_column, start, end, columns, column_type):
+            start_date = date.fromisoformat(start)
+            if start_date == target_day:
+                return iter(new_data.to_batches())
+            return iter([])
+
+        mock_bq_client.read_table_partitioned_streaming.side_effect = _streaming_side_effect
+
+        adapter = _create_adapter(mock_config, mock_bq_client)
+        result = adapter.sync_table(table_config, sync_state)
+
+        assert result["success"] is True
+
+        # Read back the target partition -- should have 2 rows (dedup on id)
+        merged = pq.read_table(partition_path)
+        assert merged.num_rows == 2
+        assert sorted(merged.column("id").to_pylist()) == [1, 2]
+
+    def test_empty_partition_skipped(
+        self, mock_config, mock_bq_client, tmp_parquet_dir, sync_state
+    ):
+        """A partition day with no data from BQ should not create a file."""
+        table_config, partition_dir = self._setup_partition_config(
+            mock_config, tmp_parquet_dir, max_history_days=2, granularity="day",
+        )
+
+        # Return empty iterator for every call
+        mock_bq_client.read_table_partitioned_streaming.return_value = iter([])
+        # side_effect takes precedence over return_value when set, but let's use
+        # a function so each call gets a fresh empty iterator
+        mock_bq_client.read_table_partitioned_streaming.side_effect = (
+            lambda **kw: iter([])
+        )
+
+        adapter = _create_adapter(mock_config, mock_bq_client)
+        result = adapter.sync_table(table_config, sync_state)
+
+        assert result["success"] is True
+
+        # No partition files should have been created
+        partition_files = list(partition_dir.glob("*.parquet"))
+        assert len(partition_files) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -574,15 +739,13 @@ class TestSyncTableDispatch:
     def test_dispatches_partitioned(
         self, mock_config, mock_bq_client, tmp_parquet_dir, sync_state
     ):
-        """sync_strategy='incremental' with partition_by should call _partitioned_sync."""
-        import pandas as pd
-
+        """sync_strategy='partitioned' should call _partitioned_sync."""
         table_config = _make_table_config(
-            sync_strategy="incremental",
+            sync_strategy="partitioned",
             incremental_column="created_at",
             partition_by="created_at",
-            partition_granularity="month",
-            incremental_window_days=7,
+            partition_granularity="day",
+            max_history_days=2,
         )
         partition_dir = tmp_parquet_dir / "orders"
         partition_dir.mkdir(parents=True, exist_ok=True)
@@ -592,13 +755,9 @@ class TestSyncTableDispatch:
             return partition_dir / f"{key}.parquet"
         mock_config.get_partition_path.side_effect = _partition_path
 
-        ts = [pd.Timestamp("2026-01-15 10:00:00", tz="UTC")]
-        arrow_data = pa.table({
-            "id": [1],
-            "name": ["A"],
-            "created_at": pa.array(ts, type=pa.timestamp("us", tz="UTC")),
-        })
-        mock_bq_client.read_table.return_value = arrow_data
+        mock_bq_client.read_table_partitioned_streaming.side_effect = (
+            lambda **kw: iter([])
+        )
 
         adapter = _create_adapter(mock_config, mock_bq_client)
 
@@ -770,3 +929,175 @@ class TestCreateDataSourceFactory:
             from connectors.bigquery.adapter import create_data_source, BigQueryDataSource
             instance = create_data_source()
             assert isinstance(instance, BigQueryDataSource)
+
+
+# ---------------------------------------------------------------------------
+# 14. _cleanup_old_partitions deletes files beyond retention window
+# ---------------------------------------------------------------------------
+
+class TestPartitionCleanup:
+
+    def test_deletes_old_partitions(self, mock_config, mock_bq_client, tmp_parquet_dir):
+        """Partition files older than max_history_days should be deleted."""
+        table_config = _make_table_config(
+            sync_strategy="partitioned",
+            partition_by="event_date",
+            partition_granularity="day",
+            max_history_days=5,
+        )
+
+        partition_dir = tmp_parquet_dir / "orders"
+        partition_dir.mkdir(parents=True, exist_ok=True)
+
+        today = date.today()
+        # Create files: 3 days ago (keep), 6 days ago (delete), 10 days ago (delete)
+        keep_day = today - timedelta(days=3)
+        delete_day1 = today - timedelta(days=6)
+        delete_day2 = today - timedelta(days=10)
+
+        for d in [keep_day, delete_day1, delete_day2]:
+            key = d.strftime("%Y_%m_%d")
+            dummy = pa.table({"id": [1]})
+            pq.write_table(dummy, partition_dir / f"{key}.parquet")
+
+        adapter = _create_adapter(mock_config, mock_bq_client)
+        deleted = adapter._cleanup_old_partitions(table_config, partition_dir, "day")
+
+        assert deleted == 2
+
+        # Only the recent file should remain
+        remaining = [f.stem for f in partition_dir.glob("*.parquet")]
+        assert keep_day.strftime("%Y_%m_%d") in remaining
+        assert delete_day1.strftime("%Y_%m_%d") not in remaining
+        assert delete_day2.strftime("%Y_%m_%d") not in remaining
+
+    def test_no_cleanup_without_max_history_days(self, mock_config, mock_bq_client, tmp_parquet_dir):
+        """Without max_history_days, no partition files should be deleted."""
+        table_config = _make_table_config(
+            sync_strategy="partitioned",
+            partition_by="event_date",
+            partition_granularity="day",
+            max_history_days=None,
+        )
+
+        partition_dir = tmp_parquet_dir / "orders"
+        partition_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create an old file (100 days ago)
+        old_day = date.today() - timedelta(days=100)
+        key = old_day.strftime("%Y_%m_%d")
+        pq.write_table(pa.table({"id": [1]}), partition_dir / f"{key}.parquet")
+
+        adapter = _create_adapter(mock_config, mock_bq_client)
+        deleted = adapter._cleanup_old_partitions(table_config, partition_dir, "day")
+
+        assert deleted == 0
+        assert len(list(partition_dir.glob("*.parquet"))) == 1
+
+
+# ---------------------------------------------------------------------------
+# 15. _generate_partition_dates produces correct date ranges
+# ---------------------------------------------------------------------------
+
+class TestGeneratePartitionDates:
+
+    def test_daily_generation(self, mock_config, mock_bq_client):
+        """Daily granularity should generate one date per day, inclusive."""
+        adapter = _create_adapter(mock_config, mock_bq_client)
+
+        start = date(2026, 3, 1)
+        end = date(2026, 3, 5)
+        dates = adapter._generate_partition_dates(start, end, "day")
+
+        assert dates == [
+            date(2026, 3, 1),
+            date(2026, 3, 2),
+            date(2026, 3, 3),
+            date(2026, 3, 4),
+            date(2026, 3, 5),
+        ]
+
+    def test_monthly_generation(self, mock_config, mock_bq_client):
+        """Monthly granularity should generate first-of-month dates, aligned."""
+        adapter = _create_adapter(mock_config, mock_bq_client)
+
+        # Start mid-month -- should align to 1st
+        start = date(2026, 1, 15)
+        end = date(2026, 4, 10)
+        dates = adapter._generate_partition_dates(start, end, "month")
+
+        assert dates == [
+            date(2026, 1, 1),
+            date(2026, 2, 1),
+            date(2026, 3, 1),
+            date(2026, 4, 1),
+        ]
+
+    def test_monthly_generation_across_year_boundary(self, mock_config, mock_bq_client):
+        """Monthly generation should cross year boundaries correctly."""
+        adapter = _create_adapter(mock_config, mock_bq_client)
+
+        start = date(2025, 11, 1)
+        end = date(2026, 2, 15)
+        dates = adapter._generate_partition_dates(start, end, "month")
+
+        assert dates == [
+            date(2025, 11, 1),
+            date(2025, 12, 1),
+            date(2026, 1, 1),
+            date(2026, 2, 1),
+        ]
+
+    def test_daily_single_day(self, mock_config, mock_bq_client):
+        """When start == end, should return a single date."""
+        adapter = _create_adapter(mock_config, mock_bq_client)
+
+        d = date(2026, 6, 15)
+        dates = adapter._generate_partition_dates(d, d, "day")
+
+        assert dates == [d]
+
+    def test_empty_range(self, mock_config, mock_bq_client):
+        """When start > end, should return an empty list."""
+        adapter = _create_adapter(mock_config, mock_bq_client)
+
+        dates = adapter._generate_partition_dates(date(2026, 3, 10), date(2026, 3, 5), "day")
+        assert dates == []
+
+
+# ---------------------------------------------------------------------------
+# 16. _parse_partition_date converts partition keys back to dates
+# ---------------------------------------------------------------------------
+
+class TestParsePartitionDate:
+
+    def test_parse_day_format(self, mock_config, mock_bq_client):
+        """'2026_01_15' with day granularity should parse to date(2026, 1, 15)."""
+        adapter = _create_adapter(mock_config, mock_bq_client)
+        result = adapter._parse_partition_date("2026_01_15", "day")
+        assert result == date(2026, 1, 15)
+
+    def test_parse_month_format(self, mock_config, mock_bq_client):
+        """'2026_01' with month granularity should parse to date(2026, 1, 1)."""
+        adapter = _create_adapter(mock_config, mock_bq_client)
+        result = adapter._parse_partition_date("2026_01", "month")
+        assert result == date(2026, 1, 1)
+
+    def test_parse_year_format(self, mock_config, mock_bq_client):
+        """'2026' with year granularity should parse to date(2026, 1, 1)."""
+        adapter = _create_adapter(mock_config, mock_bq_client)
+        result = adapter._parse_partition_date("2026", "year")
+        assert result == date(2026, 1, 1)
+
+    def test_parse_invalid_returns_none(self, mock_config, mock_bq_client):
+        """Invalid partition key should return None."""
+        adapter = _create_adapter(mock_config, mock_bq_client)
+        assert adapter._parse_partition_date("invalid", "day") is None
+        assert adapter._parse_partition_date("not_a_date", "month") is None
+        assert adapter._parse_partition_date("abc", "year") is None
+
+    def test_parse_mismatched_granularity_returns_none(self, mock_config, mock_bq_client):
+        """Day key with month granularity should return None (format mismatch)."""
+        adapter = _create_adapter(mock_config, mock_bq_client)
+        # "2026_01_15" is a day format -- parsing as "month" (%Y_%m) should fail
+        assert adapter._parse_partition_date("2026_01_15", "month") is None

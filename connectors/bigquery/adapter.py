@@ -9,7 +9,7 @@ using PyArrow (no CSV intermediate step).
 import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -336,10 +336,11 @@ class BigQueryDataSource(DataSource):
         sync_state: SyncState,
     ) -> Dict[str, Any]:
         """
-        Partition-based sync: read data by partition range and write partition files.
-        """
-        import pandas as pd
+        Per-partition streaming sync: process one partition (day) at a time.
 
+        Queries BQ for a single day, streams result to disk, then moves to next day.
+        Memory usage is constant (~20-50 MB per partition) regardless of total data volume.
+        """
         partition_col = table_config.partition_by
         if not partition_col and table_config.incremental_column:
             partition_col = table_config.incremental_column
@@ -351,95 +352,230 @@ class BigQueryDataSource(DataSource):
             )
             return self._full_refresh(table_config)
 
-        granularity = table_config.partition_granularity or "month"
+        granularity = table_config.partition_granularity or "day"
+        column_type = table_config.partition_column_type
         logger.info(
             f"Partitioned sync: {table_config.name} "
-            f"(by {partition_col}, {granularity})"
+            f"(by {partition_col}, {granularity}, type={column_type})"
         )
 
         partition_dir = self.config.get_parquet_path(table_config)
         date_columns = self.bq_client.get_date_columns(table_config.id)
         pyarrow_schema = self.bq_client.get_pyarrow_schema(table_config.id)
 
-        # Determine time range
+        # Determine date range
         last_sync = sync_state.get_last_sync(table_config.id)
+        today = date.today()
 
         if last_sync:
             last_sync_dt = datetime.fromisoformat(last_sync)
             window_days = table_config.incremental_window_days or 7
-            start_dt = last_sync_dt - timedelta(days=window_days)
-            logger.info(f"  -> Reading from {start_dt.isoformat()} (window: {window_days} days)")
+            start_date = (last_sync_dt - timedelta(days=window_days)).date()
+            logger.info(f"  -> Incremental sync from {start_date} (window: {window_days} days)")
         else:
             if table_config.max_history_days:
-                start_dt = datetime.now() - timedelta(days=table_config.max_history_days)
-                logger.info(f"  -> First sync, limited to last {table_config.max_history_days} days")
+                start_date = today - timedelta(days=table_config.max_history_days)
+                logger.info(f"  -> First sync, last {table_config.max_history_days} days from {start_date}")
             else:
-                start_dt = None
-                logger.info("  -> First sync, reading all data")
+                start_date = today - timedelta(days=365)
+                logger.info("  -> First sync, no max_history_days, defaulting to 365 days")
 
-        # Read data from BigQuery
-        if start_dt:
-            arrow_table = self.bq_client.read_table_partitioned(
-                table_id=table_config.id,
-                partition_column=partition_col,
-                start=start_dt.isoformat(),
-                columns=table_config.columns,
+        # Generate list of partition dates
+        partition_dates = self._generate_partition_dates(start_date, today, granularity)
+        logger.info(f"  -> Processing {len(partition_dates)} partitions")
+
+        total_rows = 0
+        partitions_updated = 0
+
+        for partition_date in partition_dates:
+            rows = self._sync_single_partition(
+                table_config=table_config,
+                partition_col=partition_col,
+                partition_date=partition_date,
+                partition_dir=partition_dir,
+                date_columns=date_columns,
+                pyarrow_schema=pyarrow_schema,
+                granularity=granularity,
+                column_type=column_type,
             )
-        else:
-            arrow_table = self.bq_client.read_table(
-                table_config.id,
-                columns=table_config.columns,
-                row_filter=table_config.row_filter,
-            )
+            if rows > 0:
+                partitions_updated += 1
+            total_rows += rows
 
-        if arrow_table.num_rows == 0:
-            logger.info("  -> No data to sync")
-            return self._get_partition_totals(partition_dir)
+        # Cleanup old partitions beyond retention window
+        deleted = self._cleanup_old_partitions(table_config, partition_dir, granularity)
+        if deleted > 0:
+            logger.info(f"  -> Cleaned up {deleted} old partition files")
 
-        logger.info(f"  -> Processing {arrow_table.num_rows} rows into partitions")
-
-        # Convert to pandas for partitioning
-        df = arrow_table.to_pandas()
-
-        # Ensure partition column is datetime
-        if not pd.api.types.is_datetime64_any_dtype(df[partition_col]):
-            df[partition_col] = pd.to_datetime(df[partition_col], format="ISO8601", utc=True)
-
-        # Create partition key
-        if granularity == "month":
-            df["_partition_key"] = df[partition_col].dt.strftime("%Y_%m")
-        elif granularity == "day":
-            df["_partition_key"] = df[partition_col].dt.strftime("%Y_%m_%d")
-        elif granularity == "year":
-            df["_partition_key"] = df[partition_col].dt.strftime("%Y")
-
-        primary_key_cols = table_config.get_primary_key_columns()
-        partitions_updated = set()
-
-        for partition_key, group_df in df.groupby("_partition_key"):
-            group_df = group_df.drop(columns=["_partition_key"])
-            partition_path = self.config.get_partition_path(table_config, partition_key)
-            partitions_updated.add(partition_key)
-
-            # Merge with existing partition if it exists
-            if partition_path.exists():
-                existing_df = pd.read_parquet(partition_path)
-                merged_df = pd.concat([existing_df, group_df], ignore_index=True)
-                merged_df = merged_df.drop_duplicates(subset=primary_key_cols, keep="last")
-            else:
-                merged_df = group_df
-
-            # Write partition
-            table = pa.Table.from_pandas(merged_df, preserve_index=False)
-            if date_columns:
-                table = convert_date_columns_to_date32(table, date_columns)
-            if pyarrow_schema:
-                table = apply_schema_to_table(table, pyarrow_schema)
-            pq.write_table(table, partition_path, compression="snappy")
-
-        logger.info(f"  -> Partitioned sync complete: {len(partitions_updated)} partitions updated")
+        logger.info(
+            f"  -> Partitioned sync complete: {partitions_updated} partitions updated, "
+            f"{total_rows} total rows processed"
+        )
 
         return self._get_partition_totals(partition_dir)
+
+    @staticmethod
+    def _generate_partition_dates(
+        start_date: date,
+        end_date: date,
+        granularity: str,
+    ) -> List[date]:
+        """Generate list of partition start dates between start and end."""
+        dates = []
+        current = start_date
+
+        if granularity == "day":
+            while current <= end_date:
+                dates.append(current)
+                current += timedelta(days=1)
+        elif granularity == "month":
+            # Align to first of month
+            current = current.replace(day=1)
+            while current <= end_date:
+                dates.append(current)
+                # Move to first of next month
+                if current.month == 12:
+                    current = current.replace(year=current.year + 1, month=1)
+                else:
+                    current = current.replace(month=current.month + 1)
+        elif granularity == "year":
+            current = current.replace(month=1, day=1)
+            while current <= end_date:
+                dates.append(current)
+                current = current.replace(year=current.year + 1)
+
+        return dates
+
+    def _sync_single_partition(
+        self,
+        table_config: TableConfig,
+        partition_col: str,
+        partition_date: date,
+        partition_dir: Path,
+        date_columns: List[str],
+        pyarrow_schema,
+        granularity: str,
+        column_type: str,
+    ) -> int:
+        """
+        Query BQ for one partition period, stream to disk, merge with existing file.
+
+        Returns row count for this partition after merge.
+        """
+        import pandas as pd
+
+        # Calculate partition range [start, end)
+        start = partition_date
+        if granularity == "day":
+            end = start + timedelta(days=1)
+            partition_key = start.strftime("%Y_%m_%d")
+        elif granularity == "month":
+            if start.month == 12:
+                end = start.replace(year=start.year + 1, month=1)
+            else:
+                end = start.replace(month=start.month + 1)
+            partition_key = start.strftime("%Y_%m")
+        elif granularity == "year":
+            end = start.replace(year=start.year + 1)
+            partition_key = start.strftime("%Y")
+        else:
+            raise ValueError(f"Unknown granularity: {granularity}")
+
+        partition_path = self.config.get_partition_path(table_config, partition_key)
+
+        # Stream data from BQ for this single partition
+        batches = []
+        for batch in self.bq_client.read_table_partitioned_streaming(
+            table_id=table_config.id,
+            partition_column=partition_col,
+            start=start.isoformat(),
+            end=end.isoformat(),
+            columns=table_config.columns,
+            column_type=column_type,
+        ):
+            batches.append(batch)
+
+        if not batches:
+            return 0
+
+        new_data = pa.Table.from_batches(batches)
+        if new_data.num_rows == 0:
+            return 0
+
+        # Apply schema conversions
+        if date_columns:
+            new_data = convert_date_columns_to_date32(new_data, date_columns)
+        if pyarrow_schema:
+            new_data = apply_schema_to_table(new_data, pyarrow_schema)
+
+        # Merge with existing partition file if present
+        primary_key_cols = table_config.get_primary_key_columns()
+
+        if partition_path.exists():
+            existing = pq.read_table(partition_path)
+            merged = self._merge_arrow_tables(existing, new_data, primary_key_cols)
+        else:
+            merged = new_data
+
+        # Write partition file
+        pq.write_table(merged, partition_path, compression="snappy")
+        row_count = merged.num_rows
+
+        logger.debug(
+            f"    Partition {partition_key}: {new_data.num_rows} new rows, "
+            f"{row_count} total after merge"
+        )
+
+        # Release memory
+        del batches, new_data, merged
+
+        return row_count
+
+    def _cleanup_old_partitions(
+        self,
+        table_config: TableConfig,
+        partition_dir: Path,
+        granularity: str,
+    ) -> int:
+        """
+        Delete partition files older than max_history_days.
+
+        Returns count of deleted files.
+        """
+        if not table_config.max_history_days:
+            return 0
+
+        if not partition_dir.exists():
+            return 0
+
+        cutoff_date = date.today() - timedelta(days=table_config.max_history_days)
+        deleted = 0
+
+        for part_path in partition_dir.glob("*.parquet"):
+            try:
+                partition_date = self._parse_partition_date(part_path.stem, granularity)
+                if partition_date and partition_date < cutoff_date:
+                    part_path.unlink()
+                    deleted += 1
+                    logger.debug(f"    Deleted old partition: {part_path.name}")
+            except (ValueError, IndexError):
+                logger.warning(f"    Skipping unrecognized partition file: {part_path.name}")
+
+        return deleted
+
+    @staticmethod
+    def _parse_partition_date(partition_key: str, granularity: str) -> Optional[date]:
+        """Parse a partition key back to a date."""
+        try:
+            if granularity == "day":
+                return datetime.strptime(partition_key, "%Y_%m_%d").date()
+            elif granularity == "month":
+                return datetime.strptime(partition_key, "%Y_%m").date()
+            elif granularity == "year":
+                return datetime.strptime(partition_key, "%Y").date()
+        except ValueError:
+            return None
+        return None
 
     def _merge_arrow_tables(
         self,

@@ -406,6 +406,21 @@ class DataSyncManager:
         else:
             table_configs = self.config.tables
 
+        # Filter out remote-only tables (no local sync needed)
+        remote_skipped = [
+            tc for tc in table_configs if tc.query_mode == "remote"
+        ]
+        table_configs = [
+            tc for tc in table_configs if tc.query_mode != "remote"
+        ]
+
+        if remote_skipped:
+            logger.info(
+                f"Skipping {len(remote_skipped)} remote-only tables "
+                f"(query via BigQuery): "
+                f"{', '.join(tc.name for tc in remote_skipped)}"
+            )
+
         logger.info(f"Synchronizing {len(table_configs)} tables...")
 
         results = {}
