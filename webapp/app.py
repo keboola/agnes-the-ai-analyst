@@ -396,7 +396,7 @@ def _load_catalog_data() -> list:
             # Enrich with catalog metadata (OpenMetadata)
             if _catalog_enricher:
                 try:
-                    # Create minimal config for enrichment
+                    # Create config for enrichment with all available fields
                     from src.config import TableConfig
                     table_config = TableConfig(
                         id=table_id,
@@ -404,6 +404,11 @@ def _load_catalog_data() -> list:
                         description=table.get("description", ""),
                         primary_key=table.get("primary_key", "id"),
                         sync_strategy=table.get("sync_strategy", "full_refresh"),
+                        incremental_window_days=table.get("incremental_window_days"),
+                        partition_by=table.get("partition_by"),
+                        partition_granularity=table.get("partition_granularity"),
+                        max_history_days=table.get("max_history_days"),
+                        partition_column_type=table.get("partition_column_type", "TIMESTAMP"),
                         catalog_fqn=table.get("catalog_fqn"),
                     )
                     catalog_data = _catalog_enricher.enrich_table(table_config)
@@ -715,6 +720,11 @@ def register_routes(app: Flask) -> None:
                                             description=table_def.get("description", ""),
                                             primary_key=table_def.get("primary_key", "id"),
                                             sync_strategy=table_def.get("sync_strategy", "full_refresh"),
+                                            incremental_window_days=table_def.get("incremental_window_days"),
+                                            partition_by=table_def.get("partition_by"),
+                                            partition_granularity=table_def.get("partition_granularity"),
+                                            max_history_days=table_def.get("max_history_days"),
+                                            partition_column_type=table_def.get("partition_column_type", "TIMESTAMP"),
                                             catalog_fqn=table_def.get("catalog_fqn"),
                                         )
                                         catalog_data = _catalog_enricher.enrich_table(table_config)
