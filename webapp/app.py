@@ -673,7 +673,7 @@ def register_routes(app: Flask) -> None:
     @app.route("/api/catalog/profile/<table_name>")
     @login_required
     def catalog_profile(table_name):
-        """Return profiler data for a single table."""
+        """Return profiler data for a single table with OpenMetadata catalog enrichment."""
         profiles_path = _resolve_metadata_path("profiles.json")
         try:
             if not profiles_path.exists():
@@ -685,6 +685,54 @@ def register_routes(app: Flask) -> None:
             table_profile = profiles.get("tables", {}).get(table_name)
             if not table_profile:
                 return jsonify({"error": f"No profile for table '{table_name}'"}), 404
+
+            # Enrich with OpenMetadata catalog data if available
+            if _catalog_enricher and _catalog_enricher.enabled:
+                try:
+                    # Find table config from data_description.md
+                    from src.config import TableConfig
+                    from config.loader import load_instance_config
+
+                    # Load data_description.md to find table config by name
+                    instance_config = load_instance_config()
+                    desc_path = Path(os.path.dirname(__file__)) / ".." / "docs" / "data_description.md"
+                    if desc_path.exists():
+                        with open(desc_path) as f:
+                            content = f.read()
+
+                        import re
+                        yaml_match = re.search(r'```yaml\s*\n(.*?)```', content, re.DOTALL)
+                        if yaml_match:
+                            import yaml
+                            yaml_data = yaml.safe_load(yaml_match.group(1))
+                            if yaml_data and "tables" in yaml_data:
+                                # Find table by name
+                                for table_def in yaml_data["tables"]:
+                                    if table_def.get("name") == table_name:
+                                        table_config = TableConfig(
+                                            id=table_def.get("id", ""),
+                                            name=table_def.get("name", ""),
+                                            description=table_def.get("description", ""),
+                                            primary_key=table_def.get("primary_key", "id"),
+                                            sync_strategy=table_def.get("sync_strategy", "full_refresh"),
+                                            catalog_fqn=table_def.get("catalog_fqn"),
+                                        )
+                                        catalog_data = _catalog_enricher.enrich_table(table_config)
+                                        if catalog_data:
+                                            # Add catalog enrichment to profile
+                                            table_profile["catalog"] = {
+                                                "description": catalog_data.description,
+                                                "tags": catalog_data.tags,
+                                                "tier": catalog_data.tier,
+                                                "owners": catalog_data.owners,
+                                                "url": catalog_data.catalog_url,
+                                            }
+                                            # Override description with catalog version
+                                            if catalog_data.description:
+                                                table_profile["description"] = catalog_data.description
+                                        break
+                except Exception as e:
+                    logger.warning(f"Error enriching profile for {table_name}: {e}")
 
             return jsonify(table_profile)
         except Exception as e:
