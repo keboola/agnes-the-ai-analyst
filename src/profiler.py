@@ -672,6 +672,12 @@ def profile_table(
     """
     con = duckdb.connect()
 
+    # Limit DuckDB memory to avoid OOM on servers with limited RAM.
+    # DuckDB defaults to using all available memory, which can trigger
+    # the OOM killer when profiling large tables alongside other services.
+    con.execute("SET memory_limit = '4GB'")
+    con.execute("SET threads = 2")
+
     # Determine read expression
     if parquet_path.is_dir():
         read_expr = f"read_parquet('{parquet_path}/*.parquet')"
