@@ -69,10 +69,9 @@ if [[ -z "$DRY_RUN" ]]; then
 
         NEW_CHECKSUM=$(md5sum "$SCRIPT_PATH" 2>/dev/null | cut -d' ' -f1 || echo "none")
         if [[ "$OLD_CHECKSUM" != "$NEW_CHECKSUM" && "$OLD_CHECKSUM" != "none" ]]; then
+            echo "   sync_data.sh updated, restarting with new version..."
             echo ""
-            echo "⚠️  sync_data.sh was updated! Run sync again to use the new version."
-            echo "   Command: bash server/scripts/sync_data.sh"
-            exit 1
+            exec bash "$SCRIPT_PATH" "$@"
         fi
         echo "   ✅ Scripts up to date"
     fi
