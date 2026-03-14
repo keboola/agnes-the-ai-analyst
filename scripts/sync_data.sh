@@ -491,23 +491,9 @@ else
     echo "  [dry-run] Would sync corporate memory rules to .claude/rules/"
 fi
 
-# Sync Python environment to server (only if dependencies changed)
-if [[ -z "$DRY_RUN" ]] && [[ -f "./.venv/bin/pip" ]]; then
-    echo ""
-    LOCAL_REQ="$(mktemp)"
-    ./.venv/bin/pip freeze > "$LOCAL_REQ"
-    LOCAL_HASH=$(md5sum "$LOCAL_REQ" 2>/dev/null | cut -d' ' -f1 || md5 -q "$LOCAL_REQ" 2>/dev/null || echo "none")
-    REMOTE_HASH=$(ssh $SSH_HOST "md5sum ~/.analyst_requirements.txt 2>/dev/null | cut -d' ' -f1 || echo 'missing'" 2>/dev/null || echo "missing")
-    if [[ "$LOCAL_HASH" != "$REMOTE_HASH" ]]; then
-        echo "Syncing Python environment to server..."
-        scp "$LOCAL_REQ" "$SSH_HOST:~/.analyst_requirements.txt"
-        ssh $SSH_HOST "test -d ~/.venv || python3 -m venv ~/.venv; ~/.venv/bin/pip install -r ~/.analyst_requirements.txt --quiet 2>&1 | tail -1"
-        echo "Server Python environment synced"
-    else
-        echo "Server Python environment up to date"
-    fi
-    rm -f "$LOCAL_REQ"
-fi
+# Note: Python environment on server is set up during bootstrap (not synced).
+# Server venv is created via: ssh {alias} 'python3 -m venv ~/.venv && pip install ...'
+# This avoids cross-platform pip freeze issues (Windows/macOS -> Linux).
 
 # Only update DuckDB and check freshness if NOT dry-run
 if [[ -z "$DRY_RUN" ]]; then

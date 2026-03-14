@@ -51,11 +51,16 @@ steps:
       - "rsync -avz --no-perms --no-group --progress {ssh_alias}:server/parquet/ ./server/parquet/"
     note: "Some folders may be empty if data sync hasn't run on the server yet. That's OK."
 
-  - name: "Set up Python venv"
+  - name: "Set up Python venv (local and server)"
+    description: |
+      Set up local venv, then create a matching venv on the server via SSH.
+      The server venv is needed for running scripts remotely (notifications, etc.).
+      Install the SAME packages on both sides (do NOT copy pip freeze across platforms).
     commands:
       - "python3 -m venv .venv"
       - "source .venv/bin/activate"
       - "pip install pandas pyarrow duckdb pyyaml python-dotenv"
+      - "ssh {ssh_alias} 'python3 -m venv ~/.venv && ~/.venv/bin/pip install --quiet pandas pyarrow duckdb pyyaml python-dotenv'"
 
   - name: "Initialize DuckDB"
     condition: "only if server/scripts/setup_views.sh exists"
