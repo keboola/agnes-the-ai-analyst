@@ -225,6 +225,92 @@ FALLBACK_DATA_STATS = {
 }
 
 
+def _generate_setup_instructions(username: str) -> str:
+    """Generate clipboard-ready setup instructions from bootstrap.yaml.
+
+    Reads the structured YAML, substitutes placeholders from instance config,
+    and produces plain text that users paste into Claude Code.
+    """
+    bootstrap_path = os.path.join(os.path.dirname(__file__), "..", "docs", "setup", "bootstrap.yaml")
+    with open(bootstrap_path, "r") as f:
+        bootstrap = yaml.safe_load(f)
+
+    webapp_url = f"https://{Config.SERVER_HOSTNAME}" if Config.SERVER_HOSTNAME else ""
+    placeholders = {
+        "{username}": username,
+        "{server_host}": Config.SERVER_HOST,
+        "{server_hostname}": Config.SERVER_HOSTNAME,
+        "{ssh_alias}": Config.SSH_ALIAS,
+        "{ssh_key}": Config.SSH_KEY,
+        "{project_dir}": Config.PROJECT_DIR,
+        "{webapp_url}": webapp_url,
+    }
+
+    def sub(text: str) -> str:
+        for key, val in placeholders.items():
+            text = text.replace(key, val)
+        return text
+
+    lines = []
+
+    # Header
+    if "header" in bootstrap:
+        lines.append(sub(bootstrap["header"]).strip())
+        lines.append("")
+
+    # Connection details
+    conn = bootstrap.get("connection", {})
+    if conn:
+        lines.append("Connection details:")
+        for key, val in conn.items():
+            label = key.replace("_", " ").replace("host", "IP").replace("url", "URL")
+            display_val = sub(val)
+            if key == "ssh_key":
+                display_val += " (already generated)"
+            lines.append(f"  {label}: {display_val}")
+        lines.append("")
+
+    # Steps
+    lines.append("Steps:")
+    lines.append("")
+    for i, step in enumerate(bootstrap.get("steps", []), 1):
+        name = sub(step.get("name", ""))
+        condition = step.get("condition", "")
+        if condition:
+            lines.append(f"{i}. {name} ({sub(condition)}):")
+        else:
+            lines.append(f"{i}. {name}:")
+
+        # Description (free text instructions for Claude)
+        desc = step.get("description", "")
+        if desc:
+            for line in sub(desc).strip().splitlines():
+                lines.append(f"   {line}")
+
+        # Commands (executable shell commands)
+        commands = step.get("commands", [])
+        for cmd in commands:
+            lines.append(f"   {sub(cmd)}")
+
+        # Note
+        note = step.get("note", "")
+        if note:
+            lines.append(f"   Note: {sub(note)}")
+
+        lines.append("")
+
+    # Existing project hint
+    existing = bootstrap.get("existing_project", {})
+    if existing:
+        msg = existing.get("message", "")
+        if msg:
+            lines.append("If this directory already has CLAUDE.md with 'AI Data Analyst':")
+            for line in sub(msg).strip().splitlines():
+                lines.append(f"  {line}")
+
+    return "\n".join(lines)
+
+
 def _load_data_stats() -> dict:
     """Load aggregate data stats from sync_state.json, with hardcoded fallback."""
     try:
@@ -812,25 +898,12 @@ def register_routes(app: Flask) -> None:
         # Check if username is available (for new registrations)
         username_available, username_error = is_username_available(username)
 
-        # Read bootstrap YAML for Claude Code setup instructions
-        bootstrap_yaml = ""
+        # Generate setup instructions from bootstrap.yaml
+        setup_instructions = ""
         try:
-            bootstrap_path = os.path.join(os.path.dirname(__file__), "..", "docs", "setup", "bootstrap.yaml")
-            with open(bootstrap_path, "r") as f:
-                bootstrap_yaml_template = f.read()
-
-            # Inject username and server info into template
-            bootstrap_yaml = bootstrap_yaml_template.replace("{username}", username)
-            bootstrap_yaml = bootstrap_yaml.replace("{server_host}", Config.SERVER_HOST)
-            bootstrap_yaml = bootstrap_yaml.replace("{server_hostname}", Config.SERVER_HOSTNAME)
-            bootstrap_yaml = bootstrap_yaml.replace("{ssh_alias}", Config.SSH_ALIAS)
-            bootstrap_yaml = bootstrap_yaml.replace("{ssh_key}", Config.SSH_KEY)
-            bootstrap_yaml = bootstrap_yaml.replace("{project_dir}", Config.PROJECT_DIR)
-            webapp_url = f"https://{Config.SERVER_HOSTNAME}" if Config.SERVER_HOSTNAME else ""
-            bootstrap_yaml = bootstrap_yaml.replace("{webapp_url}", webapp_url)
-
+            setup_instructions = _generate_setup_instructions(username)
         except Exception as e:
-            logger.warning(f"Could not read bootstrap.yaml: {e}")
+            logger.warning(f"Could not generate setup instructions: {e}")
 
         # Get Telegram link status
         telegram_status = get_telegram_status(username)
@@ -879,7 +952,7 @@ def register_routes(app: Flask) -> None:
             ssh_alias=Config.SSH_ALIAS,
             ssh_key=Config.SSH_KEY,
             project_dir=Config.PROJECT_DIR,
-            bootstrap_yaml=bootstrap_yaml,
+            setup_instructions=setup_instructions,
             telegram_status=telegram_status,
             desktop_status=desktop_status,
             data_stats=data_stats,

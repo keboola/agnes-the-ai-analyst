@@ -1,280 +1,80 @@
-version: "1.0"
-project_name: "ai_data_analyst"
-project_dir: "."
-
-# Placeholders filled by webapp per-user:
+# AI Data Analyst - Setup Instructions
+#
+# Single source of truth for local environment setup.
+# Webapp reads this, substitutes placeholders, and generates clipboard text.
+#
+# Placeholders (filled from instance.yaml by webapp):
 #   {server_host}  - server IP or hostname
-#   {ssh_alias}    - SSH config alias (default: "data-analyst", configurable to avoid conflicts)
-#   {ssh_key}      - SSH private key path (default: ~/.ssh/data_analyst_server)
+#   {ssh_alias}    - SSH config alias (instance.yaml: server.ssh_alias)
+#   {ssh_key}      - SSH private key path (instance.yaml: server.ssh_key)
 #   {username}     - analyst username on server
-#   {webapp_url}   - webapp URL for registration
+#   {webapp_url}   - webapp URL
+#   {project_dir}  - local project folder name (instance.yaml: server.project_dir)
 
-server:
-  host: "{server_host}"
-  hostname: "{ssh_alias}"
+header: |
+  Set up my AI Data Analyst local environment.
+
+connection:
+  server_host: "{server_host}"
   webapp_url: "{webapp_url}"
+  username: "{username}"
+  ssh_key: "{ssh_key}"
 
-setup:
-  steps:
-    - name: "detect_existing_project"
-      description: "Check if project already exists"
-      check: "test -f ./CLAUDE.md"
-      on_success: "verify_project_identity"
-      message: |
-        Existing CLAUDE.md detected in current directory.
-        Verifying this is an AI Data Analyst project...
-
-    - name: "verify_project_identity"
-      description: "Verify this is the correct project type"
-      check: "grep -q 'AI Data Analyst' ./CLAUDE.md"
-      on_success: "existing_project_confirmed"
-      on_failure: |
-        Wrong project type detected.
-        The CLAUDE.md file exists but doesn't match AI Data Analyst.
-
-        Options:
-        - Choose a different directory for setup
-        - Remove existing CLAUDE.md if this was a mistake
-      message: |
-        AI Data Analyst project confirmed.
-
-        This directory is already set up. You can:
-        - Sync latest data: bash server/scripts/sync_data.sh
-        - View project context: cat CLAUDE.md
-
-        To recreate CLAUDE.md: rm -f ./CLAUDE.md and re-run bootstrap
-
-    - name: "check_directory_empty"
-      description: "Warn if directory is not empty"
-      check: "[ $(ls -A . 2>/dev/null | wc -l) -eq 0 ]"
-      on_failure: |
-        Current directory is not empty.
-
-        This setup will create:
-        - .claude/ (project metadata)
-        - server/ (read-only data from server: parquet files, docs, scripts)
-        - user/ (your workspace: DuckDB database, artifacts)
-        - .venv/ (Python virtual environment)
-
-        Make sure you're in the correct directory before continuing.
-      warn_only: true
-      message: |
-        Starting setup in current directory...
-
-    - name: "generate_ssh_key"
-      description: "Generate SSH key for server authentication"
-      check: "test -f {ssh_key}.pub"
-      action: |
-        ssh-keygen -t ed25519 -f {ssh_key} -C "{username}@{ssh_alias}" -N ''
-      on_success: "show_public_key"
-      message: |
-        SSH key generated successfully.
-
-    - name: "show_public_key"
-      description: "Display SSH public key to user"
-      action: "cat {ssh_key}.pub"
-      message: |
-        Your SSH public key has been generated!
-
-        Next steps:
-        1. Copy the public key shown above
-        2. Go to: {webapp_url}
-        3. Sign in and paste the key into the form
-        4. Wait a few seconds for account creation
-        5. Come back here to continue
-      wait_for_user: true
-
-    - name: "add_ssh_config"
-      description: "Add SSH config entry"
-      requires: ["show_public_key"]
-      check: "ssh -o ConnectTimeout=5 -o BatchMode=yes {ssh_alias} echo ok 2>/dev/null"
-      action: |
-        mkdir -p ~/.ssh
-
-        # Check if alias already exists with a different host
-        if grep -q 'Host {ssh_alias}' ~/.ssh/config 2>/dev/null; then
-          EXISTING_HOST=$(awk '/Host {ssh_alias}/,/Host / {if (/HostName/) print $2}' ~/.ssh/config | head -1)
-          if [[ "$EXISTING_HOST" != "{server_host}" ]]; then
-            echo "WARNING: SSH alias '{ssh_alias}' already exists pointing to $EXISTING_HOST"
-            echo "Skipping SSH config - please resolve manually or use a different alias."
-            exit 1
-          fi
-        else
-          cat >> ~/.ssh/config << 'EOF'
-
+steps:
+  - name: "SSH config"
+    description: |
+      Check ~/.ssh/config - if a Host entry named "{ssh_alias}" already exists
+      with a DIFFERENT server, ask me what name to use instead.
+      Otherwise add:
         Host {ssh_alias}
-            HostName {server_host}
-            User {username}
-            IdentityFile {ssh_key}
-            StrictHostKeyChecking accept-new
-        EOF
-          chmod 600 ~/.ssh/config
-        fi
-      message: |
-        SSH configuration added for {ssh_alias} server.
+          HostName {server_host}
+          User {username}
+          IdentityFile {ssh_key}
+          StrictHostKeyChecking accept-new
+      Then test: ssh {ssh_alias} echo ok
 
-    - name: "test_ssh_connection"
-      description: "Test SSH connection to server"
-      requires: ["add_ssh_config"]
-      action: "ssh -o ConnectTimeout=5 -o BatchMode=yes {ssh_alias} echo 'ok' 2>/dev/null"
-      message: |
-        Testing connection to data server...
-        Connection successful!
-      on_failure: |
-        SSH connection failed!
+  - name: "Create project folders"
+    commands:
+      - "mkdir -p server/docs server/scripts server/parquet server/metadata server/examples"
+      - "mkdir -p user/duckdb user/notifications user/artifacts user/scripts user/parquet user/sessions"
+      - 'printf "ssh_alias={ssh_alias}\nserver_host={server_host}\nwebapp_url={webapp_url}\n" > .sync_connection'
 
-        Please verify:
-        1. You completed registration at {webapp_url}
-        2. Your account was created successfully
-        3. Your username matches: {username}
-      retry: true
-      max_retries: 3
+  - name: "Download from server"
+    description: |
+      Use rsync with --no-perms --no-group to avoid macOS permission errors.
+      Skip directories that don't exist on the server (rsync exit code 23 = missing source).
+    commands:
+      - "rsync -avz --no-perms --no-group {ssh_alias}:server/scripts/ ./server/scripts/"
+      - "rsync -avz --no-perms --no-group {ssh_alias}:server/docs/ ./server/docs/"
+      - "rsync -avz --no-perms --no-group {ssh_alias}:server/examples/ ./server/examples/"
+      - "rsync -avz --no-perms --no-group {ssh_alias}:server/metadata/ ./server/metadata/"
+      - "rsync -avz --no-perms --no-group --progress {ssh_alias}:server/parquet/ ./server/parquet/"
+    note: "Some folders may be empty if data sync hasn't run on the server yet. That's OK."
 
-    - name: "create_folders"
-      description: "Create local project structure and save connection details"
-      action: |
-        mkdir -p ./server/docs ./server/scripts ./server/examples ./server/parquet ./server/metadata
-        mkdir -p ./user/duckdb ./user/notifications ./user/artifacts ./user/scripts ./user/parquet ./user/sessions
+  - name: "Set up Python venv"
+    commands:
+      - "python3 -m venv .venv"
+      - "source .venv/bin/activate"
+      - "pip install pandas pyarrow duckdb pyyaml python-dotenv"
 
-        # Save connection details for sync_data.sh to use when generating CLAUDE.md
-        printf "ssh_alias={ssh_alias}\nserver_host={server_host}\nwebapp_url={webapp_url}\n" > ./.sync_connection
-      message: |
-        Project structure created (server/, user/).
+  - name: "Initialize DuckDB"
+    condition: "only if server/scripts/setup_views.sh exists"
+    commands:
+      - "bash server/scripts/setup_views.sh"
 
-    - name: "check_rsync"
-      description: "Verify rsync is available"
-      check: "command -v rsync >/dev/null 2>&1"
-      warn_only: true
-      on_failure: |
-        rsync is not installed. Install it for better sync performance:
+  - name: "Create CLAUDE.md"
+    condition: "if server/docs/setup/claude_md_template.txt exists"
+    description: |
+      Copy the template and replace these placeholders:
+        {username} -> {username}
+        {ssh_alias} -> {ssh_alias}
+        {server_host} -> {server_host}
+        {webapp_url} -> {webapp_url}
+      Also create CLAUDE.local.md for personal notes (never overwritten by sync).
+      Also copy server/docs/setup/claude_settings.json to .claude/settings.json.
 
-        macOS:   brew install rsync
-        Ubuntu:  sudo apt-get install -y rsync
-        RHEL:    sudo yum install -y rsync
-
-        Without rsync, scp will be used as fallback (slower).
-
-    - name: "download_server_data"
-      description: "Download all server data (scripts, docs, metadata, parquet)"
-      action: |
-        echo "Syncing scripts..."
-        rsync -avz --no-perms --no-group {ssh_alias}:server/scripts/ ./server/scripts/ 2>/dev/null || \
-          scp -r {ssh_alias}:server/scripts/* ./server/scripts/ 2>/dev/null || true
-
-        echo "Syncing documentation..."
-        rsync -avz --no-perms --no-group {ssh_alias}:server/docs/ ./server/docs/ 2>/dev/null || \
-          scp -r {ssh_alias}:server/docs/* ./server/docs/ 2>/dev/null || true
-
-        echo "Syncing examples..."
-        rsync -avz --no-perms --no-group {ssh_alias}:server/examples/ ./server/examples/ 2>/dev/null || true
-
-        echo "Syncing metadata..."
-        rsync -avz --no-perms --no-group {ssh_alias}:server/metadata/ ./server/metadata/ 2>/dev/null || \
-          scp -r {ssh_alias}:server/metadata/* ./server/metadata/ 2>/dev/null || true
-
-        echo "Syncing parquet data (this may take a few minutes)..."
-        rsync -avz --no-perms --no-group --progress {ssh_alias}:server/parquet/ ./server/parquet/ 2>/dev/null || \
-          scp -r {ssh_alias}:server/parquet/* ./server/parquet/ 2>/dev/null || true
-      requires: ["test_ssh_connection", "create_folders"]
-      message: |
-        Downloading data from server...
-        Data downloaded successfully!
-
-    - name: "setup_venv"
-      description: "Create Python virtual environment and install dependencies"
-      check: "test -f ./.venv/bin/python || test -f ./.venv/Scripts/python.exe"
-      action: |
-        if command -v python3 >/dev/null 2>&1; then
-          PYTHON_CMD=python3
-        else
-          PYTHON_CMD=python
-        fi
-
-        $PYTHON_CMD -m venv ./.venv
-
-        if [ -f ./.venv/bin/activate ]; then
-          source ./.venv/bin/activate
-        else
-          source ./.venv/Scripts/activate
-        fi
-
-        pip install --upgrade pip --quiet
-        pip install pandas pyarrow duckdb pyyaml python-dotenv --quiet
-      requires: ["create_folders"]
-      message: |
-        Setting up Python environment...
-        Python environment ready!
-
-    - name: "initialize_duckdb"
-      description: "Initialize DuckDB views on Parquet files"
-      action: |
-        if [[ -f server/scripts/setup_views.sh ]]; then
-          bash server/scripts/setup_views.sh
-        else
-          echo "setup_views.sh not found, skipping DuckDB initialization"
-        fi
-      requires: ["download_server_data", "setup_venv"]
-      message: |
-        Initializing DuckDB analytical database...
-        DuckDB initialized! All tables ready for queries.
-
-    - name: "setup_claude_project_context"
-      description: "Create Claude Code project context files"
-      action: |
-        # Generate CLAUDE.md from template
-        if [[ -f "./server/docs/setup/claude_md_template.txt" ]]; then
-          sed -e "s/{username}/{username}/g" \
-              ./server/docs/setup/claude_md_template.txt > ./CLAUDE.md
-          chmod 644 ./CLAUDE.md
-        fi
-
-        # Create CLAUDE.local.md for personal customizations
-        if [[ ! -f "./CLAUDE.local.md" ]]; then
-          cat > ./CLAUDE.local.md << 'LOCALEOF'
-        # CLAUDE.local.md
-
-        Your personal instructions for Claude Code in this project.
-        This file is NOT overwritten by data sync - it is yours to customize.
-
-        ## Your Custom Instructions
-
-        Add your preferences, shortcuts, or project-specific notes below:
-
-        LOCALEOF
-          chmod 644 ./CLAUDE.local.md
-        fi
-
-        # Copy project permissions
-        mkdir -p ./.claude
-        if [[ -f "./server/docs/setup/claude_settings.json" ]]; then
-          cp ./server/docs/setup/claude_settings.json ./.claude/settings.json
-        fi
-      requires: ["download_server_data"]
-      message: |
-        CLAUDE.md created (auto-updated on sync).
-        CLAUDE.local.md created (your personal customizations, never overwritten).
-
-    - name: "check_setup"
-      description: "Verify setup completed successfully"
-      requires: ["initialize_duckdb", "setup_claude_project_context"]
-      message: |
-        Setup complete! Your AI Data Analyst environment is ready.
-
-        What's been set up:
-        - Data tables synced as local Parquet files
-        - DuckDB analytical database with views configured
-        - Python environment with pandas, pyarrow, duckdb
-        - Helper scripts for data sync
-
-        You can now start asking questions about your data.
-        See server/docs/data_description.md for table schemas.
-
-        To sync latest data: bash server/scripts/sync_data.sh
-
-# Python dependencies
-dependencies:
-  - pandas>=2.0.0
-  - pyarrow>=12.0.0
-  - duckdb>=0.9.0
-  - pyyaml>=6.0
-  - python-dotenv>=1.0.0
+existing_project:
+  check: "If CLAUDE.md already exists and contains 'AI Data Analyst'"
+  message: |
+    This directory is already set up. Just sync latest data:
+      bash server/scripts/sync_data.sh
