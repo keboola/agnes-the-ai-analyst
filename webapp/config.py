@@ -89,6 +89,8 @@ class Config:
         _get(_instance, "server", "host", default=""))
     SERVER_HOSTNAME = os.environ.get("SERVER_HOSTNAME",
         _get(_instance, "server", "hostname", default=""))
+    SSH_ALIAS = _get(_instance, "server", "ssh_alias", default="data-analyst")
+    SSH_KEY = _get(_instance, "server", "ssh_key", default="~/.ssh/data_analyst_server")
 
     # Session config
     SESSION_TYPE = "filesystem"

@@ -820,6 +820,8 @@ def register_routes(app: Flask) -> None:
             bootstrap_yaml = bootstrap_yaml_template.replace("{username}", username)
             bootstrap_yaml = bootstrap_yaml.replace("{server_host}", Config.SERVER_HOST)
             bootstrap_yaml = bootstrap_yaml.replace("{server_hostname}", Config.SERVER_HOSTNAME)
+            bootstrap_yaml = bootstrap_yaml.replace("{ssh_alias}", Config.SSH_ALIAS)
+            bootstrap_yaml = bootstrap_yaml.replace("{ssh_key}", Config.SSH_KEY)
             webapp_url = f"https://{Config.SERVER_HOSTNAME}" if Config.SERVER_HOSTNAME else ""
             bootstrap_yaml = bootstrap_yaml.replace("{webapp_url}", webapp_url)
 
