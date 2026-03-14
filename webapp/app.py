@@ -872,6 +872,8 @@ def register_routes(app: Flask) -> None:
             username_error=username_error,
             server_host=Config.SERVER_HOST,
             server_hostname=Config.SERVER_HOSTNAME,
+            ssh_alias=Config.SSH_ALIAS,
+            ssh_key=Config.SSH_KEY,
             bootstrap_yaml=bootstrap_yaml,
             telegram_status=telegram_status,
             desktop_status=desktop_status,
