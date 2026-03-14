@@ -234,6 +234,9 @@ def _load_data_stats() -> dict:
                 state = json.load(f)
 
             tables_data = state.get("tables", {})
+            # Support flat format (table_id at top level, no "tables" wrapper)
+            if not tables_data and any(isinstance(v, dict) and "rows" in v for v in state.values()):
+                tables_data = {k: v for k, v in state.items() if isinstance(v, dict) and "rows" in v}
             if not tables_data:
                 return dict(FALLBACK_DATA_STATS)
 
