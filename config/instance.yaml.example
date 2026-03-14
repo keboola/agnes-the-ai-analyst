@@ -19,6 +19,10 @@ server:
   hostname: ""                    # DNS name (e.g., "data.acme.com")
   host: ""                        # IP address
   app_dir: "/opt/data-analyst"    # Installation directory
+  # --- Client setup (shown in "Get Started" on dashboard) ---
+  # ssh_alias: "data-analyst"     # SSH config Host alias for analysts (default: "data-analyst")
+  # ssh_key: "~/.ssh/data_analyst_server"  # SSH key path for analysts (default: "~/.ssh/data_analyst_server")
+  # project_dir: "data-analyst"   # Local project folder name (default: "data-analyst")
 
 # --- Admin users ---
 # Manage the server, own data files, get unlimited resource limits.
@@ -71,6 +75,8 @@ auth:
   #
   # username_strip_domain: false
   # username_prefix: ""
+  # disabled_providers:            # Hide auth methods from login page
+  #   - "email"                    # Disable email magic link (use when Google OAuth is configured)
 
 # --- Theme (optional) ---
 # Customize colors, fonts, and shape to match your brand.
