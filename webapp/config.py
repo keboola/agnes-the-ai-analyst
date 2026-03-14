@@ -91,6 +91,7 @@ class Config:
         _get(_instance, "server", "hostname", default=""))
     SSH_ALIAS = _get(_instance, "server", "ssh_alias", default="data-analyst")
     SSH_KEY = _get(_instance, "server", "ssh_key", default="~/.ssh/data_analyst_server")
+    PROJECT_DIR = _get(_instance, "server", "project_dir", default="data-analyst")
 
     # Session config
     SESSION_TYPE = "filesystem"

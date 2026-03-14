@@ -822,6 +822,7 @@ def register_routes(app: Flask) -> None:
             bootstrap_yaml = bootstrap_yaml.replace("{server_hostname}", Config.SERVER_HOSTNAME)
             bootstrap_yaml = bootstrap_yaml.replace("{ssh_alias}", Config.SSH_ALIAS)
             bootstrap_yaml = bootstrap_yaml.replace("{ssh_key}", Config.SSH_KEY)
+            bootstrap_yaml = bootstrap_yaml.replace("{project_dir}", Config.PROJECT_DIR)
             webapp_url = f"https://{Config.SERVER_HOSTNAME}" if Config.SERVER_HOSTNAME else ""
             bootstrap_yaml = bootstrap_yaml.replace("{webapp_url}", webapp_url)
 
@@ -874,6 +875,7 @@ def register_routes(app: Flask) -> None:
             server_hostname=Config.SERVER_HOSTNAME,
             ssh_alias=Config.SSH_ALIAS,
             ssh_key=Config.SSH_KEY,
+            project_dir=Config.PROJECT_DIR,
             bootstrap_yaml=bootstrap_yaml,
             telegram_status=telegram_status,
             desktop_status=desktop_status,

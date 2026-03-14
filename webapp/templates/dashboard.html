@@ -1878,7 +1878,7 @@
             <h3>Set up your local environment</h3>
             <p class="env-subtitle">Run Claude Code in your project folder and paste the setup instructions to configure SSH, sync data, and initialize DuckDB.</p>
             <div class="env-setup-row">
-                <span class="code-pill">cd data-analyst && claude</span>
+                <span class="code-pill">cd {{ project_dir }} && claude</span>
                 <button onclick="copyBootstrapInstructions(this)" class="btn-setup" id="bootstrapCopyBtn">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
@@ -2321,18 +2321,18 @@
                         <div class="terminal-lines">
                             <div class="terminal-line">
                                 <span class="prompt">$</span>
-                                <span class="cmd">mkdir -p data-analyst && cd data-analyst</span>
-                                <button onclick="copyTermLine(this, 'mkdir -p data-analyst && cd data-analyst')" class="btn-copy-term">copy</button>
+                                <span class="cmd">mkdir -p {{ project_dir }} && cd {{ project_dir }}</span>
+                                <button onclick="copyTermLine(this, 'mkdir -p {{ project_dir }} && cd {{ project_dir }}')" class="btn-copy-term">copy</button>
                             </div>
                             <div class="terminal-line">
                                 <span class="prompt">$</span>
-                                <span class="cmd">ssh-keygen -t ed25519 -f ~/.ssh/data_analyst_server -N ''</span>
-                                <button onclick="copyTermLine(this, &quot;ssh-keygen -t ed25519 -f ~/.ssh/data_analyst_server -N ''&quot;)" class="btn-copy-term">copy</button>
+                                <span class="cmd">ssh-keygen -t ed25519 -f {{ ssh_key }} -N ''</span>
+                                <button onclick="copyTermLine(this, &quot;ssh-keygen -t ed25519 -f {{ ssh_key }} -N ''&quot;)" class="btn-copy-term">copy</button>
                             </div>
                             <div class="terminal-line">
                                 <span class="prompt">$</span>
-                                <span class="cmd">cat ~/.ssh/data_analyst_server.pub</span>
-                                <button onclick="copyTermLine(this, 'cat ~/.ssh/data_analyst_server.pub')" class="btn-copy-term">copy</button>
+                                <span class="cmd">cat {{ ssh_key }}.pub</span>
+                                <button onclick="copyTermLine(this, 'cat {{ ssh_key }}.pub')" class="btn-copy-term">copy</button>
                             </div>
                             <div class="terminal-line">
                                 <span class="comment"># Copy the output above and paste it below</span>
