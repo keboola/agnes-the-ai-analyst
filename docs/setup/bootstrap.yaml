@@ -2,9 +2,16 @@ version: "1.0"
 project_name: "ai_data_analyst"
 project_dir: "."
 
+# Placeholders filled by webapp per-user:
+#   {server_host}  - server IP or hostname
+#   {ssh_alias}    - SSH config alias (default: "data-analyst", configurable to avoid conflicts)
+#   {ssh_key}      - SSH private key path (default: ~/.ssh/data_analyst_server)
+#   {username}     - analyst username on server
+#   {webapp_url}   - webapp URL for registration
+
 server:
   host: "{server_host}"
-  hostname: "data-analyst"
+  hostname: "{ssh_alias}"
   webapp_url: "{webapp_url}"
 
 setup:
@@ -14,8 +21,7 @@ setup:
       check: "test -f ./CLAUDE.md"
       on_success: "verify_project_identity"
       message: |
-        📁 Existing CLAUDE.md detected in current directory
-
+        Existing CLAUDE.md detected in current directory.
         Verifying this is an AI Data Analyst project...
 
     - name: "verify_project_identity"
@@ -23,15 +29,14 @@ setup:
       check: "grep -q 'AI Data Analyst' ./CLAUDE.md"
       on_success: "existing_project_confirmed"
       on_failure: |
-        ❌ Wrong project type detected
-
+        Wrong project type detected.
         The CLAUDE.md file exists but doesn't match AI Data Analyst.
 
         Options:
         - Choose a different directory for setup
         - Remove existing CLAUDE.md if this was a mistake
       message: |
-        ✅ AI Data Analyst project confirmed
+        AI Data Analyst project confirmed.
 
         This directory is already set up. You can:
         - Sync latest data: bash server/scripts/sync_data.sh
@@ -43,87 +48,85 @@ setup:
       description: "Warn if directory is not empty"
       check: "[ $(ls -A . 2>/dev/null | wc -l) -eq 0 ]"
       on_failure: |
-        ⚠️  Current directory is not empty
+        Current directory is not empty.
 
-        Found existing files here. This setup will create the following:
+        This setup will create:
         - .claude/ (project metadata)
-        - server/ (read-only data from server: parquet files ~690 MB, docs, scripts)
-        - user/ (your workspace: DuckDB database, notifications, artifacts)
+        - server/ (read-only data from server: parquet files, docs, scripts)
+        - user/ (your workspace: DuckDB database, artifacts)
         - .venv/ (Python virtual environment)
 
         Make sure you're in the correct directory before continuing.
-        If this is the right place, the setup will proceed without affecting existing files.
       warn_only: true
       message: |
-        📂 Starting setup in current directory...
+        Starting setup in current directory...
 
     - name: "generate_ssh_key"
       description: "Generate SSH key for server authentication"
-      check: "test -f ~/.ssh/data_analyst_server.pub"
+      check: "test -f {ssh_key}.pub"
       action: |
-        ssh-keygen -t ed25519 -f ~/.ssh/data_analyst_server -C "{username}@data-analyst" -N ''
+        ssh-keygen -t ed25519 -f {ssh_key} -C "{username}@{ssh_alias}" -N ''
       on_success: "show_public_key"
       message: |
-        🔑 SSH key generated successfully
+        SSH key generated successfully.
 
     - name: "show_public_key"
       description: "Display SSH public key to user"
-      action: "cat ~/.ssh/data_analyst_server.pub"
+      action: "cat {ssh_key}.pub"
       message: |
-        📋 Your SSH public key has been generated!
+        Your SSH public key has been generated!
 
         Next steps:
         1. Copy the public key shown above
         2. Go to: {webapp_url}
-        3. Sign in:
-           - Internal users: Click "Sign in with Google"
-           - External users: Click "Sign in with Email"
-        4. Paste the key into the form and click "Create Account"
-        5. Wait a few seconds for account creation
-        6. Come back here to continue
-
-        Note: Your username will be derived from your email:
-        - john.doe@example.com -> john.doe
-        - partner@company.com -> partner_company_com
+        3. Sign in and paste the key into the form
+        4. Wait a few seconds for account creation
+        5. Come back here to continue
       wait_for_user: true
 
     - name: "add_ssh_config"
       description: "Add SSH config entry"
       requires: ["show_public_key"]
-      check: "grep -q 'Host data-analyst' ~/.ssh/config 2>/dev/null"
+      check: "ssh -o ConnectTimeout=5 -o BatchMode=yes {ssh_alias} echo ok 2>/dev/null"
       action: |
         mkdir -p ~/.ssh
-        cat >> ~/.ssh/config << 'EOF'
 
-        Host data-analyst
+        # Check if alias already exists with a different host
+        if grep -q 'Host {ssh_alias}' ~/.ssh/config 2>/dev/null; then
+          EXISTING_HOST=$(awk '/Host {ssh_alias}/,/Host / {if (/HostName/) print $2}' ~/.ssh/config | head -1)
+          if [[ "$EXISTING_HOST" != "{server_host}" ]]; then
+            echo "WARNING: SSH alias '{ssh_alias}' already exists pointing to $EXISTING_HOST"
+            echo "Skipping SSH config - please resolve manually or use a different alias."
+            exit 1
+          fi
+        else
+          cat >> ~/.ssh/config << 'EOF'
+
+        Host {ssh_alias}
             HostName {server_host}
             User {username}
-            IdentityFile ~/.ssh/data_analyst_server
+            IdentityFile {ssh_key}
             StrictHostKeyChecking accept-new
         EOF
-        chmod 600 ~/.ssh/config
+          chmod 600 ~/.ssh/config
+        fi
       message: |
-        ⚙️  SSH configuration added for data-analyst server
+        SSH configuration added for {ssh_alias} server.
 
     - name: "test_ssh_connection"
       description: "Test SSH connection to server"
       requires: ["add_ssh_config"]
-      action: "ssh -o ConnectTimeout=5 -o BatchMode=yes data-analyst echo 'ok' 2>/dev/null"
+      action: "ssh -o ConnectTimeout=5 -o BatchMode=yes {ssh_alias} echo 'ok' 2>/dev/null"
       message: |
-        🔌 Testing connection to data server... (this may take a few seconds)
-        ✅ Connection successful! You're authenticated and ready to sync data.
+        Testing connection to data server...
+        Connection successful!
       on_failure: |
-        ❌ SSH connection failed!
+        SSH connection failed!
 
         Please verify:
         1. You completed registration at {webapp_url}
-        2. Your account shows as created on the dashboard
-        3. You copied the correct username
-
-        Common issues:
-        - Account creation can take a few seconds
-        - Make sure you pasted the complete SSH public key
-        - Check that username matches exactly (case-sensitive)
+        2. Your account was created successfully
+        3. Your username matches: {username}
       retry: true
       max_retries: 3
 
@@ -132,159 +135,60 @@ setup:
       action: |
         mkdir -p ./server/docs ./server/scripts ./server/examples ./server/parquet ./server/metadata
         mkdir -p ./user/duckdb ./user/notifications ./user/artifacts ./user/scripts ./user/parquet ./user/sessions
-        mkdir -p ./.venv
       message: |
-        📁 Project structure created (server/, user/, .venv/)
+        Project structure created (server/, user/).
 
     - name: "check_rsync"
-      description: "Verify rsync is available (preferred) or prepare scp fallback"
+      description: "Verify rsync is available"
       check: "command -v rsync >/dev/null 2>&1"
       warn_only: true
       on_failure: |
-        ⚠️  rsync is not installed on your system.
+        rsync is not installed. Install it for better sync performance:
 
-        RECOMMENDED: Install rsync for better performance and reliability.
+        macOS:   brew install rsync
+        Ubuntu:  sudo apt-get install -y rsync
+        RHEL:    sudo yum install -y rsync
 
-        Installation instructions:
+        Without rsync, scp will be used as fallback (slower).
 
-        macOS (Homebrew):
-          brew install rsync
-
-        macOS (without Homebrew):
-          Install Homebrew first: /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-          Then: brew install rsync
-
-        Linux (Debian/Ubuntu):
-          sudo apt-get update && sudo apt-get install -y rsync
-
-        Linux (RHEL/CentOS):
-          sudo yum install -y rsync
-
-        Windows:
-          Option 1 (Recommended): Use WSL (Windows Subsystem for Linux)
-            1. Open PowerShell as Administrator
-            2. Run: wsl --install
-            3. Restart your computer
-            4. After restart, run this setup again in WSL terminal
-
-          Option 2: Git for Windows
-            1. Install Git for Windows from: https://git-scm.com/download/win
-            2. Use Git Bash terminal
-
-        ---
-        SCP FALLBACK (if rsync installation is not possible):
-
-        If you cannot install rsync, scp can be used as alternative.
-        IMPORTANT: scp with wildcard (*) does NOT copy dotfiles (files starting with .)
-
-        When using scp, you MUST explicitly copy dotfiles separately:
-
-        Example for metadata directory:
-          scp -r data-analyst:server/metadata/* ./server/metadata/
-          scp data-analyst:server/metadata/.* ./server/metadata/
-
-        Or copy the entire directory (includes dotfiles):
-          scp -r data-analyst:server/metadata ./server/
-
-    - name: "download_sync_settings"
-      description: "Download user's dataset sync preferences from server"
+    - name: "download_server_data"
+      description: "Download all server data (scripts, docs, metadata, parquet)"
       action: |
-        SYNC_CONFIG="/tmp/.sync_settings_$(id -u).yaml"
-        if scp -q data-analyst:~/.sync_settings.yaml "$SYNC_CONFIG" 2>/dev/null; then
-          echo "Settings loaded from server"
-        else
-          # No custom settings yet - create defaults (all optional datasets disabled)
-          cat > "$SYNC_CONFIG" << 'DEFAULTS'
-        datasets:
-          jira: false
-          jira_attachments: false
-          kbc_telemetry_expert: false
-        DEFAULTS
-          echo "No custom settings found, using defaults"
-        fi
-      requires: ["test_ssh_connection"]
+        echo "Syncing scripts..."
+        rsync -avz --no-perms --no-group {ssh_alias}:server/scripts/ ./server/scripts/ 2>/dev/null || \
+          scp -r {ssh_alias}:server/scripts/* ./server/scripts/ 2>/dev/null || true
+
+        echo "Syncing documentation..."
+        rsync -avz --no-perms --no-group {ssh_alias}:server/docs/ ./server/docs/ 2>/dev/null || \
+          scp -r {ssh_alias}:server/docs/* ./server/docs/ 2>/dev/null || true
+
+        echo "Syncing examples..."
+        rsync -avz --no-perms --no-group {ssh_alias}:server/examples/ ./server/examples/ 2>/dev/null || true
+
+        echo "Syncing metadata..."
+        rsync -avz --no-perms --no-group {ssh_alias}:server/metadata/ ./server/metadata/ 2>/dev/null || \
+          scp -r {ssh_alias}:server/metadata/* ./server/metadata/ 2>/dev/null || true
+
+        echo "Syncing parquet data (this may take a few minutes)..."
+        rsync -avz --no-perms --no-group --progress {ssh_alias}:server/parquet/ ./server/parquet/ 2>/dev/null || \
+          scp -r {ssh_alias}:server/parquet/* ./server/parquet/ 2>/dev/null || true
+      requires: ["test_ssh_connection", "create_folders"]
       message: |
-        📥 Downloading dataset preferences from portal...
-        ✅ Sync settings loaded (manage at {webapp_url})
-
-    - name: "download_scripts"
-      description: "Download setup scripts from server"
-      action: |
-        rsync -avz data-analyst:server/scripts/ ./server/scripts/
-      requires: ["test_ssh_connection", "create_folders", "check_rsync"]
-      message: |
-        📥 Downloading helper scripts from server...
-        ✅ Scripts downloaded successfully
-
-    - name: "download_docs"
-      description: "Download documentation from server"
-      action: |
-        SYNC_CONFIG="/tmp/.sync_settings_$(id -u).yaml"
-
-        # Build exclude list for disabled datasets (generic based on settings)
-        DOC_EXCLUDES=""
-        if [[ -f "$SYNC_CONFIG" ]]; then
-          for name in $(grep -E '^\s+\w+:\s*false' "$SYNC_CONFIG" | sed 's/:.*//' | tr -d ' '); do
-            DOC_EXCLUDES="$DOC_EXCLUDES --exclude=datasets/${name}* --exclude=${name}_*"
-          done
-        fi
-
-        rsync -avz $DOC_EXCLUDES data-analyst:server/docs/ ./server/docs/
-        rsync -avz data-analyst:server/examples/ ./server/examples/
-        rsync -avz data-analyst:server/metadata/ ./server/metadata/
-      requires: ["test_ssh_connection", "create_folders", "check_rsync", "download_sync_settings"]
-      message: |
-        📥 Downloading documentation, examples, and metadata from server...
-        ✅ Documentation downloaded successfully
-
-    - name: "download_data"
-      description: "Download data from server"
-      action: |
-        SYNC_CONFIG="/tmp/.sync_settings_$(id -u).yaml"
-
-        # Exclude ALL optional datasets from core sync (generic based on settings)
-        PARQUET_EXCLUDES=""
-        ENABLED_DATASETS=""
-        if [[ -f "$SYNC_CONFIG" ]]; then
-          for name in $(grep -E '^\s+\w+:\s*(true|false)' "$SYNC_CONFIG" | sed 's/:.*//' | tr -d ' '); do
-            PARQUET_EXCLUDES="$PARQUET_EXCLUDES --exclude=${name}/"
-          done
-          ENABLED_DATASETS=$(grep -E '^\s+\w+:\s*true' "$SYNC_CONFIG" | sed 's/:.*//' | tr -d ' ')
-        fi
-
-        # Sync core data (excludes all optional datasets)
-        rsync -avz --progress $PARQUET_EXCLUDES data-analyst:server/parquet/ ./server/parquet/
-
-        # Sync each enabled optional dataset individually
-        for name in $ENABLED_DATASETS; do
-          echo ""
-          echo "Syncing optional dataset: $name"
-          rsync -avz --progress data-analyst:server/parquet/${name}/ ./server/parquet/${name}/ 2>/dev/null || true
-        done
-      requires: ["test_ssh_connection", "create_folders", "check_rsync", "download_sync_settings"]
-      message: |
-        📥 Downloading data files from server...
-
-        This is the largest download and may take 5-10 minutes depending on your connection and current data volume.
-        Only datasets enabled in your portal settings will be downloaded.
-
-        ✅ Data downloaded successfully! All enabled tables are now available locally.
+        Downloading data from server...
+        Data downloaded successfully!
 
     - name: "setup_venv"
       description: "Create Python virtual environment and install dependencies"
       check: "test -f ./.venv/bin/python || test -f ./.venv/Scripts/python.exe"
       action: |
-        # Use python3 if available, otherwise python (Windows compatibility)
         if command -v python3 >/dev/null 2>&1; then
           PYTHON_CMD=python3
         else
           PYTHON_CMD=python
         fi
 
-        # Create venv
         $PYTHON_CMD -m venv ./.venv
 
-        # Activate and install dependencies
         if [ -f ./.venv/bin/activate ]; then
           source ./.venv/bin/activate
         else
@@ -295,66 +199,33 @@ setup:
         pip install pandas pyarrow duckdb pyyaml python-dotenv --quiet
       requires: ["create_folders"]
       message: |
-        🐍 Setting up Python environment...
-
-        Creating virtual environment and installing dependencies:
-        - pandas (data manipulation)
-        - pyarrow (Parquet file support)
-        - duckdb (analytical database)
-        - pyyaml & python-dotenv (configuration)
-
-        This may take 1-2 minutes to download and install packages.
-
-        ✅ Python environment ready! All dependencies installed.
-
-    - name: "setup_server_venv"
-      description: "Create Python virtual environment on server for notifications"
-      action: |
-        # Freeze local requirements
-        if [ -f ./.venv/bin/activate ]; then
-          source ./.venv/bin/activate
-        else
-          source ./.venv/Scripts/activate
-        fi
-        LOCAL_REQ=$(mktemp)
-        pip freeze > "$LOCAL_REQ"
-
-        # Create venv on server and install same packages
-        ssh data-analyst "python3 -m venv ~/.venv"
-        scp "$LOCAL_REQ" data-analyst:~/.analyst_requirements.txt
-        ssh data-analyst "~/.venv/bin/pip install --upgrade pip --quiet && ~/.venv/bin/pip install -r ~/.analyst_requirements.txt --quiet && rm -f ~/.analyst_requirements.txt"
-        rm -f "$LOCAL_REQ"
-      requires: ["setup_venv", "test_ssh_connection"]
-      message: |
-        Setting up Python environment on server (for notifications)...
-        Server Python environment ready!
+        Setting up Python environment...
+        Python environment ready!
 
     - name: "initialize_duckdb"
       description: "Initialize DuckDB views on Parquet files"
       action: |
-        bash server/scripts/setup_views.sh
-      requires: ["download_scripts", "download_data", "setup_venv"]
+        if [[ -f server/scripts/setup_views.sh ]]; then
+          bash server/scripts/setup_views.sh
+        else
+          echo "setup_views.sh not found, skipping DuckDB initialization"
+        fi
+      requires: ["download_server_data", "setup_venv"]
       message: |
-        🦆 Initializing DuckDB analytical database...
-
-        Creating views for all tables spanning:
-        - Company and project data
-        - Employee information
-        - Sales and financial metrics
-        - Product telemetry and usage data
-
-        This may take 30-60 seconds to create all views.
-
-        ✅ DuckDB database initialized! All tables ready for queries.
+        Initializing DuckDB analytical database...
+        DuckDB initialized! All tables ready for queries.
 
     - name: "setup_claude_project_context"
       description: "Create Claude Code project context files"
       action: |
-        # Generate CLAUDE.md from template with variable substitution
-        sed -e "s/{username}/$USER/g" \
-            ./server/docs/setup/claude_md_template.txt > ./CLAUDE.md
-        chmod 644 ./CLAUDE.md
-        # Create CLAUDE.local.md for user's personal customizations (not synced)
+        # Generate CLAUDE.md from template
+        if [[ -f "./server/docs/setup/claude_md_template.txt" ]]; then
+          sed -e "s/{username}/{username}/g" \
+              ./server/docs/setup/claude_md_template.txt > ./CLAUDE.md
+          chmod 644 ./CLAUDE.md
+        fi
+
+        # Create CLAUDE.local.md for personal customizations
         if [[ ! -f "./CLAUDE.local.md" ]]; then
           cat > ./CLAUDE.local.md << 'LOCALEOF'
         # CLAUDE.local.md
@@ -369,49 +240,35 @@ setup:
         LOCALEOF
           chmod 644 ./CLAUDE.local.md
         fi
-        # Create .claude directory and copy settings.json (project permissions)
+
+        # Copy project permissions
         mkdir -p ./.claude
         if [[ -f "./server/docs/setup/claude_settings.json" ]]; then
           cp ./server/docs/setup/claude_settings.json ./.claude/settings.json
         fi
-      requires: ["download_docs"]
+      requires: ["download_server_data"]
       message: |
-        📝 Creating project context for Claude Code...
-        ✅ CLAUDE.md created (auto-updated on sync)
-        ✅ CLAUDE.local.md created (your personal customizations, never overwritten)
-        ✅ .claude/settings.json synced (project permissions)
+        CLAUDE.md created (auto-updated on sync).
+        CLAUDE.local.md created (your personal customizations, never overwritten).
 
     - name: "check_setup"
       description: "Verify setup completed successfully"
-      action: |
-        # Use python3 if available, otherwise python (Windows compatibility)
-        if command -v python3 >/dev/null 2>&1; then
-          PYTHON_CMD=python3
-        else
-          PYTHON_CMD=python
-        fi
-
-        echo "Setup verification complete"
-      requires: ["initialize_duckdb"]
+      requires: ["initialize_duckdb", "setup_claude_project_context"]
       message: |
-        🎉 Setup complete! Your AI Data Analyst environment is ready.
+        Setup complete! Your AI Data Analyst environment is ready.
 
-        ✅ What's been set up:
-        - Loads of interesting data (companies, projects, employees, sales, telemetry)
-        - DuckDB analytical database with all views configured
+        What's been set up:
+        - Data tables synced as local Parquet files
+        - DuckDB analytical database with views configured
         - Python environment with pandas, pyarrow, duckdb
-        - Helper scripts for data sync and freshness checks
-        - Complete documentation and examples
+        - Helper scripts for data sync
 
-        📊 You can now:
-        - Start asking questions about your data
-        - Explore server/docs/data_description.md for table schemas
-        - See docs/GETTING_STARTED.md for query examples
+        You can now start asking questions about your data.
+        See server/docs/data_description.md for table schemas.
 
-        🔄 Maintenance commands:
-        - Sync latest data: bash server/scripts/sync_data.sh
+        To sync latest data: bash server/scripts/sync_data.sh
 
-# Python dependencies (installed in setup_venv step)
+# Python dependencies
 dependencies:
   - pandas>=2.0.0
   - pyarrow>=12.0.0
