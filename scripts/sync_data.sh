@@ -18,6 +18,15 @@ for arg in "$@"; do
     esac
 done
 
+# --- SSH alias (read from .sync_connection, default: data-analyst) ---
+SSH_HOST="data-analyst"
+if [[ -f "./.sync_connection" ]]; then
+    _alias=$(grep '^ssh_alias=' ./.sync_connection 2>/dev/null | cut -d= -f2)
+    if [[ -n "$_alias" ]]; then
+        SSH_HOST="$_alias"
+    fi
+fi
+
 # --- Rsync reliability settings (Issue #197) ---
 RSYNC_SSH_OPTS='ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o ConnectTimeout=30'
 RSYNC_TIMEOUT=300
@@ -55,8 +64,8 @@ if [[ -z "$DRY_RUN" ]]; then
         OLD_CHECKSUM=$(md5sum "$SCRIPT_PATH" 2>/dev/null | cut -d' ' -f1 || echo "none")
 
         echo "🔄 Checking for script updates..."
-        rsync -e "$RSYNC_SSH_OPTS" --timeout=30 -avz --quiet data-analyst:server/scripts/ ./server/scripts/ 2>/dev/null || \
-            scp -rq data-analyst:server/scripts/* ./server/scripts/ 2>/dev/null || true
+        rsync -e "$RSYNC_SSH_OPTS" --timeout=30 -avz --quiet $SSH_HOST:server/scripts/ ./server/scripts/ 2>/dev/null || \
+            scp -rq $SSH_HOST:server/scripts/* ./server/scripts/ 2>/dev/null || true
 
         NEW_CHECKSUM=$(md5sum "$SCRIPT_PATH" 2>/dev/null | cut -d' ' -f1 || echo "none")
         if [[ "$OLD_CHECKSUM" != "$NEW_CHECKSUM" && "$OLD_CHECKSUM" != "none" ]]; then
@@ -85,20 +94,20 @@ sync_from_server() {
     local with_dotfiles="$3"
 
     if [[ "$USE_RSYNC" == true ]]; then
-        rsync_reliable -avz --delete $DRY_RUN "data-analyst:${remote_path}/" "${local_path}/"
+        rsync_reliable -avz --delete $DRY_RUN "$SSH_HOST:${remote_path}/" "${local_path}/"
     else
         if [[ -n "$DRY_RUN" ]]; then
-            echo "  [dry-run] Would copy: data-analyst:${remote_path}/* -> ${local_path}/"
+            echo "  [dry-run] Would copy: $SSH_HOST:${remote_path}/* -> ${local_path}/"
             if [[ "$with_dotfiles" == "--with-dotfiles" ]]; then
-                echo "  [dry-run] Would copy dotfiles: data-analyst:${remote_path}/.* -> ${local_path}/"
+                echo "  [dry-run] Would copy dotfiles: $SSH_HOST:${remote_path}/.* -> ${local_path}/"
             fi
         else
             mkdir -p "${local_path}"
             # Copy regular files
-            scp -r "data-analyst:${remote_path}/"* "${local_path}/" 2>/dev/null || true
+            scp -r "$SSH_HOST:${remote_path}/"* "${local_path}/" 2>/dev/null || true
             # IMPORTANT: scp with * does NOT copy dotfiles, must copy explicitly
             if [[ "$with_dotfiles" == "--with-dotfiles" ]]; then
-                scp "data-analyst:${remote_path}/".* "${local_path}/" 2>/dev/null || true
+                scp "$SSH_HOST:${remote_path}/".* "${local_path}/" 2>/dev/null || true
             fi
         fi
     fi
@@ -110,13 +119,13 @@ sync_to_server() {
     local remote_path="$2"
 
     if [[ "$USE_RSYNC" == true ]]; then
-        rsync_reliable -avz --delete $DRY_RUN "${local_path}/" "data-analyst:${remote_path}/"
+        rsync_reliable -avz --delete $DRY_RUN "${local_path}/" "$SSH_HOST:${remote_path}/"
     else
         if [[ -n "$DRY_RUN" ]]; then
-            echo "  [dry-run] Would upload: ${local_path}/* -> data-analyst:${remote_path}/"
+            echo "  [dry-run] Would upload: ${local_path}/* -> $SSH_HOST:${remote_path}/"
         else
-            scp -r "${local_path}/"* "data-analyst:${remote_path}/" 2>/dev/null || true
-            scp "${local_path}/".* "data-analyst:${remote_path}/" 2>/dev/null || true
+            scp -r "${local_path}/"* "$SSH_HOST:${remote_path}/" 2>/dev/null || true
+            scp "${local_path}/".* "$SSH_HOST:${remote_path}/" 2>/dev/null || true
         fi
     fi
 }
@@ -132,9 +141,9 @@ if [[ "$PUSH_ONLY" == true ]]; then
     # Backup CLAUDE.local.md to server home (disaster recovery)
     if [[ -f "./CLAUDE.local.md" ]]; then
         if [[ -n "$DRY_RUN" ]]; then
-            echo "  [dry-run] Would backup: ./CLAUDE.local.md -> data-analyst:~/CLAUDE.local.md"
+            echo "  [dry-run] Would backup: ./CLAUDE.local.md -> $SSH_HOST:~/CLAUDE.local.md"
         else
-            scp -q ./CLAUDE.local.md "data-analyst:~/CLAUDE.local.md" && \
+            scp -q ./CLAUDE.local.md "$SSH_HOST:~/CLAUDE.local.md" && \
                 echo "📝 CLAUDE.local.md backed up to server"
         fi
     fi
@@ -198,7 +207,7 @@ SYNC_CONFIG_LOCAL="/tmp/.sync_settings_$(id -u).yaml"
 
 if [[ -z "$DRY_RUN" ]]; then
     echo "📥 Downloading sync settings from portal..."
-    if scp -q data-analyst:~/.sync_settings.yaml "$SYNC_CONFIG_LOCAL" 2>/dev/null; then
+    if scp -q $SSH_HOST:~/.sync_settings.yaml "$SYNC_CONFIG_LOCAL" 2>/dev/null; then
         echo "   ✅ Settings loaded"
     else
         echo "   ℹ️  No custom settings, using defaults (Jira disabled)"
@@ -212,7 +221,7 @@ DEFAULTS
     fi
     # Download rsync filter for per-table sync
     SYNC_FILTER_LOCAL="/tmp/.sync_rsync_filter_$(id -u)"
-    if scp -q data-analyst:~/.sync_rsync_filter "$SYNC_FILTER_LOCAL" 2>/dev/null; then
+    if scp -q $SSH_HOST:~/.sync_rsync_filter "$SYNC_FILTER_LOCAL" 2>/dev/null; then
         echo "   ✅ Filter file loaded"
     else
         # No filter file = no per-table filtering
@@ -231,7 +240,7 @@ DEFAULTS
     fi
     # Download rsync filter for dry-run too
     SYNC_FILTER_LOCAL="/tmp/.sync_rsync_filter_$(id -u)"
-    scp -q data-analyst:~/.sync_rsync_filter "$SYNC_FILTER_LOCAL" 2>/dev/null || rm -f "$SYNC_FILTER_LOCAL"
+    scp -q $SSH_HOST:~/.sync_rsync_filter "$SYNC_FILTER_LOCAL" 2>/dev/null || rm -f "$SYNC_FILTER_LOCAL"
 fi
 
 # --- Sync server/ content (read-only from server, --delete removes obsolete files) ---
@@ -248,7 +257,7 @@ fi
 
 # Sync docs with excludes for disabled datasets
 if [[ "$USE_RSYNC" == true ]]; then
-    rsync_reliable -avz --delete $DOCS_EXCLUDES $DRY_RUN "data-analyst:server/docs/" "./server/docs/"
+    rsync_reliable -avz --delete $DOCS_EXCLUDES $DRY_RUN "$SSH_HOST:server/docs/" "./server/docs/"
 else
     sync_from_server server/docs ./server/docs
 fi
@@ -308,9 +317,9 @@ echo "📦 Syncing core parquet files..."
 if [[ "$USE_RSYNC" == true ]]; then
     if [[ -f "$SYNC_FILTER_LOCAL" ]] && grep -q "table_mode: explicit" "$SYNC_FILTER_LOCAL" 2>/dev/null; then
         echo "   Using per-table filter (explicit mode)"
-        rsync_reliable -av --delete --progress --filter="merge $SYNC_FILTER_LOCAL" $DRY_RUN data-analyst:server/parquet/ ./server/parquet/
+        rsync_reliable -av --delete --progress --filter="merge $SYNC_FILTER_LOCAL" $DRY_RUN $SSH_HOST:server/parquet/ ./server/parquet/
     else
-        rsync_reliable -av --delete --progress --exclude='jira/' --exclude='kbc_telemetry_expert/' $DRY_RUN data-analyst:server/parquet/ ./server/parquet/
+        rsync_reliable -av --delete --progress --exclude='jira/' --exclude='kbc_telemetry_expert/' $DRY_RUN $SSH_HOST:server/parquet/ ./server/parquet/
     fi
 else
     sync_from_server server/parquet ./server/parquet
@@ -369,22 +378,22 @@ if [[ -f "$SYNC_CONFIG_LOCAL" ]]; then
         echo ""
         echo "📊 Syncing Telemetry Expert dataset..."
         if [[ "$USE_RSYNC" == true ]]; then
-            rsync_reliable -av --delete --progress $DRY_RUN data-analyst:server/parquet/kbc_telemetry_expert/ ./server/parquet/kbc_telemetry_expert/
+            rsync_reliable -av --delete --progress $DRY_RUN $SSH_HOST:server/parquet/kbc_telemetry_expert/ ./server/parquet/kbc_telemetry_expert/
         else
             if [[ -n "$DRY_RUN" ]]; then
                 echo "  [dry-run] Would sync: kbc_telemetry_expert parquet"
             else
                 mkdir -p ./server/parquet/kbc_telemetry_expert
-                scp -r "data-analyst:server/parquet/kbc_telemetry_expert/"* ./server/parquet/kbc_telemetry_expert/ 2>/dev/null || true
+                scp -r "$SSH_HOST:server/parquet/kbc_telemetry_expert/"* ./server/parquet/kbc_telemetry_expert/ 2>/dev/null || true
             fi
         fi
         # Sync dataset docs (.md file + schema directory)
         mkdir -p ./server/docs/datasets
         if [[ "$USE_RSYNC" == true ]]; then
-            rsync_reliable -avz $DRY_RUN data-analyst:'server/docs/datasets/kbc_telemetry_expert*' ./server/docs/datasets/
+            rsync_reliable -avz $DRY_RUN $SSH_HOST:'server/docs/datasets/kbc_telemetry_expert*' ./server/docs/datasets/
         else
             if [[ -z "$DRY_RUN" ]]; then
-                scp -r data-analyst:'server/docs/datasets/kbc_telemetry_expert*' ./server/docs/datasets/ 2>/dev/null || true
+                scp -r $SSH_HOST:'server/docs/datasets/kbc_telemetry_expert*' ./server/docs/datasets/ 2>/dev/null || true
             fi
         fi
         if [[ -z "$DRY_RUN" ]]; then
@@ -459,9 +468,9 @@ sync_to_server ./user user
 # Backup CLAUDE.local.md to server home (disaster recovery)
 if [[ -f "./CLAUDE.local.md" ]]; then
     if [[ -n "$DRY_RUN" ]]; then
-        echo "  [dry-run] Would backup: ./CLAUDE.local.md -> data-analyst:~/CLAUDE.local.md"
+        echo "  [dry-run] Would backup: ./CLAUDE.local.md -> $SSH_HOST:~/CLAUDE.local.md"
     else
-        scp -q ./CLAUDE.local.md "data-analyst:~/CLAUDE.local.md" && \
+        scp -q ./CLAUDE.local.md "$SSH_HOST:~/CLAUDE.local.md" && \
             echo "📝 CLAUDE.local.md backed up to server"
     fi
 fi
@@ -472,7 +481,7 @@ echo ""
 echo "📚 Syncing corporate memory rules..."
 if [[ -z "$DRY_RUN" ]]; then
     mkdir -p .claude/rules
-    if scp -rq "data-analyst:~/.claude_rules/"* .claude/rules/ 2>/dev/null; then
+    if scp -rq "$SSH_HOST:~/.claude_rules/"* .claude/rules/ 2>/dev/null; then
         RULES_COUNT=$(ls -1 .claude/rules/km_*.md 2>/dev/null | wc -l)
         echo "   ✅ $RULES_COUNT knowledge rules synced to .claude/rules/"
     else
@@ -488,11 +497,11 @@ if [[ -z "$DRY_RUN" ]] && [[ -f "./.venv/bin/pip" ]]; then
     LOCAL_REQ="$(mktemp)"
     ./.venv/bin/pip freeze > "$LOCAL_REQ"
     LOCAL_HASH=$(md5sum "$LOCAL_REQ" 2>/dev/null | cut -d' ' -f1 || md5 -q "$LOCAL_REQ" 2>/dev/null || echo "none")
-    REMOTE_HASH=$(ssh data-analyst "md5sum ~/.analyst_requirements.txt 2>/dev/null | cut -d' ' -f1 || echo 'missing'" 2>/dev/null || echo "missing")
+    REMOTE_HASH=$(ssh $SSH_HOST "md5sum ~/.analyst_requirements.txt 2>/dev/null | cut -d' ' -f1 || echo 'missing'" 2>/dev/null || echo "missing")
     if [[ "$LOCAL_HASH" != "$REMOTE_HASH" ]]; then
         echo "Syncing Python environment to server..."
-        scp "$LOCAL_REQ" "data-analyst:~/.analyst_requirements.txt"
-        ssh data-analyst "test -d ~/.venv || python3 -m venv ~/.venv; ~/.venv/bin/pip install -r ~/.analyst_requirements.txt --quiet 2>&1 | tail -1"
+        scp "$LOCAL_REQ" "$SSH_HOST:~/.analyst_requirements.txt"
+        ssh $SSH_HOST "test -d ~/.venv || python3 -m venv ~/.venv; ~/.venv/bin/pip install -r ~/.analyst_requirements.txt --quiet 2>&1 | tail -1"
         echo "Server Python environment synced"
     else
         echo "Server Python environment up to date"
@@ -524,7 +533,7 @@ if [[ -z "$DRY_RUN" ]]; then
     bash "${SCRIPT_DIR}/setup_views.sh"
 
     # Update sync timestamp on server (used by webapp Account card)
-    ssh data-analyst "touch ~/server/" 2>/dev/null || true
+    ssh $SSH_HOST "touch ~/server/" 2>/dev/null || true
 
     echo ""
     echo "✅ Data sync complete!"
