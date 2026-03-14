@@ -279,25 +279,26 @@ if [[ -z "$DRY_RUN" ]]; then
         fi
 
         # Read connection details from .sync_connection (written by bootstrap)
-        SSH_ALIAS="data-analyst"
-        SSH_HOST="unknown"
-        WEBAPP_URL=""
+        # Use TMPL_ prefix to avoid overwriting $SSH_HOST (the SSH alias used for rsync)
+        TMPL_SSH_ALIAS="$SSH_HOST"
+        TMPL_SERVER_HOST="unknown"
+        TMPL_WEBAPP_URL=""
         if [[ -f "./.sync_connection" ]]; then
-            SSH_ALIAS=$(grep '^ssh_alias=' ./.sync_connection 2>/dev/null | cut -d= -f2 || echo "data-analyst")
-            SSH_HOST=$(grep '^server_host=' ./.sync_connection 2>/dev/null | cut -d= -f2 || echo "unknown")
-            WEBAPP_URL=$(grep '^webapp_url=' ./.sync_connection 2>/dev/null | cut -d= -f2 || echo "")
+            TMPL_SSH_ALIAS=$(grep '^ssh_alias=' ./.sync_connection 2>/dev/null | cut -d= -f2 || echo "$SSH_HOST")
+            TMPL_SERVER_HOST=$(grep '^server_host=' ./.sync_connection 2>/dev/null | cut -d= -f2 || echo "unknown")
+            TMPL_WEBAPP_URL=$(grep '^webapp_url=' ./.sync_connection 2>/dev/null | cut -d= -f2 || echo "")
         fi
         # Fallback: extract host from SSH config
-        if [[ "$SSH_HOST" == "unknown" ]] && [[ -f "$HOME/.ssh/config" ]]; then
-            SSH_HOST=$(awk "/^Host ${SSH_ALIAS}\$/,/^Host /{if(/HostName/) print \$2}" "$HOME/.ssh/config" 2>/dev/null | head -1)
-            SSH_HOST="${SSH_HOST:-unknown}"
+        if [[ "$TMPL_SERVER_HOST" == "unknown" ]] && [[ -f "$HOME/.ssh/config" ]]; then
+            TMPL_SERVER_HOST=$(awk "/^Host ${TMPL_SSH_ALIAS}\$/,/^Host /{if(/HostName/) print \$2}" "$HOME/.ssh/config" 2>/dev/null | head -1)
+            TMPL_SERVER_HOST="${TMPL_SERVER_HOST:-unknown}"
         fi
-        WEBAPP_URL="${WEBAPP_URL:-https://${SSH_HOST}}"
+        TMPL_WEBAPP_URL="${TMPL_WEBAPP_URL:-https://${TMPL_SERVER_HOST}}"
 
         sed -e "s/{username}/$ANALYST_USER/g" \
-            -e "s/{ssh_alias}/$SSH_ALIAS/g" \
-            -e "s|{server_host}|$SSH_HOST|g" \
-            -e "s|{webapp_url}|$WEBAPP_URL|g" \
+            -e "s/{ssh_alias}/$TMPL_SSH_ALIAS/g" \
+            -e "s|{server_host}|$TMPL_SERVER_HOST|g" \
+            -e "s|{webapp_url}|$TMPL_WEBAPP_URL|g" \
             ./server/docs/setup/claude_md_template.txt > ./CLAUDE.md
         echo "📝 CLAUDE.md updated from latest template"
     fi
