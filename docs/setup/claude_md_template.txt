@@ -8,13 +8,13 @@ Project context file for **AI Data Analyst** - local analytics environment with 
 |----------|-------|
 | **Project Type** | AI Data Analyst |
 | **Database** | DuckDB at `user/duckdb/analytics.duckdb` |
-| **Data Source** | data-analyst server (34.88.8.46) |
+| **Data Source** | {ssh_alias} server ({server_host}) |
 | **Data Format** | Parquet files in `server/parquet/` |
 | **Analyst** | {username} |
 
 ---
 
-## ⚠️ CRITICAL: Always Start Here
+## CRITICAL: Always Start Here
 
 ### 1. Sync Data When Starting
 
@@ -30,35 +30,7 @@ bash server/scripts/sync_data.sh
 
 This updates data, scripts, documentation, and CLAUDE.md.
 
-### 2. Read Metrics Definitions
-
-**Before calculating ANY business metric (MRR, ARR, usage, limits, etc.), you MUST:**
-
-1. **Start with the metrics index** - read `server/docs/metrics/metrics.yml` first
-   - This index file lists all available metrics organized by category
-   - Find the metric you need and note its file path
-
-2. **Then read the specific metric file** from its category folder:
-   ```bash
-   # Example: Read the metrics index first
-   cat server/docs/metrics/metrics.yml
-
-   # Then read the specific metric definition you need
-   cat server/docs/metrics/sales_revenue/mrr.yml
-   cat server/docs/metrics/product_usage/usage_value.yml
-   cat server/docs/metrics/finance/infra_cost.yml
-   cat server/docs/metrics/weekly_leadership_kpis/revenue_upsells_ytd.yml
-   ```
-
-**Categories:**
-- `finance/` - Financial metrics (infra costs, retention)
-- `product_usage/` - Platform usage, limits, telemetry
-- `sales_revenue/` - MRR, ARR, new customers, expansions
-- `weekly_leadership_kpis/` - Weekly KPIs for leadership reporting
-
-Do not calculate metrics from memory. The formulas contain critical details (e.g., conditional aggregation for different metric types, proper value vs company_value usage). Getting this wrong produces plausible but incorrect numbers.
-
-### 3. Read Schema Documentation Before Writing SQL
+### 2. Read Schema Documentation Before Writing SQL
 
 **MANDATORY: Before writing ANY SQL query, you MUST read the relevant documentation files:**
 
@@ -73,20 +45,6 @@ cat server/docs/schema.yml
 - **NEVER guess column names**
 - schema.yml contains: all column names, types, descriptions, primary keys
 
-#### For on-demand datasets (if enabled):
-
-```bash
-# Check for additional dataset schemas (e.g., kbc_telemetry_expert)
-ls server/docs/datasets/
-# Read the dataset doc for table relationships and ER diagrams
-cat server/docs/datasets/<dataset_name>.md
-# Read the dataset schema for column details
-cat server/docs/datasets/<dataset_name>/schema.yml
-```
-
-- On-demand datasets have their own schema.yml and documentation files
-- Only available if enabled in Data Settings at {webapp_url}
-
 #### For table relationships (joins, foreign keys):
 
 ```bash
@@ -94,9 +52,30 @@ cat server/docs/datasets/<dataset_name>/schema.yml
 cat server/docs/data_description.md
 ```
 
-- Contains ER diagrams, primary/foreign keys, sync strategies
+- Contains primary/foreign keys, sync strategies, and table descriptions
 - Essential for writing correct JOIN queries
-- On-demand dataset docs reference core tables with `(core)` markers
+
+#### For additional dataset schemas (if available):
+
+```bash
+# Check for additional dataset schemas
+ls server/docs/datasets/ 2>/dev/null
+```
+
+### 3. Read Metrics Definitions (if available)
+
+**Before calculating ANY business metric, check for metric definitions:**
+
+```bash
+# Check if metrics index exists
+cat server/docs/metrics/metrics.yml 2>/dev/null
+
+# Or list available metric files
+ls server/docs/metrics/ 2>/dev/null
+```
+
+If metric definitions exist, always read the specific metric file before calculating.
+Do not calculate metrics from memory - the formulas contain critical details.
 
 ---
 
@@ -106,17 +85,16 @@ cat server/docs/data_description.md
 project_root/
 ├── server/                         # READ-ONLY - synced from server
 │   ├── docs/                       # Documentation
-│   │   ├── metrics/                # Metric definitions (modular structure)
-│   │   ├── datasets/               # On-demand dataset docs and schemas
-│   │   ├── data_description.md     # Table relationships and ER diagrams
-│   │   └── schema.yml              # Table schemas and column definitions
+│   │   ├── data_description.md     # Table relationships and descriptions
+│   │   ├── schema.yml              # Table schemas and column definitions
+│   │   ├── metrics/                # Metric definitions (if available)
+│   │   └── datasets/               # Additional dataset docs (if available)
 │   ├── scripts/                    # Helper scripts (sync_data.sh, setup_views.sh)
-│   ├── examples/                   # Example notification scripts
+│   ├── examples/                   # Example scripts (if available)
 │   └── parquet/                    # Synced parquet data files
 │
 ├── user/                           # YOUR WORKSPACE - never overwritten
 │   ├── duckdb/                     # DuckDB database (analytics.duckdb)
-│   ├── notifications/              # Your notification scripts
 │   ├── artifacts/                  # Analysis outputs, charts, exports
 │   └── scripts/                    # Your custom scripts
 │
@@ -159,19 +137,21 @@ for table in tables:
 con.close()
 ```
 
-### Query examples
+### Query data
 
-Browse `server/docs/metrics/metrics.yml` for all available metrics, then read specific metric files:
-- **Finance**: `finance/` - Infrastructure costs with allocation guides
-- **Product Usage**: `product_usage/` - Usage metrics with conditional aggregation, contract limits, usage vs limits
-- **Sales & Revenue**: `sales_revenue/` - MRR, ARR, new customer acquisition, expansions
-- **Weekly Leadership KPIs**: `weekly_leadership_kpis/` - All weekly metrics for leadership reporting
+```bash
+# Read schema first, then query
+cat server/docs/schema.yml
+```
 
-All metric examples include multiple SQL variants:
-- `sql`: Total aggregate across all companies
-- `sql_by_company`: Grouped by company
-- `sql_single_company`: Filter for specific company
-- `sql_by_project`: Project-level analysis (where applicable)
+```python
+import duckdb
+con = duckdb.connect('user/duckdb/analytics.duckdb')
+# Write your query based on schema.yml column definitions
+result = con.execute("SELECT * FROM your_table LIMIT 10").fetchdf()
+print(result)
+con.close()
+```
 
 ---
 
@@ -193,42 +173,13 @@ You're ready to analyze!
 
 ---
 
-## Corporate Memory
-
-Your `CLAUDE.local.md` file serves a dual purpose:
-1. **Personal notes** - never overwritten by server sync, your workspace for discoveries
-2. **Knowledge sharing** - backed up to the server and processed into shared team knowledge
-
-### How It Works
-
-- Every `sync_data.sh` run backs up your `CLAUDE.local.md` to the server
-- Every 30 minutes, the server extracts valuable knowledge from all team members' files
-- Extracted knowledge is deduplicated and merged into a shared Corporate Memory database
-- Browse and vote on knowledge at {webapp_url}/corporate-memory
-- Items you upvote are synced to your `.claude/rules/` during the next data sync
-
-### What to Write in CLAUDE.local.md
-
-When you discover something valuable during your work, add it to `CLAUDE.local.md`:
-
-- **Technical discoveries**: Novel solutions, workarounds, or techniques
-- **Best practices**: Patterns that improved code quality or productivity
-- **Tool tips**: Useful DuckDB queries, commands, or configurations
-- **Debugging wisdom**: How specific errors were diagnosed and resolved
-- **Domain knowledge**: Business logic insights or data relationships
-
-The more specific and actionable your notes are, the more valuable they become for the whole team.
-
----
-
 ## Important Reminders
 
-- ⚠️ **Always read `server/docs/schema.yml` before writing SQL queries**
-- ⚠️ **Always check `server/docs/datasets/` for additional schema files from on-demand datasets**
-- ⚠️ **Always read `server/docs/metrics/metrics.yml` to find the right metric, then read its definition file before calculating business metrics**
-- ⚠️ **Always read `server/docs/data_description.md` for table relationships and joins**
-- ✅ Use DuckDB views, not direct parquet file reads
-- ❌ Never modify files in `server/` - they're read-only
+- Always read `server/docs/schema.yml` before writing SQL queries
+- Always read `server/docs/data_description.md` for table relationships and joins
+- Check `server/docs/metrics/` for metric definitions before calculating business metrics
+- Use DuckDB views, not direct parquet file reads
+- Never modify files in `server/` - they're read-only
 
 ---
 

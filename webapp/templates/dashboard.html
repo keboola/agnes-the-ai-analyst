@@ -2447,9 +2447,13 @@
             + '       IdentityFile ' + sshKey + '\n'
             + '       StrictHostKeyChecking accept-new\n'
             + '   Then test: ssh ' + sshAlias + ' echo ok\n\n'
-            + '2. Create project folders (use explicit mkdir, not brace expansion):\n'
+            + '2. Create project folders and save connection details:\n'
             + '   mkdir -p server/docs server/scripts server/parquet server/metadata server/examples\n'
-            + '   mkdir -p user/duckdb user/notifications user/artifacts user/scripts user/parquet user/sessions\n\n'
+            + '   mkdir -p user/duckdb user/notifications user/artifacts user/scripts user/parquet user/sessions\n'
+            + '   Save this to .sync_connection (used by sync script to generate CLAUDE.md):\n'
+            + '     ssh_alias=' + sshAlias + '\n'
+            + '     server_host=' + serverHost + '\n'
+            + '     webapp_url=' + webappUrl + '\n\n'
             + '3. Download from server via rsync (use --no-perms --no-group to avoid macOS permission errors).\n'
             + '   Skip directories that don\'t exist on the server (rsync exit code 23 = missing source).\n'
             + '   rsync -avz --no-perms --no-group ' + sshAlias + ':server/scripts/ ./server/scripts/\n'
@@ -2464,8 +2468,12 @@
             + '   pip install pandas pyarrow duckdb pyyaml python-dotenv\n\n'
             + '5. Initialize DuckDB (only if server/scripts/setup_views.sh exists):\n'
             + '   bash server/scripts/setup_views.sh\n\n'
-            + '6. Create CLAUDE.md (only if server/docs/setup/claude_md_template.txt exists):\n'
-            + '   Copy the template, replace {username} with ' + username + '\n';
+            + '6. Create CLAUDE.md (if server/docs/setup/claude_md_template.txt exists):\n'
+            + '   Copy the template, replace placeholders:\n'
+            + '     {username} -> ' + username + '\n'
+            + '     {ssh_alias} -> ' + sshAlias + '\n'
+            + '     {server_host} -> ' + serverHost + '\n'
+            + '     {webapp_url} -> ' + webappUrl + '\n';
 
         var button = btn || document.getElementById('bootstrapCopyBtn');
         var origText = button.textContent;

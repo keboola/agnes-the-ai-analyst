@@ -131,10 +131,17 @@ setup:
       max_retries: 3
 
     - name: "create_folders"
-      description: "Create local project structure"
+      description: "Create local project structure and save connection details"
       action: |
         mkdir -p ./server/docs ./server/scripts ./server/examples ./server/parquet ./server/metadata
         mkdir -p ./user/duckdb ./user/notifications ./user/artifacts ./user/scripts ./user/parquet ./user/sessions
+
+        # Save connection details for sync_data.sh to use when generating CLAUDE.md
+        cat > ./.sync_connection << 'CONN'
+        ssh_alias={ssh_alias}
+        server_host={server_host}
+        webapp_url={webapp_url}
+        CONN
       message: |
         Project structure created (server/, user/).
 
