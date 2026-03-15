@@ -20,6 +20,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 import yaml
 
@@ -82,7 +83,7 @@ def _yaml_header(catalog_url: str, fqn: str = "", entity_type: str = "") -> str:
     """
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     if fqn and entity_type:
-        source_url = f"{catalog_url}/{entity_type}/{fqn}"
+        source_url = f"{catalog_url}/{entity_type}/{quote(fqn, safe='.')}"
     else:
         source_url = catalog_url
     lines = [
