@@ -205,17 +205,12 @@ fi
 SYNC_CONFIG_LOCAL="/tmp/.sync_settings_$(id -u).yaml"
 
 if [[ -z "$DRY_RUN" ]]; then
-    echo "📥 Downloading sync settings from portal..."
     if scp -q $SSH_HOST:~/.sync_settings.yaml "$SYNC_CONFIG_LOCAL" 2>/dev/null; then
-        echo "   ✅ Settings loaded"
+        echo "📥 Sync settings loaded from portal"
     else
-        echo "   ℹ️  No custom settings, using defaults (Jira disabled)"
-        # Create empty/default config
+        # No custom settings on server — create empty config (no optional datasets)
         cat > "$SYNC_CONFIG_LOCAL" << 'DEFAULTS'
-datasets:
-  jira: false
-  jira_attachments: false
-  kbc_telemetry_expert: false
+datasets: {}
 DEFAULTS
     fi
     # Download rsync filter for per-table sync
@@ -231,10 +226,7 @@ else
     # For dry-run, still need settings to show what would happen
     if [[ ! -f "$SYNC_CONFIG_LOCAL" ]]; then
         cat > "$SYNC_CONFIG_LOCAL" << 'DEFAULTS'
-datasets:
-  jira: false
-  jira_attachments: false
-  kbc_telemetry_expert: false
+datasets: {}
 DEFAULTS
     fi
     # Download rsync filter for dry-run too
@@ -245,13 +237,12 @@ fi
 # --- Sync server/ content (read-only from server, --delete removes obsolete files) ---
 echo "📋 Syncing documentation and scripts..."
 
-# Build exclude list for docs based on disabled datasets
+# Build exclude list for docs based on disabled optional datasets
 DOCS_EXCLUDES=""
-if ! grep -qE '^\s*jira:\s*true' "$SYNC_CONFIG_LOCAL" 2>/dev/null; then
-    DOCS_EXCLUDES="$DOCS_EXCLUDES --exclude=jira_schema.md"
-fi
-if ! grep -qE '^\s*kbc_telemetry_expert:\s*true' "$SYNC_CONFIG_LOCAL" 2>/dev/null; then
-    DOCS_EXCLUDES="$DOCS_EXCLUDES --exclude=datasets/kbc_telemetry_expert*"
+if [[ -f "$SYNC_CONFIG_LOCAL" ]]; then
+    for name in $(grep -E '^\s+\w+:\s*false' "$SYNC_CONFIG_LOCAL" 2>/dev/null | sed 's/:.*//' | tr -d ' '); do
+        DOCS_EXCLUDES="$DOCS_EXCLUDES --exclude=datasets/${name}* --exclude=${name}_*"
+    done
 fi
 
 # Sync docs with excludes for disabled datasets
@@ -311,15 +302,23 @@ if [[ -z "$DRY_RUN" ]]; then
     echo ""
 fi
 
-# Sync core parquet data (excludes optional datasets like jira/)
-# Optional datasets are synced by sub-scripts based on user config
+# Sync core parquet data (excludes optional datasets not enabled in settings)
 echo "📦 Syncing core parquet files..."
+
+# Build parquet exclude list from optional datasets in sync settings
+PARQUET_EXCLUDES=""
+if [[ -f "$SYNC_CONFIG_LOCAL" ]]; then
+    for name in $(grep -E '^\s+\w+:\s*(true|false)' "$SYNC_CONFIG_LOCAL" 2>/dev/null | sed 's/:.*//' | tr -d ' '); do
+        PARQUET_EXCLUDES="$PARQUET_EXCLUDES --exclude=${name}/"
+    done
+fi
+
 if [[ "$USE_RSYNC" == true ]]; then
     if [[ -f "$SYNC_FILTER_LOCAL" ]] && grep -q "table_mode: explicit" "$SYNC_FILTER_LOCAL" 2>/dev/null; then
         echo "   Using per-table filter (explicit mode)"
         rsync_reliable -av --delete --progress --filter="merge $SYNC_FILTER_LOCAL" $DRY_RUN $SSH_HOST:server/parquet/ ./server/parquet/
     else
-        rsync_reliable -av --delete --progress --exclude='jira/' --exclude='kbc_telemetry_expert/' $DRY_RUN $SSH_HOST:server/parquet/ ./server/parquet/
+        rsync_reliable -av --delete --progress $PARQUET_EXCLUDES $DRY_RUN $SSH_HOST:server/parquet/ ./server/parquet/
     fi
 else
     sync_from_server server/parquet ./server/parquet
@@ -330,104 +329,46 @@ if [[ -z "$DRY_RUN" ]]; then
     mkdir -p ./user/duckdb ./user/notifications ./user/artifacts ./user/scripts ./user/parquet ./user/sessions
 fi
 
-# --- Sync optional datasets ---
+# --- Sync optional datasets (generic, driven by sync_settings.yaml) ---
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Read config and sync optional datasets
 if [[ -f "$SYNC_CONFIG_LOCAL" ]]; then
-    # Jira dataset
-    if grep -qE '^\s*jira:\s*true' "$SYNC_CONFIG_LOCAL" 2>/dev/null; then
+    # Sync enabled datasets
+    ENABLED_DATASETS=$(grep -E '^\s+\w+:\s*true' "$SYNC_CONFIG_LOCAL" 2>/dev/null | sed 's/:.*//' | tr -d ' ')
+    for name in $ENABLED_DATASETS; do
         echo ""
-        if [[ -f "${SCRIPT_DIR}/sync_jira.sh" ]]; then
-            bash "${SCRIPT_DIR}/sync_jira.sh" $DRY_RUN
+        # Run dataset-specific sync script if it exists
+        if [[ -f "${SCRIPT_DIR}/sync_${name}.sh" ]]; then
+            bash "${SCRIPT_DIR}/sync_${name}.sh" $DRY_RUN
+        else
+            # Generic: sync parquet + docs for this dataset
+            echo "📊 Syncing optional dataset: $name"
+            if [[ "$USE_RSYNC" == true ]]; then
+                rsync_reliable -av --delete --progress $DRY_RUN $SSH_HOST:server/parquet/${name}/ ./server/parquet/${name}/
+            fi
+            mkdir -p ./server/docs/datasets
+            rsync_reliable -avz $DRY_RUN $SSH_HOST:"server/docs/datasets/${name}*" ./server/docs/datasets/ 2>/dev/null || true
         fi
-    else
-        # Cleanup: remove Jira data if disabled (so Claude doesn't see stale data)
-        JIRA_CLEANUP_NEEDED=false
-        [[ -d "./server/parquet/jira" ]] && JIRA_CLEANUP_NEEDED=true
-        [[ -f "./server/docs/jira_schema.md" ]] && JIRA_CLEANUP_NEEDED=true
-        [[ -d "./server/jira_attachments" ]] && JIRA_CLEANUP_NEEDED=true
+    done
 
-        if [[ "$JIRA_CLEANUP_NEEDED" == true ]]; then
+    # Cleanup disabled datasets (remove stale local data so Claude doesn't see it)
+    DISABLED_DATASETS=$(grep -E '^\s+\w+:\s*false' "$SYNC_CONFIG_LOCAL" 2>/dev/null | sed 's/:.*//' | tr -d ' ')
+    for name in $DISABLED_DATASETS; do
+        CLEANUP_NEEDED=false
+        [[ -d "./server/parquet/${name}" ]] && CLEANUP_NEEDED=true
+        ls ./server/docs/datasets/${name}* &>/dev/null 2>&1 && CLEANUP_NEEDED=true
+
+        if [[ "$CLEANUP_NEEDED" == true ]]; then
             echo ""
             if [[ -n "$DRY_RUN" ]]; then
-                echo "🧹 [dry-run] Would clean up disabled Jira dataset:"
-                [[ -d "./server/parquet/jira" ]] && echo "   Would remove: server/parquet/jira/"
-                [[ -f "./server/docs/jira_schema.md" ]] && echo "   Would remove: server/docs/jira_schema.md"
-                [[ -d "./server/jira_attachments" ]] && echo "   Would remove: server/jira_attachments/"
+                echo "🧹 [dry-run] Would clean up disabled dataset: $name"
             else
-                echo "🧹 Cleaning up disabled Jira dataset..."
-                if [[ -d "./server/parquet/jira" ]]; then
-                    rm -rf ./server/parquet/jira
-                    echo "   Removed: server/parquet/jira/"
-                fi
-                if [[ -f "./server/docs/jira_schema.md" ]]; then
-                    rm -f ./server/docs/jira_schema.md
-                    echo "   Removed: server/docs/jira_schema.md"
-                fi
-                if [[ -d "./server/jira_attachments" ]]; then
-                    rm -rf ./server/jira_attachments
-                    echo "   Removed: server/jira_attachments/"
-                fi
+                echo "🧹 Cleaning up disabled dataset: $name"
+                rm -rf "./server/parquet/${name}" 2>/dev/null
+                rm -rf ./server/docs/datasets/${name}* 2>/dev/null
             fi
         fi
-    fi
-
-    # Telemetry Expert dataset
-    if grep -qE '^\s*kbc_telemetry_expert:\s*true' "$SYNC_CONFIG_LOCAL" 2>/dev/null; then
-        echo ""
-        echo "📊 Syncing Telemetry Expert dataset..."
-        if [[ "$USE_RSYNC" == true ]]; then
-            rsync_reliable -av --delete --progress $DRY_RUN $SSH_HOST:server/parquet/kbc_telemetry_expert/ ./server/parquet/kbc_telemetry_expert/
-        else
-            if [[ -n "$DRY_RUN" ]]; then
-                echo "  [dry-run] Would sync: kbc_telemetry_expert parquet"
-            else
-                mkdir -p ./server/parquet/kbc_telemetry_expert
-                scp -r "$SSH_HOST:server/parquet/kbc_telemetry_expert/"* ./server/parquet/kbc_telemetry_expert/ 2>/dev/null || true
-            fi
-        fi
-        # Sync dataset docs (.md file + schema directory)
-        mkdir -p ./server/docs/datasets
-        if [[ "$USE_RSYNC" == true ]]; then
-            rsync_reliable -avz $DRY_RUN $SSH_HOST:'server/docs/datasets/kbc_telemetry_expert*' ./server/docs/datasets/
-        else
-            if [[ -z "$DRY_RUN" ]]; then
-                scp -r $SSH_HOST:'server/docs/datasets/kbc_telemetry_expert*' ./server/docs/datasets/ 2>/dev/null || true
-            fi
-        fi
-        if [[ -z "$DRY_RUN" ]]; then
-            echo "✅ Telemetry Expert synced"
-        fi
-    else
-        # Cleanup: remove dataset if disabled (so Claude doesn't see stale data)
-        KBC_CLEANUP_NEEDED=false
-        [[ -d "./server/parquet/kbc_telemetry_expert" ]] && KBC_CLEANUP_NEEDED=true
-        ls ./server/docs/datasets/kbc_telemetry_expert* &>/dev/null && KBC_CLEANUP_NEEDED=true
-
-        if [[ "$KBC_CLEANUP_NEEDED" == true ]]; then
-            echo ""
-            if [[ -n "$DRY_RUN" ]]; then
-                echo "🧹 [dry-run] Would clean up disabled Telemetry Expert dataset:"
-                [[ -d "./server/parquet/kbc_telemetry_expert" ]] && echo "   Would remove: server/parquet/kbc_telemetry_expert/"
-                for f in ./server/docs/datasets/kbc_telemetry_expert*; do
-                    [[ -e "$f" ]] && echo "   Would remove: $f"
-                done
-            else
-                echo "🧹 Cleaning up disabled Telemetry Expert dataset..."
-                if [[ -d "./server/parquet/kbc_telemetry_expert" ]]; then
-                    rm -rf ./server/parquet/kbc_telemetry_expert
-                    echo "   Removed: server/parquet/kbc_telemetry_expert/"
-                fi
-                for f in ./server/docs/datasets/kbc_telemetry_expert*; do
-                    if [[ -e "$f" ]]; then
-                        rm -rf "$f"
-                        echo "   Removed: $f"
-                    fi
-                done
-            fi
-        fi
-    fi
+    done
 fi
 
 # --- Backup: collect missed session transcripts ---
