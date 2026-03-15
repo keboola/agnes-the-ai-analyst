@@ -14,6 +14,7 @@ Extracts metadata from OpenMetadata tag conventions:
 - Unit.* -> unit of measurement
 """
 
+import html
 import logging
 import re
 from typing import Any, Dict, List, Optional
@@ -193,6 +194,51 @@ def extract_tag_names(tags: List[Dict[str, Any]]) -> List[str]:
     return result
 
 
+def strip_html(text: str) -> str:
+    """
+    Strip HTML tags and decode entities from OpenMetadata descriptions.
+
+    OpenMetadata stores descriptions as rich HTML. This converts to clean
+    plain text suitable for YAML files and agent consumption.
+
+    Handles:
+    - HTML tags (<p>, <strong>, <em>, <ul>, <li>, etc.)
+    - HTML entities (&nbsp;, &amp;, etc.)
+    - List items (converted to "- " prefix)
+    - Excessive whitespace from tag removal
+
+    Args:
+        text: Raw HTML string from OpenMetadata
+
+    Returns:
+        Clean plain text string
+    """
+    if not text:
+        return ""
+
+    # Convert <li> to list items before stripping tags
+    result = re.sub(r"<li[^>]*>", "\n- ", text)
+
+    # Convert block-level tags to newlines
+    result = re.sub(r"<br\s*/?>", "\n", result)
+    result = re.sub(r"</(?:p|div|h[1-6]|tr|ul|ol)>", "\n", result)
+
+    # Remove all remaining HTML tags
+    result = re.sub(r"<[^>]+>", "", result)
+
+    # Decode HTML entities (&nbsp; -> space, &amp; -> &, etc.)
+    result = html.unescape(result)
+
+    # Clean up whitespace: collapse multiple spaces, strip lines
+    lines = []
+    for line in result.split("\n"):
+        cleaned = " ".join(line.split())
+        if cleaned:
+            lines.append(cleaned)
+
+    return "\n".join(lines)
+
+
 def sanitize_filename(name: str) -> str:
     """
     Convert metric/entity name to safe filesystem name.
@@ -247,7 +293,7 @@ def metric_to_yaml_dict(raw_metric: Dict[str, Any]) -> Dict[str, Any]:
         "time_column": "",
         "table": "",
         "expression": extract_expression(raw_metric),
-        "description": (raw_metric.get("description", "") or "").strip(),
+        "description": strip_html(raw_metric.get("description", "") or ""),
         "dimensions": extract_dimensions(tags),
         "notes": notes,
         "synonyms": [],
@@ -315,7 +361,7 @@ def metric_to_detail_dict(raw_metric: Dict[str, Any], category_colors: Optional[
             "time_column": "",
         },
         "overview": {
-            "description": description.strip(),
+            "description": strip_html(description),
             "key_insights": [],
         },
         "validation": None,
@@ -356,7 +402,7 @@ def table_to_yaml_dict(raw_table: Dict[str, Any]) -> Dict[str, Any]:
     """
     fqn = raw_table.get("fullyQualifiedName", "")
     name = raw_table.get("name", "")
-    description = raw_table.get("description", "") or ""
+    description = strip_html(raw_table.get("description", "") or "")
     tags = raw_table.get("tags", [])
 
     # Parse columns
@@ -365,7 +411,7 @@ def table_to_yaml_dict(raw_table: Dict[str, Any]) -> Dict[str, Any]:
         col_entry = {
             "name": col.get("name", ""),
             "type": col.get("dataType", ""),
-            "description": (col.get("description", "") or "").strip(),
+            "description": strip_html(col.get("description", "") or ""),
         }
         columns.append(col_entry)
 

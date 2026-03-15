@@ -19,6 +19,7 @@ from connectors.openmetadata.transformer import (
     metric_to_display_dict,
     metric_to_yaml_dict,
     sanitize_filename,
+    strip_html,
     table_to_yaml_dict,
 )
 
@@ -368,6 +369,65 @@ class TestExtractTagNames:
 
 
 # ===========================================================================
+# strip_html
+# ===========================================================================
+
+class TestStripHtml:
+    def test_strip_simple_tags(self):
+        assert strip_html("<p>Hello world</p>") == "Hello world"
+
+    def test_strip_nested_tags(self):
+        result = strip_html("<p><strong>Bold</strong> and <em>italic</em></p>")
+        assert result == "Bold and italic"
+
+    def test_decode_html_entities(self):
+        result = strip_html("price&nbsp;&amp;&nbsp;value")
+        assert "price" in result
+        assert "&" in result
+        assert "value" in result
+        assert "&nbsp;" not in result
+        assert "&amp;" not in result
+
+    def test_list_items(self):
+        result = strip_html('<ul><li class="x">First</li><li>Second</li></ul>')
+        assert "- First" in result
+        assert "- Second" in result
+
+    def test_empty_string(self):
+        assert strip_html("") == ""
+
+    def test_none_like(self):
+        assert strip_html("") == ""
+
+    def test_plain_text_unchanged(self):
+        assert strip_html("No HTML here") == "No HTML here"
+
+    def test_real_openmetadata_description(self):
+        """Test with actual OpenMetadata HTML output."""
+        html_desc = (
+            '<p><strong>Business name: </strong>Live Deals</p>'
+            '<p><strong>Purpose:</strong></p>'
+            '<p>The&nbsp;<em>Live deals</em>&nbsp;metric measures the&nbsp;breadth '
+            'of active, purchasable supply on Groupon.</p>'
+        )
+        result = strip_html(html_desc)
+        assert "<" not in result
+        assert "&nbsp;" not in result
+        assert "Live Deals" in result
+        assert "Live deals" in result
+        assert "purchasable supply" in result
+
+    def test_collapses_whitespace(self):
+        result = strip_html("<p>  too   many   spaces  </p>")
+        assert result == "too many spaces"
+
+    def test_br_tags(self):
+        result = strip_html("line1<br/>line2<br>line3")
+        assert "line1" in result
+        assert "line2" in result
+        assert "line3" in result
+
+
 # sanitize_filename
 # ===========================================================================
 
