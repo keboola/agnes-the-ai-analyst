@@ -68,21 +68,26 @@ def _get_docs_dir() -> Path:
     return docs_dir
 
 
-def _yaml_header(catalog_url: str, fqn: str = "") -> str:
+def _yaml_header(catalog_url: str, fqn: str = "", entity_type: str = "") -> str:
     """
     Generate AUTO-GENERATED header comment for YAML files.
 
     Args:
         catalog_url: OpenMetadata instance URL
         fqn: Optional entity FQN for reference
+        entity_type: Entity type for catalog URL (e.g., "metric", "table")
 
     Returns:
         Multi-line comment string
     """
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if fqn and entity_type:
+        source_url = f"{catalog_url}/{entity_type}/{fqn}"
+    else:
+        source_url = catalog_url
     lines = [
         AUTO_GENERATED_MARKER,
-        CATALOG_SOURCE_LINE.format(url=catalog_url),
+        CATALOG_SOURCE_LINE.format(url=source_url),
         GENERATED_LINE.format(timestamp=timestamp),
         DO_NOT_EDIT_LINE,
     ]
@@ -166,7 +171,7 @@ def export_metrics(
 
             # Write individual metric YAML
             file_path = cat_dir / f"{metric_name}.yml"
-            header = _yaml_header(catalog_url, fqn)
+            header = _yaml_header(catalog_url, fqn, entity_type="metric")
             # Wrap in list to match MetricParser expected format
             yaml_content = yaml.dump(
                 [yaml_dict],
@@ -283,7 +288,7 @@ def export_tables(
 
             # Write table YAML
             file_path = tables_dir / f"{table_config.name}.yml"
-            header = _yaml_header(catalog_url, fqn)
+            header = _yaml_header(catalog_url, fqn, entity_type="table")
             yaml_content = yaml.dump(
                 yaml_dict,
                 default_flow_style=False,
