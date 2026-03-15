@@ -11,30 +11,127 @@ folder_mapping:
   "in.c-example": "example"
 
 tables:
+  # Small reference table - full refresh, no automatic sync
   - id: "in.c-example.customers"
     name: "customers"
     description: "Customer master data"
     primary_key: "id"
     sync_strategy: "full_refresh"
 
+  # Large transactional table - daily automatic sync with profiling
   - id: "in.c-example.orders"
     name: "orders"
     description: "Order transactions with line items"
     primary_key: "id"
-    sync_strategy: "incremental"
-    incremental_window_days: 7
+    sync_strategy: "partitioned"
     partition_by: "created_at"
-    partition_granularity: "month"
+    partition_column_type: "DATE"
+    partition_granularity: "day"
+    incremental_window_days: 3
+    max_history_days: 450
+    query_mode: "local"
+    sync_schedule: "daily 05:00"
+    profile_after_sync: true
+
+  # Frequently updated table - sync every hour, skip profiling
+  - id: "in.c-example.events"
+    name: "events"
+    description: "Real-time event stream"
+    primary_key: "event_id"
+    sync_strategy: "partitioned"
+    partition_by: "event_date"
+    partition_column_type: "DATE"
+    partition_granularity: "day"
+    incremental_window_days: 1
+    query_mode: "local"
+    sync_schedule: "every 1h"
+    profile_after_sync: false
 ```
 
-## Sync Strategies
+## Table Configuration Reference
 
-- **full_refresh**: Downloads entire table on each sync. Best for small reference tables.
-- **incremental**: Downloads only new/changed rows based on a date column. Best for large transactional tables.
+### Required Fields
 
-## Partition Granularity
+| Field | Description | Example |
+|-------|-------------|---------|
+| `id` | Full table identifier in data source | `"in.c-crm.company"` |
+| `name` | Short name (used for Parquet filenames) | `"company"` |
+| `description` | Human-readable description | `"Company master data"` |
+| `primary_key` | Primary key column(s), comma-separated | `"id"` or `"order_id, line_id"` |
+| `sync_strategy` | How data is downloaded (see below) | `"full_refresh"` |
 
-When using `partition_by`, data is split into separate Parquet files by time period:
-- **month**: One file per month (e.g., `orders/2024-01.parquet`)
-- **day**: One file per day (e.g., `events/2024-01-15.parquet`)
-- **none**: Single file (default)
+### Sync Strategy
+
+| Strategy | Description | Use for |
+|----------|-------------|---------|
+| `full_refresh` | Downloads entire table each sync | Small reference tables (< 100K rows) |
+| `incremental` | Downloads changed rows via changedSince | Medium tables with update tracking |
+| `partitioned` | Downloads by time partitions, overwrites only recent ones | Large tables with date column |
+
+### Partitioning
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `partition_by` | *(none)* | Column to partition by (e.g., `"created_at"`, `"event_date"`) |
+| `partition_granularity` | `"month"` | `"day"`, `"month"`, or `"year"` |
+| `partition_column_type` | `"TIMESTAMP"` | SQL type: `"DATE"`, `"TIMESTAMP"`, or `"DATETIME"` |
+| `incremental_window_days` | `7` | How many recent days to re-download on each sync |
+| `max_history_days` | *(all)* | Maximum history to keep (e.g., `450` for ~15 months) |
+| `initial_load_chunk_days` | `30` | Chunk size for first-time download |
+
+### Query Mode
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `query_mode` | `"local"` | How the AI agent queries this table |
+
+| Mode | Description | Best for |
+|------|-------------|----------|
+| `local` | Synced to Parquet, queried via DuckDB | Tables < 2 GB, fast queries |
+| `remote` | Not synced, queried via BigQuery | Huge tables (100+ GB), live data |
+| `hybrid` | Subset synced for profiling, queries go to BigQuery | Medium tables needing live data |
+
+### Automatic Sync Schedule
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `sync_schedule` | *(none)* | When to automatically sync this table |
+| `profile_after_sync` | `true` | Run data profiler after sync completes |
+
+The `sync_schedule` field controls automatic synchronization via the `data-refresh`
+systemd timer (runs every 15 minutes). If omitted, the table is only synced manually.
+
+**Schedule formats:**
+
+| Format | Example | Description |
+|--------|---------|-------------|
+| `every {N}m` | `"every 15m"`, `"every 30m"` | Sync every N minutes |
+| `every {N}h` | `"every 1h"`, `"every 6h"` | Sync every N hours |
+| `daily HH:MM` | `"daily 05:00"`, `"daily 17:30"` | Sync once per day at HH:MM UTC |
+| *(omitted)* | - | Manual sync only (`python -m src.data_sync`) |
+
+**How scheduling works:**
+- A systemd timer runs `python -m src.data_sync --scheduled` every 15 minutes
+- For each table with `sync_schedule`, it checks the last sync time from `sync_state.json`
+- `every` schedules: syncs if enough time has elapsed since last sync
+- `daily` schedules: syncs once after the target time passes (skips if already synced today)
+- Tables without `sync_schedule` are never synced automatically
+
+**Profiling control:**
+- `profile_after_sync: true` (default) - runs profiler after sync to update column statistics
+- `profile_after_sync: false` - skips profiler (use for frequently synced tables where
+  profiling overhead is not worth it; the AI agent uses slightly older statistics)
+- When profiling runs, the webapp is automatically restarted to load new statistics
+
+### Optional Fields
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `folder` | *(from folder_mapping)* | Override output folder name |
+| `row_filter` | *(none)* | SQL WHERE clause (e.g., `"date >= DATE_SUB(CURRENT_DATE(), INTERVAL 15 MONTH)"`) |
+| `columns` | *(all)* | List of columns to sync (subset) |
+| `incremental_column` | *(none)* | Column for timestamp-based incremental sync (BigQuery) |
+| `dataset` | *(none)* | Dataset group name for on-demand tables |
+| `catalog_fqn` | *(auto)* | OpenMetadata FQN override (auto-derived from table ID if not set) |
+| `foreign_keys` | `[]` | List of foreign key relationships |
+| `where_filters` | `[]` | List of filters for Keboola Storage API |

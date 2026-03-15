@@ -363,7 +363,7 @@ if [[ -n "${DESKTOP_JWT_SECRET:-}" ]] && ! systemctl is-active --quiet ws-gatewa
 fi
 
 # Enable timers (only if service files exist)
-for timer in corporate-memory session-collector jira-sla-poll jira-consistency jira-consistency-deep; do
+for timer in corporate-memory session-collector jira-sla-poll jira-consistency jira-consistency-deep data-refresh catalog-refresh; do
     if [[ -f "/etc/systemd/system/${timer}.timer" ]]; then
         if ! systemctl is-enabled --quiet "${timer}.timer" 2>/dev/null; then
             log "Enabling ${timer} timer..."

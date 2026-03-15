@@ -86,6 +86,8 @@ class TableConfig:
         max_history_days: Max days of history for initial incremental load (None = download all)
         dataset: Dataset group name for on-demand tables (e.g., "kbc_telemetry_expert")
         initial_load_chunk_days: Chunk size in days for chunked initial load (default: 30)
+        sync_schedule: Schedule for automatic sync: "every 15m", "every 1h", "daily 05:00" (UTC)
+        profile_after_sync: Run profiler after sync (default True; disable for frequently synced tables)
     """
     id: str
     name: str
@@ -107,6 +109,8 @@ class TableConfig:
     query_mode: str = "local"  # "local" (Parquet) | "remote" (BQ direct) | "hybrid" (sync subset, query BQ)
     partition_column_type: str = "TIMESTAMP"  # BQ SQL type for partition column: "DATE", "TIMESTAMP", "DATETIME"
     catalog_fqn: Optional[str] = None  # Explicit OpenMetadata FQN override (auto-derived if not set)
+    sync_schedule: Optional[str] = None  # Schedule: "every 15m", "every 1h", "daily 05:00" (UTC)
+    profile_after_sync: bool = True  # Run profiler after sync (disable for frequently synced tables)
 
     def __post_init__(self):
         """Validate configuration after initialization."""
@@ -157,6 +161,19 @@ class TableConfig:
                 f"Invalid partition_column_type '{self.partition_column_type}' for table {self.id}. "
                 f"Allowed values: {', '.join(valid_column_types)}"
             )
+
+        # Validate sync_schedule format
+        if self.sync_schedule:
+            import re as _re
+            valid_schedule = (
+                _re.match(r"^every \d+[mh]$", self.sync_schedule)
+                or _re.match(r"^daily \d{2}:\d{2}$", self.sync_schedule)
+            )
+            if not valid_schedule:
+                raise ValueError(
+                    f"Invalid sync_schedule '{self.sync_schedule}' for table {self.id}. "
+                    f"Allowed formats: 'every 15m', 'every 1h', 'daily 05:00'"
+                )
 
         # For partitioned, partition_by must be defined
         if self.sync_strategy == "partitioned":
@@ -457,6 +474,8 @@ class Config:
                 query_mode=table_data.get("query_mode", "local"),
                 partition_column_type=table_data.get("partition_column_type", "TIMESTAMP"),
                 catalog_fqn=table_data.get("catalog_fqn"),
+                sync_schedule=table_data.get("sync_schedule"),
+                profile_after_sync=table_data.get("profile_after_sync", True),
             )
             table_configs.append(config)
 

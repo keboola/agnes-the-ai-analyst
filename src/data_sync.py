@@ -481,23 +481,151 @@ class DataSyncManager:
 
         # Auto-profile changed tables
         if success_count > 0:
-            try:
-                from src.profiler import profile_changed_tables
-                changed = [
-                    self.config.get_table_config(tid).name
-                    for tid, r in results.items()
-                    if r.get("success") and self.config.get_table_config(tid)
-                ]
-                if changed:
-                    result = profile_changed_tables(changed)
-                    logger.info(
-                        f"Auto-profiling: {result['success']} profiled, "
-                        f"{result['errors']} errors, {result['skipped']} skipped"
-                    )
-            except Exception as e:
-                logger.warning(f"Auto-profiling failed (non-fatal): {e}")
+            self._auto_profile(results)
 
         return results
+
+    def _auto_profile(
+        self,
+        results: Dict[str, Dict[str, Any]],
+        skip_tables: Optional[List[str]] = None,
+    ):
+        """Run profiler on successfully synced tables.
+
+        Args:
+            results: Sync results dict {table_id: result}
+            skip_tables: Table IDs to skip profiling for
+        """
+        skip_set = set(skip_tables or [])
+        try:
+            from src.profiler import profile_changed_tables
+            changed = [
+                self.config.get_table_config(tid).name
+                for tid, r in results.items()
+                if r.get("success")
+                and self.config.get_table_config(tid)
+                and tid not in skip_set
+            ]
+            if changed:
+                result = profile_changed_tables(changed)
+                logger.info(
+                    f"Auto-profiling: {result['success']} profiled, "
+                    f"{result['errors']} errors, {result['skipped']} skipped"
+                )
+            else:
+                logger.info("No tables to profile (all skipped or none succeeded)")
+        except Exception as e:
+            logger.warning(f"Auto-profiling failed (non-fatal): {e}")
+
+    def sync_scheduled(self) -> Dict[str, Dict[str, Any]]:
+        """Synchronize only tables whose sync_schedule says they are due.
+
+        Evaluates each table's sync_schedule against its last_sync timestamp.
+        Only syncs tables that are due. Respects profile_after_sync flag.
+
+        Returns:
+            Dictionary {table_id: result} with sync results (only for synced tables)
+        """
+        from src.scheduler import is_table_due
+
+        scheduled_tables = [
+            tc for tc in self.config.tables
+            if tc.sync_schedule and tc.query_mode != "remote"
+        ]
+
+        if not scheduled_tables:
+            logger.info("No tables with sync_schedule configured")
+            return {}
+
+        # Evaluate which tables are due
+        due_tables = []
+        for tc in scheduled_tables:
+            last_sync = self.sync_state.get_last_sync(tc.id)
+            if is_table_due(tc.sync_schedule, last_sync):
+                due_tables.append(tc)
+                logger.info(f"Table {tc.name} is DUE (schedule: {tc.sync_schedule})")
+            else:
+                logger.debug(f"Table {tc.name} is not due (schedule: {tc.sync_schedule})")
+
+        if not due_tables:
+            logger.info(
+                f"Checked {len(scheduled_tables)} scheduled tables, none are due"
+            )
+            return {}
+
+        logger.info(
+            f"Syncing {len(due_tables)}/{len(scheduled_tables)} due tables: "
+            f"{', '.join(tc.name for tc in due_tables)}"
+        )
+
+        # Sync due tables
+        results = {}
+        for table_config in due_tables:
+            try:
+                result = self.data_source.sync_table(table_config, self.sync_state)
+                results[table_config.id] = result
+                if result["success"]:
+                    logger.info(
+                        f"  {table_config.name}: {result['rows']:,} rows, "
+                        f"{result['file_size_mb']:.2f} MB"
+                    )
+                else:
+                    logger.error(f"  {table_config.name}: {result['error']}")
+            except Exception as e:
+                logger.error(f"  {table_config.name}: sync failed: {e}")
+                results[table_config.id] = {"success": False, "error": str(e)}
+
+        success_count = sum(1 for r in results.values() if r["success"])
+        logger.info(f"Scheduled sync: {success_count}/{len(results)} tables successful")
+
+        # Generate schema.yml
+        if success_count > 0:
+            try:
+                self._generate_schema_yaml()
+            except Exception as e:
+                logger.warning(f"Failed to generate schema.yml: {e}")
+
+        # Profile only tables with profile_after_sync=True
+        skip_profiler = [
+            tc.id for tc in due_tables if not tc.profile_after_sync
+        ]
+        if skip_profiler:
+            logger.info(
+                f"Skipping profiler for: "
+                f"{', '.join(self.config.get_table_config(tid).name for tid in skip_profiler)}"
+            )
+
+        profiled_any = False
+        if success_count > 0:
+            tables_to_profile = [
+                tid for tid, r in results.items()
+                if r.get("success") and tid not in set(skip_profiler)
+            ]
+            if tables_to_profile:
+                self._auto_profile(results, skip_tables=skip_profiler)
+                profiled_any = True
+
+        # Restart webapp if profiler ran (new profiles.json needs reload)
+        if profiled_any:
+            self._restart_webapp()
+
+        return results
+
+    def _restart_webapp(self):
+        """Restart webapp service to pick up new profiles.json."""
+        import subprocess
+        try:
+            subprocess.run(
+                ["sudo", "systemctl", "restart", "webapp"],
+                check=True,
+                capture_output=True,
+                timeout=30,
+            )
+            logger.info("Webapp restarted successfully")
+        except subprocess.CalledProcessError as e:
+            logger.warning(f"Failed to restart webapp: {e.stderr.decode() if e.stderr else e}")
+        except FileNotFoundError:
+            logger.debug("systemctl not found (not running on server)")
 
 
 def create_sync_manager() -> DataSyncManager:
@@ -563,16 +691,25 @@ if __name__ == "__main__":
     # CLI interface for sync
     import sys
 
-    print("Data Sync")
+    scheduled_mode = "--scheduled" in sys.argv
+    table_args = [a for a in sys.argv[1:] if a != "--scheduled"]
 
     try:
         manager = create_sync_manager()
 
-        if len(sys.argv) > 1:
-            tables_to_sync = sys.argv[1:]
-            print(f"\nSynchronizing selected tables: {', '.join(tables_to_sync)}")
-            results = manager.sync_all(tables=tables_to_sync)
+        if scheduled_mode:
+            print("Data Sync (scheduled mode)")
+            results = manager.sync_scheduled()
+
+            if not results:
+                print("No tables due for sync")
+                sys.exit(0)
+        elif table_args:
+            print("Data Sync")
+            print(f"\nSynchronizing selected tables: {', '.join(table_args)}")
+            results = manager.sync_all(tables=table_args)
         else:
+            print("Data Sync")
             print("\nSynchronizing all tables...")
             results = manager.sync_all()
 
