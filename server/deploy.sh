@@ -202,7 +202,7 @@ if [[ -f "${REPO_DIR}/auth/password.py" ]]; then
 fi
 
 # Corporate memory directory
-if [[ -d "${REPO_DIR}/services/corporate-memory" ]]; then
+if [[ -d "${REPO_DIR}/services/corporate_memory" ]]; then
     log "Setting up corporate memory directory..."
     sudo /usr/bin/mkdir -p /data/corporate-memory
     sudo /usr/bin/chown root:data-ops /data/corporate-memory
@@ -238,6 +238,24 @@ for unit_file in "${REPO_DIR}"/services/*/systemd/*.service "${REPO_DIR}"/servic
     fi
 done
 if [[ "$SYSTEMD_CHANGED" == "true" ]]; then
+    # Ensure all ReadWritePaths directories exist before daemon-reload.
+    # ProtectSystem=strict uses mount namespaces for ReadWritePaths — if any
+    # listed path is missing, the service fails at NAMESPACE step before any
+    # Exec* directive runs. This loop prevents that class of failures.
+    log "Validating ReadWritePaths directories..."
+    for installed_unit in /etc/systemd/system/*.service; do
+        [[ -f "$installed_unit" ]] || continue
+        rw_paths=$(grep -oP '^ReadWritePaths=\K.*' "$installed_unit" 2>/dev/null || true)
+        for rw_path in $rw_paths; do
+            if [[ ! -d "$rw_path" ]]; then
+                log "  Creating missing ReadWritePaths: $rw_path (required by $(basename "$installed_unit"))"
+                sudo /usr/bin/mkdir -p "$rw_path"
+                sudo /usr/bin/chown root:data-ops "$rw_path"
+                sudo /usr/bin/chmod 2770 "$rw_path"
+            fi
+        done
+    done
+
     sudo /usr/bin/systemctl daemon-reload
     log "  systemd daemon-reload completed"
 fi

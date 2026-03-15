@@ -15,9 +15,9 @@ EnvironmentFile=/opt/data-analyst/.env
 Environment=PYTHONPATH=/opt/data-analyst/repo
 Environment=CONFIG_DIR=/opt/data-analyst/instance/config
 
-# Write access to data directory and logs
+# Write access to data directory, logs, and /tmp (for staging + lock file)
 ProtectSystem=strict
-ReadWritePaths=/data /opt/data-analyst/logs /tmp/data_analyst_staging
+ReadWritePaths=/data /opt/data-analyst/logs /tmp
 PrivateTmp=false
 
 # Sync can take a while for large tables
