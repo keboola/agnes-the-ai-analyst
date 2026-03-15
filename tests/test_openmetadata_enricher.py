@@ -235,7 +235,8 @@ def test_derive_fqn_explicit_override():
 
 def test_parse_table_response(sample_om_response):
     """Test parsing OpenMetadata table response."""
-    with patch("connectors.openmetadata.enricher.OpenMetadataClient"):
+    with patch("connectors.openmetadata.enricher.OpenMetadataClient") as mock_client_cls:
+        mock_client_cls.return_value.base_url = "https://catalog.example.com"
         enricher = CatalogEnricher(
             {
                 "openmetadata": {

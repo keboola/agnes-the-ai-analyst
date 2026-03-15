@@ -87,22 +87,24 @@ class OpenMetadataClient:
 
         return response.json()
 
-    def get_metrics(self, limit: int = 100) -> List[Dict[str, Any]]:
+    def get_metrics(self, limit: int = 100, fields: str = "tags,owners") -> List[Dict[str, Any]]:
         """
-        Fetch list of available metrics from OpenMetadata (Phase 2).
+        Fetch list of available metrics from OpenMetadata.
 
         Args:
             limit: Maximum number of metrics to return
+            fields: Comma-separated list of fields to include (e.g., "tags,owners")
 
         Returns:
             List of metric dictionaries with:
             - id, name, fullyQualifiedName
             - description
             - metricExpression: metric calculation SQL/formula
-            - owners, tags
+            - owners, tags (when requested via fields)
         """
         params = {
             "limit": limit,
+            "fields": fields,
         }
 
         response = self._client.get("/api/v1/metrics", params=params)
@@ -111,25 +113,27 @@ class OpenMetadataClient:
         data = response.json()
         return data.get("data", [])
 
-    def get_metric_by_fqn(self, fqn: str) -> Dict[str, Any]:
+    def get_metric_by_fqn(self, fqn: str, fields: str = "tags,owners") -> Dict[str, Any]:
         """
         Fetch a specific metric by FQN from OpenMetadata.
 
         Args:
             fqn: Fully qualified name (e.g., "Active2 Customers")
+            fields: Comma-separated list of fields to include
 
         Returns:
             Dictionary with metric metadata:
             - id, name, fullyQualifiedName
             - description, metricExpression
-            - owners, tags
+            - owners, tags (when requested via fields)
 
         Raises:
             httpx.HTTPStatusError: If request fails (non-2xx status)
         """
         url = f"/api/v1/metrics/name/{fqn}"
+        params = {"fields": fields}
 
-        response = self._client.get(url)
+        response = self._client.get(url, params=params)
         response.raise_for_status()
 
         return response.json()

@@ -62,6 +62,16 @@ try:
 except ImportError:
     MetricParser = None
 
+# Shared OpenMetadata transformer (catalog -> dict)
+try:
+    from connectors.openmetadata.transformer import (
+        metric_to_detail_dict as _transformer_metric_detail,
+        metric_to_display_dict as _transformer_metric_display,
+    )
+    _TRANSFORMER_AVAILABLE = True
+except ImportError:
+    _TRANSFORMER_AVAILABLE = False
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -645,31 +655,29 @@ def _parse_om_metric(raw_metric: dict) -> dict:
     """
     Parse raw OpenMetadata metric dict into format for metric list display.
 
-    Extracts category, grain from tags with standard prefixes:
-    - Category: tagFQN like "MetricCategory.finance" or "Category.marketing"
-    - Grain: tagFQN like "Grain.monthly"
+    Delegates to shared transformer module for consistent parsing across
+    webapp and catalog export.
 
     Args:
-        raw_metric: Raw metric dict from OpenMetadata (id, fullyQualifiedName, description, tags, etc.)
+        raw_metric: Raw metric dict from OpenMetadata
 
     Returns:
-        Dict with keys: name, display_name, description, grain, path
-        (path = "catalog:{fullyQualifiedName}" for JS routing)
+        Dict with keys: name, display_name, description, grain, category, path
     """
+    if _TRANSFORMER_AVAILABLE:
+        return _transformer_metric_display(raw_metric)
+
+    # Inline fallback if transformer module not available
     fqn = raw_metric.get("fullyQualifiedName", "")
     name = raw_metric.get("name", "")
     display_name = raw_metric.get("displayName", name)
     description = raw_metric.get("description", "") or ""
-
-    # Extract category from tags, grain from granularity field
     tags = raw_metric.get("tags", [])
     category = "general"
     grain = raw_metric.get("granularity", "") or ""
 
     for tag in tags:
         tag_fqn = tag.get("tagFQN", "")
-
-        # Extract category from MetricCategory.* or Category.* tags
         if tag_fqn.startswith("MetricCategory."):
             category = tag_fqn.split(".", 1)[1]
         elif tag_fqn.startswith("Category."):
@@ -679,9 +687,9 @@ def _parse_om_metric(raw_metric: dict) -> dict:
         "name": name,
         "display_name": display_name,
         "description": description,
-        "grain": grain.lower() if grain else "",  # Normalize to lowercase
+        "grain": grain.lower() if grain else "",
         "category": category,
-        "path": f"catalog:{fqn}",  # Special prefix for JS routing
+        "path": f"catalog:{fqn}",
     }
 
 
@@ -761,8 +769,7 @@ def _build_om_metric_detail(raw_metric: dict) -> dict:
     """
     Convert raw OpenMetadata metric into MetricParser-compatible JSON for modal.
 
-    Maps OpenMetadata fields to MetricParser structure (name, display_name, category, metadata, etc.).
-    Extracts type, unit, grain from OpenMetadata fields (metricType, unitOfMeasurement, granularity).
+    Delegates to shared transformer module for consistent parsing.
 
     Args:
         raw_metric: Raw metric dict from OpenMetadata
@@ -770,12 +777,17 @@ def _build_om_metric_detail(raw_metric: dict) -> dict:
     Returns:
         Dict matching MetricParser._structure_metric_data() format
     """
+    category_colors = MetricParser.CATEGORY_COLORS if MetricParser else {}
+
+    if _TRANSFORMER_AVAILABLE:
+        return _transformer_metric_detail(raw_metric, category_colors=category_colors)
+
+    # Inline fallback if transformer module not available
     fqn = raw_metric.get("fullyQualifiedName", "")
     name = raw_metric.get("name", "")
     display_name = raw_metric.get("displayName", name)
     description = raw_metric.get("description", "") or ""
 
-    # OpenMetadata uses metricExpression instead of expression
     expression = ""
     metric_expr = raw_metric.get("metricExpression", {})
     if isinstance(metric_expr, dict):
@@ -783,67 +795,31 @@ def _build_om_metric_detail(raw_metric: dict) -> dict:
     elif isinstance(metric_expr, str):
         expression = metric_expr
 
-    owners = raw_metric.get("owners", [])
-
-    # Extract metadata from OpenMetadata fields and tags
     metric_type = raw_metric.get("metricType", "") or ""
     unit = raw_metric.get("unitOfMeasurement", "") or ""
     grain = raw_metric.get("granularity", "") or ""
     category = "general"
     dimensions = []
 
-    # Also check tags for category and dimensions
-    tags = raw_metric.get("tags", [])
-    for tag in tags:
+    for tag in raw_metric.get("tags", []):
         tag_fqn = tag.get("tagFQN", "")
-
         if tag_fqn.startswith("MetricCategory."):
             category = tag_fqn.split(".", 1)[1]
         elif tag_fqn.startswith("Dimension."):
             dimensions.append(tag_fqn.split(".", 1)[1])
 
-    # Extract owner names
-    owner_names = []
-    for owner in owners:
-        name_val = owner.get("name") or owner.get("displayName", "")
-        if name_val:
-            owner_names.append(name_val)
-
-    # Build MetricParser-compatible structure
     return {
         "name": name,
         "display_name": display_name,
         "category": category,
-        "category_color": MetricParser.CATEGORY_COLORS.get(category, "#6B7280"),
-        "metadata": {
-            "type": metric_type,
-            "unit": unit,
-            "grain": grain,
-            "time_column": "",  # Not available in OpenMetadata
-        },
-        "overview": {
-            "description": description.strip(),
-            "key_insights": [],  # Not available in OpenMetadata
-        },
-        "validation": None,  # Not available in OpenMetadata
+        "category_color": category_colors.get(category, "#6B7280"),
+        "metadata": {"type": metric_type, "unit": unit, "grain": grain, "time_column": ""},
+        "overview": {"description": description.strip(), "key_insights": []},
+        "validation": None,
         "dimensions": dimensions,
-        "notes": {
-            "all": [],  # Not available in OpenMetadata
-            "key_insights": [],
-        },
-        "sql_examples": {
-            "expression": {
-                "title": "Metric Expression",
-                "query": expression,
-                "complexity": "simple",
-            }
-        } if expression else {},
-        "technical": {
-            "table": "",  # Not available in OpenMetadata
-            "expression": expression,
-            "synonyms": [],
-            "data_sources": [],
-        },
+        "notes": {"all": [], "key_insights": []},
+        "sql_examples": {"expression": {"title": "Metric Expression", "query": expression, "complexity": "simple"}} if expression else {},
+        "technical": {"table": "", "expression": expression, "synonyms": [], "data_sources": []},
         "special_sections": {},
     }
 
