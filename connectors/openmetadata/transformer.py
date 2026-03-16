@@ -319,6 +319,7 @@ def metric_to_display_dict(raw_metric: Dict[str, Any]) -> Dict[str, Any]:
     Parse raw OpenMetadata metric for metric list display in webapp.
 
     Returns a lightweight dict for listing metrics (not full detail).
+    Description is stripped of HTML and truncated for list view.
 
     Args:
         raw_metric: Raw metric dict from OpenMetadata API
@@ -332,10 +333,15 @@ def metric_to_display_dict(raw_metric: Dict[str, Any]) -> Dict[str, Any]:
     description = raw_metric.get("description", "") or ""
     tags = raw_metric.get("tags", [])
 
+    # Strip HTML and truncate for list excerpt
+    clean_desc = strip_html(description)
+    if len(clean_desc) > 150:
+        clean_desc = clean_desc[:147] + "..."
+
     return {
         "name": name,
         "display_name": display_name,
-        "description": description,
+        "description": clean_desc,
         "grain": extract_grain(raw_metric),
         "category": extract_category(tags),
         "path": f"catalog:{fqn}",
@@ -376,6 +382,7 @@ def metric_to_detail_dict(raw_metric: Dict[str, Any], category_colors: Optional[
         },
         "overview": {
             "description": strip_html(description),
+            "description_html": description,
             "key_insights": [],
         },
         "validation": None,

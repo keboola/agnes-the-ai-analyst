@@ -1415,7 +1415,7 @@
                     {% for metric in category.metrics %}
                     <div class="table-row" onclick="openMetricModal('{{ metric.path }}')">
                         <div class="table-row-left">
-                            <div class="table-row-name">{{ metric.name }}</div>
+                            <div class="table-row-name">{{ metric.display_name }}</div>
                             <div class="table-row-desc">{{ metric.description }}</div>
                         </div>
                         <div class="table-row-right">

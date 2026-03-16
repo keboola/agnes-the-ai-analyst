@@ -829,7 +829,7 @@ def _build_om_metric_detail(raw_metric: dict) -> dict:
         "category": category,
         "category_color": category_colors.get(category, "#6B7280"),
         "metadata": {"type": metric_type, "unit": unit, "grain": grain, "time_column": ""},
-        "overview": {"description": description.strip(), "key_insights": []},
+        "overview": {"description": description.strip(), "description_html": description.strip(), "key_insights": []},
         "validation": None,
         "dimensions": dimensions,
         "notes": {"all": [], "key_insights": []},

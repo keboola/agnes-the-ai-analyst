@@ -148,12 +148,17 @@ function renderMetricModal(data) {
 function renderOverviewTab(data) {
     const keyInsights = data.notes.key_insights || data.notes.all.slice(0, 5);
 
+    // Prefer rendered HTML from catalog over stripped plain text
+    const descriptionContent = data.overview.description_html
+        ? `<div class="om-description">${data.overview.description_html}</div>`
+        : `<p>${escapeHtml(data.overview.description)}</p>`;
+
     return `
         <div id="tabOverview" class="metric-tab-content">
             <div class="metric-section">
                 <h3 class="metric-section-header">What it measures</h3>
                 <div class="metric-section-content">
-                    <p>${data.overview.description}</p>
+                    ${descriptionContent}
                 </div>
             </div>
 

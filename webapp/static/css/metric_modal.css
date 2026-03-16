@@ -330,6 +330,46 @@
     font-weight: 500;
 }
 
+/* OpenMetadata HTML description (rendered from catalog) */
+.om-description {
+    font-size: 15px;
+    line-height: 1.7;
+    color: #374151;
+}
+
+.om-description p {
+    margin: 0 0 12px 0;
+}
+
+.om-description p:last-child {
+    margin-bottom: 0;
+}
+
+.om-description strong {
+    color: #111827;
+    font-weight: 600;
+}
+
+.om-description ul,
+.om-description ol {
+    margin: 8px 0 12px 0;
+    padding-left: 24px;
+}
+
+.om-description li {
+    margin-bottom: 4px;
+    line-height: 1.6;
+}
+
+.om-description code {
+    background: #F3F4F6;
+    color: #0073D1;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: 'Monaco', 'Menlo', monospace;
+    font-size: 13px;
+}
+
 /* Dimension Pills */
 .metric-dimensions {
     display: flex;
