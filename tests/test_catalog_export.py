@@ -297,6 +297,52 @@ class TestExportMetrics:
         assert (docs / "metrics" / "finance" / "total_revenue.yml").exists()
         assert (docs / "metrics" / "product" / "active_users.yml").exists()
 
+    def test_export_metrics_filter_tag_keeps_matching(self, tmp_path: Path, mock_client):
+        """Only metrics with the filter_tag are exported."""
+        tagged = _make_raw_metric(name="M1", fqn="M1", category_tag="MetricCategory.finance")
+        tagged["tags"].append({"tagFQN": "AIAgent.FoundryAI", "name": "FoundryAI"})
+
+        untagged = _make_raw_metric(
+            name="Live Deals", fqn="LiveDeals", category_tag="MetricCategory.supply"
+        )
+
+        mock_client.get_metrics.return_value = [tagged, untagged]
+
+        docs = tmp_path / "docs"
+        count = export_metrics(mock_client, docs, CATALOG_URL, filter_tag="AIAgent.FoundryAI")
+
+        assert count == 1
+        assert (docs / "metrics" / "finance" / "m1.yml").exists()
+        assert not (docs / "metrics" / "supply").exists()
+
+    def test_export_metrics_filter_tag_empty_exports_all(self, tmp_path: Path, mock_client):
+        """Empty filter_tag means no filtering - all metrics exported."""
+        mock_client.get_metrics.return_value = [
+            _make_raw_metric(name="A", fqn="A"),
+            _make_raw_metric(name="B", fqn="B"),
+        ]
+
+        docs = tmp_path / "docs"
+        count = export_metrics(mock_client, docs, CATALOG_URL, filter_tag="")
+
+        assert count == 2
+
+    def test_export_metrics_filter_tag_cleans_stale_untagged(self, tmp_path: Path, mock_client):
+        """Stale files from previously-exported untagged metrics get cleaned up."""
+        tagged = _make_raw_metric(name="M1", fqn="M1", category_tag="MetricCategory.finance")
+        tagged["tags"].append({"tagFQN": "AIAgent.FoundryAI", "name": "FoundryAI"})
+        mock_client.get_metrics.return_value = [tagged]
+
+        docs = tmp_path / "docs"
+        stale_dir = docs / "metrics" / "general"
+        stale_dir.mkdir(parents=True)
+        stale = stale_dir / "livedeals.yml"
+        stale.write_text(AUTO_GENERATED_MARKER + "\nname: livedeals\n")
+
+        export_metrics(mock_client, docs, CATALOG_URL, filter_tag="AIAgent.FoundryAI")
+
+        assert not stale.exists()
+
 
 # ---------------------------------------------------------------------------
 # 4. export_tables

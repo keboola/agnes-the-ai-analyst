@@ -15,6 +15,7 @@ from connectors.openmetadata.transformer import (
     extract_owners,
     extract_tag_names,
     extract_unit,
+    has_tag,
     metric_to_detail_dict,
     metric_to_display_dict,
     metric_to_yaml_dict,
@@ -330,6 +331,30 @@ class TestExtractUnit:
 # ===========================================================================
 # extract_tag_names
 # ===========================================================================
+
+class TestHasTag:
+    def test_has_tag_present(self):
+        """Returns True when tag with matching FQN is in the list."""
+        tags = [
+            {"tagFQN": "AIAgent.FoundryAI", "name": "FoundryAI"},
+            {"tagFQN": "Tier.Tier1"},
+        ]
+        assert has_tag(tags, "AIAgent.FoundryAI") is True
+
+    def test_has_tag_absent(self):
+        """Returns False when tag is not in the list."""
+        tags = [{"tagFQN": "Tier.Tier2"}]
+        assert has_tag(tags, "AIAgent.FoundryAI") is False
+
+    def test_has_tag_empty_list(self):
+        """Returns False for empty tag list."""
+        assert has_tag([], "AIAgent.FoundryAI") is False
+
+    def test_has_tag_partial_match(self):
+        """Does not match partial FQN."""
+        tags = [{"tagFQN": "AIAgent.FoundryAI_v2"}]
+        assert has_tag(tags, "AIAgent.FoundryAI") is False
+
 
 class TestExtractTagNames:
     def test_extract_tag_names_with_name_field(self):

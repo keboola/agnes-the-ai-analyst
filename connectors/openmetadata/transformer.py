@@ -174,6 +174,20 @@ def extract_unit(raw_metric: Dict[str, Any]) -> str:
     return ""
 
 
+def has_tag(tags: List[Dict[str, Any]], tag_fqn: str) -> bool:
+    """
+    Check if a specific tag (by FQN) is present in the tag list.
+
+    Args:
+        tags: List of tag dicts from OpenMetadata
+        tag_fqn: Fully qualified tag name to check (e.g., "AIAgent.FoundryAI")
+
+    Returns:
+        True if the tag is found
+    """
+    return any(t.get("tagFQN", "") == tag_fqn for t in tags)
+
+
 def extract_tag_names(tags: List[Dict[str, Any]]) -> List[str]:
     """
     Extract simple tag names from OpenMetadata tag list.

@@ -29,6 +29,7 @@ from connectors.openmetadata.client import OpenMetadataClient
 from connectors.openmetadata.transformer import (
     extract_category,
     extract_grain,
+    has_tag,
     metric_to_yaml_dict,
     sanitize_filename,
     table_to_yaml_dict,
@@ -121,21 +122,24 @@ def export_metrics(
     client: OpenMetadataClient,
     docs_dir: Path,
     catalog_url: str,
+    filter_tag: str = "",
 ) -> int:
     """
     Export metrics from OpenMetadata to YAML files.
 
     For each metric:
     1. Fetches all metrics from catalog API
-    2. Transforms each to YAML-compatible dict
-    3. Writes individual YAML files: {docs_dir}/metrics/{category}/{name}.yml
-    4. Writes index file: {docs_dir}/metrics/metrics.yml
-    5. Cleans up stale auto-generated files
+    2. Filters by required tag (if configured)
+    3. Transforms each to YAML-compatible dict
+    4. Writes individual YAML files: {docs_dir}/metrics/{category}/{name}.yml
+    5. Writes index file: {docs_dir}/metrics/metrics.yml
+    6. Cleans up stale auto-generated files
 
     Args:
         client: Initialized OpenMetadata API client
         docs_dir: Base docs directory (e.g., /data/docs)
         catalog_url: Catalog URL for header comments
+        filter_tag: If set, only export metrics that have this tag (e.g., "AIAgent.FoundryAI")
 
     Returns:
         Number of metrics exported
@@ -150,6 +154,14 @@ def export_metrics(
         return 0
 
     logger.info(f"Fetched {len(raw_metrics)} metrics from catalog")
+
+    # Filter by tag if configured
+    if filter_tag:
+        filtered = [m for m in raw_metrics if has_tag(m.get("tags", []), filter_tag)]
+        logger.info(
+            f"Tag filter '{filter_tag}': {len(filtered)}/{len(raw_metrics)} metrics matched"
+        )
+        raw_metrics = filtered
 
     # Track which files we write (for cleanup)
     written_files: set[Path] = set()
@@ -400,9 +412,12 @@ def main() -> None:
         logger.warning(f"Failed to initialize OpenMetadata client: {e}")
         return
 
+    # Optional tag filter (only export metrics with this tag)
+    filter_tag = om_config.get("filter_tag", "").strip()
+
     try:
         # Export metrics
-        metrics_count = export_metrics(client, docs_dir, catalog_url)
+        metrics_count = export_metrics(client, docs_dir, catalog_url, filter_tag=filter_tag)
 
         # Export tables
         try:
