@@ -5,9 +5,10 @@ Parses sync_schedule strings from table configuration and determines
 whether a table is due for synchronization based on its last sync time.
 
 Schedule formats:
-    "every 15m"   - every 15 minutes
-    "every 1h"    - every hour
-    "daily 05:00" - once per day at 05:00 UTC
+    "every 15m"            - every 15 minutes
+    "every 1h"             - every hour
+    "daily 05:00"          - once per day at 05:00 UTC
+    "daily 07:00,13:00,18:00" - multiple times per day (UTC)
 """
 
 import logging
@@ -20,8 +21,8 @@ logger = logging.getLogger(__name__)
 # Pattern: "every 15m", "every 2h"
 INTERVAL_PATTERN = re.compile(r"^every (\d+)([mh])$")
 
-# Pattern: "daily 05:00", "daily 17:30"
-DAILY_PATTERN = re.compile(r"^daily (\d{2}):(\d{2})$")
+# Pattern: "daily 05:00", "daily 17:30", "daily 07:00,13:00,18:00"
+DAILY_PATTERN = re.compile(r"^daily ([\d:,]+)$")
 
 
 def parse_interval_minutes(schedule: str) -> Optional[int]:
@@ -87,50 +88,61 @@ def is_table_due(
             )
         return due
 
-    # Check daily schedule: "daily HH:MM"
+    # Check daily schedule: "daily HH:MM" or "daily HH:MM,HH:MM,..."
     match = DAILY_PATTERN.match(schedule)
     if match:
-        target_hour = int(match.group(1))
-        target_minute = int(match.group(2))
-        return _is_daily_due(last_sync, now, target_hour, target_minute)
+        times_str = match.group(1)
+        target_times = _parse_daily_times(times_str)
+        if not target_times:
+            logger.warning(f"Invalid daily schedule times: {schedule}")
+            return False
+        return _is_daily_due(last_sync, now, target_times)
 
     logger.warning(f"Unknown schedule format: {schedule}")
     return False
 
 
+def _parse_daily_times(times_str: str) -> list[tuple[int, int]]:
+    """Parse comma-separated HH:MM times into list of (hour, minute) tuples."""
+    time_pattern = re.compile(r"^(\d{2}):(\d{2})$")
+    result = []
+    for part in times_str.split(","):
+        m = time_pattern.match(part.strip())
+        if not m:
+            return []
+        hour, minute = int(m.group(1)), int(m.group(2))
+        if hour > 23 or minute > 59:
+            return []
+        result.append((hour, minute))
+    return result
+
+
 def _is_daily_due(
     last_sync: datetime,
     now: datetime,
-    target_hour: int,
-    target_minute: int,
+    target_times: list[tuple[int, int]],
 ) -> bool:
     """Check if a daily schedule is due.
 
-    A daily schedule at HH:MM is due when:
+    Supports multiple target times per day. A target time is due when:
     1. Current time is at or past HH:MM today, AND
     2. Last sync was before HH:MM today
 
-    This means: once HH:MM passes, the first scheduler tick will trigger it,
-    and subsequent ticks on the same day will skip it.
+    Returns True if ANY of the target times is due.
     """
-    # Today's target time
-    today_target = now.replace(
-        hour=target_hour, minute=target_minute, second=0, microsecond=0
-    )
+    for target_hour, target_minute in target_times:
+        today_target = now.replace(
+            hour=target_hour, minute=target_minute, second=0, microsecond=0
+        )
 
-    # Not yet time today
-    if now < today_target:
-        return False
+        if now >= today_target and last_sync < today_target:
+            logger.debug(
+                f"Daily schedule: target {target_hour:02d}:{target_minute:02d} UTC, "
+                f"last sync {last_sync.isoformat()}, now {now.isoformat()} -> due"
+            )
+            return True
 
-    # Time has passed, check if we already synced after today's target
-    if last_sync >= today_target:
-        return False
-
-    logger.debug(
-        f"Daily schedule: target {target_hour:02d}:{target_minute:02d} UTC, "
-        f"last sync {last_sync.isoformat()}, now {now.isoformat()} -> due"
-    )
-    return True
+    return False
 
 
 def _parse_timestamp(iso_string: str) -> Optional[datetime]:

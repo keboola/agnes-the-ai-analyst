@@ -7,6 +7,7 @@ import pytest
 
 from src.scheduler import (
     _is_daily_due,
+    _parse_daily_times,
     _parse_timestamp,
     is_table_due,
     parse_interval_minutes,
@@ -229,27 +230,85 @@ class TestIsDailyDue:
     def test_before_target_not_due(self) -> None:
         now = datetime(2026, 3, 15, 4, 0, 0, tzinfo=timezone.utc)
         last_sync = datetime(2026, 3, 14, 5, 30, 0, tzinfo=timezone.utc)
-        assert _is_daily_due(last_sync, now, target_hour=5, target_minute=0) is False
+        assert _is_daily_due(last_sync, now, [(5, 0)]) is False
 
     def test_after_target_last_sync_before_target_is_due(self) -> None:
         now = datetime(2026, 3, 15, 6, 0, 0, tzinfo=timezone.utc)
         last_sync = datetime(2026, 3, 15, 4, 0, 0, tzinfo=timezone.utc)
-        assert _is_daily_due(last_sync, now, target_hour=5, target_minute=0) is True
+        assert _is_daily_due(last_sync, now, [(5, 0)]) is True
 
     def test_after_target_last_sync_after_target_not_due(self) -> None:
         now = datetime(2026, 3, 15, 6, 0, 0, tzinfo=timezone.utc)
         last_sync = datetime(2026, 3, 15, 5, 30, 0, tzinfo=timezone.utc)
-        assert _is_daily_due(last_sync, now, target_hour=5, target_minute=0) is False
+        assert _is_daily_due(last_sync, now, [(5, 0)]) is False
 
     def test_target_with_minutes(self) -> None:
         now = datetime(2026, 3, 15, 17, 45, 0, tzinfo=timezone.utc)
         last_sync = datetime(2026, 3, 15, 10, 0, 0, tzinfo=timezone.utc)
-        assert _is_daily_due(last_sync, now, target_hour=17, target_minute=30) is True
+        assert _is_daily_due(last_sync, now, [(17, 30)]) is True
 
     def test_target_with_minutes_not_yet(self) -> None:
         now = datetime(2026, 3, 15, 17, 15, 0, tzinfo=timezone.utc)
         last_sync = datetime(2026, 3, 15, 10, 0, 0, tzinfo=timezone.utc)
-        assert _is_daily_due(last_sync, now, target_hour=17, target_minute=30) is False
+        assert _is_daily_due(last_sync, now, [(17, 30)]) is False
+
+
+class TestMultipleDailyTimes:
+    """Tests for multiple daily schedule times."""
+
+    def test_multi_time_first_due(self) -> None:
+        now = datetime(2026, 3, 15, 8, 0, 0, tzinfo=timezone.utc)
+        last_sync = datetime(2026, 3, 14, 19, 0, 0, tzinfo=timezone.utc)
+        assert _is_daily_due(last_sync, now, [(7, 0), (13, 0), (18, 0)]) is True
+
+    def test_multi_time_second_due(self) -> None:
+        now = datetime(2026, 3, 15, 14, 0, 0, tzinfo=timezone.utc)
+        last_sync = datetime(2026, 3, 15, 7, 30, 0, tzinfo=timezone.utc)
+        assert _is_daily_due(last_sync, now, [(7, 0), (13, 0), (18, 0)]) is True
+
+    def test_multi_time_third_due(self) -> None:
+        now = datetime(2026, 3, 15, 19, 0, 0, tzinfo=timezone.utc)
+        last_sync = datetime(2026, 3, 15, 13, 30, 0, tzinfo=timezone.utc)
+        assert _is_daily_due(last_sync, now, [(7, 0), (13, 0), (18, 0)]) is True
+
+    def test_multi_time_between_slots_not_due(self) -> None:
+        now = datetime(2026, 3, 15, 10, 0, 0, tzinfo=timezone.utc)
+        last_sync = datetime(2026, 3, 15, 7, 30, 0, tzinfo=timezone.utc)
+        assert _is_daily_due(last_sync, now, [(7, 0), (13, 0), (18, 0)]) is False
+
+    def test_multi_time_all_done_not_due(self) -> None:
+        now = datetime(2026, 3, 15, 20, 0, 0, tzinfo=timezone.utc)
+        last_sync = datetime(2026, 3, 15, 18, 30, 0, tzinfo=timezone.utc)
+        assert _is_daily_due(last_sync, now, [(7, 0), (13, 0), (18, 0)]) is False
+
+    def test_is_table_due_multi_time_format(self) -> None:
+        now = datetime(2026, 3, 15, 14, 0, 0, tzinfo=timezone.utc)
+        last_sync = datetime(2026, 3, 15, 7, 30, 0, tzinfo=timezone.utc).isoformat()
+        assert is_table_due("daily 07:00,13:00,18:00", last_sync_iso=last_sync, now=now) is True
+
+    def test_is_table_due_multi_time_not_due(self) -> None:
+        now = datetime(2026, 3, 15, 10, 0, 0, tzinfo=timezone.utc)
+        last_sync = datetime(2026, 3, 15, 7, 30, 0, tzinfo=timezone.utc).isoformat()
+        assert is_table_due("daily 07:00,13:00,18:00", last_sync_iso=last_sync, now=now) is False
+
+
+class TestParseDailyTimes:
+    """Tests for _parse_daily_times()."""
+
+    def test_single_time(self) -> None:
+        assert _parse_daily_times("05:00") == [(5, 0)]
+
+    def test_multiple_times(self) -> None:
+        assert _parse_daily_times("07:00,13:00,18:00") == [(7, 0), (13, 0), (18, 0)]
+
+    def test_invalid_format(self) -> None:
+        assert _parse_daily_times("7:00") == []
+
+    def test_invalid_hour(self) -> None:
+        assert _parse_daily_times("25:00") == []
+
+    def test_invalid_minute(self) -> None:
+        assert _parse_daily_times("12:60") == []
 
 
 # ---------------------------------------------------------------------------
