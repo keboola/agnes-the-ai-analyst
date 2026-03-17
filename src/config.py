@@ -167,12 +167,13 @@ class TableConfig:
             import re as _re
             valid_schedule = (
                 _re.match(r"^every \d+[mh]$", self.sync_schedule)
-                or _re.match(r"^daily \d{2}:\d{2}$", self.sync_schedule)
+                or _re.match(r"^daily \d{2}:\d{2}(,\d{2}:\d{2})*$", self.sync_schedule)
             )
             if not valid_schedule:
                 raise ValueError(
                     f"Invalid sync_schedule '{self.sync_schedule}' for table {self.id}. "
-                    f"Allowed formats: 'every 15m', 'every 1h', 'daily 05:00'"
+                    f"Allowed formats: 'every 15m', 'every 1h', 'daily 05:00', "
+                    f"'daily 07:00,13:00,18:00'"
                 )
 
         # For partitioned, partition_by must be defined
