@@ -8,6 +8,7 @@ Low-level HTTP wrapper for OpenMetadata REST API with these functions:
 4. Proper error handling and logging
 """
 
+import json
 import logging
 from typing import Dict, List, Optional, Any
 import warnings
@@ -137,6 +138,50 @@ class OpenMetadataClient:
         response.raise_for_status()
 
         return response.json()
+
+    def search_by_data_product(
+        self,
+        data_product_name: str,
+        entity_type: str = "",
+        limit: int = 50,
+        fields: str = "tags,owners",
+    ) -> List[Dict[str, Any]]:
+        """
+        Search for entities belonging to a data product.
+
+        Uses OpenMetadata search API with queryFilter to find all assets
+        (metrics, tables, etc.) that are part of the specified data product.
+
+        Args:
+            data_product_name: Name of the data product (e.g., "FoundryAIDataModel")
+            entity_type: Filter by entity type (e.g., "metric", "table"). Empty = all types.
+            limit: Maximum number of results
+            fields: Comma-separated list of fields to include
+
+        Returns:
+            List of entity dictionaries
+        """
+        must_clauses = [
+            {"term": {"dataProducts.name.keyword": data_product_name}},
+        ]
+        if entity_type:
+            must_clauses.append({"term": {"entityType": entity_type}})
+
+        query_filter = json.dumps({"bool": {"must": must_clauses}})
+
+        params = {
+            "q": "*",
+            "index": "all",
+            "size": limit,
+            "queryFilter": query_filter,
+        }
+
+        response = self._client.get("/api/v1/search/query", params=params)
+        response.raise_for_status()
+
+        data = response.json()
+        hits = data.get("hits", {}).get("hits", [])
+        return [hit.get("_source", {}) for hit in hits]
 
     def close(self):
         """Close HTTP client session."""

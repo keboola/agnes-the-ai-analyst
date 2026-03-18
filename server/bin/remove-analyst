@@ -47,12 +47,15 @@ if [[ "$USERNAME" == "$CURRENT_USER" ]]; then
     exit 1
 fi
 
-# Get user groups for info (safe extraction, no pipefail issues)
-GROUPS=$(id -nG "$USERNAME" 2>/dev/null) || GROUPS="(unknown)"
+# Get user info (avoid using GROUPS - it's a bash special variable for current user's GIDs)
+USER_GROUPS=$(id -nG "$USERNAME" 2>/dev/null) || USER_GROUPS="(unknown)"
+HOME_DIR="/home/$USERNAME"
+HOME_EXISTS=false
+[[ -d "$HOME_DIR" ]] && HOME_EXISTS=true
 
 echo "Removing user: $USERNAME"
-echo "  Groups: $GROUPS"
-echo "  Home: /home/$USERNAME"
+echo "  Groups: $USER_GROUPS"
+echo "  Home: $HOME_DIR ($([ "$HOME_EXISTS" = true ] && echo "exists" || echo "already missing"))"
 
 if [[ "$FORCE" != true ]]; then
     read -p "Are you sure? [y/N] " -n 1 -r
@@ -65,16 +68,23 @@ fi
 
 # Remove user and home directory
 echo "  Deleting OS user..."
-if userdel -r "$USERNAME" 2>/dev/null; then
-    echo "  User and home directory removed"
+USERDEL_ERR=$(userdel -r "$USERNAME" 2>&1)
+USERDEL_EXIT=$?
+if [[ $USERDEL_EXIT -eq 0 ]]; then
+    if [[ "$HOME_EXISTS" = true ]]; then
+        echo "  User and home directory removed"
+    else
+        echo "  User removed (home directory was already missing)"
+    fi
 elif userdel "$USERNAME" 2>/dev/null; then
-    echo "  User removed (userdel -r failed, cleaning up home manually)"
-    if [[ -d "/home/$USERNAME" ]]; then
-        rm -rf "/home/$USERNAME"
-        echo "  Home directory /home/$USERNAME removed"
+    echo "  User removed (userdel -r failed: $USERDEL_ERR)"
+    if [[ -d "$HOME_DIR" ]]; then
+        rm -rf "$HOME_DIR"
+        echo "  Home directory $HOME_DIR removed"
     fi
 else
     echo "Error: Failed to remove user '$USERNAME'"
+    echo "  userdel error: $USERDEL_ERR"
     echo "  Check if processes are running as this user: ps -u $USERNAME"
     exit 1
 fi

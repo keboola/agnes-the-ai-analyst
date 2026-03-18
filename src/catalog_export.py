@@ -123,23 +123,24 @@ def export_metrics(
     docs_dir: Path,
     catalog_url: str,
     filter_tag: str = "",
+    data_product: str = "",
 ) -> int:
     """
     Export metrics from OpenMetadata to YAML files.
 
     For each metric:
-    1. Fetches all metrics from catalog API
-    2. Filters by required tag (if configured)
-    3. Transforms each to YAML-compatible dict
-    4. Writes individual YAML files: {docs_dir}/metrics/{category}/{name}.yml
-    5. Writes index file: {docs_dir}/metrics/metrics.yml
-    6. Cleans up stale auto-generated files
+    1. Discovers metrics via data product (preferred) or fetches all + filters by tag
+    2. Transforms each to YAML-compatible dict
+    3. Writes individual YAML files: {docs_dir}/metrics/{category}/{name}.yml
+    4. Writes index file: {docs_dir}/metrics/metrics.yml
+    5. Cleans up stale auto-generated files
 
     Args:
         client: Initialized OpenMetadata API client
         docs_dir: Base docs directory (e.g., /data/docs)
         catalog_url: Catalog URL for header comments
         filter_tag: If set, only export metrics that have this tag (e.g., "AIAgent.FoundryAI")
+        data_product: If set, discover metrics via data product assets (preferred over filter_tag)
 
     Returns:
         Number of metrics exported
@@ -147,21 +148,38 @@ def export_metrics(
     metrics_dir = docs_dir / "metrics"
     metrics_dir.mkdir(parents=True, exist_ok=True)
 
-    # Fetch all metrics with tags and owners
-    raw_metrics = client.get_metrics(limit=200, fields="tags,owners")
+    raw_metrics: List[Dict[str, Any]] = []
+
+    # Strategy 1: Discover metrics via data product (preferred)
+    if data_product:
+        try:
+            raw_metrics = client.search_by_data_product(
+                data_product_name=data_product,
+                entity_type="metric",
+                limit=200,
+            )
+            logger.info(
+                f"Data product '{data_product}': found {len(raw_metrics)} metrics"
+            )
+        except Exception as e:
+            logger.warning(f"Data product search failed, falling back to tag filter: {e}")
+            raw_metrics = []
+
+    # Strategy 2: Fallback to tag-based filter
     if not raw_metrics:
-        logger.warning("No metrics returned from catalog - preserving existing files")
-        return 0
+        raw_metrics = client.get_metrics(limit=200, fields="tags,owners")
+        if not raw_metrics:
+            logger.warning("No metrics returned from catalog - preserving existing files")
+            return 0
 
-    logger.info(f"Fetched {len(raw_metrics)} metrics from catalog")
+        logger.info(f"Fetched {len(raw_metrics)} metrics from catalog")
 
-    # Filter by tag if configured
-    if filter_tag:
-        filtered = [m for m in raw_metrics if has_tag(m.get("tags", []), filter_tag)]
-        logger.info(
-            f"Tag filter '{filter_tag}': {len(filtered)}/{len(raw_metrics)} metrics matched"
-        )
-        raw_metrics = filtered
+        if filter_tag:
+            filtered = [m for m in raw_metrics if has_tag(m.get("tags", []), filter_tag)]
+            logger.info(
+                f"Tag filter '{filter_tag}': {len(filtered)}/{len(raw_metrics)} metrics matched"
+            )
+            raw_metrics = filtered
 
     # Track which files we write (for cleanup)
     written_files: set[Path] = set()
@@ -412,12 +430,16 @@ def main() -> None:
         logger.warning(f"Failed to initialize OpenMetadata client: {e}")
         return
 
-    # Optional tag filter (only export metrics with this tag)
+    # Discovery config: data product (preferred) or tag filter (fallback)
     filter_tag = om_config.get("filter_tag", "").strip()
+    data_product = om_config.get("data_product", "").strip()
 
     try:
         # Export metrics
-        metrics_count = export_metrics(client, docs_dir, catalog_url, filter_tag=filter_tag)
+        metrics_count = export_metrics(
+            client, docs_dir, catalog_url,
+            filter_tag=filter_tag, data_product=data_product,
+        )
 
         # Export tables
         try:
