@@ -102,7 +102,8 @@ def extract_expression(raw_metric: Dict[str, Any]) -> str:
     """
     metric_expr = raw_metric.get("metricExpression", {})
     if isinstance(metric_expr, dict):
-        return metric_expr.get("expression", "") or ""
+        # OpenMetadata uses "code" field for the SQL expression
+        return metric_expr.get("code", "") or metric_expr.get("expression", "") or ""
     if isinstance(metric_expr, str):
         return metric_expr
     return ""
