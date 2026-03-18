@@ -83,6 +83,7 @@ logger = logging.getLogger(__name__)
 # Global catalog enricher (initialized in create_app)
 _catalog_enricher = None
 _catalog_filter_tag = ""
+_catalog_data_product = ""
 
 
 def get_git_commit_hash() -> str:
@@ -124,11 +125,14 @@ def create_app() -> Flask:
             _catalog_enricher = CatalogEnricher(instance_config)
             if _catalog_enricher.enabled:
                 logger.info("OpenMetadata catalog enricher initialized")
-            # Store filter tag for metric filtering
-            global _catalog_filter_tag
+            # Store metric discovery config
+            global _catalog_filter_tag, _catalog_data_product
             om_config = instance_config.get("openmetadata", {})
+            _catalog_data_product = om_config.get("data_product", "").strip()
             _catalog_filter_tag = om_config.get("filter_tag", "").strip()
-            if _catalog_filter_tag:
+            if _catalog_data_product:
+                logger.info(f"Catalog metric discovery: data product '{_catalog_data_product}'")
+            elif _catalog_filter_tag:
                 logger.info(f"Catalog metric filter tag: {_catalog_filter_tag}")
         except Exception as e:
             logger.warning(f"Failed to initialize catalog enricher: {e}")
@@ -722,18 +726,20 @@ def _load_metrics_from_catalog() -> list:
         return []
 
     try:
-        # Fetch metrics from catalog
-        raw_metrics = _catalog_enricher.get_metrics()
+        # Fetch metrics - prefer data product filter, fall back to tag filter
+        if _catalog_data_product:
+            raw_metrics = _catalog_enricher.get_metrics_by_data_product(_catalog_data_product)
+        else:
+            raw_metrics = _catalog_enricher.get_metrics()
+            if _catalog_filter_tag and _TRANSFORMER_AVAILABLE:
+                raw_metrics = [
+                    m for m in raw_metrics
+                    if _transformer_has_tag(m.get("tags", []), _catalog_filter_tag)
+                ]
+
         if not raw_metrics:
             logger.debug("No metrics found in catalog")
             return []
-
-        # Filter by tag if configured
-        if _catalog_filter_tag and _TRANSFORMER_AVAILABLE:
-            raw_metrics = [
-                m for m in raw_metrics
-                if _transformer_has_tag(m.get("tags", []), _catalog_filter_tag)
-            ]
 
         # Parse each metric and group by category
         categories = {}

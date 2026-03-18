@@ -340,6 +340,35 @@ class CatalogEnricher:
             logger.warning(f"Failed to fetch metrics from catalog: {e}")
             return []
 
+    def get_metrics_by_data_product(self, data_product_name: str, limit: int = 200) -> List[Dict[str, Any]]:
+        """
+        Fetch metrics belonging to a specific data product.
+
+        Preferred over get_metrics() + tag filter when data_product is configured,
+        as it returns exactly the metrics in the data product regardless of tags.
+
+        Returns empty list if enricher disabled, catalog unavailable, or on error.
+        Never raises exception (graceful degradation).
+        """
+        if not self.enabled or not self._client:
+            return []
+
+        try:
+            cache_key = f"__metrics_dp_{data_product_name}__"
+            cached = self._get_from_cache(cache_key)
+            if cached is not None:
+                logger.debug(f"Catalog cache hit: metrics for data product '{data_product_name}'")
+                return cached
+
+            metrics = self._client.search_by_data_product(data_product_name, entity_type="metric", limit=limit)
+            self._cache_entry(cache_key, metrics)
+            logger.info(f"Loaded {len(metrics)} metrics from data product '{data_product_name}'")
+            return metrics
+
+        except Exception as e:
+            logger.warning(f"Failed to fetch metrics for data product '{data_product_name}': {e}")
+            return []
+
     def clear_cache(self):
         """Manually clear all cached entries."""
         self._cache.clear()
