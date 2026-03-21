@@ -533,7 +533,43 @@ Examples:
         action="store_true",
         help="Suppress progress messages (stderr)",
     )
+    parser.add_argument(
+        "--stdin",
+        action="store_true",
+        help="Read query spec from stdin as JSON. Avoids shell escaping issues.",
+    )
     return parser
+
+
+def _parse_stdin_query() -> dict:
+    """Parse query specification from stdin JSON.
+
+    Expected format:
+    {
+        "sql": "SELECT ... FROM ...",
+        "register_bq": {"alias": "BQ SQL", ...},
+        "format": "table",
+        "output": "/path/to/file",
+        "max_rows": 100000,
+        "max_bq_rows": 500000
+    }
+
+    Returns:
+        Dict with parsed query spec
+    """
+    raw = sys.stdin.read().strip()
+    if not raw:
+        raise RemoteQueryError("Empty stdin. Provide JSON query spec.")
+
+    try:
+        spec = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise RemoteQueryError(f"Invalid JSON on stdin: {e}")
+
+    if "sql" not in spec:
+        raise RemoteQueryError("JSON must contain 'sql' field.")
+
+    return spec
 
 
 def main(argv: Optional[list[str]] = None) -> None:
@@ -549,6 +585,25 @@ def main(argv: Optional[list[str]] = None) -> None:
     )
 
     try:
+        # --stdin mode: read query spec from JSON on stdin (no shell escaping needed)
+        if args.stdin:
+            spec = _parse_stdin_query()
+            bq_regs = [
+                (alias, sql) for alias, sql in spec.get("register_bq", {}).items()
+            ]
+            execute_remote_query(
+                sql=spec["sql"],
+                bq_registrations=bq_regs,
+                fmt=spec.get("format", args.fmt),
+                output=spec.get("output", args.output),
+                max_rows=spec.get("max_rows", args.max_rows),
+                max_bq_rows=spec.get("max_bq_rows", args.max_bq_rows),
+                timeout=args.timeout,
+                data_dir=args.data_dir,
+                quiet=args.quiet,
+            )
+            return
+
         execute_remote_query(
             sql=args.sql,
             bq_registrations=args.bq_registrations,
