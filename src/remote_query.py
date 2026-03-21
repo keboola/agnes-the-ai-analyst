@@ -36,7 +36,7 @@ from typing import Optional
 
 import duckdb
 
-from config.loader import load_instance_config, get_instance_value
+from config.loader import get_instance_value
 from scripts.duckdb_manager import (
     create_local_views,
     register_bq_table,
@@ -55,12 +55,24 @@ class RemoteQueryError(Exception):
 # ---------------------------------------------------------------------------
 
 def _load_remote_query_config() -> dict:
-    """Load remote_query settings from instance.yaml with defaults."""
-    try:
-        instance_config = load_instance_config()
-    except (FileNotFoundError, ValueError) as e:
-        logger.warning("Could not load instance config: %s. Using defaults.", e)
-        instance_config = {}
+    """Load remote_query settings from instance.yaml with defaults.
+
+    Uses raw YAML loading instead of load_instance_config() to avoid
+    requiring webapp secrets (WEBAPP_SECRET_KEY etc.) that analysts
+    don't have access to.
+    """
+    import yaml as _yaml
+    from pathlib import Path as _Path
+
+    instance_config: dict = {}
+    config_dir = _Path(os.environ.get("CONFIG_DIR", "./config"))
+    yaml_path = config_dir / "instance.yaml"
+    if yaml_path.exists():
+        try:
+            with open(yaml_path) as f:
+                instance_config = _yaml.safe_load(f) or {}
+        except Exception as e:
+            logger.warning("Could not load instance.yaml: %s. Using defaults.", e)
 
     return {
         "timeout_seconds": get_instance_value(
