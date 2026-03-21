@@ -183,6 +183,133 @@ You're ready to analyze!
 
 ---
 
+## Remote Queries (BigQuery)
+
+Some tables are too large for local Parquet sync and are queried remotely via BigQuery.
+These tables have `query_mode: "remote"` in `server/docs/data_description.md`.
+
+### How to recognize remote tables
+
+Before writing any query, read `server/docs/data_description.md`. Each table has:
+- `query_mode: "local"` -- available as a local DuckDB view (query normally)
+- `query_mode: "remote"` -- NOT in local DuckDB, must use remote query protocol below
+- `query_mode: "hybrid"` -- local view exists AND can query BQ for live data
+
+### Remote table metadata in data_description.md
+
+Remote tables include metadata to help you write safe queries:
+
+- **`volume`** -- rows_per_day, unique entities per day (tells you table size)
+- **`columns`** -- column names, types, value distributions
+- **`dimension_profile`** -- cardinality per dimension with value distributions
+- **`query_result_estimates`** -- expected row counts after GROUP BY combinations
+- **`join_keys`** -- how to join with other tables
+
+**ALWAYS read these sections before writing a remote query.** Use `query_result_estimates`
+to predict how many rows your query will return. The server has limited RAM -- keep BQ
+sub-query results under 500K rows.
+
+### Two-phase query protocol
+
+Remote queries run **on the server** via SSH (server has DuckDB + Parquet + BigQuery access).
+You write two SQL statements:
+
+1. **BQ sub-query** (`--register-bq "alias=SQL"`) -- runs on BigQuery, result registered in DuckDB as a view.
+   This MUST contain WHERE and/or GROUP BY to reduce the result set. Never SELECT * from a remote table.
+2. **DuckDB SQL** (`--sql "SQL"`) -- runs in DuckDB after all views (local + BQ) are ready.
+   Can JOIN local tables with registered BQ results.
+
+### Command format
+
+```bash
+ssh {ssh_alias} 'cd /opt/data-analyst && \
+  set -a && source .env && set +a && \
+  PYTHONPATH=repo CONFIG_DIR=instance/config \
+  .venv/bin/python3 -m src.remote_query \
+    --register-bq "ALIAS=BQ_SQL_QUERY" \
+    --sql "DUCKDB_SQL_QUERY" \
+    --format table'
+```
+
+Arguments:
+- `--register-bq "alias=SQL"` -- Register a BQ query result as DuckDB view (repeatable for multiple remote tables)
+- `--sql "SQL"` -- The final DuckDB query (can reference local views + registered BQ aliases)
+- `--format table|csv|json|parquet` -- Output format (default: table)
+- `--output /path/file` -- Output file for parquet/csv/json
+- `--max-rows N` -- Override max result rows
+
+### Example 1: Remote-only query (aggregated data)
+
+```bash
+ssh {ssh_alias} 'cd /opt/data-analyst && \
+  set -a && source .env && set +a && \
+  PYTHONPATH=repo CONFIG_DIR=instance/config \
+  .venv/bin/python3 -m src.remote_query \
+    --register-bq "agg_data=SELECT date_col, dim_col, SUM(metric) as total FROM \`project.dataset.table\` WHERE date_col >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY) GROUP BY 1,2" \
+    --sql "SELECT * FROM agg_data ORDER BY date_col, dim_col" \
+    --format table'
+```
+
+### Example 2: JOIN local + remote
+
+```bash
+ssh {ssh_alias} 'cd /opt/data-analyst && \
+  set -a && source .env && set +a && \
+  PYTHONPATH=repo CONFIG_DIR=instance/config \
+  .venv/bin/python3 -m src.remote_query \
+    --register-bq "remote_data=SELECT date_col, dim_col, SUM(metric) as total FROM \`project.dataset.table\` WHERE date_col >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY) GROUP BY 1,2" \
+    --sql "SELECT l.*, r.total FROM local_table l JOIN remote_data r ON l.date_col = r.date_col AND l.dim_col = r.dim_col ORDER BY 1,2" \
+    --format table'
+```
+
+### Example 3: Download result as Parquet for local analysis
+
+```bash
+# 1. Run query, save as Parquet on server
+ssh {ssh_alias} 'cd /opt/data-analyst && \
+  set -a && source .env && set +a && \
+  PYTHONPATH=repo CONFIG_DIR=instance/config \
+  .venv/bin/python3 -m src.remote_query \
+    --register-bq "remote_data=SELECT ... GROUP BY ..." \
+    --sql "SELECT ... JOIN ..." \
+    --format parquet --output /tmp/remote_query/analysis.parquet'
+
+# 2. Download to local machine
+scp {ssh_alias}:/tmp/remote_query/analysis.parquet ./user/parquet/
+
+# 3. Register in local DuckDB for further analysis
+python3 -c "
+import duckdb
+conn = duckdb.connect('user/duckdb/analytics.duckdb')
+conn.execute(\"CREATE OR REPLACE VIEW analysis AS SELECT * FROM read_parquet('user/parquet/analysis.parquet')\")
+print('View created:', conn.execute('SELECT COUNT(*) FROM analysis').fetchone()[0], 'rows')
+conn.close()
+"
+```
+
+### How to estimate result sizes
+
+Before writing a BQ sub-query, check `dimension_profile` and `query_result_estimates`
+in `server/docs/data_description.md`.
+
+**Rule of thumb:** rows = (estimate per day from query_result_estimates) * (number of days in WHERE clause).
+If that exceeds 100K rows, add more aggregation or tighter date filters.
+
+### Safety rules
+
+1. **NEVER** run `SELECT * FROM remote_table` without WHERE + GROUP BY
+2. **ALWAYS** check `dimension_profile` before writing BQ sub-queries
+3. **ALWAYS** include date range in WHERE clause
+4. **Limits**: 500K rows max per BQ sub-query, 100K rows max in final result
+5. If the query might take > 60 seconds, use nohup pattern:
+   ```bash
+   ssh {ssh_alias} 'nohup ... --format parquet --output /tmp/result.parquet > /tmp/rq.log 2>&1 &'
+   ssh {ssh_alias} 'tail -5 /tmp/rq.log'  # check progress
+   scp {ssh_alias}:/tmp/result.parquet ./user/parquet/
+   ```
+
+---
+
 ## Reporting Issues
 
 Report issues to your platform team or the project's issue tracker.

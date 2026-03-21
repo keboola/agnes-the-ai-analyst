@@ -107,6 +107,7 @@ class TableConfig:
     columns: Optional[List[str]] = None  # Subset of columns to sync (None = all)
     row_filter: Optional[str] = None  # SQL WHERE clause for filtering (e.g., "event_date >= '2024-01-01'")
     query_mode: str = "local"  # "local" (Parquet) | "remote" (BQ direct) | "hybrid" (sync subset, query BQ)
+    bq_entity_type: str = "view"  # "view" (Python BQ client) | "table" (DuckDB BQ extension)
     partition_column_type: str = "TIMESTAMP"  # BQ SQL type for partition column: "DATE", "TIMESTAMP", "DATETIME"
     catalog_fqn: Optional[str] = None  # Explicit OpenMetadata FQN override (auto-derived if not set)
     sync_schedule: Optional[str] = None  # Schedule: "every 15m", "every 1h", "daily 05:00" (UTC)
@@ -120,6 +121,14 @@ class TableConfig:
             raise ValueError(
                 f"Invalid query_mode '{self.query_mode}' for table {self.id}. "
                 f"Allowed values: {', '.join(valid_query_modes)}"
+            )
+
+        # Validate bq_entity_type
+        valid_entity_types = ("view", "table")
+        if self.bq_entity_type not in valid_entity_types:
+            raise ValueError(
+                f"Invalid bq_entity_type '{self.bq_entity_type}' for table {self.id}. "
+                f"Allowed values: {', '.join(valid_entity_types)}"
             )
 
         # Validate sync_strategy
@@ -473,6 +482,7 @@ class Config:
                 columns=table_data.get("columns"),
                 row_filter=table_data.get("row_filter"),
                 query_mode=table_data.get("query_mode", "local"),
+                bq_entity_type=table_data.get("bq_entity_type", "view"),
                 partition_column_type=table_data.get("partition_column_type", "TIMESTAMP"),
                 catalog_fqn=table_data.get("catalog_fqn"),
                 sync_schedule=table_data.get("sync_schedule"),

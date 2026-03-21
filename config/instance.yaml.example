@@ -181,3 +181,13 @@ catalog:
 #   alert_missing_pct: 5.0           # Alert threshold for missing %
 #   alert_imbalance_pct: 60.0        # Alert threshold for imbalance %
 #   alert_high_cardinality: 50       # Alert threshold for high cardinality columns
+
+# --- Remote query (optional) ---
+# Settings for remote BigQuery queries via `python -m src.remote_query`.
+# Used when tables have query_mode: "remote" in data_description.md.
+# remote_query:
+#   timeout_seconds: 300              # BQ + DuckDB query timeout
+#   max_result_rows: 100000           # Max rows in final output
+#   max_bq_registration_rows: 500000  # Max rows per --register-bq sub-query
+#   default_format: "table"           # Default output format
+#   output_dir: "/tmp/remote_query"   # Directory for Parquet/CSV exports

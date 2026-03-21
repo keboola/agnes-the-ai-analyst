@@ -270,6 +270,89 @@ def get_remote_tables(table_configs: List[Dict]) -> List[Dict]:
     ]
 
 
+def create_local_views(
+    conn: duckdb.DuckDBPyConnection,
+    data_dir: str,
+    project_root: Optional[Path] = None,
+    verbose: bool = True,
+) -> Tuple[List[str], List[str]]:
+    """Create DuckDB views for local/hybrid tables from Parquet files.
+
+    Extracts the shared logic from init_duckdb() so it can be reused
+    by remote_query.py without creating a persistent DB file.
+
+    Args:
+        conn: Open DuckDB connection (in-memory or file-backed)
+        data_dir: Base data directory (e.g., "server", "/data/src_data")
+        project_root: Project root path. If None, auto-detected.
+        verbose: Print progress messages
+
+    Returns:
+        Tuple of (created_view_names, skipped_table_names)
+    """
+    if project_root is None:
+        project_root = find_project_root()
+
+    table_configs, folder_mapping = parse_data_description(project_root)
+
+    # Filter to local and hybrid tables (both have local Parquet)
+    eligible_tables = [
+        tc for tc in table_configs
+        if tc.get("query_mode", "local") in ("local", "hybrid")
+    ]
+
+    created_views = []
+    skipped_views = []
+
+    for table_config in eligible_tables:
+        table_name = table_config['name']
+
+        try:
+            parquet_path = get_parquet_path(table_config, folder_mapping, data_dir)
+
+            if not parquet_path.exists():
+                skipped_views.append(table_name)
+                if verbose:
+                    print(f"   [SKIP] {table_name} - parquet not found: {parquet_path}")
+                continue
+
+            # Determine if partitioned
+            sync_strategy = table_config.get('sync_strategy', 'full_refresh')
+            is_partitioned = (
+                sync_strategy == "partitioned" or
+                (sync_strategy == "incremental" and table_config.get('partition_by'))
+            )
+
+            if is_partitioned:
+                glob_pattern = parquet_path / "*.parquet"
+                partition_files = list(parquet_path.glob("*.parquet"))
+                if not partition_files:
+                    skipped_views.append(table_name)
+                    if verbose:
+                        print(f"   [SKIP] {table_name} - no partition files")
+                    continue
+
+                sql = f"CREATE OR REPLACE VIEW {table_name} AS SELECT * FROM read_parquet('{glob_pattern}', union_by_name=true)"
+                if verbose:
+                    mode_label = "hybrid" if table_config.get("query_mode") == "hybrid" else "local"
+                    print(f"   [OK] {table_name} ({len(partition_files)} partitions, {mode_label})")
+            else:
+                sql = f"CREATE OR REPLACE VIEW {table_name} AS SELECT * FROM read_parquet('{parquet_path}')"
+                if verbose:
+                    mode_label = "hybrid" if table_config.get("query_mode") == "hybrid" else "local"
+                    print(f"   [OK] {table_name} ({mode_label})")
+
+            conn.execute(sql)
+            created_views.append(table_name)
+
+        except Exception as e:
+            if verbose:
+                print(f"   [ERR] Error creating {table_name}: {e}")
+            raise
+
+    return created_views, skipped_views
+
+
 def init_duckdb(
     db_path="user/duckdb/analytics.duckdb",
     data_dir="server",
@@ -299,7 +382,6 @@ def init_duckdb(
         print("Initializing DuckDB database...")
 
     try:
-        # Find project root and parse data_description.md
         project_root = find_project_root()
         if verbose:
             print(f"   Project root: {project_root}")
@@ -308,87 +390,25 @@ def init_duckdb(
         if verbose:
             print(f"   Loaded {len(table_configs)} tables from data_description.md")
 
-        # Separate tables by query_mode
-        local_tables = []
-        remote_tables = []
-        hybrid_tables = []
-
-        for tc in table_configs:
-            mode = tc.get("query_mode", "local")
-            if mode == "remote":
-                remote_tables.append(tc)
-            elif mode == "hybrid":
-                hybrid_tables.append(tc)
-            else:
-                local_tables.append(tc)
+        # Classify tables by query_mode (for display only)
+        remote_tables = [tc for tc in table_configs if tc.get("query_mode") == "remote"]
+        local_count = len([tc for tc in table_configs if tc.get("query_mode", "local") == "local"])
+        hybrid_count = len([tc for tc in table_configs if tc.get("query_mode") == "hybrid"])
 
         if verbose:
-            print(f"   Query modes: {len(local_tables)} local, "
-                  f"{len(remote_tables)} remote, {len(hybrid_tables)} hybrid")
+            print(f"   Query modes: {local_count} local, "
+                  f"{len(remote_tables)} remote, {hybrid_count} hybrid")
 
         # Connect to database (creates if doesn't exist)
         conn = duckdb.connect(db_path)
 
-        # Create local views from parquet files
         if verbose:
             print("\n   Creating views from parquet files...")
 
-        created_views = []
-        skipped_views = []
-
-        # Process local and hybrid tables (both have local parquet)
-        for table_config in local_tables + hybrid_tables:
-            table_name = table_config['name']
-
-            try:
-                # Get parquet path
-                parquet_path = get_parquet_path(table_config, folder_mapping, data_dir)
-
-                # Check if file/directory exists
-                if not parquet_path.exists():
-                    skipped_views.append(table_name)
-                    if verbose:
-                        print(f"   [SKIP] {table_name} - parquet not found: {parquet_path}")
-                    continue
-
-                # Determine if partitioned
-                sync_strategy = table_config.get('sync_strategy', 'full_refresh')
-                is_partitioned = (
-                    sync_strategy == "partitioned" or
-                    (sync_strategy == "incremental" and table_config.get('partition_by'))
-                )
-
-                # Create view
-                if is_partitioned:
-                    # For partitioned tables, use glob pattern
-                    glob_pattern = parquet_path / "*.parquet"
-
-                    # Check if there are any partition files
-                    partition_files = list(parquet_path.glob("*.parquet"))
-                    if not partition_files:
-                        skipped_views.append(table_name)
-                        if verbose:
-                            print(f"   [SKIP] {table_name} - no partition files")
-                        continue
-
-                    sql = f"CREATE OR REPLACE VIEW {table_name} AS SELECT * FROM read_parquet('{glob_pattern}', union_by_name=true)"
-                    if verbose:
-                        mode_label = "hybrid" if table_config.get("query_mode") == "hybrid" else "local"
-                        print(f"   [OK] {table_name} ({len(partition_files)} partitions, {mode_label})")
-                else:
-                    # Single parquet file
-                    sql = f"CREATE OR REPLACE VIEW {table_name} AS SELECT * FROM read_parquet('{parquet_path}')"
-                    if verbose:
-                        mode_label = "hybrid" if table_config.get("query_mode") == "hybrid" else "local"
-                        print(f"   [OK] {table_name} ({mode_label})")
-
-                conn.execute(sql)
-                created_views.append(table_name)
-
-            except Exception as e:
-                if verbose:
-                    print(f"   [ERR] Error creating {table_name}: {e}")
-                return False
+        # Delegate to create_local_views
+        created_views, skipped_views = create_local_views(
+            conn, data_dir, project_root=project_root, verbose=verbose,
+        )
 
         # Log remote tables (queried at runtime via register_bq_table)
         if remote_tables:

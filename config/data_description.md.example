@@ -46,6 +46,18 @@ tables:
     query_mode: "local"
     sync_schedule: "every 1h"
     profile_after_sync: false
+
+  # Remote table - too large for local sync, queried via BigQuery
+  - id: "project.dataset.page_views"
+    name: "page_views"
+    description: "Page-level traffic metrics (~5M rows/day)"
+    primary_key: "page_view_id"
+    sync_strategy: "partitioned"
+    partition_by: "event_date"
+    partition_column_type: "DATE"
+    partition_granularity: "day"
+    query_mode: "remote"
+    bq_entity_type: "view"
 ```
 
 ## Table Configuration Reference
@@ -84,12 +96,27 @@ tables:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `query_mode` | `"local"` | How the AI agent queries this table |
+| `bq_entity_type` | `"view"` | BigQuery entity type: `"view"` (Python BQ client) or `"table"` (DuckDB BQ extension) |
 
 | Mode | Description | Best for |
 |------|-------------|----------|
 | `local` | Synced to Parquet, queried via DuckDB | Tables < 2 GB, fast queries |
 | `remote` | Not synced, queried via BigQuery | Huge tables (100+ GB), live data |
 | `hybrid` | Subset synced for profiling, queries go to BigQuery | Medium tables needing live data |
+
+### Remote Table Metadata
+
+Remote tables (`query_mode: "remote"`) should include metadata to help the AI agent
+write safe, efficient queries:
+
+| Field | Description |
+|-------|-------------|
+| `grain` | Row granularity description |
+| `volume` | Size estimates (rows_per_day, unique entities) |
+| `columns` | Column descriptions with value distributions |
+| `dimension_profile` | Cardinality per dimension |
+| `query_result_estimates` | Expected rows after GROUP BY combinations |
+| `join_keys` | How to join with other tables |
 
 ### Automatic Sync Schedule
 
