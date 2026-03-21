@@ -329,7 +329,7 @@ def _format_output(
         # Re-execute without limit wrapper for clean Arrow export
         arrow_result = conn.execute(
             f"SELECT * FROM ({sql}) AS _rq LIMIT {max_rows}"
-        ).fetch_arrow_table()
+        ).arrow().read_all()
 
         if not output_path:
             output_path = str(Path(_load_remote_query_config()["output_dir"]) / "result.parquet")

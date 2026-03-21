@@ -188,6 +188,12 @@ You're ready to analyze!
 Some tables are too large for local Parquet sync and are queried remotely via BigQuery.
 These tables have `query_mode: "remote"` in `server/docs/data_description.md`.
 
+**IMPORTANT: When remote tables exist, proactively offer hybrid analyses that combine
+local and remote data.** For example, if the user asks for a business overview, suggest
+joining local order data with remote traffic data to show a complete picture (conversion
+funnels, revenue per visitor, etc.). Don't wait for the user to ask -- hybrid insights
+are more valuable than single-source analysis.
+
 ### How to recognize remote tables
 
 Before writing any query, read `server/docs/data_description.md`. Each table has:
@@ -219,13 +225,14 @@ You write two SQL statements:
 2. **DuckDB SQL** (`--sql "SQL"`) -- runs in DuckDB after all views (local + BQ) are ready.
    Can JOIN local tables with registered BQ results.
 
-### Command format (JSON via stdin -- ALWAYS use this)
+### Command format (JSON file via stdin)
 
 **IMPORTANT:** Always use the `--stdin` JSON mode to avoid shell escaping issues with
-backticks, quotes, and parentheses in SQL. Write a heredoc with the JSON query spec:
+backticks, quotes, and parentheses in SQL. Use the Write tool to create a JSON query
+spec file, then pipe it to SSH via stdin redirect:
 
-```bash
-cat <<'QUERY' | ssh {ssh_alias} 'bash ~/server/scripts/remote_query.sh --stdin'
+**Step 1:** Use the Write tool to create a JSON file (e.g., `user/scripts/rq_query.json`):
+```json
 {
   "register_bq": {
     "ALIAS": "SELECT ... FROM `project.dataset.table` WHERE ... GROUP BY ..."
@@ -233,11 +240,15 @@ cat <<'QUERY' | ssh {ssh_alias} 'bash ~/server/scripts/remote_query.sh --stdin'
   "sql": "SELECT ... FROM ALIAS JOIN local_table ...",
   "format": "table"
 }
-QUERY
 ```
 
-The `<<'QUERY'` heredoc passes SQL **literally** -- no escaping needed for backticks,
-single quotes, parentheses, or any other special characters.
+**Step 2:** Run the query via SSH with stdin redirect:
+```bash
+ssh {ssh_alias} 'bash ~/server/scripts/remote_query.sh --stdin' < user/scripts/rq_query.json
+```
+
+**NEVER use `cat <<HEREDOC | ssh ...`** -- the `cat` command is blocked by permissions.
+Always write the JSON to a file first using the Write tool, then use `< file` redirect.
 
 **JSON fields:**
 - `"sql"` (required) -- DuckDB SQL query (can reference local views + registered BQ aliases)
@@ -248,8 +259,8 @@ single quotes, parentheses, or any other special characters.
 
 ### Example 1: Remote-only query (aggregated data)
 
-```bash
-cat <<'QUERY' | ssh {ssh_alias} 'bash ~/server/scripts/remote_query.sh --stdin'
+Write to `user/scripts/rq_query.json`:
+```json
 {
   "register_bq": {
     "agg_data": "SELECT date_col, dim_col, SUM(metric) as total FROM `project.dataset.table` WHERE date_col >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY) GROUP BY 1,2"
@@ -257,13 +268,17 @@ cat <<'QUERY' | ssh {ssh_alias} 'bash ~/server/scripts/remote_query.sh --stdin'
   "sql": "SELECT * FROM agg_data ORDER BY date_col, dim_col",
   "format": "table"
 }
-QUERY
+```
+
+Then run:
+```bash
+ssh {ssh_alias} 'bash ~/server/scripts/remote_query.sh --stdin' < user/scripts/rq_query.json
 ```
 
 ### Example 2: JOIN local + remote
 
-```bash
-cat <<'QUERY' | ssh {ssh_alias} 'bash ~/server/scripts/remote_query.sh --stdin'
+Write to `user/scripts/rq_query.json`:
+```json
 {
   "register_bq": {
     "remote_data": "SELECT date_col, dim_col, SUM(metric) as total FROM `project.dataset.table` WHERE date_col >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY) GROUP BY 1,2"
@@ -271,14 +286,17 @@ cat <<'QUERY' | ssh {ssh_alias} 'bash ~/server/scripts/remote_query.sh --stdin'
   "sql": "SELECT l.*, r.total FROM local_table l JOIN remote_data r ON l.date_col = r.date_col AND l.dim_col = r.dim_col ORDER BY 1,2",
   "format": "table"
 }
-QUERY
+```
+
+Then run:
+```bash
+ssh {ssh_alias} 'bash ~/server/scripts/remote_query.sh --stdin' < user/scripts/rq_query.json
 ```
 
 ### Example 3: Download result as Parquet for local analysis
 
-```bash
-# 1. Run query, save as Parquet on server
-cat <<'QUERY' | ssh {ssh_alias} 'bash ~/server/scripts/remote_query.sh --stdin'
+Write to `user/scripts/rq_query.json`:
+```json
 {
   "register_bq": {
     "remote_data": "SELECT ... FROM `project.dataset.table` WHERE ... GROUP BY ..."
@@ -287,7 +305,12 @@ cat <<'QUERY' | ssh {ssh_alias} 'bash ~/server/scripts/remote_query.sh --stdin'
   "format": "parquet",
   "output": "/tmp/remote_query/analysis.parquet"
 }
-QUERY
+```
+
+Then run:
+```bash
+# 1. Run query on server
+ssh {ssh_alias} 'bash ~/server/scripts/remote_query.sh --stdin' < user/scripts/rq_query.json
 
 # 2. Download to local machine
 scp {ssh_alias}:/tmp/remote_query/analysis.parquet ./user/parquet/
@@ -318,10 +341,8 @@ If that exceeds 100K rows, add more aggregation or tighter date filters.
 4. **Limits**: 500K rows max per BQ sub-query, 100K rows max in final result
 5. If the query might take > 60 seconds, use nohup pattern:
    ```bash
-   # Write query to temp file, then run via nohup
-   cat <<'QUERY' | ssh {ssh_alias} 'cat > /tmp/rq_spec.json && nohup bash ~/server/scripts/remote_query.sh --stdin < /tmp/rq_spec.json > /tmp/rq.log 2>&1 &'
-   {"register_bq": {"data": "SELECT ..."}, "sql": "SELECT ...", "format": "parquet", "output": "/tmp/remote_query/result.parquet"}
-   QUERY
+   # Write query spec to user/scripts/rq_query.json first, then:
+   ssh {ssh_alias} 'cat > /tmp/rq_spec.json && nohup bash ~/server/scripts/remote_query.sh --stdin < /tmp/rq_spec.json > /tmp/rq.log 2>&1 &' < user/scripts/rq_query.json
    ssh {ssh_alias} 'tail -5 /tmp/rq.log'  # check progress
    scp {ssh_alias}:/tmp/remote_query/result.parquet ./user/parquet/
    ```

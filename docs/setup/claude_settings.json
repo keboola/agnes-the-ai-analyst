@@ -41,6 +41,8 @@
         "Bash(stat:*)",
         "Bash(bash server/scripts/*)",
         "Bash(python server/scripts/*)",
+        "Bash(ssh:*)",
+        "Bash(scp:*)",
         "WebFetch(domain:github.com)",
         "WebSearch"
       ],
