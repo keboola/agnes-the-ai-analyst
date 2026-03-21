@@ -481,7 +481,8 @@ Examples:
     )
     parser.add_argument(
         "--sql",
-        required=True,
+        required=False,  # not required when --stdin is used
+        default=None,
         help="DuckDB SQL query (executed after all views are registered)",
     )
     parser.add_argument(
@@ -603,6 +604,10 @@ def main(argv: Optional[list[str]] = None) -> None:
                 quiet=args.quiet,
             )
             return
+
+        # Validate --sql is provided when not using --stdin
+        if not args.sql:
+            parser.error("--sql is required (or use --stdin for JSON input)")
 
         execute_remote_query(
             sql=args.sql,

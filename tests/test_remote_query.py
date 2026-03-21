@@ -161,11 +161,12 @@ def _patched_duckdb_connect(*args, **kwargs):
 class TestCLIArgParsing:
     """Test _parse_register_bq() and build_parser()."""
 
-    def test_requires_sql(self):
-        """Parser should fail when --sql is missing."""
+    def test_sql_defaults_to_none(self):
+        """Parser allows --sql to be omitted (for --stdin mode)."""
         parser = build_parser()
-        with pytest.raises(SystemExit):
-            parser.parse_args([])
+        args = parser.parse_args(["--stdin"])
+        assert args.sql is None
+        assert args.stdin is True
 
     def test_register_bq_parsing(self):
         """'alias=SELECT ...' parses into (alias, sql) tuple."""
