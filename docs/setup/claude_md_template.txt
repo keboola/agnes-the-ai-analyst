@@ -222,14 +222,14 @@ You write two SQL statements:
 ### Command format
 
 ```bash
-ssh {ssh_alias} 'cd /opt/data-analyst && \
-  set -a && source .env && set +a && \
-  PYTHONPATH=repo CONFIG_DIR=instance/config \
-  .venv/bin/python3 -m src.remote_query \
+ssh {ssh_alias} 'bash ~/server/scripts/remote_query.sh \
     --register-bq "ALIAS=BQ_SQL_QUERY" \
     --sql "DUCKDB_SQL_QUERY" \
     --format table'
 ```
+
+The wrapper script (`remote_query.sh`) handles environment setup automatically
+(PYTHONPATH, CONFIG_DIR, .env loading). All arguments are passed to `python -m src.remote_query`.
 
 Arguments:
 - `--register-bq "alias=SQL"` -- Register a BQ query result as DuckDB view (repeatable for multiple remote tables)
@@ -241,10 +241,7 @@ Arguments:
 ### Example 1: Remote-only query (aggregated data)
 
 ```bash
-ssh {ssh_alias} 'cd /opt/data-analyst && \
-  set -a && source .env && set +a && \
-  PYTHONPATH=repo CONFIG_DIR=instance/config \
-  .venv/bin/python3 -m src.remote_query \
+ssh {ssh_alias} 'bash ~/server/scripts/remote_query.sh \
     --register-bq "agg_data=SELECT date_col, dim_col, SUM(metric) as total FROM \`project.dataset.table\` WHERE date_col >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY) GROUP BY 1,2" \
     --sql "SELECT * FROM agg_data ORDER BY date_col, dim_col" \
     --format table'
@@ -253,10 +250,7 @@ ssh {ssh_alias} 'cd /opt/data-analyst && \
 ### Example 2: JOIN local + remote
 
 ```bash
-ssh {ssh_alias} 'cd /opt/data-analyst && \
-  set -a && source .env && set +a && \
-  PYTHONPATH=repo CONFIG_DIR=instance/config \
-  .venv/bin/python3 -m src.remote_query \
+ssh {ssh_alias} 'bash ~/server/scripts/remote_query.sh \
     --register-bq "remote_data=SELECT date_col, dim_col, SUM(metric) as total FROM \`project.dataset.table\` WHERE date_col >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY) GROUP BY 1,2" \
     --sql "SELECT l.*, r.total FROM local_table l JOIN remote_data r ON l.date_col = r.date_col AND l.dim_col = r.dim_col ORDER BY 1,2" \
     --format table'
@@ -266,10 +260,7 @@ ssh {ssh_alias} 'cd /opt/data-analyst && \
 
 ```bash
 # 1. Run query, save as Parquet on server
-ssh {ssh_alias} 'cd /opt/data-analyst && \
-  set -a && source .env && set +a && \
-  PYTHONPATH=repo CONFIG_DIR=instance/config \
-  .venv/bin/python3 -m src.remote_query \
+ssh {ssh_alias} 'bash ~/server/scripts/remote_query.sh \
     --register-bq "remote_data=SELECT ... GROUP BY ..." \
     --sql "SELECT ... JOIN ..." \
     --format parquet --output /tmp/remote_query/analysis.parquet'
@@ -303,9 +294,9 @@ If that exceeds 100K rows, add more aggregation or tighter date filters.
 4. **Limits**: 500K rows max per BQ sub-query, 100K rows max in final result
 5. If the query might take > 60 seconds, use nohup pattern:
    ```bash
-   ssh {ssh_alias} 'nohup ... --format parquet --output /tmp/result.parquet > /tmp/rq.log 2>&1 &'
+   ssh {ssh_alias} 'nohup bash ~/server/scripts/remote_query.sh --register-bq "..." --sql "..." --format parquet --output /tmp/remote_query/result.parquet > /tmp/rq.log 2>&1 &'
    ssh {ssh_alias} 'tail -5 /tmp/rq.log'  # check progress
-   scp {ssh_alias}:/tmp/result.parquet ./user/parquet/
+   scp {ssh_alias}:/tmp/remote_query/result.parquet ./user/parquet/
    ```
 
 ---
