@@ -30,14 +30,21 @@ def find_project_root() -> Path:
     """
     Find project root (folder containing docs/data_description.md).
 
-    Searches from current folder upwards.
+    Searches from current folder upwards. Also checks CONFIG_DIR env var
+    for server deployments where data_description.md is in instance config.
 
     Returns:
-        Path to project root
+        Path to project root (CWD if CONFIG_DIR has data_description.md)
 
     Raises:
         FileNotFoundError: If docs/data_description.md is not found
     """
+    # If CONFIG_DIR is set and has data_description.md, use CWD as project root
+    # (server deployment: CONFIG_DIR=instance/config, CWD=/opt/data-analyst)
+    config_dir = Path(os.environ.get("CONFIG_DIR", ""))
+    if config_dir and (config_dir / "data_description.md").exists():
+        return Path.cwd()
+
     current = Path.cwd()
 
     # Try current folder first
@@ -58,7 +65,7 @@ def find_project_root() -> Path:
 
     raise FileNotFoundError(
         "docs/data_description.md not found. "
-        "Make sure you're running from project root."
+        "Make sure you're running from project root or set CONFIG_DIR."
     )
 
 
@@ -74,12 +81,15 @@ def parse_data_description(project_root: Path) -> Tuple[List[Dict], Dict[str, st
         - table_configs: List of table configuration dicts
         - folder_mapping: Dict mapping bucket names to folder names
     """
-    # Try both possible locations
-    data_desc_path = project_root / "docs" / "data_description.md"
-    if not data_desc_path.exists():
+    # Check CONFIG_DIR first (server deployment), then project root locations
+    config_dir = Path(os.environ.get("CONFIG_DIR", ""))
+    if config_dir and (config_dir / "data_description.md").exists():
+        data_desc_path = config_dir / "data_description.md"
+    elif (project_root / "docs" / "data_description.md").exists():
+        data_desc_path = project_root / "docs" / "data_description.md"
+    elif (project_root / "server" / "docs" / "data_description.md").exists():
         data_desc_path = project_root / "server" / "docs" / "data_description.md"
-
-    if not data_desc_path.exists():
+    else:
         raise FileNotFoundError(f"data_description.md not found in {project_root}")
 
     with open(data_desc_path, 'r', encoding='utf-8') as f:
