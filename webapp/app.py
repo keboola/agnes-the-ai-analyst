@@ -40,6 +40,7 @@ from .corporate_memory_service import (
     vote as memory_vote,
     is_km_admin,
     get_governance_mode,
+    get_groups as get_memory_groups,
     approve_item,
     reject_item,
     mandate_item,
@@ -49,6 +50,7 @@ from .corporate_memory_service import (
     get_pending_queue,
     get_audit_log,
     migrate_existing_items,
+    VALID_STATUSES,
 )
 from .user_service import (
     UserInfo,
@@ -1393,9 +1395,11 @@ def register_routes(app: Flask) -> None:
         knowledge = get_knowledge(page=0, per_page=20)
 
         # Governance context for admin features
+        _is_admin = is_km_admin(email) if email else False
         governance = {
             "mode": get_governance_mode(),
-            "is_km_admin": is_km_admin(email) if email else False,
+            "is_km_admin": _is_admin,
+            "pending_count": get_memory_stats().get("pending_count", 0) if _is_admin else 0,
         }
 
         return render_template(
@@ -1405,6 +1409,31 @@ def register_routes(app: Flask) -> None:
             user_votes=user_votes,
             knowledge=knowledge,
             governance=governance,
+        )
+
+    @app.route("/corporate-memory/admin")
+    @login_required
+    @km_admin_required
+    def corporate_memory_admin():
+        """Corporate Memory admin review queue page."""
+        user = session.get("user", {})
+        email = user.get("email", "")
+
+        stats = get_memory_stats()
+        groups = get_memory_groups()
+
+        # Build groups list for audience dropdown (name + member count)
+        groups_list = [
+            {"name": name, "members_count": len(g.get("members", []))}
+            for name, g in groups.items()
+            if isinstance(g, dict)
+        ]
+
+        return render_template(
+            "corporate_memory_admin.html",
+            stats=stats,
+            groups=groups_list,
+            governance_mode=get_governance_mode(),
         )
 
     # ─────────────────────────────────────────────────────────────────
@@ -1440,8 +1469,12 @@ def register_routes(app: Flask) -> None:
         # Admin status filter (only km_admins can filter by status)
         status = request.args.get("status")
         include_statuses = None
-        if status and is_km_admin(email):
-            include_statuses = {status}
+        if is_km_admin(email):
+            if status:
+                include_statuses = {status}
+            elif request.args.get("all_statuses", "").lower() == "true":
+                # Admin requesting all statuses (for admin "All Items" view)
+                include_statuses = set(VALID_STATUSES)
 
         result = get_knowledge(
             category=category,
@@ -1723,9 +1756,16 @@ def register_routes(app: Flask) -> None:
     def corporate_memory_admin_config():
         """Get current governance configuration."""
         try:
+            groups = get_memory_groups()
+            groups_list = [
+                {"name": name, "members_count": len(g.get("members", []))}
+                for name, g in groups.items()
+                if isinstance(g, dict)
+            ]
             return jsonify({
                 "ok": True,
                 "governance_mode": get_governance_mode(),
+                "groups": groups_list,
             })
         except Exception as e:
             logger.exception("Error fetching governance config")

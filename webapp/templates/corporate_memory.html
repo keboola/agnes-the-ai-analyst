@@ -437,6 +437,40 @@
             opacity: 0.5;
         }
 
+        /* Admin Link Button */
+        .admin-link-btn {
+            display: flex;
+            align-items: center;
+            gap: var(--space-2);
+            padding: var(--space-2) var(--space-3);
+            background: var(--surface);
+            border: 1px solid var(--primary);
+            border-radius: var(--radius-md);
+            color: var(--primary);
+            text-decoration: none;
+            font-size: var(--text-sm);
+            font-weight: var(--font-medium);
+            transition: all 0.15s;
+        }
+
+        .admin-link-btn:hover {
+            background: var(--primary-light);
+        }
+
+        .pending-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 18px;
+            height: 18px;
+            padding: 0 5px;
+            border-radius: var(--radius-full);
+            background: var(--warning);
+            color: white;
+            font-size: 10px;
+            font-weight: var(--font-bold);
+        }
+
         /* Responsive */
         @media (max-width: 768px) {
             .page-header {
@@ -499,15 +533,28 @@
                     <h1>Corporate Memory</h1>
                 </div>
             </div>
-            <div class="user-info-v2">
-                {% if session.user.picture %}
-                <img src="{{ session.user.picture }}" alt="Profile" class="avatar-v2">
-                {% else %}
-                <div class="avatar-v2" style="background: var(--primary-light); display: flex; align-items: center; justify-content: center; font-weight: 600; color: var(--primary); font-size: 12px;">
-                    {{ session.user.email[:2].upper() }}
-                </div>
+            <div style="display: flex; align-items: center; gap: var(--space-4);">
+                {% if governance.is_km_admin %}
+                <a href="{{ url_for('corporate_memory_admin') }}" class="admin-link-btn">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                    </svg>
+                    Admin Review
+                    {% if governance.pending_count > 0 %}
+                    <span class="pending-badge">{{ governance.pending_count }}</span>
+                    {% endif %}
+                </a>
                 {% endif %}
-                {{ session.user.email }}
+                <div class="user-info-v2">
+                    {% if session.user.picture %}
+                    <img src="{{ session.user.picture }}" alt="Profile" class="avatar-v2">
+                    {% else %}
+                    <div class="avatar-v2" style="background: var(--primary-light); display: flex; align-items: center; justify-content: center; font-weight: 600; color: var(--primary); font-size: 12px;">
+                        {{ session.user.email[:2].upper() }}
+                    </div>
+                    {% endif %}
+                    {{ session.user.email }}
+                </div>
             </div>
         </header>
 

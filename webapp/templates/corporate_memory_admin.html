@@ -1,0 +1,1556 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Corporate Memory Admin - Data Analyst Portal</title>
+    {% if not config.THEME_FONT_URL %}
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    {% endif %}
+    <link rel="stylesheet" href="{{ url_for('static', filename='style-custom.css') }}">
+    <style>
+        /* Corporate Memory Admin - Design System Styles */
+        .container-memory {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: var(--space-6);
+        }
+
+        /* Header */
+        .page-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding-bottom: var(--space-5);
+            border-bottom: 1px solid var(--border);
+            margin-bottom: var(--space-6);
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: var(--space-4);
+        }
+
+        .back-link {
+            display: flex;
+            align-items: center;
+            gap: var(--space-2);
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-size: var(--text-sm);
+            padding: var(--space-2) var(--space-3);
+            border-radius: var(--radius-md);
+            transition: all 0.15s;
+        }
+
+        .back-link:hover {
+            background: var(--border-light);
+            color: var(--text-primary);
+        }
+
+        .page-title {
+            display: flex;
+            align-items: center;
+            gap: var(--space-3);
+        }
+
+        .page-title h1 {
+            font-size: var(--text-xl);
+            font-weight: var(--font-semibold);
+        }
+
+        .page-icon {
+            width: 36px;
+            height: 36px;
+            background: var(--primary);
+            border-radius: var(--radius-lg);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+        }
+
+        /* Stats Bar */
+        .stats-bar {
+            display: flex;
+            gap: var(--space-6);
+            padding: var(--space-5);
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-xl);
+            box-shadow: var(--shadow-sm);
+            margin-bottom: var(--space-6);
+        }
+
+        .stat-item {
+            text-align: center;
+        }
+
+        .stat-item .value {
+            font-size: var(--text-xl);
+            font-weight: var(--font-bold);
+            color: var(--text-primary);
+        }
+
+        .stat-item .label {
+            font-size: var(--text-xs);
+            color: var(--text-secondary);
+            text-transform: uppercase;
+        }
+
+        .stat-item.highlight .value {
+            color: var(--warning);
+        }
+
+        .stat-item.highlight-blue .value {
+            color: var(--primary);
+        }
+
+        .stat-item.highlight-green .value {
+            color: var(--success);
+        }
+
+        .stat-divider {
+            width: 1px;
+            background: var(--border);
+        }
+
+        /* Tab Navigation */
+        .tab-nav {
+            display: flex;
+            gap: var(--space-1);
+            margin-bottom: var(--space-5);
+            border-bottom: 2px solid var(--border);
+        }
+
+        .tab-btn {
+            padding: var(--space-3) var(--space-4);
+            background: none;
+            border: none;
+            border-bottom: 2px solid transparent;
+            margin-bottom: -2px;
+            font-size: var(--text-base);
+            font-weight: var(--font-medium);
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.15s;
+            display: flex;
+            align-items: center;
+            gap: var(--space-2);
+        }
+
+        .tab-btn:hover {
+            color: var(--text-primary);
+        }
+
+        .tab-btn.active {
+            color: var(--primary);
+            border-bottom-color: var(--primary);
+        }
+
+        .tab-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 18px;
+            height: 18px;
+            padding: 0 5px;
+            border-radius: var(--radius-full);
+            background: var(--warning);
+            color: white;
+            font-size: 10px;
+            font-weight: var(--font-bold);
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        /* Batch Action Bar */
+        .batch-bar {
+            display: flex;
+            align-items: center;
+            gap: var(--space-4);
+            padding: var(--space-3) var(--space-4);
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            margin-bottom: var(--space-4);
+        }
+
+        .batch-bar label {
+            display: flex;
+            align-items: center;
+            gap: var(--space-2);
+            font-size: var(--text-sm);
+            color: var(--text-secondary);
+            cursor: pointer;
+        }
+
+        .batch-bar input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+            accent-color: var(--primary);
+        }
+
+        .batch-actions {
+            display: flex;
+            gap: var(--space-2);
+            margin-left: auto;
+        }
+
+        .selected-count {
+            font-size: var(--text-sm);
+            color: var(--text-secondary);
+        }
+
+        /* Action Buttons */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: var(--space-2);
+            padding: var(--space-2) var(--space-3);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            font-size: var(--text-sm);
+            font-weight: var(--font-medium);
+            cursor: pointer;
+            transition: all 0.15s;
+            background: var(--surface);
+            color: var(--text-secondary);
+        }
+
+        .btn:hover:not(:disabled) {
+            border-color: var(--text-secondary);
+        }
+
+        .btn:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+
+        .btn-approve {
+            color: var(--success);
+            border-color: var(--success);
+        }
+
+        .btn-approve:hover:not(:disabled) {
+            background: rgba(16, 183, 127, 0.1);
+            border-color: var(--success);
+        }
+
+        .btn-mandate {
+            color: white;
+            background: var(--primary);
+            border-color: var(--primary);
+        }
+
+        .btn-mandate:hover:not(:disabled) {
+            background: var(--primary-dark);
+            border-color: var(--primary-dark);
+        }
+
+        .btn-reject {
+            color: var(--error);
+            border-color: transparent;
+        }
+
+        .btn-reject:hover:not(:disabled) {
+            background: rgba(234, 88, 12, 0.1);
+            border-color: var(--error);
+        }
+
+        .btn-revoke {
+            color: var(--text-secondary);
+            border-color: transparent;
+        }
+
+        .btn-revoke:hover:not(:disabled) {
+            background: rgba(107, 114, 128, 0.1);
+            border-color: var(--text-secondary);
+        }
+
+        /* Knowledge Item Cards */
+        .knowledge-list {
+            display: flex;
+            flex-direction: column;
+            gap: var(--space-4);
+        }
+
+        .knowledge-item {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-xl);
+            box-shadow: var(--shadow-sm);
+            padding: var(--space-5);
+            transition: all 0.15s;
+            position: relative;
+        }
+
+        .knowledge-item:hover {
+            border-color: var(--primary);
+            box-shadow: var(--shadow-md);
+        }
+
+        .knowledge-item.focused {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 2px var(--primary-light);
+        }
+
+        .item-row {
+            display: flex;
+            gap: var(--space-4);
+            align-items: flex-start;
+        }
+
+        .item-checkbox {
+            margin-top: 2px;
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+            accent-color: var(--primary);
+            flex-shrink: 0;
+        }
+
+        .item-body {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .knowledge-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: var(--space-3);
+        }
+
+        .knowledge-title {
+            font-size: var(--text-md);
+            font-weight: var(--font-semibold);
+            color: var(--text-primary);
+            margin-bottom: var(--space-1);
+        }
+
+        .knowledge-meta {
+            display: flex;
+            align-items: center;
+            gap: var(--space-3);
+            font-size: var(--text-xs);
+            color: var(--text-secondary);
+        }
+
+        .category-badge {
+            padding: 2px 8px;
+            border-radius: var(--radius-full);
+            font-size: var(--text-xs);
+            font-weight: var(--font-medium);
+        }
+
+        .category-badge.data_analysis { background: rgba(16, 183, 127, 0.1); color: var(--success); }
+        .category-badge.api_integration { background: var(--primary-light); color: var(--primary); }
+        .category-badge.debugging { background: rgba(234, 88, 12, 0.1); color: var(--error); }
+        .category-badge.performance { background: rgba(245, 159, 10, 0.1); color: #b45309; }
+        .category-badge.workflow { background: rgba(139, 92, 246, 0.1); color: #7c3aed; }
+        .category-badge.infrastructure { background: rgba(107, 114, 128, 0.1); color: var(--text-secondary); }
+        .category-badge.business_logic { background: rgba(16, 183, 127, 0.1); color: #0d9668; }
+
+        /* Status Badges */
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: var(--space-1);
+            padding: 2px 8px;
+            border-radius: var(--radius-full);
+            font-size: var(--text-xs);
+            font-weight: var(--font-semibold);
+            text-transform: capitalize;
+        }
+
+        .status-badge.pending {
+            background: rgba(245, 159, 10, 0.15);
+            color: #b45309;
+        }
+
+        .status-badge.approved {
+            background: rgba(16, 183, 127, 0.15);
+            color: #0d9668;
+        }
+
+        .status-badge.mandatory {
+            background: var(--primary-light);
+            color: var(--primary);
+        }
+
+        .status-badge.rejected {
+            background: rgba(234, 88, 12, 0.15);
+            color: var(--error);
+        }
+
+        .status-badge.revoked {
+            background: rgba(107, 114, 128, 0.15);
+            color: var(--text-secondary);
+        }
+
+        .knowledge-content {
+            font-size: var(--text-base);
+            color: var(--text-secondary);
+            line-height: 1.7;
+            margin-bottom: var(--space-4);
+            /* Truncate long content */
+            display: -webkit-box;
+            -webkit-line-clamp: 3;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+
+        .knowledge-content code {
+            font-family: var(--font-mono);
+            font-size: var(--text-sm);
+            background: var(--background);
+            padding: 2px 6px;
+            border-radius: var(--radius-sm);
+            color: var(--text-primary);
+        }
+
+        .knowledge-footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding-top: var(--space-3);
+            border-top: 1px solid var(--border-light);
+        }
+
+        .knowledge-tags {
+            display: flex;
+            gap: var(--space-2);
+            flex-wrap: wrap;
+        }
+
+        .tag {
+            font-size: var(--text-xs);
+            color: var(--text-secondary);
+            background: var(--background);
+            padding: 2px 8px;
+            border-radius: var(--radius-sm);
+        }
+
+        .contributors {
+            font-size: var(--text-xs);
+            color: var(--text-secondary);
+            display: flex;
+            align-items: center;
+            gap: var(--space-2);
+        }
+
+        .contributor-avatars {
+            display: flex;
+        }
+
+        .contributor-avatar {
+            width: 20px;
+            height: 20px;
+            border-radius: var(--radius-full);
+            background: var(--primary-light);
+            border: 2px solid var(--surface);
+            margin-left: -6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 8px;
+            font-weight: var(--font-semibold);
+            color: var(--primary);
+        }
+
+        .contributor-avatar:first-child {
+            margin-left: 0;
+        }
+
+        /* Item Actions */
+        .item-actions {
+            display: flex;
+            gap: var(--space-2);
+            margin-top: var(--space-3);
+            padding-top: var(--space-3);
+            border-top: 1px solid var(--border-light);
+        }
+
+        /* Mandate Form (inline) */
+        .mandate-form {
+            display: none;
+            margin-top: var(--space-3);
+            padding: var(--space-4);
+            background: var(--background);
+            border-radius: var(--radius-lg);
+            border: 1px solid var(--border);
+        }
+
+        .mandate-form.visible {
+            display: block;
+        }
+
+        .mandate-form label {
+            display: block;
+            font-size: var(--text-sm);
+            font-weight: var(--font-medium);
+            color: var(--text-primary);
+            margin-bottom: var(--space-2);
+        }
+
+        .mandate-form textarea {
+            width: 100%;
+            padding: var(--space-2) var(--space-3);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            font-size: var(--text-base);
+            font-family: var(--font-primary);
+            resize: vertical;
+            min-height: 60px;
+            background: var(--surface);
+        }
+
+        .mandate-form textarea:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 2px var(--primary-light);
+        }
+
+        .mandate-form select {
+            width: 100%;
+            padding: var(--space-2) var(--space-3);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            font-size: var(--text-base);
+            background: var(--surface);
+            color: var(--text-primary);
+            margin-bottom: var(--space-3);
+        }
+
+        .mandate-form-actions {
+            display: flex;
+            gap: var(--space-2);
+            margin-top: var(--space-3);
+        }
+
+        /* Filter Bar (All Items tab) */
+        .filter-bar {
+            display: flex;
+            align-items: center;
+            gap: var(--space-3);
+            margin-bottom: var(--space-4);
+        }
+
+        .filter-bar label {
+            font-size: var(--text-sm);
+            color: var(--text-secondary);
+        }
+
+        .filter-select {
+            padding: var(--space-2) var(--space-3);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            font-size: var(--text-sm);
+            background: var(--surface);
+            color: var(--text-primary);
+            cursor: pointer;
+        }
+
+        /* Audit Log Table */
+        .audit-table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-xl);
+            overflow: hidden;
+            box-shadow: var(--shadow-sm);
+        }
+
+        .audit-table th {
+            padding: var(--space-3) var(--space-4);
+            text-align: left;
+            font-size: var(--text-xs);
+            font-weight: var(--font-semibold);
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            background: var(--background);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .audit-table td {
+            padding: var(--space-3) var(--space-4);
+            font-size: var(--text-sm);
+            color: var(--text-primary);
+            border-bottom: 1px solid var(--border-light);
+        }
+
+        .audit-table tr:last-child td {
+            border-bottom: none;
+        }
+
+        .audit-table tr:hover td {
+            background: var(--border-light);
+        }
+
+        .action-badge {
+            display: inline-flex;
+            padding: 2px 8px;
+            border-radius: var(--radius-full);
+            font-size: var(--text-xs);
+            font-weight: var(--font-medium);
+        }
+
+        .action-badge.approved {
+            background: rgba(16, 183, 127, 0.15);
+            color: #0d9668;
+        }
+
+        .action-badge.rejected {
+            background: rgba(234, 88, 12, 0.15);
+            color: var(--error);
+        }
+
+        .action-badge.mandated {
+            background: var(--primary-light);
+            color: var(--primary);
+        }
+
+        .action-badge.revoked {
+            background: rgba(107, 114, 128, 0.15);
+            color: var(--text-secondary);
+        }
+
+        .action-badge.edited {
+            background: rgba(139, 92, 246, 0.15);
+            color: #7c3aed;
+        }
+
+        .action-badge.migration_auto_approved {
+            background: rgba(245, 159, 10, 0.15);
+            color: #b45309;
+        }
+
+        .audit-details {
+            font-size: var(--text-xs);
+            color: var(--text-secondary);
+            max-width: 200px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        /* Pagination */
+        .pagination {
+            display: flex;
+            justify-content: center;
+            gap: var(--space-2);
+            margin-top: var(--space-6);
+        }
+
+        .page-btn {
+            padding: var(--space-2) var(--space-3);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            background: var(--surface);
+            font-size: var(--text-sm);
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .page-btn:hover:not(:disabled) {
+            border-color: var(--primary);
+            color: var(--primary);
+        }
+
+        .page-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .page-btn.active {
+            background: var(--primary);
+            border-color: var(--primary);
+            color: white;
+        }
+
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: var(--space-8);
+            color: var(--text-secondary);
+        }
+
+        .empty-state svg {
+            width: 48px;
+            height: 48px;
+            margin-bottom: var(--space-4);
+            opacity: 0.5;
+        }
+
+        /* Loading indicator */
+        .loading {
+            text-align: center;
+            padding: var(--space-6);
+            color: var(--text-secondary);
+            font-size: var(--text-sm);
+        }
+
+        /* Toast notification */
+        .toast {
+            position: fixed;
+            bottom: var(--space-6);
+            right: var(--space-6);
+            padding: var(--space-3) var(--space-5);
+            border-radius: var(--radius-lg);
+            color: white;
+            font-size: var(--text-sm);
+            font-weight: var(--font-medium);
+            box-shadow: var(--shadow-md);
+            z-index: 1000;
+            opacity: 0;
+            transform: translateY(10px);
+            transition: all 0.3s;
+            pointer-events: none;
+        }
+
+        .toast.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        .toast.success {
+            background: var(--success);
+        }
+
+        .toast.error {
+            background: var(--error);
+        }
+
+        /* Keyboard shortcut hints */
+        .shortcut-hint {
+            display: none;
+            font-size: 9px;
+            padding: 1px 4px;
+            background: var(--background);
+            border: 1px solid var(--border);
+            border-radius: 3px;
+            color: var(--text-secondary);
+            margin-left: var(--space-1);
+        }
+
+        .keyboard-active .shortcut-hint {
+            display: inline;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .page-header {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: var(--space-3);
+            }
+
+            .stats-bar {
+                flex-wrap: wrap;
+                gap: var(--space-4);
+            }
+
+            .tab-nav {
+                overflow-x: auto;
+            }
+
+            .batch-bar {
+                flex-wrap: wrap;
+            }
+
+            .knowledge-header {
+                flex-direction: column;
+                gap: var(--space-3);
+            }
+
+            .knowledge-footer {
+                flex-direction: column;
+                gap: var(--space-3);
+                align-items: flex-start;
+            }
+
+            .item-actions {
+                flex-wrap: wrap;
+            }
+
+            .audit-table {
+                display: block;
+                overflow-x: auto;
+            }
+
+            .shortcut-hint {
+                display: none !important;
+            }
+        }
+    </style>
+    {% include '_theme.html' %}
+</head>
+<body>
+    <div class="container-memory">
+        <!-- Header -->
+        <header class="page-header">
+            <div class="header-left">
+                <a href="{{ url_for('corporate_memory') }}" class="back-link">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M15 18l-6-6 6-6"/>
+                    </svg>
+                    Corporate Memory
+                </a>
+                <div class="page-title">
+                    <span class="page-icon">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                        </svg>
+                    </span>
+                    <h1>Corporate Memory &mdash; Admin</h1>
+                </div>
+            </div>
+            <div class="user-info-v2">
+                {% if session.user.picture %}
+                <img src="{{ session.user.picture }}" alt="Profile" class="avatar-v2">
+                {% else %}
+                <div class="avatar-v2" style="background: var(--primary-light); display: flex; align-items: center; justify-content: center; font-weight: 600; color: var(--primary); font-size: 12px;">
+                    {{ session.user.email[:2].upper() }}
+                </div>
+                {% endif %}
+                {{ session.user.email }}
+            </div>
+        </header>
+
+        <!-- Stats Bar -->
+        <div class="stats-bar">
+            <div class="stat-item highlight">
+                <div class="value" id="statPending">{{ stats.pending_count|default(0) }}</div>
+                <div class="label">Pending</div>
+            </div>
+            <div class="stat-divider"></div>
+            <div class="stat-item highlight-green">
+                <div class="value" id="statApproved">{{ stats.approved_count|default(0) }}</div>
+                <div class="label">Approved</div>
+            </div>
+            <div class="stat-divider"></div>
+            <div class="stat-item highlight-blue">
+                <div class="value" id="statMandatory">{{ stats.mandatory_count|default(0) }}</div>
+                <div class="label">Mandatory</div>
+            </div>
+            <div class="stat-divider"></div>
+            <div class="stat-item">
+                <div class="value" id="statTotal">{{ stats.knowledge_count|default(0) }}</div>
+                <div class="label">Total</div>
+            </div>
+        </div>
+
+        <!-- Tab Navigation -->
+        <div class="tab-nav">
+            <button class="tab-btn active" data-tab="review" onclick="switchTab('review')">
+                Review Queue
+                <span class="tab-badge" id="pendingBadge" style="{% if not stats.pending_count %}display:none{% endif %}">{{ stats.pending_count|default(0) }}</span>
+            </button>
+            <button class="tab-btn" data-tab="all" onclick="switchTab('all')">
+                All Items
+            </button>
+            <button class="tab-btn" data-tab="audit" onclick="switchTab('audit')">
+                Audit Log
+            </button>
+        </div>
+
+        <!-- Review Queue Tab -->
+        <div id="tab-review" class="tab-content active">
+            <div class="batch-bar">
+                <label>
+                    <input type="checkbox" id="selectAllReview" onchange="toggleSelectAll('review')">
+                    Select all
+                </label>
+                <span class="selected-count" id="selectedCountReview"></span>
+                <div class="batch-actions">
+                    <button class="btn btn-approve" id="batchApproveBtn" disabled onclick="batchAction('approve')">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="20 6 9 17 4 12"/>
+                        </svg>
+                        Approve Selected
+                    </button>
+                    <button class="btn btn-reject" id="batchRejectBtn" disabled onclick="batchAction('reject')">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="18" y1="6" x2="6" y2="18"/>
+                            <line x1="6" y1="6" x2="18" y2="18"/>
+                        </svg>
+                        Reject Selected
+                    </button>
+                </div>
+            </div>
+            <div id="reviewList" class="knowledge-list">
+                <div class="loading">Loading pending items...</div>
+            </div>
+            <div id="reviewPagination" class="pagination"></div>
+        </div>
+
+        <!-- All Items Tab -->
+        <div id="tab-all" class="tab-content">
+            <div class="filter-bar">
+                <label for="statusFilter">Status:</label>
+                <select class="filter-select" id="statusFilter" onchange="loadAllItems(0)">
+                    <option value="">All</option>
+                    <option value="pending">Pending</option>
+                    <option value="approved">Approved</option>
+                    <option value="mandatory">Mandatory</option>
+                    <option value="rejected">Rejected</option>
+                    <option value="revoked">Revoked</option>
+                </select>
+            </div>
+            <div id="allList" class="knowledge-list">
+                <div class="loading">Loading items...</div>
+            </div>
+            <div id="allPagination" class="pagination"></div>
+        </div>
+
+        <!-- Audit Log Tab -->
+        <div id="tab-audit" class="tab-content">
+            <div class="filter-bar">
+                <label for="auditActionFilter">Action:</label>
+                <select class="filter-select" id="auditActionFilter" onchange="loadAuditLog(0)">
+                    <option value="">All Actions</option>
+                    <option value="approved">Approved</option>
+                    <option value="rejected">Rejected</option>
+                    <option value="mandated">Mandated</option>
+                    <option value="revoked">Revoked</option>
+                    <option value="edited">Edited</option>
+                </select>
+            </div>
+            <div id="auditContent">
+                <div class="loading">Loading audit log...</div>
+            </div>
+            <div id="auditPagination" class="pagination"></div>
+        </div>
+    </div>
+
+    <!-- Toast notification -->
+    <div id="toast" class="toast"></div>
+
+    <script>
+    // Configuration passed from server
+    const GROUPS = {{ groups | tojson }};
+    const GOVERNANCE_MODE = {{ governance_mode | tojson }};
+
+    // State
+    let currentTab = 'review';
+    let reviewPage = 0;
+    let allPage = 0;
+    let auditPage = 0;
+    let focusedIndex = -1;
+    let keyboardActive = false;
+
+    // ─────────────────────────────────────────────────────────────
+    // Tab management
+    // ─────────────────────────────────────────────────────────────
+
+    function switchTab(tab) {
+        currentTab = tab;
+        focusedIndex = -1;
+
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        document.querySelector(`.tab-btn[data-tab="${tab}"]`).classList.add('active');
+
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        document.getElementById(`tab-${tab}`).classList.add('active');
+
+        // Load data for tab if needed
+        if (tab === 'review') loadReviewQueue(reviewPage);
+        else if (tab === 'all') loadAllItems(allPage);
+        else if (tab === 'audit') loadAuditLog(auditPage);
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Data loading
+    // ─────────────────────────────────────────────────────────────
+
+    async function loadReviewQueue(page) {
+        reviewPage = page;
+        const list = document.getElementById('reviewList');
+        const pagination = document.getElementById('reviewPagination');
+
+        try {
+            const params = new URLSearchParams({page, _t: Date.now()});
+            const resp = await fetch(`/api/corporate-memory/admin/pending?${params}`);
+            const data = await resp.json();
+            renderReviewItems(data, list, pagination);
+            updateStats();
+        } catch (e) {
+            console.error('Failed to load review queue:', e);
+            list.innerHTML = '<div class="empty-state"><p>Error loading pending items.</p></div>';
+        }
+    }
+
+    async function loadAllItems(page) {
+        allPage = page;
+        const list = document.getElementById('allList');
+        const pagination = document.getElementById('allPagination');
+        const status = document.getElementById('statusFilter').value;
+
+        try {
+            const params = new URLSearchParams({page, _t: Date.now()});
+            if (status) {
+                params.append('status', status);
+            } else {
+                params.append('all_statuses', 'true');
+            }
+            const resp = await fetch(`/api/corporate-memory/knowledge?${params}`);
+            const data = await resp.json();
+            renderAllItems(data, list, pagination);
+        } catch (e) {
+            console.error('Failed to load all items:', e);
+            list.innerHTML = '<div class="empty-state"><p>Error loading items.</p></div>';
+        }
+    }
+
+    async function loadAuditLog(page) {
+        auditPage = page;
+        const content = document.getElementById('auditContent');
+        const pagination = document.getElementById('auditPagination');
+        const action = document.getElementById('auditActionFilter').value;
+
+        try {
+            const params = new URLSearchParams({page, per_page: 20, _t: Date.now()});
+            if (action) params.append('action', action);
+            const resp = await fetch(`/api/corporate-memory/admin/audit?${params}`);
+            const data = await resp.json();
+            renderAuditLog(data, content, pagination);
+        } catch (e) {
+            console.error('Failed to load audit log:', e);
+            content.innerHTML = '<div class="empty-state"><p>Error loading audit log.</p></div>';
+        }
+    }
+
+    async function updateStats() {
+        try {
+            const resp = await fetch(`/api/corporate-memory/stats?_t=${Date.now()}`);
+            const data = await resp.json();
+            document.getElementById('statPending').textContent = data.pending_count || 0;
+            document.getElementById('statApproved').textContent = data.approved_count || 0;
+            document.getElementById('statMandatory').textContent = data.mandatory_count || 0;
+            document.getElementById('statTotal').textContent = data.knowledge_count || 0;
+
+            const badge = document.getElementById('pendingBadge');
+            const pending = data.pending_count || 0;
+            badge.textContent = pending;
+            badge.style.display = pending > 0 ? '' : 'none';
+        } catch (e) {
+            console.error('Failed to update stats:', e);
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Rendering: Review Queue
+    // ─────────────────────────────────────────────────────────────
+
+    function renderReviewItems(data, list, paginationEl) {
+        if (!data.items || data.items.length === 0) {
+            list.innerHTML = `
+                <div class="empty-state">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                    <p>No pending items to review.</p>
+                    <p style="font-size: var(--text-sm);">All knowledge items have been reviewed.</p>
+                </div>`;
+            paginationEl.innerHTML = '';
+            return;
+        }
+
+        list.innerHTML = data.items.map((item, idx) => renderItemCard(item, idx, true)).join('');
+        renderPagination(paginationEl, data, 'loadReviewQueue');
+        updateSelectionCount('review');
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Rendering: All Items
+    // ─────────────────────────────────────────────────────────────
+
+    function renderAllItems(data, list, paginationEl) {
+        if (!data.items || data.items.length === 0) {
+            list.innerHTML = `
+                <div class="empty-state">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/>
+                    </svg>
+                    <p>No items found with the selected filter.</p>
+                </div>`;
+            paginationEl.innerHTML = '';
+            return;
+        }
+
+        list.innerHTML = data.items.map((item, idx) => renderItemCard(item, idx, false)).join('');
+        renderPagination(paginationEl, data, 'loadAllItems');
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Rendering: Shared Item Card
+    // ─────────────────────────────────────────────────────────────
+
+    function renderItemCard(item, idx, isReview) {
+        const status = item.status || 'pending';
+        const categoryDisplay = (item.category || 'general').replace(/_/g, ' ');
+        const dateStr = item.extracted_at ? item.extracted_at.substring(0, 10) : 'recently';
+        const contributors = item.source_users_display || [];
+
+        // Determine available actions based on current status
+        let actionsHtml = '';
+        if (isReview) {
+            actionsHtml = `
+                <div class="item-actions">
+                    <button class="btn btn-approve" onclick="adminAction('approve', '${esc(item.id)}')">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="20 6 9 17 4 12"/>
+                        </svg>
+                        Approve <span class="shortcut-hint">A</span>
+                    </button>
+                    <button class="btn btn-mandate" onclick="showMandateForm('${esc(item.id)}')">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                        </svg>
+                        Mandate <span class="shortcut-hint">M</span>
+                    </button>
+                    <button class="btn btn-reject" onclick="adminAction('reject', '${esc(item.id)}')">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="18" y1="6" x2="6" y2="18"/>
+                            <line x1="6" y1="6" x2="18" y2="18"/>
+                        </svg>
+                        Reject <span class="shortcut-hint">R</span>
+                    </button>
+                </div>`;
+        } else {
+            actionsHtml = buildStatusActions(item);
+        }
+
+        const mandateFormHtml = `
+            <div class="mandate-form" id="mandate-form-${esc(item.id)}">
+                <label>Why is this mandatory?</label>
+                <textarea id="mandate-reason-${esc(item.id)}" placeholder="Explain why all analysts need this rule..."></textarea>
+                <label style="margin-top: var(--space-3);">Target Audience</label>
+                <select id="mandate-audience-${esc(item.id)}">
+                    <option value="all">All users</option>
+                    ${GROUPS.map(g => `<option value="group:${esc(g.name)}">${esc(g.name)} (${g.members_count} members)</option>`).join('')}
+                </select>
+                <div class="mandate-form-actions">
+                    <button class="btn btn-mandate" onclick="submitMandate('${esc(item.id)}')">Confirm Mandate</button>
+                    <button class="btn" onclick="hideMandateForm('${esc(item.id)}')">Cancel</button>
+                </div>
+            </div>`;
+
+        return `
+            <div class="knowledge-item" data-id="${esc(item.id)}" data-idx="${idx}">
+                <div class="item-row">
+                    ${isReview ? `<input type="checkbox" class="item-checkbox" data-id="${esc(item.id)}" onchange="updateSelectionCount('review')">` : ''}
+                    <div class="item-body">
+                        <div class="knowledge-header">
+                            <div>
+                                <div class="knowledge-title">${escapeHtml(item.title || 'Untitled')}</div>
+                                <div class="knowledge-meta">
+                                    <span class="category-badge ${esc(item.category || 'general')}">${escapeHtml(categoryDisplay)}</span>
+                                    ${!isReview ? `<span class="status-badge ${esc(status)}">${escapeHtml(status)}</span>` : ''}
+                                    <span>Added ${escapeHtml(dateStr)}</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="knowledge-content">${escapeHtml(item.content || '')}</div>
+                        <div class="knowledge-footer">
+                            <div class="knowledge-tags">
+                                ${(item.tags || []).map(tag => `<span class="tag">${escapeHtml(tag)}</span>`).join('')}
+                            </div>
+                            <div class="contributors">
+                                <div class="contributor-avatars">
+                                    ${contributors.slice(0, 3).map(u =>
+                                        `<span class="contributor-avatar" title="${escapeHtml(u.name)}">${escapeHtml(u.initials)}</span>`
+                                    ).join('')}
+                                    ${contributors.length > 3 ? `<span class="contributor-avatar">+${contributors.length - 3}</span>` : ''}
+                                </div>
+                                <span>${contributors.length} contributor${contributors.length !== 1 ? 's' : ''}</span>
+                            </div>
+                        </div>
+                        ${actionsHtml}
+                        ${mandateFormHtml}
+                    </div>
+                </div>
+            </div>`;
+    }
+
+    function buildStatusActions(item) {
+        const status = item.status || 'pending';
+        let buttons = [];
+
+        // Actions depend on the valid transitions from current status
+        if (status === 'pending') {
+            buttons.push(`<button class="btn btn-approve" onclick="adminAction('approve', '${esc(item.id)}')">Approve</button>`);
+            buttons.push(`<button class="btn btn-mandate" onclick="showMandateForm('${esc(item.id)}')">Mandate</button>`);
+            buttons.push(`<button class="btn btn-reject" onclick="adminAction('reject', '${esc(item.id)}')">Reject</button>`);
+        } else if (status === 'approved') {
+            buttons.push(`<button class="btn btn-mandate" onclick="showMandateForm('${esc(item.id)}')">Promote to Mandatory</button>`);
+            buttons.push(`<button class="btn btn-reject" onclick="adminAction('reject', '${esc(item.id)}')">Reject</button>`);
+        } else if (status === 'mandatory') {
+            buttons.push(`<button class="btn btn-approve" onclick="adminAction('approve', '${esc(item.id)}')">Demote to Approved</button>`);
+            buttons.push(`<button class="btn btn-revoke" onclick="adminAction('revoke', '${esc(item.id)}')">Revoke</button>`);
+        } else if (status === 'rejected') {
+            buttons.push(`<button class="btn btn-approve" onclick="adminAction('approve', '${esc(item.id)}')">Re-approve</button>`);
+        } else if (status === 'revoked') {
+            buttons.push(`<button class="btn btn-approve" onclick="adminAction('approve', '${esc(item.id)}')">Re-approve</button>`);
+            buttons.push(`<button class="btn btn-mandate" onclick="showMandateForm('${esc(item.id)}')">Re-mandate</button>`);
+        }
+
+        if (buttons.length === 0) return '';
+        return `<div class="item-actions">${buttons.join('')}</div>`;
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Rendering: Audit Log
+    // ─────────────────────────────────────────────────────────────
+
+    function renderAuditLog(data, content, paginationEl) {
+        if (!data.entries || data.entries.length === 0) {
+            content.innerHTML = `
+                <div class="empty-state">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                        <polyline points="14 2 14 8 20 8"/>
+                        <line x1="16" y1="13" x2="8" y2="13"/>
+                        <line x1="16" y1="17" x2="8" y2="17"/>
+                    </svg>
+                    <p>No audit log entries yet.</p>
+                </div>`;
+            paginationEl.innerHTML = '';
+            return;
+        }
+
+        let rows = data.entries.map(entry => {
+            const ts = entry.timestamp ? new Date(entry.timestamp).toLocaleString() : 'Unknown';
+            const admin = entry.admin || 'Unknown';
+            const action = entry.action || 'unknown';
+            const itemId = entry.item_id || '';
+            const details = entry.details || {};
+
+            let detailStr = '';
+            if (details.reason) detailStr = details.reason;
+            else if (details.mandatory_reason) detailStr = details.mandatory_reason;
+            else if (details.audience) detailStr = `Audience: ${details.audience}`;
+            else if (details.previous_status) detailStr = `From: ${details.previous_status}`;
+
+            return `
+                <tr>
+                    <td>${escapeHtml(ts)}</td>
+                    <td>${escapeHtml(admin)}</td>
+                    <td><span class="action-badge ${esc(action)}">${escapeHtml(action)}</span></td>
+                    <td title="${escapeHtml(itemId)}">${escapeHtml(itemId.substring(0, 12))}${itemId.length > 12 ? '...' : ''}</td>
+                    <td class="audit-details" title="${escapeHtml(detailStr)}">${escapeHtml(detailStr)}</td>
+                </tr>`;
+        }).join('');
+
+        content.innerHTML = `
+            <table class="audit-table">
+                <thead>
+                    <tr>
+                        <th>Timestamp</th>
+                        <th>Admin</th>
+                        <th>Action</th>
+                        <th>Item</th>
+                        <th>Details</th>
+                    </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            </table>`;
+
+        // Pagination for audit (using total and per_page)
+        const totalPages = Math.ceil((data.total || 0) / (data.per_page || 20));
+        renderPaginationGeneric(paginationEl, data.page || 0, totalPages, 'loadAuditLog');
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Rendering: Pagination
+    // ─────────────────────────────────────────────────────────────
+
+    function renderPagination(el, data, fnName) {
+        renderPaginationGeneric(el, data.page || 0, data.total_pages || 0, fnName);
+    }
+
+    function renderPaginationGeneric(el, page, totalPages, fnName) {
+        if (totalPages <= 1) {
+            el.innerHTML = '';
+            return;
+        }
+
+        let html = `<button class="page-btn" onclick="${fnName}(${page - 1})" ${page === 0 ? 'disabled' : ''}>Prev</button>`;
+
+        // Smart pagination: show max 7 page buttons
+        const maxVisible = 7;
+        let startPage = Math.max(0, page - Math.floor(maxVisible / 2));
+        let endPage = Math.min(totalPages, startPage + maxVisible);
+        if (endPage - startPage < maxVisible) {
+            startPage = Math.max(0, endPage - maxVisible);
+        }
+
+        if (startPage > 0) {
+            html += `<button class="page-btn" onclick="${fnName}(0)">1</button>`;
+            if (startPage > 1) html += `<span style="padding: var(--space-2); color: var(--text-secondary);">...</span>`;
+        }
+
+        for (let p = startPage; p < endPage; p++) {
+            html += `<button class="page-btn ${p === page ? 'active' : ''}" onclick="${fnName}(${p})">${p + 1}</button>`;
+        }
+
+        if (endPage < totalPages) {
+            if (endPage < totalPages - 1) html += `<span style="padding: var(--space-2); color: var(--text-secondary);">...</span>`;
+            html += `<button class="page-btn" onclick="${fnName}(${totalPages - 1})">${totalPages}</button>`;
+        }
+
+        html += `<button class="page-btn" onclick="${fnName}(${page + 1})" ${page >= totalPages - 1 ? 'disabled' : ''}>Next</button>`;
+        el.innerHTML = html;
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Admin Actions
+    // ─────────────────────────────────────────────────────────────
+
+    async function adminAction(action, itemId) {
+        const url = `/api/corporate-memory/admin/${action}`;
+        const body = {item_id: itemId};
+
+        try {
+            const resp = await fetch(url, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(body),
+            });
+
+            const result = await resp.json();
+            if (result.ok) {
+                showToast(`Item ${action}d successfully`, 'success');
+                refreshCurrentTab();
+            } else {
+                showToast(result.error || `Failed to ${action} item`, 'error');
+            }
+        } catch (e) {
+            console.error(`Failed to ${action} item:`, e);
+            showToast(`Network error: ${action} failed`, 'error');
+        }
+    }
+
+    function showMandateForm(itemId) {
+        // Hide all other mandate forms first
+        document.querySelectorAll('.mandate-form.visible').forEach(f => f.classList.remove('visible'));
+        const form = document.getElementById(`mandate-form-${itemId}`);
+        if (form) form.classList.add('visible');
+    }
+
+    function hideMandateForm(itemId) {
+        const form = document.getElementById(`mandate-form-${itemId}`);
+        if (form) form.classList.remove('visible');
+    }
+
+    async function submitMandate(itemId) {
+        const reason = document.getElementById(`mandate-reason-${itemId}`).value.trim();
+        const audience = document.getElementById(`mandate-audience-${itemId}`).value;
+
+        if (!reason) {
+            showToast('Please provide a reason for mandating this item', 'error');
+            return;
+        }
+
+        try {
+            const resp = await fetch('/api/corporate-memory/admin/mandate', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    item_id: itemId,
+                    mandatory_reason: reason,
+                    audience: audience,
+                }),
+            });
+
+            const result = await resp.json();
+            if (result.ok) {
+                showToast('Item mandated successfully', 'success');
+                refreshCurrentTab();
+            } else {
+                showToast(result.error || 'Failed to mandate item', 'error');
+            }
+        } catch (e) {
+            console.error('Failed to mandate item:', e);
+            showToast('Network error: mandate failed', 'error');
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Batch Actions
+    // ─────────────────────────────────────────────────────────────
+
+    function getSelectedIds(tab) {
+        const selector = tab === 'review' ? '#reviewList .item-checkbox:checked' : '#allList .item-checkbox:checked';
+        return Array.from(document.querySelectorAll(selector)).map(cb => cb.dataset.id);
+    }
+
+    function toggleSelectAll(tab) {
+        const selectAllEl = document.getElementById(tab === 'review' ? 'selectAllReview' : 'selectAllAll');
+        const checkboxes = document.querySelectorAll(
+            tab === 'review' ? '#reviewList .item-checkbox' : '#allList .item-checkbox'
+        );
+        checkboxes.forEach(cb => cb.checked = selectAllEl.checked);
+        updateSelectionCount(tab);
+    }
+
+    function updateSelectionCount(tab) {
+        const ids = getSelectedIds(tab);
+        const countEl = document.getElementById(tab === 'review' ? 'selectedCountReview' : 'selectedCountAll');
+        const approveBtn = document.getElementById(tab === 'review' ? 'batchApproveBtn' : 'batchApproveBtnAll');
+        const rejectBtn = document.getElementById(tab === 'review' ? 'batchRejectBtn' : 'batchRejectBtnAll');
+
+        if (countEl) countEl.textContent = ids.length > 0 ? `${ids.length} selected` : '';
+        if (approveBtn) approveBtn.disabled = ids.length === 0;
+        if (rejectBtn) rejectBtn.disabled = ids.length === 0;
+    }
+
+    async function batchAction(action) {
+        const ids = getSelectedIds('review');
+        if (ids.length === 0) return;
+
+        try {
+            const resp = await fetch('/api/corporate-memory/admin/batch', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({item_ids: ids, action: action}),
+            });
+
+            const result = await resp.json();
+            if (result.ok) {
+                const successCount = (result.success || []).length;
+                const failCount = (result.failed || []).length;
+                let msg = `${successCount} item${successCount !== 1 ? 's' : ''} ${action}d`;
+                if (failCount > 0) msg += `, ${failCount} failed`;
+                showToast(msg, failCount > 0 ? 'error' : 'success');
+                refreshCurrentTab();
+            } else {
+                showToast(result.error || `Batch ${action} failed`, 'error');
+            }
+        } catch (e) {
+            console.error(`Batch ${action} failed:`, e);
+            showToast(`Network error: batch ${action} failed`, 'error');
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Tab Refresh
+    // ─────────────────────────────────────────────────────────────
+
+    function refreshCurrentTab() {
+        if (currentTab === 'review') loadReviewQueue(reviewPage);
+        else if (currentTab === 'all') loadAllItems(allPage);
+        else if (currentTab === 'audit') loadAuditLog(auditPage);
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Keyboard Shortcuts
+    // ─────────────────────────────────────────────────────────────
+
+    document.addEventListener('keydown', function(e) {
+        // Skip if focus is in an input or textarea
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+        // Only active in review tab
+        if (currentTab !== 'review') return;
+
+        const items = document.querySelectorAll('#reviewList .knowledge-item');
+        if (items.length === 0) return;
+
+        // Activate keyboard mode
+        if (!keyboardActive) {
+            keyboardActive = true;
+            document.body.classList.add('keyboard-active');
+        }
+
+        switch (e.key) {
+            case 'j': // Next item
+                e.preventDefault();
+                focusedIndex = Math.min(focusedIndex + 1, items.length - 1);
+                updateFocus(items);
+                break;
+            case 'k': // Previous item
+                e.preventDefault();
+                focusedIndex = Math.max(focusedIndex - 1, 0);
+                updateFocus(items);
+                break;
+            case 'a': // Approve focused
+                e.preventDefault();
+                if (focusedIndex >= 0 && focusedIndex < items.length) {
+                    const id = items[focusedIndex].dataset.id;
+                    if (id) adminAction('approve', id);
+                }
+                break;
+            case 'r': // Reject focused
+                e.preventDefault();
+                if (focusedIndex >= 0 && focusedIndex < items.length) {
+                    const id = items[focusedIndex].dataset.id;
+                    if (id) adminAction('reject', id);
+                }
+                break;
+            case 'm': // Mandate focused
+                e.preventDefault();
+                if (focusedIndex >= 0 && focusedIndex < items.length) {
+                    const id = items[focusedIndex].dataset.id;
+                    if (id) showMandateForm(id);
+                }
+                break;
+        }
+    });
+
+    function updateFocus(items) {
+        items.forEach(item => item.classList.remove('focused'));
+        if (focusedIndex >= 0 && focusedIndex < items.length) {
+            items[focusedIndex].classList.add('focused');
+            items[focusedIndex].scrollIntoView({behavior: 'smooth', block: 'nearest'});
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Utility
+    // ─────────────────────────────────────────────────────────────
+
+    function escapeHtml(text) {
+        if (text === null || text === undefined) return '';
+        const div = document.createElement('div');
+        div.textContent = String(text);
+        return div.innerHTML;
+    }
+
+    function esc(text) {
+        // Escape for use in HTML attributes (single quotes in onclick handlers etc.)
+        return escapeHtml(String(text || '')).replace(/'/g, '&#39;').replace(/"/g, '&quot;');
+    }
+
+    let toastTimeout = null;
+    function showToast(message, type) {
+        const toast = document.getElementById('toast');
+        toast.textContent = message;
+        toast.className = `toast ${type} visible`;
+        clearTimeout(toastTimeout);
+        toastTimeout = setTimeout(() => {
+            toast.classList.remove('visible');
+        }, 3000);
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Initial load
+    // ─────────────────────────────────────────────────────────────
+
+    loadReviewQueue(0);
+    </script>
+</body>
+</html>

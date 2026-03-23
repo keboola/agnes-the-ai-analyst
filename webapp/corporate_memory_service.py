@@ -104,6 +104,16 @@ def get_governance_mode() -> str | None:
     return gov.get("distribution_mode", "hybrid")
 
 
+def get_groups() -> dict:
+    """Return the groups dict from instance config (public wrapper around _load_groups).
+
+    Returns:
+        Dict mapping group name to group config (with 'members' list).
+        Empty dict if no groups configured.
+    """
+    return _load_groups()
+
+
 def get_approval_mode() -> str | None:
     """Return the approval mode, or None if legacy (no config)."""
     gov = _load_governance_config()
