@@ -116,10 +116,10 @@ class OpenAICompatExtractor:
         self._structured_output = structured_output
         self._safe_url = _sanitize_url(base_url)
 
-        # Suppress OpenAI SDK debug logging which dumps full request bodies
-        # including prompt content — this is a security requirement
-        logging.getLogger("openai").setLevel(logging.WARNING)
-        logging.getLogger("httpx").setLevel(logging.WARNING)
+        # Suppress OpenAI SDK and HTTP client debug logging which dumps full
+        # request bodies including prompt content — this is a security requirement
+        for noisy_logger in ("openai", "httpx", "httpcore"):
+            logging.getLogger(noisy_logger).setLevel(logging.WARNING)
 
     def extract_json(
         self,
