@@ -35,7 +35,7 @@ FILTERING RULES:
 For each item provide:
 - existing_id: The ID from existing catalog if this maps to an existing item, or null for new items
 - title: Short descriptive title (max 60 chars)
-- content: Clear explanation with examples if relevant (max 500 chars)
+- content: Clear explanation with examples if relevant (max 1000 chars)
 - category: One of [data_analysis, api_integration, debugging, performance, workflow, infrastructure, business_logic]
 - tags: 2-4 relevant keywords
 - source_users: Array of usernames who contributed this knowledge (for existing items with no matching user notes, preserve the original source_users)
