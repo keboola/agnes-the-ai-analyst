@@ -10,6 +10,7 @@ import re
 import time
 from urllib.parse import urlparse
 
+import httpx
 import openai
 
 from .exceptions import (
@@ -94,6 +95,7 @@ class OpenAICompatExtractor:
         base_url: str,
         model: str,
         structured_output: str = "auto",
+        verify_ssl: bool = True,
     ) -> None:
         """Initialize the OpenAI-compatible extractor.
 
@@ -102,11 +104,22 @@ class OpenAICompatExtractor:
             base_url: Base URL of the OpenAI-compatible API.
             model: Model identifier.
             structured_output: Fallback strategy - "strict", "json", or "auto".
+            verify_ssl: Whether to verify SSL certificates. Set to False for
+                corporate proxies with self-signed certificates.
         """
-        self._client = openai.OpenAI(api_key=api_key, base_url=base_url)
+        # Custom httpx client for SSL control (corporate proxies often use self-signed certs)
+        http_client = httpx.Client(verify=verify_ssl)
+        self._client = openai.OpenAI(
+            api_key=api_key, base_url=base_url, http_client=http_client,
+        )
         self._model = model
         self._structured_output = structured_output
         self._safe_url = _sanitize_url(base_url)
+
+        # Suppress OpenAI SDK debug logging which dumps full request bodies
+        # including prompt content — this is a security requirement
+        logging.getLogger("openai").setLevel(logging.WARNING)
+        logging.getLogger("httpx").setLevel(logging.WARNING)
 
     def extract_json(
         self,

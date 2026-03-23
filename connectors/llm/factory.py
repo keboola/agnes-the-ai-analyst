@@ -96,17 +96,20 @@ def create_extractor(ai_config: dict) -> StructuredExtractor:
                 f"got '{structured_output}'"
             )
 
+        verify_ssl = ai_config.get("verify_ssl", True)
+
         safe_url = _sanitize_url(base_url)
         logger.info(
             "Creating OpenAICompatExtractor, url=%s, model=%s, "
-            "structured_output=%s",
-            safe_url, model, structured_output,
+            "structured_output=%s, verify_ssl=%s",
+            safe_url, model, structured_output, verify_ssl,
         )
         return OpenAICompatExtractor(
             api_key=api_key,
             base_url=base_url,
             model=model,
             structured_output=structured_output,
+            verify_ssl=verify_ssl,
         )
 
     else:
