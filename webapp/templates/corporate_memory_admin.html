@@ -1121,7 +1121,7 @@
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
                         </svg>
-                        Mandate <span class="shortcut-hint">M</span>
+                        Make Mandatory <span class="shortcut-hint">M</span>
                     </button>
                     <button class="btn btn-reject" onclick="adminAction('reject', '${esc(item.id)}')">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1145,7 +1145,7 @@
                     ${GROUPS.map(g => `<option value="group:${esc(g.name)}">${esc(g.name)} (${g.members_count} members)</option>`).join('')}
                 </select>
                 <div class="mandate-form-actions">
-                    <button class="btn btn-mandate" onclick="submitMandate('${esc(item.id)}')">Confirm Mandate</button>
+                    <button class="btn btn-mandate" onclick="submitMandate('${esc(item.id)}')">Confirm</button>
                     <button class="btn" onclick="hideMandateForm('${esc(item.id)}')">Cancel</button>
                 </div>
             </div>`;
@@ -1194,10 +1194,10 @@
         // Actions depend on the valid transitions from current status
         if (status === 'pending') {
             buttons.push(`<button class="btn btn-approve" onclick="adminAction('approve', '${esc(item.id)}')">Approve</button>`);
-            buttons.push(`<button class="btn btn-mandate" onclick="showMandateForm('${esc(item.id)}')">Mandate</button>`);
+            buttons.push(`<button class="btn btn-mandate" onclick="showMandateForm('${esc(item.id)}')">Make Mandatory</button>`);
             buttons.push(`<button class="btn btn-reject" onclick="adminAction('reject', '${esc(item.id)}')">Reject</button>`);
         } else if (status === 'approved') {
-            buttons.push(`<button class="btn btn-mandate" onclick="showMandateForm('${esc(item.id)}')">Promote to Mandatory</button>`);
+            buttons.push(`<button class="btn btn-mandate" onclick="showMandateForm('${esc(item.id)}')">Make Mandatory</button>`);
             buttons.push(`<button class="btn btn-reject" onclick="adminAction('reject', '${esc(item.id)}')">Reject</button>`);
         } else if (status === 'mandatory') {
             buttons.push(`<button class="btn btn-approve" onclick="adminAction('approve', '${esc(item.id)}')">Demote to Approved</button>`);
@@ -1206,7 +1206,7 @@
             buttons.push(`<button class="btn btn-approve" onclick="adminAction('approve', '${esc(item.id)}')">Re-approve</button>`);
         } else if (status === 'revoked') {
             buttons.push(`<button class="btn btn-approve" onclick="adminAction('approve', '${esc(item.id)}')">Re-approve</button>`);
-            buttons.push(`<button class="btn btn-mandate" onclick="showMandateForm('${esc(item.id)}')">Re-mandate</button>`);
+            buttons.push(`<button class="btn btn-mandate" onclick="showMandateForm('${esc(item.id)}')">Make Mandatory</button>`);
         }
 
         if (buttons.length === 0) return '';
