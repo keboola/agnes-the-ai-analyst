@@ -153,8 +153,57 @@ jira:
   cloud_id: ""
 
 # --- Corporate Memory AI (optional) ---
+# Extracts shared knowledge from team members' CLAUDE.local.md files.
+# Provider: "anthropic" (direct API) or "openai_compat" (LiteLLM, OpenRouter, Azure, etc.)
 ai:
-  anthropic_api_key: "${ANTHROPIC_API_KEY}"
+  provider: "anthropic"                    # or "openai_compat"
+  api_key: "${ANTHROPIC_API_KEY}"          # or "${LLM_API_KEY}" for proxy
+  # base_url: "https://litellm.example.com"  # required for openai_compat
+  model: "claude-haiku-4-5-20251001"       # any model available on your provider
+  # --- Structured output quality control ---
+  # AI models can return JSON in three ways, each with different reliability:
+  #
+  # Layer 1 - "json_schema" (best):
+  #   The provider enforces an exact schema. Every field, type, and structure
+  #   is guaranteed. Available on: Anthropic, OpenAI, Claude via LiteLLM.
+  #
+  # Layer 2 - "json_object" (good):
+  #   The provider guarantees valid JSON, but does not enforce a specific schema.
+  #   Fields may be missing or have wrong types. Available on most providers.
+  #
+  # Layer 3 - "prompt" (acceptable):
+  #   The AI is asked to respond in JSON via instructions in the prompt.
+  #   No technical enforcement -- the model may still return invalid JSON.
+  #   Works everywhere, but least reliable.
+  #
+  # "strict" = only Layer 1. Fail if provider doesn't support json_schema.
+  #            Use when data quality is non-negotiable.
+  # "json"   = Layer 1, fall back to Layer 2. No prompt-based fallback.
+  #            Good balance of quality and compatibility.
+  # "auto"   = All three layers as progressive fallback. Maximum compatibility.
+  #            Use when you'd rather get imperfect data than no data.
+  structured_output: "auto"
+
+# Legacy format (still supported, equivalent to provider: "anthropic"):
+# ai:
+#   anthropic_api_key: "${ANTHROPIC_API_KEY}"
+
+# Examples:
+# --- LiteLLM proxy ---
+# ai:
+#   provider: "openai_compat"
+#   base_url: "https://litellm.example.com"
+#   api_key: "${LLM_API_KEY}"
+#   model: "claude-haiku-4-5-20251001"
+#   structured_output: "strict"
+#
+# --- OpenRouter ---
+# ai:
+#   provider: "openai_compat"
+#   base_url: "https://openrouter.ai/api/v1"
+#   api_key: "${OPENROUTER_API_KEY}"
+#   model: "anthropic/claude-3-haiku"
+#   structured_output: "auto"
 
 # --- User display (for Corporate Memory avatars) ---
 users: {}

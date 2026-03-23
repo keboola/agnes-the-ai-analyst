@@ -313,7 +313,7 @@ log "Creating data sync .env file..."
     for var in TELEGRAM_BOT_TOKEN DESKTOP_JWT_SECRET SENDGRID_API_KEY \
                JIRA_SLA_EMAIL JIRA_SLA_API_TOKEN JIRA_CLOUD_ID \
                EMAIL_FROM_ADDRESS EMAIL_FROM_NAME ALLOWED_EMAILS \
-               ANTHROPIC_API_KEY; do
+               ANTHROPIC_API_KEY LLM_API_KEY; do
         if [[ -n "${!var:-}" ]]; then
             echo "${var}=${!var}"
         fi

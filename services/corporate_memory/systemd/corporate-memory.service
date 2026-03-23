@@ -13,6 +13,8 @@ ExecStart=/usr/local/bin/collect-knowledge
 # Environment
 EnvironmentFile=/opt/data-analyst/.env
 EnvironmentFile=/opt/data-analyst/repo/.env
+Environment=CONFIG_DIR=/opt/data-analyst/instance/config
+Environment=PYTHONPATH=/opt/data-analyst/repo
 
 # Security hardening - root needed to read /home/*/CLAUDE.local.md
 ProtectSystem=strict

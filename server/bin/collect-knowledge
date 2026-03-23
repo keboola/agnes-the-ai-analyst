@@ -27,5 +27,9 @@ if [[ -f "${REPO_DIR}/.env" ]]; then
     set +a
 fi
 
+# Config directory for instance.yaml
+export CONFIG_DIR="${APP_DIR}/instance/config"
+export PYTHONPATH="${REPO_DIR}"
+
 # Run the collector
 exec "$VENV_PYTHON" -m services.corporate_memory "$@"

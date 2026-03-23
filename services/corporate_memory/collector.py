@@ -19,7 +19,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import anthropic
+from connectors.llm import create_extractor
+from connectors.llm.exceptions import LLMError
 
 from .prompts import CATALOG_REFRESH_PROMPT, SENSITIVITY_CHECK_PROMPT
 
@@ -29,9 +30,6 @@ KNOWLEDGE_FILE = CORPORATE_MEMORY_DIR / "knowledge.json"
 COLLECTION_LOG = CORPORATE_MEMORY_DIR / "collection.log"
 USER_HASHES_FILE = CORPORATE_MEMORY_DIR / "user_hashes.json"
 HOME_BASE = Path("/home")
-
-# HAIKU model for cost-effective extraction
-HAIKU_MODEL = "claude-haiku-4-5-20251001"
 
 # Configure logging
 logging.basicConfig(
@@ -123,14 +121,6 @@ def _generate_id(content: str) -> str:
     """Generate a stable ID from content hash."""
     h = hashlib.sha256(content.encode()).hexdigest()[:12]
     return f"km_{h}"
-
-
-def _get_claude_client() -> anthropic.Anthropic:
-    """Get Anthropic client with API key from environment."""
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise ValueError("ANTHROPIC_API_KEY environment variable is required")
-    return anthropic.Anthropic(api_key=api_key)
 
 
 def _find_claude_local_files() -> list[tuple[str, Path]]:
@@ -309,7 +299,7 @@ def _process_catalog_response(
     return result
 
 
-def check_sensitivity(client: anthropic.Anthropic, item: dict) -> bool:
+def check_sensitivity(extractor, item: dict) -> bool:
     """Check if a knowledge item is safe to share.
 
     Returns True if safe, False if contains sensitive data.
@@ -321,29 +311,20 @@ def check_sensitivity(client: anthropic.Anthropic, item: dict) -> bool:
     )
 
     try:
-        response = client.messages.create(
-            model=HAIKU_MODEL,
-            max_tokens=256,
-            messages=[{"role": "user", "content": prompt}],
-            output_config={
-                "format": {
-                    "type": "json_schema",
-                    "schema": SENSITIVITY_SCHEMA,
-                },
-            },
+        result = extractor.extract_json(
+            prompt, max_tokens=256,
+            json_schema=SENSITIVITY_SCHEMA, schema_name="sensitivity_check",
         )
-
-        result = json.loads(response.content[0].text)
 
         if not result.get("safe", False):
             reason = result.get("reason", "unknown")
-            logger.info(f"Filtered sensitive item: {item.get('title', 'untitled')} - {reason}")
+            logger.info("Filtered sensitive item id=%s - %s", item.get("id", "unknown"), reason)
             return False
 
         return True
 
-    except (json.JSONDecodeError, anthropic.APIError) as e:
-        logger.warning(f"Sensitivity check failed, assuming unsafe: {e}")
+    except LLMError as e:
+        logger.warning("Sensitivity check failed, assuming unsafe: %s", type(e).__name__)
         return False
 
 
@@ -389,12 +370,19 @@ def collect_all(dry_run: bool = False) -> dict:
         stats["skipped"] = True
         return stats
 
-    # Step 2: Initialize client
+    # Step 2: Initialize AI extractor
     try:
-        client = _get_claude_client()
-    except ValueError as e:
+        from config.loader import load_instance_config
+        instance_config = load_instance_config()
+        ai_config = instance_config.get("ai")
+        if not ai_config:
+            logger.warning("No ai: section in instance.yaml, skipping catalog refresh")
+            stats["skipped"] = True
+            return stats
+        extractor = create_extractor(ai_config)
+    except (ValueError, FileNotFoundError) as e:
         stats["errors"].append(str(e))
-        logger.error(str(e))
+        logger.error("Failed to initialize AI extractor: %s", e)
         return stats
 
     # Step 3: Load existing catalog
@@ -420,30 +408,17 @@ def collect_all(dry_run: bool = False) -> dict:
     )
 
     try:
-        response = client.messages.create(
-            model=HAIKU_MODEL,
-            max_tokens=8192,
-            messages=[{"role": "user", "content": prompt}],
-            output_config={
-                "format": {
-                    "type": "json_schema",
-                    "schema": CATALOG_SCHEMA,
-                },
-            },
+        response_data = extractor.extract_json(
+            prompt, max_tokens=8192,
+            json_schema=CATALOG_SCHEMA, schema_name="catalog_refresh",
         )
-
-        response_data = json.loads(response.content[0].text)
         response_items = response_data.get("items", [])
         stats["items_extracted"] = len(response_items)
-        logger.info(f"HAIKU returned {len(response_items)} catalog items")
+        logger.info(f"Extractor returned {len(response_items)} catalog items")
 
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse HAIKU response as JSON: {e}")
-        stats["errors"].append(f"JSON parse error: {e}")
-        return stats
-    except anthropic.APIError as e:
-        logger.error(f"HAIKU API error: {e}")
-        stats["errors"].append(f"API error: {e}")
+    except LLMError as e:
+        logger.error("LLM extraction error: %s", type(e).__name__)
+        stats["errors"].append(f"LLM error: {type(e).__name__}")
         return stats
 
     # Step 6: Process response - map to existing IDs
@@ -460,10 +435,10 @@ def collect_all(dry_run: bool = False) -> dict:
             stats["items_preserved"] += 1
         else:
             # New item - run sensitivity check
-            if check_sensitivity(client, item):
+            if check_sensitivity(extractor, item):
                 final_items[item_id] = item
                 stats["items_new"] += 1
-                logger.info(f"Added new knowledge item: {item['title']}")
+                logger.info("Added new knowledge item: id=%s", item_id)
             else:
                 stats["items_filtered"] += 1
 

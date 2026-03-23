@@ -126,5 +126,6 @@ catalog:
 | `SENDGRID_API_KEY` | For password auth emails |
 | `TELEGRAM_BOT_TOKEN` | For Telegram notifications |
 | `ANTHROPIC_API_KEY` | For Corporate Memory AI |
+| `LLM_API_KEY` | API key for LLM proxy (LiteLLM, OpenRouter, etc.) |
 | `JIRA_WEBHOOK_SECRET` | For Jira integration |
 | `CONFIG_DIR` | Override config directory path |

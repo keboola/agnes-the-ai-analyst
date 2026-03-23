@@ -55,6 +55,9 @@ sendgrid>=6.11.0
 # anthropic - Claude API client for HAIKU-based knowledge extraction
 anthropic>=0.39.0
 
+# OpenAI-compatible API client for LLM proxy routing (LiteLLM, OpenRouter, etc.)
+openai>=1.0.0
+
 # Sample data generation (development/testing)
 # faker - realistic synthetic data for demo datasets
 faker>=24.0.0
