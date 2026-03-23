@@ -1,7 +1,7 @@
 """
 Corporate Memory service for the webapp.
 
-Manages knowledge items, voting, and user rules generation.
+Manages knowledge items, voting, user rules generation, and governance.
 Follows patterns from telegram_service.py for JSON I/O.
 """
 
@@ -11,19 +11,36 @@ import os
 import shutil
 import subprocess
 import tempfile
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
+
+from config.loader import load_instance_config, get_instance_value
 
 logger = logging.getLogger(__name__)
 
 CORPORATE_MEMORY_DIR = Path(os.environ.get("CORPORATE_MEMORY_DIR", "/data/corporate-memory"))
 KNOWLEDGE_FILE = CORPORATE_MEMORY_DIR / "knowledge.json"
 VOTES_FILE = CORPORATE_MEMORY_DIR / "votes.json"
+AUDIT_FILE = CORPORATE_MEMORY_DIR / "audit.jsonl"
+
+VALID_STATUSES = frozenset({
+    "pending", "approved", "mandatory", "rejected", "revoked", "expired",
+})
+
+VALID_TRANSITIONS = {
+    "pending":   {"approved", "mandatory", "rejected"},
+    "approved":  {"mandatory", "rejected"},
+    "mandatory": {"approved", "revoked"},
+    "rejected":  {"approved"},
+    "revoked":   {"approved", "mandatory"},
+    "expired":   {"approved", "mandatory", "rejected"},
+}
+
 
 def _load_user_mappings():
     """Load user display names and username mappings from instance config."""
     try:
-        from config.loader import load_instance_config, get_instance_value
         config = load_instance_config()
         users = get_instance_value(config, "users", default={})
         mapping = get_instance_value(config, "username_mapping", default={})
@@ -35,6 +52,139 @@ def _load_user_mappings():
 _USER_CONFIG = _load_user_mappings()
 USER_DISPLAY_NAMES = _USER_CONFIG[0]
 WEBAPP_TO_SERVER_USERNAME = _USER_CONFIG[1]
+
+# Module-level caches for governance config and groups
+_governance_config_cache: dict | None = None
+_groups_cache: dict | None = None
+
+
+def _load_governance_config() -> dict:
+    """Load corporate_memory section from instance config, cached at module level.
+
+    Returns empty dict if not configured (legacy mode).
+    """
+    global _governance_config_cache
+    if _governance_config_cache is not None:
+        return _governance_config_cache
+
+    try:
+        config = load_instance_config()
+        _governance_config_cache = get_instance_value(
+            config, "corporate_memory", default={},
+        ) or {}
+    except Exception:
+        _governance_config_cache = {}
+
+    return _governance_config_cache
+
+
+def _load_groups() -> dict:
+    """Load groups section from instance config, cached at module level.
+
+    Returns empty dict if not present.
+    """
+    global _groups_cache
+    if _groups_cache is not None:
+        return _groups_cache
+
+    try:
+        config = load_instance_config()
+        _groups_cache = get_instance_value(config, "groups", default={}) or {}
+    except Exception:
+        _groups_cache = {}
+
+    return _groups_cache
+
+
+def get_governance_mode() -> str | None:
+    """Return the governance distribution mode, or None if legacy (no config)."""
+    gov = _load_governance_config()
+    if not gov:
+        return None
+    return gov.get("distribution_mode", "hybrid")
+
+
+def get_approval_mode() -> str | None:
+    """Return the approval mode, or None if legacy (no config)."""
+    gov = _load_governance_config()
+    if not gov:
+        return None
+    return gov.get("approval_mode", "review_queue")
+
+
+def is_km_admin(email: str) -> bool:
+    """Check if the given email has km_admin privileges.
+
+    Looks up the email in the users dict from instance.yaml.
+    Returns False if no governance config or user not found.
+    """
+    try:
+        config = load_instance_config()
+        users = get_instance_value(config, "users", default={}) or {}
+        user = users.get(email)
+        if not user or not isinstance(user, dict):
+            return False
+        return bool(user.get("km_admin", False))
+    except Exception:
+        return False
+
+
+def _write_audit_log(admin: str, action: str, item_id: str, details: dict) -> None:
+    """Append one JSON line to the audit log file.
+
+    Creates parent directory if needed. Uses append mode.
+    """
+    AUDIT_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "admin": admin,
+        "action": action,
+        "item_id": item_id,
+        "details": details,
+    }
+
+    try:
+        with open(AUDIT_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logger.error(f"Failed to write audit log: {e}")
+
+
+def _validate_transition(current_status: str, new_status: str) -> bool:
+    """Check if a status transition is valid according to VALID_TRANSITIONS."""
+    allowed = VALID_TRANSITIONS.get(current_status, set())
+    return new_status in allowed
+
+
+def _check_audience(item: dict, email: str) -> bool:
+    """Check if a user is in the target audience for an item.
+
+    audience of "all" or None means everyone.
+    audience of "group:name" checks group membership.
+    """
+    audience = item.get("audience")
+    if audience is None or audience == "all":
+        return True
+
+    if audience.startswith("group:"):
+        group_name = audience[len("group:"):]
+        groups = _load_groups()
+        group = groups.get(group_name)
+        if not group or not isinstance(group, dict):
+            return False
+        members = group.get("members", [])
+        return email in members
+
+    return False
+
+
+def _default_review_by() -> str:
+    """Return ISO8601 timestamp for now + review_period_months from config."""
+    gov = _load_governance_config()
+    months = gov.get("review_period_months", 6)
+    review_date = datetime.now(timezone.utc) + timedelta(days=months * 30)
+    return review_date.isoformat()
 
 
 def get_user_display(username: str) -> dict:
@@ -92,6 +242,7 @@ def get_knowledge(
     sort: str = "score",
     username: str | None = None,
     my_rules: bool = False,
+    include_statuses: set[str] | None = None,
 ) -> dict[str, Any]:
     """Get knowledge items with optional filtering and pagination.
 
@@ -103,6 +254,8 @@ def get_knowledge(
         sort: Sort field (score, updated_at, contributors)
         username: Current user's username (for my_rules filter)
         my_rules: If True, only show items user has upvoted
+        include_statuses: If governance active, filter to these statuses.
+            None = default to approved+mandatory. Ignored in legacy mode.
 
     Returns:
         Dict with items list, total count, and pagination info.
@@ -111,9 +264,26 @@ def get_knowledge(
     items_dict = data.get("items", {})
     votes_data = _read_json(VOTES_FILE)
 
+    governance_mode = get_governance_mode()
+
+    # Determine which statuses to include
+    if governance_mode is not None:
+        if include_statuses is not None:
+            allowed_statuses = include_statuses
+        else:
+            allowed_statuses = {"approved", "mandatory"}
+    else:
+        allowed_statuses = None  # Legacy: no filtering
+
     # Convert to list and calculate scores
     items = []
     for item_id, item in items_dict.items():
+        # Status filtering for governance mode
+        if allowed_statuses is not None:
+            item_status = item.get("status", "approved")
+            if item_status not in allowed_statuses:
+                continue
+
         # Calculate upvotes and downvotes separately
         upvotes = 0
         downvotes = 0
@@ -140,6 +310,11 @@ def get_knowledge(
             {"username": u, **get_user_display(u)}
             for u in item.get("source_users", [])
         ]
+
+        # Add governance fields
+        item_copy["is_mandatory"] = item.get("status") == "mandatory"
+        item_copy["mandatory_reason"] = item.get("mandatory_reason")
+
         items.append(item_copy)
 
     # Apply filters
@@ -188,6 +363,7 @@ def get_stats() -> dict[str, Any]:
 
     Returns:
         Dict with contributor count, knowledge count, etc.
+        If governance is active, also includes status counts.
     """
     data = _read_json(KNOWLEDGE_FILE)
     items = data.get("items", {})
@@ -204,12 +380,31 @@ def get_stats() -> dict[str, Any]:
         cat = item.get("category", "general")
         categories[cat] = categories.get(cat, 0) + 1
 
-    return {
+    result = {
         "knowledge_count": len(items),
         "contributors": len(contributors),
         "categories": categories,
         "last_collection": metadata.get("last_collection"),
     }
+
+    # Add governance status counts if active
+    if get_governance_mode() is not None:
+        pending_count = 0
+        approved_count = 0
+        mandatory_count = 0
+        for item in items.values():
+            status = item.get("status", "approved")
+            if status == "pending":
+                pending_count += 1
+            elif status == "approved":
+                approved_count += 1
+            elif status == "mandatory":
+                mandatory_count += 1
+        result["pending_count"] = pending_count
+        result["approved_count"] = approved_count
+        result["mandatory_count"] = mandatory_count
+
+    return result
 
 
 def get_user_stats(username: str) -> dict[str, Any]:
@@ -251,6 +446,11 @@ def vote(username: str, item_id: str, vote_value: int) -> tuple[bool, str]:
     Returns:
         Tuple of (success, message).
     """
+    # Check governance mode restrictions
+    governance_mode = get_governance_mode()
+    if governance_mode == "mandatory_only":
+        return False, "Voting is disabled in this governance mode"
+
     # Validate vote value
     if vote_value not in (-1, 0, 1):
         return False, "Invalid vote value. Use -1, 0, or 1."
@@ -297,24 +497,54 @@ def get_user_votes(username: str) -> dict[str, int]:
 def get_user_rules(username: str) -> list[dict]:
     """Get knowledge items that should be synced to user's rules.
 
-    Returns all items the user has upvoted (personal choice, no threshold).
+    In legacy mode (no governance): returns all items the user has upvoted.
+    In governance mode:
+        - "hybrid": mandatory items (audience-checked) + user-upvoted approved items
+        - "mandatory_only" / "admin_curated": only mandatory items (audience-checked)
 
     Args:
         username: The username.
 
     Returns:
-        List of knowledge items to sync.
+        List of knowledge items to sync (deduplicated).
     """
-    votes_data = _read_json(VOTES_FILE)
-    user_votes = votes_data.get(username, {})
-
     knowledge_data = _read_json(KNOWLEDGE_FILE)
     items = knowledge_data.get("items", {})
 
-    rules = []
-    for item_id, vote_val in user_votes.items():
-        if vote_val > 0 and item_id in items:
-            rules.append(items[item_id])
+    governance_mode = get_governance_mode()
+
+    if governance_mode is None:
+        # Legacy mode: upvoted items only (original behavior)
+        votes_data = _read_json(VOTES_FILE)
+        user_votes = votes_data.get(username, {})
+
+        rules = []
+        for item_id, vote_val in user_votes.items():
+            if vote_val > 0 and item_id in items:
+                rules.append(items[item_id])
+        return rules
+
+    # Governance mode: collect mandatory + optionally upvoted items
+    seen_ids: set[str] = set()
+    rules: list[dict] = []
+
+    # Always include mandatory items that pass audience check
+    for item_id, item in items.items():
+        if item.get("status") == "mandatory" and _check_audience(item, username):
+            rules.append(item)
+            seen_ids.add(item_id)
+
+    # In hybrid mode, also include user-upvoted approved items
+    if governance_mode == "hybrid":
+        votes_data = _read_json(VOTES_FILE)
+        user_votes = votes_data.get(username, {})
+
+        for item_id, vote_val in user_votes.items():
+            if vote_val > 0 and item_id in items and item_id not in seen_ids:
+                item = items[item_id]
+                if item.get("status") == "approved":
+                    rules.append(item)
+                    seen_ids.add(item_id)
 
     return rules
 
@@ -420,3 +650,462 @@ def regenerate_all_user_rules() -> dict[str, int]:
         results[username] = len(rules)
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Governance: admin action functions
+# ---------------------------------------------------------------------------
+
+
+def _regenerate_rules_for_audience(audience: str) -> None:
+    """Regenerate rules for all users affected by an audience change.
+
+    If audience is "all", regenerate for all users who have voted.
+    If audience is "group:name", regenerate for group members only.
+    """
+    if audience == "all" or audience is None:
+        regenerate_all_user_rules()
+        return
+
+    if audience.startswith("group:"):
+        group_name = audience[len("group:"):]
+        groups = _load_groups()
+        group = groups.get(group_name)
+        if group and isinstance(group, dict):
+            for member_email in group.get("members", []):
+                _regenerate_user_rules(member_email)
+
+
+def approve_item(admin_email: str, item_id: str) -> tuple[bool, str]:
+    """Approve a knowledge item.
+
+    Args:
+        admin_email: Email of the admin performing the action.
+        item_id: The knowledge item ID to approve.
+
+    Returns:
+        Tuple of (success, error_or_success_message).
+    """
+    if not is_km_admin(admin_email):
+        return False, "Permission denied: user is not a km_admin"
+
+    knowledge_data = _read_json(KNOWLEDGE_FILE)
+    items = knowledge_data.get("items", {})
+
+    if item_id not in items:
+        return False, f"Knowledge item {item_id} not found"
+
+    item = items[item_id]
+    current_status = item.get("status", "pending")
+
+    if not _validate_transition(current_status, "approved"):
+        return False, f"Cannot transition from '{current_status}' to 'approved'"
+
+    now = datetime.now(timezone.utc).isoformat()
+    item["status"] = "approved"
+    item["approved_by"] = admin_email
+    item["approved_at"] = now
+    item["review_by"] = _default_review_by()
+    item["updated_at"] = now
+
+    _write_json(KNOWLEDGE_FILE, knowledge_data)
+    _write_audit_log(admin_email, "approved", item_id, {
+        "previous_status": current_status,
+    })
+
+    logger.info(f"Item {item_id} approved by {admin_email}")
+    return True, "Item approved"
+
+
+def reject_item(
+    admin_email: str,
+    item_id: str,
+    reason: str | None = None,
+) -> tuple[bool, str]:
+    """Reject a knowledge item.
+
+    Args:
+        admin_email: Email of the admin performing the action.
+        item_id: The knowledge item ID to reject.
+        reason: Optional rejection reason.
+
+    Returns:
+        Tuple of (success, error_or_success_message).
+    """
+    if not is_km_admin(admin_email):
+        return False, "Permission denied: user is not a km_admin"
+
+    knowledge_data = _read_json(KNOWLEDGE_FILE)
+    items = knowledge_data.get("items", {})
+
+    if item_id not in items:
+        return False, f"Knowledge item {item_id} not found"
+
+    item = items[item_id]
+    current_status = item.get("status", "pending")
+
+    if not _validate_transition(current_status, "rejected"):
+        return False, f"Cannot transition from '{current_status}' to 'rejected'"
+
+    now = datetime.now(timezone.utc).isoformat()
+    item["status"] = "rejected"
+    item["rejected_by"] = admin_email
+    item["rejected_at"] = now
+    if reason:
+        item["rejection_reason"] = reason
+    item["updated_at"] = now
+
+    _write_json(KNOWLEDGE_FILE, knowledge_data)
+    _write_audit_log(admin_email, "rejected", item_id, {
+        "previous_status": current_status,
+        "reason": reason,
+    })
+
+    logger.info(f"Item {item_id} rejected by {admin_email}")
+    return True, "Item rejected"
+
+
+def mandate_item(
+    admin_email: str,
+    item_id: str,
+    mandatory_reason: str,
+    audience: str = "all",
+) -> tuple[bool, str]:
+    """Mark a knowledge item as mandatory for a target audience.
+
+    Args:
+        admin_email: Email of the admin performing the action.
+        item_id: The knowledge item ID to mandate.
+        mandatory_reason: Required reason for mandating (must be non-empty).
+        audience: Target audience — "all" or "group:name".
+
+    Returns:
+        Tuple of (success, error_or_success_message).
+    """
+    if not is_km_admin(admin_email):
+        return False, "Permission denied: user is not a km_admin"
+
+    if not mandatory_reason or not mandatory_reason.strip():
+        return False, "mandatory_reason is required and must be non-empty"
+
+    # Validate audience format
+    if audience != "all" and not audience.startswith("group:"):
+        return False, f"Invalid audience format: '{audience}'. Use 'all' or 'group:<name>'"
+
+    # Validate group exists if specified
+    if audience.startswith("group:"):
+        group_name = audience[len("group:"):]
+        groups = _load_groups()
+        if group_name not in groups:
+            return False, f"Group '{group_name}' not found in config"
+
+    knowledge_data = _read_json(KNOWLEDGE_FILE)
+    items = knowledge_data.get("items", {})
+
+    if item_id not in items:
+        return False, f"Knowledge item {item_id} not found"
+
+    item = items[item_id]
+    current_status = item.get("status", "pending")
+
+    if not _validate_transition(current_status, "mandatory"):
+        return False, f"Cannot transition from '{current_status}' to 'mandatory'"
+
+    now = datetime.now(timezone.utc).isoformat()
+    item["status"] = "mandatory"
+    item["mandatory_reason"] = mandatory_reason.strip()
+    item["audience"] = audience
+    item["approved_by"] = admin_email
+    item["approved_at"] = now
+    item["review_by"] = _default_review_by()
+    item["updated_at"] = now
+
+    _write_json(KNOWLEDGE_FILE, knowledge_data)
+    _write_audit_log(admin_email, "mandated", item_id, {
+        "previous_status": current_status,
+        "mandatory_reason": mandatory_reason.strip(),
+        "audience": audience,
+    })
+
+    # Regenerate rules for affected users
+    _regenerate_rules_for_audience(audience)
+
+    logger.info(f"Item {item_id} mandated by {admin_email} for audience={audience}")
+    return True, "Item mandated"
+
+
+def revoke_item(
+    admin_email: str,
+    item_id: str,
+    reason: str | None = None,
+) -> tuple[bool, str]:
+    """Revoke a mandatory knowledge item.
+
+    Only valid from "mandatory" status. Sets status to "revoked" and
+    triggers rule regeneration for all users to remove the revoked item.
+
+    Args:
+        admin_email: Email of the admin performing the action.
+        item_id: The knowledge item ID to revoke.
+        reason: Optional revocation reason.
+
+    Returns:
+        Tuple of (success, error_or_success_message).
+    """
+    if not is_km_admin(admin_email):
+        return False, "Permission denied: user is not a km_admin"
+
+    knowledge_data = _read_json(KNOWLEDGE_FILE)
+    items = knowledge_data.get("items", {})
+
+    if item_id not in items:
+        return False, f"Knowledge item {item_id} not found"
+
+    item = items[item_id]
+    current_status = item.get("status", "pending")
+
+    if not _validate_transition(current_status, "revoked"):
+        return False, f"Cannot transition from '{current_status}' to 'revoked'"
+
+    now = datetime.now(timezone.utc).isoformat()
+    item["status"] = "revoked"
+    item["revoked_by"] = admin_email
+    item["revoked_at"] = now
+    if reason:
+        item["revocation_reason"] = reason
+    item["updated_at"] = now
+
+    _write_json(KNOWLEDGE_FILE, knowledge_data)
+    _write_audit_log(admin_email, "revoked", item_id, {
+        "previous_status": current_status,
+        "reason": reason,
+    })
+
+    # Regenerate rules for ALL users to remove revoked item
+    regenerate_all_user_rules()
+
+    logger.info(f"Item {item_id} revoked by {admin_email}")
+    return True, "Item revoked"
+
+
+def edit_item(
+    admin_email: str,
+    item_id: str,
+    title: str | None = None,
+    content: str | None = None,
+) -> tuple[bool, str]:
+    """Edit a knowledge item's title and/or content.
+
+    At least one of title or content must be provided.
+
+    Args:
+        admin_email: Email of the admin performing the edit.
+        item_id: The knowledge item ID to edit.
+        title: New title (or None to keep existing).
+        content: New content (or None to keep existing).
+
+    Returns:
+        Tuple of (success, error_or_success_message).
+    """
+    if not is_km_admin(admin_email):
+        return False, "Permission denied: user is not a km_admin"
+
+    if title is None and content is None:
+        return False, "At least one of title or content must be provided"
+
+    knowledge_data = _read_json(KNOWLEDGE_FILE)
+    items = knowledge_data.get("items", {})
+
+    if item_id not in items:
+        return False, f"Knowledge item {item_id} not found"
+
+    item = items[item_id]
+    now = datetime.now(timezone.utc).isoformat()
+
+    audit_details: dict[str, Any] = {}
+
+    if title is not None:
+        audit_details["old_title"] = item.get("title")
+        audit_details["new_title"] = title
+        item["title"] = title
+
+    if content is not None:
+        audit_details["old_content"] = item.get("content")
+        audit_details["new_content"] = content
+        item["content"] = content
+
+    item["edited_by"] = admin_email
+    item["edited_at"] = now
+    item["updated_at"] = now
+
+    _write_json(KNOWLEDGE_FILE, knowledge_data)
+    _write_audit_log(admin_email, "edited", item_id, audit_details)
+
+    logger.info(f"Item {item_id} edited by {admin_email}")
+    return True, "Item edited"
+
+
+def batch_action(
+    admin_email: str,
+    item_ids: list[str],
+    action: str,
+    **kwargs: Any,
+) -> dict:
+    """Perform a governance action on multiple items.
+
+    Not atomic — partial success is OK.
+
+    Args:
+        admin_email: Email of the admin performing the action.
+        item_ids: List of knowledge item IDs.
+        action: One of "approve", "reject", "mandate".
+        **kwargs: Additional arguments passed to the action function.
+            For "mandate": mandatory_reason (required), audience (default "all").
+
+    Returns:
+        Dict with "success" (list of IDs) and "failed" (list of {id, error}).
+    """
+    valid_actions = {"approve", "reject", "mandate"}
+    if action not in valid_actions:
+        return {
+            "success": [],
+            "failed": [{"id": "N/A", "error": f"Invalid action: '{action}'. Must be one of {valid_actions}"}],
+        }
+
+    action_map = {
+        "approve": lambda item_id: approve_item(admin_email, item_id),
+        "reject": lambda item_id: reject_item(
+            admin_email, item_id, reason=kwargs.get("reason"),
+        ),
+        "mandate": lambda item_id: mandate_item(
+            admin_email,
+            item_id,
+            mandatory_reason=kwargs.get("mandatory_reason", ""),
+            audience=kwargs.get("audience", "all"),
+        ),
+    }
+
+    action_fn = action_map[action]
+    success: list[str] = []
+    failed: list[dict] = []
+
+    for item_id in item_ids:
+        ok, message = action_fn(item_id)
+        if ok:
+            success.append(item_id)
+        else:
+            failed.append({"id": item_id, "error": message})
+
+    return {"success": success, "failed": failed}
+
+
+def get_pending_queue(
+    category: str | None = None,
+    page: int = 0,
+    per_page: int = 20,
+) -> dict:
+    """Get pending knowledge items awaiting admin review.
+
+    Args:
+        category: Optional category filter.
+        page: Page number (0-indexed).
+        per_page: Items per page.
+
+    Returns:
+        Dict with items list, total count, and pagination info.
+    """
+    return get_knowledge(
+        category=category,
+        page=page,
+        per_page=per_page,
+        include_statuses={"pending"},
+    )
+
+
+def get_audit_log(
+    page: int = 0,
+    per_page: int = 50,
+    admin: str | None = None,
+    action: str | None = None,
+) -> dict:
+    """Read and paginate the audit log.
+
+    Args:
+        page: Page number (0-indexed).
+        per_page: Entries per page.
+        admin: Filter by admin email.
+        action: Filter by action type.
+
+    Returns:
+        Dict with entries, total count, and pagination info.
+    """
+    entries: list[dict] = []
+
+    try:
+        with open(AUDIT_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    entries.append(entry)
+                except json.JSONDecodeError:
+                    continue
+    except FileNotFoundError:
+        pass
+
+    # Apply filters
+    if admin:
+        entries = [e for e in entries if e.get("admin") == admin]
+    if action:
+        entries = [e for e in entries if e.get("action") == action]
+
+    # Sort newest first
+    entries.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
+
+    # Paginate
+    total = len(entries)
+    start = page * per_page
+    end = start + per_page
+    page_entries = entries[start:end]
+
+    return {
+        "entries": page_entries,
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+    }
+
+
+def migrate_existing_items() -> int:
+    """Migrate existing knowledge items without a status field.
+
+    Sets status="approved" with migration metadata for items that lack
+    a status field. Idempotent — items that already have a status are skipped.
+
+    Returns:
+        Number of items migrated.
+    """
+    knowledge_data = _read_json(KNOWLEDGE_FILE)
+    items = knowledge_data.get("items", {})
+    now = datetime.now(timezone.utc).isoformat()
+    count = 0
+
+    for item_id, item in items.items():
+        if "status" not in item:
+            item["status"] = "approved"
+            item["approved_by"] = "migration"
+            item["approved_at"] = now
+            item["review_by"] = _default_review_by()
+
+            _write_audit_log("migration", "migration_auto_approved", item_id, {
+                "reason": "Pre-governance item auto-approved during migration",
+            })
+            count += 1
+
+    if count > 0:
+        _write_json(KNOWLEDGE_FILE, knowledge_data)
+        logger.info(f"Migrated {count} items to approved status")
+
+    return count

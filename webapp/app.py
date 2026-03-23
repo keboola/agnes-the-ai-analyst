@@ -17,7 +17,7 @@ import yaml
 
 from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
 
-from .auth import admin_required, auth_bp, login_required
+from .auth import admin_required, auth_bp, km_admin_required, login_required
 from .config import Config
 from .desktop_auth import require_desktop_auth
 from .notification_images import images_bp
@@ -38,6 +38,17 @@ from .corporate_memory_service import (
     get_user_stats as get_memory_user_stats,
     get_user_votes,
     vote as memory_vote,
+    is_km_admin,
+    get_governance_mode,
+    approve_item,
+    reject_item,
+    mandate_item,
+    revoke_item,
+    edit_item,
+    batch_action,
+    get_pending_queue,
+    get_audit_log,
+    migrate_existing_items,
 )
 from .user_service import (
     UserInfo,
@@ -1381,12 +1392,19 @@ def register_routes(app: Flask) -> None:
         # Get initial page of knowledge
         knowledge = get_knowledge(page=0, per_page=20)
 
+        # Governance context for admin features
+        governance = {
+            "mode": get_governance_mode(),
+            "is_km_admin": is_km_admin(email) if email else False,
+        }
+
         return render_template(
             "corporate_memory.html",
             stats=stats,
             user_stats=user_stats,
             user_votes=user_votes,
             knowledge=knowledge,
+            governance=governance,
         )
 
     # ─────────────────────────────────────────────────────────────────
@@ -1419,6 +1437,12 @@ def register_routes(app: Flask) -> None:
         # Limit per_page to reasonable maximum
         per_page = min(per_page, 100)
 
+        # Admin status filter (only km_admins can filter by status)
+        status = request.args.get("status")
+        include_statuses = None
+        if status and is_km_admin(email):
+            include_statuses = {status}
+
         result = get_knowledge(
             category=category,
             search=search,
@@ -1427,6 +1451,7 @@ def register_routes(app: Flask) -> None:
             sort=sort,
             username=username,
             my_rules=my_rules,
+            include_statuses=include_statuses,
         )
         return jsonify(result)
 
@@ -1450,6 +1475,10 @@ def register_routes(app: Flask) -> None:
     @login_required
     def api_corporate_memory_vote():
         """Vote on a knowledge item."""
+        mode = get_governance_mode()
+        if mode == "mandatory_only":
+            return jsonify({"ok": False, "error": "Voting is disabled in mandatory-only mode"}), 400
+
         user = session.get("user", {})
         email = user.get("email", "")
         username = get_webapp_username(email)
@@ -1481,6 +1510,226 @@ def register_routes(app: Flask) -> None:
 
         votes = get_user_votes(username)
         return jsonify({"votes": votes})
+
+    # ─────────────────────────────────────────────────────────────────
+    # Corporate Memory Admin API
+    # ─────────────────────────────────────────────────────────────────
+
+    @app.route("/api/corporate-memory/admin/approve", methods=["POST"])
+    @login_required
+    @km_admin_required
+    def corporate_memory_admin_approve():
+        """Approve a pending knowledge item."""
+        data = request.get_json(silent=True) or {}
+        if "item_id" not in data:
+            return jsonify({"ok": False, "error": "item_id is required"}), 400
+
+        email = session.get("user", {}).get("email", "")
+        try:
+            success, message = approve_item(email, data["item_id"])
+            if not success:
+                return jsonify({"ok": False, "error": message}), 400
+            return jsonify({"ok": True, "message": message})
+        except Exception as e:
+            logger.exception("Error approving item")
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    @app.route("/api/corporate-memory/admin/reject", methods=["POST"])
+    @login_required
+    @km_admin_required
+    def corporate_memory_admin_reject():
+        """Reject a knowledge item."""
+        data = request.get_json(silent=True) or {}
+        if "item_id" not in data:
+            return jsonify({"ok": False, "error": "item_id is required"}), 400
+
+        email = session.get("user", {}).get("email", "")
+        try:
+            success, message = reject_item(
+                email, data["item_id"], reason=data.get("reason"),
+            )
+            if not success:
+                return jsonify({"ok": False, "error": message}), 400
+            return jsonify({"ok": True, "message": message})
+        except Exception as e:
+            logger.exception("Error rejecting item")
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    @app.route("/api/corporate-memory/admin/mandate", methods=["POST"])
+    @login_required
+    @km_admin_required
+    def corporate_memory_admin_mandate():
+        """Mark a knowledge item as mandatory."""
+        data = request.get_json(silent=True) or {}
+        if "item_id" not in data:
+            return jsonify({"ok": False, "error": "item_id is required"}), 400
+
+        mandatory_reason = data.get("mandatory_reason", "")
+        if not mandatory_reason or not mandatory_reason.strip():
+            return jsonify({"ok": False, "error": "mandatory_reason is required"}), 400
+
+        email = session.get("user", {}).get("email", "")
+        try:
+            success, message = mandate_item(
+                email,
+                data["item_id"],
+                mandatory_reason=mandatory_reason,
+                audience=data.get("audience", "all"),
+            )
+            if not success:
+                return jsonify({"ok": False, "error": message}), 400
+            return jsonify({"ok": True, "message": message})
+        except Exception as e:
+            logger.exception("Error mandating item")
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    @app.route("/api/corporate-memory/admin/revoke", methods=["POST"])
+    @login_required
+    @km_admin_required
+    def corporate_memory_admin_revoke():
+        """Revoke a mandatory knowledge item."""
+        data = request.get_json(silent=True) or {}
+        if "item_id" not in data:
+            return jsonify({"ok": False, "error": "item_id is required"}), 400
+
+        email = session.get("user", {}).get("email", "")
+        try:
+            success, message = revoke_item(
+                email, data["item_id"], reason=data.get("reason"),
+            )
+            if not success:
+                return jsonify({"ok": False, "error": message}), 400
+            return jsonify({"ok": True, "message": message})
+        except Exception as e:
+            logger.exception("Error revoking item")
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    @app.route("/api/corporate-memory/admin/edit", methods=["POST"])
+    @login_required
+    @km_admin_required
+    def corporate_memory_admin_edit():
+        """Edit a knowledge item's title and/or content."""
+        data = request.get_json(silent=True) or {}
+        if "item_id" not in data:
+            return jsonify({"ok": False, "error": "item_id is required"}), 400
+
+        title = data.get("title")
+        content = data.get("content")
+        if title is None and content is None:
+            return jsonify({"ok": False, "error": "At least one of title or content must be provided"}), 400
+
+        email = session.get("user", {}).get("email", "")
+        try:
+            success, message = edit_item(
+                email, data["item_id"], title=title, content=content,
+            )
+            if not success:
+                return jsonify({"ok": False, "error": message}), 400
+            return jsonify({"ok": True, "message": message})
+        except Exception as e:
+            logger.exception("Error editing item")
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    @app.route("/api/corporate-memory/admin/batch", methods=["POST"])
+    @login_required
+    @km_admin_required
+    def corporate_memory_admin_batch():
+        """Perform a governance action on multiple items."""
+        data = request.get_json(silent=True) or {}
+        item_ids = data.get("item_ids")
+        action = data.get("action")
+
+        if not item_ids or not isinstance(item_ids, list):
+            return jsonify({"ok": False, "error": "item_ids must be a non-empty list"}), 400
+        if not action:
+            return jsonify({"ok": False, "error": "action is required"}), 400
+
+        email = session.get("user", {}).get("email", "")
+        try:
+            result = batch_action(
+                email,
+                item_ids,
+                action,
+                mandatory_reason=data.get("mandatory_reason"),
+                audience=data.get("audience"),
+                reason=data.get("reason"),
+            )
+            return jsonify({"ok": True, **result})
+        except Exception as e:
+            logger.exception("Error in batch action")
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    @app.route("/api/corporate-memory/admin/pending")
+    @login_required
+    @km_admin_required
+    def corporate_memory_admin_pending():
+        """Get pending knowledge items awaiting review."""
+        category = request.args.get("category")
+        page = request.args.get("page", 0, type=int)
+        per_page = request.args.get("per_page", 20, type=int)
+
+        per_page = min(per_page, 100)
+
+        try:
+            result = get_pending_queue(
+                category=category, page=page, per_page=per_page,
+            )
+            return jsonify(result)
+        except Exception as e:
+            logger.exception("Error fetching pending queue")
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    @app.route("/api/corporate-memory/admin/audit")
+    @login_required
+    @km_admin_required
+    def corporate_memory_admin_audit():
+        """Get the governance audit log."""
+        page = request.args.get("page", 0, type=int)
+        per_page = request.args.get("per_page", 50, type=int)
+        admin_filter = request.args.get("admin")
+        action_filter = request.args.get("action")
+
+        per_page = min(per_page, 100)
+
+        try:
+            result = get_audit_log(
+                page=page,
+                per_page=per_page,
+                admin=admin_filter,
+                action=action_filter,
+            )
+            return jsonify(result)
+        except Exception as e:
+            logger.exception("Error fetching audit log")
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    @app.route("/api/corporate-memory/admin/migrate", methods=["POST"])
+    @login_required
+    @km_admin_required
+    def corporate_memory_admin_migrate():
+        """Migrate existing items without status to approved."""
+        email = session.get("user", {}).get("email", "")
+        try:
+            count = migrate_existing_items()
+            logger.info(f"Migration triggered by {email}: {count} items migrated")
+            return jsonify({"ok": True, "migrated": count})
+        except Exception as e:
+            logger.exception("Error migrating items")
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    @app.route("/api/corporate-memory/admin/config")
+    @login_required
+    @km_admin_required
+    def corporate_memory_admin_config():
+        """Get current governance configuration."""
+        try:
+            return jsonify({
+                "ok": True,
+                "governance_mode": get_governance_mode(),
+            })
+        except Exception as e:
+            logger.exception("Error fetching governance config")
+            return jsonify({"ok": False, "error": str(e)}), 500
 
     # ─────────────────────────────────────────────────────────────────
     # Admin pages

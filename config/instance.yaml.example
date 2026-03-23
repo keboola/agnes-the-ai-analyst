@@ -205,7 +205,48 @@ ai:
 #   model: "anthropic/claude-3-haiku"
 #   structured_output: "auto"
 
-# --- User display (for Corporate Memory avatars) ---
+# --- Corporate Memory governance (optional) ---
+# Controls how AI-extracted knowledge is reviewed and distributed.
+# If not present, system operates in legacy mode (democratic wiki, no admin review).
+#
+# corporate_memory:
+#   # How knowledge reaches users:
+#   # "mandatory_only" — admin controls everything, no user voting
+#   # "admin_curated" — admin controls, users vote as feedback signal
+#   # "hybrid" — mandatory from admin + optional from user voting (default)
+#   distribution_mode: "hybrid"
+#
+#   # How new AI-extracted items enter the system:
+#   # "review_queue" — nothing published without admin approval (default)
+#   # "auto_publish" — items go live immediately, admin intervenes retroactively
+#   # "threshold" — high-confidence auto-publish, low-confidence to review queue
+#   approval_mode: "review_queue"
+#
+#   # Default review period for approved/mandatory items (months)
+#   review_period_months: 6
+#
+#   # Notify km_admins about new pending items
+#   notify_on_new_items: true
+
+# --- User groups for audience targeting (optional) ---
+# Used with Corporate Memory governance to target mandatory knowledge to specific groups.
+#
+# groups:
+#   finance:
+#     label: "Finance & Analytics"
+#     members: ["analyst1@company.com", "analyst2@company.com"]
+#   engineering:
+#     label: "Engineering"
+#     members: ["dev1@company.com", "dev2@company.com"]
+
+# --- User display and permissions ---
+# Corporate Memory avatars + optional km_admin flag for governance.
+# users:
+#   admin@company.com:
+#     display_name: "Admin User"
+#     km_admin: true              # Corporate Memory admin (approve/mandate knowledge)
+#   analyst@company.com:
+#     display_name: "Analyst User"
 users: {}
 
 # --- Username mapping (webapp email -> server username, only if different) ---

@@ -24,6 +24,12 @@ from connectors.llm.exceptions import LLMError
 
 from .prompts import CATALOG_REFRESH_PROMPT, SENSITIVITY_CHECK_PROMPT
 
+# Fields preserved across re-collections when item already exists
+GOVERNANCE_FIELDS = (
+    "status", "approved_by", "approved_at", "mandatory_reason",
+    "audience", "review_by", "edited_by", "edited_at",
+)
+
 # Configuration
 CORPORATE_MEMORY_DIR = Path(os.environ.get("CORPORATE_MEMORY_DIR", "/data/corporate-memory"))
 KNOWLEDGE_FILE = CORPORATE_MEMORY_DIR / "knowledge.json"
@@ -245,11 +251,17 @@ def _format_user_files(user_files: dict[str, tuple[str, str]]) -> str:
 def _process_catalog_response(
     response_items: list[dict],
     existing: dict,
+    initial_status: str = "approved",
 ) -> dict[str, dict]:
     """Map HAIKU's response back to real IDs, preserving existing ones.
 
-    For items with existing_id: keep that ID, update fields.
+    For items with existing_id: keep that ID, update fields, preserve governance.
     For new items (existing_id is null): generate SHA256 ID from title+content.
+
+    Args:
+        response_items: Items returned by the LLM extractor.
+        existing: Current knowledge.json data (with "items" dict).
+        initial_status: Status to assign to new items ("approved" or "pending").
 
     Returns dict of items keyed by ID.
     """
@@ -275,6 +287,9 @@ def _process_catalog_response(
                 "extracted_at": old_item.get("extracted_at", now),
                 "updated_at": now,
             }
+            # Preserve governance fields from old item
+            for field in GOVERNANCE_FIELDS:
+                result[existing_id][field] = old_item.get(field)
         else:
             # New item - generate ID from title+content
             content_hash = item["title"] + item["content"]
@@ -294,6 +309,14 @@ def _process_catalog_response(
                 "source_users": item["source_users"],
                 "extracted_at": now,
                 "updated_at": now,
+                "status": initial_status,
+                "approved_by": None,
+                "approved_at": None,
+                "mandatory_reason": None,
+                "audience": "all",
+                "review_by": None,
+                "edited_by": None,
+                "edited_at": None,
             }
 
     return result
@@ -351,6 +374,7 @@ def collect_all(dry_run: bool = False) -> dict:
         "items_filtered": 0,
         "items_preserved": 0,
         "items_new": 0,
+        "items_pending": 0,
         "skipped": False,
         "errors": [],
     }
@@ -384,6 +408,16 @@ def collect_all(dry_run: bool = False) -> dict:
         stats["errors"].append(str(e))
         logger.error("Failed to initialize AI extractor: %s", e)
         return stats
+
+    # Determine initial status for new items based on approval mode
+    governance_config = instance_config.get("corporate_memory", {})
+    approval_mode = governance_config.get("approval_mode", "review_queue")
+    if not governance_config:
+        initial_status = "approved"  # Legacy mode: no governance config
+    elif approval_mode == "auto_publish":
+        initial_status = "approved"
+    else:
+        initial_status = "pending"  # review_queue and threshold default to pending
 
     # Step 3: Load existing catalog
     existing = _read_json(KNOWLEDGE_FILE)
@@ -422,7 +456,7 @@ def collect_all(dry_run: bool = False) -> dict:
         return stats
 
     # Step 6: Process response - map to existing IDs
-    processed_items = _process_catalog_response(response_items, existing)
+    processed_items = _process_catalog_response(response_items, existing, initial_status=initial_status)
 
     # Step 7: Run sensitivity check on NEW items only
     # Items with IDs that existed before already passed the check
@@ -441,6 +475,8 @@ def collect_all(dry_run: bool = False) -> dict:
                 logger.info("Added new knowledge item: id=%s", item_id)
             else:
                 stats["items_filtered"] += 1
+
+    stats["items_pending"] = sum(1 for item in final_items.values() if item.get("status") == "pending")
 
     # Step 8: Build updated knowledge.json
     updated = {
@@ -547,6 +583,8 @@ def main() -> int:
     print(f"  Items preserved: {stats['items_preserved']}")
     print(f"  Items new: {stats['items_new']}")
     print(f"  Items filtered (sensitive): {stats['items_filtered']}")
+    if stats.get("items_pending"):
+        print(f"  Items pending review: {stats['items_pending']}")
 
     if stats["errors"]:
         print(f"\nErrors ({len(stats['errors'])}):")

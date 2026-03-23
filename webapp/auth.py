@@ -65,6 +65,34 @@ def admin_required(f):
     return decorated_function
 
 
+def km_admin_required(f):
+    """Decorator to require Corporate Memory admin privileges for a route.
+
+    Checks km_admin flag via corporate_memory_service.is_km_admin().
+    Returns 403 JSON for API routes, redirect for HTML routes.
+    """
+
+    @functools.wraps(f)
+    def decorated_function(*args, **kwargs):
+        if "user" not in session:
+            if request.path.startswith("/api/"):
+                return jsonify({"error": "Authentication required"}), 401
+            return redirect(url_for("auth.login"))
+
+        from .corporate_memory_service import is_km_admin
+
+        email = session.get("user", {}).get("email", "")
+        if not is_km_admin(email):
+            if request.path.startswith("/api/"):
+                return jsonify({"error": "Corporate Memory admin access required"}), 403
+            flash("Corporate Memory admin access required.", "error")
+            return redirect(url_for("dashboard"))
+
+        return f(*args, **kwargs)
+
+    return decorated_function
+
+
 def validate_email_domain(email: str) -> bool:
     """Check if email belongs to an allowed domain or whitelist.
 
