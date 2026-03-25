@@ -75,8 +75,8 @@ class TableConfig:
         id: Full table ID in Keboola (e.g., "in.c-sfdc.company")
         name: Short table name (e.g., "company")
         description: Table description
-        primary_key: Primary key column name
-        sync_strategy: "full_refresh", "incremental", or "partitioned"
+        primary_key: Primary key column name (optional for remote-only tables)
+        sync_strategy: "full_refresh", "incremental", "partitioned", or "none" (for remote-only tables)
         incremental_window_days: Number of days to backtrack for incremental sync
         partition_by: Column name to partition by (for incremental/partitioned with partitions)
         partition_granularity: Partition granularity: "month", "day", or "year"
@@ -92,8 +92,8 @@ class TableConfig:
     id: str
     name: str
     description: str
-    primary_key: str
-    sync_strategy: str  # "full_refresh", "incremental", or "partitioned"
+    primary_key: str = ""  # Optional for remote-only tables
+    sync_strategy: str = "none"  # "full_refresh", "incremental", "partitioned", or "none" (remote-only)
     incremental_window_days: Optional[int] = None
     partition_by: Optional[str] = None
     partition_granularity: Optional[str] = None  # "month", "day", "year"
@@ -132,10 +132,10 @@ class TableConfig:
             )
 
         # Validate sync_strategy
-        if self.sync_strategy not in ["full_refresh", "incremental", "partitioned"]:
+        if self.sync_strategy not in ["full_refresh", "incremental", "partitioned", "none"]:
             raise ValueError(
                 f"Invalid sync_strategy '{self.sync_strategy}' for table {self.id}. "
-                f"Allowed values: 'full_refresh', 'incremental', 'partitioned'"
+                f"Allowed values: 'full_refresh', 'incremental', 'partitioned', 'none'"
             )
 
         # For incremental strategy:
@@ -467,8 +467,8 @@ class Config:
                 id=table_data["id"],
                 name=table_data["name"],
                 description=table_data["description"],
-                primary_key=table_data["primary_key"],
-                sync_strategy=table_data["sync_strategy"],
+                primary_key=table_data.get("primary_key", ""),
+                sync_strategy=table_data.get("sync_strategy", "none"),
                 incremental_window_days=table_data.get("incremental_window_days"),
                 partition_by=table_data.get("partition_by"),
                 partition_granularity=table_data.get("partition_granularity"),
