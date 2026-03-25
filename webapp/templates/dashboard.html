@@ -1946,7 +1946,7 @@
                                 <div>
                                     <div class="data-source-name">Core Business Data</div>
                                     <div class="data-source-status">
-                                        <span class="status-dot"></span>
+                                        <span class="status-dot{% if data_stats.last_updated %} status-dot--live{% endif %}"></span>
                                         {% if data_stats.last_updated %}Synced {{ data_stats.last_updated }}{% else %}Not yet synced{% endif %}
                                     </div>
                                 </div>
@@ -1954,7 +1954,7 @@
                             <span class="badge-included">Always included</span>
                         </div>
                         <div class="data-source-details">
-                            {% if catalog_data %}{% for cat in catalog_data %}{{ cat.name }} ({{ cat.count }} tables){% if not loop.last %}, {% endif %}{% endfor %} -- {{ data_stats.tables }} tables total{% else %}Finance, HR, Sales, KBC Telemetry -- {{ data_stats.tables }} tables total{% endif %}
+                            {% if catalog_data %}{% for cat in catalog_data %}{{ cat.name }} ({{ cat.count }} tables){% if not loop.last %}, {% endif %}{% endfor %}{% if data_stats.remote_tables %} &middot; {{ data_stats.local_tables }} local, {{ data_stats.remote_tables }} live{% endif %}{% else %}{{ data_stats.total_tables or data_stats.tables }} tables total{% endif %}
                         </div>
                     </div>
 
@@ -1973,7 +1973,7 @@
                                 <div>
                                     <div class="data-source-name">Business Metrics</div>
                                     <div class="data-source-status">
-                                        {{ metrics_total.n }} metrics across {{ metrics_data|length }} categories
+                                        {{ metrics_total.n }} metrics across {{ metrics_data|length }} categories{% if data_stats.last_updated %} &middot; data from {{ data_stats.last_updated }}{% endif %}
                                     </div>
                                 </div>
                             </div>

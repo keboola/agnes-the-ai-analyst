@@ -418,6 +418,60 @@
             color: #B45309;
         }
 
+        /* ── Query Mode Badges ── */
+        .query-mode-badge {
+            font-size: 10px;
+            font-weight: 600;
+            padding: 2px 7px;
+            border-radius: 4px;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            white-space: nowrap;
+        }
+        .query-mode-badge.local {
+            background: var(--primary-light);
+            color: var(--primary);
+        }
+        .query-mode-badge.live {
+            background: rgba(16, 183, 127, 0.1);
+            color: #047857;
+        }
+
+        .table-sync-info {
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-top: 2px;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .table-sync-info .live-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: #10B77F;
+            animation: pulse-live 2s ease-in-out infinite;
+            flex-shrink: 0;
+        }
+        @keyframes pulse-live {
+            0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(16, 183, 127, 0.4); }
+            50% { opacity: 0.7; box-shadow: 0 0 0 3px rgba(16, 183, 127, 0); }
+        }
+
+        .data-freshness-note {
+            padding: 8px 24px;
+            font-size: 12px;
+            color: var(--text-secondary);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            border-top: 1px solid var(--border-light);
+        }
+        .data-freshness-note svg {
+            flex-shrink: 0;
+            opacity: 0.5;
+        }
+
         .profile-link {
             display: flex;
             align-items: center;
@@ -1332,7 +1386,12 @@
                     <div class="source-card-info">
                         <div class="source-card-name">Core Business Data</div>
                         <div class="source-card-desc">Core business data from internal systems</div>
-                        <div class="source-card-meta">{{ data_stats.tables }} tables &middot; ~{{ data_stats.rows_display }} rows total</div>
+                        <div class="source-card-meta">
+                            {{ data_stats.total_tables or data_stats.tables }} tables &middot; ~{{ data_stats.rows_display }} rows total
+                            {% if data_stats.last_updated %}
+                            &middot; Synced {{ data_stats.last_updated }}
+                            {% endif %}
+                        </div>
                     </div>
                 </div>
                 <div class="source-card-right">
@@ -1355,17 +1414,33 @@
                 </button>
                 <div class="accordion-content">
                     {% for table in category.tables %}
-                    <div class="table-row" onclick="openProfiler('{{ table.name }}')">
+                    <div class="table-row" {% if table.query_mode != 'remote' %}onclick="openProfiler('{{ table.name }}')"{% endif %}>
                         <div class="table-row-left">
-                            <div class="table-row-name">{{ table.name }}</div>
+                            <div class="table-row-name">
+                                {{ table.name }}
+                                {% if table.query_mode == 'remote' %}
+                                <span class="query-mode-badge live">Live</span>
+                                {% else %}
+                                <span class="query-mode-badge local">Local</span>
+                                {% endif %}
+                            </div>
                             <div class="table-row-desc">{{ table.description }}</div>
+                            <div class="table-sync-info">
+                                {% if table.query_mode == 'remote' %}
+                                <span class="live-dot"></span> Queried directly from BigQuery
+                                {% elif table.last_sync %}
+                                Synced {{ table.last_sync }}
+                                {% endif %}
+                            </div>
                         </div>
                         <div class="table-row-right">
                             <span class="rows-badge{{ ' large' if table.rows_large }}">{{ table.rows_display }}</span>
+                            {% if table.query_mode != 'remote' %}
                             <span class="profile-link">
                                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
                                 Profile
                             </span>
+                            {% endif %}
                         </div>
                     </div>
                     {% endfor %}
@@ -1401,6 +1476,13 @@
                     </label>
                 </div>
             </div>
+
+            {% if data_stats and data_stats.last_updated %}
+            <div class="data-freshness-note">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                Calculated from data synced {{ data_stats.last_updated }}
+            </div>
+            {% endif %}
 
             {% for category in metrics_data %}
             <div class="accordion-category">

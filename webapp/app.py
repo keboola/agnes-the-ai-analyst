@@ -375,13 +375,21 @@ def _load_data_stats() -> dict:
             else:
                 rows_display = str(total_rows)
 
-            # Parse last_updated timestamp
+            # Parse last_updated: try root-level first, then derive from table last_sync
             last_updated = state.get("last_updated")
+            if not last_updated:
+                # Derive from max of all tables' last_sync timestamps
+                sync_times = [t.get("last_sync") for t in tables_data.values() if t.get("last_sync")]
+                if sync_times:
+                    last_updated = max(sync_times)
+
             last_updated_display = None
+            last_updated_iso = None
             if last_updated:
                 try:
                     dt = datetime.fromisoformat(last_updated)
-                    last_updated_display = dt.strftime("%Y-%m-%d %H:%M") + " UTC"
+                    last_updated_display = dt.strftime("%b %d, %H:%M") + " UTC"
+                    last_updated_iso = dt.isoformat()
                 except (ValueError, TypeError):
                     last_updated_display = last_updated[:16] if last_updated else None
 
@@ -392,8 +400,32 @@ def _load_data_stats() -> dict:
             else:
                 size_display = f"{size_mb} MB"
 
+            # Count tables by query_mode from data_description.md
+            local_tables = total_tables
+            remote_tables = 0
+            try:
+                desc_path = Path(os.path.dirname(__file__)) / ".." / "docs" / "data_description.md"
+                if desc_path.exists():
+                    import re
+                    import yaml
+                    with open(desc_path) as f:
+                        dd_content = f.read()
+                    yaml_blocks = re.findall(r'```yaml\s*\n(.*?)```', dd_content, re.DOTALL)
+                    all_dd_tables = []
+                    for block in yaml_blocks:
+                        parsed = yaml.safe_load(block)
+                        if parsed and "tables" in parsed:
+                            all_dd_tables.extend(parsed["tables"])
+                    remote_tables = sum(1 for t in all_dd_tables if t.get("query_mode") == "remote")
+                    local_tables = len(all_dd_tables) - remote_tables
+            except Exception:
+                pass
+
             return {
                 "tables": total_tables,
+                "total_tables": local_tables + remote_tables,
+                "local_tables": local_tables,
+                "remote_tables": remote_tables,
                 "columns": total_columns if total_columns > 0 else FALLBACK_DATA_STATS["columns"],
                 "rows": total_rows,
                 "rows_display": rows_display,
@@ -403,6 +435,7 @@ def _load_data_stats() -> dict:
                 "unstructured_gb": FALLBACK_DATA_STATS["unstructured_gb"],
                 "unstructured_display": FALLBACK_DATA_STATS["unstructured_display"],
                 "last_updated": last_updated_display,
+                "last_updated_iso": last_updated_iso,
                 "highlights": FALLBACK_DATA_STATS["highlights"],
             }
     except Exception as e:
@@ -467,16 +500,25 @@ def _load_catalog_data() -> list:
         with open(desc_path) as f:
             content = f.read()
 
-        # Extract YAML block between ```yaml and ```
-        yaml_match = re.search(r'```yaml\s*\n(.*?)```', content, re.DOTALL)
-        if not yaml_match:
+        # Extract ALL YAML blocks between ```yaml and ```
+        yaml_blocks = re.findall(r'```yaml\s*\n(.*?)```', content, re.DOTALL)
+        if not yaml_blocks:
             return catalog
 
-        yaml_data = yaml.safe_load(yaml_match.group(1))
-        if not yaml_data or "tables" not in yaml_data:
+        # Merge tables and folder_mappings from all blocks
+        yaml_data = {"tables": [], "folder_mapping": {}}
+        for block in yaml_blocks:
+            parsed = yaml.safe_load(block)
+            if not parsed:
+                continue
+            if "tables" in parsed:
+                yaml_data["tables"].extend(parsed["tables"])
+            if "folder_mapping" in parsed:
+                yaml_data["folder_mapping"].update(parsed["folder_mapping"])
+        if not yaml_data["tables"]:
             return catalog
 
-        # Load sync state for row counts
+        # Load sync state for row counts and timestamps
         sync_data = {}
         try:
             sync_path = _resolve_metadata_path("sync_state.json")
@@ -484,6 +526,9 @@ def _load_catalog_data() -> list:
                 with open(sync_path) as f:
                     state = json.load(f)
                 sync_data = state.get("tables", {})
+                # Support flat format (table_id at top level, no "tables" wrapper)
+                if not sync_data and any(isinstance(v, dict) and "rows" in v for v in state.values()):
+                    sync_data = {k: v for k, v in state.items() if isinstance(v, dict) and "rows" in v}
         except Exception:
             pass
 
@@ -518,20 +563,40 @@ def _load_catalog_data() -> list:
             if folder not in categories:
                 categories[folder] = []
 
-            # Get sync info
+            # Get sync info and query mode
+            query_mode = table.get("query_mode", "local")
             sync_info = sync_data.get(table_id, {})
             rows = sync_info.get("rows", 0)
 
-            # Format rows
-            if rows >= 1_000_000:
-                rows_display = f"{rows / 1_000_000:.1f}M"
-            elif rows >= 1_000:
-                rows_display = f"{rows:,}"
+            # For remote tables, use volume estimate from config
+            if query_mode == "remote" and rows == 0:
+                volume = table.get("volume", {})
+                est_rows = volume.get("rows_per_day", 0)
+                if est_rows:
+                    rows_display = f"~{est_rows / 1_000_000:.0f}M/day"
+                    rows_large = True
+                else:
+                    rows_display = "Live"
+                    rows_large = False
             else:
-                rows_display = str(rows) if rows > 0 else "-"
+                # Format rows for local/hybrid tables
+                if rows >= 1_000_000:
+                    rows_display = f"{rows / 1_000_000:.1f}M"
+                elif rows >= 1_000:
+                    rows_display = f"{rows:,}"
+                else:
+                    rows_display = str(rows) if rows > 0 else "-"
+                rows_large = rows >= 1_000_000
 
-            # Determine if "large" badge
-            rows_large = rows >= 1_000_000
+            # Parse last_sync timestamp for display
+            last_sync = sync_info.get("last_sync")
+            last_sync_display = None
+            if last_sync:
+                try:
+                    dt = datetime.fromisoformat(last_sync)
+                    last_sync_display = dt.strftime("%b %d, %H:%M") + " UTC"
+                except (ValueError, TypeError):
+                    last_sync_display = None
 
             table_info = {
                 "name": table.get("name", ""),
@@ -539,6 +604,8 @@ def _load_catalog_data() -> list:
                 "rows": rows,
                 "rows_display": rows_display,
                 "rows_large": rows_large,
+                "query_mode": query_mode,
+                "last_sync": last_sync_display,
             }
 
             # Enrich with catalog metadata (OpenMetadata)
