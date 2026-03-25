@@ -173,8 +173,8 @@ class TableInfo:
         table_id: str,
         name: str,
         description: str,
-        primary_key: str,
-        sync_strategy: str,
+        primary_key: str = "",
+        sync_strategy: str = "none",
         foreign_keys: Optional[List[ForeignKeyInfo]] = None,
         partition_by: Optional[str] = None,
         partition_granularity: Optional[str] = None,
@@ -189,6 +189,8 @@ class TableInfo:
         self.partition_granularity = partition_granularity
 
     def get_primary_key_columns(self) -> List[str]:
+        if not self.primary_key:
+            return []
         return [col.strip() for col in self.primary_key.split(",")]
 
     def is_partitioned(self) -> bool:
@@ -314,8 +316,8 @@ def parse_data_description(path: Path) -> Tuple[List[TableInfo], Dict[str, str]]
                         table_id=td["id"],
                         name=td["name"],
                         description=td["description"],
-                        primary_key=td["primary_key"],
-                        sync_strategy=td["sync_strategy"],
+                        primary_key=td.get("primary_key", ""),
+                        sync_strategy=td.get("sync_strategy", "none"),
                         foreign_keys=fk_list,
                         partition_by=td.get("partition_by"),
                         partition_granularity=td.get("partition_granularity"),
