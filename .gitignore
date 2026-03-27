@@ -132,3 +132,6 @@ docs/datasets/*/schema.yml
 # Agent-generated reports (not part of codebase)
 .audit/
 docs/AGENT-REPORTS/
+
+# Internal transcripts and meeting notes
+docs/ZS_PADAK_*
