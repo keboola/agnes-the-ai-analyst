@@ -1,0 +1,48 @@
+services:
+  app:
+    build: .
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+      - data:/data
+    env_file: .env
+    environment:
+      - DATA_DIR=/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; r=httpx.get('http://localhost:8000/api/health'); exit(0 if r.status_code==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  scheduler:
+    build: .
+    command: python -m services.scheduler
+    volumes:
+      - data:/data
+    env_file: .env
+    environment:
+      - DATA_DIR=/data
+      - API_URL=http://app:8000
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+
+  telegram-bot:
+    build: .
+    command: python -m services.telegram_bot
+    volumes:
+      - data:/data
+    env_file: .env
+    environment:
+      - DATA_DIR=/data
+    depends_on:
+      - app
+    profiles:
+      - full
+    restart: unless-stopped
+
+volumes:
+  data:

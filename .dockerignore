@@ -1,0 +1,17 @@
+.git
+.venv
+venv
+__pycache__
+*.pyc
+.env
+.env.*
+data/
+dev_data/
+*.egg-info
+dist/
+build/
+.pytest_cache
+.mypy_cache
+.claude/
+node_modules/
+docs/ZS_PADAK_*
