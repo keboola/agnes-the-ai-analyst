@@ -46,7 +46,11 @@ def _build_context(request: Request, user: Optional[dict] = None, **extra) -> di
 
         @staticmethod
         def theme_overrides():
-            return get_theme()
+            theme = get_theme()
+            # Return dict of CSS variable overrides (only non-empty values)
+            if isinstance(theme, dict):
+                return {k: v for k, v in theme.items() if v}
+            return {}
 
     ctx = {
         "request": request,
@@ -78,7 +82,7 @@ async def login_page(request: Request):
         {"name": "google", "display_name": "Google", "icon": "google"},
     ]
     ctx = _build_context(request, providers=providers)
-    return templates.TemplateResponse("login.html", ctx)
+    return templates.TemplateResponse(request, "login.html", ctx)
 
 
 @router.get("/dashboard", response_class=HTMLResponse)
@@ -108,7 +112,7 @@ async def dashboard(
         datasets=datasets,
         account_status="active",
     )
-    return templates.TemplateResponse("dashboard.html", ctx)
+    return templates.TemplateResponse(request, "dashboard.html", ctx)
 
 
 @router.get("/catalog", response_class=HTMLResponse)
@@ -158,7 +162,7 @@ async def catalog(
         datasets=datasets,
         enabled_datasets=enabled_datasets,
     )
-    return templates.TemplateResponse("catalog.html", ctx)
+    return templates.TemplateResponse(request, "catalog.html", ctx)
 
 
 @router.get("/corporate-memory", response_class=HTMLResponse)
@@ -182,7 +186,7 @@ async def corporate_memory(
         knowledge_items=items,
         governance_mode=cm_config.get("distribution_mode"),
     )
-    return templates.TemplateResponse("corporate_memory.html", ctx)
+    return templates.TemplateResponse(request, "corporate_memory.html", ctx)
 
 
 @router.get("/corporate-memory/admin", response_class=HTMLResponse)
@@ -194,7 +198,7 @@ async def corporate_memory_admin(
     repo = KnowledgeRepository(conn)
     pending = repo.list_items(statuses=["pending"], limit=100)
     ctx = _build_context(request, user=user, pending_items=pending)
-    return templates.TemplateResponse("corporate_memory_admin.html", ctx)
+    return templates.TemplateResponse(request, "corporate_memory_admin.html", ctx)
 
 
 @router.get("/activity-center", response_class=HTMLResponse)
@@ -208,7 +212,7 @@ async def activity_center(
         "total_items": len(repo.list_items(limit=10000)),
     }
     ctx = _build_context(request, user=user, stats=stats)
-    return templates.TemplateResponse("activity_center.html", ctx)
+    return templates.TemplateResponse(request, "activity_center.html", ctx)
 
 
 @router.get("/admin/tables", response_class=HTMLResponse)
@@ -221,4 +225,4 @@ async def admin_tables(
     repo = TableRegistryRepository(conn)
     tables = repo.list_all()
     ctx = _build_context(request, user=user, registered_tables=tables)
-    return templates.TemplateResponse("admin_tables.html", ctx)
+    return templates.TemplateResponse(request, "admin_tables.html", ctx)
