@@ -1,0 +1,43 @@
+[project]
+name = "data-analyst"
+version = "2.0.0"
+description = "AI Data Analyst — data distribution platform for AI analytical systems"
+requires-python = ">=3.9"
+license = "MIT"
+
+dependencies = [
+    "duckdb>=0.9.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "python-multipart>=0.0.9",
+    "jinja2>=3.1.0",
+    "PyJWT>=2.8.0",
+    "httpx>=0.27.0",
+    "typer>=0.12.0",
+    "rich>=13.0.0",
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+da = "cli.main:app"
+
+[project.optional-dependencies]
+connectors = [
+    "kbcstorage>=0.9.0",
+    "google-cloud-bigquery>=3.0.0",
+    "google-cloud-bigquery-storage>=2.0.0",
+    "pandas>=2.0.0",
+    "pyarrow>=12.0.0",
+]
+telegram = [
+    "aiohttp>=3.9.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-mock>=3.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
