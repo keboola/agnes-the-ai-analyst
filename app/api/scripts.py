@@ -110,13 +110,45 @@ async def undeploy_script(
 
 def _execute_script(source: str, name: str) -> dict:
     """Execute a Python script in a sandboxed subprocess."""
-    # Safety checks
-    dangerous_imports = ["subprocess", "shutil", "ctypes", "importlib"]
-    for imp in dangerous_imports:
-        if f"import {imp}" in source or f"from {imp}" in source:
+    # Comprehensive safety checks — block dangerous patterns
+    blocked_patterns = [
+        # Direct imports of dangerous modules
+        "import subprocess", "from subprocess",
+        "import shutil", "from shutil",
+        "import ctypes", "from ctypes",
+        "import importlib", "from importlib",
+        "import socket", "from socket",
+        "import requests", "from requests",
+        "import urllib", "from urllib",
+        "import http", "from http",
+        # Dynamic import bypasses
+        "__import__",
+        "importlib",
+        # Code execution bypasses
+        "exec(",
+        "eval(",
+        "compile(",
+        # OS-level access
+        "import os", "from os",
+        "import sys", "from sys",
+        "import signal", "from signal",
+        # File access bypasses
+        "open(",
+        "pathlib",
+        # Dangerous builtins
+        "globals()",
+        "locals()",
+        "getattr(",
+        "setattr(",
+        "delattr(",
+        "breakpoint(",
+    ]
+    source_lower = source.lower()
+    for pattern in blocked_patterns:
+        if pattern.lower() in source_lower:
             raise HTTPException(
                 status_code=400,
-                detail=f"Script contains disallowed import: {imp}",
+                detail=f"Script contains disallowed pattern: {pattern.split('(')[0].strip()}",
             )
 
     data_dir = os.environ.get("DATA_DIR", "./data")
@@ -134,11 +166,13 @@ def _execute_script(source: str, name: str) -> dict:
             timeout=SCRIPT_TIMEOUT,
             env={
                 "PATH": os.environ.get("PATH", ""),
+                "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
                 "DATA_DIR": data_dir,
-                "PYTHONPATH": os.getcwd(),
                 "HOME": "/tmp",
+                # Pass through Python env for package discovery
+                "VIRTUAL_ENV": os.environ.get("VIRTUAL_ENV", ""),
             },
-            cwd=os.getcwd(),
+            cwd="/tmp",  # restrict working directory
         )
         stdout = result.stdout[:SCRIPT_MAX_OUTPUT]
         stderr = result.stderr[:SCRIPT_MAX_OUTPUT]

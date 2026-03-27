@@ -30,13 +30,28 @@ async def execute_query(
     user: dict = Depends(get_current_user),
 ):
     """Execute SQL against the server analytics DuckDB."""
-    # Safety: basic SQL injection prevention
     sql_lower = request.sql.strip().lower()
-    if any(keyword in sql_lower for keyword in ["drop ", "delete ", "insert ", "update ", "alter ", "create "]):
-        raise HTTPException(status_code=400, detail="Only SELECT queries are allowed")
+
+    # Block everything except SELECT
+    blocked = [
+        "drop ", "delete ", "insert ", "update ", "alter ", "create ",
+        "copy ", "attach ", "detach ", "load ", "install ",
+        "export ", "import ", "pragma ",
+        # File access functions
+        "read_csv", "read_json", "read_parquet(", "read_text",
+        "write_csv", "write_parquet",
+        # Multiple statements
+        ";",
+    ]
+    if any(keyword in sql_lower for keyword in blocked):
+        raise HTTPException(status_code=400, detail="Only single SELECT queries are allowed")
+
+    if not sql_lower.startswith("select ") and not sql_lower.startswith("with "):
+        raise HTTPException(status_code=400, detail="Query must start with SELECT or WITH")
 
     conn = get_analytics_db()
     try:
+        # Open in read-only mode for extra safety
         result = conn.execute(request.sql).fetchmany(request.limit + 1)
         columns = [desc[0] for desc in conn.description] if conn.description else []
         truncated = len(result) > request.limit
