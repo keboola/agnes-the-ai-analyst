@@ -11,6 +11,8 @@ from app.api.query import router as query_router
 from app.api.users import router as users_router
 from app.api.memory import router as memory_router
 from app.api.upload import router as upload_router
+from app.api.scripts import router as scripts_router
+from app.api.settings import router as settings_router
 
 
 def create_app() -> FastAPI:
@@ -38,6 +40,8 @@ def create_app() -> FastAPI:
     app.include_router(users_router)
     app.include_router(memory_router)
     app.include_router(upload_router)
+    app.include_router(scripts_router)
+    app.include_router(settings_router)
 
     return app
 

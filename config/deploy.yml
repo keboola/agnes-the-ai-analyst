@@ -1,0 +1,67 @@
+# Kamal production deployment config
+# Usage: kamal deploy
+
+service: data-analyst
+
+image: ghcr.io/keboola/data-analyst
+
+registry:
+  server: ghcr.io
+  username:
+    - KAMAL_REGISTRY_USERNAME
+  password:
+    - KAMAL_REGISTRY_PASSWORD
+
+servers:
+  web:
+    hosts:
+      - YOUR_SERVER_IP
+    cmd: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    options:
+      volume:
+        - /data:/data
+
+accessories:
+  scheduler:
+    image: ghcr.io/keboola/data-analyst
+    host: YOUR_SERVER_IP
+    cmd: python -m services.scheduler
+    env:
+      clear:
+        API_URL: http://data-analyst-web:8000
+      secret:
+        - SCHEDULER_API_TOKEN
+    volumes:
+      - /data:/data
+
+  telegram-bot:
+    image: ghcr.io/keboola/data-analyst
+    host: YOUR_SERVER_IP
+    cmd: python -m services.telegram_bot
+    env:
+      secret:
+        - TELEGRAM_BOT_TOKEN
+    volumes:
+      - /data:/data
+
+proxy:
+  ssl: true
+  host: data.your-domain.com
+
+healthcheck:
+  path: /api/health
+  port: 8000
+  interval: 30
+
+env:
+  clear:
+    DATA_DIR: /data
+    LOG_LEVEL: info
+  secret:
+    - JWT_SECRET_KEY
+    - KEBOOLA_STORAGE_TOKEN
+    - KEBOOLA_STACK_URL
+    - KEBOOLA_PROJECT_ID
+    - GOOGLE_CLIENT_ID
+    - GOOGLE_CLIENT_SECRET
+    - TELEGRAM_BOT_TOKEN
