@@ -1,8 +1,9 @@
-"""DuckDB connection management and schema initialization.
+"""DuckDB connection management and schema versioning.
 
-Provides connections to the system state database and analytics database,
-with automatic directory creation and schema bootstrapping.
+Provides get_system_db() for the system state database
+and get_analytics_db() for the analytics database with parquet views.
 """
+
 import os
 from pathlib import Path
 
@@ -10,181 +11,181 @@ import duckdb
 
 SCHEMA_VERSION = 1
 
-_SCHEMA_SQL = """
+_SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
-    version     INTEGER NOT NULL,
-    applied_at  TIMESTAMP DEFAULT current_timestamp
-);
-
-CREATE TABLE IF NOT EXISTS audit_log (
-    id          VARCHAR PRIMARY KEY,
-    timestamp   TIMESTAMP DEFAULT current_timestamp,
-    actor       VARCHAR,
-    action      VARCHAR NOT NULL,
-    entity_type VARCHAR,
-    entity_id   VARCHAR,
-    details     JSON
-);
-
-CREATE TABLE IF NOT EXISTS dataset_permissions (
-    id          VARCHAR PRIMARY KEY,
-    user_email  VARCHAR NOT NULL,
-    dataset     VARCHAR NOT NULL,
-    permission  VARCHAR NOT NULL DEFAULT 'read',
-    granted_by  VARCHAR,
-    granted_at  TIMESTAMP DEFAULT current_timestamp
-);
-
-CREATE TABLE IF NOT EXISTS knowledge_items (
-    id          VARCHAR PRIMARY KEY,
-    title       VARCHAR NOT NULL,
-    content     VARCHAR,
-    category    VARCHAR,
-    author      VARCHAR,
-    status      VARCHAR DEFAULT 'active',
-    metadata    JSON,
-    created_at  TIMESTAMP DEFAULT current_timestamp,
-    updated_at  TIMESTAMP DEFAULT current_timestamp
-);
-
-CREATE TABLE IF NOT EXISTS knowledge_votes (
-    id          VARCHAR PRIMARY KEY,
-    item_id     VARCHAR NOT NULL,
-    user_email  VARCHAR NOT NULL,
-    vote        INTEGER NOT NULL,
-    created_at  TIMESTAMP DEFAULT current_timestamp
-);
-
-CREATE TABLE IF NOT EXISTS pending_codes (
-    code        VARCHAR PRIMARY KEY,
-    user_email  VARCHAR NOT NULL,
-    purpose     VARCHAR,
-    created_at  TIMESTAMP DEFAULT current_timestamp,
-    expires_at  TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS script_registry (
-    id          VARCHAR PRIMARY KEY,
-    name        VARCHAR NOT NULL,
-    path        VARCHAR NOT NULL,
-    description VARCHAR,
-    author      VARCHAR,
-    metadata    JSON,
-    created_at  TIMESTAMP DEFAULT current_timestamp,
-    updated_at  TIMESTAMP DEFAULT current_timestamp
-);
-
-CREATE TABLE IF NOT EXISTS sync_history (
-    id          VARCHAR PRIMARY KEY,
-    table_name  VARCHAR NOT NULL,
-    status      VARCHAR NOT NULL,
-    rows_synced INTEGER,
-    started_at  TIMESTAMP DEFAULT current_timestamp,
-    finished_at TIMESTAMP,
-    error       VARCHAR,
-    metadata    JSON
-);
-
-CREATE TABLE IF NOT EXISTS sync_state (
-    table_name  VARCHAR PRIMARY KEY,
-    last_sync   TIMESTAMP,
-    status      VARCHAR DEFAULT 'pending',
-    row_count   INTEGER,
-    file_hash   VARCHAR,
-    metadata    JSON
-);
-
-CREATE TABLE IF NOT EXISTS table_profiles (
-    table_name  VARCHAR PRIMARY KEY,
-    profile     JSON,
-    profiled_at TIMESTAMP DEFAULT current_timestamp
-);
-
-CREATE TABLE IF NOT EXISTS table_registry (
-    table_name  VARCHAR PRIMARY KEY,
-    bucket      VARCHAR,
-    source      VARCHAR,
-    sync_strategy VARCHAR DEFAULT 'full',
-    primary_key VARCHAR,
-    description VARCHAR,
-    metadata    JSON,
-    registered_at TIMESTAMP DEFAULT current_timestamp,
-    updated_at  TIMESTAMP DEFAULT current_timestamp
-);
-
-CREATE TABLE IF NOT EXISTS telegram_links (
-    chat_id     VARCHAR PRIMARY KEY,
-    user_email  VARCHAR NOT NULL,
-    linked_at   TIMESTAMP DEFAULT current_timestamp,
-    active      BOOLEAN DEFAULT true
-);
-
-CREATE TABLE IF NOT EXISTS user_sync_settings (
-    user_email  VARCHAR PRIMARY KEY,
-    settings    JSON,
-    updated_at  TIMESTAMP DEFAULT current_timestamp
+    version INTEGER NOT NULL,
+    applied_at TIMESTAMP DEFAULT current_timestamp
 );
 
 CREATE TABLE IF NOT EXISTS users (
-    email       VARCHAR PRIMARY KEY,
-    name        VARCHAR,
-    picture     VARCHAR,
-    role        VARCHAR DEFAULT 'analyst',
-    is_active   BOOLEAN DEFAULT true,
-    metadata    JSON,
-    created_at  TIMESTAMP DEFAULT current_timestamp,
-    last_login  TIMESTAMP
+    id VARCHAR PRIMARY KEY,
+    email VARCHAR UNIQUE NOT NULL,
+    name VARCHAR,
+    role VARCHAR DEFAULT 'analyst',
+    password_hash VARCHAR,
+    setup_token VARCHAR,
+    setup_token_created TIMESTAMP,
+    reset_token VARCHAR,
+    reset_token_created TIMESTAMP,
+    created_at TIMESTAMP DEFAULT current_timestamp,
+    updated_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS sync_state (
+    table_id VARCHAR PRIMARY KEY,
+    last_sync TIMESTAMP,
+    rows BIGINT,
+    file_size_bytes BIGINT,
+    uncompressed_size_bytes BIGINT,
+    columns INTEGER,
+    hash VARCHAR,
+    status VARCHAR DEFAULT 'ok',
+    error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS sync_history (
+    id VARCHAR PRIMARY KEY,
+    table_id VARCHAR NOT NULL,
+    synced_at TIMESTAMP NOT NULL,
+    rows BIGINT,
+    duration_ms INTEGER,
+    status VARCHAR,
+    error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS user_sync_settings (
+    user_id VARCHAR NOT NULL,
+    dataset VARCHAR NOT NULL,
+    enabled BOOLEAN DEFAULT false,
+    table_mode VARCHAR DEFAULT 'all',
+    tables JSON,
+    updated_at TIMESTAMP,
+    PRIMARY KEY (user_id, dataset)
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_items (
+    id VARCHAR PRIMARY KEY,
+    title VARCHAR NOT NULL,
+    content TEXT,
+    category VARCHAR,
+    tags JSON,
+    status VARCHAR DEFAULT 'pending',
+    contributors JSON,
+    source_user VARCHAR,
+    audience VARCHAR,
+    created_at TIMESTAMP DEFAULT current_timestamp,
+    updated_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_votes (
+    item_id VARCHAR NOT NULL,
+    user_id VARCHAR NOT NULL,
+    vote INTEGER,
+    voted_at TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (item_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id VARCHAR PRIMARY KEY,
+    timestamp TIMESTAMP NOT NULL DEFAULT current_timestamp,
+    user_id VARCHAR,
+    action VARCHAR NOT NULL,
+    resource VARCHAR,
+    params JSON,
+    result VARCHAR,
+    duration_ms INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS telegram_links (
+    user_id VARCHAR PRIMARY KEY,
+    chat_id BIGINT NOT NULL,
+    linked_at TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS pending_codes (
+    code VARCHAR PRIMARY KEY,
+    chat_id BIGINT NOT NULL,
+    created_at TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS script_registry (
+    id VARCHAR PRIMARY KEY,
+    name VARCHAR NOT NULL,
+    owner VARCHAR,
+    schedule VARCHAR,
+    source TEXT NOT NULL,
+    deployed_at TIMESTAMP DEFAULT current_timestamp,
+    last_run TIMESTAMP,
+    last_status VARCHAR
+);
+
+CREATE TABLE IF NOT EXISTS table_registry (
+    id VARCHAR PRIMARY KEY,
+    name VARCHAR NOT NULL,
+    folder VARCHAR,
+    sync_strategy VARCHAR,
+    primary_key VARCHAR,
+    description TEXT,
+    registered_by VARCHAR,
+    registered_at TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS table_profiles (
+    table_id VARCHAR PRIMARY KEY,
+    profile JSON NOT NULL,
+    profiled_at TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS dataset_permissions (
+    user_id VARCHAR NOT NULL,
+    dataset VARCHAR NOT NULL,
+    access VARCHAR DEFAULT 'read',
+    PRIMARY KEY (user_id, dataset)
 );
 """
 
 
 def _get_data_dir() -> Path:
-    """Return the DATA_DIR path, defaulting to ./data."""
-    return Path(os.environ.get("DATA_DIR", "data"))
+    return Path(os.environ.get("DATA_DIR", "./data"))
 
 
 def get_system_db() -> duckdb.DuckDBPyConnection:
-    """Open (or create) the system state database and ensure schema exists.
-
-    Returns a DuckDB connection to {DATA_DIR}/state/system.duckdb.
-    Creates directories and all schema tables on first call.
-    """
-    db_dir = _get_data_dir() / "state"
-    db_dir.mkdir(parents=True, exist_ok=True)
-    db_path = db_dir / "system.duckdb"
-
+    """Get a connection to the system state database. Creates schema if needed."""
+    db_path = _get_data_dir() / "state" / "system.duckdb"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = duckdb.connect(str(db_path))
-    conn.execute(_SCHEMA_SQL)
-
-    # Seed schema_version if empty
-    row = conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()
-    if row[0] == 0:
-        conn.execute(
-            "INSERT INTO schema_version (version) VALUES (?)", [SCHEMA_VERSION]
-        )
-
+    _ensure_schema(conn)
     return conn
 
 
 def get_analytics_db() -> duckdb.DuckDBPyConnection:
-    """Open (or create) the analytics database.
-
-    Returns a DuckDB connection to {DATA_DIR}/analytics/server.duckdb.
-    Creates directories if needed.
-    """
-    db_dir = _get_data_dir() / "analytics"
-    db_dir.mkdir(parents=True, exist_ok=True)
-    db_path = db_dir / "server.duckdb"
-
+    """Get a connection to the analytics database (parquet views)."""
+    db_path = _get_data_dir() / "analytics" / "server.duckdb"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
     return duckdb.connect(str(db_path))
 
 
+def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
+    """Create tables if they don't exist. Apply migrations if schema version changed."""
+    current = get_schema_version(conn)
+    if current < SCHEMA_VERSION:
+        conn.execute(_SYSTEM_SCHEMA)
+        if current == 0:
+            conn.execute(
+                "INSERT INTO schema_version (version) VALUES (?)",
+                [SCHEMA_VERSION],
+            )
+        else:
+            conn.execute(
+                "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
+                [SCHEMA_VERSION],
+            )
+
+
 def get_schema_version(conn: duckdb.DuckDBPyConnection) -> int:
-    """Return the current schema version, or 0 if no schema_version table."""
+    """Get current schema version. Returns 0 if no schema exists."""
     try:
-        row = conn.execute(
-            "SELECT version FROM schema_version ORDER BY applied_at DESC LIMIT 1"
-        ).fetchone()
-        return row[0] if row else 0
+        result = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
+        return result[0] if result and result[0] else 0
     except duckdb.CatalogException:
         return 0
