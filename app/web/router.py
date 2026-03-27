@@ -14,6 +14,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 import duckdb
 
+import jinja2
+
 from app.auth.dependencies import get_current_user, get_optional_user, _get_db
 from app.instance_config import (
     get_instance_name, get_instance_subtitle, get_datasets,
@@ -30,6 +32,74 @@ router = APIRouter(tags=["web"])
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+# Make templates tolerant of missing variables (renders empty string instead of error)
+class _SilentUndefined(jinja2.Undefined):
+    """Silently handle any access on undefined variables — returns empty/falsy."""
+    def __str__(self): return ""
+    def __iter__(self): return iter([])
+    def __bool__(self): return False
+    def __len__(self): return 0
+    def __getattr__(self, name): return self
+    def __getitem__(self, name): return self
+    def __call__(self, *args, **kwargs): return self
+    def __int__(self): return 0
+
+templates.env.undefined = _SilentUndefined
+
+# Add custom JSON filter that handles _SilentUndefined and _FlexDict
+import json as _json
+
+class _SafeEncoder(_json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, (_SilentUndefined, _FlexDict)):
+            if isinstance(obj, _FlexDict) and dict.__len__(obj) > 0:
+                return dict(obj)
+            return None
+        return super().default(obj)
+
+templates.env.policies["json.dumps_function"] = lambda obj, **kw: _json.dumps(obj, cls=_SafeEncoder, **kw)
+
+
+class _FlexDict(dict):
+    """Dict that returns empty _FlexDict for missing keys and attributes.
+    Prevents Jinja2 UndefinedError when templates access missing nested values."""
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError:
+            return _FlexDict()
+    def __bool__(self): return bool(dict.__len__(self))
+    def __str__(self): return ""
+    def __int__(self): return 0
+    def __float__(self): return 0.0
+    def __iter__(self): return iter(dict.values(self)) if dict.__len__(self) else iter([])
+    def __len__(self): return dict.__len__(self)
+    def __call__(self, *args, **kwargs): return ""
+    def __add__(self, other): return other
+    def __radd__(self, other): return other
+    def __sub__(self, other): return 0 - other if isinstance(other, (int, float)) else self
+    def __rsub__(self, other): return other
+    def __mul__(self, other): return 0
+    def __rmul__(self, other): return 0
+    def __truediv__(self, other): return 0
+    def __rtruediv__(self, other): return 0
+    def __mod__(self, other): return 0
+    def __eq__(self, other): return False if dict.__len__(self) == 0 else dict.__eq__(self, other)
+    def __ne__(self, other): return True if dict.__len__(self) == 0 else dict.__ne__(self, other)
+    def __lt__(self, other): return False
+    def __gt__(self, other): return False
+    def __le__(self, other): return True
+    def __ge__(self, other): return True
+    def __contains__(self, item): return dict.__contains__(self, item) if dict.__len__(self) else False
+
+
+def _flex(d):
+    """Recursively convert dicts to _FlexDict for template compatibility."""
+    if isinstance(d, dict) and not isinstance(d, _FlexDict):
+        return _FlexDict({k: _flex(v) for k, v in d.items()})
+    if isinstance(d, list):
+        return [_flex(i) for i in d]
+    return d
 
 
 def _build_context(request: Request, user: Optional[dict] = None, **extra) -> dict:
@@ -55,15 +125,17 @@ def _build_context(request: Request, user: Optional[dict] = None, **extra) -> di
     ctx = {
         "request": request,
         "config": ConfigProxy,
-        "user": user,
+        "user": _flex(user) if user else _FlexDict(),
         "now": datetime.now,
         "static_url": lambda path: f"/static/{path}",
         # Flask compatibility shims for templates
         "get_flashed_messages": lambda **kwargs: [],
         "url_for": lambda endpoint, **kw: f"/{endpoint}",
-        "session": {"user": user} if user else {},
-        **extra,
+        "session": _FlexDict({"user": user}) if user else _FlexDict(),
     }
+    # Flex all extra context values for template compatibility
+    for k, v in extra.items():
+        ctx[k] = _flex(v) if isinstance(v, (dict, list)) else v
     return ctx
 
 
@@ -127,7 +199,18 @@ async def dashboard(
         account_details=None,
         telegram_status={"linked": False},
         setup_instructions="Use 'da login' to connect your CLI tool.",
-        data_stats={"total_tables": total_tables, "total_rows": total_rows},
+        data_stats={
+            "tables": total_tables,
+            "total_tables": total_tables,
+            "columns": 0,
+            "rows_display": f"{total_rows:,}" if total_rows else "0",
+            "size_display": "0 MB",
+            "unstructured_display": "0 MB",
+            "total_rows": total_rows,
+            "last_updated": None,
+            "remote_tables": 0,
+            "local_tables": total_tables,
+        },
         categories=[],
         metrics_data=[],
         desktop_status={"linked": False},
@@ -179,11 +262,34 @@ async def catalog(
         tables = []
         logger.warning(f"Could not load catalog: {e}")
 
+    # Build data_stats for catalog template
+    total_rows = sum(s.get("rows", 0) or 0 for s in all_states)
+    data_stats = {
+        "total_tables": len(all_states),
+        "total_rows": total_rows,
+        "total_columns": 0,
+        "total_size": sum(s.get("file_size_bytes", 0) or 0 for s in all_states),
+        "last_updated": max((s.get("last_sync") for s in all_states if s.get("last_sync")), default=None),
+    }
+
+    # Build categories from tables
+    categories = {}
+    for t in tables:
+        ds = t.get("dataset") or "default"
+        if ds not in categories:
+            categories[ds] = {"name": ds, "tables": []}
+        categories[ds]["tables"].append(t)
+
     ctx = _build_context(
         request, user=user,
         tables=tables,
         datasets=datasets,
         enabled_datasets=enabled_datasets,
+        data_stats=data_stats,
+        categories=list(categories.values()),
+        metrics_data=[],
+        sync_states=all_states,
+        folder_mapping={},
     )
     return templates.TemplateResponse(request, "catalog.html", ctx)
 
@@ -204,10 +310,28 @@ async def corporate_memory(
         item["downvotes"] = votes["downvotes"]
 
     cm_config = get_corporate_memory_config()
+    governance_mode = cm_config.get("distribution_mode")
+
+    # Build stats
+    all_items = repo.list_items(limit=10000)
+    categories = sorted(set(i.get("category", "") for i in all_items if i.get("category")))
+
     ctx = _build_context(
         request, user=user,
         knowledge_items=items,
-        governance_mode=cm_config.get("distribution_mode"),
+        governance_mode=governance_mode,
+        governance={"mode": governance_mode, "groups": cm_config.get("groups", {})},
+        categories=categories,
+        stats={"total": len(all_items), "approved": len([i for i in all_items if i.get("status") == "approved"])},
+        user_votes={},
+        is_km_admin=user.get("role") in ("km_admin", "admin"),
+        user_stats={"authored": 0, "votes_given": 0},
+        # Template expects knowledge as object with .items and .total_pages
+        knowledge={"items": items, "total_pages": 1, "page": 1, "per_page": 100, "total": len(items)},
+        total_pages=1,
+        current_page=1,
+        page=1,
+        per_page=100,
     )
     return templates.TemplateResponse(request, "corporate_memory.html", ctx)
 
@@ -220,7 +344,19 @@ async def corporate_memory_admin(
 ):
     repo = KnowledgeRepository(conn)
     pending = repo.list_items(statuses=["pending"], limit=100)
-    ctx = _build_context(request, user=user, pending_items=pending)
+    all_items = repo.list_items(limit=10000)
+    status_counts = {}
+    for item in all_items:
+        s = item.get("status", "unknown")
+        status_counts[s] = status_counts.get(s, 0) + 1
+    ctx = _build_context(
+        request, user=user,
+        pending_items=pending,
+        stats={"total": len(all_items), "by_status": status_counts, "pending": len(pending)},
+        governance=get_corporate_memory_config(),
+        groups=get_corporate_memory_config().get("groups", {}),
+        audit_entries=[],
+    )
     return templates.TemplateResponse(request, "corporate_memory_admin.html", ctx)
 
 
@@ -234,7 +370,12 @@ async def activity_center(
     stats = {
         "total_items": len(repo.list_items(limit=10000)),
     }
-    ctx = _build_context(request, user=user, stats=stats)
+    ctx = _build_context(
+        request, user=user,
+        stats=stats,
+        activity={"recent_sessions": [], "recent_reports": [], "insights": []},
+        knowledge_stats={"total": 0, "approved": 0, "mandatory": 0},
+    )
     return templates.TemplateResponse(request, "activity_center.html", ctx)
 
 
