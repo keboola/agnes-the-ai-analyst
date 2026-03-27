@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Data Analyst Portal{% endblock %}</title>
+    <link rel="stylesheet" href="{{ static_url('style.css') }}">
+    <link rel="stylesheet" href="{{ static_url('style-custom.css') }}">
+    {% include '_theme.html' %}
+</head>
+<body>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+    <div class="flash-messages" style="position: fixed; top: 20px; left: 50%; transform: translateX(-50%); z-index: 1000; max-width: 500px;">
+        {% for category, message in messages %}
+        <div class="flash flash-{{ category }}">
+            {{ message }}
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+    {% endwith %}
+
+    {% block content %}{% endblock %}
+</body>
+</html>

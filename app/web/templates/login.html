@@ -1,0 +1,126 @@
+{% extends "base_login.html" %}
+
+{% block title %}Login - Data Analyst Portal{% endblock %}
+
+{% block content %}
+<div class="login-page">
+    <div class="login-split">
+        <!-- Left: Features & Value Proposition -->
+        <div class="login-features">
+            <div class="features-content">
+                <h1 class="features-title">{{ config.INSTANCE_NAME }}</h1>
+                <p class="features-subtitle">
+                    Your local AI agent works with centralized data, shared context, and corporate memory that learns from everyone.
+                </p>
+
+                <div class="feature-cards">
+                    <div class="feature-card">
+                        <div class="feature-icon feature-icon-data">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <ellipse cx="12" cy="5" rx="9" ry="3"/>
+                                <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
+                                <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+                            </svg>
+                        </div>
+                        <div class="feature-text">
+                            <h3>Unified Data Access</h3>
+                            <p>Synced data from central server with semantic layer, metrics definitions, and full documentation.</p>
+                        </div>
+                    </div>
+
+                    <div class="feature-card">
+                        <div class="feature-icon feature-icon-memory">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M12 2a4 4 0 0 1 4 4c0 1.1-.9 2-2 2h-4c-1.1 0-2-.9-2-2a4 4 0 0 1 4-4z"/>
+                                <path d="M12 8v8"/>
+                                <path d="M8 12h8"/>
+                                <circle cx="12" cy="19" r="3"/>
+                            </svg>
+                        </div>
+                        <div class="feature-text">
+                            <h3>Corporate Memory</h3>
+                            <p>Shared context across all users. When someone discovers something, everyone's AI knows it.</p>
+                        </div>
+                    </div>
+
+                    <div class="feature-card">
+                        <div class="feature-icon feature-icon-auto">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+                            </svg>
+                        </div>
+                        <div class="feature-text">
+                            <h3>Instant Automation</h3>
+                            <p>Turn any analysis into automated scripts. Runs without AI - fast, cheap, and repeatable.</p>
+                        </div>
+                    </div>
+
+                    <div class="feature-card">
+                        <div class="feature-icon feature-icon-notif">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+                                <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+                            </svg>
+                        </div>
+                        <div class="feature-text">
+                            <h3>Smart Notifications</h3>
+                            <p>Your AI agent can set up alerts and deploy them to the cloud. Server monitors 24/7.</p>
+                        </div>
+                    </div>
+
+                    <div class="feature-card">
+                        <div class="feature-icon feature-icon-performance">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M3 3v18h18"/>
+                                <path d="M18 17V9"/>
+                                <path d="M13 17v-6"/>
+                                <path d="M8 17v-3"/>
+                                <polyline points="7 7 12 3 17 6 22 2"/>
+                            </svg>
+                        </div>
+                        <div class="feature-text">
+                            <h3>Performance Intelligence</h3>
+                            <p>Track how data and AI drive measurable business outcomes. Real-time visibility into team maturity, process improvements, and ROI across departments.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right: Login Card -->
+        <div class="login-card-wrapper">
+            <div class="login-card">
+                <h2>Sign In</h2>
+                <p class="login-description">
+                    Access your AI data analysis workspace
+                </p>
+
+                {% for btn in login_buttons %}
+                <a href="{{ btn.url }}" class="btn {{ btn.css_class|default('btn-secondary') }}" style="width: 100%; max-width: 280px;">
+                    {% if btn.icon_html %}{{ btn.icon_html|safe }}{% endif %}
+                    {{ btn.text }}
+                </a>
+
+                {% if btn.subtitle %}
+                <p class="login-note">
+                    {{ btn.subtitle|safe }}
+                </p>
+                {% endif %}
+
+                {% if not loop.last %}
+                <div class="divider">
+                    <span>or</span>
+                </div>
+                {% endif %}
+                {% endfor %}
+
+                {% if not login_buttons %}
+                <p class="login-note">
+                    No authentication providers are configured. Please set up at least one provider.
+                </p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

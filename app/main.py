@@ -1,7 +1,11 @@
 """FastAPI main application — unified server for web UI + API."""
 
+import logging
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.auth.router import router as auth_router
 from app.api.health import router as health_router
@@ -13,6 +17,12 @@ from app.api.memory import router as memory_router
 from app.api.upload import router as upload_router
 from app.api.scripts import router as scripts_router
 from app.api.settings import router as settings_router
+from app.api.catalog import router as catalog_router
+from app.api.telegram import router as telegram_router
+from app.api.admin import router as admin_router
+from app.web.router import router as web_router
+
+logger = logging.getLogger(__name__)
 
 
 def create_app() -> FastAPI:
@@ -22,7 +32,7 @@ def create_app() -> FastAPI:
         version="2.0.0",
     )
 
-    # CORS for CLI and web UI
+    # CORS for CLI and external clients
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -31,7 +41,20 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Register routers
+    # Load instance config on startup
+    try:
+        from app.instance_config import load_instance_config
+        load_instance_config()
+        logger.info("Instance config loaded")
+    except Exception as e:
+        logger.warning(f"Could not load instance config: {e}")
+
+    # Static files
+    static_dir = Path(__file__).parent / "web" / "static"
+    if static_dir.exists():
+        app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+    # API routers
     app.include_router(auth_router)
     app.include_router(health_router)
     app.include_router(sync_router)
@@ -42,6 +65,12 @@ def create_app() -> FastAPI:
     app.include_router(upload_router)
     app.include_router(scripts_router)
     app.include_router(settings_router)
+    app.include_router(catalog_router)
+    app.include_router(telegram_router)
+    app.include_router(admin_router)
+
+    # Web UI router (must be last — has catch-all routes)
+    app.include_router(web_router)
 
     return app
 

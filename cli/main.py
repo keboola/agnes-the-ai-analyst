@@ -12,6 +12,9 @@ from cli.commands.status import status_app
 from cli.commands.admin import admin_app
 from cli.commands.diagnose import diagnose_app
 from cli.commands.skills import skills_app
+from cli.commands.setup import setup_app
+from cli.commands.server import server_app
+from cli.commands.explore import explore_app
 
 app = typer.Typer(
     name="da",
@@ -27,6 +30,9 @@ app.add_typer(status_app, name="status")
 app.add_typer(admin_app, name="admin")
 app.add_typer(diagnose_app, name="diagnose")
 app.add_typer(skills_app, name="skills")
+app.add_typer(setup_app, name="setup")
+app.add_typer(server_app, name="server")
+app.add_typer(explore_app, name="explore")
 
 
 if __name__ == "__main__":

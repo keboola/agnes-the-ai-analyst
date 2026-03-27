@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+
+{% block title %}Authorize Desktop App - Data Analyst Portal{% endblock %}
+
+{% block content %}
+<div class="login-container">
+    <div class="login-card">
+        <h2>Authorize Desktop App</h2>
+        <p class="login-description">
+            Link your account <strong>{{ username }}</strong> to the {{ config.INSTANCE_NAME }} desktop application.
+        </p>
+
+        <div id="authorize-section">
+            <button id="authorize-btn" class="btn btn-google" onclick="authorizeDesktop()">
+                Authorize Desktop App
+            </button>
+        </div>
+
+        <div id="success-section" style="display: none;">
+            <p class="login-description">Authorization successful. Opening desktop app...</p>
+            <p class="login-note">
+                If the app did not open automatically,
+                <a id="manual-link" href="#">click here</a>.
+            </p>
+        </div>
+
+        <div id="error-section" style="display: none;">
+            <p class="flash flash-error" id="error-message"></p>
+        </div>
+    </div>
+</div>
+
+<script>
+async function authorizeDesktop() {
+    const btn = document.getElementById('authorize-btn');
+    btn.disabled = true;
+    btn.textContent = 'Authorizing...';
+
+    try {
+        const response = await fetch('/api/desktop/authorize', { method: 'POST' });
+        const data = await response.json();
+
+        if (response.ok && data.url) {
+            document.getElementById('authorize-section').style.display = 'none';
+            document.getElementById('success-section').style.display = 'block';
+            document.getElementById('manual-link').href = data.url;
+            window.location.href = data.url;
+        } else {
+            showError(data.error || 'Authorization failed.');
+        }
+    } catch (err) {
+        showError('Network error. Please try again.');
+    }
+}
+
+function showError(message) {
+    document.getElementById('authorize-btn').disabled = false;
+    document.getElementById('authorize-btn').textContent = 'Authorize Desktop App';
+    document.getElementById('error-message').textContent = message;
+    document.getElementById('error-section').style.display = 'block';
+}
+</script>
+{% endblock %}
