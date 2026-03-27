@@ -4,7 +4,7 @@ from enum import Enum
 from typing import Optional
 
 import duckdb
-from fastapi import Depends, HTTPException, Header, status
+from fastapi import Depends, HTTPException, Header, Request, status
 
 from app.auth.jwt import verify_token
 from src.db import get_system_db
@@ -35,16 +35,26 @@ def _get_db():
 
 
 async def get_current_user(
+    request: Request = None,
     authorization: Optional[str] = Header(None),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ) -> dict:
-    """Extract and validate JWT from Authorization header. Returns user dict."""
-    if not authorization or not authorization.startswith("Bearer "):
+    """Extract and validate JWT from Authorization header or cookie. Returns user dict."""
+    token = None
+
+    # Try Authorization header first
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.removeprefix("Bearer ")
+
+    # Fallback to cookie (for web UI after OAuth redirect)
+    if not token and request:
+        token = request.cookies.get("access_token")
+
+    if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing or invalid Authorization header",
         )
-    token = authorization.removeprefix("Bearer ")
     payload = verify_token(token)
     if not payload:
         raise HTTPException(

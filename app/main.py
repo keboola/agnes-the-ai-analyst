@@ -3,9 +3,12 @@
 import logging
 from pathlib import Path
 
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.sessions import SessionMiddleware
 
 from app.auth.router import router as auth_router
 from app.api.health import router as health_router
@@ -32,6 +35,12 @@ def create_app() -> FastAPI:
         version="2.0.0",
     )
 
+    # Session middleware (required for OAuth state)
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=os.environ.get("JWT_SECRET_KEY", "dev-session-secret"),
+    )
+
     # CORS for CLI and external clients
     app.add_middleware(
         CORSMiddleware,
@@ -54,8 +63,16 @@ def create_app() -> FastAPI:
     if static_dir.exists():
         app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
+    # Auth providers (conditional registration)
+    from app.auth.providers.google import router as google_auth_router, is_available as google_available
+    from app.auth.providers.password import router as password_auth_router
+    from app.auth.providers.email import router as email_auth_router, is_available as email_available
+
     # API routers
     app.include_router(auth_router)
+    app.include_router(google_auth_router)
+    app.include_router(password_auth_router)
+    app.include_router(email_auth_router)  # Always register, check availability per-request
     app.include_router(health_router)
     app.include_router(sync_router)
     app.include_router(data_router)
