@@ -1,0 +1,20 @@
+# Kamal staging deployment config
+# Usage: kamal deploy -d staging
+
+servers:
+  web:
+    hosts:
+      - YOUR_STAGING_SERVER_IP
+
+accessories:
+  scheduler:
+    host: YOUR_STAGING_SERVER_IP
+  telegram-bot:
+    host: YOUR_STAGING_SERVER_IP
+
+proxy:
+  host: staging.data.your-domain.com
+
+env:
+  clear:
+    LOG_LEVEL: debug
