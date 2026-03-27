@@ -135,3 +135,4 @@ docs/AGENT-REPORTS/
 
 # Internal transcripts and meeting notes
 docs/ZS_PADAK_*
+.github/workflows/ci.yml
