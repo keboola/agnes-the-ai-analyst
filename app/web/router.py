@@ -103,14 +103,37 @@ async def dashboard(
     total_tables = len(all_states)
     total_rows = sum(s.get("rows", 0) or 0 for s in all_states)
 
+    # Build user_info object expected by dashboard template
+    class UserInfo:
+        def __init__(self):
+            self.exists = True
+            self.is_admin = user.get("role") == "admin"
+            self.is_analyst = user.get("role") in ("analyst", "admin", "km_admin")
+            self.is_privileged = user.get("role") == "admin"
+            self.username = user.get("email", "").split("@")[0]
+            self.home_dir = ""
+            self.groups = []
+
     ctx = _build_context(
         request, user=user,
+        user_info=UserInfo(),
+        username=user.get("email", "").split("@")[0],
         total_tables=total_tables,
         total_rows=total_rows,
         sync_states=all_states,
         enabled_datasets=enabled_datasets,
         datasets=datasets,
         account_status="active",
+        account_details=None,
+        telegram_status={"linked": False},
+        setup_instructions="Use 'da login' to connect your CLI tool.",
+        data_stats={"total_tables": total_tables, "total_rows": total_rows},
+        categories=[],
+        metrics_data=[],
+        desktop_status={"linked": False},
+        activity_summary={"total_sessions": 0, "total_queries": 0},
+        knowledge_stats={"total": 0, "approved": 0},
+        user_knowledge_stats={"authored": 0, "votes_given": 0},
     )
     return templates.TemplateResponse(request, "dashboard.html", ctx)
 
