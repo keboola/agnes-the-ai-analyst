@@ -46,18 +46,16 @@ def init_extract(output_dir: str | Path) -> None:
             table_dir = data_dir / table_name
             table_dir.mkdir(exist_ok=True)
 
-            # Create view that reads all parquet files in the table directory
-            glob_path = str(table_dir / "*.parquet")
-            conn.execute(
-                f'CREATE OR REPLACE VIEW "{table_name}" AS '
-                f"SELECT * FROM read_parquet('{glob_path}', union_by_name=true, hive_partitioning=false)"
-            )
-
-            # Count existing rows if any parquets exist
+            # Create view only if parquet files exist (DuckDB glob fails on empty dirs)
             rows = 0
             size_bytes = 0
             parquets = list(table_dir.glob("*.parquet"))
             if parquets:
+                glob_path = str(table_dir / "*.parquet")
+                conn.execute(
+                    f'CREATE OR REPLACE VIEW "{table_name}" AS '
+                    f"SELECT * FROM read_parquet('{glob_path}', union_by_name=true, hive_partitioning=false)"
+                )
                 try:
                     rows = conn.execute(f'SELECT count(*) FROM "{table_name}"').fetchone()[0]
                     size_bytes = sum(f.stat().st_size for f in parquets)
@@ -96,6 +94,11 @@ def update_meta(output_dir: str | Path, table_name: str) -> None:
         if parquets:
             try:
                 glob_path = str(table_dir / "*.parquet")
+                # Recreate view to pick up new/changed parquet files
+                conn.execute(
+                    f'CREATE OR REPLACE VIEW "{table_name}" AS '
+                    f"SELECT * FROM read_parquet('{glob_path}', union_by_name=true, hive_partitioning=false)"
+                )
                 rows = conn.execute(f"SELECT count(*) FROM read_parquet('{glob_path}', union_by_name=true)").fetchone()[0]
                 size_bytes = sum(f.stat().st_size for f in parquets)
             except Exception as e:
