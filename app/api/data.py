@@ -23,13 +23,18 @@ async def download_table(
 ):
     """Stream a parquet file for download. Supports ETag for caching."""
     data_dir = _get_data_dir()
-    parquet_dir = data_dir / "src_data" / "parquet"
 
-    # Find the parquet file (may be in a subfolder)
-    candidates = list(parquet_dir.rglob(f"{table_id}.parquet"))
+    # Search in extracts directory (v2 extract.duckdb architecture)
+    extracts_dir = data_dir / "extracts"
+    candidates = list(extracts_dir.rglob(f"data/{table_id}.parquet")) if extracts_dir.exists() else []
+
+    # Fallback to legacy path for backward compatibility
     if not candidates:
-        # Try with folder structure: folder/table.parquet
-        candidates = list(parquet_dir.rglob(f"*/{table_id}.parquet"))
+        parquet_dir = data_dir / "src_data" / "parquet"
+        candidates = list(parquet_dir.rglob(f"{table_id}.parquet"))
+        if not candidates:
+            candidates = list(parquet_dir.rglob(f"*/{table_id}.parquet"))
+
     if not candidates:
         raise HTTPException(status_code=404, detail=f"Table '{table_id}' not found")
 

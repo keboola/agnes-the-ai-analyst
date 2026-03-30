@@ -35,18 +35,55 @@ def _get_data_dir() -> Path:
 
 
 def _run_sync(tables: Optional[List[str]] = None):
-    """Run DataSyncManager in background. Called by trigger endpoint."""
+    """Run extractor + orchestrator in background. Called by trigger endpoint."""
     try:
-        from src.data_sync import DataSyncManager
-        manager = DataSyncManager()
-        if tables:
-            for t in tables:
-                manager.sync_table(t)
+        from app.instance_config import get_data_source_type, get_value
+        from src.db import get_system_db
+        from src.repositories.table_registry import TableRegistryRepository
+        from src.orchestrator import SyncOrchestrator
+
+        source_type = get_data_source_type()
+        data_dir = _get_data_dir()
+
+        # Get table configs from registry
+        sys_conn = get_system_db()
+        try:
+            repo = TableRegistryRepository(sys_conn)
+            if tables:
+                all_configs = [repo.get(t) for t in tables]
+                table_configs = [c for c in all_configs if c is not None]
+            else:
+                table_configs = repo.list_by_source(source_type) if source_type else repo.list_all()
+        finally:
+            sys_conn.close()
+
+        # Run appropriate extractor
+        if source_type == "keboola":
+            from connectors.keboola.extractor import run as keboola_run
+            kbc_url = get_value("keboola", "url", default="")
+            kbc_token = os.environ.get(
+                get_value("keboola", "token_env", default="KEBOOLA_STORAGE_TOKEN"), ""
+            )
+            output = str(data_dir / "extracts" / "keboola")
+            result = keboola_run(output, table_configs, kbc_url, kbc_token)
+            logger.info("Keboola extraction: %s", result)
+
+        elif source_type == "bigquery":
+            from connectors.bigquery.extractor import init_extract as bq_init
+            project_id = get_value("bigquery", "project_id", default="")
+            output = str(data_dir / "extracts" / "bigquery")
+            result = bq_init(output, project_id, table_configs)
+            logger.info("BigQuery extract init: %s", result)
+
         else:
-            manager.sync_all()
-        logger.info("Data sync completed successfully")
-    except ImportError as e:
-        logger.warning(f"DataSyncManager not available: {e}")
+            logger.warning("Unknown data source type: %s", source_type)
+            return
+
+        # Rebuild master views
+        orch = SyncOrchestrator()
+        views = orch.rebuild()
+        logger.info("Orchestrator rebuild: %s", {k: len(v) for k, v in views.items()})
+
     except Exception as e:
         logger.error(f"Data sync failed: {e}\n{traceback.format_exc()}")
 
