@@ -344,7 +344,7 @@ class TestSyncScriptReliability:
             if "command -v rsync" in line:
                 continue
             # Skip self-update rsync with scp fallback (sync_data.sh only)
-            if "data-analyst:server/scripts/" in line:
+            if "server/scripts/" in line and script_path.name == "sync_data.sh":
                 continue
             # Everything else must use rsync_reliable, not bare rsync
             if line.startswith("rsync ") or re.match(r'^rsync\s', line):

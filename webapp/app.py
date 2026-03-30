@@ -895,6 +895,9 @@ def _build_om_metric_detail(raw_metric: dict) -> dict:
         expression = metric_expr.get("expression", "") or ""
     elif isinstance(metric_expr, str):
         expression = metric_expr
+    # Fallback: top-level expression field (OpenMetadata format varies)
+    if not expression:
+        expression = raw_metric.get("expression", "") or ""
 
     metric_type = raw_metric.get("metricType", "") or ""
     unit = raw_metric.get("unitOfMeasurement", "") or ""

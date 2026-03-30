@@ -46,6 +46,7 @@ deploy ALL=(ALL) NOPASSWD: /usr/bin/mkdir -p /data/scripts
 deploy ALL=(ALL) NOPASSWD: /usr/bin/cp /opt/data-analyst/repo/scripts/* /data/scripts/*
 deploy ALL=(ALL) NOPASSWD: /usr/bin/chmod -R 755 /data/scripts
 deploy ALL=(ALL) NOPASSWD: /usr/bin/chown -R deploy\:data-ops /data/scripts
+deploy ALL=(ALL) NOPASSWD: /usr/bin/chown -R root\:data-ops /data/scripts
 
 # Allow deploy user to manage documentation in /data/docs
 deploy ALL=(ALL) NOPASSWD: /usr/bin/mkdir -p /data/docs
@@ -54,10 +55,12 @@ deploy ALL=(ALL) NOPASSWD: /usr/bin/cp /opt/data-analyst/repo/docs/* /data/docs/
 deploy ALL=(ALL) NOPASSWD: /usr/bin/cp -r /opt/data-analyst/repo/docs/* /data/docs/
 deploy ALL=(ALL) NOPASSWD: /usr/bin/chmod -R 775 /data/docs
 deploy ALL=(ALL) NOPASSWD: /usr/bin/chown -R deploy\:data-ops /data/docs
+deploy ALL=(ALL) NOPASSWD: /usr/bin/chown -R root\:data-ops /data/docs
 
 # Allow deploy user to manage notifications directory
 deploy ALL=(ALL) NOPASSWD: /usr/bin/mkdir -p /data/notifications
 deploy ALL=(ALL) NOPASSWD: /usr/bin/chown deploy\:data-ops /data/notifications
+deploy ALL=(ALL) NOPASSWD: /usr/bin/chown root\:data-ops /data/notifications
 deploy ALL=(ALL) NOPASSWD: /usr/bin/chmod 2770 /data/notifications
 
 # Allow deploy user to manage notify-bot service
@@ -86,10 +89,12 @@ deploy ALL=(ALL) NOPASSWD: /usr/bin/cp /opt/data-analyst/repo/server/limits-user
 deploy ALL=(ALL) NOPASSWD: /usr/bin/chmod 644 /etc/security/limits.d/99-users.conf
 
 # Allow deploy user to manage example notification scripts
+deploy ALL=(ALL) NOPASSWD: /usr/bin/mkdir -p /data/examples
 deploy ALL=(ALL) NOPASSWD: /usr/bin/mkdir -p /data/examples/notifications
 deploy ALL=(ALL) NOPASSWD: /usr/bin/cp /opt/data-analyst/repo/examples/notifications/* /data/examples/notifications/*
 deploy ALL=(ALL) NOPASSWD: /usr/bin/chmod -R 755 /data/examples
 deploy ALL=(ALL) NOPASSWD: /usr/bin/chown -R deploy\:data-ops /data/examples
+deploy ALL=(ALL) NOPASSWD: /usr/bin/chown -R root\:data-ops /data/examples
 
 # Allow deploy user to manage Jira data directory
 deploy ALL=(ALL) NOPASSWD: /usr/bin/mkdir -p /data/src_data/raw/jira/*
@@ -104,6 +109,7 @@ deploy ALL=(ALL) NOPASSWD: /usr/bin/chmod 2770 /data/auth
 # Allow deploy user to manage corporate memory directory and service
 deploy ALL=(ALL) NOPASSWD: /usr/bin/mkdir -p /data/corporate-memory
 deploy ALL=(ALL) NOPASSWD: /usr/bin/chown deploy\:data-ops /data/corporate-memory
+deploy ALL=(ALL) NOPASSWD: /usr/bin/chown root\:data-ops /data/corporate-memory
 deploy ALL=(ALL) NOPASSWD: /usr/bin/chmod 2770 /data/corporate-memory
 deploy ALL=(ALL) NOPASSWD: /usr/bin/cp /opt/data-analyst/repo/services/corporate_memory/systemd/corporate-memory.service /etc/systemd/system/corporate-memory.service
 deploy ALL=(ALL) NOPASSWD: /usr/bin/cp /opt/data-analyst/repo/services/corporate_memory/systemd/corporate-memory.timer /etc/systemd/system/corporate-memory.timer
