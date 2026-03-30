@@ -103,10 +103,13 @@ def extract_expression(raw_metric: Dict[str, Any]) -> str:
     metric_expr = raw_metric.get("metricExpression", {})
     if isinstance(metric_expr, dict):
         # OpenMetadata uses "code" field for the SQL expression
-        return metric_expr.get("code", "") or metric_expr.get("expression", "") or ""
-    if isinstance(metric_expr, str):
+        result = metric_expr.get("code", "") or metric_expr.get("expression", "") or ""
+        if result:
+            return result
+    elif isinstance(metric_expr, str) and metric_expr:
         return metric_expr
-    return ""
+    # Fallback: top-level expression field (OpenMetadata format varies)
+    return raw_metric.get("expression", "") or ""
 
 
 def extract_owners(raw: Dict[str, Any]) -> List[str]:

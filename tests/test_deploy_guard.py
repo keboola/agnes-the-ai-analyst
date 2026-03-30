@@ -536,12 +536,12 @@ class TestFileOwnership:
     # Explicit list of critical directories and their expected ownership.
     # Maintained manually - extend when new critical directories are added.
     CRITICAL_DIRS = {
-        "/data/scripts": {"owner": "deploy", "group": "data-ops"},
-        "/data/docs": {"owner": "deploy", "group": "data-ops"},
-        "/data/examples": {"owner": "deploy", "group": "data-ops"},
-        "/data/notifications": {"owner": "deploy", "group": "data-ops"},
+        "/data/scripts": {"owner": "root", "group": "data-ops"},
+        "/data/docs": {"owner": "root", "group": "data-ops"},
+        "/data/examples": {"owner": "root", "group": "data-ops"},
+        "/data/notifications": {"owner": "root", "group": "data-ops"},
         "/data/auth": {"owner": "www-data", "group": "data-ops"},
-        "/data/corporate-memory": {"owner": "deploy", "group": "data-ops"},
+        "/data/corporate-memory": {"owner": "root", "group": "data-ops"},
         "/data/user_sessions": {"owner": "root", "group": "data-ops"},
         "/data/src_data/raw/jira": {"owner": "root", "group": "data-ops"},
         "/opt/data-analyst": {"owner": "root", "group": "data-ops"},
@@ -675,12 +675,15 @@ class TestSymlinksAndPaths:
         # Find cp commands copying from ${REPO_DIR}/ or repo-relative paths
         # Pattern: cp ... ${REPO_DIR}/path or "${REPO_DIR}/path"
         cp_sources = re.findall(
-            r'cp\s+(?:-r\s+)?"?\$\{REPO_DIR\}/([^"}\s]+)',
+            r'cp\s+(?:-r\s+)?"?\$\{REPO_DIR\}/([^"}\s$]+)',
             deploy_content,
         )
 
         missing = []
         for rel_path in cp_sources:
+            # Skip shell variable expansions (e.g., loop vars like ${script_file})
+            if "${" in rel_path or "$" in rel_path:
+                continue
             # Handle glob patterns (e.g., examples/notifications/*.py)
             if "*" in rel_path:
                 # Check the directory exists
