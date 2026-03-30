@@ -46,24 +46,24 @@ async def get_table_profile(
 @router.get("/tables")
 async def list_catalog_tables(
     user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """List all available tables from data_description.md."""
-    try:
-        from src.config import get_config
-        config = get_config()
-        tables = []
-        for tc in config.tables:
-            tables.append({
-                "id": tc.id,
-                "name": tc.name,
-                "description": tc.description,
-                "dataset": getattr(tc, "dataset", None),
-                "sync_strategy": tc.sync_strategy,
-                "query_mode": getattr(tc, "query_mode", "local"),
-            })
-        return {"tables": tables, "count": len(tables)}
-    except Exception as e:
-        return {"tables": [], "count": 0, "error": str(e)}
+    """List all available tables from table_registry."""
+    from src.repositories.table_registry import TableRegistryRepository
+    repo = TableRegistryRepository(conn)
+    all_tables = repo.list_all()
+    tables = [
+        {
+            "id": t["id"],
+            "name": t["name"],
+            "description": t.get("description"),
+            "source_type": t.get("source_type"),
+            "sync_strategy": t.get("sync_strategy"),
+            "query_mode": t.get("query_mode", "local"),
+        }
+        for t in all_tables
+    ]
+    return {"tables": tables, "count": len(tables)}
 
 
 @router.get("/metrics/{metric_path:path}")

@@ -48,12 +48,20 @@ async def discover_tables(
 ):
     """Discover all available tables from the configured data source."""
     try:
-        from src.data_sync import create_data_source
-        source = create_data_source()
-        tables = source.discover_tables()
-        return {"tables": tables, "count": len(tables), "source": source.get_source_name()}
-    except ImportError:
-        return {"tables": [], "count": 0, "error": "Data source not configured"}
+        from app.instance_config import get_data_source_type
+        source_type = get_data_source_type()
+
+        if source_type == "keboola":
+            from connectors.keboola.client import KeboolaClient
+            import os
+            from app.instance_config import get_value
+            url = get_value("keboola", "url", default="")
+            token = os.environ.get(get_value("keboola", "token_env", default="KEBOOLA_STORAGE_TOKEN"), "")
+            client = KeboolaClient(token=token, url=url)
+            tables = client.discover_all_tables()
+            return {"tables": tables, "count": len(tables), "source": "keboola"}
+        else:
+            return {"tables": [], "count": 0, "source": source_type, "error": "Discovery not implemented for this source"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Discovery failed: {e}")
 
@@ -97,15 +105,6 @@ async def register_table(
         sync_schedule=request.sync_schedule,
         profile_after_sync=request.profile_after_sync,
     )
-
-    # Regenerate data_description.md if table_registry module supports it
-    try:
-        from src.table_registry import TableRegistry
-        tr = TableRegistry()
-        tr.generate_data_description_md()
-        logger.info(f"Regenerated data_description.md after registering {table_id}")
-    except Exception as e:
-        logger.warning(f"Could not regenerate data_description.md: {e}")
 
     return {"id": table_id, "name": request.name, "status": "registered"}
 
