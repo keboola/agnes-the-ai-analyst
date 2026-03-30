@@ -1,265 +1,173 @@
 # Core Refactoring — DuckDB-Centric Extract Architecture
 
 **Date:** 2026-03-30
-**Status:** Draft
+**Status:** Draft v2
 
 ## 1. Problem
 
-The current data sync core is 5,900 lines of tightly coupled code:
-- `src/config.py` (653 lines) — parses YAML from markdown files
-- `src/data_sync.py` (734 lines) — god object: orchestration + schema gen + profiling + systemctl restart
-- `src/parquet_manager.py` (755 lines) — CSV→pandas→PyArrow→parquet conversion
-- `connectors/keboola/adapter.py` (820 lines) — download + type cast + merge + partition + write
-- `connectors/keboola/client.py` (877 lines) — Keboola REST API wrapper
-- `connectors/bigquery/adapter.py` (665 lines) — similar pattern for BigQuery
+Current sync core is 5,900 lines with heavy dependencies (pandas, pyarrow, kbcstorage). Fragile markdown config parser. Adding a connector requires 500-1700 lines of Python. Tightly coupled — connector downloads, type-casts, merges, partitions, and writes to disk all in one place.
 
-Heavy dependencies: pandas, pyarrow, kbcstorage, google-cloud-bigquery, google-cloud-bigquery-storage.
+## 2. Core idea
 
-Fragile: permission issues, incremental merge bugs, markdown parser edge cases. Adding a new connector requires 500-1700 lines of Python.
-
-## 2. Solution
-
-Replace the entire sync pipeline with DuckDB as the universal data bus. DuckDB extensions (keboola, bigquery, postgres, etc.) handle extraction. Each extractor produces a self-contained output folder with parquets + a DuckDB file with views. No pandas, no PyArrow, no custom CSV parsing.
-
-Adding a new connector = 1 SQL config row in `table_registry`, not a new Python module.
-
-## 3. Architecture
-
-### 3.1 Server-side: Extractors produce self-contained output folders
+Every data source produces the same thing: **a folder with `extract.duckdb` + `data/`**. The orchestrator doesn't care how the data got there — it just ATTACHes the DuckDB file.
 
 ```
-/data/
-├── extracts/
-│   ├── keboola/                          ← KeboolaExtractor output
-│   │   ├── parquet/
-│   │   │   ├── orders.parquet
-│   │   │   └── customers.parquet
-│   │   └── extract.duckdb               ← views pointing to ./parquet/*
-│   │
-│   ├── bigquery/                         ← BigQueryExtractor output
-│   │   ├── parquet/
-│   │   │   └── deal_traffic.parquet
-│   │   └── extract.duckdb
-│   │
-│   └── jira/                             ← JiraExtractor output
-│       ├── parquet/
-│       │   └── tickets.parquet
-│       └── extract.duckdb
-│
-├── analytics.duckdb                      ← Master: ATTACHes all extract DBs + flat views
-│
-└── state/
-    └── system.duckdb                     ← Users, sync_state, knowledge (existing, unchanged)
+/data/extracts/{source_name}/
+├── extract.duckdb          ← MUST exist. Contains _meta table + views/tables on data.
+└── data/                   ← Data files the views point to (parquet, csv, whatever).
 ```
 
-Each extractor writes into its own `output_dir`:
-- `parquet/` — data files
-- `extract.duckdb` — views pointing to `./parquet/*.parquet` (relative paths)
+That's it. That's the entire contract.
 
-**Path resolution:** DuckDB resolves relative paths from the process CWD, not the .duckdb file location. Extractors must use absolute paths in views, or the orchestrator must set CWD before opening the DuckDB. Recommendation: use absolute paths (`/data/extracts/keboola/parquet/orders.parquet`) for robustness.
+## 3. extract.duckdb contract
 
-Master `analytics.duckdb` ATTACHes all extractor DBs:
+Every `extract.duckdb` MUST contain:
+
+**`_meta` table** — describes what's inside:
 ```sql
-ATTACH '/data/extracts/keboola/extract.duckdb' AS keboola (READ_ONLY);
-ATTACH '/data/extracts/bigquery/extract.duckdb' AS bigquery (READ_ONLY);
--- Flat views for convenience:
-CREATE OR REPLACE VIEW orders AS SELECT * FROM keboola.orders;
-CREATE OR REPLACE VIEW deal_traffic AS SELECT * FROM bigquery.deal_traffic;
+CREATE TABLE _meta (
+    table_name VARCHAR NOT NULL,
+    description VARCHAR,
+    rows BIGINT,
+    size_bytes BIGINT,
+    extracted_at TIMESTAMP,
+    query_mode VARCHAR DEFAULT 'local'   -- 'local' = data is here, 'remote' = query on demand
+);
 ```
 
-### 3.2 Extractor interface
+**Views or tables** for each entry in `_meta` — how they store data is their business (parquet, csv, in-memory, remote ATTACH — doesn't matter).
 
-```python
-class ExtractResult:
-    output_dir: str           # path to extractor output folder
-    tables: list[dict]        # [{name, rows, hash, size_bytes}]
+## 4. Two types of sources
 
-class DataExtractor(ABC):
-    @abstractmethod
-    def extract(self, table_configs: list, output_dir: str) -> ExtractResult:
-        """Extract data into output_dir/parquet/ and create output_dir/extract.duckdb with views."""
+### Batch pull (Keboola, BigQuery, Postgres, CSV)
 
-    def extract_incremental(self, table_configs, output_dir, since: datetime) -> ExtractResult:
-        """Incremental extract. Default: falls back to full extract."""
-        return self.extract(table_configs, output_dir)
+Scheduler or manual trigger runs extractor → rewrites entire output folder.
+
+```
+Scheduler (every 15m)
+  → python -m connectors.keboola.extract
+  → output: /data/extracts/keboola/extract.duckdb + data/*.parquet
+  → orchestrator.rebuild()
 ```
 
-### 3.3 Keboola extractor implementation
+One instance typically has **one primary batch source** (configured in `instance.yaml`). The extractor reads `table_registry` for which tables to pull and how (sync_strategy, schedule).
 
-```python
-class KeboolaExtractor(DataExtractor):
-    def __init__(self, token: str, url: str):
-        self.token = token
-        self.url = url
+### Real-time push (Jira webhooks)
 
-    def extract(self, table_configs, output_dir) -> ExtractResult:
-        parquet_dir = f"{output_dir}/parquet"
-        os.makedirs(parquet_dir, exist_ok=True)
+External system sends events → webhook handler updates output folder incrementally.
 
-        conn = duckdb.connect(f"{output_dir}/extract.duckdb")
-        conn.execute("INSTALL keboola FROM community; LOAD keboola;")
-        conn.execute(f"ATTACH '{self.url}' AS kbc (TYPE keboola, TOKEN '{self.token}')")
-
-        tables = []
-        for tc in table_configs:
-            if tc.query_mode == "remote":
-                continue
-
-            pq_path = f"{parquet_dir}/{tc.name}.parquet"
-            conn.execute(f"""
-                COPY (SELECT * FROM kbc."{tc.bucket}".{tc.source_table})
-                TO '{pq_path}' (FORMAT PARQUET)
-            """)
-            rows = conn.execute(f"SELECT count(*) FROM read_parquet('{pq_path}')").fetchone()[0]
-
-            # Create view with relative path
-            conn.execute(f"""
-                CREATE VIEW {tc.name} AS
-                SELECT * FROM read_parquet('./parquet/{tc.name}.parquet')
-            """)
-
-            tables.append({"name": tc.name, "rows": rows, ...})
-
-        conn.execute("DETACH kbc")
-        conn.close()
-        return ExtractResult(output_dir=output_dir, tables=tables)
+```
+Jira sends webhook → POST /webhooks/jira
+  → handler processes event
+  → appends/updates parquet in /data/extracts/jira/data/
+  → updates extract.duckdb views + _meta
 ```
 
-~50 lines. Replaces 1,700 lines (adapter.py + client.py).
+No scheduler needed — data arrives when it arrives. Output folder is updated in-place, not rewritten.
 
-### 3.4 Adding a new connector: config, not code
+### Both produce the same output
 
-For most data sources, DuckDB has a native extension. New connector = SQL config in `table_registry`:
+The orchestrator doesn't know or care which type produced the folder. It just ATTACHes `extract.duckdb`.
 
-```sql
-INSERT INTO table_registry (id, name, source_type, extension_install, attach_sql, select_sql) VALUES
-('pg_users', 'Users', 'postgres',
- 'INSTALL postgres; LOAD postgres;',
- $$ATTACH 'postgresql://user:pass@host/db' AS src (TYPE postgres)$$,
- 'SELECT * FROM src.public.users');
-```
-
-The generic `DuckDBExtractor` reads these configs and executes them:
-
-```python
-class DuckDBExtractor(DataExtractor):
-    """Universal extractor — driven by SQL config from table_registry."""
-
-    def extract(self, table_configs, output_dir) -> ExtractResult:
-        parquet_dir = f"{output_dir}/parquet"
-        os.makedirs(parquet_dir, exist_ok=True)
-        conn = duckdb.connect(f"{output_dir}/extract.duckdb")
-
-        # Group by source_type for one ATTACH per source
-        by_source = defaultdict(list)
-        for tc in table_configs:
-            by_source[tc.source_type].append(tc)
-
-        tables = []
-        for source_type, configs in by_source.items():
-            tc0 = configs[0]
-            if tc0.extension_install:
-                conn.execute(tc0.extension_install)
-            conn.execute(tc0.attach_sql)
-
-            for tc in configs:
-                if tc.query_mode == "remote":
-                    continue
-                pq_path = f"{parquet_dir}/{tc.name}.parquet"
-                conn.execute(f"COPY ({tc.select_sql}) TO '{pq_path}' (FORMAT PARQUET)")
-                rows = conn.execute(f"SELECT count(*) FROM read_parquet('{pq_path}')").fetchone()[0]
-                conn.execute(f"CREATE VIEW {tc.name} AS SELECT * FROM read_parquet('./parquet/{tc.name}.parquet')")
-                tables.append({"name": tc.name, "rows": rows, ...})
-
-        conn.close()
-        return ExtractResult(output_dir=output_dir, tables=tables)
-```
-
-Supported via DuckDB extensions (no custom code):
-- Keboola (`keboola` extension)
-- BigQuery (`bigquery` extension)
-- PostgreSQL (`postgres` — built-in)
-- MySQL (`mysql` — built-in)
-- SQLite (`sqlite` — built-in)
-- S3/GCS Parquet (`httpfs` — built-in)
-- CSV/JSON files (`read_csv_auto`, `read_json_auto` — built-in)
-
-Sources without DuckDB extension (REST APIs, custom formats) get a Python extractor implementing `DataExtractor`.
-
-### 3.5 Orchestrator
+## 5. Orchestrator
 
 ```python
 class SyncOrchestrator:
-    def sync(self, source_type: str = None):
-        """Run extractors, rebuild master analytics.duckdb, update state."""
+    def rebuild(self):
+        """Scan /data/extracts/*, ATTACH each, create master views."""
+        master = duckdb.connect("/data/analytics.duckdb")
 
-        # 1. Get table configs from registry
-        configs = self.registry.list_by_source(source_type)
+        for ext_dir in sorted(Path("/data/extracts").iterdir()):
+            db = ext_dir / "extract.duckdb"
+            if not db.exists():
+                continue
 
-        # 2. Group by extractor
-        by_extractor = group_by_source_type(configs)
+            name = ext_dir.name
+            master.execute(f"ATTACH '{db}' AS {name} (READ_ONLY)")
 
-        # 3. Run each extractor into its output folder
-        for ext_name, ext_configs in by_extractor.items():
-            output_dir = f"/data/extracts/{ext_name}"
-            extractor = self.get_extractor(ext_name)
-            result = extractor.extract(ext_configs, output_dir)
+            # Read _meta to know what's available
+            meta = master.execute(f"SELECT table_name, rows, query_mode FROM {name}._meta").fetchall()
 
-            # Update sync state per table
-            for t in result.tables:
-                self.state.update_sync(t["name"], rows=t["rows"], hash=t["hash"])
+            # Create flat views in master
+            for table_name, rows, query_mode in meta:
+                master.execute(f"CREATE OR REPLACE VIEW {table_name} AS SELECT * FROM {name}.{table_name}")
+                self.state.update_sync(table_name, rows=rows)
 
-        # 4. Rebuild master analytics.duckdb
-        self.rebuild_master_db()
-
-    def rebuild_master_db(self):
-        """ATTACH all extractor DBs, create flat views."""
-        conn = duckdb.connect("/data/analytics.duckdb")
-
-        for ext_dir in Path("/data/extracts").iterdir():
-            ext_db = ext_dir / "extract.duckdb"
-            if ext_db.exists():
-                name = ext_dir.name
-                conn.execute(f"ATTACH '{ext_db}' AS {name} (READ_ONLY)")
-
-                # Create flat views (no prefix)
-                views = conn.execute(f"""
-                    SELECT table_name FROM information_schema.tables
-                    WHERE table_catalog = '{name}' AND table_type = 'VIEW'
-                """).fetchall()
-                for (view_name,) in views:
-                    conn.execute(f"CREATE OR REPLACE VIEW {view_name} AS SELECT * FROM {name}.{view_name}")
-
-        conn.close()
+        master.close()
 ```
 
-~60 lines. Replaces 734-line DataSyncManager.
+~30 lines. Replaces 734-line DataSyncManager.
 
-### 3.6 Config: table_registry replaces data_description.md
+## 6. Keboola extractor
 
-Extended `table_registry` schema (in `system.duckdb`):
+```python
+# connectors/keboola/extractor.py (~60 lines)
+
+def run(output_dir: str, table_configs: list[dict]):
+    """Extract tables from Keboola into output_dir."""
+    data_dir = Path(output_dir) / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    conn = duckdb.connect(f"{output_dir}/extract.duckdb")
+    conn.execute("INSTALL keboola FROM community; LOAD keboola;")
+    conn.execute(f"ATTACH '{url}' AS kbc (TYPE keboola, TOKEN '{token}')")
+
+    # Create _meta
+    conn.execute("DROP TABLE IF EXISTS _meta")
+    conn.execute("""CREATE TABLE _meta (
+        table_name VARCHAR, description VARCHAR, rows BIGINT,
+        size_bytes BIGINT, extracted_at TIMESTAMP, query_mode VARCHAR DEFAULT 'local'
+    )""")
+
+    now = datetime.now(timezone.utc)
+    for tc in table_configs:
+        if tc["query_mode"] == "remote":
+            # Register in _meta but don't download
+            conn.execute(f"INSERT INTO _meta VALUES ('{tc['name']}', '', 0, 0, '{now}', 'remote')")
+            continue
+
+        pq_path = str(data_dir / f"{tc['name']}.parquet")
+        conn.execute(f"""COPY (SELECT * FROM kbc."{tc['bucket']}".{tc['source_table']})
+                        TO '{pq_path}' (FORMAT PARQUET)""")
+
+        rows = conn.execute(f"SELECT count(*) FROM read_parquet('{pq_path}')").fetchone()[0]
+        size = os.path.getsize(pq_path)
+
+        conn.execute(f"CREATE OR REPLACE VIEW {tc['name']} AS SELECT * FROM read_parquet('{pq_path}')")
+        conn.execute(f"INSERT INTO _meta VALUES ('{tc['name']}', '{tc.get('description','')}', {rows}, {size}, '{now}', 'local')")
+
+    conn.execute("DETACH kbc")
+    conn.close()
+
+if __name__ == "__main__":
+    # Standalone: reads config from table_registry, runs extraction
+    configs = load_table_configs()
+    run("/data/extracts/keboola", configs)
+```
+
+Replaces 1,700 lines (adapter.py + client.py).
+
+## 7. Config: table_registry
+
+`table_registry` in `system.duckdb` (already exists, extend with source columns):
 
 ```sql
 CREATE TABLE IF NOT EXISTS table_registry (
     id VARCHAR PRIMARY KEY,
     name VARCHAR NOT NULL,
 
-    -- Source config
-    source_type VARCHAR NOT NULL,          -- 'keboola', 'bigquery', 'postgres', 'csv'
-    bucket VARCHAR,                        -- Keboola bucket (e.g., 'in.c-crm')
-    source_table VARCHAR,                  -- Table name in source
-    extension_install VARCHAR,             -- 'INSTALL keboola FROM community; LOAD keboola;'
-    attach_sql VARCHAR,                    -- 'ATTACH ''url'' AS src (TYPE keboola, TOKEN ''...'')'
-    select_sql VARCHAR,                    -- 'SELECT * FROM src."bucket".table'
+    -- Source
+    source_type VARCHAR NOT NULL,     -- 'keboola', 'bigquery', 'jira', 'postgres'
+    bucket VARCHAR,                   -- Keboola bucket or schema
+    source_table VARCHAR,             -- table name in source
 
-    -- Sync config
+    -- Sync behavior
     sync_strategy VARCHAR DEFAULT 'full_refresh',
-    query_mode VARCHAR DEFAULT 'local',    -- 'local', 'remote'
-    sync_schedule VARCHAR,                 -- 'every 15m', 'daily 05:00'
+    query_mode VARCHAR DEFAULT 'local',
+    sync_schedule VARCHAR,
     profile_after_sync BOOLEAN DEFAULT true,
 
     -- Metadata
-    folder VARCHAR,
     primary_key VARCHAR,
     description TEXT,
     registered_by VARCHAR,
@@ -267,140 +175,105 @@ CREATE TABLE IF NOT EXISTS table_registry (
 );
 ```
 
-This replaces the entire `config.py` (653 lines) and `data_description.md` parser.
-
-Import tool: `scripts/import_data_description.py` reads existing `data_description.md` and inserts into `table_registry`. One-time migration.
-
-### 3.7 Client-side (analyst): unchanged
-
-```
-~/data-analyst/
-├── server/
-│   └── parquet/                  ← downloaded via da sync (per-user filtered)
-│       ├── orders.parquet
-│       └── customers.parquet
-│
-└── user/
-    └── duckdb/
-        └── analytics.duckdb     ← CLI creates views on local parquets
+Instance-level source config stays in `instance.yaml`:
+```yaml
+data_source: keboola
+keboola:
+  url: https://connection.us-east4.gcp.keboola.com
+  token_env: KEBOOLA_STORAGE_TOKEN
 ```
 
-`da sync` downloads parquets from server API (filtered by permissions), creates local `analytics.duckdb` with views. Exactly as it works now. No change for analysts.
+Table list goes in `table_registry`. Import from existing `data_description.md` via one-time migration script.
 
-### 3.8 Remote tables
-
-Tables with `query_mode = "remote"` are never downloaded. On the server, they stay accessible via the ATTACHed extractor DuckDB. Remote queries go through the API:
+## 8. How it runs
 
 ```
-POST /api/query {"sql": "SELECT ... FROM deal_traffic WHERE ..."}
-→ Server executes against analytics.duckdb
-→ Which ATTACHes bigquery/extract.duckdb
-→ Which ATTACHes BigQuery via extension
-→ Query pushed down to BigQuery backend
+instance.yaml → which source (keboola)
+table_registry → which tables + how (full_refresh, schedule)
+
+Scheduler:
+  Every 15 min:
+    1. Read table_registry for tables due to sync
+    2. Run extractor: python -m connectors.keboola.extract
+    3. Extractor writes /data/extracts/keboola/
+    4. orchestrator.rebuild() → ATTACH → master views
+
+API trigger:
+  POST /api/sync/trigger
+    → same as scheduler step 2-4
+
+CLI:
+  da sync (on analyst machine)
+    → calls GET /api/sync/manifest
+    → downloads parquets from /api/data/{table}/download
+    → creates local analytics.duckdb with views
 ```
 
-For the analyst's CLI:
-```bash
-da query "SELECT country, sum(visitors) FROM deal_traffic WHERE date > '2025-03-01' GROUP BY country" --remote
+## 9. Adding a new source
+
+**If DuckDB has extension for it (most cases):**
+
+1. Add tables to `table_registry` (via admin API or CLI)
+2. Write extractor script: `connectors/{name}/extractor.py` (~30-60 lines)
+   - `INSTALL extension; LOAD extension; ATTACH source; COPY TO parquet`
+3. Add to scheduler config
+4. Done
+
+**If no DuckDB extension (REST API, custom):**
+
+1. Same as above but extractor fetches data via HTTP/SDK
+2. Writes result to DuckDB via `read_json_auto` or `conn.register()`
+3. Same output format: `extract.duckdb` + `data/`
+
+**Jira-style webhook:**
+
+1. Add webhook endpoint to FastAPI
+2. Handler updates `/data/extracts/jira/` incrementally
+3. Same output format — orchestrator picks it up on next rebuild
+
+## 10. What gets deleted
+
+| File | Lines | Replaced by |
+|------|-------|-------------|
+| `src/config.py` | 653 | `table_registry` in DuckDB |
+| `src/parquet_manager.py` | 755 | DuckDB `COPY TO` |
+| `src/data_sync.py` (most) | ~600 | SyncOrchestrator (~30 lines) |
+| `connectors/keboola/adapter.py` | 820 | extractor.py (~60 lines) |
+| `connectors/bigquery/adapter.py` | 665 | extractor.py (~40 lines) |
+| **Total removed** | **~3500** | **~200 new** |
+
+Kept as legacy (not deleted):
+- `connectors/keboola/client.py` — fallback if extension unavailable
+- `connectors/jira/` — webhook pattern, adapted to write extract.duckdb
+- `src/profiler.py` — already DuckDB, unchanged
+
+## 11. What stays unchanged
+
+- `src/repositories/` — DuckDB-backed, used by API
+- `src/db.py` — system DB schema
+- `src/profiler.py` — already uses DuckDB
+- `connectors/llm/`, `connectors/openmetadata/` — unrelated
+- `app/` (FastAPI), `cli/`, `webapp/` — call orchestrator instead of DataSyncManager
+
+## 12. Client side (analyst) — no change
+
+```
+da sync → downloads parquets from server API → creates local analytics.duckdb with views
 ```
 
-### 3.9 Incremental sync (future)
+Analyst doesn't know or care about extractors. Same flow as today.
 
-Current design: full refresh only. When Keboola DuckDB extension adds `changedSince` support (issue keboola/duckdb-extension#10):
+## 13. Incremental sync (future)
 
-```python
-def extract_incremental(self, table_configs, output_dir, since):
-    # Extension will support changedSince filter
-    conn.execute(f"""
-        COPY (SELECT * FROM kbc."{tc.bucket}".{tc.source_table}
-              WHERE _kbc_changed_since > '{since}')
-        TO '{pq_path}' (FORMAT PARQUET)
-    """)
-    # Merge with existing parquet
-    conn.execute(f"""
-        CREATE VIEW {tc.name} AS
-        SELECT * FROM read_parquet(['./parquet/{tc.name}.parquet', '{pq_path}'])
-    """)
-```
+Current: full refresh only. Extractor interface is ready for incremental:
+- `table_registry` has `sync_strategy` field
+- Extractor can check last sync time from `_meta.extracted_at`
+- When Keboola DuckDB extension adds `changedSince` (issue #10), extractor uses it
+- Until then: full refresh, which is fast enough for most tables via extension
 
-The extractor interface already has `extract_incremental()` with fallback to full refresh.
+## 14. Tested (2026-03-30)
 
-## 4. What gets deleted
-
-| File | Lines | Why |
-|------|-------|-----|
-| `src/config.py` | 653 | Replaced by `table_registry` in DuckDB |
-| `src/parquet_manager.py` | 755 | DuckDB `COPY TO` replaces all conversion |
-| `src/data_sync.py` (most) | ~600 | New SyncOrchestrator ~60 lines |
-| `connectors/keboola/adapter.py` | 820 | New KeboolaExtractor ~50 lines |
-| `connectors/bigquery/adapter.py` | 665 | New BigQueryExtractor ~40 lines |
-| **Total removed** | **~3500** | |
-| **Total new** | **~300** | |
-
-Kept as legacy fallback (not deleted):
-- `connectors/keboola/client.py` — REST API wrapper, used if extension unavailable
-- `src/profiler.py` — already uses DuckDB, unchanged
-- `scripts/duckdb_manager.py` — legacy, superseded by extractor pattern
-
-## 5. What stays unchanged
-
-| Component | Why |
-|-----------|-----|
-| `src/repositories/` | Already DuckDB-backed, used by API |
-| `src/db.py` | System DB schema management |
-| `src/profiler.py` | Already uses DuckDB |
-| `connectors/jira/` | Webhook pattern, different from extract |
-| `connectors/llm/` | LLM abstraction, unrelated |
-| `connectors/openmetadata/` | Catalog enrichment, unrelated |
-| `app/` (FastAPI) | Calls orchestrator instead of DataSyncManager |
-| `cli/` | Downloads parquets from API, unchanged |
-| `webapp/` | Legacy Flask, unchanged |
-
-## 6. Dependencies removed
-
-| Package | Why not needed |
-|---------|---------------|
-| pandas | DuckDB handles CSV/type casting natively |
-| pyarrow | DuckDB `COPY TO PARQUET` replaces all Parquet I/O |
-| kbcstorage | Keboola DuckDB extension replaces REST API |
-| google-cloud-bigquery | BigQuery DuckDB extension replaces client |
-| google-cloud-bigquery-storage | Same |
-| tqdm | Optional, not critical |
-
-## 7. New dependency
-
-| Package | Version | Why |
-|---------|---------|-----|
-| duckdb | >= 1.5.1 | Required for Keboola extension |
-
-**Risk:** DuckDB 1.5.1 is not yet on PyPI stable (available via uv lock from source). Expected to be stable soon.
-
-**Mitigation:** Legacy `connectors/keboola/client.py` stays as fallback. If extension is unavailable, `KeboolaAPIExtractor` uses old REST API + `duckdb.read_csv_auto()` instead of pandas.
-
-## 8. Migration plan
-
-1. Extend `table_registry` schema with source config columns
-2. Write `scripts/import_data_description.py` — imports existing `data_description.md` into `table_registry`
-3. Implement `DataExtractor` ABC + `KeboolaExtractor` + `DuckDBExtractor`
-4. Implement `SyncOrchestrator` with `rebuild_master_db()`
-5. Wire `app/api/sync.py` to use new orchestrator
-6. Test with real Keboola token (project from demo notebooks)
-7. Verify `da sync` still produces identical local structure
-8. Keep old code as legacy (don't delete until validated in production)
-
-## 9. Testing
-
-- Unit: extractor returns correct ExtractResult, views resolve, parquets readable
-- Integration: real Keboola token → extract → parquet → views → query
-- E2E: server Docker → da sync → offline query → correct results
-- Regression: existing 156 tests must still pass (they don't touch old sync core)
-
-## 10. Verified by testing (2026-03-30)
-
-Keboola DuckDB extension tested with real token:
-- `ATTACH` + `SELECT *` + `COPY TO parquet` works (1.5s for 15 rows)
-- Filter pushdown: `=`, `>`, `<` supported but all columns are VARCHAR from Keboola
-- `_timestamp` not exposed (no incremental via extension)
-- `keboola_pull()` API doesn't match docs (issue #11 filed)
-- Full refresh is the only reliable sync strategy for now
+Keboola DuckDB extension with real token:
+- `ATTACH` + `SELECT *` + `COPY TO parquet`: works (1.5s for 15 rows)
+- Extension: v0.1.0, requires DuckDB 1.5.1+
 - Issues filed: keboola/duckdb-extension#6 through #11
