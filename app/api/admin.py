@@ -21,6 +21,12 @@ class RegisterTableRequest(BaseModel):
     sync_strategy: str = "full_refresh"
     primary_key: Optional[str] = None
     description: Optional[str] = None
+    source_type: Optional[str] = None
+    bucket: Optional[str] = None
+    source_table: Optional[str] = None
+    query_mode: str = "local"
+    sync_schedule: Optional[str] = None
+    profile_after_sync: bool = True
 
 
 class UpdateTableRequest(BaseModel):
@@ -28,6 +34,12 @@ class UpdateTableRequest(BaseModel):
     sync_strategy: Optional[str] = None
     primary_key: Optional[str] = None
     description: Optional[str] = None
+    source_type: Optional[str] = None
+    bucket: Optional[str] = None
+    source_table: Optional[str] = None
+    query_mode: Optional[str] = None
+    sync_schedule: Optional[str] = None
+    profile_after_sync: Optional[bool] = None
 
 
 @router.get("/discover-tables")
@@ -78,6 +90,12 @@ async def register_table(
         primary_key=request.primary_key,
         description=request.description,
         registered_by=user.get("email"),
+        source_type=request.source_type,
+        bucket=request.bucket,
+        source_table=request.source_table,
+        query_mode=request.query_mode,
+        sync_schedule=request.sync_schedule,
+        profile_after_sync=request.profile_after_sync,
     )
 
     # Regenerate data_description.md if table_registry module supports it
