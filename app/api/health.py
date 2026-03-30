@@ -33,8 +33,16 @@ async def health_check(conn: duckdb.DuckDBPyConnection = Depends(_get_db)):
         now = datetime.now(timezone.utc)
         for s in all_states:
             last = s.get("last_sync")
-            if last and (now - last).total_seconds() > 86400:  # >24h
-                stale.append(s["table_id"])
+            if last:
+                try:
+                    # Handle both tz-aware and tz-naive datetimes from DuckDB
+                    if hasattr(last, 'tzinfo') and last.tzinfo is None:
+                        from datetime import timezone as tz
+                        last = last.replace(tzinfo=tz.utc)
+                    if (now - last).total_seconds() > 86400:
+                        stale.append(s["table_id"])
+                except (TypeError, AttributeError):
+                    pass  # skip if timestamp comparison fails
         checks["data"] = {
             "status": "ok" if not stale else "warning",
             "tables": total_tables,
