@@ -1,0 +1,116 @@
+"""BigQuery extractor — produces extract.duckdb with remote views via DuckDB BigQuery extension.
+
+No data is downloaded. All queries go directly to BigQuery via DuckDB extension ATTACH.
+"""
+
+import logging
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import List, Dict, Any
+
+import duckdb
+
+logger = logging.getLogger(__name__)
+
+
+def _create_meta_table(conn: duckdb.DuckDBPyConnection) -> None:
+    """Create the _meta table required by the extract.duckdb contract."""
+    conn.execute("DROP TABLE IF EXISTS _meta")
+    conn.execute("""CREATE TABLE _meta (
+        table_name VARCHAR NOT NULL,
+        description VARCHAR,
+        rows BIGINT,
+        size_bytes BIGINT,
+        extracted_at TIMESTAMP,
+        query_mode VARCHAR DEFAULT 'remote'
+    )""")
+
+
+def init_extract(
+    output_dir: str,
+    project_id: str,
+    table_configs: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Create extract.duckdb with remote views into BigQuery.
+
+    Args:
+        output_dir: Path to write extract.duckdb
+        project_id: GCP project ID
+        table_configs: List of table config dicts from table_registry
+
+    Returns:
+        Dict with stats: {tables_registered: int, errors: list}
+    """
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    db_path = output_path / "extract.duckdb"
+    conn = duckdb.connect(str(db_path))
+
+    stats = {"tables_registered": 0, "errors": []}
+    now = datetime.now(timezone.utc)
+
+    try:
+        # Install and load BigQuery extension
+        conn.execute("INSTALL bigquery FROM community; LOAD bigquery;")
+        conn.execute(f"ATTACH 'project={project_id}' AS bq (TYPE bigquery, READ_ONLY)")
+        logger.info("Attached BigQuery project: %s", project_id)
+
+        _create_meta_table(conn)
+
+        for tc in table_configs:
+            table_name = tc["name"]
+            dataset = tc.get("bucket", "")  # BigQuery dataset
+            source_table = tc.get("source_table", table_name)
+
+            try:
+                conn.execute(
+                    f'CREATE OR REPLACE VIEW "{table_name}" AS '
+                    f'SELECT * FROM bq."{dataset}"."{source_table}"'
+                )
+                conn.execute(
+                    "INSERT INTO _meta VALUES (?, ?, 0, 0, ?, 'remote')",
+                    [table_name, tc.get("description", ""), now],
+                )
+                stats["tables_registered"] += 1
+                logger.info(
+                    "Registered remote view: %s -> bq.%s.%s",
+                    table_name, dataset, source_table,
+                )
+            except Exception as e:
+                logger.error("Failed to register %s: %s", table_name, e)
+                stats["errors"].append({"table": table_name, "error": str(e)})
+
+        conn.execute("DETACH bq")
+    finally:
+        conn.close()
+
+    return stats
+
+
+if __name__ == "__main__":
+    """Standalone: reads config from instance.yaml + table_registry, creates extract."""
+    from config.loader import load_instance_config
+    from src.db import get_system_db
+    from src.repositories.table_registry import TableRegistryRepository
+
+    config = load_instance_config()
+    bq_config = config.get("bigquery", {})
+    project_id = bq_config.get("project_id", "")
+
+    sys_conn = get_system_db()
+    try:
+        repo = TableRegistryRepository(sys_conn)
+        tables = repo.list_by_source("bigquery")
+    finally:
+        sys_conn.close()
+
+    if not tables:
+        logger.warning("No BigQuery tables registered in table_registry")
+    else:
+        data_dir = Path(os.environ.get("DATA_DIR", "./data"))
+        result = init_extract(
+            str(data_dir / "extracts" / "bigquery"), project_id, tables
+        )
+        logger.info("BigQuery extract init complete: %s", result)

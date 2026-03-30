@@ -1,0 +1,188 @@
+"""Tests for SyncOrchestrator."""
+
+import os
+from pathlib import Path
+
+import duckdb
+import pytest
+
+
+@pytest.fixture
+def setup_env(tmp_path):
+    """Set up DATA_DIR and return paths."""
+    os.environ["DATA_DIR"] = str(tmp_path)
+    extracts_dir = tmp_path / "extracts"
+    extracts_dir.mkdir()
+    analytics_dir = tmp_path / "analytics"
+    analytics_dir.mkdir()
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    yield {
+        "data_dir": tmp_path,
+        "extracts_dir": extracts_dir,
+        "analytics_db": str(analytics_dir / "server.duckdb"),
+    }
+    # Clean up env var to avoid leaking between tests
+    os.environ.pop("DATA_DIR", None)
+
+
+def _create_mock_extract(extracts_dir: Path, source_name: str, tables: list[dict]):
+    """Create a mock extract.duckdb with _meta and views."""
+    source_dir = extracts_dir / source_name
+    source_dir.mkdir()
+    data_dir = source_dir / "data"
+    data_dir.mkdir()
+
+    db_path = source_dir / "extract.duckdb"
+    conn = duckdb.connect(str(db_path))
+
+    conn.execute(
+        """CREATE TABLE _meta (
+        table_name VARCHAR, description VARCHAR, rows BIGINT,
+        size_bytes BIGINT, extracted_at TIMESTAMP,
+        query_mode VARCHAR DEFAULT 'local'
+    )"""
+    )
+
+    for t in tables:
+        name = t["name"]
+        rows_data = t.get("data", [])
+        query_mode = t.get("query_mode", "local")
+
+        # Create an actual table (simulating what a view on parquet would look like)
+        if rows_data:
+            cols = ", ".join(f"{k} VARCHAR" for k in rows_data[0].keys())
+            conn.execute(f'CREATE TABLE "{name}" ({cols})')
+            for row in rows_data:
+                vals = ", ".join(f"'{v}'" for v in row.values())
+                conn.execute(f'INSERT INTO "{name}" VALUES ({vals})')
+        else:
+            conn.execute(f'CREATE TABLE "{name}" (id VARCHAR)')
+
+        row_count = len(rows_data)
+        conn.execute(
+            "INSERT INTO _meta VALUES (?, ?, ?, ?, current_timestamp, ?)",
+            [name, t.get("description", ""), row_count, 0, query_mode],
+        )
+
+    conn.close()
+
+
+class TestSyncOrchestrator:
+    def test_rebuild_empty_extracts(self, setup_env):
+        from src.orchestrator import SyncOrchestrator
+
+        orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
+        result = orch.rebuild()
+        assert result == {}
+
+    def test_rebuild_single_source(self, setup_env):
+        from src.orchestrator import SyncOrchestrator
+
+        _create_mock_extract(
+            setup_env["extracts_dir"],
+            "keboola",
+            [
+                {"name": "orders", "data": [{"id": "1", "total": "100"}]},
+                {"name": "customers", "data": [{"id": "1", "name": "Alice"}]},
+            ],
+        )
+        orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
+        result = orch.rebuild()
+        assert "keboola" in result
+        assert set(result["keboola"]) == {"orders", "customers"}
+
+        # Verify views work when source is attached (as the orchestrator leaves it)
+        # Open a fresh connection and re-attach to simulate how the analytics DB is used
+        conn = duckdb.connect(setup_env["analytics_db"])
+        try:
+            extract_path = setup_env["extracts_dir"] / "keboola" / "extract.duckdb"
+            conn.execute(f"ATTACH '{extract_path}' AS keboola (READ_ONLY)")
+            row = conn.execute("SELECT total FROM orders WHERE id='1'").fetchone()
+            assert row[0] == "100"
+        finally:
+            conn.close()
+
+    def test_rebuild_multiple_sources(self, setup_env):
+        from src.orchestrator import SyncOrchestrator
+
+        _create_mock_extract(
+            setup_env["extracts_dir"],
+            "keboola",
+            [{"name": "orders", "data": [{"id": "1"}]}],
+        )
+        _create_mock_extract(
+            setup_env["extracts_dir"],
+            "jira",
+            [{"name": "issues", "data": [{"key": "PROJ-1"}]}],
+        )
+        orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
+        result = orch.rebuild()
+        assert "keboola" in result
+        assert "jira" in result
+
+    def test_rebuild_skips_missing_extract_db(self, setup_env):
+        from src.orchestrator import SyncOrchestrator
+
+        # Create directory without extract.duckdb
+        (setup_env["extracts_dir"] / "broken").mkdir()
+        _create_mock_extract(
+            setup_env["extracts_dir"],
+            "keboola",
+            [{"name": "orders", "data": [{"id": "1"}]}],
+        )
+        orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
+        result = orch.rebuild()
+        assert "broken" not in result
+        assert "keboola" in result
+
+    def test_rebuild_source_single(self, setup_env):
+        from src.orchestrator import SyncOrchestrator
+
+        _create_mock_extract(
+            setup_env["extracts_dir"],
+            "jira",
+            [{"name": "issues", "data": [{"key": "PROJ-1"}]}],
+        )
+        orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
+        tables = orch.rebuild_source("jira")
+        assert "issues" in tables
+
+    def test_rebuild_source_nonexistent(self, setup_env):
+        from src.orchestrator import SyncOrchestrator
+
+        orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
+        tables = orch.rebuild_source("nonexistent")
+        assert tables == []
+
+    def test_rebuild_with_remote_tables(self, setup_env):
+        from src.orchestrator import SyncOrchestrator
+
+        _create_mock_extract(
+            setup_env["extracts_dir"],
+            "bigquery",
+            [
+                {
+                    "name": "page_views",
+                    "query_mode": "remote",
+                    "data": [{"url": "/home"}],
+                }
+            ],
+        )
+        orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
+        result = orch.rebuild()
+        assert "bigquery" in result
+        assert "page_views" in result["bigquery"]
+
+    def test_rebuild_idempotent(self, setup_env):
+        from src.orchestrator import SyncOrchestrator
+
+        _create_mock_extract(
+            setup_env["extracts_dir"],
+            "keboola",
+            [{"name": "orders", "data": [{"id": "1"}]}],
+        )
+        orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
+        result1 = orch.rebuild()
+        result2 = orch.rebuild()
+        assert result1 == result2

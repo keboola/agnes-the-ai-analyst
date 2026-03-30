@@ -293,6 +293,57 @@ class TestTableRegistryRepository:
         repo.unregister("t1")
         assert repo.get("t1") is None
 
+    def test_register_with_source_fields(self, db_conn):
+        from src.repositories.table_registry import TableRegistryRepository
+        repo = TableRegistryRepository(db_conn)
+        repo.register(
+            id="in.c-crm.company", name="company",
+            source_type="keboola", bucket="in.c-crm", source_table="company",
+            query_mode="local", sync_schedule="every 15m", profile_after_sync=True,
+        )
+        table = repo.get("in.c-crm.company")
+        assert table["source_type"] == "keboola"
+        assert table["bucket"] == "in.c-crm"
+        assert table["source_table"] == "company"
+        assert table["query_mode"] == "local"
+        assert table["sync_schedule"] == "every 15m"
+        assert table["profile_after_sync"] is True
+
+    def test_list_by_source(self, db_conn):
+        from src.repositories.table_registry import TableRegistryRepository
+        repo = TableRegistryRepository(db_conn)
+        repo.register(id="t1", name="A", source_type="keboola")
+        repo.register(id="t2", name="B", source_type="bigquery")
+        repo.register(id="t3", name="C", source_type="keboola")
+        keboola = repo.list_by_source("keboola")
+        assert len(keboola) == 2
+        assert all(t["source_type"] == "keboola" for t in keboola)
+        bq = repo.list_by_source("bigquery")
+        assert len(bq) == 1
+
+    def test_list_local(self, db_conn):
+        from src.repositories.table_registry import TableRegistryRepository
+        repo = TableRegistryRepository(db_conn)
+        repo.register(id="t1", name="A", source_type="keboola", query_mode="local")
+        repo.register(id="t2", name="B", source_type="bigquery", query_mode="remote")
+        repo.register(id="t3", name="C", source_type="keboola", query_mode="local")
+        local = repo.list_local()
+        assert len(local) == 2
+        local_kbc = repo.list_local(source_type="keboola")
+        assert len(local_kbc) == 2
+
+    def test_register_bigquery_remote(self, db_conn):
+        from src.repositories.table_registry import TableRegistryRepository
+        repo = TableRegistryRepository(db_conn)
+        repo.register(
+            id="project.dataset.orders", name="orders",
+            source_type="bigquery", bucket="dataset", source_table="orders",
+            query_mode="remote", profile_after_sync=False,
+        )
+        table = repo.get("project.dataset.orders")
+        assert table["query_mode"] == "remote"
+        assert table["profile_after_sync"] is False
+
 
 # ---- Profiles ----
 

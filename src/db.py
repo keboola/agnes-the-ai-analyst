@@ -9,7 +9,7 @@ from pathlib import Path
 
 import duckdb
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -122,9 +122,15 @@ CREATE TABLE IF NOT EXISTS script_registry (
 CREATE TABLE IF NOT EXISTS table_registry (
     id VARCHAR PRIMARY KEY,
     name VARCHAR NOT NULL,
-    folder VARCHAR,
-    sync_strategy VARCHAR,
+    source_type VARCHAR,
+    bucket VARCHAR,
+    source_table VARCHAR,
+    sync_strategy VARCHAR DEFAULT 'full_refresh',
+    query_mode VARCHAR DEFAULT 'local',
+    sync_schedule VARCHAR,
+    profile_after_sync BOOLEAN DEFAULT true,
     primary_key VARCHAR,
+    folder VARCHAR,
     description TEXT,
     registered_by VARCHAR,
     registered_at TIMESTAMP DEFAULT current_timestamp
@@ -165,6 +171,16 @@ def get_analytics_db() -> duckdb.DuckDBPyConnection:
     return duckdb.connect(str(db_path))
 
 
+_V1_TO_V2_MIGRATIONS = [
+    "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS source_type VARCHAR",
+    "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS bucket VARCHAR",
+    "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS source_table VARCHAR",
+    "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS query_mode VARCHAR DEFAULT 'local'",
+    "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS sync_schedule VARCHAR",
+    "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS profile_after_sync BOOLEAN DEFAULT true",
+]
+
+
 def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
     """Create tables if they don't exist. Apply migrations if schema version changed."""
     current = get_schema_version(conn)
@@ -176,6 +192,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 [SCHEMA_VERSION],
             )
         else:
+            if current < 2:
+                for sql in _V1_TO_V2_MIGRATIONS:
+                    conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

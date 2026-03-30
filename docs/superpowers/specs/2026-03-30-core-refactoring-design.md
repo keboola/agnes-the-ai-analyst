@@ -37,9 +37,9 @@ CREATE TABLE _meta (
 
 **Views or tables** for each entry in `_meta` — how they store data is their business (parquet, csv, in-memory, remote ATTACH — doesn't matter).
 
-## 4. Two types of sources
+## 4. Three types of sources
 
-### Batch pull (Keboola, BigQuery, Postgres, CSV)
+### Batch pull (Keboola, Postgres, CSV)
 
 Scheduler or manual trigger runs extractor → rewrites entire output folder.
 
@@ -51,6 +51,27 @@ Scheduler (every 15m)
 ```
 
 One instance typically has **one primary batch source** (configured in `instance.yaml`). The extractor reads `table_registry` for which tables to pull and how (sync_strategy, schedule).
+
+### Remote attach (BigQuery)
+
+No data download. DuckDB BigQuery community extension ATTACHes directly to BQ. Queries go to BigQuery on-demand.
+
+```
+/data/extracts/bigquery/
+├── extract.duckdb          ← ATTACH to BQ + views + _meta (query_mode='remote')
+└── (no data/ directory)
+```
+
+```sql
+INSTALL bigquery FROM community; LOAD bigquery;
+ATTACH 'project=my_gcp_project' AS bq (TYPE bigquery, READ_ONLY);
+CREATE VIEW orders AS SELECT * FROM bq.dataset.orders;
+INSERT INTO _meta VALUES ('orders', 'Order data', 0, 0, now(), 'remote');
+```
+
+Extractor (`connectors/bigquery/extractor.py`, ~50 lines) runs once at init or when table_registry changes. It creates `extract.duckdb` with views that delegate to BQ — no parquets, no downloads. Orchestrator ATTACHes it like any other source.
+
+Replaces: `adapter.py` (665 lines) + `client.py` (644 lines) + `remote_query.py` (~300 lines).
 
 ### Real-time push (Jira webhooks)
 
@@ -65,9 +86,9 @@ Jira sends webhook → POST /webhooks/jira
 
 No scheduler needed — data arrives when it arrives. Output folder is updated in-place, not rewritten.
 
-### Both produce the same output
+### All three produce the same output
 
-The orchestrator doesn't know or care which type produced the folder. It just ATTACHes `extract.duckdb`.
+The orchestrator doesn't know or care which type produced the folder or whether data is local parquets or remote BQ views. It just ATTACHes `extract.duckdb`.
 
 ## 5. Orchestrator
 
@@ -147,7 +168,44 @@ if __name__ == "__main__":
 
 Replaces 1,700 lines (adapter.py + client.py).
 
-## 7. Config: table_registry
+## 7. BigQuery extractor
+
+```python
+# connectors/bigquery/extractor.py (~50 lines)
+
+def init_extract(output_dir: str, project_id: str, table_configs: list[dict]):
+    """Create extract.duckdb with remote views into BigQuery."""
+    conn = duckdb.connect(f"{output_dir}/extract.duckdb")
+    conn.execute("INSTALL bigquery FROM community; LOAD bigquery;")
+    conn.execute(f"ATTACH 'project={project_id}' AS bq (TYPE bigquery, READ_ONLY)")
+
+    # Create _meta
+    conn.execute("DROP TABLE IF EXISTS _meta")
+    conn.execute("""CREATE TABLE _meta (
+        table_name VARCHAR, description VARCHAR, rows BIGINT,
+        size_bytes BIGINT, extracted_at TIMESTAMP, query_mode VARCHAR DEFAULT 'remote'
+    )""")
+
+    now = datetime.now(timezone.utc)
+    for tc in table_configs:
+        dataset = tc['bucket']  # BigQuery dataset
+        source = tc['source_table']
+        conn.execute(f'CREATE OR REPLACE VIEW {tc["name"]} AS SELECT * FROM bq."{dataset}"."{source}"')
+        conn.execute(f"INSERT INTO _meta VALUES ('{tc['name']}', '{tc.get('description','')}', 0, 0, '{now}', 'remote')")
+
+    conn.execute("DETACH bq")
+    conn.close()
+
+if __name__ == "__main__":
+    configs = load_table_configs(source_type="bigquery")
+    init_extract("/data/extracts/bigquery", project_id, configs)
+```
+
+No `data/` directory. All queries go directly to BigQuery via DuckDB extension. Replaces 1,600 lines (adapter.py + client.py + remote_query.py).
+
+Authentication: DuckDB BigQuery extension uses Application Default Credentials (ADC) or `GOOGLE_APPLICATION_CREDENTIALS` env var — same as the current `google-cloud-bigquery` Python client.
+
+## 8. Config: table_registry
 
 `table_registry` in `system.duckdb` (already exists, extend with source columns):
 
@@ -185,7 +243,7 @@ keboola:
 
 Table list goes in `table_registry`. Import from existing `data_description.md` via one-time migration script.
 
-## 8. How it runs
+## 9. How it runs
 
 ```
 instance.yaml → which source (keboola)
@@ -209,7 +267,7 @@ CLI:
     → creates local analytics.duckdb with views
 ```
 
-## 9. Adding a new source
+## 10. Adding a new source
 
 **If DuckDB has extension for it (most cases):**
 
@@ -231,23 +289,25 @@ CLI:
 2. Handler updates `/data/extracts/jira/` incrementally
 3. Same output format — orchestrator picks it up on next rebuild
 
-## 10. What gets deleted
+## 11. What gets deleted
 
 | File | Lines | Replaced by |
 |------|-------|-------------|
 | `src/config.py` | 653 | `table_registry` in DuckDB |
 | `src/parquet_manager.py` | 755 | DuckDB `COPY TO` |
 | `src/data_sync.py` (most) | ~600 | SyncOrchestrator (~30 lines) |
+| `src/remote_query.py` | ~300 | DuckDB BigQuery ATTACH (queries go directly via extension) |
 | `connectors/keboola/adapter.py` | 820 | extractor.py (~60 lines) |
-| `connectors/bigquery/adapter.py` | 665 | extractor.py (~40 lines) |
-| **Total removed** | **~3500** | **~200 new** |
+| `connectors/bigquery/adapter.py` | 665 | extractor.py (~50 lines, remote-only via DuckDB BQ extension) |
+| `connectors/bigquery/client.py` | 644 | DuckDB BigQuery extension (ADC auth, direct ATTACH) |
+| **Total removed** | **~4,400** | **~200 new** |
 
 Kept as legacy (not deleted):
-- `connectors/keboola/client.py` — fallback if extension unavailable
+- `connectors/keboola/client.py` — fallback if DuckDB Keboola extension unavailable
 - `connectors/jira/` — webhook pattern, adapted to write extract.duckdb
 - `src/profiler.py` — already DuckDB, unchanged
 
-## 11. What stays unchanged
+## 12. What stays unchanged
 
 - `src/repositories/` — DuckDB-backed, used by API
 - `src/db.py` — system DB schema
@@ -255,7 +315,7 @@ Kept as legacy (not deleted):
 - `connectors/llm/`, `connectors/openmetadata/` — unrelated
 - `app/` (FastAPI), `cli/`, `webapp/` — call orchestrator instead of DataSyncManager
 
-## 12. Client side (analyst) — no change
+## 13. Client side (analyst) — no change
 
 ```
 da sync → downloads parquets from server API → creates local analytics.duckdb with views
@@ -263,7 +323,7 @@ da sync → downloads parquets from server API → creates local analytics.duckd
 
 Analyst doesn't know or care about extractors. Same flow as today.
 
-## 13. Incremental sync (future)
+## 14. Incremental sync (future)
 
 Current: full refresh only. Extractor interface is ready for incremental:
 - `table_registry` has `sync_strategy` field
@@ -271,7 +331,7 @@ Current: full refresh only. Extractor interface is ready for incremental:
 - When Keboola DuckDB extension adds `changedSince` (issue #10), extractor uses it
 - Until then: full refresh, which is fast enough for most tables via extension
 
-## 14. Tested (2026-03-30)
+## 15. Tested (2026-03-30)
 
 Keboola DuckDB extension with real token:
 - `ATTACH` + `SELECT *` + `COPY TO parquet`: works (1.5s for 15 rows)
