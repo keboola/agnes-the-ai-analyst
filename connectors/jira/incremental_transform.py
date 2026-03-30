@@ -38,8 +38,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Default paths (can be overridden via environment)
-DEFAULT_RAW_DIR = Path("/data/src_data/raw/jira")
-DEFAULT_OUTPUT_DIR = Path("/data/src_data/parquet/jira")
+DEFAULT_RAW_DIR = Path(os.environ.get("DATA_DIR", "/data")) / "extracts" / "jira" / "raw"
+DEFAULT_OUTPUT_DIR = Path(os.environ.get("DATA_DIR", "/data")) / "extracts" / "jira" / "data"
 
 
 def upsert_dataframe(
@@ -213,6 +213,15 @@ def transform_single_issue(
             updated_remote_links = upsert_dataframe(existing_remote_links, remote_links_records, "issue_key", issue_key)
             path = save_parquet_month(updated_remote_links, REMOTE_LINKS_SCHEMA, output_dir / "remote_links", month_key)
             updated_paths.append(path)
+
+        # Update extract.duckdb _meta for all affected tables
+        try:
+            from .extract_init import update_meta
+            extract_dir = output_dir.parent  # output_dir is .../data, parent is .../jira
+            for table_name in ["issues", "comments", "attachments", "changelog", "issuelinks", "remote_links"]:
+                update_meta(extract_dir, table_name)
+        except Exception as meta_err:
+            logger.warning(f"Could not update extract.duckdb _meta: {meta_err}")
 
         logger.info(f"Successfully updated {issue_key} in Parquet files")
         return True

@@ -47,6 +47,12 @@ def trigger_incremental_transform(issue_key: str, deleted: bool = False) -> bool
 
         if success:
             logger.info(f"Incremental transform completed for {issue_key}")
+            # Rebuild Jira views in master analytics.duckdb
+            try:
+                from src.orchestrator import SyncOrchestrator
+                SyncOrchestrator().rebuild_source("jira")
+            except Exception as orch_err:
+                logger.warning(f"Orchestrator rebuild failed: {orch_err}")
         else:
             logger.warning(f"Incremental transform failed for {issue_key}")
 
