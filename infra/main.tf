@@ -6,6 +6,10 @@ terraform {
       source  = "hashicorp/google"
       version = "~> 5.0"
     }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.0"
+    }
   }
 }
 
@@ -13,6 +17,13 @@ provider "google" {
   project = var.project_id
   region  = var.region
   zone    = var.zone
+}
+
+# --- Auto-generated secrets ---
+
+resource "random_password" "jwt_secret" {
+  length  = 48
+  special = false
 }
 
 # --- Network ---
@@ -69,7 +80,7 @@ locals {
 
     echo "=== Creating .env ==="
     cat > "$APP_DIR/.env" << 'ENVEOF'
-    JWT_SECRET_KEY=${var.jwt_secret}
+    JWT_SECRET_KEY=${random_password.jwt_secret.result}
     DATA_DIR=/data
     DATA_SOURCE=${var.keboola_token != "" ? "keboola" : "local"}
     KEBOOLA_STORAGE_TOKEN=${var.keboola_token}
