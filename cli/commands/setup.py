@@ -1,4 +1,4 @@
-"""Setup commands — da setup init/test-connection/deploy/first-sync/verify."""
+"""Setup commands — da setup init/bootstrap/test-connection/first-sync/verify."""
 
 import json
 import os
@@ -14,9 +14,8 @@ setup_app = typer.Typer(help="Instance setup (guided by AI agent)")
 def setup_init(
     server: str = typer.Option("http://localhost:8000", help="Server URL"),
 ):
-    """Initialize a new instance configuration."""
+    """Initialize CLI config to point at a server."""
     typer.echo(f"Server: {server}")
-    typer.echo("Creating config directory...")
 
     from cli.config import _config_dir
     config_dir = _config_dir()
@@ -26,9 +25,50 @@ def setup_init(
     config = {"server": server}
     config_file.write_text(yaml.dump(config))
     typer.echo(f"Config saved to {config_file}")
-
     os.environ["DA_SERVER"] = server
-    typer.echo("\nNext: da setup test-connection")
+    typer.echo("\nNext: da setup bootstrap --email admin@company.com")
+
+
+@setup_app.command("bootstrap")
+def bootstrap(
+    email: str = typer.Argument(..., help="Admin email"),
+    name: str = typer.Option("", help="Display name"),
+    password: str = typer.Option("", help="Optional password"),
+    server: str = typer.Option(None, help="Server URL override"),
+):
+    """Create the first admin user on a fresh instance.
+
+    Only works when the database has zero users.
+    After this, use 'da login' for normal auth.
+    """
+    if server:
+        os.environ["DA_SERVER"] = server
+
+    typer.echo("Bootstrapping first admin user...")
+    try:
+        resp = api_post("/auth/bootstrap", json={
+            "email": email,
+            "name": name or email.split("@")[0],
+            "password": password,
+        })
+        if resp.status_code == 200:
+            data = resp.json()
+            # Save token automatically
+            from cli.config import save_token
+            save_token(data["access_token"], data["email"], data["role"])
+            typer.echo(f"Admin user created: {data['email']}")
+            typer.echo(f"Token saved — you are now logged in as admin.")
+            typer.echo("\nNext: da setup test-connection")
+        elif resp.status_code == 403:
+            typer.echo(f"Bootstrap disabled: {resp.json().get('detail', '')}")
+            typer.echo("Users already exist. Use: da login --email your@email.com")
+        else:
+            typer.echo(f"Failed: {resp.text}", err=True)
+            raise typer.Exit(1)
+    except Exception as e:
+        typer.echo(f"Connection error: {e}", err=True)
+        typer.echo("Is the server running? Check: docker compose ps")
+        raise typer.Exit(1)
 
 
 @setup_app.command("test-connection")
@@ -41,6 +81,11 @@ def test_connection():
         typer.echo(f"  Server: {health.get('status', 'unknown')}")
         for svc, info in health.get("services", {}).items():
             typer.echo(f"  {svc}: {info.get('status', '?')}")
+
+        if health.get("status") == "healthy":
+            typer.echo("\nServer is healthy.")
+        else:
+            typer.echo("\nServer has issues. Check: da diagnose --json")
     except Exception as e:
         typer.echo(f"  FAILED: {e}", err=True)
         raise typer.Exit(1)
@@ -55,77 +100,130 @@ def first_sync():
     try:
         resp = api_post("/api/sync/trigger")
         if resp.status_code == 200:
-            typer.echo(f"  {resp.json().get('message', 'Sync triggered')}")
+            data = resp.json()
+            typer.echo(f"  Status: {data.get('status', '?')}")
+            typer.echo(f"  {data.get('message', '')}")
+        elif resp.status_code == 403:
+            typer.echo("  Permission denied. Are you logged in as admin?")
+            typer.echo("  Run: da login --email admin@company.com")
+            raise typer.Exit(1)
         else:
             typer.echo(f"  Failed: {resp.text}", err=True)
+            raise typer.Exit(1)
     except Exception as e:
         typer.echo(f"  Error: {e}", err=True)
         raise typer.Exit(1)
 
-    typer.echo("\nNext: da setup verify")
+    typer.echo("\nWait for sync to complete, then: da setup verify")
 
 
 @setup_app.command("verify")
-def verify():
-    """Verify the instance is working end-to-end."""
-    typer.echo("Running verification checks...")
+def verify(as_json: bool = typer.Option(False, "--json", help="Output as JSON")):
+    """Verify the instance is working end-to-end.
+
+    Checks: server health → auth → data sync → manifest → query capability.
+    Returns structured report for AI agents.
+    """
     checks = []
 
-    # 1. Health
+    # 1. Server reachable
     try:
         resp = api_get("/api/health")
         h = resp.json()
-        checks.append(("Health", h.get("status") == "healthy", h.get("status")))
+        checks.append({
+            "name": "server",
+            "status": "pass" if h.get("status") == "healthy" else "warn",
+            "detail": h.get("status"),
+        })
     except Exception as e:
-        checks.append(("Health", False, str(e)))
+        checks.append({"name": "server", "status": "fail", "detail": str(e)})
+        _report(checks, as_json)
+        return
 
-    # 2. Data
+    # 2. Auth works (token valid)
+    from cli.config import get_token
+    token = get_token()
+    if token:
+        try:
+            resp = api_get("/api/sync/manifest")
+            if resp.status_code == 200:
+                checks.append({"name": "auth", "status": "pass", "detail": "token valid"})
+            else:
+                checks.append({"name": "auth", "status": "fail", "detail": f"HTTP {resp.status_code}"})
+        except Exception as e:
+            checks.append({"name": "auth", "status": "fail", "detail": str(e)})
+    else:
+        checks.append({"name": "auth", "status": "fail", "detail": "no token — run: da login"})
+
+    # 3. Data available
     try:
         resp = api_get("/api/sync/manifest")
         m = resp.json()
         table_count = len(m.get("tables", {}))
-        checks.append(("Data", table_count > 0, f"{table_count} tables"))
+        total_rows = sum(t.get("rows", 0) for t in m.get("tables", {}).values())
+        if table_count > 0:
+            checks.append({"name": "data", "status": "pass", "detail": f"{table_count} tables, {total_rows:,} rows"})
+        else:
+            checks.append({"name": "data", "status": "warn", "detail": "0 tables — run: da setup first-sync"})
     except Exception as e:
-        checks.append(("Data", False, str(e)))
+        checks.append({"name": "data", "status": "fail", "detail": str(e)})
 
-    # 3. Users
+    # 4. Users exist
     try:
         resp = api_get("/api/users")
         if resp.status_code == 200:
             count = len(resp.json())
-            checks.append(("Users", count > 0, f"{count} users"))
+            checks.append({"name": "users", "status": "pass", "detail": f"{count} users"})
+        elif resp.status_code == 403:
+            checks.append({"name": "users", "status": "pass", "detail": "exists (need admin for count)"})
         else:
-            checks.append(("Users", True, "requires admin token"))
+            checks.append({"name": "users", "status": "warn", "detail": f"HTTP {resp.status_code}"})
     except Exception as e:
-        checks.append(("Users", False, str(e)))
+        checks.append({"name": "users", "status": "fail", "detail": str(e)})
 
-    for name, ok, detail in checks:
-        status = "PASS" if ok else "FAIL"
-        typer.echo(f"  [{status}] {name}: {detail}")
+    # 5. Web UI accessible
+    try:
+        resp = api_get("/login")
+        checks.append({
+            "name": "web_ui",
+            "status": "pass" if resp.status_code == 200 else "fail",
+            "detail": f"HTTP {resp.status_code}, {len(resp.content)} bytes",
+        })
+    except Exception as e:
+        checks.append({"name": "web_ui", "status": "fail", "detail": str(e)})
 
-    all_ok = all(ok for _, ok, _ in checks)
-    if all_ok:
-        typer.echo("\nAll checks passed! Instance is ready.")
+    # 6. Swagger docs
+    try:
+        resp = api_get("/docs")
+        checks.append({
+            "name": "api_docs",
+            "status": "pass" if resp.status_code == 200 else "fail",
+            "detail": f"HTTP {resp.status_code}",
+        })
+    except Exception as e:
+        checks.append({"name": "api_docs", "status": "fail", "detail": str(e)})
+
+    _report(checks, as_json)
+
+
+def _report(checks: list, as_json: bool):
+    all_pass = all(c["status"] == "pass" for c in checks)
+    has_fail = any(c["status"] == "fail" for c in checks)
+
+    if as_json:
+        typer.echo(json.dumps({
+            "overall": "pass" if all_pass else ("fail" if has_fail else "warn"),
+            "checks": checks,
+        }, indent=2))
     else:
-        typer.echo("\nSome checks failed. Review above.")
-        raise typer.Exit(1)
-
-
-@setup_app.command("add-user")
-def add_first_user(
-    email: str = typer.Argument(..., help="Admin email"),
-    name: str = typer.Option("", help="Display name"),
-):
-    """Add the first admin user to the instance."""
-    resp = api_post("/api/users", json={
-        "email": email,
-        "name": name or email.split("@")[0],
-        "role": "admin",
-    })
-    if resp.status_code == 201:
-        typer.echo(f"Admin user created: {email}")
-    elif resp.status_code == 409:
-        typer.echo(f"User {email} already exists.")
-    else:
-        typer.echo(f"Failed: {resp.text}", err=True)
-        raise typer.Exit(1)
+        for c in checks:
+            icon = {"pass": "OK", "fail": "FAIL", "warn": "WARN"}[c["status"]]
+            typer.echo(f"  [{icon:4s}] {c['name']}: {c['detail']}")
+        typer.echo("")
+        if all_pass:
+            typer.echo("All checks passed! Instance is ready.")
+        elif has_fail:
+            typer.echo("Some checks FAILED. See above for details.")
+            raise typer.Exit(1)
+        else:
+            typer.echo("Instance is running but some items need attention.")
