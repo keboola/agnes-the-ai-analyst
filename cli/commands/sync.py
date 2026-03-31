@@ -52,7 +52,9 @@ def sync(
             if docs_only:
                 continue
             local_hash = local_tables.get(tid, {}).get("hash", "")
-            if info.get("hash", "") != local_hash:
+            server_hash = info.get("hash", "")
+            # Download if: hashes differ, or no local copy, or hash is empty (not computed)
+            if server_hash != local_hash or tid not in local_tables or not server_hash:
                 to_download.append(tid)
 
         progress.update(task, description=f"Found {len(to_download)} tables to sync")
