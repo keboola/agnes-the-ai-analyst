@@ -98,7 +98,8 @@ result = run(str(data_dir / "extracts" / "keboola"), configs, url, token)
 print(json.dumps(result))
 """]
 
-        logger.info("Starting extractor subprocess for %d tables", len(table_configs))
+        import sys as _sys
+        print(f"[SYNC] Starting extractor subprocess for {len(table_configs)} tables", file=_sys.stderr, flush=True)
 
         result = subprocess.run(
             cmd, input=_json.dumps(serializable), capture_output=True, text=True,
@@ -107,22 +108,25 @@ print(json.dumps(result))
         )
 
         if result.stdout:
-            logger.info("Extractor result: %s", result.stdout.strip()[-500:])
+            print(f"[SYNC] Extractor stdout: {result.stdout.strip()[-500:]}", file=_sys.stderr, flush=True)
         if result.stderr:
-            logger.warning("Extractor stderr: %s", result.stderr[-500:])
+            print(f"[SYNC] Extractor stderr: {result.stderr[-500:]}", file=_sys.stderr, flush=True)
         if result.returncode != 0:
-            logger.error("Extractor failed (exit %d)", result.returncode)
+            print(f"[SYNC] Extractor FAILED (exit {result.returncode})", file=_sys.stderr, flush=True)
+        else:
+            print(f"[SYNC] Extractor OK", file=_sys.stderr, flush=True)
 
         # Rebuild master views (reads extract.duckdb files, no write conflict)
         from src.orchestrator import SyncOrchestrator
         orch = SyncOrchestrator()
         views = orch.rebuild()
-        logger.info("Orchestrator rebuild: %s", {k: len(v) for k, v in views.items()})
+        print(f"[SYNC] Orchestrator rebuild: {{{', '.join(f'{k}: {len(v)}' for k, v in views.items())}}}", file=_sys.stderr, flush=True)
 
     except subprocess.TimeoutExpired:
-        logger.error("Extractor timed out after 1800s")
+        print("[SYNC] Extractor timed out after 1800s", file=_sys.stderr, flush=True)
     except Exception as e:
-        logger.error(f"Data sync failed: {e}\n{traceback.format_exc()}")
+        print(f"[SYNC] FAILED: {e}", file=_sys.stderr, flush=True)
+        traceback.print_exc()
 
 
 # ---- Manifest ----
