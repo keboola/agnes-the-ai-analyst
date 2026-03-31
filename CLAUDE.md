@@ -47,7 +47,7 @@ docker compose --profile full up  # Include telegram bot
 │   ├── bigquery/           # BigQuery: extractor.py (remote-only via DuckDB BQ extension)
 │   └── jira/               # Jira: webhook + incremental parquet → extract.duckdb
 ├── cli/                    # CLI tool (`da sync`, `da query`, `da admin`)
-├── auth/                   # Authentication providers (google, email, password, desktop)
+├── app/auth/               # Authentication (FastAPI-based providers)
 ├── services/               # Standalone services (scheduler, telegram_bot, ws_gateway, etc.)
 ├── server/                 # Legacy deployment infrastructure
 ├── scripts/                # Utility + migration scripts
@@ -105,7 +105,7 @@ Table definitions: DuckDB `table_registry` table in `system.duckdb`.
 ```bash
 # Setup
 python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+uv pip install -r requirements.txt
 
 # Run FastAPI locally
 uvicorn app.main:app --reload
@@ -128,12 +128,10 @@ Must create `_meta` table with columns: table_name, description, rows, size_byte
 Orchestrator ATTACHes it automatically.
 
 ### Authentication
-Pluggable auth providers in `auth/`:
-- **Google** (`google`): OAuth via Google
-- **Email** (`email`): Email magic link (itsdangerous token)
-- **Password** (`password`): Username/password
-- **Desktop** (`desktop`): JWT for API
-- New provider = `auth/<name>/provider.py` implementing `AuthProvider`
+Auth providers in `app/auth/` (FastAPI-based):
+- **Google**: OAuth via Google
+- **Email**: Email magic link (itsdangerous token)
+- **Desktop**: JWT for API
 
 ## Key Implementation Details
 

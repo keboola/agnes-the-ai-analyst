@@ -1,5 +1,6 @@
 """Sync orchestrator — ATTACHes extract.duckdb files into master analytics.duckdb."""
 
+import hashlib
 import logging
 import os
 import threading
@@ -144,28 +145,39 @@ class SyncOrchestrator:
                 tables.append(table_name)
 
             # Update sync_state in system DB
-            self._update_sync_state(meta_rows)
+            self._update_sync_state(meta_rows, source_name)
 
         except Exception as e:
             logger.error("Failed to attach %s: %s", source_name, e)
 
         return tables
 
-    def _update_sync_state(self, meta_rows: list) -> None:
+    def _update_sync_state(self, meta_rows: list, source_name: str) -> None:
         """Update sync_state table in system.duckdb from _meta entries."""
         try:
             from src.db import get_system_db
             from src.repositories.sync_state import SyncStateRepository
 
+            extracts_dir = _get_extracts_dir()
             sys_conn = get_system_db()
             try:
                 repo = SyncStateRepository(sys_conn)
                 for table_name, rows, size_bytes, query_mode in meta_rows:
+                    # Compute hash from parquet file stats (fast, no file read)
+                    pq_path = extracts_dir / source_name / "data" / f"{table_name}.parquet"
+                    if pq_path.exists():
+                        stat = pq_path.stat()
+                        file_hash = hashlib.md5(
+                            f"{stat.st_mtime_ns}:{stat.st_size}".encode()
+                        ).hexdigest()[:12]
+                    else:
+                        file_hash = ""
+
                     repo.update_sync(
                         table_id=table_name,
                         rows=rows or 0,
                         file_size_bytes=size_bytes or 0,
-                        hash="",  # TODO: compute from parquet file
+                        hash=file_hash,
                     )
             finally:
                 sys_conn.close()
