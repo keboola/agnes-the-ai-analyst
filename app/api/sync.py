@@ -62,7 +62,7 @@ def _run_sync(tables: Optional[List[str]] = None):
                 all_configs = [repo.get(t) for t in tables]
                 table_configs = [c for c in all_configs if c is not None]
             else:
-                table_configs = repo.list_by_source(source_type) if source_type else repo.list_all()
+                table_configs = repo.list_local(source_type) if source_type else repo.list_local()
         finally:
             sys_conn.close()
 
