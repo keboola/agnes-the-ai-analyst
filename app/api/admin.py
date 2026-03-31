@@ -84,8 +84,10 @@ async def register_table(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Register a new table in the system."""
+    if not request.name or not request.name.strip():
+        raise HTTPException(status_code=422, detail="Table name cannot be empty")
     repo = TableRegistryRepository(conn)
-    table_id = request.name.lower().replace(" ", "_")
+    table_id = request.name.strip().lower().replace(" ", "_")
 
     if repo.get(table_id):
         raise HTTPException(status_code=409, detail=f"Table '{table_id}' already registered")
