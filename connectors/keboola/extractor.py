@@ -52,8 +52,13 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
     data_dir = output_path / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
 
+    # Write to temp file then rename — avoids lock conflict with orchestrator
+    # which may hold a read lock on the existing extract.duckdb
     db_path = output_path / "extract.duckdb"
-    conn = duckdb.connect(str(db_path))
+    tmp_db_path = output_path / "extract.duckdb.tmp"
+    if tmp_db_path.exists():
+        tmp_db_path.unlink()
+    conn = duckdb.connect(str(tmp_db_path))
 
     stats = {"tables_extracted": 0, "tables_failed": 0, "errors": []}
     now = datetime.now(timezone.utc)
@@ -114,6 +119,11 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
 
     finally:
         conn.close()
+
+    # Atomic replace: swap temp DB into place
+    import shutil
+    if tmp_db_path.exists():
+        shutil.move(str(tmp_db_path), str(db_path))
 
     return stats
 
