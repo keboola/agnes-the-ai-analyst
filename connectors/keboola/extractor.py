@@ -168,15 +168,36 @@ def _extract_via_legacy(
 
 
 if __name__ == "__main__":
-    """Standalone: reads config from instance.yaml + table_registry, runs extraction."""
-    from config.loader import load_instance_config
+    """Standalone: reads config from env + table_registry, runs extraction.
+
+    Used by sync trigger subprocess. Reads KEBOOLA_STORAGE_TOKEN and
+    KEBOOLA_STACK_URL from environment, table list from DuckDB registry.
+    """
+    import logging as _logging
+    _logging.basicConfig(level=_logging.INFO, format="%(levelname)s: %(message)s")
+
+    # Read Keboola credentials — env first, then instance.yaml fallback
+    url = os.environ.get("KEBOOLA_STACK_URL", "")
+    token = os.environ.get("KEBOOLA_STORAGE_TOKEN", "")
+
+    if not url or not token:
+        try:
+            from config.loader import load_instance_config
+            config = load_instance_config()
+            kbc_config = config.get("keboola", {})
+            url = url or kbc_config.get("url", "")
+            token_env = kbc_config.get("token_env", "KEBOOLA_STORAGE_TOKEN")
+            token = token or os.environ.get(token_env, "")
+        except Exception:
+            pass
+
+    if not url or not token:
+        logger.error("Missing KEBOOLA_STACK_URL or KEBOOLA_STORAGE_TOKEN")
+        exit(1)
+
+    # Read table list from registry
     from src.db import get_system_db
     from src.repositories.table_registry import TableRegistryRepository
-
-    config = load_instance_config()
-    kbc_config = config.get("keboola", {})
-    url = kbc_config.get("url", "")
-    token = os.environ.get(kbc_config.get("token_env", "KEBOOLA_STORAGE_TOKEN"), "")
 
     sys_conn = get_system_db()
     try:
@@ -187,7 +208,12 @@ if __name__ == "__main__":
 
     if not tables:
         logger.warning("No Keboola tables registered in table_registry")
-    else:
-        data_dir = Path(os.environ.get("DATA_DIR", "./data"))
-        result = run(str(data_dir / "extracts" / "keboola"), tables, url, token)
-        logger.info("Extraction complete: %s", result)
+        exit(0)
+
+    logger.info("Extracting %d tables from %s", len(tables), url)
+    data_dir = Path(os.environ.get("DATA_DIR", "./data"))
+    result = run(str(data_dir / "extracts" / "keboola"), tables, url, token)
+    logger.info("Extraction complete: %s", result)
+
+    failed = result.get("tables_failed", 0)
+    exit(1 if failed == len(tables) else 0)  # exit 1 only if ALL tables failed

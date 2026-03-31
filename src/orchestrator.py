@@ -50,7 +50,11 @@ class SyncOrchestrator:
             return {}
 
         result = {}
-        conn = duckdb.connect(self._db_path)
+        # Write to temp file then rename — avoids lock conflict with query endpoint
+        tmp_path = self._db_path + ".tmp"
+        if Path(tmp_path).exists():
+            Path(tmp_path).unlink()
+        conn = duckdb.connect(tmp_path)
         try:
             # Detach any previously attached databases (except main and temp)
             attached = [
@@ -84,6 +88,11 @@ class SyncOrchestrator:
         finally:
             conn.close()
 
+        # Atomic swap: replace analytics.duckdb with new version
+        import shutil
+        if Path(tmp_path).exists():
+            shutil.move(tmp_path, self._db_path)
+
         return result
 
     def _do_rebuild_source(self, source_name: str) -> List[str]:
@@ -93,16 +102,25 @@ class SyncOrchestrator:
             logger.warning("No extract.duckdb for source %s", source_name)
             return []
 
-        conn = duckdb.connect(self._db_path)
+        tmp_path = self._db_path + ".tmp"
+        if Path(tmp_path).exists():
+            Path(tmp_path).unlink()
+        conn = duckdb.connect(tmp_path)
         try:
             # Detach if already attached
             try:
                 conn.execute(f"DETACH {source_name}")
             except Exception:
                 pass
-            return self._attach_and_create_views(conn, source_name, str(db_file))
+            tables = self._attach_and_create_views(conn, source_name, str(db_file))
         finally:
             conn.close()
+
+        import shutil
+        if Path(tmp_path).exists():
+            shutil.move(tmp_path, self._db_path)
+
+        return tables
 
     def _attach_and_create_views(
         self, conn: duckdb.DuckDBPyConnection, source_name: str, db_path: str

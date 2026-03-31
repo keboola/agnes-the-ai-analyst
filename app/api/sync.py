@@ -36,55 +36,41 @@ def _get_data_dir() -> Path:
 
 
 def _run_sync(tables: Optional[List[str]] = None):
-    """Run extractor + orchestrator in background. Called by trigger endpoint."""
+    """Run extractor as subprocess + orchestrator rebuild.
+
+    Extractor runs in a separate process to avoid DuckDB lock conflicts
+    with the main API process. Orchestrator rebuild runs in-process after
+    the extractor finishes (it only reads extract.duckdb files).
+    """
+    import subprocess
+    import sys
+
     try:
-        from app.instance_config import get_data_source_type, get_value
-        from src.db import get_system_db
-        from src.repositories.table_registry import TableRegistryRepository
+        # Run extractor as subprocess — completely separate DuckDB connections
+        env = {**os.environ}
+        cmd = [sys.executable, "-m", "connectors.keboola.extractor"]
+        logger.info("Starting extractor subprocess: %s", " ".join(cmd))
+
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=600, env=env,
+            cwd=str(Path(__file__).parent.parent.parent),  # project root
+        )
+
+        if result.stdout:
+            logger.info("Extractor stdout: %s", result.stdout[-500:])
+        if result.stderr:
+            logger.warning("Extractor stderr: %s", result.stderr[-500:])
+        if result.returncode != 0:
+            logger.error("Extractor failed (exit %d)", result.returncode)
+
+        # Rebuild master views (reads extract.duckdb files, no write conflict)
         from src.orchestrator import SyncOrchestrator
-
-        source_type = get_data_source_type()
-        data_dir = _get_data_dir()
-
-        # Get table configs from registry
-        sys_conn = get_system_db()
-        try:
-            repo = TableRegistryRepository(sys_conn)
-            if tables:
-                all_configs = [repo.get(t) for t in tables]
-                table_configs = [c for c in all_configs if c is not None]
-            else:
-                table_configs = repo.list_by_source(source_type) if source_type else repo.list_all()
-        finally:
-            sys_conn.close()
-
-        # Run appropriate extractor
-        if source_type == "keboola":
-            from connectors.keboola.extractor import run as keboola_run
-            kbc_url = get_value("keboola", "url", default="")
-            kbc_token = os.environ.get(
-                get_value("keboola", "token_env", default="KEBOOLA_STORAGE_TOKEN"), ""
-            )
-            output = str(data_dir / "extracts" / "keboola")
-            result = keboola_run(output, table_configs, kbc_url, kbc_token)
-            logger.info("Keboola extraction: %s", result)
-
-        elif source_type == "bigquery":
-            from connectors.bigquery.extractor import init_extract as bq_init
-            project_id = get_value("bigquery", "project_id", default="")
-            output = str(data_dir / "extracts" / "bigquery")
-            result = bq_init(output, project_id, table_configs)
-            logger.info("BigQuery extract init: %s", result)
-
-        else:
-            logger.warning("Unknown data source type: %s", source_type)
-            return
-
-        # Rebuild master views
         orch = SyncOrchestrator()
         views = orch.rebuild()
         logger.info("Orchestrator rebuild: %s", {k: len(v) for k, v in views.items()})
 
+    except subprocess.TimeoutExpired:
+        logger.error("Extractor timed out after 600s")
     except Exception as e:
         logger.error(f"Data sync failed: {e}\n{traceback.format_exc()}")
 
