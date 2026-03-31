@@ -7,11 +7,11 @@ from datetime import datetime, timedelta
 from unittest.mock import Mock, patch, MagicMock
 from dataclasses import dataclass
 
-from src.config import TableConfig
 from connectors.openmetadata.enricher import (
     CatalogEnricher,
     CatalogTableData,
     CatalogColumnData,
+    TableConfig,
 )
 
 
@@ -21,9 +21,6 @@ def sample_table_config():
     return TableConfig(
         id="prj-grp-dataview-prod-1ff9.marketing.roi_datamart_v2",
         name="roi_datamart_v2",
-        description="ROI metrics",
-        primary_key="id",
-        sync_strategy="full_refresh",
     )
 
 
@@ -111,9 +108,6 @@ def test_enrich_table_disabled():
     table_config = TableConfig(
         id="test.table",
         name="test",
-        description="Test",
-        primary_key="id",
-        sync_strategy="full_refresh",
     )
 
     result = enricher.enrich_table(table_config)
@@ -145,9 +139,6 @@ def test_enrich_table_cache_hit():
         table_config = TableConfig(
             id="prj-grp-dataview-prod-1ff9.marketing.test",
             name="test",
-            description="Test",
-            primary_key="id",
-            sync_strategy="full_refresh",
         )
 
         result = enricher.enrich_table(table_config)
@@ -199,9 +190,6 @@ def test_derive_fqn_auto():
         table_config = TableConfig(
             id="prj-grp-dataview-prod-1ff9.marketing.roi_datamart_v2",
             name="roi_datamart_v2",
-            description="Test",
-            primary_key="id",
-            sync_strategy="full_refresh",
         )
 
         fqn = enricher._derive_fqn(table_config)
@@ -223,9 +211,6 @@ def test_derive_fqn_explicit_override():
         table_config = TableConfig(
             id="prj-grp-dataview-prod-1ff9.marketing.roi_datamart_v2",
             name="roi_datamart_v2",
-            description="Test",
-            primary_key="id",
-            sync_strategy="full_refresh",
         )
         table_config.catalog_fqn = "bigquery.custom.fqn.override"
 
@@ -390,9 +375,6 @@ def test_enrich_table_http_error_graceful():
         table_config = TableConfig(
             id="test.table",
             name="test",
-            description="Test",
-            primary_key="id",
-            sync_strategy="full_refresh",
         )
 
         # Should return None, not raise

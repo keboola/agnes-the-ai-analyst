@@ -93,17 +93,15 @@ def mock_client():
 
 
 @pytest.fixture
-def mock_config():
-    """Return a mock Config with a single table."""
-    cfg = MagicMock()
-    cfg.tables = [
-        FakeTableConfig(
-            name="order_economics",
-            id="prj.dataset.order_economics",
-            catalog_fqn="bigquery.prj.dataset.order_economics",
-        )
+def mock_tables():
+    """Return a list of table dicts matching TableRegistryRepository.list_all() format."""
+    return [
+        {
+            "id": "prj.dataset.order_economics",
+            "name": "order_economics",
+            "catalog_fqn": "bigquery.prj.dataset.order_economics",
+        }
     ]
-    return cfg
 
 
 CATALOG_URL = "https://catalog.example.com"
@@ -351,11 +349,11 @@ class TestExportMetrics:
 
 class TestExportTables:
     def test_export_tables_writes_files(
-        self, tmp_path: Path, mock_client, mock_config
+        self, tmp_path: Path, mock_client, mock_tables
     ):
         """Creates table YAML with columns."""
         docs = tmp_path / "docs"
-        count = export_tables(mock_client, mock_config, docs, CATALOG_URL)
+        count = export_tables(mock_client, mock_tables, docs, CATALOG_URL)
 
         assert count == 1
 
@@ -374,21 +372,12 @@ class TestExportTables:
         assert parsed["columns"][0]["name"] == "order_id"
 
     def test_export_tables_handles_api_error(
-        self, tmp_path: Path, mock_client, mock_config
+        self, tmp_path: Path, mock_client
     ):
         """Continues on per-table errors, exports remaining tables."""
-        # Two tables: first will fail, second succeeds
-        mock_config.tables = [
-            FakeTableConfig(
-                name="broken_table",
-                id="prj.dataset.broken",
-                catalog_fqn="bigquery.prj.dataset.broken",
-            ),
-            FakeTableConfig(
-                name="good_table",
-                id="prj.dataset.good",
-                catalog_fqn="bigquery.prj.dataset.good",
-            ),
+        tables = [
+            {"id": "prj.dataset.broken", "name": "broken_table", "catalog_fqn": "bigquery.prj.dataset.broken"},
+            {"id": "prj.dataset.good", "name": "good_table", "catalog_fqn": "bigquery.prj.dataset.good"},
         ]
 
         def side_effect(fqn):
@@ -399,7 +388,7 @@ class TestExportTables:
         mock_client.get_table.side_effect = side_effect
 
         docs = tmp_path / "docs"
-        count = export_tables(mock_client, mock_config, docs, CATALOG_URL)
+        count = export_tables(mock_client, tables, docs, CATALOG_URL)
 
         # Only the good table should succeed
         assert count == 1
@@ -407,11 +396,11 @@ class TestExportTables:
         assert (docs / "tables" / "good_table.yml").exists()
 
     def test_export_tables_uses_catalog_fqn(
-        self, tmp_path: Path, mock_client, mock_config
+        self, tmp_path: Path, mock_client, mock_tables
     ):
         """Uses explicit catalog_fqn when set on table config."""
         docs = tmp_path / "docs"
-        export_tables(mock_client, mock_config, docs, CATALOG_URL)
+        export_tables(mock_client, mock_tables, docs, CATALOG_URL)
 
         mock_client.get_table.assert_called_once_with(
             "bigquery.prj.dataset.order_economics"
@@ -421,17 +410,12 @@ class TestExportTables:
         self, tmp_path: Path, mock_client
     ):
         """When catalog_fqn is None, derives FQN as 'bigquery.{id}'."""
-        cfg = MagicMock()
-        cfg.tables = [
-            FakeTableConfig(
-                name="my_table",
-                id="project.dataset.my_table",
-                catalog_fqn=None,
-            )
+        tables = [
+            {"id": "project.dataset.my_table", "name": "my_table"},
         ]
 
         docs = tmp_path / "docs"
-        export_tables(mock_client, cfg, docs, CATALOG_URL)
+        export_tables(mock_client, tables, docs, CATALOG_URL)
 
         mock_client.get_table.assert_called_once_with(
             "bigquery.project.dataset.my_table"

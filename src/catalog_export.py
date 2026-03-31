@@ -34,7 +34,8 @@ from connectors.openmetadata.transformer import (
     sanitize_filename,
     table_to_yaml_dict,
 )
-from src.config import Config
+from src.db import get_system_db
+from src.repositories.table_registry import TableRegistryRepository
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -279,14 +280,14 @@ def _write_metrics_index(
 
 def export_tables(
     client: OpenMetadataClient,
-    config: Config,
+    tables: list[dict],
     docs_dir: Path,
     catalog_url: str,
 ) -> int:
     """
     Export table metadata from OpenMetadata to YAML files.
 
-    For each table defined in data_description.md:
+    For each table in the registry:
     1. Derives the OpenMetadata FQN
     2. Fetches table metadata (columns, owners, tags, description)
     3. Transforms to YAML dict
@@ -294,7 +295,7 @@ def export_tables(
 
     Args:
         client: Initialized OpenMetadata API client
-        config: Application config with table definitions
+        tables: List of table dicts from TableRegistryRepository.list_all()
         docs_dir: Base docs directory
         catalog_url: Catalog URL for header comments
 
@@ -307,10 +308,12 @@ def export_tables(
     written_files: set[Path] = set()
     count = 0
 
-    for table_config in config.tables:
+    for tbl in tables:
+        table_id = tbl.get("id", "")
+        table_name = tbl.get("name", "")
         try:
-            # Derive FQN: explicit override or auto-derive
-            fqn = table_config.catalog_fqn or f"bigquery.{table_config.id}"
+            # Use explicit catalog_fqn if set, otherwise derive from table id
+            fqn = tbl.get("catalog_fqn") or f"bigquery.{table_id}"
 
             logger.debug(f"Fetching table metadata: {fqn}")
             raw_table = client.get_table(fqn)
@@ -318,7 +321,7 @@ def export_tables(
             yaml_dict = table_to_yaml_dict(raw_table)
 
             # Write table YAML
-            file_path = tables_dir / f"{table_config.name}.yml"
+            file_path = tables_dir / f"{table_name}.yml"
             header = _yaml_header(catalog_url, fqn, entity_type="table")
             yaml_content = yaml.dump(
                 yaml_dict,
@@ -330,10 +333,10 @@ def export_tables(
             written_files.add(file_path)
             count += 1
 
-            logger.info(f"Exported table: {table_config.name} ({len(yaml_dict.get('columns', []))} columns)")
+            logger.info(f"Exported table: {table_name} ({len(yaml_dict.get('columns', []))} columns)")
 
         except Exception as e:
-            logger.warning(f"Failed to export table {table_config.name}: {e}")
+            logger.warning(f"Failed to export table {table_name}: {e}")
             continue
 
     # Cleanup stale auto-generated table files
@@ -443,10 +446,12 @@ def main() -> None:
 
         # Export tables
         try:
-            config = Config()
-            tables_count = export_tables(client, config, docs_dir, catalog_url)
+            conn = get_system_db()
+            repo = TableRegistryRepository(conn)
+            registered_tables = repo.list_all()
+            tables_count = export_tables(client, registered_tables, docs_dir, catalog_url)
         except Exception as e:
-            logger.warning(f"Table export skipped (config error): {e}")
+            logger.warning(f"Table export skipped (registry error): {e}")
             tables_count = 0
 
         # Write sync state

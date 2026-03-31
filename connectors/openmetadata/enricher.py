@@ -15,8 +15,21 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
-from src.config import TableConfig
+from dataclasses import dataclass as _dataclass
 from .client import OpenMetadataClient
+
+
+@_dataclass
+class TableConfig:
+    """Minimal table config used by the enricher.
+
+    Attributes expected by CatalogEnricher: id, name, and optional catalog_fqn.
+    Can be constructed from a dict, e.g. ``TableConfig(**row)`` where *row*
+    comes from ``TableRegistryRepository.get()``.
+    """
+    id: str
+    name: str
+    catalog_fqn: str = ""
 
 
 logger = logging.getLogger(__name__)

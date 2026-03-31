@@ -23,7 +23,16 @@ import requests
 from kbcstorage.client import Client
 from kbcstorage.tables import Tables
 
-from src.config import get_config, TableConfig, WhereFilter
+from dataclasses import dataclass, field
+from typing import Optional as _Opt
+
+
+@dataclass
+class WhereFilter:
+    """Keboola where filter for export operations."""
+    column: str
+    operator: str = "eq"
+    values: list = field(default_factory=list)
 
 
 logger = logging.getLogger(__name__)
@@ -86,10 +95,8 @@ class KeboolaClient:
             token: Storage API token. If None, loads from configuration.
             url: Stack URL. If None, loads from configuration.
         """
-        config = get_config()
-
-        self.token = token or config.keboola_token
-        self.url = url or config.keboola_stack_url
+        self.token = token or os.environ.get("KEBOOLA_STORAGE_TOKEN", "")
+        self.url = url or os.environ.get("KEBOOLA_STACK_URL", "")
 
         if not self.token:
             raise ValueError(
@@ -824,7 +831,7 @@ def create_client() -> KeboolaClient:
     """
     Factory function to create Keboola client.
 
-    Uses configuration from get_config().
+    Uses environment variables for token and URL.
 
     Returns:
         KeboolaClient instance
@@ -848,21 +855,21 @@ if __name__ == "__main__":
             print("   ❌ Connection failed!")
             exit(1)
 
-        # Test metadata
+        # Test metadata with discovered tables
         print("\n2️⃣ Testing metadata...")
-        config = get_config()
-        if config.tables:
-            test_table = config.tables[0]
-            print(f"   Testing table: {test_table.id}")
+        tables = client.discover_all_tables()
+        if tables:
+            test_table_id = tables[0].get("id", tables[0].get("name", ""))
+            print(f"   Testing table: {test_table_id}")
 
-            metadata = client.get_table_metadata(test_table.id)
+            metadata = client.get_table_metadata(test_table_id)
             print(f"   ✅ Metadata loaded:")
             print(f"      Columns: {len(metadata.get('columns', []))}")
             print(f"      Rows: {metadata.get('row_count', 0):,}")
             print(f"      Size: {metadata.get('data_size_bytes', 0) / 1024 / 1024:.2f} MB")
 
             # Test dtypes
-            dtypes = client.get_pandas_dtypes(test_table.id)
+            dtypes = client.get_pandas_dtypes(test_table_id)
             print(f"      Pandas dtypes:")
             for col, dtype in list(dtypes.items())[:5]:
                 print(f"         {col}: {dtype}")
