@@ -373,6 +373,158 @@
             background: rgba(243, 244, 246, 0.5);
         }
 
+        .table-row-locked {
+            opacity: 0.75;
+        }
+
+        .table-row-locked:hover {
+            background: rgba(234, 88, 12, 0.04);
+        }
+
+        .access-badge {
+            display: inline-block;
+            font-size: 11px;
+            font-weight: 600;
+            padding: 1px 6px;
+            border-radius: 4px;
+            margin-left: 6px;
+            vertical-align: middle;
+            font-family: var(--font-primary);
+        }
+
+        .access-badge.locked {
+            font-size: 13px;
+            padding: 0 2px;
+        }
+
+        .access-badge.pending {
+            background: #FFF7ED;
+            color: #EA580C;
+            border: 1px solid #FDBA74;
+        }
+
+        .btn-request-access {
+            font-size: 12px;
+            font-weight: 500;
+            padding: 4px 12px;
+            border-radius: 6px;
+            background: var(--primary-light);
+            color: var(--primary);
+            cursor: pointer;
+            transition: all 0.15s ease;
+            white-space: nowrap;
+        }
+
+        .btn-request-access:hover {
+            background: var(--primary);
+            color: #fff;
+        }
+
+        /* Request Access Modal */
+        .request-access-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 1100;
+            padding: 40px 24px;
+        }
+
+        .request-access-overlay.active {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .request-access-modal {
+            max-width: 500px;
+            width: 100%;
+            background: var(--surface);
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
+
+        .request-access-modal .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 24px 16px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .request-access-modal .modal-header h3 {
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .request-access-modal .modal-body {
+            padding: 20px 24px;
+        }
+
+        .request-access-modal .modal-body label {
+            display: block;
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            margin-top: 16px;
+            margin-bottom: 6px;
+        }
+
+        .request-access-modal .modal-body textarea {
+            width: 100%;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 10px 12px;
+            font-family: var(--font-primary);
+            font-size: 13px;
+            resize: vertical;
+        }
+
+        .request-access-modal .modal-body textarea:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px var(--primary-light);
+        }
+
+        .request-access-modal .modal-footer {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+            padding: 16px 24px 20px;
+            border-top: 1px solid var(--border);
+        }
+
+        .request-access-modal .btn-secondary {
+            padding: 8px 16px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--surface);
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            color: var(--text-primary);
+        }
+
+        .request-access-modal .btn-primary {
+            padding: 8px 16px;
+            border-radius: 8px;
+            border: none;
+            background: var(--primary);
+            color: #fff;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+        }
+
+        .request-access-modal .btn-primary:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
         .table-row-left {
             flex: 1;
             min-width: 0;
@@ -1414,10 +1566,17 @@
                 </button>
                 <div class="accordion-content">
                     {% for table in category.tables %}
-                    <div class="table-row" {% if table.query_mode != 'remote' %}onclick="openProfiler('{{ table.name }}')"{% endif %}>
+                    <div class="table-row{% if not table.is_public and not table.has_access %} table-row-locked{% endif %}" {% if not table.is_public and not table.has_access %}{% if table.pending_request %}title="Access request pending"{% else %}onclick="openRequestModal('{{ table.id }}', '{{ table.name }}')"{% endif %}{% elif table.query_mode != 'remote' %}onclick="openProfiler('{{ table.name }}')"{% endif %}>
                         <div class="table-row-left">
                             <div class="table-row-name">
                                 {{ table.name }}
+                                {% if not table.is_public and not table.has_access %}
+                                    {% if table.pending_request %}
+                                    <span class="access-badge pending">Pending</span>
+                                    {% else %}
+                                    <span class="access-badge locked" title="Private table - request access">&#128274;</span>
+                                    {% endif %}
+                                {% endif %}
                                 {% if table.query_mode == 'remote' %}
                                 <span class="query-mode-badge live">Live</span>
                                 {% else %}
@@ -1426,7 +1585,9 @@
                             </div>
                             <div class="table-row-desc">{{ table.description }}</div>
                             <div class="table-sync-info">
-                                {% if table.query_mode == 'remote' %}
+                                {% if not table.is_public and not table.has_access and not table.pending_request %}
+                                <span style="color: var(--text-secondary);">Click to request access</span>
+                                {% elif table.query_mode == 'remote' %}
                                 <span class="live-dot"></span> Queried directly from BigQuery
                                 {% elif table.last_sync %}
                                 Synced {{ table.last_sync }}
@@ -1434,12 +1595,20 @@
                             </div>
                         </div>
                         <div class="table-row-right">
+                            {% if not table.is_public and not table.has_access %}
+                                {% if table.pending_request %}
+                                <span class="rows-badge" style="background: #FFF7ED; color: #EA580C;">Awaiting review</span>
+                                {% else %}
+                                <span class="btn-request-access" onclick="event.stopPropagation(); openRequestModal('{{ table.id }}', '{{ table.name }}')">Request Access</span>
+                                {% endif %}
+                            {% else %}
                             <span class="rows-badge{{ ' large' if table.rows_large }}">{{ table.rows_display }}</span>
                             {% if table.query_mode != 'remote' %}
                             <span class="profile-link">
                                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
                                 Profile
                             </span>
+                            {% endif %}
                             {% endif %}
                         </div>
                     </div>
@@ -2448,6 +2617,77 @@ document.addEventListener('keydown', e => {
         box.classList.remove('visible');
     });
 })();
+</script>
+
+<!-- ═══════════════ REQUEST ACCESS MODAL ═══════════════ -->
+<div id="requestAccessOverlay" class="request-access-overlay" onclick="if(event.target===this)closeRequestModal()">
+    <div class="request-access-modal">
+        <div class="modal-header">
+            <h3>Request Access</h3>
+            <button class="btn-secondary" style="border:none;font-size:18px;padding:4px 8px;line-height:1;" onclick="closeRequestModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+            <p>Table: <strong id="requestTableName"></strong></p>
+            <label for="requestReason">Reason (optional)</label>
+            <textarea id="requestReason" rows="3" placeholder="Why do you need access to this table?"></textarea>
+            <p id="requestStatus" style="margin-top:12px;display:none;font-size:13px;"></p>
+        </div>
+        <div class="modal-footer">
+            <button class="btn-secondary" onclick="closeRequestModal()">Cancel</button>
+            <button class="btn-primary" id="submitRequestBtn" onclick="submitAccessRequest()">Request Access</button>
+        </div>
+    </div>
+</div>
+
+<script>
+let requestTableId = '';
+
+function openRequestModal(tableId, tableName) {
+    requestTableId = tableId;
+    document.getElementById('requestTableName').textContent = tableName;
+    document.getElementById('requestReason').value = '';
+    document.getElementById('requestStatus').style.display = 'none';
+    document.getElementById('submitRequestBtn').disabled = false;
+    document.getElementById('submitRequestBtn').textContent = 'Request Access';
+    document.getElementById('requestAccessOverlay').classList.add('active');
+}
+
+function closeRequestModal() {
+    document.getElementById('requestAccessOverlay').classList.remove('active');
+}
+
+async function submitAccessRequest() {
+    const reason = document.getElementById('requestReason').value;
+    const btn = document.getElementById('submitRequestBtn');
+    const status = document.getElementById('requestStatus');
+    btn.disabled = true;
+
+    try {
+        const resp = await fetch('/api/access-requests', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({table_id: requestTableId, reason: reason})
+        });
+
+        if (resp.ok) {
+            status.textContent = 'Request submitted! An admin will review it.';
+            status.style.color = 'var(--success)';
+            status.style.display = 'block';
+            btn.textContent = 'Submitted';
+        } else if (resp.status === 409) {
+            status.textContent = 'You already have a pending request for this table.';
+            status.style.color = 'var(--warning)';
+            status.style.display = 'block';
+        } else {
+            throw new Error('Request failed');
+        }
+    } catch(e) {
+        status.textContent = 'Error submitting request. Please try again.';
+        status.style.color = 'var(--error)';
+        status.style.display = 'block';
+        btn.disabled = false;
+    }
+}
 </script>
 
 <!-- ═══════════════ METRIC MODAL ═══════════════ -->
