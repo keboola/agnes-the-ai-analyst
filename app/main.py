@@ -58,6 +58,22 @@ def create_app() -> FastAPI:
     except Exception as e:
         logger.warning(f"Could not load instance config: {e}")
 
+    # Seed admin user for testing/CI (when SEED_ADMIN_EMAIL is set)
+    seed_email = os.environ.get("SEED_ADMIN_EMAIL")
+    if seed_email:
+        try:
+            from src.db import get_system_db
+            from src.repositories.users import UserRepository
+            conn = get_system_db()
+            repo = UserRepository(conn)
+            if not repo.get_by_email(seed_email):
+                import uuid
+                repo.create(id=str(uuid.uuid4()), email=seed_email, name="Admin", role="admin")
+                logger.info("Seeded admin user: %s", seed_email)
+            conn.close()
+        except Exception as e:
+            logger.warning(f"Could not seed admin: {e}")
+
     # Static files
     static_dir = Path(__file__).parent / "web" / "static"
     if static_dir.exists():
