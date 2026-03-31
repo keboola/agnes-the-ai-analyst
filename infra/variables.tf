@@ -66,6 +66,12 @@ variable "keboola_project_id" {
   default     = ""
 }
 
+variable "admin_email" {
+  description = "Admin email for initial seed (e.g., admin@company.com)"
+  type        = string
+  default     = ""
+}
+
 variable "domain" {
   description = "Domain name for SSL (optional, empty = IP only)"
   type        = string

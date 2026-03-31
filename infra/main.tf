@@ -86,6 +86,7 @@ locals {
     KEBOOLA_STORAGE_TOKEN=${var.keboola_token}
     KEBOOLA_STACK_URL=${var.keboola_stack_url}
     KEBOOLA_PROJECT_ID=${var.keboola_project_id}
+    SEED_ADMIN_EMAIL=${var.admin_email}
     LOG_LEVEL=info
     ENVEOF
     # Strip leading whitespace from heredoc
@@ -93,7 +94,7 @@ locals {
     chmod 600 "$APP_DIR/.env"
 
     echo "=== Creating data directory ==="
-    mkdir -p /data/state /data/analytics /data/src_data/parquet
+    mkdir -p /data/state /data/analytics /data/extracts
     chown -R 1000:1000 /data
 
     echo "=== Starting Docker Compose ==="
