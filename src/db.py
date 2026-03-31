@@ -149,6 +149,18 @@ CREATE TABLE IF NOT EXISTS dataset_permissions (
     access VARCHAR DEFAULT 'read',
     PRIMARY KEY (user_id, dataset)
 );
+
+CREATE TABLE IF NOT EXISTS access_requests (
+    id VARCHAR PRIMARY KEY,
+    user_id VARCHAR NOT NULL,
+    user_email VARCHAR NOT NULL,
+    table_id VARCHAR NOT NULL,
+    reason TEXT,
+    status VARCHAR DEFAULT 'pending',
+    reviewed_by VARCHAR,
+    reviewed_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT current_timestamp
+);
 """
 
 

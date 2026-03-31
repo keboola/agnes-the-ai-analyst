@@ -26,6 +26,7 @@ from src.repositories.sync_settings import SyncSettingsRepository, DatasetPermis
 from src.repositories.knowledge import KnowledgeRepository
 from src.repositories.users import UserRepository
 from src.repositories.profiles import ProfileRepository
+from src.repositories.access_requests import AccessRequestRepository
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["web"])
@@ -240,27 +241,45 @@ async def catalog(
     try:
         from src.repositories.table_registry import TableRegistryRepository
         table_repo = TableRegistryRepository(conn)
+        perm_repo = DatasetPermissionRepository(conn)
+        access_repo = AccessRequestRepository(conn)
         registered = table_repo.list_all()
+
+        # Pre-fetch user's pending access requests
+        user_id = user.get("id", "")
+        user_requests = access_repo.list_by_user(user_id)
+        pending_request_table_ids = {
+            r["table_id"] for r in user_requests if r.get("status") == "pending"
+        }
+
         tables = []
         for tc in registered:
+            table_id = tc.get("id", "")
+            is_public = tc.get("is_public", True)
+            has_access = is_public or perm_repo.has_access(user_id, table_id)
+
             table_data = {
-                "id": tc.get("id", ""),
+                "id": table_id,
                 "name": tc.get("name", ""),
                 "description": tc.get("description", ""),
                 "dataset": tc.get("bucket"),
                 "sync_strategy": tc.get("sync_strategy", "full_refresh"),
                 "query_mode": tc.get("query_mode", "local"),
-                "profile": all_profiles.get(tc.get("id", "")),
+                "profile": all_profiles.get(table_id),
+                "is_public": is_public,
+                "has_access": has_access,
+                "pending_request": table_id in pending_request_table_ids,
             }
             # Add sync state
             for state in all_states:
-                if state["table_id"] == tc.get("id"):
+                if state["table_id"] == table_id:
                     table_data["last_sync"] = state.get("last_sync")
                     table_data["rows"] = state.get("rows")
                     break
             tables.append(table_data)
     except Exception as e:
         tables = []
+        pending_request_table_ids = set()
         logger.warning(f"Could not load catalog: {e}")
 
     # Build data_stats for catalog template
@@ -281,13 +300,20 @@ async def catalog(
             categories[ds] = {"name": ds, "tables": []}
         categories[ds]["tables"].append(t)
 
+    # Add count to each category (template expects .count)
+    catalog_data = []
+    for cat in categories.values():
+        cat["count"] = len(cat["tables"])
+        catalog_data.append(cat)
+
     ctx = _build_context(
         request, user=user,
         tables=tables,
         datasets=datasets,
         enabled_datasets=enabled_datasets,
         data_stats=data_stats,
-        categories=list(categories.values()),
+        categories=catalog_data,
+        catalog_data=catalog_data,
         metrics_data=[],
         sync_states=all_states,
         folder_mapping={},
@@ -391,3 +417,14 @@ async def admin_tables(
     tables = repo.list_all()
     ctx = _build_context(request, user=user, registered_tables=tables)
     return templates.TemplateResponse(request, "admin_tables.html", ctx)
+
+
+@router.get("/admin/permissions", response_class=HTMLResponse)
+async def admin_permissions_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Admin page for managing permissions and access requests."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_permissions.html", ctx)

@@ -24,6 +24,7 @@ from app.api.catalog import router as catalog_router
 from app.api.telegram import router as telegram_router
 from app.api.admin import router as admin_router
 from app.api.permissions import router as permissions_router
+from app.api.access_requests import router as access_requests_router
 from app.web.router import router as web_router
 
 logger = logging.getLogger(__name__)
@@ -103,6 +104,7 @@ def create_app() -> FastAPI:
     app.include_router(telegram_router)
     app.include_router(admin_router)
     app.include_router(permissions_router)
+    app.include_router(access_requests_router)
 
     # Web UI router (must be last — has catch-all routes)
     app.include_router(web_router)
