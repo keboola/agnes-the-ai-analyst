@@ -197,6 +197,11 @@ def get_system_db() -> duckdb.DuckDBPyConnection:
             _system_db_conn = duckdb.connect(db_path)
             _system_db_path = db_path
             _ensure_schema(_system_db_conn)
+            # WAL mode: allows concurrent readers while writing
+            try:
+                _system_db_conn.execute("PRAGMA enable_wal")
+            except Exception:
+                pass  # Older DuckDB versions may not support this
         return _system_db_conn.cursor()
 
 
