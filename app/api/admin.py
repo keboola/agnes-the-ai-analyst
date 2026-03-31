@@ -121,9 +121,13 @@ async def update_table(
     if not repo.get(table_id):
         raise HTTPException(status_code=404, detail="Table not found")
 
-    updates = {k: v for k, v in request.dict().items() if v is not None}
+    updates = {k: v for k, v in request.model_dump().items() if v is not None}
     if updates:
-        repo.register(id=table_id, **{**repo.get(table_id), **updates})
+        existing = repo.get(table_id)
+        merged = {k: v for k, v in existing.items() if k != "registered_at"}
+        merged.update(updates)
+        merged.pop("id", None)  # avoid duplicate id kwarg
+        repo.register(id=table_id, **merged)
     return {"id": table_id, "updated": list(updates.keys())}
 
 
