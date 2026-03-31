@@ -16,6 +16,20 @@ services:
       timeout: 5s
       retries: 3
 
+  # One-shot: run extractor then rebuild orchestrator views
+  extract:
+    build: .
+    command: >
+      sh -c "python -m connectors.keboola.extractor &&
+             python -c 'from src.orchestrator import SyncOrchestrator; print(SyncOrchestrator().rebuild())'"
+    volumes:
+      - data:/data
+    env_file: .env
+    environment:
+      - DATA_DIR=/data
+    profiles:
+      - extract
+
   scheduler:
     build: .
     command: python -m services.scheduler
