@@ -109,7 +109,9 @@ class KeboolaClient:
 
         # Metadata cache
         self.metadata_cache: Dict[str, Dict[str, Any]] = {}
-        self.metadata_cache_path = config.get_metadata_path() / "table_metadata.json"
+        metadata_dir = Path(os.environ.get("DATA_DIR", "./data")) / "metadata"
+        metadata_dir.mkdir(parents=True, exist_ok=True)
+        self.metadata_cache_path = metadata_dir / "table_metadata.json"
 
         # Load cache from disk if exists
         self._load_metadata_cache()
