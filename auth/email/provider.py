@@ -27,9 +27,44 @@ from flask import (
 )
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
+import os
+
 from auth import AuthProvider
-from webapp.auth import validate_email_domain
-from webapp.config import Config
+from app.instance_config import get_allowed_domains, get_value
+
+_ALLOWED_DOMAINS = get_allowed_domains()
+_ALLOWED_EMAILS = [
+    e.strip().lower()
+    for e in os.environ.get("ALLOWED_EMAILS", "").split(",")
+    if e.strip()
+]
+
+
+def validate_email_domain(email: str) -> bool:
+    if not email:
+        return False
+    email_lower = email.lower()
+    if email_lower in _ALLOWED_EMAILS:
+        return True
+    domain = email_lower.split("@")[-1]
+    return domain in _ALLOWED_DOMAINS
+
+
+class _Config:
+    SECRET_KEY = os.environ.get("WEBAPP_SECRET_KEY", "dev-secret-key-change-me")
+    ALLOWED_DOMAINS = _ALLOWED_DOMAINS
+    SMTP_HOST = os.environ.get("SMTP_HOST", "")
+    SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+    SMTP_USER = os.environ.get("SMTP_USER", "")
+    SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
+    SMTP_FROM = os.environ.get("SMTP_FROM",
+        os.environ.get("SMTP_USER",
+            get_value("email", "from_address", default="noreply@example.com")))
+    SMTP_USE_TLS = os.environ.get("SMTP_USE_TLS", "true").lower() == "true"
+    INSTANCE_NAME = get_value("instance", "name", default="AI Data Analyst")
+
+
+Config = _Config
 
 logger = logging.getLogger(__name__)
 

@@ -2,7 +2,7 @@
 Google OAuth authentication provider.
 
 Handles Google Sign-In flow with domain validation.
-Extracted from webapp/auth.py - the OAuth-specific routes.
+Google OAuth flow with domain validation (Flask blueprint).
 """
 
 import logging
@@ -10,9 +10,36 @@ import logging
 from authlib.integrations.flask_client import OAuth
 from flask import Blueprint, flash, redirect, session, url_for
 
+import os
+
 from auth import AuthProvider
-from webapp.auth import validate_email_domain
-from webapp.config import Config
+from app.instance_config import get_allowed_domains
+
+_ALLOWED_DOMAINS = get_allowed_domains()
+_ALLOWED_EMAILS = [
+    e.strip().lower()
+    for e in os.environ.get("ALLOWED_EMAILS", "").split(",")
+    if e.strip()
+]
+
+
+def validate_email_domain(email: str) -> bool:
+    if not email:
+        return False
+    email_lower = email.lower()
+    if email_lower in _ALLOWED_EMAILS:
+        return True
+    domain = email_lower.split("@")[-1]
+    return domain in _ALLOWED_DOMAINS
+
+
+class _Config:
+    ALLOWED_DOMAINS = _ALLOWED_DOMAINS
+    GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
+    GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+
+
+Config = _Config
 
 logger = logging.getLogger(__name__)
 

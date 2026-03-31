@@ -150,3 +150,83 @@ class TestQuery:
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data[0]["cnt"] == 2
+
+
+class TestAdminCommands:
+    def test_register_table(self, tmp_config):
+        """Test da admin register-table calls the API and reports success."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 201
+        mock_resp.json.return_value = {"id": "tbl-1", "name": "orders"}
+
+        with patch("cli.commands.admin.api_post", return_value=mock_resp) as mock_post:
+            result = runner.invoke(app, [
+                "admin", "register-table", "orders",
+                "--source-type", "keboola",
+                "--bucket", "in.c-crm",
+                "--query-mode", "local",
+            ])
+            assert result.exit_code == 0
+            assert "Registered: orders" in result.output
+            mock_post.assert_called_once()
+            call_args = mock_post.call_args
+            assert call_args[0][0] == "/api/admin/register-table"
+            assert call_args[1]["json"]["name"] == "orders"
+
+    def test_register_table_conflict(self, tmp_config):
+        """Test da admin register-table when table already exists."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 409
+        mock_resp.json.return_value = {"detail": "Table already exists"}
+
+        with patch("cli.commands.admin.api_post", return_value=mock_resp):
+            result = runner.invoke(app, ["admin", "register-table", "orders"])
+            assert result.exit_code == 0
+            assert "Already exists: orders" in result.output
+
+    def test_list_tables(self, tmp_config):
+        """Test da admin list-tables returns table listing."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "count": 2,
+            "tables": [
+                {"name": "orders", "source_type": "keboola", "query_mode": "local", "bucket": "in.c-crm", "id": "t1"},
+                {"name": "customers", "source_type": "keboola", "query_mode": "local", "bucket": "in.c-crm", "id": "t2"},
+            ],
+        }
+
+        with patch("cli.commands.admin.api_get", return_value=mock_resp):
+            result = runner.invoke(app, ["admin", "list-tables"])
+            assert result.exit_code == 0
+            assert "Registered tables: 2" in result.output
+            assert "orders" in result.output
+            assert "customers" in result.output
+
+    def test_list_tables_json(self, tmp_config):
+        """Test da admin list-tables --json outputs valid JSON."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "count": 1,
+            "tables": [
+                {"name": "orders", "source_type": "keboola", "query_mode": "local", "bucket": "in.c-crm", "id": "t1"},
+            ],
+        }
+
+        with patch("cli.commands.admin.api_get", return_value=mock_resp):
+            result = runner.invoke(app, ["admin", "list-tables", "--json"])
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert data["count"] == 1
+
+    def test_list_tables_api_failure(self, tmp_config):
+        """Test da admin list-tables handles API errors."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 500
+        mock_resp.text = "Internal Server Error"
+        mock_resp.json.return_value = {"detail": "Internal Server Error"}
+
+        with patch("cli.commands.admin.api_get", return_value=mock_resp):
+            result = runner.invoke(app, ["admin", "list-tables"])
+            assert result.exit_code == 1

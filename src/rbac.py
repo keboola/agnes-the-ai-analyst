@@ -1,7 +1,7 @@
 """Role-based access control — centralized permission checks using DuckDB.
 
 Replaces Linux group-based auth (sudo/data-ops → admin, dataread → analyst).
-Used by both FastAPI (app/auth/dependencies.py) and Flask webapp (webapp/auth.py).
+Used by FastAPI (app/auth/dependencies.py).
 """
 
 from enum import Enum

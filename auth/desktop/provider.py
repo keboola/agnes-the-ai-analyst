@@ -1,7 +1,7 @@
 """
 Desktop JWT authentication provider.
 
-Wraps the existing webapp/desktop_auth.py blueprint.
+Desktop JWT authentication (Flask blueprint).
 This is NOT a login provider (no login button) - it provides
 JWT-based API authentication for the native desktop application.
 """
@@ -10,8 +10,16 @@ import logging
 
 from flask import Blueprint
 
+import os
+
 from auth import AuthProvider
-from webapp.config import Config
+
+
+class _Config:
+    DESKTOP_JWT_SECRET = os.environ.get("DESKTOP_JWT_SECRET", "")
+
+
+Config = _Config
 
 logger = logging.getLogger(__name__)
 
@@ -26,9 +34,8 @@ class DesktopAuthProvider(AuthProvider):
         return "Desktop App"
 
     def get_blueprint(self) -> Blueprint:
-        from webapp.desktop_auth import desktop_bp
-
-        return desktop_bp
+        # Legacy Flask blueprint — removed with webapp/
+        return Blueprint("desktop_auth", __name__)
 
     def get_login_button(self) -> dict:
         return {

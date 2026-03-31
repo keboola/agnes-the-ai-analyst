@@ -13,8 +13,7 @@ from datetime import datetime
 
 from flask import Blueprint, abort, jsonify, request
 
-from webapp.config import Config
-from .service import get_jira_service
+from .service import Config, get_jira_service
 
 logger = logging.getLogger(__name__)
 
