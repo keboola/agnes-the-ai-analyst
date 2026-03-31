@@ -1,69 +1,40 @@
-# Data source adapters (install only what you need)
-kbcstorage>=0.9.0          # For Keboola adapter
-google-cloud-bigquery>=3.0.0           # For BigQuery adapter
-google-cloud-bigquery-storage>=2.0.0   # For BigQuery adapter (fast Arrow transfer)
-
-# Data processing
-# pandas - core tabular data processing library
-# pyarrow - Parquet format support and fast operations
-# pytz - timezone support required by DuckDB for reading timezone-aware Parquet columns
-pandas>=2.0.0
-pyarrow>=12.0.0
-pytz>=2024.1
-
-# Analytical database
-# DuckDB - in-process SQL OLAP database for analytical queries
+# Core database
 duckdb>=0.9.0
 
-# Configuration
-# python-dotenv - loading environment variables from .env files
-# pyyaml - parsing YAML configuration from data_description.md
-python-dotenv>=1.0.0
-pyyaml>=6.0
-
-# Progress tracking and logging
-# tqdm - progress bars for long-running operations (download, sync)
-tqdm>=4.65.0
-
-# Web application (Google SSO portal)
-# flask - web framework for self-service portal (legacy, being replaced by FastAPI)
-# authlib - OAuth 2.0 / OpenID Connect library for Google SSO
-# gunicorn - WSGI server for production deployment
-flask>=3.0.0
-authlib>=1.3.0
-gunicorn>=21.0.0
-
-# FastAPI - new unified web framework (API + web UI)
+# Web framework (FastAPI)
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 python-multipart>=0.0.9
 jinja2>=3.1.0
 
-# Telegram notification bot
-# httpx - async HTTP client for Telegram API and unix socket communication
-# aiohttp - async HTTP server for bot's internal send API
+# Authentication
+PyJWT>=2.8.0
+itsdangerous>=2.1.0
+
+# HTTP client
 httpx>=0.27.0
-aiohttp>=3.9.0
+
+# CLI
+typer>=0.12.0
+rich>=13.0.0
+
+# Configuration
+python-dotenv>=1.0.0
+pyyaml>=6.0
+
+# Data processing
+pandas>=2.0.0
+pyarrow>=12.0.0
+pytz>=2024.1
+
+# Data source connectors
+kbcstorage>=0.9.0
+google-cloud-bigquery>=3.0.0
+google-cloud-bigquery-storage>=2.0.0
+
+# Profiler visualizations
 matplotlib>=3.8.0
 numpy>=1.24.0
 
-# Desktop app authentication
-# PyJWT - JWT token creation and validation for desktop app auth
-PyJWT>=2.8.0
-
-# Password authentication for external users
-# argon2-cffi - modern password hashing algorithm (Argon2id)
-# sendgrid - email service for setup/reset links
-argon2-cffi>=23.1.0
-sendgrid>=6.11.0
-
-# Corporate Memory knowledge extraction
-# anthropic - Claude API client for HAIKU-based knowledge extraction
-anthropic>=0.39.0
-
-# OpenAI-compatible API client for LLM proxy routing (LiteLLM, OpenRouter, etc.)
-openai>=1.0.0
-
-# Sample data generation (development/testing)
-# faker - realistic synthetic data for demo datasets
+# Sample data generation
 faker>=24.0.0

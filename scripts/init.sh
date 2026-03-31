@@ -39,16 +39,19 @@ echo "3️⃣  Activating virtual environment..."
 source .venv/bin/activate
 echo "   ✅ Virtual environment activated"
 
-# Upgrade pip
+# Install uv if not available
 echo ""
-echo "4️⃣  Upgrading pip..."
-pip install --upgrade pip --quiet
-echo "   ✅ pip upgraded"
+echo "4️⃣  Checking uv..."
+if ! command -v uv &> /dev/null; then
+    echo "   Installing uv..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+fi
+echo "   ✅ uv available"
 
 # Install dependencies
 echo ""
 echo "5️⃣  Installing dependencies from requirements.txt..."
-pip install -r requirements.txt --quiet
+uv pip install -r requirements.txt --quiet
 echo "   ✅ Dependencies installed"
 
 # Create folders
