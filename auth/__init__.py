@@ -70,9 +70,10 @@ def discover_providers() -> list[AuthProvider]:
     Only available providers (is_available() == True) are returned.
     Providers listed in Config.AUTH_DISABLED_PROVIDERS are skipped.
     """
-    from webapp.config import Config
+    from app.instance_config import get_value
 
-    disabled = [name.lower() for name in (Config.AUTH_DISABLED_PROVIDERS or [])]
+    disabled_raw = get_value("auth", "disabled_providers", default=[])
+    disabled = [name.lower() for name in (disabled_raw or [])]
     providers = []
     auth_dir = Path(__file__).parent
 

@@ -204,3 +204,11 @@ class TestTableLifecycle:
         resp = c.get("/api/admin/registry", headers=_auth(t))
         ids = {tbl["id"] for tbl in resp.json()["tables"]}
         assert table_id not in ids
+
+
+class TestSyncSubprocess:
+    def test_sync_trigger_returns_200(self, seeded_app):
+        c = seeded_app["client"]
+        resp = c.post("/api/sync/trigger", headers=_auth(seeded_app["admin_token"]))
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "triggered"

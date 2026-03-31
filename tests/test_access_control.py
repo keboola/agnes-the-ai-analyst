@@ -523,6 +523,91 @@ class TestQueryFiltering:
         assert resp.status_code != 403
 
 
+class TestAccessRequestFlow:
+    """Full access request lifecycle: request -> approve -> access."""
+
+    def test_request_approve_access(self, seeded_app):
+        """Analyst requests -> admin approves -> analyst gets access."""
+        c = seeded_app["client"]
+        env = seeded_app["env"]
+        admin_h = _auth(seeded_app["admin_token"])
+        analyst_h = _auth(seeded_app["analyst_token"])
+
+        # Create private table with data
+        create_mock_extract(env["extracts_dir"], "keboola", [
+            {"name": "secret", "data": [{"id": "1", "val": "hidden"}]},
+        ])
+        from src.db import get_system_db
+        conn = get_system_db()
+        conn.execute("INSERT INTO table_registry (id,name,is_public) VALUES ('secret','secret',false) ON CONFLICT(id) DO UPDATE SET is_public=false")
+        conn.close()
+
+        # Analyst blocked
+        assert c.get("/api/data/secret/download", headers=analyst_h).status_code == 403
+
+        # Analyst requests access
+        resp = c.post("/api/access-requests", json={"table_id": "secret", "reason": "Need for analysis"},
+                      headers=analyst_h)
+        assert resp.status_code == 201
+        req_id = resp.json()["id"]
+
+        # Check pending
+        resp = c.get("/api/access-requests/pending", headers=admin_h)
+        assert resp.status_code == 200
+        assert any(r["id"] == req_id for r in resp.json()["requests"])
+
+        # Admin approves
+        resp = c.post(f"/api/access-requests/{req_id}/approve", headers=admin_h)
+        assert resp.status_code == 200
+
+        # Analyst now has access
+        assert c.get("/api/data/secret/download", headers=analyst_h).status_code == 200
+
+    def test_request_deny(self, seeded_app):
+        c = seeded_app["client"]
+        admin_h = _auth(seeded_app["admin_token"])
+        analyst_h = _auth(seeded_app["analyst_token"])
+
+        from src.db import get_system_db
+        conn = get_system_db()
+        conn.execute("INSERT INTO table_registry (id,name,is_public) VALUES ('denied_tbl','denied_tbl',false) ON CONFLICT(id) DO UPDATE SET is_public=false")
+        conn.close()
+
+        resp = c.post("/api/access-requests", json={"table_id": "denied_tbl"}, headers=analyst_h)
+        req_id = resp.json()["id"]
+
+        resp = c.post(f"/api/access-requests/{req_id}/deny", headers=admin_h)
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "denied"
+
+    def test_duplicate_request_409(self, seeded_app):
+        c = seeded_app["client"]
+        analyst_h = _auth(seeded_app["analyst_token"])
+
+        from src.db import get_system_db
+        conn = get_system_db()
+        conn.execute("INSERT INTO table_registry (id,name,is_public) VALUES ('dup_tbl','dup_tbl',false) ON CONFLICT(id) DO UPDATE SET is_public=false")
+        conn.close()
+
+        c.post("/api/access-requests", json={"table_id": "dup_tbl"}, headers=analyst_h)
+        resp = c.post("/api/access-requests", json={"table_id": "dup_tbl"}, headers=analyst_h)
+        assert resp.status_code == 409
+
+    def test_my_requests(self, seeded_app):
+        c = seeded_app["client"]
+        analyst_h = _auth(seeded_app["analyst_token"])
+
+        from src.db import get_system_db
+        conn = get_system_db()
+        conn.execute("INSERT INTO table_registry (id,name,is_public) VALUES ('my_req_tbl','my_req_tbl',false) ON CONFLICT(id) DO UPDATE SET is_public=false")
+        conn.close()
+
+        c.post("/api/access-requests", json={"table_id": "my_req_tbl"}, headers=analyst_h)
+        resp = c.get("/api/access-requests/my", headers=analyst_h)
+        assert resp.status_code == 200
+        assert any(r["table_id"] == "my_req_tbl" for r in resp.json()["requests"])
+
+
 class TestUnauthenticatedAccess:
     """Endpoints require authentication."""
 

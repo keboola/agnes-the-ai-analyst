@@ -49,7 +49,6 @@ docker compose --profile full up  # Include telegram bot
 ├── cli/                    # CLI tool (`da sync`, `da query`, `da admin`)
 ├── auth/                   # Authentication providers (google, email, password, desktop)
 ├── services/               # Standalone services (scheduler, telegram_bot, ws_gateway, etc.)
-├── webapp/                 # Legacy Flask web portal
 ├── server/                 # Legacy deployment infrastructure
 ├── scripts/                # Utility + migration scripts
 ├── config/                 # Configuration templates (instance.yaml.example)
@@ -86,8 +85,8 @@ The SyncOrchestrator scans `/data/extracts/*/extract.duckdb`, ATTACHes each into
                          │
               ┌──────────┼──────────┐
               ▼          ▼          ▼
-          FastAPI      CLI       Webapp
-          (serve)    (da sync)   (dashboard)
+          FastAPI      CLI
+          (serve)    (da sync)
 ```
 
 Three source types:
@@ -110,9 +109,6 @@ pip install -r requirements.txt
 
 # Run FastAPI locally
 uvicorn app.main:app --reload
-
-# Run legacy Flask webapp
-flask --app webapp.app run --debug
 
 # Run tests
 pytest tests/ -v

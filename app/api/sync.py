@@ -52,7 +52,7 @@ def _run_sync(tables: Optional[List[str]] = None):
         logger.info("Starting extractor subprocess: %s", " ".join(cmd))
 
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=600, env=env,
+            cmd, capture_output=True, text=True, timeout=1800, env=env,
             cwd=str(Path(__file__).parent.parent.parent),  # project root
         )
 

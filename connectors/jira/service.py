@@ -18,9 +18,21 @@ from typing import Any
 
 import httpx
 
-from webapp.config import Config
-
 logger = logging.getLogger(__name__)
+
+
+class _JiraConfig:
+    """Jira configuration from environment variables."""
+    JIRA_DOMAIN = os.environ.get("JIRA_DOMAIN", "")
+    JIRA_EMAIL = os.environ.get("JIRA_EMAIL", "")
+    JIRA_API_TOKEN = os.environ.get("JIRA_API_TOKEN", "")
+    JIRA_DATA_DIR = Path(os.environ.get("JIRA_DATA_DIR", "/data/src_data/raw/jira"))
+    JIRA_CLOUD_ID = os.environ.get("JIRA_CLOUD_ID", "")
+    JIRA_SLA_EMAIL = os.environ.get("JIRA_SLA_EMAIL", "")
+    JIRA_SLA_API_TOKEN = os.environ.get("JIRA_SLA_API_TOKEN", "")
+
+
+Config = _JiraConfig
 
 
 def trigger_incremental_transform(issue_key: str, deleted: bool = False) -> bool:

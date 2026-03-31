@@ -1,7 +1,7 @@
 """
 Email/password authentication provider.
 
-Wraps the existing webapp/password_auth.py blueprint.
+Email/password authentication (Flask blueprint).
 Available only when SENDGRID_API_KEY is configured.
 """
 
@@ -9,8 +9,16 @@ import logging
 
 from flask import Blueprint
 
+import os
+
 from auth import AuthProvider
-from webapp.config import Config
+
+
+class _Config:
+    SENDGRID_API_KEY = os.environ.get("SENDGRID_API_KEY", "")
+
+
+Config = _Config
 
 logger = logging.getLogger(__name__)
 
@@ -25,9 +33,8 @@ class PasswordAuthProvider(AuthProvider):
         return "Email"
 
     def get_blueprint(self) -> Blueprint:
-        from webapp.password_auth import password_auth_bp
-
-        return password_auth_bp
+        # Legacy Flask blueprint — removed with webapp/
+        return Blueprint("password_auth", __name__)
 
     def get_login_button(self) -> dict:
         return {

@@ -5,6 +5,10 @@
 dev_data/
 session-analysis/
 
+# CLI sync artifacts (local parquets + DuckDB)
+server/
+user/
+
 # Environment variables
 .env
 .env.local
