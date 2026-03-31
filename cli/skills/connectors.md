@@ -1,30 +1,53 @@
 # Connectors — How to add a new data source
 
 ## Existing Connectors
-- **Keboola** (`connectors/keboola/`) — Keboola Storage API
-- **BigQuery** (`connectors/bigquery/`) — Google BigQuery
-- **Jira** (`connectors/jira/`) — Jira webhook + API
+- **Keboola** (`connectors/keboola/extractor.py`) — DuckDB Keboola extension, batch pull
+- **BigQuery** (`connectors/bigquery/extractor.py`) — DuckDB BQ extension, remote-only
+- **Jira** (`connectors/jira/`) — Webhook + incremental parquet transform
+
+## extract.duckdb Contract
+
+Every connector produces the same output:
+```
+/data/extracts/{source_name}/
+├── extract.duckdb          ← _meta table + views
+└── data/                   ← parquet files (local sources only)
+```
+
+The `_meta` table must have columns:
+- `table_name VARCHAR` — view name
+- `description VARCHAR`
+- `rows BIGINT`
+- `size_bytes BIGINT`
+- `extracted_at TIMESTAMP`
+- `query_mode VARCHAR` — 'local' (data here) or 'remote' (query on demand)
 
 ## Adding a New Connector
 
-1. Create `connectors/<name>/adapter.py` implementing the `DataSource` ABC:
+1. Create `connectors/<name>/extractor.py`:
    ```python
-   from src.data_sync import DataSource
+   import duckdb
+   from pathlib import Path
 
-   class MyDataSource(DataSource):
-       def sync_table(self, table_config, sync_state): ...
-       def discover_tables(self): ...
-       def get_column_metadata(self, table_id): ...
-       def get_source_name(self): ...
+   def run(output_dir: str, table_configs: list[dict], **kwargs):
+       output = Path(output_dir)
+       data_dir = output / "data"
+       data_dir.mkdir(parents=True, exist_ok=True)
+
+       conn = duckdb.connect(str(output / "extract.duckdb"))
+       # Create _meta table
+       # For each table: COPY TO parquet, create view, insert _meta row
+       conn.close()
    ```
 
-2. The factory in `src/data_sync.py:create_data_source()` auto-discovers connectors.
-   Set `DATA_SOURCE=<name>` in instance.yaml or .env.
+2. Register tables in DuckDB `table_registry` via admin API or migration script.
+   Set `source_type` to your connector name.
 
 3. Add required env vars to `.env` and `config/.env.template`.
 
-4. Add tests to `tests/test_<name>_adapter.py`.
+4. The SyncOrchestrator (`src/orchestrator.py`) will auto-discover your extract.duckdb.
 
 ## Configuration
-Each connector reads credentials from environment variables.
-Table definitions are in `docs/data_description.md` (YAML blocks).
+- Instance-level config: `config/instance.yaml` (connection details)
+- Table definitions: DuckDB `table_registry` table
+- Credentials: environment variables
