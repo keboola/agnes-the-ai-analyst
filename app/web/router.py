@@ -236,24 +236,25 @@ async def catalog(
     enabled_datasets = settings_repo.get_enabled_datasets(user["id"])
     datasets = get_datasets()
 
-    # Build catalog data from config
+    # Build catalog data from table_registry in DuckDB
     try:
-        from src.config import get_config
-        config = get_config()
+        from src.repositories.table_registry import TableRegistryRepository
+        table_repo = TableRegistryRepository(conn)
+        registered = table_repo.list_all()
         tables = []
-        for tc in config.tables:
+        for tc in registered:
             table_data = {
-                "id": tc.id,
-                "name": tc.name,
-                "description": tc.description,
-                "dataset": getattr(tc, "dataset", None),
-                "sync_strategy": tc.sync_strategy,
-                "query_mode": getattr(tc, "query_mode", "local"),
-                "profile": all_profiles.get(tc.id),
+                "id": tc.get("id", ""),
+                "name": tc.get("name", ""),
+                "description": tc.get("description", ""),
+                "dataset": tc.get("bucket"),
+                "sync_strategy": tc.get("sync_strategy", "full_refresh"),
+                "query_mode": tc.get("query_mode", "local"),
+                "profile": all_profiles.get(tc.get("id", "")),
             }
             # Add sync state
             for state in all_states:
-                if state["table_id"] == tc.id:
+                if state["table_id"] == tc.get("id"):
                     table_data["last_sync"] = state.get("last_sync")
                     table_data["rows"] = state.get("rows")
                     break

@@ -611,19 +611,11 @@ def _load_catalog_data() -> list:
             # Enrich with catalog metadata (OpenMetadata)
             if _catalog_enricher:
                 try:
-                    # Create config for enrichment with all available fields
-                    from src.config import TableConfig
-                    table_config = TableConfig(
+                    # Create lightweight config for enrichment (enricher uses .id, .name, .catalog_fqn)
+                    from types import SimpleNamespace
+                    table_config = SimpleNamespace(
                         id=table_id,
                         name=table.get("name", ""),
-                        description=table.get("description", ""),
-                        primary_key=table.get("primary_key", "id"),
-                        sync_strategy=table.get("sync_strategy", "full_refresh"),
-                        incremental_window_days=table.get("incremental_window_days"),
-                        partition_by=table.get("partition_by"),
-                        partition_granularity=table.get("partition_granularity"),
-                        max_history_days=table.get("max_history_days"),
-                        partition_column_type=table.get("partition_column_type", "TIMESTAMP"),
                         catalog_fqn=table.get("catalog_fqn"),
                     )
                     catalog_data = _catalog_enricher.enrich_table(table_config)
@@ -1097,7 +1089,7 @@ def register_routes(app: Flask) -> None:
             if _catalog_enricher and _catalog_enricher.enabled:
                 try:
                     # Find table config from data_description.md
-                    from src.config import TableConfig
+                    from types import SimpleNamespace
                     from config.loader import load_instance_config
 
                     # Load data_description.md to find table config by name
@@ -1116,17 +1108,10 @@ def register_routes(app: Flask) -> None:
                                 # Find table by name
                                 for table_def in yaml_data["tables"]:
                                     if table_def.get("name") == table_name:
-                                        table_config = TableConfig(
+                                        # Lightweight config (enricher uses .id, .name, .catalog_fqn)
+                                        table_config = SimpleNamespace(
                                             id=table_def.get("id", ""),
                                             name=table_def.get("name", ""),
-                                            description=table_def.get("description", ""),
-                                            primary_key=table_def.get("primary_key", "id"),
-                                            sync_strategy=table_def.get("sync_strategy", "full_refresh"),
-                                            incremental_window_days=table_def.get("incremental_window_days"),
-                                            partition_by=table_def.get("partition_by"),
-                                            partition_granularity=table_def.get("partition_granularity"),
-                                            max_history_days=table_def.get("max_history_days"),
-                                            partition_column_type=table_def.get("partition_column_type", "TIMESTAMP"),
                                             catalog_fqn=table_def.get("catalog_fqn"),
                                         )
                                         catalog_data = _catalog_enricher.enrich_table(table_config)
@@ -1862,17 +1847,25 @@ def register_routes(app: Flask) -> None:
     def admin_discover_tables():
         """Discover all available tables from the data source."""
         try:
-            from src.data_sync import create_data_source
+            from app.instance_config import get_data_source_type, get_value
 
-            ds = create_data_source()
-            raw_tables = ds.discover_tables()
+            source_type = get_data_source_type()
+            raw_tables = []
+            if source_type == "keboola":
+                from connectors.keboola.client import KeboolaClient
+                url = get_value("keboola", "url", default="")
+                token = os.environ.get(get_value("keboola", "token_env", default="KEBOOLA_STORAGE_TOKEN"), "")
+                client = KeboolaClient(token=token, url=url)
+                raw_tables = client.discover_all_tables()
 
             # Check which tables are already registered
             registered_ids = set()
             try:
-                from src.table_registry import TableRegistry
-                registry = TableRegistry.default()
-                registered_ids = {t["id"] for t in registry.list_tables()}
+                from src.db import get_system_db
+                from src.repositories.table_registry import TableRegistryRepository
+                conn = get_system_db()
+                repo = TableRegistryRepository(conn)
+                registered_ids = {t["id"] for t in repo.list_all()}
             except Exception:
                 pass
 
@@ -1905,14 +1898,16 @@ def register_routes(app: Flask) -> None:
     def admin_registry_list():
         """Return the full table registry."""
         try:
-            from src.table_registry import TableRegistry
+            from src.db import get_system_db
+            from src.repositories.table_registry import TableRegistryRepository
 
-            registry = TableRegistry.default()
+            conn = get_system_db()
+            repo = TableRegistryRepository(conn)
             return jsonify({
                 "ok": True,
-                "version": registry.version,
-                "folder_mapping": registry.get_folder_mapping(),
-                "tables": registry.list_tables(),
+                "version": 0,
+                "folder_mapping": {},
+                "tables": repo.list_all(),
             })
         except Exception as e:
             logger.error(f"Registry list failed: {e}")
@@ -1923,7 +1918,8 @@ def register_routes(app: Flask) -> None:
     @admin_required
     def admin_register_table():
         """Register a new table from discovery results."""
-        from src.table_registry import ConflictError, TableRegistry
+        from src.db import get_system_db
+        from src.repositories.table_registry import TableRegistryRepository
 
         user = session.get("user", {})
         email = user.get("email", "")
@@ -1933,21 +1929,26 @@ def register_routes(app: Flask) -> None:
             return jsonify({"error": "Missing table 'id'"}), 400
 
         try:
-            registry = TableRegistry.default()
-            registry.register_table(
-                table_def=data,
+            conn = get_system_db()
+            repo = TableRegistryRepository(conn)
+            repo.register(
+                id=data["id"],
+                name=data.get("name", ""),
+                folder=data.get("folder"),
+                sync_strategy=data.get("sync_strategy"),
+                primary_key=data.get("primary_key"),
+                description=data.get("description"),
                 registered_by=email,
-                expected_version=data.get("version"),
+                source_type=data.get("source_type"),
+                bucket=data.get("bucket"),
+                source_table=data.get("source_table"),
+                query_mode=data.get("query_mode", "local"),
+                sync_schedule=data.get("sync_schedule"),
+                profile_after_sync=data.get("profile_after_sync", True),
             )
 
-            # Regenerate data_description.md
-            docs_path = Path(os.path.dirname(__file__)) / ".." / "docs" / "data_description.md"
-            registry.generate_data_description_md(docs_path.resolve())
+            return jsonify({"ok": True})
 
-            return jsonify({"ok": True, "version": registry.version})
-
-        except ConflictError as e:
-            return jsonify({"error": str(e)}), 409
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
         except Exception as e:
@@ -1959,30 +1960,42 @@ def register_routes(app: Flask) -> None:
     @admin_required
     def admin_update_table(table_id):
         """Update configuration of a registered table."""
-        from src.table_registry import ConflictError, TableRegistry
+        from src.db import get_system_db
+        from src.repositories.table_registry import TableRegistryRepository
 
         user = session.get("user", {})
         email = user.get("email", "")
 
         data = request.get_json(silent=True) or {}
+        data.pop("version", None)  # Not used by DuckDB repo
 
         try:
-            registry = TableRegistry.default()
-            registry.update_table(
-                table_id=table_id,
-                updates=data,
-                updated_by=email,
-                expected_version=data.pop("version", None),
+            conn = get_system_db()
+            repo = TableRegistryRepository(conn)
+
+            # Get existing record and merge updates
+            existing = repo.get(table_id)
+            if not existing:
+                return jsonify({"error": f"Table '{table_id}' not found"}), 404
+
+            repo.register(
+                id=table_id,
+                name=data.get("name", existing.get("name", "")),
+                folder=data.get("folder", existing.get("folder")),
+                sync_strategy=data.get("sync_strategy", existing.get("sync_strategy")),
+                primary_key=data.get("primary_key", existing.get("primary_key")),
+                description=data.get("description", existing.get("description")),
+                registered_by=email,
+                source_type=data.get("source_type", existing.get("source_type")),
+                bucket=data.get("bucket", existing.get("bucket")),
+                source_table=data.get("source_table", existing.get("source_table")),
+                query_mode=data.get("query_mode", existing.get("query_mode", "local")),
+                sync_schedule=data.get("sync_schedule", existing.get("sync_schedule")),
+                profile_after_sync=data.get("profile_after_sync", existing.get("profile_after_sync", True)),
             )
 
-            # Regenerate data_description.md
-            docs_path = Path(os.path.dirname(__file__)) / ".." / "docs" / "data_description.md"
-            registry.generate_data_description_md(docs_path.resolve())
+            return jsonify({"ok": True})
 
-            return jsonify({"ok": True, "version": registry.version})
-
-        except ConflictError as e:
-            return jsonify({"error": str(e)}), 409
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
         except Exception as e:
@@ -1994,25 +2007,18 @@ def register_routes(app: Flask) -> None:
     @admin_required
     def admin_unregister_table(table_id):
         """Unregister a table and clean up subscriptions."""
-        from src.table_registry import ConflictError, TableRegistry
-
-        user = session.get("user", {})
-        email = user.get("email", "")
-
-        data = request.get_json(silent=True) or {}
+        from src.db import get_system_db
+        from src.repositories.table_registry import TableRegistryRepository
 
         try:
-            registry = TableRegistry.default()
+            conn = get_system_db()
+            repo = TableRegistryRepository(conn)
 
             # Get table name before deletion (for subscription cleanup)
-            table_info = registry.get_table(table_id)
+            table_info = repo.get(table_id)
             table_name = table_info["name"] if table_info else None
 
-            registry.unregister_table(
-                table_id=table_id,
-                unregistered_by=email,
-                expected_version=data.get("version"),
-            )
+            repo.unregister(table_id)
 
             # Clean up per-user subscriptions for removed table
             if table_name:
@@ -2021,14 +2027,8 @@ def register_routes(app: Flask) -> None:
                 except Exception as ce:
                     logger.warning(f"Subscription cleanup for {table_name} failed: {ce}")
 
-            # Regenerate data_description.md
-            docs_path = Path(os.path.dirname(__file__)) / ".." / "docs" / "data_description.md"
-            registry.generate_data_description_md(docs_path.resolve())
+            return jsonify({"ok": True})
 
-            return jsonify({"ok": True, "version": registry.version})
-
-        except ConflictError as e:
-            return jsonify({"error": str(e)}), 409
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
         except Exception as e:

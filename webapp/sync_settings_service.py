@@ -194,9 +194,12 @@ def _write_rsync_filter(username: str, dataset_settings: dict, table_mode: str, 
     # Load folder_mapping from table registry (or instance config as fallback)
     folder_mapping = {}
     try:
-        from src.table_registry import TableRegistry
-        registry = TableRegistry.default()
-        folder_mapping = registry.get_folder_mapping()
+        from src.db import get_system_db
+        from src.repositories.table_registry import TableRegistryRepository
+        conn = get_system_db()
+        repo = TableRegistryRepository(conn)
+        tables = repo.list_all()
+        folder_mapping = {t["bucket"]: t["folder"] for t in tables if t.get("bucket") and t.get("folder")}
     except Exception:
         try:
             from config.loader import load_instance_config, get_instance_value

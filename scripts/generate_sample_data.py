@@ -905,35 +905,35 @@ class SampleDataGenerator:
     # ── Parquet conversion ─────────────────────────────────────
 
     def _convert_to_parquet(self, parquet_dir: Path) -> None:
-        """Convert generated CSVs to Parquet using project's ParquetManager."""
-        # Ensure project root is importable (script may run from any cwd)
-        project_root = Path(__file__).resolve().parent.parent
-        if str(project_root) not in sys.path:
-            sys.path.insert(0, str(project_root))
-        from src.parquet_manager import create_parquet_manager
+        """Convert generated CSVs to Parquet using DuckDB."""
+        import duckdb
 
-        manager = create_parquet_manager()
         parquet_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"  Converting to Parquet -> {parquet_dir}/")
 
+        conn = duckdb.connect()
         for csv_path in sorted(self.output_dir.glob("*.csv")):
             table_name = csv_path.stem
-            schema = TABLE_SCHEMAS.get(table_name, {})
             parquet_path = parquet_dir / f"{table_name}.parquet"
 
-            result = manager.csv_to_parquet(
-                csv_path=csv_path,
-                parquet_path=parquet_path,
-                dtypes=schema.get("dtypes"),
-                parse_dates=schema.get("parse_dates"),
-                date_columns=schema.get("date_columns"),
-                table_id=f"sample.{table_name}",
+            conn.execute(
+                f"COPY (SELECT * FROM read_csv_auto('{csv_path}')) "
+                f"TO '{parquet_path}' (FORMAT PARQUET, COMPRESSION ZSTD)"
             )
+
+            # Report stats
+            row_count = conn.execute(
+                f"SELECT count(*) FROM '{parquet_path}'"
+            ).fetchone()[0]
+            parquet_size = parquet_path.stat().st_size
+            csv_size = csv_path.stat().st_size
+            ratio = csv_size / parquet_size if parquet_size > 0 else 0
             logger.info(
-                f"    {table_name}: {result['rows']:,} rows, "
-                f"{result['parquet_size_bytes'] / 1024:.0f} KB "
-                f"({result['compression_ratio']:.1f}x compression)"
+                f"    {table_name}: {row_count:,} rows, "
+                f"{parquet_size / 1024:.0f} KB "
+                f"({ratio:.1f}x compression)"
             )
+        conn.close()
 
     # ── Orchestration ──────────────────────────────────────────
 
