@@ -59,7 +59,7 @@ class TestGetSchemaVersion:
 
         conn = get_system_db()
         try:
-            assert get_schema_version(conn) == 2
+            assert get_schema_version(conn) == 3
         finally:
             conn.close()
 
@@ -113,7 +113,7 @@ class TestV1ToV2Migration:
         from src.db import get_system_db, get_schema_version
         conn2 = get_system_db()
         try:
-            assert get_schema_version(conn2) == 2
+            assert get_schema_version(conn2) == 3
             # Verify old data preserved
             row = conn2.execute("SELECT name, folder FROM table_registry WHERE id='t1'").fetchone()
             assert row[0] == "Test"

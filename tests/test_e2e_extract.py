@@ -263,7 +263,7 @@ class TestSchemaMigration:
         from src.db import get_system_db, get_schema_version
         conn2 = get_system_db()
 
-        assert get_schema_version(conn2) == 2
+        assert get_schema_version(conn2) == 3
 
         # Old data preserved
         old = conn2.execute("SELECT name, folder FROM table_registry WHERE id='old_table'").fetchone()

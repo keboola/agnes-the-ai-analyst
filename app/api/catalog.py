@@ -11,6 +11,7 @@ import yaml
 
 from app.auth.dependencies import get_current_user, _get_db
 from src.repositories.profiles import ProfileRepository
+from src.rbac import can_access_table
 
 router = APIRouter(prefix="/api/catalog", tags=["catalog"])
 
@@ -52,6 +53,11 @@ async def list_catalog_tables(
     from src.repositories.table_registry import TableRegistryRepository
     repo = TableRegistryRepository(conn)
     all_tables = repo.list_all()
+
+    # Filter by user's accessible tables (admin sees all)
+    if user.get("role") != "admin":
+        all_tables = [t for t in all_tables if can_access_table(user, t["id"], conn)]
+
     tables = [
         {
             "id": t["id"],

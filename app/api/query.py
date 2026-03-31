@@ -5,9 +5,11 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+import duckdb
 
-from app.auth.dependencies import get_current_user
+from app.auth.dependencies import get_current_user, _get_db
 from src.db import get_analytics_db
+from src.rbac import get_accessible_tables
 
 router = APIRouter(prefix="/api/query", tags=["query"])
 
@@ -28,6 +30,7 @@ class QueryResponse(BaseModel):
 async def execute_query(
     request: QueryRequest,
     user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Execute SQL against the server analytics DuckDB."""
     sql_lower = request.sql.strip().lower()
@@ -49,11 +52,26 @@ async def execute_query(
     if not sql_lower.startswith("select ") and not sql_lower.startswith("with "):
         raise HTTPException(status_code=400, detail="Query must start with SELECT or WITH")
 
-    conn = get_analytics_db()
+    # Get allowed tables for this user
+    allowed = get_accessible_tables(user, conn)
+
+    analytics = get_analytics_db()
     try:
+        if allowed is not None:  # None = admin, sees all
+            # Get all views in analytics DB
+            all_views = {row[0] for row in analytics.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_type='VIEW'"
+            ).fetchall()}
+
+            # Check if query references any forbidden tables
+            forbidden = all_views - set(allowed)
+            for table in forbidden:
+                if table.lower() in sql_lower:
+                    raise HTTPException(status_code=403, detail=f"Access denied to table '{table}'")
+
         # Open in read-only mode for extra safety
-        result = conn.execute(request.sql).fetchmany(request.limit + 1)
-        columns = [desc[0] for desc in conn.description] if conn.description else []
+        result = analytics.execute(request.sql).fetchmany(request.limit + 1)
+        columns = [desc[0] for desc in analytics.description] if analytics.description else []
         truncated = len(result) > request.limit
         rows = result[:request.limit]
         # Convert to serializable types
@@ -69,7 +87,9 @@ async def execute_query(
             row_count=len(serializable_rows),
             truncated=truncated,
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Query error: {str(e)}")
     finally:
-        conn.close()
+        analytics.close()
