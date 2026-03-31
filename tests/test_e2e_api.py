@@ -136,6 +136,12 @@ class TestRBACEnforcement:
         create_mock_extract(env["extracts_dir"], "keboola", [
             {"name": "orders", "data": [{"id": "1"}]},
         ])
+        # Register the table so RBAC can check is_public (defaults to True)
+        admin_t = seeded_app["admin_token"]
+        c.post("/api/admin/register-table", json={
+            "name": "orders", "source_type": "keboola", "bucket": "in.c-crm",
+            "source_table": "orders", "query_mode": "local",
+        }, headers=_auth(admin_t))
         t = seeded_app["analyst_token"]
         resp = c.get("/api/data/orders/download", headers=_auth(t))
         assert resp.status_code == 200

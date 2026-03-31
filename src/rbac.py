@@ -83,6 +83,76 @@ def has_dataset_access(email: str, dataset: str) -> bool:
         conn.close()
 
 
+def can_access_table(user: dict, table_id: str, conn=None) -> bool:
+    """Check if user can access a specific table.
+
+    Rules:
+    1. Admin -> always True
+    2. Table is_public=True -> always True
+    3. Explicit permission in dataset_permissions -> True
+    4. Wildcard bucket permission (e.g., 'in.c-finance.*') -> True
+    5. Otherwise -> False
+    """
+    if user.get("role") == "admin":
+        return True
+
+    should_close = False
+    if conn is None:
+        conn = get_system_db()
+        should_close = True
+
+    try:
+        from src.repositories.table_registry import TableRegistryRepository
+        from src.repositories.sync_settings import DatasetPermissionRepository
+
+        # Check if table is public
+        table = TableRegistryRepository(conn).get(table_id)
+        if table and table.get("is_public", True):
+            return True
+
+        user_id = user.get("id", "")
+        perm_repo = DatasetPermissionRepository(conn)
+
+        # Check explicit permission
+        if perm_repo.has_access(user_id, table_id):
+            return True
+
+        # Check wildcard bucket permission
+        bucket = table.get("bucket", "") if table else ""
+        if bucket and perm_repo.has_access(user_id, f"{bucket}.*"):
+            return True
+
+        return False
+    finally:
+        if should_close:
+            conn.close()
+
+
+def get_accessible_tables(user: dict, conn=None) -> list[str]:
+    """Get list of table IDs the user can access. Used for filtering."""
+    if user.get("role") == "admin":
+        return None  # None means "all" — admin bypass
+
+    should_close = False
+    if conn is None:
+        conn = get_system_db()
+        should_close = True
+
+    try:
+        from src.repositories.table_registry import TableRegistryRepository
+        repo = TableRegistryRepository(conn)
+        all_tables = repo.list_all()
+
+        accessible = []
+        for t in all_tables:
+            if can_access_table(user, t["id"], conn):
+                accessible.append(t["id"])
+        return accessible
+    finally:
+        if should_close:
+            conn.close()
+
+
 def set_user_role(email: str, role: Role) -> bool:
     """Set role for a user. Returns True if successful."""
     conn = get_system_db()

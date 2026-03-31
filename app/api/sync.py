@@ -15,6 +15,7 @@ import duckdb
 from app.auth.dependencies import get_current_user, require_role, Role, _get_db
 from src.repositories.sync_state import SyncStateRepository
 from src.repositories.sync_settings import SyncSettingsRepository, DatasetPermissionRepository
+from src.rbac import can_access_table
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/sync", tags=["sync"])
@@ -97,20 +98,16 @@ async def sync_manifest(
 ):
     """Return hash-based manifest of all synced data, filtered per user."""
     repo = SyncStateRepository(conn)
-    perm_repo = DatasetPermissionRepository(conn)
     all_states = repo.get_all_states()
 
-    # Filter by user's accessible datasets (admin sees all)
-    user_role = user.get("role", "viewer")
-    accessible = None
-    if user_role != "admin":
-        accessible = set(perm_repo.get_accessible_datasets(user["id"]))
+    # Filter by user's accessible tables (admin sees all)
+    if user.get("role") != "admin":
+        all_states = [s for s in all_states if can_access_table(user, s["table_id"], conn)]
 
     data_dir = _get_data_dir()
     tables = {}
     for state in all_states:
         table_id = state["table_id"]
-        # If user has limited access, filter tables (simplified: by table_id prefix)
         tables[table_id] = {
             "hash": state.get("hash", ""),
             "updated": state.get("last_sync").isoformat() if state.get("last_sync") else None,

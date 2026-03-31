@@ -5,8 +5,10 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
+import duckdb
 
-from app.auth.dependencies import get_current_user
+from app.auth.dependencies import get_current_user, _get_db
+from src.rbac import can_access_table
 
 router = APIRouter(prefix="/api/data", tags=["data"])
 
@@ -20,8 +22,13 @@ async def download_table(
     table_id: str,
     request: Request,
     user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Stream a parquet file for download. Supports ETag for caching."""
+    # Check access FIRST
+    if not can_access_table(user, table_id, conn):
+        raise HTTPException(status_code=403, detail="Access denied to this table")
+
     data_dir = _get_data_dir()
 
     # Search in extracts directory (v2 extract.duckdb architecture)

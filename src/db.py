@@ -9,7 +9,7 @@ from pathlib import Path
 
 import duckdb
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -133,6 +133,7 @@ CREATE TABLE IF NOT EXISTS table_registry (
     folder VARCHAR,
     description TEXT,
     registered_by VARCHAR,
+    is_public BOOLEAN DEFAULT true,
     registered_at TIMESTAMP DEFAULT current_timestamp
 );
 
@@ -180,6 +181,10 @@ _V1_TO_V2_MIGRATIONS = [
     "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS profile_after_sync BOOLEAN DEFAULT true",
 ]
 
+_V2_TO_V3_MIGRATIONS = [
+    "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS is_public BOOLEAN DEFAULT true",
+]
+
 
 def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
     """Create tables if they don't exist. Apply migrations if schema version changed."""
@@ -194,6 +199,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
         else:
             if current < 2:
                 for sql in _V1_TO_V2_MIGRATIONS:
+                    conn.execute(sql)
+            if current < 3:
+                for sql in _V2_TO_V3_MIGRATIONS:
                     conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
