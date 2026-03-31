@@ -142,7 +142,10 @@ def _extract_via_legacy(
         csv_path = tmp.name
 
     try:
-        table_id = tc.get("id", tc["name"])
+        # Construct full Keboola table ID: bucket.source_table (e.g., in.c-finance.circle)
+        bucket = tc.get("bucket", "")
+        source_table = tc.get("source_table", tc["name"])
+        table_id = f"{bucket}.{source_table}" if bucket else tc.get("id", tc["name"])
         client.export_table(table_id, Path(csv_path))
 
         # Convert CSV to Parquet using DuckDB
