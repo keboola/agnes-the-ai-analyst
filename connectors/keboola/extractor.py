@@ -143,7 +143,7 @@ def _extract_via_legacy(
 
     try:
         table_id = tc.get("id", tc["name"])
-        client.export_table(table_id, csv_path)
+        client.export_table(table_id, Path(csv_path))
 
         # Convert CSV to Parquet using DuckDB
         conv_conn = duckdb.connect()
