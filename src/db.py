@@ -164,17 +164,40 @@ CREATE TABLE IF NOT EXISTS access_requests (
 """
 
 
+import threading
+
+_system_db_lock = threading.Lock()
+_system_db_conn: duckdb.DuckDBPyConnection | None = None
+_system_db_path: str | None = None
+
+
 def _get_data_dir() -> Path:
     return Path(os.environ.get("DATA_DIR", "./data"))
 
 
 def get_system_db() -> duckdb.DuckDBPyConnection:
-    """Get a connection to the system state database. Creates schema if needed."""
-    db_path = _get_data_dir() / "state" / "system.duckdb"
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = duckdb.connect(str(db_path))
-    _ensure_schema(conn)
-    return conn
+    """Get a connection to the system state database.
+
+    Uses a single shared connection per DATA_DIR to avoid DuckDB lock
+    conflicts between the main app and background tasks. Returns a cursor
+    so callers can safely close() it without closing the underlying connection.
+    """
+    global _system_db_conn, _system_db_path
+    db_path = str(_get_data_dir() / "state" / "system.duckdb")
+
+    with _system_db_lock:
+        if _system_db_conn is None or _system_db_path != db_path:
+            # Close old connection if DATA_DIR changed (e.g., in tests)
+            if _system_db_conn is not None:
+                try:
+                    _system_db_conn.close()
+                except Exception:
+                    pass
+            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+            _system_db_conn = duckdb.connect(db_path)
+            _system_db_path = db_path
+            _ensure_schema(_system_db_conn)
+        return _system_db_conn.cursor()
 
 
 def get_analytics_db() -> duckdb.DuckDBPyConnection:
