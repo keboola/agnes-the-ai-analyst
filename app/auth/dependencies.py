@@ -1,6 +1,5 @@
 """FastAPI auth dependencies — current user, role checking."""
 
-from enum import Enum
 from typing import Optional
 
 import duckdb
@@ -8,22 +7,8 @@ from fastapi import Depends, HTTPException, Header, Request, status
 
 from app.auth.jwt import verify_token
 from src.db import get_system_db
+from src.rbac import Role, ROLE_HIERARCHY
 from src.repositories.users import UserRepository
-
-
-class Role(str, Enum):
-    VIEWER = "viewer"
-    ANALYST = "analyst"
-    ADMIN = "admin"
-    KM_ADMIN = "km_admin"
-
-
-ROLE_HIERARCHY = {
-    Role.VIEWER: 0,
-    Role.ANALYST: 1,
-    Role.KM_ADMIN: 2,
-    Role.ADMIN: 3,
-}
 
 
 def _get_db():

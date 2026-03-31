@@ -37,7 +37,7 @@ def login_required(f):
 def admin_required(f):
     """Decorator to require admin privileges for a route.
 
-    Recomputes admin status server-side on every request.
+    Checks role in DuckDB users table via src/rbac.py.
     Returns 403 JSON for API routes, redirect for HTML routes.
     """
 
@@ -48,13 +48,10 @@ def admin_required(f):
                 return jsonify({"error": "Authentication required"}), 401
             return redirect(url_for("auth.login"))
 
-        from .user_service import check_user_exists, get_webapp_username
+        from src.rbac import is_admin
 
         email = session.get("user", {}).get("email", "")
-        username = get_webapp_username(email)
-        user_info = check_user_exists(username)
-
-        if not user_info.is_admin:
+        if not is_admin(email):
             if request.path.startswith("/api/"):
                 return jsonify({"error": "Admin access required"}), 403
             flash("Admin access required.", "error")
@@ -68,7 +65,7 @@ def admin_required(f):
 def km_admin_required(f):
     """Decorator to require Corporate Memory admin privileges for a route.
 
-    Checks km_admin flag via corporate_memory_service.is_km_admin().
+    Checks role in DuckDB users table via src/rbac.py.
     Returns 403 JSON for API routes, redirect for HTML routes.
     """
 
@@ -79,7 +76,7 @@ def km_admin_required(f):
                 return jsonify({"error": "Authentication required"}), 401
             return redirect(url_for("auth.login"))
 
-        from .corporate_memory_service import is_km_admin
+        from src.rbac import is_km_admin
 
         email = session.get("user", {}).get("email", "")
         if not is_km_admin(email):
