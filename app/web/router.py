@@ -165,7 +165,18 @@ async def login_page(request: Request):
             providers.append({"name": "email", "display_name": "Email Link", "icon": "mail"})
     except Exception:
         pass
-    ctx = _build_context(request, providers=providers)
+
+    # Convert to login_buttons format expected by template
+    login_buttons = []
+    for p in providers:
+        if p["name"] == "google":
+            login_buttons.append({"url": "/auth/google/login", "text": "Sign in with Google", "css_class": "btn-primary", "icon_html": ""})
+        elif p["name"] == "password":
+            login_buttons.append({"url": "/login/password", "text": "Sign in with Email & Password", "css_class": "btn-secondary", "icon_html": ""})
+        elif p["name"] == "email":
+            login_buttons.append({"url": "/login/email", "text": "Sign in with Email Link", "css_class": "btn-secondary", "icon_html": ""})
+
+    ctx = _build_context(request, providers=providers, login_buttons=login_buttons)
     return templates.TemplateResponse(request, "login.html", ctx)
 
 
