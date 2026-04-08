@@ -213,16 +213,29 @@ def get_analytics_db() -> duckdb.DuckDBPyConnection:
 
 
 def get_analytics_db_readonly() -> duckdb.DuckDBPyConnection:
-    """Read-only connection to analytics DB. Blocks writes and external access."""
+    """Read-only connection to analytics DB. Blocks writes and external access.
+
+    ATTACHes extract.duckdb files so views that reference them work.
+    """
     db_path = _get_data_dir() / "analytics" / "server.duckdb"
     if not db_path.exists():
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        return duckdb.connect(str(db_path), read_only=False)  # Can't open read-only if new
+        return duckdb.connect(str(db_path), read_only=False)
     conn = duckdb.connect(str(db_path), read_only=True)
     try:
         conn.execute("SET enable_external_access = false")
     except Exception:
-        pass  # Older DuckDB may not support this
+        pass
+    # ATTACH extract.duckdb files so views referencing them work
+    extracts_dir = _get_data_dir() / "extracts"
+    if extracts_dir.exists():
+        for ext_dir in sorted(extracts_dir.iterdir()):
+            db_file = ext_dir / "extract.duckdb"
+            if db_file.exists() and ext_dir.is_dir():
+                try:
+                    conn.execute(f"ATTACH '{db_file}' AS {ext_dir.name} (READ_ONLY)")
+                except Exception:
+                    pass
     return conn
 
 
