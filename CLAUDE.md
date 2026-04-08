@@ -53,7 +53,7 @@ docker compose --profile full up  # Include telegram bot
 ├── scripts/                # Utility + migration scripts
 ├── config/                 # Configuration templates (instance.yaml.example)
 ├── docs/                   # Documentation + metric YAML definitions
-└── tests/                  # Test suite (704 tests)
+└── tests/                  # Test suite (633 tests)
 ```
 
 ## Architecture: extract.duckdb Contract

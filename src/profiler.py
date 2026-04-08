@@ -15,7 +15,7 @@ import math
 import os
 import re
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -1210,7 +1210,7 @@ def profile_changed_tables(table_names: list[str]) -> dict:
 
     # Write atomically
     output = {
-        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "generated_at": datetime.now(timezone.utc).isoformat() + "Z",
         "version": "1.0",
         "tables": merged,
     }
@@ -1376,7 +1376,7 @@ def main() -> None:
 
     # Build output
     output = {
-        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "generated_at": datetime.now(timezone.utc).isoformat() + "Z",
         "version": "1.0",
         "tables": profiles,
     }

@@ -12,7 +12,7 @@ import json
 import logging
 import os
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -259,7 +259,7 @@ class JiraService:
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
         # Add metadata
-        issue_data["_synced_at"] = datetime.utcnow().isoformat()
+        issue_data["_synced_at"] = datetime.now(timezone.utc).isoformat()
 
         # Fetch and embed remote links for Parquet transform
         issue_key_for_links = issue_data.get("key")
@@ -525,7 +525,7 @@ class JiraService:
                 with issue_json_lock(issues_dir, issue_key):
                     with open(file_path) as f:
                         data = json.load(f)
-                    data["_deleted_at"] = datetime.utcnow().isoformat()
+                    data["_deleted_at"] = datetime.now(timezone.utc).isoformat()
 
                     # Atomic write: temp file + replace
                     fd, tmp_path = tempfile.mkstemp(

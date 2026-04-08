@@ -1,11 +1,10 @@
 services:
   app:
     build: .
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
     volumes:
-      - .:/app
       - data:/data
     env_file: .env
     environment:

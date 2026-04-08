@@ -9,7 +9,7 @@ import hashlib
 import hmac
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
@@ -52,7 +52,7 @@ def _log_webhook_event(event_data: dict) -> None:
     """Log webhook event to file for debugging/audit."""
     try:
         WEBHOOK_LOG_DIR.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
         event_type = event_data.get("webhookEvent", "unknown").replace(":", "_")
         filename = f"{timestamp}_{event_type}.json"
         filepath = WEBHOOK_LOG_DIR / filename
