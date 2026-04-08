@@ -65,6 +65,24 @@ Every data source produces the same output:
 └── data/                   ← parquet files (local sources only)
 ```
 
+### Remote table support (`_remote_attach`)
+
+Extractors with remote/passthrough tables (query_mode='remote') include a `_remote_attach` table
+in extract.duckdb so the orchestrator can re-ATTACH the external DuckDB extension at query time:
+
+```sql
+CREATE TABLE _remote_attach (
+    alias     VARCHAR,  -- DuckDB alias used in views, e.g. 'kbc'
+    extension VARCHAR,  -- Extension name, e.g. 'keboola'
+    url       VARCHAR,  -- Connection URL
+    token_env VARCHAR   -- Env-var name holding the auth token (NOT the token itself)
+);
+```
+
+The orchestrator reads this table, installs/loads the extension, reads the token from the
+environment, and ATTACHes the external source. Views referencing `kbc."bucket"."table"` then
+resolve correctly. This mechanism is generic — any connector can use it.
+
 The SyncOrchestrator scans `/data/extracts/*/extract.duckdb`, ATTACHes each into master `analytics.duckdb`, and creates views.
 
 ```

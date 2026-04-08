@@ -40,7 +40,9 @@ def sample_configs():
 
 
 def _mock_attach(conn, url, token):
-    """Mock that says extension is available."""
+    """Mock that says extension is available and ATTACHes a fake kbc catalog."""
+    # Create in-memory DB as kbc so views referencing kbc."bucket"."table" can be created
+    conn.execute("ATTACH ':memory:' AS kbc")
     return True
 
 
@@ -90,11 +92,20 @@ class TestKeboolaExtractor:
 
         configs = [{
             "name": "big_table",
+            "bucket": "in.c-events",
+            "source_table": "big_table",
             "query_mode": "remote",
             "description": "Too large to sync",
         }]
 
-        with patch("connectors.keboola.extractor._try_attach_extension", side_effect=_mock_attach):
+        def mock_attach_with_schema(conn, url, token):
+            """Mock kbc with the expected bucket schema so remote views can be created."""
+            conn.execute("ATTACH ':memory:' AS kbc")
+            conn.execute('CREATE SCHEMA kbc."in.c-events"')
+            conn.execute('CREATE TABLE kbc."in.c-events"."big_table" (id VARCHAR)')
+            return True
+
+        with patch("connectors.keboola.extractor._try_attach_extension", side_effect=mock_attach_with_schema):
             result = run(output_dir, configs, "https://example.com", "test-token")
 
         assert result["tables_extracted"] == 1
@@ -103,6 +114,13 @@ class TestKeboolaExtractor:
         try:
             meta = conn.execute("SELECT query_mode FROM _meta WHERE table_name='big_table'").fetchone()
             assert meta[0] == "remote"
+
+            # _remote_attach table should exist with Keboola connection info
+            ra = conn.execute("SELECT alias, extension, url, token_env FROM _remote_attach").fetchone()
+            assert ra[0] == "kbc"
+            assert ra[1] == "keboola"
+            assert ra[2] == "https://example.com"
+            assert ra[3] == "KEBOOLA_STORAGE_TOKEN"
         finally:
             conn.close()
 

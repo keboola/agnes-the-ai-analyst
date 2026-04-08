@@ -1,4 +1,21 @@
-"""Sync orchestrator — ATTACHes extract.duckdb files into master analytics.duckdb."""
+"""Sync orchestrator — ATTACHes extract.duckdb files into master analytics.duckdb.
+
+Remote table support
+--------------------
+Extractors that create views referencing external DuckDB extensions (e.g. Keboola,
+BigQuery) must include a ``_remote_attach`` table in their extract.duckdb:
+
+    CREATE TABLE _remote_attach (
+        alias     VARCHAR,  -- DuckDB alias used in views, e.g. 'kbc'
+        extension VARCHAR,  -- Extension name, e.g. 'keboola'
+        url       VARCHAR,  -- Connection URL
+        token_env VARCHAR   -- Env-var name holding the auth token (NOT the token itself)
+    );
+
+At rebuild time the orchestrator reads ``_remote_attach``, installs/loads the
+extension, reads the token from the environment, and ATTACHes the external source
+so that remote views resolve correctly.
+"""
 
 import hashlib
 import logging
@@ -131,6 +148,9 @@ class SyncOrchestrator:
         try:
             conn.execute(f"ATTACH '{db_path}' AS {source_name} (READ_ONLY)")
 
+            # Re-ATTACH external extensions needed by remote views
+            self._attach_remote_extensions(conn, source_name)
+
             # Read _meta to know what's available
             meta_rows = conn.execute(
                 f"SELECT table_name, rows, size_bytes, query_mode "
@@ -151,6 +171,51 @@ class SyncOrchestrator:
             logger.error("Failed to attach %s: %s", source_name, e)
 
         return tables
+
+    def _attach_remote_extensions(
+        self, conn: duckdb.DuckDBPyConnection, source_name: str
+    ) -> None:
+        """Read _remote_attach from extract.duckdb and ATTACH external sources."""
+        try:
+            tables = conn.execute(
+                f"SELECT table_name FROM information_schema.tables "
+                f"WHERE table_schema='{source_name}' AND table_name='_remote_attach'"
+            ).fetchall()
+            if not tables:
+                return
+        except Exception:
+            return
+
+        rows = conn.execute(
+            f"SELECT alias, extension, url, token_env FROM {source_name}._remote_attach"
+        ).fetchall()
+
+        for alias, extension, url, token_env in rows:
+            token = os.environ.get(token_env, "")
+            if not token:
+                logger.warning(
+                    "Remote attach %s: env var %s not set, skipping", alias, token_env
+                )
+                continue
+
+            try:
+                # Skip if already attached (e.g. multiple sources share same extension)
+                attached = {
+                    r[0] for r in conn.execute(
+                        "SELECT database_name FROM duckdb_databases()"
+                    ).fetchall()
+                }
+                if alias in attached:
+                    logger.debug("Remote source %s already attached", alias)
+                    continue
+
+                conn.execute(f"INSTALL {extension} FROM community; LOAD {extension};")
+                conn.execute(
+                    f"ATTACH '{url}' AS {alias} (TYPE {extension}, TOKEN '{token}')"
+                )
+                logger.info("Attached remote source %s via %s extension", alias, extension)
+            except Exception as e:
+                logger.error("Failed to attach remote source %s: %s", alias, e)
 
     def _update_sync_state(self, meta_rows: list, source_name: str) -> None:
         """Update sync_state table in system.duckdb from _meta entries."""
