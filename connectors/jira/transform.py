@@ -9,7 +9,7 @@ import json
 import logging
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -549,7 +549,7 @@ def transform_remote_links(raw_issue: dict) -> list[dict]:
 def get_month_key(dt: datetime | None) -> str:
     """Get month key (YYYY-MM) from datetime, defaulting to current month."""
     if dt is None:
-        dt = datetime.utcnow()
+        dt = datetime.now(timezone.utc)
     return dt.strftime("%Y-%m")
 
 

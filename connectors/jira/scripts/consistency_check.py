@@ -36,7 +36,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
 
@@ -151,8 +151,8 @@ class JiraConsistencyChecker:
             Set of issue keys from Jira API (ground truth)
         """
         # Calculate cutoff date with grace period
-        cutoff = datetime.utcnow() - timedelta(days=max_age_days)
-        grace_cutoff = datetime.utcnow() - timedelta(minutes=self.GRACE_PERIOD_MINUTES)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+        grace_cutoff = datetime.now(timezone.utc) - timedelta(minutes=self.GRACE_PERIOD_MINUTES)
 
         # JQL: fetch issues created after cutoff, but not too recent (grace period)
         jira_project = os.environ.get("JIRA_PROJECT", "")
@@ -533,7 +533,7 @@ class JiraConsistencyChecker:
 
         # Build report
         report = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "check_type": "incremental" if max_age_days <= 90 else "deep",
             "max_age_days": max_age_days,
             "duration_seconds": round(duration, 2),

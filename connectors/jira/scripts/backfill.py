@@ -33,7 +33,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
@@ -292,7 +292,7 @@ class JiraBackfill:
             return None
 
         # Add sync metadata
-        issue_data["_synced_at"] = datetime.utcnow().isoformat()
+        issue_data["_synced_at"] = datetime.now(timezone.utc).isoformat()
 
         file_path = self.issues_dir / f"{issue_key}.json"
 
