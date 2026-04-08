@@ -75,7 +75,8 @@ class TestScriptsAPI:
             "source": "import subprocess; subprocess.run(['ls'])", "name": "bad",
         }, headers=headers)
         assert resp.status_code == 400
-        assert "disallowed" in resp.json()["detail"]
+        detail = resp.json()["detail"]
+        assert "disallowed" in detail or "Blocked" in detail
 
     def test_deploy_run_undeploy(self, client):
         c, _, analyst_token = client

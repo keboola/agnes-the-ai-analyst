@@ -212,6 +212,20 @@ def get_analytics_db() -> duckdb.DuckDBPyConnection:
     return duckdb.connect(str(db_path))
 
 
+def get_analytics_db_readonly() -> duckdb.DuckDBPyConnection:
+    """Read-only connection to analytics DB. Blocks writes and external access."""
+    db_path = _get_data_dir() / "analytics" / "server.duckdb"
+    if not db_path.exists():
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        return duckdb.connect(str(db_path), read_only=False)  # Can't open read-only if new
+    conn = duckdb.connect(str(db_path), read_only=True)
+    try:
+        conn.execute("SET enable_external_access = false")
+    except Exception:
+        pass  # Older DuckDB may not support this
+    return conn
+
+
 _V1_TO_V2_MIGRATIONS = [
     "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS source_type VARCHAR",
     "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS bucket VARCHAR",

@@ -8,7 +8,7 @@ from pydantic import BaseModel
 import duckdb
 
 from app.auth.dependencies import get_current_user, _get_db
-from src.db import get_analytics_db
+from src.db import get_analytics_db_readonly
 from src.rbac import get_accessible_tables
 
 router = APIRouter(prefix="/api/query", tags=["query"])
@@ -43,6 +43,7 @@ async def execute_query(
         # File access functions
         "read_csv", "read_json", "read_parquet(", "read_text",
         "write_csv", "write_parquet",
+        "read_blob", "glob(", "read_ndjson", "'/", '"/',
         # Multiple statements
         ";",
     ]
@@ -55,7 +56,7 @@ async def execute_query(
     # Get allowed tables for this user
     allowed = get_accessible_tables(user, conn)
 
-    analytics = get_analytics_db()
+    analytics = get_analytics_db_readonly()
     try:
         if allowed is not None:  # None = admin, sees all
             # Get all views in analytics DB
