@@ -39,6 +39,7 @@ services:
     environment:
       - DATA_DIR=/data
       - API_URL=http://app:8000
+      - SEED_ADMIN_EMAIL=${SEED_ADMIN_EMAIL:-}
     depends_on:
       app:
         condition: service_healthy
@@ -47,6 +48,48 @@ services:
   telegram-bot:
     build: .
     command: python -m services.telegram_bot
+    volumes:
+      - data:/data
+    env_file: .env
+    environment:
+      - DATA_DIR=/data
+    depends_on:
+      - app
+    profiles:
+      - full
+    restart: unless-stopped
+
+  ws-gateway:
+    build: .
+    command: python -m services.ws_gateway
+    volumes:
+      - data:/data
+    env_file: .env
+    environment:
+      - DATA_DIR=/data
+    depends_on:
+      - app
+    profiles:
+      - full
+    restart: unless-stopped
+
+  corporate-memory:
+    build: .
+    command: python -m services.corporate_memory
+    volumes:
+      - data:/data
+    env_file: .env
+    environment:
+      - DATA_DIR=/data
+    depends_on:
+      - app
+    profiles:
+      - full
+    restart: unless-stopped
+
+  session-collector:
+    build: .
+    command: python -m services.session_collector
     volumes:
       - data:/data
     env_file: .env
