@@ -186,9 +186,10 @@ def _extract_via_legacy(
         table_id = f"{bucket}.{source_table}" if bucket else tc.get("id", tc["name"])
         client.export_table(table_id, Path(csv_path))
 
-        # Convert CSV to Parquet using DuckDB
+        # Convert CSV to Parquet using DuckDB — all_varchar avoids type inference errors
+        # (e.g. columns with mostly numeric values but some strings like "Non-Manager")
         conv_conn = duckdb.connect()
-        conv_conn.execute(f"COPY (SELECT * FROM read_csv_auto('{csv_path}')) TO '{pq_path}' (FORMAT PARQUET)")
+        conv_conn.execute(f"COPY (SELECT * FROM read_csv('{csv_path}', all_varchar=true)) TO '{pq_path}' (FORMAT PARQUET)")
         conv_conn.close()
     finally:
         if os.path.exists(csv_path):
