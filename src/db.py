@@ -232,11 +232,8 @@ def get_analytics_db_readonly() -> duckdb.DuckDBPyConnection:
                     conn.execute(f"ATTACH '{db_file}' AS {ext_dir.name} (READ_ONLY)")
                 except Exception:
                     pass
-    # Disable external access AFTER attaches (blocks user file reads but allows attached DBs)
-    try:
-        conn.execute("SET enable_external_access = false")
-    except Exception:
-        pass
+    # Note: external_access stays enabled because views use read_parquet() on local files.
+    # File-path-based attacks are blocked by the SQL blocklist in app/api/query.py.
     return conn
 
 
