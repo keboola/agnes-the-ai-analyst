@@ -7,6 +7,14 @@ from typing import Optional
 import jwt
 
 SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "dev-jwt-secret-change-in-production")
+
+import warnings as _warnings
+if len(SECRET_KEY) < 32 and os.environ.get("TESTING", "").lower() not in ("1", "true"):
+    _warnings.warn(
+        f"JWT_SECRET_KEY is {len(SECRET_KEY)} chars — minimum 32 recommended for production",
+        UserWarning, stacklevel=2,
+    )
+
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 24 * 30  # 30 days
 
