@@ -19,9 +19,9 @@ ssh user@your-server-ip
 ### 2. Clone the repository
 
 ```bash
-git clone https://github.com/padak/tmp_oss.git /opt/data-analyst
+git clone https://github.com/keboola/agnes-the-ai-analyst.git /opt/data-analyst
 cd /opt/data-analyst
-git checkout feature/v2-fastapi-duckdb-docker-cli
+git checkout main
 ```
 
 ### 3. Create .env file

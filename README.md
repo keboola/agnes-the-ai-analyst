@@ -59,8 +59,8 @@ The short version:
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/your-org/ai-data-analyst.git
-cd ai-data-analyst
+git clone https://github.com/keboola/agnes-the-ai-analyst.git
+cd agnes-the-ai-analyst
 
 # 2. Copy and edit configuration
 cp config/instance.yaml.example config/instance.yaml

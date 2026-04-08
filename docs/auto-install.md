@@ -3,8 +3,8 @@
 Step-by-step deployment of AI Data Analyst on a clean Ubuntu 24.04 VM.
 
 Two repos are involved:
-- **OSS repo** (public/private): application code (`padak/tmp_oss`)
-- **Instance repo** (private): your config, secrets template, data schema (`padak/tmp_oss_cfg`)
+- **OSS repo** (public/private): application code (`keboola/agnes-the-ai-analyst`)
+- **Instance repo** (private): your config, secrets template, data schema (your private instance config repo)
 
 ## Architecture on Server
 

@@ -1,5 +1,5 @@
 # Copy to terraform.tfvars and fill in values
-project_id          = "kids-ai-data-analysis"
+project_id          = "your-gcp-project"
 region              = "europe-north1"
 zone                = "europe-north1-a"
 machine_type        = "e2-small"       # 2 vCPU, 2GB RAM, ~$7/mo
