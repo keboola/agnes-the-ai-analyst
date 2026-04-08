@@ -96,3 +96,27 @@ async def get_metric(
         return content
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error parsing metric: {e}")
+
+
+@router.post("/profile/{table_name}/refresh")
+async def refresh_profile(
+    table_name: str,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Re-generate profile for a table on demand."""
+    from src.profiler import profile_table, TableInfo
+
+    data_dir = _get_data_dir()
+    extracts_dir = data_dir / "extracts"
+    candidates = list(extracts_dir.rglob(f"data/{table_name}.parquet"))
+    if not candidates:
+        raise HTTPException(status_code=404, detail=f"No parquet for '{table_name}'")
+
+    try:
+        table_info = TableInfo(name=table_name, table_id=table_name)
+        profile = profile_table(table_info, candidates[0], [], {}, {})
+        ProfileRepository(conn).save(table_name, profile)
+        return {"status": "ok", "table": table_name, "columns": len(profile.get("columns", {}))}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Profile failed: {e}")

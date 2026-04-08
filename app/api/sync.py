@@ -122,6 +122,36 @@ print(json.dumps(result))
         views = orch.rebuild()
         print(f"[SYNC] Orchestrator rebuild: {{{', '.join(f'{k}: {len(v)}' for k, v in views.items())}}}", file=_sys.stderr, flush=True)
 
+        # Auto-profile synced tables (best-effort, don't fail sync on profile error)
+        try:
+            from src.profiler import profile_table, TableInfo
+            from src.repositories.profiles import ProfileRepository
+
+            data_dir = Path(os.environ.get("DATA_DIR", "./data"))
+            extracts_dir = data_dir / "extracts"
+
+            sys_conn = get_system_db()
+            try:
+                profile_repo = ProfileRepository(sys_conn)
+                profiled = 0
+                for source_name, table_names in views.items():
+                    for table_name in table_names[:10]:  # Limit per sync
+                        pq_path = extracts_dir / source_name / "data" / f"{table_name}.parquet"
+                        if not pq_path.exists():
+                            continue
+                        try:
+                            table_info = TableInfo(name=table_name, table_id=table_name)
+                            profile = profile_table(table_info, pq_path, [], {}, {})
+                            profile_repo.save(table_name, profile)
+                            profiled += 1
+                        except Exception as pe:
+                            print(f"[SYNC] Profile {table_name}: {pe}", file=_sys.stderr, flush=True)
+                print(f"[SYNC] Profiled {profiled} tables", file=_sys.stderr, flush=True)
+            finally:
+                sys_conn.close()
+        except Exception as e:
+            print(f"[SYNC] Profiler skipped: {e}", file=_sys.stderr, flush=True)
+
     except subprocess.TimeoutExpired:
         print("[SYNC] Extractor timed out after 1800s", file=_sys.stderr, flush=True)
     except Exception as e:

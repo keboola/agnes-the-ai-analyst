@@ -151,9 +151,20 @@ async def index(request: Request, user: Optional[dict] = Depends(get_optional_us
 
 @router.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
-    providers = [
-        {"name": "google", "display_name": "Google", "icon": "google"},
-    ]
+    providers = []
+    try:
+        from app.auth.providers.google import is_available as google_available
+        if google_available():
+            providers.append({"name": "google", "display_name": "Google", "icon": "google"})
+    except Exception:
+        pass
+    providers.append({"name": "password", "display_name": "Email & Password", "icon": "key"})
+    try:
+        from app.auth.providers.email import is_available as email_available
+        if email_available():
+            providers.append({"name": "email", "display_name": "Email Link", "icon": "mail"})
+    except Exception:
+        pass
     ctx = _build_context(request, providers=providers)
     return templates.TemplateResponse(request, "login.html", ctx)
 
