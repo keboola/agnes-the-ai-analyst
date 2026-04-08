@@ -75,7 +75,7 @@ class _DuckDBProxy:
 
 class TestBigQueryExtractor:
     def test_creates_extract_duckdb_with_meta(self, output_dir, sample_configs):
-        """Test that init_extract creates extract.duckdb with _meta table."""
+        """Test that init_extract creates extract.duckdb with _meta and _remote_attach."""
         from unittest.mock import patch
 
         def proxy_connect(path=None, **kwargs):
@@ -102,6 +102,15 @@ class TestBigQueryExtractor:
             assert meta[0][1] == "remote"
             assert meta[1][0] == "sessions"
             assert meta[1][1] == "remote"
+
+            # Verify _remote_attach table for orchestrator re-ATTACH
+            ra = conn.execute(
+                "SELECT alias, extension, url, token_env FROM _remote_attach"
+            ).fetchone()
+            assert ra[0] == "bq"
+            assert ra[1] == "bigquery"
+            assert ra[2] == "project=my-project"
+            assert ra[3] == ""  # BQ handles auth via env automatically
         finally:
             conn.close()
 

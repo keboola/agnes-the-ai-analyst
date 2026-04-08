@@ -191,8 +191,8 @@ class SyncOrchestrator:
         ).fetchall()
 
         for alias, extension, url, token_env in rows:
-            token = os.environ.get(token_env, "")
-            if not token:
+            token = os.environ.get(token_env, "") if token_env else ""
+            if token_env and not token:
                 logger.warning(
                     "Remote attach %s: env var %s not set, skipping", alias, token_env
                 )
@@ -210,9 +210,15 @@ class SyncOrchestrator:
                     continue
 
                 conn.execute(f"INSTALL {extension} FROM community; LOAD {extension};")
-                conn.execute(
-                    f"ATTACH '{url}' AS {alias} (TYPE {extension}, TOKEN '{token}')"
-                )
+                if token:
+                    conn.execute(
+                        f"ATTACH '{url}' AS {alias} (TYPE {extension}, TOKEN '{token}')"
+                    )
+                else:
+                    # Extensions like BigQuery handle auth via env (e.g. GOOGLE_APPLICATION_CREDENTIALS)
+                    conn.execute(
+                        f"ATTACH '{url}' AS {alias} (TYPE {extension}, READ_ONLY)"
+                    )
                 logger.info("Attached remote source %s via %s extension", alias, extension)
             except Exception as e:
                 logger.error("Failed to attach remote source %s: %s", alias, e)
