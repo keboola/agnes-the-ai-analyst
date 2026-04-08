@@ -105,7 +105,7 @@ Disk Layout:
    ```bash
    mkdir -p /opt/data-analyst
    chown deploy:data-ops /opt/data-analyst
-   sudo -u deploy git clone git@github.com:your-org/ai-data-analyst.git /opt/data-analyst/repo
+   sudo -u deploy git clone git@github.com:keboola/agnes-the-ai-analyst.git /opt/data-analyst/repo
    git config --global --add safe.directory /opt/data-analyst/repo
    /opt/data-analyst/repo/server/setup.sh
    ```

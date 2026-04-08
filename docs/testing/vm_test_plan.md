@@ -17,7 +17,7 @@ End-to-end test of the full platform on a clean VM with a new GitHub repository.
 **On your local machine:**
 
 ```bash
-cd /Users/padak/github/oss-ai-data-analyst
+cd /path/to/agnes-the-ai-analyst
 
 # Create repo on GitHub (pick org/name)
 gh repo create YOUR_ORG/ai-data-analyst --private --source=. --push

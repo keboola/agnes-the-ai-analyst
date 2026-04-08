@@ -70,12 +70,12 @@ locals {
     echo "=== Cloning repository ==="
     APP_DIR="/opt/data-analyst"
     if [ ! -d "$APP_DIR" ]; then
-      git clone https://github.com/padak/tmp_oss.git "$APP_DIR"
+      git clone https://github.com/keboola/agnes-the-ai-analyst.git "$APP_DIR"
       cd "$APP_DIR"
-      git checkout feature/v2-fastapi-duckdb-docker-cli
+      git checkout main
     else
       cd "$APP_DIR"
-      git pull origin feature/v2-fastapi-duckdb-docker-cli || true
+      git pull origin main || true
     fi
 
     echo "=== Creating .env ==="
