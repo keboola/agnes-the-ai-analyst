@@ -39,15 +39,15 @@ def create_app() -> FastAPI:
     )
 
     # Session middleware (required for OAuth state)
-    app.add_middleware(
-        SessionMiddleware,
-        secret_key=os.environ.get("JWT_SECRET_KEY", "dev-session-secret"),
-    )
+    import secrets as _secrets
+    session_secret = os.environ.get("SESSION_SECRET", os.environ.get("JWT_SECRET_KEY", _secrets.token_hex(32)))
+    app.add_middleware(SessionMiddleware, secret_key=session_secret)
 
     # CORS for CLI and external clients
+    cors_origins = os.environ.get("CORS_ORIGINS", "http://localhost:3000,http://localhost:8000").split(",")
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=[o.strip() for o in cors_origins],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

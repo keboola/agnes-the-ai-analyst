@@ -65,7 +65,7 @@ async def get_optional_user(
     if not authorization or not authorization.startswith("Bearer "):
         return None
     try:
-        return await get_current_user(authorization, conn)
+        return await get_current_user(request=None, authorization=authorization, conn=conn)
     except HTTPException:
         return None
 

@@ -88,12 +88,8 @@ async def bootstrap(
     user_id = str(uuid.uuid4())
     password_hash = None
     if request.password:
-        try:
-            from argon2 import PasswordHasher
-            password_hash = PasswordHasher().hash(request.password)
-        except ImportError:
-            import hashlib
-            password_hash = hashlib.sha256(request.password.encode()).hexdigest()
+        from argon2 import PasswordHasher
+        password_hash = PasswordHasher().hash(request.password)
 
     repo.create(
         id=user_id,

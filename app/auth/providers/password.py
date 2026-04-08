@@ -68,13 +68,9 @@ async def password_setup(
         raise HTTPException(status_code=400, detail="Invalid setup token")
 
     # Hash and save password
-    try:
-        from argon2 import PasswordHasher
-        ph = PasswordHasher()
-        hashed = ph.hash(request.password)
-    except ImportError:
-        import hashlib
-        hashed = hashlib.sha256(request.password.encode()).hexdigest()
+    from argon2 import PasswordHasher
+    ph = PasswordHasher()
+    hashed = ph.hash(request.password)
 
     repo.update(id=user["id"], password_hash=hashed, setup_token=None)
     token = create_access_token(user["id"], user["email"], user["role"])
