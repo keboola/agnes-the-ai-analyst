@@ -30,6 +30,8 @@ class _JiraConfig:
     JIRA_CLOUD_ID = os.environ.get("JIRA_CLOUD_ID", "")
     JIRA_SLA_EMAIL = os.environ.get("JIRA_SLA_EMAIL", "")
     JIRA_SLA_API_TOKEN = os.environ.get("JIRA_SLA_API_TOKEN", "")
+    JIRA_WEBHOOK_SECRET = os.environ.get("JIRA_WEBHOOK_SECRET", "")
+    DEBUG = os.environ.get("DEBUG", "").lower() in ("1", "true")
 
 
 Config = _JiraConfig
