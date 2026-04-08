@@ -174,6 +174,80 @@ class TestSyncOrchestrator:
         assert "bigquery" in result
         assert "page_views" in result["bigquery"]
 
+    def test_rebuild_reads_remote_attach_table(self, setup_env):
+        """Orchestrator reads _remote_attach and attempts to ATTACH the extension."""
+        from unittest.mock import patch
+        from src.orchestrator import SyncOrchestrator
+
+        # Create extract.duckdb with _remote_attach + a local table
+        source_dir = setup_env["extracts_dir"] / "keboola"
+        source_dir.mkdir()
+        (source_dir / "data").mkdir()
+
+        db_path = source_dir / "extract.duckdb"
+        conn = duckdb.connect(str(db_path))
+        conn.execute("""CREATE TABLE _meta (
+            table_name VARCHAR, description VARCHAR, rows BIGINT,
+            size_bytes BIGINT, extracted_at TIMESTAMP,
+            query_mode VARCHAR DEFAULT 'local'
+        )""")
+        conn.execute("""CREATE TABLE _remote_attach (
+            alias VARCHAR, extension VARCHAR, url VARCHAR, token_env VARCHAR
+        )""")
+        conn.execute(
+            "INSERT INTO _remote_attach VALUES ('kbc', 'keboola', 'https://kbc.example.com', 'KEBOOLA_STORAGE_TOKEN')"
+        )
+        # Local table (has data, works without extension)
+        conn.execute('CREATE TABLE "orders" (id VARCHAR)')
+        conn.execute("INSERT INTO orders VALUES ('1')")
+        conn.execute(
+            "INSERT INTO _meta VALUES ('orders', '', 1, 0, current_timestamp, 'local')"
+        )
+        conn.close()
+
+        # Token env is set but extension install will fail (not available in test)
+        # — orchestrator should log warning and continue with local tables
+        with patch.dict(os.environ, {"KEBOOLA_STORAGE_TOKEN": "test-token"}):
+            orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
+            result = orch.rebuild()
+
+        assert "keboola" in result
+        assert "orders" in result["keboola"]
+
+    def test_rebuild_remote_attach_skips_missing_token(self, setup_env):
+        """Orchestrator skips remote ATTACH when env var is not set."""
+        from src.orchestrator import SyncOrchestrator
+
+        source_dir = setup_env["extracts_dir"] / "keboola"
+        source_dir.mkdir()
+        (source_dir / "data").mkdir()
+
+        db_path = source_dir / "extract.duckdb"
+        conn = duckdb.connect(str(db_path))
+        conn.execute("""CREATE TABLE _meta (
+            table_name VARCHAR, description VARCHAR, rows BIGINT,
+            size_bytes BIGINT, extracted_at TIMESTAMP,
+            query_mode VARCHAR DEFAULT 'local'
+        )""")
+        conn.execute("""CREATE TABLE _remote_attach (
+            alias VARCHAR, extension VARCHAR, url VARCHAR, token_env VARCHAR
+        )""")
+        conn.execute(
+            "INSERT INTO _remote_attach VALUES ('kbc', 'keboola', 'https://kbc.example.com', 'NONEXISTENT_TOKEN_VAR')"
+        )
+        conn.execute('CREATE TABLE "orders" (id VARCHAR)')
+        conn.execute(
+            "INSERT INTO _meta VALUES ('orders', '', 0, 0, current_timestamp, 'local')"
+        )
+        conn.close()
+
+        # No token env set — remote attach should be skipped, local tables still work
+        orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
+        result = orch.rebuild()
+
+        assert "keboola" in result
+        assert "orders" in result["keboola"]
+
     def test_rebuild_idempotent(self, setup_env):
         from src.orchestrator import SyncOrchestrator
 

@@ -24,6 +24,23 @@ def _create_meta_table(conn: duckdb.DuckDBPyConnection) -> None:
     )""")
 
 
+def _create_remote_attach_table(
+    conn: duckdb.DuckDBPyConnection, keboola_url: str
+) -> None:
+    """Write _remote_attach so orchestrator can re-ATTACH the Keboola extension."""
+    conn.execute("DROP TABLE IF EXISTS _remote_attach")
+    conn.execute("""CREATE TABLE _remote_attach (
+        alias VARCHAR,
+        extension VARCHAR,
+        url VARCHAR,
+        token_env VARCHAR
+    )""")
+    conn.execute(
+        "INSERT INTO _remote_attach VALUES (?, ?, ?, ?)",
+        ["kbc", "keboola", keboola_url, "KEBOOLA_STORAGE_TOKEN"],
+    )
+
+
 def _try_attach_extension(conn: duckdb.DuckDBPyConnection, keboola_url: str, keboola_token: str) -> bool:
     """Try to install and attach the Keboola DuckDB extension. Returns True on success."""
     try:
@@ -69,12 +86,23 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
 
         _create_meta_table(conn)
 
+        has_remote = any(tc.get("query_mode") == "remote" for tc in table_configs)
+        if has_remote and use_extension:
+            _create_remote_attach_table(conn, keboola_url)
+
         for tc in table_configs:
             table_name = tc["name"]
             query_mode = tc.get("query_mode", "local")
 
             if query_mode == "remote":
-                # Register in _meta but don't download
+                # Create view pointing to kbc extension (requires re-ATTACH at query time)
+                bucket = tc.get("bucket", "")
+                source_table = tc.get("source_table", table_name)
+                if use_extension and bucket:
+                    conn.execute(
+                        f'CREATE OR REPLACE VIEW "{table_name}" AS '
+                        f'SELECT * FROM kbc."{bucket}"."{source_table}"'
+                    )
                 conn.execute(
                     "INSERT INTO _meta VALUES (?, ?, 0, 0, ?, 'remote')",
                     [table_name, tc.get("description", ""), now],
