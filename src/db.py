@@ -222,11 +222,7 @@ def get_analytics_db_readonly() -> duckdb.DuckDBPyConnection:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         return duckdb.connect(str(db_path), read_only=False)
     conn = duckdb.connect(str(db_path), read_only=True)
-    try:
-        conn.execute("SET enable_external_access = false")
-    except Exception:
-        pass
-    # ATTACH extract.duckdb files so views referencing them work
+    # ATTACH extract.duckdb files FIRST so views referencing them work
     extracts_dir = _get_data_dir() / "extracts"
     if extracts_dir.exists():
         for ext_dir in sorted(extracts_dir.iterdir()):
@@ -236,6 +232,11 @@ def get_analytics_db_readonly() -> duckdb.DuckDBPyConnection:
                     conn.execute(f"ATTACH '{db_file}' AS {ext_dir.name} (READ_ONLY)")
                 except Exception:
                     pass
+    # Disable external access AFTER attaches (blocks user file reads but allows attached DBs)
+    try:
+        conn.execute("SET enable_external_access = false")
+    except Exception:
+        pass
     return conn
 
 
