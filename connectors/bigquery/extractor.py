@@ -27,6 +27,25 @@ def _create_meta_table(conn: duckdb.DuckDBPyConnection) -> None:
     )""")
 
 
+def _create_remote_attach_table(
+    conn: duckdb.DuckDBPyConnection, project_id: str
+) -> None:
+    """Write _remote_attach so orchestrator can re-ATTACH the BigQuery extension."""
+    conn.execute("DROP TABLE IF EXISTS _remote_attach")
+    conn.execute("""CREATE TABLE _remote_attach (
+        alias VARCHAR,
+        extension VARCHAR,
+        url VARCHAR,
+        token_env VARCHAR
+    )""")
+    # BigQuery uses GOOGLE_APPLICATION_CREDENTIALS env var for auth automatically.
+    # token_env is empty — orchestrator ATTACHes without TOKEN param.
+    conn.execute(
+        "INSERT INTO _remote_attach VALUES (?, ?, ?, ?)",
+        ["bq", "bigquery", f"project={project_id}", ""],
+    )
+
+
 def init_extract(
     output_dir: str,
     project_id: str,
@@ -58,6 +77,7 @@ def init_extract(
         logger.info("Attached BigQuery project: %s", project_id)
 
         _create_meta_table(conn)
+        _create_remote_attach_table(conn, project_id)
 
         for tc in table_configs:
             table_name = tc["name"]
