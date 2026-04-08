@@ -143,6 +143,30 @@ def _execute_script(source: str, name: str) -> dict:
         "delattr(",
         "breakpoint(",
     ]
+    import ast
+
+    BLOCKED_MODULES = {"os", "sys", "subprocess", "shutil", "ctypes", "importlib", "socket",
+                       "requests", "urllib", "http", "signal", "pathlib", "builtins"}
+    BLOCKED_FUNCTIONS = {"exec", "eval", "compile", "open", "globals", "locals",
+                         "getattr", "setattr", "delattr", "breakpoint", "__import__"}
+
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as e:
+        raise HTTPException(status_code=400, detail=f"Script syntax error: {e}")
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[0] in BLOCKED_MODULES:
+                    raise HTTPException(status_code=400, detail=f"Blocked import: {alias.name}")
+        elif isinstance(node, ast.ImportFrom):
+            if node.module and node.module.split(".")[0] in BLOCKED_MODULES:
+                raise HTTPException(status_code=400, detail=f"Blocked import: {node.module}")
+        elif isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id in BLOCKED_FUNCTIONS:
+                raise HTTPException(status_code=400, detail=f"Blocked function: {node.func.id}")
+
     source_lower = source.lower()
     for pattern in blocked_patterns:
         if pattern.lower() in source_lower:
