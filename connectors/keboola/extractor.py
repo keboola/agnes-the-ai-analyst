@@ -45,7 +45,8 @@ def _try_attach_extension(conn: duckdb.DuckDBPyConnection, keboola_url: str, keb
     """Try to install and attach the Keboola DuckDB extension. Returns True on success."""
     try:
         conn.execute("INSTALL keboola FROM community; LOAD keboola;")
-        conn.execute(f"ATTACH '{keboola_url}' AS kbc (TYPE keboola, TOKEN '{keboola_token}')")
+        escaped_token = keboola_token.replace("'", "''")
+        conn.execute(f"ATTACH '{keboola_url}' AS kbc (TYPE keboola, TOKEN '{escaped_token}')")
         logger.info("Using DuckDB Keboola extension")
         return True
     except Exception as e:
