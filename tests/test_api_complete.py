@@ -204,3 +204,17 @@ class TestWebUI:
     def test_health_no_auth(self, client):
         resp = client["client"].get("/api/health")
         assert resp.status_code == 200
+
+
+# ---- Upload ----
+
+class TestUpload:
+    def test_upload_rejects_oversized_file(self, client):
+        import io
+        large_data = b"x" * (50 * 1024 * 1024 + 1)
+        resp = client["client"].post(
+            "/api/upload/artifacts",
+            files={"file": ("big.csv", io.BytesIO(large_data), "text/csv")},
+            headers=_h(client["admin"]),
+        )
+        assert resp.status_code == 413
