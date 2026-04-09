@@ -1,15 +1,20 @@
 """Auth endpoints — login, token generation, bootstrap."""
 
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 import duckdb
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError
 
 from app.auth.jwt import create_access_token
 from app.auth.dependencies import _get_db
 from src.repositories.users import UserRepository
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -33,6 +38,23 @@ class BootstrapRequest(BaseModel):
     password: str = ""
 
 
+def _audit(user_id: str, action: str, result: str | None = None) -> None:
+    """Fire-and-forget audit log entry. Swallows all errors."""
+    try:
+        from src.db import get_system_db
+        from src.repositories.audit import AuditRepository
+        audit_conn = get_system_db()
+        AuditRepository(audit_conn).log(
+            user_id=user_id,
+            action=action,
+            resource="auth",
+            result=result,
+        )
+        audit_conn.close()
+    except Exception:
+        pass  # Audit failure must not block auth
+
+
 @router.post("/token", response_model=TokenResponse)
 async def create_token(
     request: TokenRequest,
@@ -49,11 +71,14 @@ async def create_token(
         if not request.password:
             raise HTTPException(status_code=401, detail="Password required")
         try:
-            from argon2 import PasswordHasher
             ph = PasswordHasher()
             ph.verify(user["password_hash"], request.password)
-        except Exception:
+        except VerifyMismatchError:
+            _audit(user["id"], "login_failed", result="invalid_password")
             raise HTTPException(status_code=401, detail="Invalid password")
+        except Exception:
+            logger.exception("Unexpected error during password verification")
+            raise HTTPException(status_code=500, detail="Internal server error")
     else:
         # No password set — must use their auth provider (Google OAuth, magic link)
         raise HTTPException(
@@ -66,6 +91,7 @@ async def create_token(
         email=user["email"],
         role=user["role"],
     )
+    _audit(user["id"], "token_created")
     return TokenResponse(
         access_token=token,
         user_id=user["id"],
@@ -96,7 +122,6 @@ async def bootstrap(
     user_id = str(uuid.uuid4())
     password_hash = None
     if request.password:
-        from argon2 import PasswordHasher
         password_hash = PasswordHasher().hash(request.password)
 
     repo.create(
@@ -108,6 +133,7 @@ async def bootstrap(
     )
 
     token = create_access_token(user_id=user_id, email=request.email, role="admin")
+    _audit(user_id, "bootstrap_completed")
     return TokenResponse(
         access_token=token,
         user_id=user_id,
