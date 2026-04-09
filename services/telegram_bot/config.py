@@ -11,7 +11,7 @@ import os
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 
 # Paths
-NOTIFICATIONS_DIR = "/data/notifications"
+NOTIFICATIONS_DIR = os.path.join(os.environ.get("DATA_DIR", "/data"), "notifications")
 TELEGRAM_USERS_FILE = os.path.join(NOTIFICATIONS_DIR, "telegram_users.json")
 PENDING_CODES_FILE = os.path.join(NOTIFICATIONS_DIR, "pending_codes.json")
 BOT_LOG_FILE = os.path.join(NOTIFICATIONS_DIR, "bot.log")

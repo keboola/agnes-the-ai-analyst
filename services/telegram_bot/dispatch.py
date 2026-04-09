@@ -14,7 +14,7 @@ from . import config
 
 logger = logging.getLogger(__name__)
 
-WS_GATEWAY_SOCKET_PATH = "/run/ws-gateway/ws.sock"
+WS_GATEWAY_SOCKET_PATH = os.environ.get("WS_GATEWAY_SOCKET", "/run/ws-gateway/ws.sock")
 
 
 def dispatch_to_ws_gateway(username: str, output: dict, script_name: str) -> None:
