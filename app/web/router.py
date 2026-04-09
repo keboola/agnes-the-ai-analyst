@@ -16,7 +16,8 @@ import duckdb
 
 import jinja2
 
-from app.auth.dependencies import get_current_user, get_optional_user, _get_db
+from app.auth.dependencies import get_current_user, get_optional_user, require_role, _get_db
+from src.rbac import Role
 from app.instance_config import (
     get_instance_name, get_instance_subtitle, get_datasets,
     get_theme, get_corporate_memory_config,
@@ -388,7 +389,7 @@ async def corporate_memory(
 @router.get("/corporate-memory/admin", response_class=HTMLResponse)
 async def corporate_memory_admin(
     request: Request,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_role(Role.KM_ADMIN)),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     repo = KnowledgeRepository(conn)
@@ -431,7 +432,7 @@ async def activity_center(
 @router.get("/admin/tables", response_class=HTMLResponse)
 async def admin_tables(
     request: Request,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_role(Role.ADMIN)),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     from src.repositories.table_registry import TableRegistryRepository
@@ -444,7 +445,7 @@ async def admin_tables(
 @router.get("/admin/permissions", response_class=HTMLResponse)
 async def admin_permissions_page(
     request: Request,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_role(Role.ADMIN)),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Admin page for managing permissions and access requests."""
