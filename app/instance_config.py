@@ -46,11 +46,11 @@ def get_data_source_type() -> str:
 
 
 def get_instance_name() -> str:
-    return get_value("instance_name", default="AI Data Analyst")
+    return get_value("instance", "name", default="AI Data Analyst")
 
 
 def get_instance_subtitle() -> str:
-    return get_value("instance_subtitle", default="")
+    return get_value("instance", "subtitle", default="")
 
 
 def get_allowed_domains() -> list:
