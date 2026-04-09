@@ -84,7 +84,7 @@ ALERT_ZEROS_PCT = 50.0  # Not in config (rarely needed)
 ALERT_HIGH_CARDINALITY = _cfg["alert_high_cardinality"]
 
 # Paths - configurable via environment or defaults for server
-DATA_DIR = Path(os.environ.get("PROFILER_DATA_DIR", "/data/src_data"))
+DATA_DIR = Path(os.environ.get("DATA_DIR", "/data")) / "src_data"
 DOCS_DIR = Path(os.environ.get("PROFILER_DOCS_DIR", str(Path(__file__).parent.parent / "docs")))
 PARQUET_DIR = DATA_DIR / "parquet"
 METADATA_DIR = DATA_DIR / "metadata"
