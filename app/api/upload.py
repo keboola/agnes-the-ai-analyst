@@ -12,6 +12,8 @@ from app.utils import get_data_dir as _get_data_dir
 
 router = APIRouter(prefix="/api/upload", tags=["upload"])
 
+MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50 MB
+
 
 @router.post("/sessions")
 async def upload_session(
@@ -29,6 +31,8 @@ async def upload_session(
         filename = f"upload_{uuid.uuid4().hex[:8]}"
     target = sessions_dir / filename
     content = await file.read()
+    if len(content) > MAX_UPLOAD_SIZE:
+        raise HTTPException(status_code=413, detail=f"File too large (max {MAX_UPLOAD_SIZE // 1024 // 1024}MB)")
     target.write_bytes(content)
     return {"status": "ok", "path": str(target), "size": len(content)}
 
@@ -49,6 +53,8 @@ async def upload_artifact(
         filename = f"upload_{uuid.uuid4().hex[:8]}"
     target = artifacts_dir / filename
     content = await file.read()
+    if len(content) > MAX_UPLOAD_SIZE:
+        raise HTTPException(status_code=413, detail=f"File too large (max {MAX_UPLOAD_SIZE // 1024 // 1024}MB)")
     target.write_bytes(content)
     return {"status": "ok", "path": str(target), "size": len(content)}
 
