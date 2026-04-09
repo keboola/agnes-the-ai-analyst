@@ -30,10 +30,9 @@
    # Edit .env with your data source credentials
    ```
 
-5. Create your data description:
+5. Register your tables:
    ```bash
-   cp config/data_description.md.example docs/data_description.md
-   # Edit docs/data_description.md to define your tables
+   # Tables are registered via the admin API or web UI — no config file needed
    ```
 
 6. Sync data:

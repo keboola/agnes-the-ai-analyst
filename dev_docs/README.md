@@ -19,7 +19,6 @@ This folder contains documentation for **developers and server administrators** 
 - `insights.md` - Activity Center dashboard feature documentation
 
 ### Planning & Meetings
-- `plan-corporate-memory.md` - Corporate Memory module implementation plan
 - `meetings/` - Meeting transcripts, summaries, and notes
 
 ## For Analysts
