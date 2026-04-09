@@ -112,6 +112,18 @@ def init_extract(
     finally:
         conn.close()
 
+    # Atomic swap with WAL cleanup
+    old_wal = Path(str(db_path) + ".wal")
+    if old_wal.exists():
+        old_wal.unlink()
+
+    if tmp_db_path.exists():
+        shutil.move(str(tmp_db_path), str(db_path))
+
+    tmp_wal = Path(str(tmp_db_path) + ".wal")
+    if tmp_wal.exists():
+        tmp_wal.unlink()
+
     return stats
 
 
