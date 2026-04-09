@@ -79,22 +79,23 @@ class TestScriptsAPI:
         assert "disallowed" in detail or "Blocked" in detail
 
     def test_deploy_run_undeploy(self, client):
-        c, _, analyst_token = client
-        headers = {"Authorization": f"Bearer {analyst_token}"}
+        c, admin_token, analyst_token = client
+        analyst_headers = {"Authorization": f"Bearer {analyst_token}"}
+        admin_headers = {"Authorization": f"Bearer {admin_token}"}
 
         # Deploy
         resp = c.post("/api/scripts/deploy", json={
             "name": "calc", "source": "print(2+2)", "schedule": "0 8 * * MON",
-        }, headers=headers)
+        }, headers=analyst_headers)
         script_id = resp.json()["id"]
 
         # Run
-        resp = c.post(f"/api/scripts/{script_id}/run", headers=headers)
+        resp = c.post(f"/api/scripts/{script_id}/run", headers=analyst_headers)
         assert resp.status_code == 200
         assert "4" in resp.json()["stdout"]
 
-        # Undeploy
-        resp = c.delete(f"/api/scripts/{script_id}", headers=headers)
+        # Undeploy (requires admin)
+        resp = c.delete(f"/api/scripts/{script_id}", headers=admin_headers)
         assert resp.status_code == 204
 
 
