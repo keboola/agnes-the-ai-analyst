@@ -23,14 +23,38 @@ def web_client(tmp_path, monkeypatch):
 
 @pytest.fixture
 def admin_cookie(web_client, tmp_path, monkeypatch):
+    from argon2 import PasswordHasher
     from src.db import get_system_db
     from src.repositories.users import UserRepository
+    password = "AdminPass1!"
+    password_hash = PasswordHasher().hash(password)
     conn = get_system_db()
-    UserRepository(conn).create(id="admin1", email="admin@test.com", name="Admin", role="admin")
+    UserRepository(conn).create(
+        id="admin1", email="admin@test.com", name="Admin", role="admin",
+        password_hash=password_hash,
+    )
     conn.close()
-    # Get token via the API to ensure JWT secret matches the running app
-    resp = web_client.post("/auth/token", json={"email": "admin@test.com"})
+    resp = web_client.post("/auth/token", json={"email": "admin@test.com", "password": password})
     assert resp.status_code == 200, f"Bootstrap failed: {resp.text}"
+    token = resp.json()["access_token"]
+    return {"access_token": token}
+
+
+@pytest.fixture
+def analyst_cookie(web_client, tmp_path, monkeypatch):
+    from argon2 import PasswordHasher
+    from src.db import get_system_db
+    from src.repositories.users import UserRepository
+    password = "AnalystPass1!"
+    password_hash = PasswordHasher().hash(password)
+    conn = get_system_db()
+    UserRepository(conn).create(
+        id="analyst1", email="analyst@test.com", name="Analyst", role="analyst",
+        password_hash=password_hash,
+    )
+    conn.close()
+    resp = web_client.post("/auth/token", json={"email": "analyst@test.com", "password": password})
+    assert resp.status_code == 200, f"Analyst token failed: {resp.text}"
     token = resp.json()["access_token"]
     return {"access_token": token}
 
@@ -66,4 +90,22 @@ class TestWebUISmoke:
         resp = web_client.get("/admin/permissions", cookies=admin_cookie)
         if resp.status_code == 404:
             pytest.skip("Route /admin/permissions does not exist")
+        assert resp.status_code == 200
+
+
+class TestAdminRoleGuards:
+    def test_analyst_cannot_access_admin_tables(self, web_client, admin_cookie, analyst_cookie):
+        resp = web_client.get("/admin/tables", cookies=analyst_cookie)
+        assert resp.status_code == 403
+
+    def test_analyst_cannot_access_admin_permissions(self, web_client, admin_cookie, analyst_cookie):
+        resp = web_client.get("/admin/permissions", cookies=analyst_cookie)
+        assert resp.status_code == 403
+
+    def test_admin_can_access_admin_tables(self, web_client, admin_cookie):
+        resp = web_client.get("/admin/tables", cookies=admin_cookie)
+        assert resp.status_code == 200
+
+    def test_admin_can_access_admin_permissions(self, web_client, admin_cookie):
+        resp = web_client.get("/admin/permissions", cookies=admin_cookie)
         assert resp.status_code == 200
