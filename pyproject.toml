@@ -1,9 +1,10 @@
 [project]
-name = "data-analyst"
+name = "agnes-the-ai-analyst"
 version = "2.0.0"
-description = "AI Data Analyst — data distribution platform for AI analytical systems"
-requires-python = ">=3.9"
+description = "Agnes — AI Data Analyst platform for AI analytical systems"
+requires-python = ">=3.11"
 license = "MIT"
+readme = "README.md"
 
 dependencies = [
     # Core database
@@ -13,6 +14,7 @@ dependencies = [
     "uvicorn[standard]>=0.32.0",
     "python-multipart>=0.0.9",
     "jinja2>=3.1.0",
+    "starlette>=0.41.0",
     # Authentication
     "PyJWT>=2.8.0",
     "itsdangerous>=2.1.0",
@@ -37,19 +39,32 @@ dependencies = [
     # Profiler visualizations
     "matplotlib>=3.8.0",
     "numpy>=1.24.0",
-    # Sample data generation
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0.0",
+    "pytest-timeout>=2.0.0",
     "faker>=24.0.0",
+    "anthropic>=0.30.0",
+    "openai>=1.30.0",
 ]
 
 [project.scripts]
 da = "cli.main:app"
 
-[project.optional-dependencies]
-dev = [
-    "pytest>=7.0.0",
-    "pytest-mock>=3.0.0",
-]
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app", "src", "connectors", "cli", "services", "config"]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=9.0.0",
+    "pytest-timeout>=2.0.0",
+    "faker>=24.0.0",
+    "anthropic>=0.30.0",
+    "openai>=1.30.0",
+]

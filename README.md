@@ -80,7 +80,7 @@ curl -X POST http://localhost:8000/api/sync/trigger
 python3 -m venv .venv && source .venv/bin/activate
 
 # Install dependencies
-uv pip install -r requirements.txt
+uv pip install ".[dev]"
 
 # Run FastAPI locally with hot reload
 uvicorn app.main:app --reload
