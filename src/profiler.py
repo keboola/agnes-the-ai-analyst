@@ -716,9 +716,9 @@ def profile_table(
 
     # Determine read expression
     if parquet_path.is_dir():
-        read_expr = f"read_parquet('{parquet_path}/*.parquet')"
+        read_expr = f"read_parquet('{parquet_path}/*.parquet', union_by_name=true)"
     else:
-        read_expr = f"read_parquet('{parquet_path}')"
+        read_expr = f"read_parquet('{parquet_path}', union_by_name=true)"
 
     # Get row count to decide on sampling
     total_rows = con.execute(f"SELECT COUNT(*) FROM {read_expr}").fetchone()[0]
