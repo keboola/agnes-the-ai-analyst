@@ -6,12 +6,20 @@ from typing import Optional
 
 import jwt
 
-SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "dev-jwt-secret-change-in-production")
+SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "")
 
-import warnings as _warnings
-if len(SECRET_KEY) < 32 and os.environ.get("TESTING", "").lower() not in ("1", "true"):
+if not SECRET_KEY:
+    if os.environ.get("TESTING", "").lower() in ("1", "true"):
+        SECRET_KEY = "test-jwt-secret-key-minimum-32-chars!!"
+    else:
+        raise RuntimeError(
+            "JWT_SECRET_KEY environment variable is required. "
+            "Generate one: python -c \"import secrets; print(secrets.token_hex(32))\""
+        )
+elif len(SECRET_KEY) < 32 and os.environ.get("TESTING", "").lower() not in ("1", "true"):
+    import warnings as _warnings
     _warnings.warn(
-        f"JWT_SECRET_KEY is {len(SECRET_KEY)} chars — minimum 32 recommended for production",
+        f"JWT_SECRET_KEY is {len(SECRET_KEY)} chars — minimum 32 recommended",
         UserWarning, stacklevel=2,
     )
 

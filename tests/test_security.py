@@ -1,6 +1,8 @@
 """Security tests — sandbox escapes, SQL injection, access control."""
 
+import importlib
 import os
+import sys
 import pytest
 from fastapi.testclient import TestClient
 
@@ -190,3 +192,32 @@ class TestAuthSecurity:
         c, _ = client
         resp = c.get("/api/scripts")
         assert resp.status_code == 401
+
+
+# ---- JWT Secret Hardening ----
+
+class TestJwtSecretHardening:
+    def test_raises_without_jwt_secret_in_non_test_env(self):
+        """Module-level code must raise RuntimeError when JWT_SECRET_KEY is absent
+        and TESTING is not set, preventing accidental production deploys with no secret."""
+        saved_key = os.environ.pop("JWT_SECRET_KEY", None)
+        saved_testing = os.environ.pop("TESTING", None)
+        # Eject any cached module so the re-import re-executes module-level code
+        sys.modules.pop("app.auth.jwt", None)
+        try:
+            with pytest.raises(RuntimeError, match="JWT_SECRET_KEY environment variable is required"):
+                importlib.import_module("app.auth.jwt")
+        finally:
+            # Restore environment before re-importing so the module loads cleanly
+            if saved_key is not None:
+                os.environ["JWT_SECRET_KEY"] = saved_key
+            if saved_testing is not None:
+                os.environ["TESTING"] = saved_testing
+            # If neither was set (bare test run), use TESTING flag so reload works
+            if saved_key is None and saved_testing is None:
+                os.environ["TESTING"] = "1"
+            sys.modules.pop("app.auth.jwt", None)
+            importlib.import_module("app.auth.jwt")
+            # Clean up the temporary TESTING flag if we added it
+            if saved_key is None and saved_testing is None:
+                os.environ.pop("TESTING", None)
