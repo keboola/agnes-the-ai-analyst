@@ -131,6 +131,67 @@ gcloud compute firewall-rules create allow-data-analyst-dev \
   --project=YOUR_PROJECT
 ```
 
+## Production Deployment (pre-built images)
+
+Instead of building locally, use pre-built images from GitHub Container Registry:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+```
+
+Pin to a specific version for rollback:
+```bash
+# Edit docker-compose.prod.yml, change :latest to a commit SHA
+image: ghcr.io/keboola/agnes-the-ai-analyst:abc1234def
+```
+
+## HTTPS with Caddy (production)
+
+Set your domain in `.env`:
+```bash
+DOMAIN=data.yourcompany.com
+```
+
+Start with the production profile:
+```bash
+docker compose --profile production up -d
+```
+
+Caddy automatically provisions Let's Encrypt TLS certificates. Ensure ports 80 and 443 are open.
+
+## Multi-Instance Deployment
+
+Each customer gets a separate VM with isolated data and config.
+
+### Using Terraform
+
+1. Configure remote state: `cd infra && terraform init` (uses GCS backend)
+2. Create per-customer tfvars: `cp infra/terraform.tfvars.example infra/instances/customer.tfvars`
+3. Apply: `terraform workspace new customer && terraform apply -var-file=instances/customer.tfvars`
+4. The startup script creates `.env`, `instance.yaml`, and starts Docker Compose
+
+### Manual
+
+1. Create VM and install Docker
+2. Clone repo and create `.env` from `config/.env.template`
+3. Create `config/instance.yaml` from `config/instance.yaml.example`
+4. Start: `docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile production up -d`
+5. Bootstrap admin: `curl -X POST http://IP:8000/auth/bootstrap -H 'Content-Type: application/json' -d '{"email":"admin@customer.com","password":"initial-password"}'`
+
+## Updating an Instance
+
+```bash
+# Pull latest image
+docker compose -f docker-compose.yml -f docker-compose.prod.yml pull
+
+# Restart with new image (zero-downtime for stateless services)
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+# Rollback: edit docker-compose.prod.yml to pin previous commit SHA
+```
+
+Database migrations run automatically on startup.
+
 ## Important Notes
 
 ### DuckDB Write Locking
