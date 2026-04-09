@@ -5,9 +5,12 @@ and get_analytics_db() for the analytics database with parquet views.
 """
 
 import os
+import re
 from pathlib import Path
 
 import duckdb
+
+_SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
 SCHEMA_VERSION = 3
 
@@ -233,6 +236,8 @@ def get_analytics_db_readonly() -> duckdb.DuckDBPyConnection:
         for ext_dir in sorted(extracts_dir.iterdir()):
             db_file = ext_dir / "extract.duckdb"
             if db_file.exists() and ext_dir.is_dir():
+                if not _SAFE_IDENTIFIER.match(ext_dir.name):
+                    continue
                 try:
                     conn.execute(f"ATTACH '{db_file}' AS {ext_dir.name} (READ_ONLY)")
                 except Exception:
