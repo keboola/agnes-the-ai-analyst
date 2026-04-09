@@ -49,6 +49,13 @@ async def execute_query(
         "query_table", "iceberg_scan", "delta_scan",
         "glob(", "list_files",
         "'/", '"/','http://', 'https://', 's3://', 'gcs://',
+        # DuckDB metadata (leaks schema info regardless of RBAC)
+        "information_schema", "duckdb_tables", "duckdb_columns",
+        "duckdb_databases", "duckdb_settings", "duckdb_functions",
+        "duckdb_views", "duckdb_indexes", "duckdb_schemas",
+        "pragma_table_info", "pragma_storage_info",
+        # Relative path traversal
+        "'../", '"../',
         # Multiple statements
         ";",
     ]
