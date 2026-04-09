@@ -1,0 +1,17 @@
+# Production override — uses pre-built GHCR image instead of local build.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+services:
+  app:
+    image: ghcr.io/keboola/agnes-the-ai-analyst:latest
+  scheduler:
+    image: ghcr.io/keboola/agnes-the-ai-analyst:latest
+  extract:
+    image: ghcr.io/keboola/agnes-the-ai-analyst:latest
+  telegram-bot:
+    image: ghcr.io/keboola/agnes-the-ai-analyst:latest
+  ws-gateway:
+    image: ghcr.io/keboola/agnes-the-ai-analyst:latest
+  corporate-memory:
+    image: ghcr.io/keboola/agnes-the-ai-analyst:latest
+  session-collector:
+    image: ghcr.io/keboola/agnes-the-ai-analyst:latest
