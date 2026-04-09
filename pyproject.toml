@@ -41,11 +41,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-keboola-legacy = [
-    "kbcstorage>=0.9.0",
-]
+# keboola-legacy: install kbcstorage>=0.9.0 manually if you need the legacy
+# Keboola client fallback (primary path uses DuckDB Keboola extension)
 dev = [
-    "kbcstorage>=0.9.0",
     "pytest>=9.0.0",
     "pytest-timeout>=2.0.0",
     "faker>=24.0.0",
@@ -70,5 +68,4 @@ dev-dependencies = [
     "faker>=24.0.0",
     "anthropic>=0.30.0",
     "openai>=1.30.0",
-    "kbcstorage>=0.9.0",
 ]
