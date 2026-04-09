@@ -104,6 +104,33 @@ def _flex(d):
     return d
 
 
+_URL_MAP = {
+    # Flask-style endpoint names → FastAPI URL paths
+    "dashboard": "/dashboard",
+    "catalog": "/catalog",
+    "corporate_memory": "/corporate-memory",
+    "corporate_memory_admin": "/corporate-memory/admin",
+    "activity_center": "/activity-center",
+    "index": "/",
+    "auth.login": "/login",
+    "auth.logout": "/login",  # No logout route — redirect to login
+    "password_auth.login_email": "/auth/password/login",
+    "password_auth.reset_request": "/auth/password/reset",
+    "password_auth.request_access": "/auth/password/setup",
+    "email_auth.login_email_form": "/login/email",
+    "email_auth.send_magic_link": "/auth/email/send-link",
+    "register": "/auth/password/setup",
+}
+
+
+def _url_for_shim(endpoint: str, **kw) -> str:
+    """Flask url_for compatibility — maps endpoint names to FastAPI paths."""
+    if endpoint == "static":
+        filename = kw.get("filename", "")
+        return f"/static/{filename}"
+    return _URL_MAP.get(endpoint, f"/{endpoint}")
+
+
 def _build_context(request: Request, user: Optional[dict] = None, **extra) -> dict:
     """Build template context with config, user, and theme."""
     class ConfigProxy:
@@ -132,7 +159,7 @@ def _build_context(request: Request, user: Optional[dict] = None, **extra) -> di
         "static_url": lambda path: f"/static/{path}",
         # Flask compatibility shims for templates
         "get_flashed_messages": lambda **kwargs: [],
-        "url_for": lambda endpoint, **kw: f"/{endpoint}",
+        "url_for": lambda endpoint, **kw: _url_for_shim(endpoint, **kw),
         "session": _FlexDict({"user": user}) if user else _FlexDict(),
     }
     # Flex all extra context values for template compatibility
