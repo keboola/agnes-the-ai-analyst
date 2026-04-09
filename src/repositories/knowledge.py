@@ -46,6 +46,17 @@ class KnowledgeRepository:
              json.dumps(tags) if tags else None, status, now, now],
         )
 
+    def update(self, item_id: str, **fields) -> None:
+        if not fields:
+            return
+        now = datetime.now(timezone.utc)
+        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        values = list(fields.values()) + [now, item_id]
+        self.conn.execute(
+            f"UPDATE knowledge_items SET {set_clause}, updated_at = ? WHERE id = ?",
+            values,
+        )
+
     def update_status(self, item_id: str, status: str) -> None:
         now = datetime.now(timezone.utc)
         self.conn.execute(
