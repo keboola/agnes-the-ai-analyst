@@ -88,9 +88,11 @@ class TestAuth:
         from src.db import get_system_db
         from src.repositories.users import UserRepository
 
+        from argon2 import PasswordHasher
         conn = get_system_db()
         repo = UserRepository(conn)
-        repo.create(id="u1", email="test@acme.com", name="Test", role="analyst")
+        repo.create(id="u1", email="test@acme.com", name="Test", role="analyst",
+                    password_hash=PasswordHasher().hash("testpass"))
         conn.close()
 
         from fastapi.testclient import TestClient
@@ -103,7 +105,7 @@ class TestAuth:
             mock_get_client.return_value.__exit__ = MagicMock(return_value=False)
 
             # Simulate the API call
-            resp = client.post("/auth/token", json={"email": "test@acme.com"})
+            resp = client.post("/auth/token", json={"email": "test@acme.com", "password": "testpass"})
             assert resp.status_code == 200
             token = resp.json()["access_token"]
 

@@ -24,10 +24,15 @@ def seeded_client(tmp_path, monkeypatch):
     from src.repositories.users import UserRepository
     from app.auth.jwt import create_access_token
 
+    from argon2 import PasswordHasher
+    ph = PasswordHasher()
+
     conn = get_system_db()
     repo = UserRepository(conn)
-    repo.create(id="admin1", email="admin@acme.com", name="Admin", role="admin")
-    repo.create(id="analyst1", email="analyst@acme.com", name="Analyst", role="analyst")
+    repo.create(id="admin1", email="admin@acme.com", name="Admin", role="admin",
+                password_hash=ph.hash("adminpass"))
+    repo.create(id="analyst1", email="analyst@acme.com", name="Analyst", role="analyst",
+                password_hash=ph.hash("analystpass"))
     conn.close()
 
     app = create_app()
@@ -61,7 +66,7 @@ class TestHealth:
 class TestAuth:
     def test_token_for_existing_user(self, seeded_client):
         client, _, _ = seeded_client
-        resp = client.post("/auth/token", json={"email": "admin@acme.com"})
+        resp = client.post("/auth/token", json={"email": "admin@acme.com", "password": "adminpass"})
         assert resp.status_code == 200
         data = resp.json()
         assert "access_token" in data
