@@ -1,161 +1,61 @@
 # Disaster Recovery
 
-Recovery procedures for the Data Broker Server (`your-server`).
+Recovery procedures for the AI Data Analyst Docker deployment.
 
 ## Overview
 
 ```
-Disk Layout:
-  sda (10 GB) /         System disk (instance) - EXPENDABLE
-  sdb (30 GB) /data     Data disk - SNAPSHOTTED daily
-  sdc (30 GB) /home     Home disk - SNAPSHOTTED daily
+What lives where:
+  Docker volumes  /data        DuckDB files, parquet extracts, state
+  Git             repo/        Application code — rebuild from GitHub
+  .env            secrets      Recreate from GitHub Secrets / 1Password
 ```
 
-**Key principle**: sda is disposable. Everything on it is either in git or can be reinstalled. All unique data lives on sdb and sdc, which are independently snapshotted.
+**Key principle**: the container is disposable. All unique data lives in the `/data`
+Docker volume (or a GCP persistent disk mounted at `/data`). Re-pulling the image
+and restoring `/data` brings the service back to full operation.
 
-## What Lives Where
+## Data Layout
 
-| Location | Content | Recovery Method |
-|----------|---------|-----------------|
-| sda: `/opt/data-analyst/repo/` | Application code | `git clone` from GitHub |
-| sda: `/opt/data-analyst/.venv/` | Python packages | `pip install -r requirements.txt` |
-| sda: `/opt/data-analyst/.env` | Application secrets | deploy.sh creates from GitHub secrets |
-| sda: `/etc/sudoers.d/` | Permissions | deploy.sh copies from repo |
-| sda: `/etc/security/limits.d/` | Resource limits | deploy.sh copies from repo |
-| sda: `/etc/nginx/` | Nginx config | deploy.sh or manual copy from repo |
-| sda: `/etc/letsencrypt/` | SSL certificate | `certbot` renews automatically |
-| sdb: `/data/src_data/parquet/` | Parquet data | Regenerate from Keboola (`update.sh`) or restore snapshot |
-| sdb: `/data/notifications/` | Notification state | Restore from snapshot |
-| sdb: `/data/docs/`, `/data/scripts/` | Docs & scripts | deploy.sh copies from repo |
-| sdc: `/home/*/` | User accounts, SSH keys, workspaces, scripts | Restore from snapshot |
+| Path | Content | Backup |
+|------|---------|--------|
+| `/data/state/system.duckdb` | Table registry, users, sync state | Daily snapshot |
+| `/data/analytics/server.duckdb` | Master analytics DB (views) | Regenerated on start |
+| `/data/extracts/*/extract.duckdb` | Per-source extract DBs | Daily snapshot |
+| `/data/extracts/*/data/*.parquet` | Parquet files (local sources) | Daily snapshot |
 
-## Scenario A: System Disk Failure (sda dies)
+`analytics/server.duckdb` is rebuilt automatically by `SyncOrchestrator.rebuild()`
+on every startup, so it does not need to be backed up separately.
 
-**Impact**: Server is down, but all user data is safe on sdb/sdc.
+## Scenario A: Container Crash / Bad Deploy
 
-**Recovery time**: ~30 minutes
+**Impact**: Service down, data intact.
 
-### Steps
+**Recovery time**: ~2 minutes
 
-1. **Create new VM** (same zone, attach existing disks):
-   ```bash
-   # Create new instance with existing disks
-   gcloud compute instances create your-server \
-     --project=your-gcp-project \
-     --zone=europe-north1-a \
-     --machine-type=e2-medium \
-     --image-family=debian-12 \
-     --image-project=debian-cloud \
-     --boot-disk-size=10GB \
-     --tags=http-server,https-server
+```bash
+# Pull latest image and restart
+docker compose pull
+docker compose up -d
 
-   # Attach existing data disks
-   gcloud compute instances attach-disk your-server \
-     --project=your-gcp-project \
-     --zone=europe-north1-a \
-     --disk=data-disk
+# Check health
+curl https://your-instance.example.com/health
+```
 
-   gcloud compute instances attach-disk your-server \
-     --project=your-gcp-project \
-     --zone=europe-north1-a \
-     --disk=home-disk
-   ```
+If a bad image was pushed, roll back to the previous tag:
+```bash
+docker compose down
+# Edit docker-compose.yml to pin the previous image tag
+docker compose up -d
+```
 
-2. **SSH in and mount disks**:
-   ```bash
-   # Mount data disk
-   mkdir -p /data
-   mount /dev/sdb /data
+## Scenario B: /data Volume Corruption or Loss
 
-   # Mount home disk
-   mount /dev/sdc /home
+**Impact**: All DuckDB state and parquet data lost.
 
-   # Add to fstab (get UUIDs with blkid)
-   echo "UUID=$(blkid -s UUID -o value /dev/sdb) /data ext4 discard,defaults,nofail 0 2" >> /etc/fstab
-   echo "UUID=$(blkid -s UUID -o value /dev/sdc) /home ext4 discard,defaults,nofail 0 2" >> /etc/fstab
-   ```
+**Recovery time**: ~10 minutes (from snapshot) or ~30 minutes (regenerate from source)
 
-3. **Install prerequisites**:
-   ```bash
-   apt-get update
-   apt-get install -y git python3.11-venv python3-pip nginx certbot python3-certbot-nginx
-   ```
-
-4. **Recreate deploy user and groups**:
-   ```bash
-   # Create groups
-   groupadd dataread
-   groupadd data-private
-   groupadd data-ops
-
-   # Create deploy user
-   useradd -m -s /bin/bash deploy
-   usermod -aG data-ops deploy
-
-   # Restore deploy SSH key (generate new one)
-   sudo -u deploy ssh-keygen -t ed25519 -f /home/deploy/.ssh/id_ed25519 -N '' -C 'deploy@data-broker'
-   sudo -u deploy bash -c 'echo -e "Host github.com\n  IdentityFile ~/.ssh/id_ed25519\n  StrictHostKeyChecking accept-new" > /home/deploy/.ssh/config'
-   chmod 600 /home/deploy/.ssh/config
-
-   # Add new public key to GitHub as Deploy Key
-   cat /home/deploy/.ssh/id_ed25519.pub
-   ```
-
-5. **Clone repo and run setup**:
-   ```bash
-   mkdir -p /opt/data-analyst
-   chown deploy:data-ops /opt/data-analyst
-   sudo -u deploy git clone git@github.com:keboola/agnes-the-ai-analyst.git /opt/data-analyst/repo
-   git config --global --add safe.directory /opt/data-analyst/repo
-   /opt/data-analyst/repo/server/setup.sh
-   ```
-
-6. **Restore user accounts from /home**:
-   ```bash
-   # Users already exist on home-disk, just recreate /etc/passwd entries
-   # For each directory in /home (except deploy):
-   for dir in /home/*/; do
-     username=$(basename "$dir")
-     [[ "$username" == "deploy" ]] && continue
-     # Create user if not exists
-     if ! id "$username" &>/dev/null; then
-       useradd -M -d "/home/$username" -s /bin/bash "$username"
-       usermod -aG dataread "$username"
-     fi
-   done
-   ```
-   Note: Group memberships (data-private, sudo, data-ops) need manual review. Check the admin list in `server/limits-users.conf` for admin users.
-
-7. **Trigger deploy via GitHub Actions** (or manually):
-   ```bash
-   sudo -u deploy bash -c 'cd /opt/data-analyst/repo && ./server/deploy.sh'
-   ```
-
-8. **Set up SSL certificate**:
-   ```bash
-   certbot --nginx -d your-instance.example.com
-   ```
-
-9. **Restore crontab**:
-   ```bash
-   sudo -u deploy crontab -e
-   # Add:
-   # MAILTO=admin@your-domain.com
-   # 0 6,14,19 * * * cd /opt/data-analyst/repo && ./scripts/update.sh > /var/log/update.log 2>&1 || cat /var/log/update.log
-   ```
-
-10. **Update external IP** if it changed:
-    - DNS: `your-instance.example.com` A record
-    - GitHub secrets: `SERVER_HOST`
-    - SSH configs of all users
-
-## Scenario B: Data Disk Failure (sdb/data-disk dies)
-
-**Impact**: Parquet data lost, users unaffected.
-
-**Recovery time**: ~10 minutes (from snapshot) or ~30 minutes (from Keboola)
-
-### Option 1: Restore from snapshot (faster)
+### Option 1: Restore from GCP disk snapshot (faster)
 
 ```bash
 # Find latest snapshot
@@ -169,95 +69,99 @@ gcloud compute disks create data-disk \
   --source-snapshot=SNAPSHOT_NAME \
   --type=pd-balanced
 
-# Attach to VM (may need to stop VM first)
+# Attach to VM and mount
 gcloud compute instances attach-disk your-server \
   --project=your-gcp-project \
   --zone=europe-north1-a \
   --disk=data-disk
 
-# Mount
-ssh kids "sudo mount /dev/sdb /data"
+# Restart containers
+docker compose up -d
 ```
 
-### Option 2: Regenerate from Keboola
+### Option 2: Regenerate from source
 
 ```bash
-# Create fresh disk
-gcloud compute disks create data-disk \
-  --project=your-gcp-project \
-  --zone=europe-north1-a \
-  --size=30GB \
-  --type=pd-balanced
+# Start with empty /data volume
+docker compose up -d
 
-# Attach, format, mount
-ssh kids "sudo mkfs.ext4 /dev/sdb && sudo mount /dev/sdb /data"
-
-# Run deploy to recreate directory structure
-ssh kids "sudo -u deploy bash -c 'cd /opt/data-analyst/repo && ./server/deploy.sh'"
-
-# Regenerate parquet data from Keboola
-ssh kids "cd /opt/data-analyst/repo && ./scripts/update.sh"
+# Trigger a full sync from the data source
+curl -X POST http://localhost:8000/api/sync/trigger
+# Or via CLI:
+docker compose exec app da sync
 ```
 
-## Scenario C: Home Disk Failure (sdc/home-disk dies)
+DuckDB extract files and parquet will be repopulated from Keboola / BigQuery.
+`system.duckdb` (table registry, users) must be restored from snapshot if
+not regenerated — user accounts and table definitions are not recreated by sync.
 
-**Impact**: All user accounts, SSH keys, and personal workspaces lost.
+## Scenario C: Complete VM Loss
 
-**Recovery time**: ~10 minutes (from snapshot)
+**Recovery time**: ~20 minutes
 
-### Restore from snapshot
+1. **Create new VM** (or use managed instance group):
+   ```bash
+   gcloud compute instances create your-server \
+     --project=your-gcp-project \
+     --zone=europe-north1-a \
+     --machine-type=e2-medium \
+     --image-family=debian-12 \
+     --image-project=debian-cloud
+   ```
 
-```bash
-# Find latest snapshot
-gcloud compute snapshots list --project=your-gcp-project \
-  --filter="sourceDisk:home-disk" --sort-by=~creationTimestamp --limit=5
+2. **Install Docker**:
+   ```bash
+   curl -fsSL https://get.docker.com | sh
+   ```
 
-# Create new disk from snapshot
-gcloud compute disks create home-disk \
-  --project=your-gcp-project \
-  --zone=europe-north1-a \
-  --source-snapshot=SNAPSHOT_NAME \
-  --type=pd-balanced
+3. **Attach and mount the data disk** (or restore from snapshot per Scenario B):
+   ```bash
+   gcloud compute instances attach-disk your-server \
+     --project=your-gcp-project --zone=europe-north1-a --disk=data-disk
+   # Add mount to /etc/fstab and mount /data
+   ```
 
-# Attach to VM
-gcloud compute instances attach-disk your-server \
-  --project=your-gcp-project \
-  --zone=europe-north1-a \
-  --disk=home-disk
+4. **Clone repo and create .env**:
+   ```bash
+   git clone git@github.com:your-org/ai-data-analyst.git /opt/data-analyst
+   cd /opt/data-analyst
+   cp config/.env.template .env
+   # Fill in secrets from GitHub Secrets / 1Password
+   ```
 
-# Mount
-ssh kids "sudo mount /dev/sdc /home"
-```
+5. **Start the stack**:
+   ```bash
+   docker compose up -d
+   ```
 
-If no snapshot exists, users must re-register via https://your-instance.example.com.
-
-## Scenario D: Complete Server Loss (VM + all disks)
-
-**Recovery time**: ~45 minutes
-
-1. Follow **Scenario A** steps 1-5 (new VM, prerequisites, deploy user)
-2. Restore `data-disk` from snapshot (Scenario B, Option 1)
-3. Restore `home-disk` from snapshot (Scenario C)
-4. Follow **Scenario A** steps 6-10 (user accounts, deploy, SSL, cron, IP)
+6. **Update DNS** if the external IP changed:
+   - A record for `your-instance.example.com`
 
 ## Verification Checklist
 
 After any recovery, verify:
 
-- [ ] `ssh kids` works (admin access)
-- [ ] `https://your-instance.example.com` loads (webapp)
-- [ ] `https://your-instance.example.com/health` returns OK
-- [ ] At least one analyst can SSH in
-- [ ] `ls /data/src_data/parquet/` shows data
-- [ ] `ls /home/` shows user directories
-- [ ] `systemctl status webapp` is active
-- [ ] `systemctl status notify-bot` is active
-- [ ] `sudo crontab -u deploy -l` shows data sync cron
+- [ ] `docker compose ps` — all services `Up`
+- [ ] `https://your-instance.example.com/health` returns `{"status": "ok"}`
+- [ ] Login works (Google OAuth or email magic link)
+- [ ] At least one table appears in the data catalog
+- [ ] `docker compose logs app` — no ERROR lines at startup
 
 ## Preventive Measures
 
-- **GCP snapshots**: Daily automatic snapshots of `data-disk` and `home-disk` (14-day retention)
-- **Setup script**: `server/setup-snapshot-schedule.sh` configures snapshot policy
-- **Limits in git**: `server/limits-users.conf` is version-controlled and deployed automatically
-- **All configs in git**: sudoers, nginx, systemd services, management scripts
-- **Secrets in GitHub**: `.env` is recreated by deploy.sh from GitHub Actions secrets
+- **GCP snapshots**: Daily automatic snapshots of the `/data` persistent disk
+  (14-day retention). Configure via:
+  ```bash
+  gcloud compute resource-policies create snapshot-schedule daily-backup \
+    --project=your-gcp-project \
+    --region=europe-north1 \
+    --max-retention-days=14 \
+    --on-source-disk-delete=keep-auto-snapshots \
+    --daily-schedule \
+    --start-time=03:00
+  gcloud compute disks add-resource-policies data-disk \
+    --project=your-gcp-project --zone=europe-north1-a \
+    --resource-policies=daily-backup
+  ```
+- **Secrets in GitHub / 1Password**: `.env` is never committed; recreate from stored secrets
+- **Image tags**: Pin a known-good image tag in `docker-compose.yml` before each deploy
