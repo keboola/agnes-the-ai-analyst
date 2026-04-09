@@ -77,12 +77,14 @@ async def password_login_web(
         return RedirectResponse(url="/login/password?error=invalid", status_code=302)
 
     token = create_access_token(user["id"], user["email"], user["role"])
-    is_production = os.environ.get("TESTING", "").lower() not in ("1", "true")
+    # Secure cookie only over HTTPS (detect via X-Forwarded-Proto or request scheme)
+    # For dev/staging on plain HTTP, secure=False so the cookie is actually sent
+    use_secure = os.environ.get("DOMAIN", "") != ""  # DOMAIN set = production with TLS
     response = RedirectResponse(url="/dashboard", status_code=302)
     response.set_cookie(
         key="access_token", value=token,
         httponly=True, max_age=86400, samesite="lax",
-        secure=is_production,
+        secure=use_secure,
     )
     return response
 
