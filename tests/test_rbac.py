@@ -5,8 +5,8 @@ import pytest
 
 
 @pytest.fixture
-def setup_db(tmp_path):
-    os.environ["DATA_DIR"] = str(tmp_path)
+def setup_db(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
     from src.db import get_system_db
     from src.repositories.users import UserRepository
 

@@ -6,10 +6,10 @@ from fastapi.testclient import TestClient
 
 
 @pytest.fixture
-def client(tmp_path):
-    os.environ["DATA_DIR"] = str(tmp_path)
-    os.environ["JWT_SECRET_KEY"] = "test-secret-32chars-minimum!!!!!"
-    os.environ["SCRIPT_TIMEOUT"] = "10"
+def client(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-32chars-minimum!!!!!")
+    monkeypatch.setenv("SCRIPT_TIMEOUT", "10")
 
     from app.main import create_app
     from src.db import get_system_db

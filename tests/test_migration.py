@@ -6,7 +6,7 @@ import pytest
 
 
 @pytest.fixture
-def migration_env(tmp_path):
+def migration_env(tmp_path, monkeypatch):
     """Create temp dir with sample JSON files mimicking production layout."""
     data_dir = tmp_path / "data"
     (data_dir / "notifications").mkdir(parents=True)
@@ -52,7 +52,7 @@ def migration_env(tmp_path):
         }
     }))
 
-    os.environ["DATA_DIR"] = str(data_dir)
+    monkeypatch.setenv("DATA_DIR", str(data_dir))
     return str(data_dir)
 
 
@@ -79,11 +79,11 @@ def test_migration_idempotent(migration_env):
     assert stats2["sync_state"] == 2
 
 
-def test_migration_with_missing_files(tmp_path):
+def test_migration_with_missing_files(tmp_path, monkeypatch):
     """Migration should handle missing JSON files gracefully."""
     data_dir = tmp_path / "empty_data"
     data_dir.mkdir()
-    os.environ["DATA_DIR"] = str(data_dir)
+    monkeypatch.setenv("DATA_DIR", str(data_dir))
     from scripts.migrate_json_to_duckdb import migrate_all
     stats = migrate_all(str(data_dir))
     assert stats["sync_state"] == 0

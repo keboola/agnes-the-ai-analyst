@@ -34,8 +34,8 @@ class TestGetSystemDb:
         finally:
             conn.close()
 
-    def test_idempotent(self, tmp_path):
-        _setup_data_dir(tmp_path)
+    def test_idempotent(self, tmp_path, monkeypatch):
+        _setup_data_dir(tmp_path, monkeypatch)
         from src.db import get_system_db
 
         conn = get_system_db()
@@ -53,8 +53,8 @@ class TestGetSystemDb:
 
 
 class TestGetSchemaVersion:
-    def test_returns_version(self, tmp_path):
-        _setup_data_dir(tmp_path)
+    def test_returns_version(self, tmp_path, monkeypatch):
+        _setup_data_dir(tmp_path, monkeypatch)
         from src.db import get_schema_version, get_system_db
 
         conn = get_system_db()
@@ -63,8 +63,8 @@ class TestGetSchemaVersion:
         finally:
             conn.close()
 
-    def test_returns_zero_for_empty_db(self, tmp_path):
-        _setup_data_dir(tmp_path)
+    def test_returns_zero_for_empty_db(self, tmp_path, monkeypatch):
+        _setup_data_dir(tmp_path, monkeypatch)
         from src.db import get_schema_version
 
         conn = duckdb.connect(str(tmp_path / "empty.duckdb"))
@@ -75,9 +75,9 @@ class TestGetSchemaVersion:
 
 
 class TestV1ToV2Migration:
-    def test_migration_adds_source_columns(self, tmp_path):
+    def test_migration_adds_source_columns(self, tmp_path, monkeypatch):
         """Simulate a v1 database and verify v2 migration adds new columns."""
-        _setup_data_dir(tmp_path)
+        _setup_data_dir(tmp_path, monkeypatch)
         import duckdb as _duckdb
 
         # Create a v1 database manually
@@ -133,8 +133,8 @@ class TestV1ToV2Migration:
 
 
 class TestGetAnalyticsDb:
-    def test_creates_db(self, tmp_path):
-        _setup_data_dir(tmp_path)
+    def test_creates_db(self, tmp_path, monkeypatch):
+        _setup_data_dir(tmp_path, monkeypatch)
         from src.db import get_analytics_db
 
         conn = get_analytics_db()
@@ -145,9 +145,9 @@ class TestGetAnalyticsDb:
 
 
 class TestGetAnalyticsDbReadonly:
-    def test_analytics_readonly_rejects_malicious_dir_name(self, tmp_path):
+    def test_analytics_readonly_rejects_malicious_dir_name(self, tmp_path, monkeypatch):
         """Directories with SQL-injection chars in their name are skipped."""
-        _setup_data_dir(tmp_path)
+        _setup_data_dir(tmp_path, monkeypatch)
         import importlib
         import src.db as db_module
         importlib.reload(db_module)
