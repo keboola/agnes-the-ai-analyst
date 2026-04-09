@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Any
 
 from dataclasses import dataclass as _dataclass
 from .client import OpenMetadataClient
+from .transformer import strip_html
 
 
 @_dataclass
@@ -207,13 +208,13 @@ class CatalogEnricher:
             CatalogTableData or None if parsing fails
         """
         try:
-            description = raw.get("description", "") or ""
+            description = strip_html(raw.get("description", "") or "")
 
             # Parse columns
             columns = {}
             for col in raw.get("columns", []):
                 col_name = col.get("name", "").lower()
-                col_description = col.get("description", "") or ""
+                col_description = strip_html(col.get("description", "") or "")
                 col_type = col.get("dataType", "")
 
                 columns[col_name] = CatalogColumnData(
