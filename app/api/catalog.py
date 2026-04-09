@@ -22,6 +22,9 @@ async def get_table_profile(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Get profiler data for a specific table."""
+    # Check table-level access
+    if not can_access_table(user, table_name, conn):
+        raise HTTPException(status_code=403, detail=f"Access denied to table '{table_name}'")
     repo = ProfileRepository(conn)
     profile = repo.get(table_name)
     if not profile:
@@ -100,6 +103,9 @@ async def refresh_profile(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Re-generate profile for a table on demand."""
+    # Check table-level access
+    if not can_access_table(user, table_name, conn):
+        raise HTTPException(status_code=403, detail=f"Access denied to table '{table_name}'")
     from src.profiler import profile_table, TableInfo
 
     data_dir = _get_data_dir()
