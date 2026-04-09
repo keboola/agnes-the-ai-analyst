@@ -181,6 +181,20 @@ async def login_page(request: Request):
     return templates.TemplateResponse(request, "login.html", ctx)
 
 
+@router.get("/login/password", response_class=HTMLResponse)
+async def login_password_page(request: Request):
+    """Password login form."""
+    ctx = _build_context(request)
+    return templates.TemplateResponse(request, "password_setup.html", ctx)
+
+
+@router.get("/login/email", response_class=HTMLResponse)
+async def login_email_page(request: Request):
+    """Email magic link login form."""
+    ctx = _build_context(request)
+    return templates.TemplateResponse(request, "login_email.html", ctx)
+
+
 @router.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(
     request: Request,
