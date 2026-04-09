@@ -3,7 +3,8 @@
 import logging
 import os
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Form, HTTPException
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 import duckdb
 from argon2 import PasswordHasher
@@ -55,6 +56,35 @@ async def password_login(
 
     token = create_access_token(user["id"], user["email"], user["role"])
     return {"access_token": token, "token_type": "bearer", "email": user["email"], "role": user["role"]}
+
+
+@router.post("/login/web")
+async def password_login_web(
+    email: str = Form(...),
+    password: str = Form(""),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Web form login — sets cookie and redirects to dashboard."""
+    repo = UserRepository(conn)
+    user = repo.get_by_email(email)
+    if not user or not user.get("password_hash"):
+        return RedirectResponse(url="/login/password?error=invalid", status_code=302)
+
+    try:
+        ph = PasswordHasher()
+        ph.verify(user["password_hash"], password)
+    except (VerifyMismatchError, Exception):
+        return RedirectResponse(url="/login/password?error=invalid", status_code=302)
+
+    token = create_access_token(user["id"], user["email"], user["role"])
+    is_production = os.environ.get("TESTING", "").lower() not in ("1", "true")
+    response = RedirectResponse(url="/dashboard", status_code=302)
+    response.set_cookie(
+        key="access_token", value=token,
+        httponly=True, max_age=86400, samesite="lax",
+        secure=is_production,
+    )
+    return response
 
 
 @router.post("/setup")
