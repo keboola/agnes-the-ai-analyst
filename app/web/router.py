@@ -183,9 +183,9 @@ async def login_page(request: Request):
 
 @router.get("/login/password", response_class=HTMLResponse)
 async def login_password_page(request: Request):
-    """Password login form."""
+    """Password login form (email + password)."""
     ctx = _build_context(request)
-    return templates.TemplateResponse(request, "password_setup.html", ctx)
+    return templates.TemplateResponse(request, "login_email.html", ctx)
 
 
 @router.get("/login/email", response_class=HTMLResponse)
