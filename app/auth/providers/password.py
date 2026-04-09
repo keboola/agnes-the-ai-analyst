@@ -6,6 +6,8 @@ import os
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 import duckdb
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError
 
 from app.auth.jwt import create_access_token
 from app.auth.dependencies import _get_db
@@ -43,11 +45,13 @@ async def password_login(
 
     # Verify password
     try:
-        from argon2 import PasswordHasher
         ph = PasswordHasher()
         ph.verify(user["password_hash"], request.password)
-    except Exception:
+    except VerifyMismatchError:
         raise HTTPException(status_code=401, detail="Invalid email or password")
+    except Exception:
+        logger.exception("Unexpected error during password verification")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
     token = create_access_token(user["id"], user["email"], user["role"])
     return {"access_token": token, "token_type": "bearer", "email": user["email"], "role": user["role"]}
@@ -68,7 +72,6 @@ async def password_setup(
         raise HTTPException(status_code=400, detail="Invalid setup token")
 
     # Hash and save password
-    from argon2 import PasswordHasher
     ph = PasswordHasher()
     hashed = ph.hash(request.password)
 
