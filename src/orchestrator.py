@@ -20,6 +20,7 @@ so that remote views resolve correctly.
 import hashlib
 import logging
 import os
+import re
 import threading
 from pathlib import Path
 from typing import Dict, List
@@ -29,6 +30,16 @@ import duckdb
 logger = logging.getLogger(__name__)
 
 _rebuild_lock = threading.Lock()
+
+_SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
+
+
+def _validate_identifier(name: str, context: str) -> bool:
+    """Validate a DuckDB identifier. Returns True if safe, False if not."""
+    if not _SAFE_IDENTIFIER.match(name):
+        logger.warning("Rejected unsafe %s identifier: %r", context, name)
+        return False
+    return True
 
 
 def _get_extracts_dir() -> Path:
@@ -97,6 +108,9 @@ class SyncOrchestrator:
                     logger.debug("Skipping %s — no extract.duckdb", ext_dir.name)
                     continue
 
+                if not _validate_identifier(ext_dir.name, "source_name"):
+                    continue
+
                 tables = self._attach_and_create_views(
                     conn, ext_dir.name, str(db_file)
                 )
@@ -147,6 +161,8 @@ class SyncOrchestrator:
             ).fetchall()
 
             for table_name, rows, size_bytes, query_mode in meta_rows:
+                if not _validate_identifier(table_name, "table_name"):
+                    continue
                 conn.execute(
                     f"CREATE OR REPLACE VIEW \"{table_name}\" AS "
                     f"SELECT * FROM {source_name}.\"{table_name}\""
@@ -180,6 +196,11 @@ class SyncOrchestrator:
         ).fetchall()
 
         for alias, extension, url, token_env in rows:
+            if not _validate_identifier(alias, "remote_attach alias"):
+                continue
+            if not _validate_identifier(extension, "remote_attach extension"):
+                continue
+
             token = os.environ.get(token_env, "") if token_env else ""
             if token_env and not token:
                 logger.warning(
