@@ -111,6 +111,18 @@ class TestScriptSandbox:
         # Should still run but without access to dangerous modules
         assert resp.status_code == 200
 
+    def test_sandbox_cannot_import_httpx(self, client):
+        """httpx must be blocked — either by pattern check (400) or
+        ModuleNotFoundError at runtime due to stripped VIRTUAL_ENV/PYTHONPATH (200 with non-zero exit)."""
+        c, token = client
+        resp = c.post("/api/scripts/run", json={
+            "source": "import httpx\nprint('pwned')",
+        }, headers=_headers(token))
+        # Static pattern check should reject it outright
+        assert resp.status_code == 400 or (
+            resp.status_code == 200 and resp.json()["exit_code"] != 0
+        )
+
 
 # ---- SQL Query Security ----
 
@@ -211,6 +223,26 @@ class TestAuthSecurity:
         c, _ = client
         resp = c.get("/api/scripts")
         assert resp.status_code == 401
+
+
+# ---- JWT Claims ----
+
+class TestJwtClaims:
+    def test_jwt_contains_jti_claim(self):
+        """Token payload must include a jti claim with at least 16 hex chars."""
+        os.environ.setdefault("TESTING", "1")
+        from app.auth.jwt import create_access_token, verify_token
+        token = create_access_token("u1", "user@test.com", "analyst")
+        payload = verify_token(token)
+        assert payload is not None
+        assert "jti" in payload
+        assert len(payload["jti"]) >= 16
+
+    def test_jwt_expiry_is_24_hours(self):
+        """ACCESS_TOKEN_EXPIRE_HOURS must be 24 (not 30*24)."""
+        os.environ.setdefault("TESTING", "1")
+        from app.auth import jwt as jwt_module
+        assert jwt_module.ACCESS_TOKEN_EXPIRE_HOURS == 24
 
 
 # ---- JWT Secret Hardening ----

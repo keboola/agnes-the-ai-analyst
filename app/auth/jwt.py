@@ -1,6 +1,7 @@
 """JWT token creation and verification for API auth."""
 
 import os
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -24,7 +25,7 @@ elif len(SECRET_KEY) < 32 and os.environ.get("TESTING", "").lower() not in ("1",
     )
 
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_HOURS = 24 * 30  # 30 days
+ACCESS_TOKEN_EXPIRE_HOURS = 24  # 24 hours
 
 
 def create_access_token(
@@ -42,6 +43,7 @@ def create_access_token(
         "role": role,
         "exp": expire,
         "iat": datetime.now(timezone.utc),
+        "jti": uuid.uuid4().hex,
     }
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
