@@ -1,23 +1,18 @@
 """Catalog endpoints — table profiles, metrics."""
 
 import json
-import os
 import re
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 import duckdb
 import yaml
 
 from app.auth.dependencies import get_current_user, _get_db
+from app.utils import get_data_dir as _get_data_dir
 from src.repositories.profiles import ProfileRepository
 from src.rbac import can_access_table
 
 router = APIRouter(prefix="/api/catalog", tags=["catalog"])
-
-
-def _get_data_dir() -> Path:
-    return Path(os.environ.get("DATA_DIR", "./data"))
 
 
 @router.get("/profile/{table_name}")
