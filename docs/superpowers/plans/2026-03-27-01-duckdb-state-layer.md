@@ -103,7 +103,7 @@ def test_schema_version_tracked():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/Users/zdeneksrotyr/Library/Mobile Documents/com~apple~CloudDocs/Sources/VsCode/component_factory/tmp_oss" && python -m pytest tests/test_db.py -v`
+Run: `python -m pytest tests/test_db.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'src.db'`
 
 - [ ] **Step 3: Implement src/db.py**
@@ -317,7 +317,7 @@ def get_schema_version(conn: duckdb.DuckDBPyConnection) -> int:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/Users/zdeneksrotyr/Library/Mobile Documents/com~apple~CloudDocs/Sources/VsCode/component_factory/tmp_oss" && python -m pytest tests/test_db.py -v`
+Run: `python -m pytest tests/test_db.py -v`
 Expected: 3 tests PASS
 
 - [ ] **Step 5: Commit**
