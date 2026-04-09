@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import sys
 import tempfile
 import uuid
 from pathlib import Path
@@ -119,6 +120,7 @@ def _execute_script(source: str, name: str) -> dict:
         "import importlib", "from importlib",
         "import socket", "from socket",
         "import requests", "from requests",
+        "import httpx", "from httpx",
         "import urllib", "from urllib",
         "import http", "from http",
         # Dynamic import bypasses
@@ -146,7 +148,7 @@ def _execute_script(source: str, name: str) -> dict:
     import ast
 
     BLOCKED_MODULES = {"os", "sys", "subprocess", "shutil", "ctypes", "importlib", "socket",
-                       "requests", "urllib", "http", "signal", "pathlib", "builtins"}
+                       "requests", "httpx", "urllib", "http", "signal", "pathlib", "builtins"}
     BLOCKED_FUNCTIONS = {"exec", "eval", "compile", "open", "globals", "locals",
                          "getattr", "setattr", "delattr", "breakpoint", "__import__"}
 
@@ -184,17 +186,16 @@ def _execute_script(source: str, name: str) -> dict:
 
     try:
         result = subprocess.run(
-            ["python", script_path],
+            [sys.executable, script_path],
             capture_output=True,
             text=True,
             timeout=SCRIPT_TIMEOUT,
             env={
-                "PATH": os.environ.get("PATH", ""),
-                "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
+                "PATH": "/usr/bin:/usr/local/bin",
                 "DATA_DIR": data_dir,
                 "HOME": "/tmp",
-                # Pass through Python env for package discovery
-                "VIRTUAL_ENV": os.environ.get("VIRTUAL_ENV", ""),
+                # Deliberately exclude VIRTUAL_ENV and PYTHONPATH
+                # to prevent access to installed packages
             },
             cwd="/tmp",  # restrict working directory
         )
