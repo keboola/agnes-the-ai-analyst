@@ -77,13 +77,15 @@ async def google_callback(request: Request):
         import uuid
 
         conn = get_system_db()
-        repo = UserRepository(conn)
-        user = repo.get_by_email(email)
-        if not user:
-            user_id = str(uuid.uuid4())
-            repo.create(id=user_id, email=email, name=name, role="analyst")
+        try:
+            repo = UserRepository(conn)
             user = repo.get_by_email(email)
-        conn.close()
+            if not user:
+                user_id = str(uuid.uuid4())
+                repo.create(id=user_id, email=email, name=name, role="analyst")
+                user = repo.get_by_email(email)
+        finally:
+            conn.close()
 
         # Issue JWT
         jwt_token = create_access_token(user["id"], user["email"], user["role"])
