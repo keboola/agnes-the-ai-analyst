@@ -164,6 +164,25 @@ class TestQuerySecurity:
                        headers=_headers(token))
         assert resp.status_code == 400
 
+
+    def test_blocks_parquet_scan(self, client):
+        c, token = client
+        resp = c.post("/api/query", json={"sql": "SELECT * FROM parquet_scan('/data/extracts/secret.parquet')"},
+                       headers=_headers(token))
+        assert resp.status_code == 400
+
+    def test_blocks_read_csv_auto(self, client):
+        c, token = client
+        resp = c.post("/api/query", json={"sql": "SELECT * FROM read_csv_auto('/etc/passwd')"},
+                       headers=_headers(token))
+        assert resp.status_code == 400
+
+    def test_blocks_query_table(self, client):
+        c, token = client
+        resp = c.post("/api/query", json={"sql": "SELECT * FROM query_table('secret_table')"},
+                       headers=_headers(token))
+        assert resp.status_code == 400
+
     def test_no_auth(self, client):
         c, _ = client
         resp = c.post("/api/query", json={"sql": "SELECT 1"})

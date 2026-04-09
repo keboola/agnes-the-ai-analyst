@@ -220,7 +220,12 @@ def get_analytics_db_readonly() -> duckdb.DuckDBPyConnection:
     db_path = _get_data_dir() / "analytics" / "server.duckdb"
     if not db_path.exists():
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        return duckdb.connect(str(db_path), read_only=False)
+        conn = duckdb.connect(str(db_path), read_only=False)
+        try:
+            conn.execute("SET enable_external_access = false")
+        except Exception:
+            pass
+        return conn
     conn = duckdb.connect(str(db_path), read_only=True)
     # ATTACH extract.duckdb files FIRST so views referencing them work
     extracts_dir = _get_data_dir() / "extracts"
