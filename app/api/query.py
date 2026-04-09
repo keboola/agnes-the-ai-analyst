@@ -39,11 +39,15 @@ async def execute_query(
     blocked = [
         "drop ", "delete ", "insert ", "update ", "alter ", "create ",
         "copy ", "attach ", "detach ", "load ", "install ",
-        "export ", "import ", "pragma ",
+        "export ", "import ", "pragma ", "call ",
         # File access functions
-        "read_csv", "read_json", "read_parquet(", "read_text",
-        "write_csv", "write_parquet",
-        "read_blob", "glob(", "read_ndjson", "'/", '"/',
+        "read_csv", "read_json", "read_parquet", "read_text",
+        "write_csv", "write_parquet", "read_blob", "read_ndjson",
+        "parquet_scan", "parquet_metadata", "parquet_schema",
+        "json_scan", "csv_scan",
+        "query_table", "iceberg_scan", "delta_scan",
+        "glob(", "list_files",
+        "'/", '"/','http://', 'https://', 's3://', 'gcs://',
         # Multiple statements
         ";",
     ]
