@@ -248,6 +248,37 @@ class TestSyncOrchestrator:
         assert "keboola" in result
         assert "orders" in result["keboola"]
 
+    def test_rebuild_source_preserves_other_sources(self, setup_env):
+        """rebuild_source('jira') must not destroy views from keboola or other sources."""
+        from src.orchestrator import SyncOrchestrator
+
+        _create_mock_extract(
+            setup_env["extracts_dir"],
+            "keboola",
+            [{"name": "orders", "data": [{"id": "1", "total": "100"}]}],
+        )
+        _create_mock_extract(
+            setup_env["extracts_dir"],
+            "jira",
+            [{"name": "issues", "data": [{"key": "PROJ-1"}]}],
+        )
+
+        orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
+
+        # Full rebuild — both sources visible
+        result = orch.rebuild()
+        assert "keboola" in result
+        assert "jira" in result
+
+        # Jira webhook triggers rebuild_source("jira")
+        tables = orch.rebuild_source("jira")
+        assert "issues" in tables
+
+        # Full rebuild again (simulates next scheduled run) — keboola must still be there
+        result2 = orch.rebuild()
+        assert "keboola" in result2, "keboola must survive after rebuild_source('jira')"
+        assert "jira" in result2
+
     def test_rebuild_idempotent(self, setup_env):
         from src.orchestrator import SyncOrchestrator
 
