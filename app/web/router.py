@@ -211,14 +211,26 @@ async def login_page(request: Request):
 @router.get("/login/password", response_class=HTMLResponse)
 async def login_password_page(request: Request):
     """Password login form (email + password)."""
-    ctx = _build_context(request)
+    google_ok = False
+    try:
+        from app.auth.providers.google import is_available as google_available
+        google_ok = google_available()
+    except Exception:
+        pass
+    ctx = _build_context(request, google_available=google_ok)
     return templates.TemplateResponse(request, "login_email.html", ctx)
 
 
 @router.get("/login/email", response_class=HTMLResponse)
 async def login_email_page(request: Request):
     """Email magic link login form."""
-    ctx = _build_context(request)
+    google_ok = False
+    try:
+        from app.auth.providers.google import is_available as google_available
+        google_ok = google_available()
+    except Exception:
+        pass
+    ctx = _build_context(request, google_available=google_ok)
     return templates.TemplateResponse(request, "login_email.html", ctx)
 
 
