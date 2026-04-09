@@ -53,8 +53,27 @@ class TestCatalog:
         assert resp.status_code == 200
 
     def test_catalog_profile_not_found(self, client):
-        resp = client["client"].get("/api/catalog/profile/nonexistent", headers=_h(client["analyst"]))
+        # Admin can see 404 for truly missing tables (bypasses access control)
+        resp = client["client"].get("/api/catalog/profile/nonexistent", headers=_h(client["admin"]))
         assert resp.status_code == 404
+
+    def test_catalog_profile_access_denied_for_analyst(self, client):
+        # Non-registered (non-public) table returns 403 for analyst
+        resp = client["client"].get("/api/catalog/profile/private_table", headers=_h(client["analyst"]))
+        assert resp.status_code == 403
+
+    def test_catalog_profile_refresh_access_denied_for_analyst(self, client):
+        # Refresh endpoint also enforces access control
+        resp = client["client"].post("/api/catalog/profile/private_table/refresh", headers=_h(client["analyst"]))
+        assert resp.status_code == 403
+
+    def test_catalog_profile_public_table_accessible_to_analyst(self, client):
+        # Register a public table — analyst can access its profile (404 since no profile data)
+        client["client"].post("/api/admin/register-table",
+                               json={"name": "public_table", "source_type": "keboola"},
+                               headers=_h(client["admin"]))
+        resp = client["client"].get("/api/catalog/profile/public_table", headers=_h(client["analyst"]))
+        assert resp.status_code == 404  # access granted, but no profile data yet
 
 
 # ---- Telegram ----
