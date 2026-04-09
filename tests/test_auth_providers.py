@@ -6,9 +6,9 @@ from fastapi.testclient import TestClient
 
 
 @pytest.fixture
-def client(tmp_path):
-    os.environ["DATA_DIR"] = str(tmp_path)
-    os.environ["JWT_SECRET_KEY"] = "test-secret-32chars-minimum!!!!!"
+def client(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-32chars-minimum!!!!!")
 
     from app.main import create_app
     from src.db import get_system_db

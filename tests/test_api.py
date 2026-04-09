@@ -6,19 +6,19 @@ from fastapi.testclient import TestClient
 
 
 @pytest.fixture
-def app_client(tmp_path):
-    os.environ["DATA_DIR"] = str(tmp_path)
-    os.environ["JWT_SECRET_KEY"] = "test-secret"
+def app_client(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-secret")
     from app.main import create_app
     app = create_app()
     return TestClient(app)
 
 
 @pytest.fixture
-def seeded_client(tmp_path):
+def seeded_client(tmp_path, monkeypatch):
     """Client with a pre-created admin user and JWT token."""
-    os.environ["DATA_DIR"] = str(tmp_path)
-    os.environ["JWT_SECRET_KEY"] = "test-secret"
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-secret")
     from app.main import create_app
     from src.db import get_system_db
     from src.repositories.users import UserRepository

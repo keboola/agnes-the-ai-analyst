@@ -8,9 +8,9 @@ import pytest
 
 
 @pytest.fixture
-def setup_env(tmp_path):
+def setup_env(tmp_path, monkeypatch):
     """Set up DATA_DIR and return paths."""
-    os.environ["DATA_DIR"] = str(tmp_path)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
     extracts_dir = tmp_path / "extracts"
     extracts_dir.mkdir()
     analytics_dir = tmp_path / "analytics"
@@ -22,8 +22,6 @@ def setup_env(tmp_path):
         "extracts_dir": extracts_dir,
         "analytics_db": str(analytics_dir / "server.duckdb"),
     }
-    # Clean up env var to avoid leaking between tests
-    os.environ.pop("DATA_DIR", None)
 
 
 def _create_mock_extract(extracts_dir: Path, source_name: str, tables: list[dict]):

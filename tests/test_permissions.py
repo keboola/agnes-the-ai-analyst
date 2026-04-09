@@ -5,8 +5,8 @@ import pytest
 
 
 @pytest.fixture
-def db_conn(tmp_path):
-    os.environ["DATA_DIR"] = str(tmp_path)
+def db_conn(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
     from src.db import get_system_db
     conn = get_system_db()
     yield conn

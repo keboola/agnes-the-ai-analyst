@@ -6,20 +6,20 @@ from fastapi.testclient import TestClient
 
 
 @pytest.fixture
-def fresh_client(tmp_path):
+def fresh_client(tmp_path, monkeypatch):
     """Client with EMPTY database — no users."""
-    os.environ["DATA_DIR"] = str(tmp_path)
-    os.environ["JWT_SECRET_KEY"] = "test-secret-32chars-minimum!!!!!"
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-32chars-minimum!!!!!")
     from app.main import create_app
     app = create_app()
     return TestClient(app)
 
 
 @pytest.fixture
-def seeded_client(tmp_path):
+def seeded_client(tmp_path, monkeypatch):
     """Client with one existing user."""
-    os.environ["DATA_DIR"] = str(tmp_path)
-    os.environ["JWT_SECRET_KEY"] = "test-secret-32chars-minimum!!!!!"
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-32chars-minimum!!!!!")
     from app.main import create_app
     from src.db import get_system_db
     from src.repositories.users import UserRepository
