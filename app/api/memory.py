@@ -224,18 +224,14 @@ async def admin_edit(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     repo = KnowledgeRepository(conn)
-    item = _get_item_or_404(repo, item_id)
-    # Direct update
+    _get_item_or_404(repo, item_id)
     updates = {}
     if request.title is not None:
         updates["title"] = request.title
     if request.content is not None:
         updates["content"] = request.content
     if updates:
-        from datetime import datetime, timezone
-        set_clause = ", ".join(f"{k} = ?" for k in updates)
-        values = list(updates.values()) + [datetime.now(timezone.utc), item_id]
-        conn.execute(f"UPDATE knowledge_items SET {set_clause}, updated_at = ? WHERE id = ?", values)
+        repo.update(item_id, **updates)
     _audit_action(conn, user["email"], "edit", item_id, updates)
     return {"id": item_id, "updated": list(updates.keys())}
 
