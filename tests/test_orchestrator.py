@@ -333,6 +333,32 @@ class TestSyncOrchestrator:
         # The safe source must still be processed
         assert "keboola" in result
 
+    def test_rebuild_cleans_wal_files(self, setup_env):
+        """No .wal files should remain after rebuild completes."""
+        from src.orchestrator import SyncOrchestrator
+
+        _create_mock_extract(
+            setup_env["extracts_dir"],
+            "keboola",
+            [{"name": "orders", "data": [{"id": "1", "total": "100"}]}],
+        )
+
+        analytics_db = setup_env["analytics_db"]
+        orch = SyncOrchestrator(analytics_db_path=analytics_db)
+
+        # Simulate a pre-existing WAL file for the target analytics DB
+        wal_path = Path(analytics_db + ".wal")
+        wal_path.write_text("stale wal")
+        assert wal_path.exists(), "Pre-condition: WAL file should exist before rebuild"
+
+        orch.rebuild()
+
+        # After rebuild, no WAL files should remain alongside the analytics DB
+        assert not wal_path.exists(), "Old WAL file must be removed during atomic swap"
+        # Also verify no temp WAL was left behind
+        tmp_wal = Path(analytics_db + ".tmp.wal")
+        assert not tmp_wal.exists(), "Temp WAL file must be cleaned up"
+
     def test_rejects_malicious_table_name(self, setup_env):
         """Tables with SQL injection names in _meta must be skipped; safe tables still work."""
         from src.orchestrator import SyncOrchestrator

@@ -42,6 +42,27 @@ def _validate_identifier(name: str, context: str) -> bool:
     return True
 
 
+def _atomic_swap_db(tmp_path: str, target_path: str) -> None:
+    """Atomically replace target DuckDB file, cleaning up WAL files."""
+    import shutil
+    target = Path(target_path)
+    tmp = Path(tmp_path)
+
+    # Remove old WAL file if it exists
+    old_wal = Path(str(target) + ".wal")
+    if old_wal.exists():
+        old_wal.unlink()
+
+    # Move temp DB into place
+    if tmp.exists():
+        shutil.move(str(tmp), str(target))
+
+    # Clean up temp WAL
+    tmp_wal = Path(str(tmp) + ".wal")
+    if tmp_wal.exists():
+        tmp_wal.unlink()
+
+
 def _get_extracts_dir() -> Path:
     data_dir = Path(os.environ.get("DATA_DIR", "./data"))
     return data_dir / "extracts"
@@ -118,12 +139,11 @@ class SyncOrchestrator:
                     result[ext_dir.name] = tables
                     logger.info("Attached %s: %d tables", ext_dir.name, len(tables))
         finally:
+            conn.execute("CHECKPOINT")
             conn.close()
 
         # Atomic swap: replace analytics.duckdb with new version
-        import shutil
-        if Path(tmp_path).exists():
-            shutil.move(tmp_path, self._db_path)
+        _atomic_swap_db(tmp_path, self._db_path)
 
         return result
 
