@@ -1,21 +1,16 @@
 """Upload endpoints — sessions, artifacts, CLAUDE.local.md."""
 
-import os
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 from pathlib import Path as _Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from pydantic import BaseModel
 
 from app.auth.dependencies import get_current_user
+from app.utils import get_data_dir as _get_data_dir
 
 router = APIRouter(prefix="/api/upload", tags=["upload"])
-
-
-def _get_data_dir() -> Path:
-    return Path(os.environ.get("DATA_DIR", "./data"))
 
 
 @router.post("/sessions")
