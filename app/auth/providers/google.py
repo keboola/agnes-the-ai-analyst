@@ -89,12 +89,12 @@ async def google_callback(request: Request):
         jwt_token = create_access_token(user["id"], user["email"], user["role"])
 
         # Redirect to dashboard with token in cookie
-        is_https = request.url.scheme == "https"
+        is_production = os.environ.get("TESTING", "").lower() not in ("1", "true")
         response = RedirectResponse(url="/dashboard", status_code=302)
         response.set_cookie(
             key="access_token", value=jwt_token,
-            httponly=True, max_age=86400 * 30, samesite="lax",
-            secure=is_https,
+            httponly=True, max_age=86400, samesite="lax",
+            secure=is_production,
         )
         return response
 
