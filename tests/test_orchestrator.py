@@ -291,3 +291,84 @@ class TestSyncOrchestrator:
         result1 = orch.rebuild()
         result2 = orch.rebuild()
         assert result1 == result2
+
+    def test_rejects_malicious_source_name(self, setup_env):
+        """Directory names with SQL injection chars must be skipped entirely."""
+        from src.orchestrator import SyncOrchestrator
+
+        # Create a directory whose name contains SQL injection characters
+        malicious_name = "evil; DROP TABLE users--"
+        malicious_dir = setup_env["extracts_dir"] / malicious_name
+        malicious_dir.mkdir()
+        (malicious_dir / "data").mkdir()
+
+        # Create a valid extract.duckdb inside the malicious directory
+        db_path = malicious_dir / "extract.duckdb"
+        conn = duckdb.connect(str(db_path))
+        conn.execute(
+            """CREATE TABLE _meta (
+            table_name VARCHAR, description VARCHAR, rows BIGINT,
+            size_bytes BIGINT, extracted_at TIMESTAMP,
+            query_mode VARCHAR DEFAULT 'local'
+        )"""
+        )
+        conn.execute('CREATE TABLE "orders" (id VARCHAR)')
+        conn.execute(
+            "INSERT INTO _meta VALUES ('orders', '', 0, 0, current_timestamp, 'local')"
+        )
+        conn.close()
+
+        # Also create a safe source to confirm non-malicious sources still work
+        _create_mock_extract(
+            setup_env["extracts_dir"],
+            "keboola",
+            [{"name": "orders", "data": [{"id": "1"}]}],
+        )
+
+        orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
+        result = orch.rebuild()
+
+        # The malicious directory must not appear in results
+        assert malicious_name not in result
+        # The safe source must still be processed
+        assert "keboola" in result
+
+    def test_rejects_malicious_table_name(self, setup_env):
+        """Tables with SQL injection names in _meta must be skipped; safe tables still work."""
+        from src.orchestrator import SyncOrchestrator
+
+        source_dir = setup_env["extracts_dir"] / "keboola"
+        source_dir.mkdir()
+        (source_dir / "data").mkdir()
+
+        db_path = source_dir / "extract.duckdb"
+        conn = duckdb.connect(str(db_path))
+        conn.execute(
+            """CREATE TABLE _meta (
+            table_name VARCHAR, description VARCHAR, rows BIGINT,
+            size_bytes BIGINT, extracted_at TIMESTAMP,
+            query_mode VARCHAR DEFAULT 'local'
+        )"""
+        )
+
+        # Safe table
+        conn.execute('CREATE TABLE "orders" (id VARCHAR)')
+        conn.execute("INSERT INTO orders VALUES ('1')")
+        conn.execute(
+            "INSERT INTO _meta VALUES ('orders', '', 1, 0, current_timestamp, 'local')"
+        )
+
+        # Malicious table_name in _meta (no actual table needed — validation rejects before access)
+        conn.execute(
+            "INSERT INTO _meta VALUES ('evil; DROP TABLE users--', '', 0, 0, current_timestamp, 'local')"
+        )
+        conn.close()
+
+        orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
+        result = orch.rebuild()
+
+        assert "keboola" in result
+        # Safe table present
+        assert "orders" in result["keboola"]
+        # Malicious table_name must not appear
+        assert "evil; DROP TABLE users--" not in result["keboola"]
