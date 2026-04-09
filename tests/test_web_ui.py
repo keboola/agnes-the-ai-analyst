@@ -12,20 +12,26 @@ def web_client(tmp_path, monkeypatch):
     (tmp_path / "state").mkdir()
     (tmp_path / "analytics").mkdir()
     (tmp_path / "extracts").mkdir()
+    # Reset global DuckDB singleton to pick up new DATA_DIR
+    from src.db import close_system_db
+    close_system_db()
     from app.main import create_app
     app = create_app()
-    return TestClient(app)
+    yield TestClient(app)
+    close_system_db()
 
 
 @pytest.fixture
 def admin_cookie(web_client, tmp_path, monkeypatch):
     from src.db import get_system_db
     from src.repositories.users import UserRepository
-    from app.auth.jwt import create_access_token
     conn = get_system_db()
     UserRepository(conn).create(id="admin1", email="admin@test.com", name="Admin", role="admin")
     conn.close()
-    token = create_access_token(user_id="admin1", email="admin@test.com", role="admin")
+    # Get token via the API to ensure JWT secret matches the running app
+    resp = web_client.post("/auth/token", json={"email": "admin@test.com"})
+    assert resp.status_code == 200, f"Bootstrap failed: {resp.text}"
+    token = resp.json()["access_token"]
     return {"access_token": token}
 
 
