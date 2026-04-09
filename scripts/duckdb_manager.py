@@ -289,7 +289,7 @@ def create_local_views(
     """Create DuckDB views for local/hybrid tables from Parquet files.
 
     Extracts the shared logic from init_duckdb() so it can be reused
-    by remote_query.py without creating a persistent DB file.
+    by the query API endpoint without creating a persistent DB file.
 
     Args:
         conn: Open DuckDB connection (in-memory or file-backed)

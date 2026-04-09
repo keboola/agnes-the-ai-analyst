@@ -179,17 +179,7 @@ cat ~/.notifications/state/my_alert.json
 
 ## Examples
 
-Example scripts are available in `~/server/examples/notifications/`:
-
-- `revenue_drop.py` - text-only alert when revenue drops significantly
-- `metric_report.py` - daily report with matplotlib chart
-- `data_freshness.py` - alert when local data is stale
-
-Copy an example to get started:
-
-```bash
-cp ~/server/examples/notifications/data_freshness.py ~/user/notifications/
-```
+# Notification examples are documented here. Implementation is planned for a future release.
 
 ## Troubleshooting
 

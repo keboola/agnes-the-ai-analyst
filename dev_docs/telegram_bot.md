@@ -98,15 +98,7 @@ Installed to `/usr/local/bin/notify-runner`. Users set up their own crontab.
 
 ### 4. Example Scripts
 
-**Source:** `examples/notifications/`
-
-| Script | Description |
-|--------|-------------|
-| `revenue_drop.py` | Text-only alert when revenue drops vs 7-day average |
-| `metric_report.py` | Daily report with matplotlib chart (image notification) |
-| `data_freshness.py` | Alert when local parquet data is stale |
-
-Deployed to `/data/docs/examples/notifications/` on the server.
+Note: notification example scripts have been removed. This feature is planned for a future release.
 
 ## Data Storage
 
@@ -171,7 +163,6 @@ Scripts output JSON to stdout:
 | `server/bin/notify-scripts` | `/usr/local/bin/notify-scripts` |
 | `server/bin/notify-runner` | `/usr/local/bin/notify-runner` |
 | `services/telegram_bot/systemd/notify-bot.service` | `/etc/systemd/system/notify-bot.service` |
-| `examples/notifications/*.py` | `/data/docs/examples/notifications/` |
 | `docs/notifications.md` | `/data/docs/notifications.md` |
 
 ### Changes to existing deploy scripts
