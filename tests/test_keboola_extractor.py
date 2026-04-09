@@ -7,6 +7,8 @@ from unittest.mock import patch, MagicMock
 import duckdb
 import pytest
 
+from tests.helpers.contract import validate_extract_contract
+
 
 @pytest.fixture
 def output_dir(tmp_path):
@@ -85,6 +87,8 @@ class TestKeboolaExtractor:
             assert modes == {"local"}
         finally:
             conn.close()
+
+        validate_extract_contract(str(db_path))
 
     def test_remote_tables_not_downloaded(self, output_dir):
         """Test that tables with query_mode='remote' are registered but not downloaded."""
