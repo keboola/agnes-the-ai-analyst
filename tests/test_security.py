@@ -220,6 +220,42 @@ class TestQuerySecurity:
         # but not with 403 access denied. The regex logic is sound if test_word_boundary_match_no_false_positive passes.
         assert resp.status_code in [400, 200]  # Either query error or success
 
+    def test_blocks_information_schema(self, client):
+        c, token = client
+        resp = c.post("/api/query", json={"sql": "SELECT table_name FROM information_schema.tables"},
+                       headers=_headers(token))
+        assert resp.status_code == 400
+
+    def test_blocks_duckdb_tables(self, client):
+        c, token = client
+        resp = c.post("/api/query", json={"sql": "SELECT * FROM duckdb_tables()"},
+                       headers=_headers(token))
+        assert resp.status_code == 400
+
+    def test_blocks_duckdb_columns(self, client):
+        c, token = client
+        resp = c.post("/api/query", json={"sql": "SELECT * FROM duckdb_columns()"},
+                       headers=_headers(token))
+        assert resp.status_code == 400
+
+    def test_blocks_duckdb_databases(self, client):
+        c, token = client
+        resp = c.post("/api/query", json={"sql": "SELECT * FROM duckdb_databases()"},
+                       headers=_headers(token))
+        assert resp.status_code == 400
+
+    def test_blocks_relative_path(self, client):
+        c, token = client
+        resp = c.post("/api/query", json={"sql": "SELECT * FROM read_parquet('../secret/data.parquet')"},
+                       headers=_headers(token))
+        assert resp.status_code == 400
+
+    def test_blocks_pragma_table_info(self, client):
+        c, token = client
+        resp = c.post("/api/query", json={"sql": "SELECT * FROM pragma_table_info('users')"},
+                       headers=_headers(token))
+        assert resp.status_code == 400
+
 
 # ---- Auth Edge Cases ----
 
