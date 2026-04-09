@@ -357,6 +357,23 @@ class TestSyncOrchestrator:
         tmp_wal = Path(analytics_db + ".tmp.wal")
         assert not tmp_wal.exists(), "Temp WAL file must be cleaned up"
 
+    def test_rebuild_while_reading(self, setup_env):
+        """Rebuild should succeed even while a read-only connection exists."""
+        from src.orchestrator import SyncOrchestrator
+        import duckdb
+
+        _create_mock_extract(
+            setup_env["extracts_dir"], "keboola",
+            [{"name": "orders", "data": [{"id": "1"}]}],
+        )
+        orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
+        orch.rebuild()
+
+        reader = duckdb.connect(setup_env["analytics_db"], read_only=True)
+        result = orch.rebuild()
+        assert "keboola" in result
+        reader.close()
+
     def test_rejects_malicious_table_name(self, setup_env):
         """Tables with SQL injection names in _meta must be skipped; safe tables still work."""
         from src.orchestrator import SyncOrchestrator
