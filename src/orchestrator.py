@@ -114,31 +114,20 @@ class SyncOrchestrator:
         return result
 
     def _do_rebuild_source(self, source_name: str) -> List[str]:
+        """Rebuild views for a single source by doing a full rebuild.
+
+        A full rebuild is necessary because the analytics DB is created fresh
+        each time (temp file + atomic swap). Rebuilding only one source would
+        destroy views from all other sources.
+        """
         extracts_dir = _get_extracts_dir()
         db_file = extracts_dir / source_name / "extract.duckdb"
         if not db_file.exists():
             logger.warning("No extract.duckdb for source %s", source_name)
             return []
 
-        tmp_path = self._db_path + ".tmp"
-        if Path(tmp_path).exists():
-            Path(tmp_path).unlink()
-        conn = duckdb.connect(tmp_path)
-        try:
-            # Detach if already attached
-            try:
-                conn.execute(f"DETACH {source_name}")
-            except Exception:
-                pass
-            tables = self._attach_and_create_views(conn, source_name, str(db_file))
-        finally:
-            conn.close()
-
-        import shutil
-        if Path(tmp_path).exists():
-            shutil.move(tmp_path, self._db_path)
-
-        return tables
+        result = self._do_rebuild()
+        return result.get(source_name, [])
 
     def _attach_and_create_views(
         self, conn: duckdb.DuckDBPyConnection, source_name: str, db_path: str
