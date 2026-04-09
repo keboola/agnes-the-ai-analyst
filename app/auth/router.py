@@ -44,8 +44,10 @@ async def create_token(
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
 
-    # If user has password_hash, verify it
-    if user.get("password_hash") and request.password:
+    # If user has password_hash, require and verify it
+    if user.get("password_hash"):
+        if not request.password:
+            raise HTTPException(status_code=401, detail="Password required")
         try:
             from argon2 import PasswordHasher
             ph = PasswordHasher()

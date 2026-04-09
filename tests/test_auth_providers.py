@@ -37,6 +37,44 @@ def client(tmp_path):
     return TestClient(app)
 
 
+class TestTokenEndpoint:
+    """Tests for /auth/token — password bypass fix."""
+
+    def test_token_empty_password_rejected_when_user_has_hash(self, client):
+        """Empty password must be rejected when user has password_hash."""
+        resp = client.post("/auth/token", json={"email": "pw@test.com", "password": ""})
+        assert resp.status_code == 401
+
+    def test_token_missing_password_rejected_when_user_has_hash(self, client):
+        """Omitting password field (defaults to '') must be rejected when user has password_hash."""
+        resp = client.post("/auth/token", json={"email": "pw@test.com"})
+        assert resp.status_code == 401
+
+    def test_token_wrong_password_rejected(self, client):
+        """Wrong password must be rejected with 401."""
+        resp = client.post("/auth/token", json={"email": "pw@test.com", "password": "wrongpass"})
+        assert resp.status_code == 401
+
+    def test_token_correct_password_succeeds(self, client):
+        """Correct password must issue a token."""
+        resp = client.post("/auth/token", json={"email": "pw@test.com", "password": "testpass123"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "access_token" in data
+        assert data["email"] == "pw@test.com"
+
+    def test_token_no_password_hash_user_gets_token(self, client):
+        """User without password_hash (e.g. OAuth-only user) still gets a token without a password."""
+        resp = client.post("/auth/token", json={"email": "ml@test.com"})
+        assert resp.status_code == 200
+        assert "access_token" in resp.json()
+
+    def test_token_unknown_user_rejected(self, client):
+        """Unknown email must return 401."""
+        resp = client.post("/auth/token", json={"email": "nobody@test.com", "password": "anything"})
+        assert resp.status_code == 401
+
+
 class TestPasswordAuth:
     def test_login_success(self, client):
         resp = client.post("/auth/password/login", json={
