@@ -241,8 +241,9 @@ class SyncOrchestrator:
 
                 conn.execute(f"INSTALL {extension} FROM community; LOAD {extension};")
                 if token:
+                    escaped_token = token.replace("'", "''")
                     conn.execute(
-                        f"ATTACH '{url}' AS {alias} (TYPE {extension}, TOKEN '{token}')"
+                        f"ATTACH '{url}' AS {alias} (TYPE {extension}, TOKEN '{escaped_token}')"
                     )
                 else:
                     # Extensions like BigQuery handle auth via env (e.g. GOOGLE_APPLICATION_CREDENTIALS)

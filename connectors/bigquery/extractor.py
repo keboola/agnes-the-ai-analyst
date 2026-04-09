@@ -5,6 +5,7 @@ No data is downloaded. All queries go directly to BigQuery via DuckDB extension 
 
 import logging
 import os
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Dict, Any
@@ -64,8 +65,13 @@ def init_extract(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
+    # Write to temp file then rename — avoids lock conflict with orchestrator
+    # which may hold a read lock on the existing extract.duckdb
     db_path = output_path / "extract.duckdb"
-    conn = duckdb.connect(str(db_path))
+    tmp_db_path = output_path / "extract.duckdb.tmp"
+    if tmp_db_path.exists():
+        tmp_db_path.unlink()
+    conn = duckdb.connect(str(tmp_db_path))
 
     stats = {"tables_registered": 0, "errors": []}
     now = datetime.now(timezone.utc)

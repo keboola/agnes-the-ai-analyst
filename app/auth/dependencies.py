@@ -58,14 +58,13 @@ async def get_current_user(
 
 
 async def get_optional_user(
+    request: Request = None,
     authorization: Optional[str] = Header(None),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ) -> Optional[dict]:
     """Like get_current_user but returns None instead of 401 if no token."""
-    if not authorization or not authorization.startswith("Bearer "):
-        return None
     try:
-        return await get_current_user(request=None, authorization=authorization, conn=conn)
+        return await get_current_user(request=request, authorization=authorization, conn=conn)
     except HTTPException:
         return None
 
