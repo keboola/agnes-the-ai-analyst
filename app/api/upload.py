@@ -34,7 +34,7 @@ async def upload_session(
     if len(content) > MAX_UPLOAD_SIZE:
         raise HTTPException(status_code=413, detail=f"File too large (max {MAX_UPLOAD_SIZE // 1024 // 1024}MB)")
     target.write_bytes(content)
-    return {"status": "ok", "path": str(target), "size": len(content)}
+    return {"status": "ok", "filename": filename, "size": len(content)}
 
 
 @router.post("/artifacts")
@@ -56,7 +56,7 @@ async def upload_artifact(
     if len(content) > MAX_UPLOAD_SIZE:
         raise HTTPException(status_code=413, detail=f"File too large (max {MAX_UPLOAD_SIZE // 1024 // 1024}MB)")
     target.write_bytes(content)
-    return {"status": "ok", "path": str(target), "size": len(content)}
+    return {"status": "ok", "filename": filename, "size": len(content)}
 
 
 class LocalMdRequest(BaseModel):
