@@ -2,7 +2,7 @@
 
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path as _Path
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from pydantic import BaseModel
@@ -26,7 +26,7 @@ async def upload_session(
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
     raw_name = file.filename or f"session_{uuid.uuid4().hex[:8]}.jsonl"
-    filename = _Path(raw_name).name  # Strips directory traversal components
+    filename = Path(raw_name).name  # Strips directory traversal components
     if not filename or filename.startswith("."):
         filename = f"upload_{uuid.uuid4().hex[:8]}"
     target = sessions_dir / filename
@@ -48,7 +48,7 @@ async def upload_artifact(
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 
     raw_name = file.filename or f"artifact_{uuid.uuid4().hex[:8]}"
-    filename = _Path(raw_name).name  # Strips directory traversal components
+    filename = Path(raw_name).name  # Strips directory traversal components
     if not filename or filename.startswith("."):
         filename = f"upload_{uuid.uuid4().hex[:8]}"
     target = artifacts_dir / filename
