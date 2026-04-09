@@ -109,6 +109,7 @@ def update_meta(output_dir: str | Path, table_name: str) -> None:
             "UPDATE _meta SET rows = ?, size_bytes = ?, extracted_at = ? WHERE table_name = ?",
             [rows, size_bytes, now, table_name],
         )
+        conn.execute("CHECKPOINT")
     finally:
         conn.close()
 
