@@ -38,7 +38,7 @@ async def create_token(
     request: TokenRequest,
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Issue a JWT token. For dev/demo: any registered user gets a token."""
+    """Issue a JWT token. Requires password authentication."""
     repo = UserRepository(conn)
     user = repo.get_by_email(request.email)
     if not user:
@@ -54,6 +54,12 @@ async def create_token(
             ph.verify(user["password_hash"], request.password)
         except Exception:
             raise HTTPException(status_code=401, detail="Invalid password")
+    else:
+        # No password set — must use their auth provider (Google OAuth, magic link)
+        raise HTTPException(
+            status_code=401,
+            detail="This account uses external authentication. Please log in via your configured provider.",
+        )
 
     token = create_access_token(
         user_id=user["id"],

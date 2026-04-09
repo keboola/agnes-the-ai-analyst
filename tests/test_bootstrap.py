@@ -64,18 +64,31 @@ class TestBootstrap:
         assert "already exist" in resp.json()["detail"]
 
     def test_bootstrap_then_login(self, fresh_client):
-        """After bootstrap, normal /auth/token login works."""
-        # Bootstrap
+        """After bootstrap with password, /auth/token login works; without password it requires OAuth."""
+        # Bootstrap with a password
+        fresh_client.post("/auth/bootstrap", json={
+            "email": "admin@test.com",
+            "password": "adminpass123",
+        })
+
+        # Normal password login succeeds
+        resp = fresh_client.post("/auth/token", json={
+            "email": "admin@test.com",
+            "password": "adminpass123",
+        })
+        assert resp.status_code == 200
+        assert resp.json()["role"] == "admin"
+
+    def test_bootstrap_no_password_token_rejected(self, fresh_client):
+        """After passwordless bootstrap, /auth/token must reject the user (OAuth-only flow)."""
         fresh_client.post("/auth/bootstrap", json={
             "email": "admin@test.com",
         })
 
-        # Normal login
         resp = fresh_client.post("/auth/token", json={
             "email": "admin@test.com",
         })
-        assert resp.status_code == 200
-        assert resp.json()["role"] == "admin"
+        assert resp.status_code == 401
 
     def test_bootstrap_second_call_fails(self, fresh_client):
         """Second bootstrap call fails — endpoint self-deactivates."""

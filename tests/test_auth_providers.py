@@ -64,10 +64,15 @@ class TestTokenEndpoint:
         assert data["email"] == "pw@test.com"
 
     def test_token_no_password_hash_user_gets_token(self, client):
-        """User without password_hash (e.g. OAuth-only user) still gets a token without a password."""
+        """User without password_hash (OAuth-only) must be rejected at /auth/token."""
         resp = client.post("/auth/token", json={"email": "ml@test.com"})
-        assert resp.status_code == 200
-        assert "access_token" in resp.json()
+        assert resp.status_code == 401
+
+    def test_token_rejected_for_oauth_only_user(self, client):
+        """OAuth-only user (no password_hash) must not receive a token via /auth/token."""
+        resp = client.post("/auth/token", json={"email": "ml@test.com"})
+        assert resp.status_code == 401
+        assert "external authentication" in resp.json()["detail"]
 
     def test_token_unknown_user_rejected(self, client):
         """Unknown email must return 401."""
