@@ -1,8 +1,11 @@
-name: Deploy
+name: Build & Push
 
 on:
   push:
     branches: [main]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   test:
@@ -46,22 +49,3 @@ jobs:
         with:
           push: true
           tags: ghcr.io/${{ github.repository }}:latest
-
-  deploy-production:
-    needs: build-and-push
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: "3.3"
-
-      - name: Install Kamal
-        run: gem install kamal
-
-      - name: Deploy
-        run: kamal deploy
-        env:
-          KAMAL_REGISTRY_USERNAME: ${{ github.actor }}
-          KAMAL_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
