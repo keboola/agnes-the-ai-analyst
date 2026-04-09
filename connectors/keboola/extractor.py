@@ -146,12 +146,21 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
                 pass
 
     finally:
+        conn.execute("CHECKPOINT")
         conn.close()
 
-    # Atomic replace: swap temp DB into place
+    # Atomic replace: swap temp DB into place, cleaning up any WAL files
     import shutil
+    old_wal = Path(str(db_path) + ".wal")
+    if old_wal.exists():
+        old_wal.unlink()
+
     if tmp_db_path.exists():
         shutil.move(str(tmp_db_path), str(db_path))
+
+    tmp_wal = Path(str(tmp_db_path) + ".wal")
+    if tmp_wal.exists():
+        tmp_wal.unlink()
 
     return stats
 
