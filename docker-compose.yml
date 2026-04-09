@@ -6,6 +6,7 @@ services:
       - "8000:8000"
     volumes:
       - data:/data
+      - ./config:/app/config:ro
     env_file: .env
     environment:
       - DATA_DIR=/data
@@ -14,6 +15,7 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+    restart: unless-stopped
 
   # One-shot: run extractor then rebuild orchestrator views
   extract:
@@ -23,6 +25,7 @@ services:
              python -c 'from src.orchestrator import SyncOrchestrator; print(SyncOrchestrator().rebuild())'"
     volumes:
       - data:/data
+      - ./config:/app/config:ro
     env_file: .env
     environment:
       - DATA_DIR=/data
@@ -34,6 +37,7 @@ services:
     command: python -m services.scheduler
     volumes:
       - data:/data
+      - ./config:/app/config:ro
     env_file: .env
     environment:
       - DATA_DIR=/data
