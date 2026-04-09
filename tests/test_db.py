@@ -142,3 +142,41 @@ class TestGetAnalyticsDb:
             assert (tmp_path / "analytics" / "server.duckdb").exists()
         finally:
             conn.close()
+
+
+class TestGetAnalyticsDbReadonly:
+    def test_analytics_readonly_rejects_malicious_dir_name(self, tmp_path):
+        """Directories with SQL-injection chars in their name are skipped."""
+        _setup_data_dir(tmp_path)
+        import importlib
+        import src.db as db_module
+        importlib.reload(db_module)
+
+        # Create the analytics DB first so get_analytics_db_readonly takes the read_only path
+        analytics_dir = tmp_path / "analytics"
+        analytics_dir.mkdir(parents=True, exist_ok=True)
+        import duckdb as _duckdb
+        seed_conn = _duckdb.connect(str(analytics_dir / "server.duckdb"))
+        seed_conn.close()
+
+        # Create a malicious extract directory whose name contains SQL injection chars
+        malicious_name = "foo) AS x; DROP TABLE users; --"
+        ext_dir = tmp_path / "extracts" / malicious_name
+        ext_dir.mkdir(parents=True, exist_ok=True)
+        # Place a real (empty) extract.duckdb inside it
+        mal_conn = _duckdb.connect(str(ext_dir / "extract.duckdb"))
+        mal_conn.close()
+
+        # get_analytics_db_readonly must not raise and must skip the malicious dir
+        conn = db_module.get_analytics_db_readonly()
+        try:
+            # Verify no attachment was made for the malicious source name
+            attached = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT database_name FROM duckdb_databases()"
+                ).fetchall()
+            }
+            assert malicious_name not in attached
+        finally:
+            conn.close()
