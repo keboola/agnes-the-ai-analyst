@@ -7,6 +7,8 @@ from unittest.mock import MagicMock
 import duckdb
 import pytest
 
+from tests.helpers.contract import validate_extract_contract
+
 
 @pytest.fixture
 def output_dir(tmp_path):
@@ -113,6 +115,8 @@ class TestBigQueryExtractor:
             assert ra[3] == ""  # BQ handles auth via env automatically
         finally:
             conn.close()
+
+        validate_extract_contract(str(Path(output_dir) / "extract.duckdb"))
 
     def test_no_data_directory_created(self, output_dir, sample_configs):
         """BigQuery is remote-only -- no data/ directory should exist."""

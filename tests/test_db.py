@@ -6,13 +6,13 @@ import duckdb
 import pytest
 
 
-def _setup_data_dir(tmp_path):
-    os.environ["DATA_DIR"] = str(tmp_path)
+def _setup_data_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
 
 
 class TestGetSystemDb:
-    def test_creates_all_tables(self, tmp_path):
-        _setup_data_dir(tmp_path)
+    def test_creates_all_tables(self, tmp_path, monkeypatch):
+        _setup_data_dir(tmp_path, monkeypatch)
         from src.db import get_system_db
 
         conn = get_system_db()

@@ -13,6 +13,7 @@ from pydantic import BaseModel
 import duckdb
 
 from app.auth.dependencies import get_current_user, require_role, Role, _get_db
+from app.utils import get_data_dir as _get_data_dir
 from src.repositories.sync_state import SyncStateRepository
 from src.repositories.sync_settings import SyncSettingsRepository, DatasetPermissionRepository
 from src.rbac import can_access_table
@@ -29,10 +30,6 @@ def _file_hash(path: Path) -> str:
         for chunk in iter(lambda: f.read(8192), b""):
             h.update(chunk)
     return h.hexdigest()
-
-
-def _get_data_dir() -> Path:
-    return Path(os.environ.get("DATA_DIR", "./data"))
 
 
 def _run_sync(tables: Optional[List[str]] = None):

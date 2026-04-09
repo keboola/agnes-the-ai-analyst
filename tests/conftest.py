@@ -8,10 +8,10 @@ import pytest
 
 
 @pytest.fixture
-def e2e_env(tmp_path):
+def e2e_env(tmp_path, monkeypatch):
     """Set up complete E2E environment with DATA_DIR, create dirs."""
-    os.environ["DATA_DIR"] = str(tmp_path)
-    os.environ["JWT_SECRET_KEY"] = "test-secret-e2e"
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-e2e")
 
     (tmp_path / "extracts").mkdir()
     (tmp_path / "analytics").mkdir()
@@ -22,9 +22,6 @@ def e2e_env(tmp_path):
         "extracts_dir": tmp_path / "extracts",
         "analytics_db": str(tmp_path / "analytics" / "server.duckdb"),
     }
-
-    os.environ.pop("DATA_DIR", None)
-    os.environ.pop("JWT_SECRET_KEY", None)
 
 
 def create_mock_extract(extracts_dir: Path, source_name: str, tables: list[dict]):

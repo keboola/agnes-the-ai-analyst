@@ -286,3 +286,15 @@ def get_schema_version(conn: duckdb.DuckDBPyConnection) -> int:
         return result[0] if result and result[0] else 0
     except duckdb.CatalogException:
         return 0
+
+
+def close_system_db() -> None:
+    """Close the shared system DB connection. Called on app shutdown."""
+    global _system_db_conn, _system_db_path
+    if _system_db_conn:
+        try:
+            _system_db_conn.close()
+        except Exception:
+            pass
+        _system_db_conn = None
+        _system_db_path = None

@@ -1,6 +1,7 @@
 """FastAPI main application — unified server for web UI + API."""
 
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import os
@@ -31,11 +32,19 @@ from app.web.router import router as web_router
 logger = logging.getLogger(__name__)
 
 
+@asynccontextmanager
+async def lifespan(app):
+    yield
+    from src.db import close_system_db
+    close_system_db()
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="AI Data Analyst",
         description="Data distribution platform for AI analytical systems",
         version="2.0.0",
+        lifespan=lifespan,
     )
 
     # Session middleware (required for OAuth state)
