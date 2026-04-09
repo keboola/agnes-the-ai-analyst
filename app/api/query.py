@@ -1,6 +1,7 @@
 """Query endpoint — execute SQL against server DuckDB."""
 
 import os
+import re
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -68,10 +69,11 @@ async def execute_query(
                 "SELECT table_name FROM information_schema.tables WHERE table_type='VIEW'"
             ).fetchall()}
 
-            # Check if query references any forbidden tables
+            # Check if query references any forbidden tables (word-boundary match)
             forbidden = all_views - set(allowed)
             for table in forbidden:
-                if table.lower() in sql_lower:
+                pattern = r'\b' + re.escape(table.lower()) + r'\b'
+                if re.search(pattern, sql_lower):
                     raise HTTPException(status_code=403, detail=f"Access denied to table '{table}'")
 
         # Open in read-only mode for extra safety
