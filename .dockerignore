@@ -1,4 +1,5 @@
 .git
+.github
 .venv
 venv
 __pycache__
@@ -13,5 +14,11 @@ build/
 .pytest_cache
 .mypy_cache
 .claude/
+.idea
 node_modules/
+tests/
+docs/
+dev_docs/
+infra/
+server/
 docs/ZS_PADAK_*

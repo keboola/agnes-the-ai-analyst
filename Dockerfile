@@ -8,12 +8,11 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 WORKDIR /app
 
-# Copy dependency files first for layer caching
-COPY requirements.txt .
-RUN uv pip install --system --no-cache -r requirements.txt
-
 # Copy application code
 COPY . .
+
+# Install production dependencies from pyproject.toml
+RUN uv pip install --system --no-cache .
 
 # Default: run FastAPI server
 EXPOSE 8000

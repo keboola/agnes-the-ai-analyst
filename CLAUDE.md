@@ -123,7 +123,7 @@ Table definitions: DuckDB `table_registry` table in `system.duckdb`.
 ```bash
 # Setup
 python3 -m venv .venv && source .venv/bin/activate
-uv pip install -r requirements.txt
+uv pip install ".[dev]"
 
 # Run FastAPI locally
 uvicorn app.main:app --reload
