@@ -1,6 +1,11 @@
 terraform {
   required_version = ">= 1.5"
 
+  backend "gcs" {
+    bucket = "agnes-terraform-state"
+    prefix = "instances"
+  }
+
   required_providers {
     google = {
       source  = "hashicorp/google"
@@ -92,6 +97,22 @@ locals {
     # Strip leading whitespace from heredoc
     sed -i 's/^    //' "$APP_DIR/.env"
     chmod 600 "$APP_DIR/.env"
+
+    echo "=== Creating instance.yaml ==="
+    mkdir -p "$APP_DIR/config"
+    cat > "$APP_DIR/config/instance.yaml" << YAMLEOF
+instance:
+  name: "${var.instance_name}"
+  subtitle: "Data Analytics Platform"
+server:
+  host: "${google_compute_address.data_analyst.address}"
+  hostname: "${var.domain != "" ? var.domain : google_compute_address.data_analyst.address}"
+  port: 8000
+auth:
+  allowed_domain: ""
+data_source:
+  type: "${var.keboola_token != "" ? "keboola" : "local"}"
+YAMLEOF
 
     echo "=== Creating data directory ==="
     mkdir -p /data/state /data/analytics /data/extracts
