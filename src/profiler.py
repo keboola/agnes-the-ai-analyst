@@ -94,6 +94,21 @@ METRICS_YML_PATH = DOCS_DIR / "metrics.yml"
 METRICS_DIR = DOCS_DIR / "metrics"
 DATA_DESCRIPTION_PATH = DOCS_DIR / "data_description.md"
 
+def _load_metrics_from_db() -> Dict[str, List[str]]:
+    """Load metrics table map from DuckDB. Returns empty dict on failure."""
+    try:
+        from src.db import get_system_db
+        from src.repositories.metrics import MetricRepository
+        conn = get_system_db()
+        repo = MetricRepository(conn)
+        table_map = repo.get_table_map()
+        conn.close()
+        return table_map
+    except Exception as exc:
+        logger.debug("Could not load metrics from DuckDB: %s", exc)
+        return {}
+
+
 # Jira tables - loaded dynamically if Jira connector is enabled
 # The Jira connector stores partitioned parquet files in PARQUET_DIR/jira/
 def _load_jira_tables() -> tuple:
@@ -1151,7 +1166,10 @@ def profile_changed_tables(table_names: list[str]) -> dict:
 
     # Load sync state and metrics
     sync_state = load_sync_state(SYNC_STATE_PATH)
-    metrics_map = load_metrics(METRICS_YML_PATH)
+    # Try DuckDB-backed metrics first, fall back to YAML scan
+    metrics_map = _load_metrics_from_db()
+    if not metrics_map:
+        metrics_map = load_metrics(METRICS_YML_PATH)
     metric_file_map = load_metric_file_map(METRICS_YML_PATH)
 
     # Load existing profiles.json to preserve untouched tables
@@ -1245,7 +1263,10 @@ def main() -> None:
     sync_state = load_sync_state(SYNC_STATE_PATH)
 
     # Load metrics
-    metrics_map = load_metrics(METRICS_YML_PATH)
+    # Try DuckDB-backed metrics first, fall back to YAML scan
+    metrics_map = _load_metrics_from_db()
+    if not metrics_map:
+        metrics_map = load_metrics(METRICS_YML_PATH)
     metric_file_map = load_metric_file_map(METRICS_YML_PATH)
 
     # Load existing profiles for fallback (preserve data for tables that fail)
