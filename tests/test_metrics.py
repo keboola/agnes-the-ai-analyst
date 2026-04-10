@@ -304,3 +304,118 @@ class TestMetricRepositorySearch:
         table_map = repo.get_table_map()
         assert "None" not in table_map
         assert None not in table_map
+
+
+@pytest.fixture
+def metrics_dir(tmp_path):
+    revenue_dir = tmp_path / "metrics" / "revenue"
+    revenue_dir.mkdir(parents=True)
+    ops_dir = tmp_path / "metrics" / "operations"
+    ops_dir.mkdir(parents=True)
+
+    # total_revenue.yml — list-wrapped format with table key and sql_by_channel variant
+    (revenue_dir / "total_revenue.yml").write_text(
+        "- name: total_revenue\n"
+        "  display_name: Total Revenue\n"
+        "  category: revenue\n"
+        "  type: sum\n"
+        "  unit: USD\n"
+        "  grain: monthly\n"
+        "  table: orders\n"
+        "  sql: |\n"
+        "    SELECT DATE_TRUNC('month', order_date) AS month, SUM(total_amount) AS revenue FROM orders GROUP BY 1\n"
+        "  sql_by_channel: |\n"
+        "    SELECT channel, SUM(total_amount) AS revenue FROM orders GROUP BY 1\n"
+    )
+
+    # resolution_time.yml — plain dict format (no list wrapper)
+    (ops_dir / "resolution_time.yml").write_text(
+        "name: resolution_time\n"
+        "display_name: Resolution Time\n"
+        "type: avg\n"
+        "unit: hours\n"
+        "grain: weekly\n"
+        "table: tickets\n"
+        "sql: |\n"
+        "  SELECT AVG(resolution_hours) FROM tickets\n"
+    )
+
+    return tmp_path / "metrics"
+
+
+class TestMetricRepositoryImport:
+    def test_import_from_directory(self, db_conn, metrics_dir):
+        from src.repositories.metrics import MetricRepository
+        repo = MetricRepository(db_conn)
+        count = repo.import_from_yaml(metrics_dir)
+        assert count == 2
+        all_metrics = repo.list()
+        assert len(all_metrics) == 2
+        ids = {m["id"] for m in all_metrics}
+        assert "revenue/total_revenue" in ids
+        assert "operations/resolution_time" in ids
+
+    def test_import_maps_table_to_table_name(self, db_conn, metrics_dir):
+        from src.repositories.metrics import MetricRepository
+        repo = MetricRepository(db_conn)
+        repo.import_from_yaml(metrics_dir)
+        metric = repo.get("revenue/total_revenue")
+        assert metric is not None
+        assert metric["table_name"] == "orders"
+
+    def test_import_collects_sql_variants(self, db_conn, metrics_dir):
+        from src.repositories.metrics import MetricRepository
+        import json
+        repo = MetricRepository(db_conn)
+        repo.import_from_yaml(metrics_dir)
+        metric = repo.get("revenue/total_revenue")
+        assert metric is not None
+        sql_variants = metric["sql_variants"]
+        # DuckDB may return as a string — parse if so
+        if isinstance(sql_variants, str):
+            sql_variants = json.loads(sql_variants)
+        assert isinstance(sql_variants, dict)
+        assert "by_channel" in sql_variants
+        assert "channel" in sql_variants["by_channel"]
+
+    def test_import_single_file(self, db_conn, metrics_dir):
+        from src.repositories.metrics import MetricRepository
+        repo = MetricRepository(db_conn)
+        single_file = metrics_dir / "revenue" / "total_revenue.yml"
+        count = repo.import_from_yaml(single_file)
+        assert count == 1
+        metric = repo.get("revenue/total_revenue")
+        assert metric is not None
+
+    def test_import_idempotent(self, db_conn, metrics_dir):
+        from src.repositories.metrics import MetricRepository
+        repo = MetricRepository(db_conn)
+        repo.import_from_yaml(metrics_dir)
+        repo.import_from_yaml(metrics_dir)
+        all_metrics = repo.list()
+        assert len(all_metrics) == 2
+
+
+class TestMetricRepositoryExport:
+    def test_export_to_yaml(self, db_conn, metrics_dir, tmp_path):
+        from src.repositories.metrics import MetricRepository
+        import yaml
+        repo = MetricRepository(db_conn)
+        repo.import_from_yaml(metrics_dir)
+        output_dir = tmp_path / "exported"
+        count = repo.export_to_yaml(output_dir)
+        assert count == 2
+        # Check expected files exist
+        revenue_file = output_dir / "revenue" / "total_revenue.yml"
+        ops_file = output_dir / "operations" / "resolution_time.yml"
+        assert revenue_file.exists()
+        assert ops_file.exists()
+        # Verify content uses 'table' not 'table_name'
+        with open(revenue_file) as f:
+            data = yaml.safe_load(f)
+        assert "table" in data
+        assert "table_name" not in data
+        assert data["table"] == "orders"
+        # Verify sql_variants are expanded back to sql_by_* keys
+        assert "sql_by_channel" in data
+        assert "sql_variants" not in data
