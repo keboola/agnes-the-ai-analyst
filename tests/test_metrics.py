@@ -230,6 +230,15 @@ class TestMetricRepositorySearch:
             table_name="events",
             sql="SELECT COUNT(DISTINCT user_id) FROM events",
         )
+        # 1 metric using tables[] array (no table_name)
+        repo.create(
+            id="combined/multi",
+            name="multi",
+            display_name="Multi Table Metric",
+            category="combined",
+            tables=["a", "b"],
+            sql="SELECT 1",
+        )
         sub_metrics = repo.find_by_table("subscriptions")
         assert len(sub_metrics) == 2
         ids = {m["id"] for m in sub_metrics}
@@ -239,6 +248,16 @@ class TestMetricRepositorySearch:
         event_metrics = repo.find_by_table("events")
         assert len(event_metrics) == 1
         assert event_metrics[0]["id"] == "engagement/dau"
+
+        # Metric referencing 'a' via tables[] array should be found
+        a_metrics = repo.find_by_table("a")
+        assert len(a_metrics) == 1
+        assert a_metrics[0]["id"] == "combined/multi"
+
+        # Metric referencing 'b' via tables[] array should also be found
+        b_metrics = repo.find_by_table("b")
+        assert len(b_metrics) == 1
+        assert b_metrics[0]["id"] == "combined/multi"
 
     def test_find_by_synonym(self, db_conn):
         from src.repositories.metrics import MetricRepository
@@ -283,12 +302,26 @@ class TestMetricRepositorySearch:
             table_name="events",
             sql="SELECT COUNT(DISTINCT user_id) FROM events",
         )
+        # Metric using tables[] array
+        repo.create(
+            id="combined/multi",
+            name="multi",
+            display_name="Multi Table Metric",
+            category="combined",
+            tables=["subscriptions", "events"],
+            sql="SELECT 1",
+        )
         table_map = repo.get_table_map()
         assert isinstance(table_map, dict)
         assert "subscriptions" in table_map
         assert "events" in table_map
-        assert set(table_map["subscriptions"]) == {"mrr", "arr"}
-        assert table_map["events"] == ["dau"]
+        # 'subscriptions' should include mrr, arr (table_name) plus multi (tables[])
+        assert "mrr" in table_map["subscriptions"]
+        assert "arr" in table_map["subscriptions"]
+        assert "multi" in table_map["subscriptions"]
+        # 'events' should include dau (table_name) plus multi (tables[])
+        assert "dau" in table_map["events"]
+        assert "multi" in table_map["events"]
 
     def test_get_table_map_excludes_null_table(self, db_conn):
         from src.repositories.metrics import MetricRepository

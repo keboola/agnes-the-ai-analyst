@@ -156,8 +156,8 @@ class MetricRepository:
 
     def find_by_table(self, table_name: str) -> List[Dict[str, Any]]:
         rows = self.conn.execute(
-            "SELECT * FROM metric_definitions WHERE table_name = ? ORDER BY name",
-            [table_name],
+            "SELECT * FROM metric_definitions WHERE table_name = ? OR list_contains(tables, ?) ORDER BY name",
+            [table_name, table_name],
         ).fetchall()
         return self._rows_to_dicts(rows)
 
@@ -176,6 +176,12 @@ class MetricRepository:
         result: Dict[str, List[str]] = {}
         for table_name, metric_name in rows:
             result.setdefault(table_name, []).append(metric_name)
+        # Also include metrics that reference tables via the 'tables' array
+        results2 = self.conn.execute(
+            "SELECT unnest(tables) AS tbl, name FROM metric_definitions WHERE tables IS NOT NULL"
+        ).fetchall()
+        for tbl, metric_name in results2:
+            result.setdefault(tbl, []).append(metric_name)
         return result
 
     def import_from_yaml(self, path: Union[str, Path]) -> int:
