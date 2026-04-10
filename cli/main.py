@@ -16,6 +16,7 @@ from cli.commands.setup import setup_app
 from cli.commands.server import server_app
 from cli.commands.explore import explore_app
 from cli.commands.metrics import metrics_app
+from cli.commands.analyst import analyst_app
 
 app = typer.Typer(
     name="da",
@@ -35,6 +36,7 @@ app.add_typer(setup_app, name="setup")
 app.add_typer(server_app, name="server")
 app.add_typer(explore_app, name="explore")
 app.add_typer(metrics_app, name="metrics")
+app.add_typer(analyst_app, name="analyst")
 
 
 if __name__ == "__main__":
