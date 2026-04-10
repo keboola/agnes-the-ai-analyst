@@ -19,7 +19,10 @@ def _load_or_generate(env_var: str, file_name: str) -> str:
     secret_path.parent.mkdir(parents=True, exist_ok=True)
     val = secrets.token_hex(32)
     secret_path.write_text(val)
-    secret_path.chmod(0o600)
+    try:
+        secret_path.chmod(0o600)
+    except OSError:
+        pass  # chmod not supported on all platforms (e.g., Windows)
     logger.info(
         "Auto-generated %s -> %s (set %s in .env to use a fixed value)",
         file_name, secret_path, env_var,

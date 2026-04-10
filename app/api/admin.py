@@ -182,23 +182,33 @@ async def configure_instance(
             client = KeboolaClient(token=request.keboola_token, url=request.keboola_url)
             client.verify_token()
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Keboola connection failed: {e}")
+            logger.error("Keboola connection validation failed: %s", e)
+            raise HTTPException(status_code=400, detail="Keboola connection failed. Check your token and URL.")
 
     elif request.data_source == "bigquery":
         if not request.bigquery_project:
             raise HTTPException(status_code=400, detail="bigquery_project is required for BigQuery data source")
 
-    # Build instance.yaml config (secrets as ${ENV_VAR} references)
-    config_dir = Path(os.environ.get("CONFIG_DIR", "./config"))
-    config_path = config_dir / "instance.yaml"
+    # Write instance.yaml to DATA_DIR/state/ (writable Docker volume),
+    # NOT to CONFIG_DIR which is mounted read-only in Docker.
+    data_dir = Path(os.environ.get("DATA_DIR", "./data"))
+    config_path = data_dir / "state" / "instance.yaml"
 
-    # Load existing config or start fresh
+    # Load existing API-generated config, or fall back to read-only CONFIG_DIR config
     existing = {}
     if config_path.exists():
         try:
             existing = yaml.safe_load(config_path.read_text()) or {}
         except Exception:
             existing = {}
+    else:
+        # Try loading from read-only config as base
+        ro_path = Path(os.environ.get("CONFIG_DIR", "./config")) / "instance.yaml"
+        if ro_path.exists():
+            try:
+                existing = yaml.safe_load(ro_path.read_text()) or {}
+            except Exception:
+                existing = {}
 
     # Merge instance settings
     if request.instance_name:
@@ -220,8 +230,8 @@ async def configure_instance(
             "location": request.bigquery_location or "us",
         }
 
-    # Write instance.yaml
-    config_dir.mkdir(parents=True, exist_ok=True)
+    # Write to writable data volume
+    config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(yaml.dump(existing, default_flow_style=False, sort_keys=False))
     logger.info("Wrote instance config to %s", config_path)
 

@@ -53,8 +53,9 @@ jobs:
             CHANNEL="dev"
           fi
 
-          # Count existing tags for this channel+month to get next N
-          EXISTING=$(git tag -l "${CHANNEL}-${YEAR_MONTH}.*" | wc -l | tr -d ' ')
+          # Count existing tags GLOBALLY across all channels for this month
+          # (spec requires unique N per month: dev-2026.04.1 and stable-2026.04.2, never both .1)
+          EXISTING=$(git tag -l "*-${YEAR_MONTH}.*" | wc -l | tr -d ' ')
           N=$((EXISTING + 1))
           VERSION="${YEAR_MONTH}.${N}"
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
@@ -104,10 +105,9 @@ jobs:
 
       - name: Start Agnes from built image
         run: |
-          # Override image to use the just-built version
-          export AGNES_IMAGE="ghcr.io/${{ github.repository }}:${{ needs.build-and-push.outputs.image_tag }}"
-          sed -i "s|build: \.|image: ${AGNES_IMAGE}|g" docker-compose.yml
-          docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d
+          # Use prod compose (GHCR images) + CI overlay (test secrets)
+          export AGNES_TAG="${{ needs.build-and-push.outputs.image_tag }}"
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.ci.yml up -d app
           # Wait for healthy (max 60s)
           timeout 60 bash -c 'until curl -sf http://localhost:8000/api/health | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d[\"status\"]!=\"unhealthy\" else 1)"; do sleep 3; done'
 
@@ -116,7 +116,7 @@ jobs:
 
       - name: Collect logs on failure
         if: failure()
-        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml logs > smoke-test-logs.txt
+        run: docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.ci.yml logs > smoke-test-logs.txt
 
       - name: Upload logs
         if: failure()
@@ -127,4 +127,4 @@ jobs:
 
       - name: Teardown
         if: always()
-        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml down -v
+        run: docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.ci.yml down -v

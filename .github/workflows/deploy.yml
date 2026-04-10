@@ -1,11 +1,9 @@
 # SUPERSEDED by release.yml — CalVer tagging with stable/dev channels.
-# This workflow is kept for backward compatibility but only runs tests.
-# Image build and push is handled by release.yml.
+# Kept for manual trigger only. Automated builds use release.yml.
 name: Build & Push (legacy)
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch: {}
 
 jobs:
   test:

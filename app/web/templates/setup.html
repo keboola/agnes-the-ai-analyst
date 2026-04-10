@@ -154,6 +154,12 @@ async function apiCall(url, body) {
     const headers = { 'Content-Type': 'application/json' };
     if (token) headers['Authorization'] = 'Bearer ' + token;
     const resp = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+    if (resp.status === 401) {
+        token = '';
+        sessionStorage.removeItem('setup_token');
+        showStatus('Session expired. Please refresh the page and start over.', 'error');
+        throw new Error('Session expired');
+    }
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.detail || 'Request failed');
     return data;
