@@ -11,15 +11,34 @@ _instance_config: Optional[dict] = None
 
 
 def load_instance_config() -> dict:
-    """Load instance.yaml using the existing config loader."""
+    """Load instance.yaml — checks API-generated config first, then static config.
+
+    Search order:
+    1. DATA_DIR/state/instance.yaml (written by /api/admin/configure, writable)
+    2. CONFIG_DIR/instance.yaml (static, read-only in Docker)
+    3. Empty dict with defaults (if neither exists)
+    """
     global _instance_config
     if _instance_config is not None:
         return _instance_config
 
+    # First, try API-generated config in writable data volume
+    import yaml
+    data_dir = Path(os.environ.get("DATA_DIR", "./data"))
+    api_config_path = data_dir / "state" / "instance.yaml"
+    if api_config_path.exists():
+        try:
+            _instance_config = yaml.safe_load(api_config_path.read_text()) or {}
+            logger.info("Loaded instance.yaml from %s", api_config_path)
+            return _instance_config
+        except Exception as e:
+            logger.warning(f"Could not load API-generated instance.yaml: {e}")
+
+    # Fall back to static config (may have strict validation)
     try:
-        from config.loader import load_instance_config as _load, get_instance_value
+        from config.loader import load_instance_config as _load
         _instance_config = _load()
-        logger.info("Loaded instance.yaml")
+        logger.info("Loaded instance.yaml from config/")
     except Exception as e:
         logger.warning(f"Could not load instance.yaml: {e}. Using defaults.")
         _instance_config = {}
