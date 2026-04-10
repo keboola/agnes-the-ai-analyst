@@ -1,4 +1,7 @@
-name: Build & Push
+# SUPERSEDED by release.yml — CalVer tagging with stable/dev channels.
+# This workflow is kept for backward compatibility but only runs tests.
+# Image build and push is handled by release.yml.
+name: Build & Push (legacy)
 
 on:
   push:
@@ -24,27 +27,3 @@ jobs:
         run: pytest tests/ -v --tb=short
         env:
           TESTING: "1"
-
-  build-and-push:
-    needs: test
-    runs-on: ubuntu-latest
-    permissions:
-      packages: write
-      contents: read
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push
-        uses: docker/build-push-action@v7
-        with:
-          push: true
-          tags: |
-            ghcr.io/${{ github.repository }}:latest
-            ghcr.io/${{ github.repository }}:${{ github.sha }}

@@ -7,22 +7,22 @@ from typing import Optional
 
 import jwt
 
-SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "")
-
-if not SECRET_KEY:
+def _get_secret_key() -> str:
+    """Load JWT secret - from env, file, or auto-generated."""
     if os.environ.get("TESTING", "").lower() in ("1", "true"):
-        SECRET_KEY = "test-jwt-secret-key-minimum-32-chars!!"
-    else:
-        raise RuntimeError(
-            "JWT_SECRET_KEY environment variable is required. "
-            "Generate one: python -c \"import secrets; print(secrets.token_hex(32))\""
+        return os.environ.get("JWT_SECRET_KEY", "test-jwt-secret-key-minimum-32-chars!!")
+    from app.secrets import get_jwt_secret
+    key = get_jwt_secret()
+    if len(key) < 32:
+        import warnings as _warnings
+        _warnings.warn(
+            f"JWT_SECRET_KEY is {len(key)} chars — minimum 32 recommended",
+            UserWarning, stacklevel=2,
         )
-elif len(SECRET_KEY) < 32 and os.environ.get("TESTING", "").lower() not in ("1", "true"):
-    import warnings as _warnings
-    _warnings.warn(
-        f"JWT_SECRET_KEY is {len(SECRET_KEY)} chars — minimum 32 recommended",
-        UserWarning, stacklevel=2,
-    )
+    return key
+
+
+SECRET_KEY = _get_secret_key()
 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 24  # 24 hours

@@ -144,6 +144,205 @@ class TestGetAnalyticsDb:
             conn.close()
 
 
+class TestMigrationSafety:
+    """Tests for schema migration correctness, idempotency, and safety snapshots."""
+
+    # Minimal v2 table_registry (no is_public column — that comes in v3)
+    _V2_TABLE_REGISTRY = """
+        CREATE TABLE table_registry (
+            id VARCHAR PRIMARY KEY,
+            name VARCHAR NOT NULL,
+            source_type VARCHAR,
+            bucket VARCHAR,
+            source_table VARCHAR,
+            sync_strategy VARCHAR DEFAULT 'full_refresh',
+            query_mode VARCHAR DEFAULT 'local',
+            sync_schedule VARCHAR,
+            profile_after_sync BOOLEAN DEFAULT true,
+            primary_key VARCHAR,
+            folder VARCHAR,
+            description TEXT,
+            registered_by VARCHAR,
+            registered_at TIMESTAMP DEFAULT current_timestamp
+        );
+    """
+
+    def _create_v2_db(self, db_path):
+        """Create a minimal v2-schema DuckDB file at db_path."""
+        import duckdb as _duckdb
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = _duckdb.connect(str(db_path))
+        try:
+            conn.execute(
+                "CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP DEFAULT current_timestamp);"
+                "INSERT INTO schema_version (version) VALUES (2);"
+            )
+            conn.execute(self._V2_TABLE_REGISTRY)
+            # Stub out remaining tables so _ensure_schema doesn't fail
+            for ddl in [
+                "CREATE TABLE IF NOT EXISTS users (id VARCHAR PRIMARY KEY, email VARCHAR)",
+                "CREATE TABLE IF NOT EXISTS sync_state (table_id VARCHAR PRIMARY KEY)",
+                "CREATE TABLE IF NOT EXISTS sync_history (id VARCHAR PRIMARY KEY, table_id VARCHAR)",
+                "CREATE TABLE IF NOT EXISTS user_sync_settings (user_id VARCHAR, dataset VARCHAR, PRIMARY KEY(user_id, dataset))",
+                "CREATE TABLE IF NOT EXISTS knowledge_items (id VARCHAR PRIMARY KEY, title VARCHAR)",
+                "CREATE TABLE IF NOT EXISTS knowledge_votes (item_id VARCHAR, user_id VARCHAR, PRIMARY KEY(item_id, user_id))",
+                "CREATE TABLE IF NOT EXISTS audit_log (id VARCHAR PRIMARY KEY, action VARCHAR)",
+                "CREATE TABLE IF NOT EXISTS telegram_links (user_id VARCHAR PRIMARY KEY, chat_id BIGINT)",
+                "CREATE TABLE IF NOT EXISTS pending_codes (code VARCHAR PRIMARY KEY, chat_id BIGINT)",
+                "CREATE TABLE IF NOT EXISTS script_registry (id VARCHAR PRIMARY KEY, name VARCHAR, source TEXT)",
+                "CREATE TABLE IF NOT EXISTS table_profiles (table_id VARCHAR PRIMARY KEY, profile JSON)",
+                "CREATE TABLE IF NOT EXISTS dataset_permissions (user_id VARCHAR, dataset VARCHAR, PRIMARY KEY(user_id, dataset))",
+            ]:
+                conn.execute(ddl)
+        finally:
+            conn.close()
+
+    def test_v2_to_v3_migration(self, tmp_path, monkeypatch):
+        """v2 DB migrated to v3: schema_version=3 and is_public column added."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        import duckdb as _duckdb
+        from src.db import _ensure_schema, get_schema_version
+
+        db_path = tmp_path / "state" / "system.duckdb"
+        self._create_v2_db(db_path)
+
+        conn = _duckdb.connect(str(db_path))
+        try:
+            _ensure_schema(conn)
+            assert get_schema_version(conn) == 3
+            cols = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT column_name FROM information_schema.columns WHERE table_name='table_registry'"
+                ).fetchall()
+            }
+            assert "is_public" in cols
+        finally:
+            conn.close()
+
+    def test_migration_idempotency(self, tmp_path, monkeypatch):
+        """Calling _ensure_schema twice on a fresh DB raises no error and leaves version at 3."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        import duckdb as _duckdb
+        from src.db import _ensure_schema, get_schema_version, SCHEMA_VERSION
+
+        db_path = tmp_path / "state" / "system.duckdb"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = _duckdb.connect(str(db_path))
+        try:
+            _ensure_schema(conn)
+            _ensure_schema(conn)
+            assert get_schema_version(conn) == SCHEMA_VERSION
+        finally:
+            conn.close()
+
+    def test_migration_preserves_data(self, tmp_path, monkeypatch):
+        """Data inserted before migration is preserved after migration runs."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        import duckdb as _duckdb
+        from src.db import _ensure_schema, get_schema_version, _SYSTEM_SCHEMA
+
+        db_path = tmp_path / "state" / "system.duckdb"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = _duckdb.connect(str(db_path))
+        try:
+            # Build a v1 schema manually
+            conn.execute(
+                "CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP DEFAULT current_timestamp);"
+                "INSERT INTO schema_version (version) VALUES (1);"
+            )
+            conn.execute("""
+                CREATE TABLE table_registry (
+                    id VARCHAR PRIMARY KEY,
+                    name VARCHAR NOT NULL,
+                    folder VARCHAR,
+                    sync_strategy VARCHAR,
+                    primary_key VARCHAR,
+                    description TEXT,
+                    registered_by VARCHAR,
+                    registered_at TIMESTAMP DEFAULT current_timestamp
+                );
+            """)
+            conn.execute(
+                "INSERT INTO table_registry (id, name, description) VALUES ('row1', 'MyTable', 'kept')"
+            )
+            # Stub remaining tables
+            for ddl in [
+                "CREATE TABLE IF NOT EXISTS users (id VARCHAR PRIMARY KEY, email VARCHAR)",
+                "CREATE TABLE IF NOT EXISTS sync_state (table_id VARCHAR PRIMARY KEY)",
+                "CREATE TABLE IF NOT EXISTS sync_history (id VARCHAR PRIMARY KEY, table_id VARCHAR)",
+                "CREATE TABLE IF NOT EXISTS user_sync_settings (user_id VARCHAR, dataset VARCHAR, PRIMARY KEY(user_id, dataset))",
+                "CREATE TABLE IF NOT EXISTS knowledge_items (id VARCHAR PRIMARY KEY, title VARCHAR)",
+                "CREATE TABLE IF NOT EXISTS knowledge_votes (item_id VARCHAR, user_id VARCHAR, PRIMARY KEY(item_id, user_id))",
+                "CREATE TABLE IF NOT EXISTS audit_log (id VARCHAR PRIMARY KEY, action VARCHAR)",
+                "CREATE TABLE IF NOT EXISTS telegram_links (user_id VARCHAR PRIMARY KEY, chat_id BIGINT)",
+                "CREATE TABLE IF NOT EXISTS pending_codes (code VARCHAR PRIMARY KEY, chat_id BIGINT)",
+                "CREATE TABLE IF NOT EXISTS script_registry (id VARCHAR PRIMARY KEY, name VARCHAR, source TEXT)",
+                "CREATE TABLE IF NOT EXISTS table_profiles (table_id VARCHAR PRIMARY KEY, profile JSON)",
+                "CREATE TABLE IF NOT EXISTS dataset_permissions (user_id VARCHAR, dataset VARCHAR, PRIMARY KEY(user_id, dataset))",
+            ]:
+                conn.execute(ddl)
+
+            _ensure_schema(conn)
+
+            assert get_schema_version(conn) == 3
+            row = conn.execute(
+                "SELECT name, description FROM table_registry WHERE id='row1'"
+            ).fetchone()
+            assert row is not None, "Pre-migration row was lost"
+            assert row[0] == "MyTable"
+            assert row[1] == "kept"
+        finally:
+            conn.close()
+
+    def test_pre_migration_snapshot_created(self, tmp_path, monkeypatch):
+        """A pre-migrate snapshot is written when migrating an existing (non-fresh) DB."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        from src.db import get_system_db
+
+        # Create a v2 DB at the expected path before calling get_system_db
+        db_path = tmp_path / "state" / "system.duckdb"
+        self._create_v2_db(db_path)
+
+        conn = get_system_db()
+        try:
+            snapshot = tmp_path / "state" / "system.duckdb.pre-migrate"
+            assert snapshot.exists(), "Pre-migration snapshot was not created"
+        finally:
+            conn.close()
+
+    def test_no_snapshot_on_fresh_db(self, tmp_path, monkeypatch):
+        """No pre-migrate snapshot is created when initialising a brand-new DB."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        try:
+            snapshot = tmp_path / "state" / "system.duckdb.pre-migrate"
+            assert not snapshot.exists(), "Snapshot should not exist for a fresh DB"
+        finally:
+            conn.close()
+
+    def test_future_version_is_noop(self, tmp_path, monkeypatch):
+        """_ensure_schema does nothing when schema_version > SCHEMA_VERSION."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        import duckdb as _duckdb
+        from src.db import _ensure_schema, get_schema_version
+
+        db_path = tmp_path / "state" / "system.duckdb"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = _duckdb.connect(str(db_path))
+        try:
+            conn.execute(
+                "CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP DEFAULT current_timestamp);"
+                "INSERT INTO schema_version (version) VALUES (99);"
+            )
+            _ensure_schema(conn)
+            assert get_schema_version(conn) == 99
+        finally:
+            conn.close()
+
+
 class TestGetAnalyticsDbReadonly:
     def test_analytics_readonly_rejects_malicious_dir_name(self, tmp_path, monkeypatch):
         """Directories with SQL-injection chars in their name are skipped."""

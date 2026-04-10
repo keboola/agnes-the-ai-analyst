@@ -4,11 +4,15 @@ Provides get_system_db() for the system state database
 and get_analytics_db() for the analytics database with parquet views.
 """
 
+import logging
 import os
 import re
+import shutil
 from pathlib import Path
 
 import duckdb
+
+logger = logging.getLogger(__name__)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
@@ -260,6 +264,16 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
     """Create tables if they don't exist. Apply migrations if schema version changed."""
     current = get_schema_version(conn)
     if current < SCHEMA_VERSION:
+        # Snapshot before migration for rollback support
+        if current > 0:
+            try:
+                db_path = Path(os.environ.get("DATA_DIR", "./data")) / "state" / "system.duckdb"
+                if db_path.exists():
+                    snapshot = db_path.parent / "system.duckdb.pre-migrate"
+                    shutil.copy2(str(db_path), str(snapshot))
+                    logger.info("Pre-migration snapshot saved: %s", snapshot)
+            except Exception as e:
+                logger.warning("Could not create pre-migration snapshot: %s", e)
         conn.execute(_SYSTEM_SCHEMA)
         if current == 0:
             conn.execute(
