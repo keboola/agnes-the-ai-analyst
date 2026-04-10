@@ -161,3 +161,82 @@ def list_tables(as_json: bool = typer.Option(False, "--json")):
         typer.echo(f"Registered tables: {data['count']}")
         for t in data["tables"]:
             typer.echo(f"  {t['name']:30s} src={t.get('source_type','?'):10s} mode={t.get('query_mode','?'):6s} bucket={t.get('bucket',''):20s}")
+
+
+@admin_app.command("metadata-show")
+def metadata_show(
+    table_id: str = typer.Argument(..., help="Table ID to show metadata for"),
+    as_json: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Show column metadata for a table."""
+    resp = api_get(f"/api/admin/metadata/{table_id}")
+    if resp.status_code != 200:
+        typer.echo(f"Failed: {resp.json().get('detail', resp.text)}", err=True)
+        raise typer.Exit(1)
+
+    data = resp.json()
+    if as_json:
+        typer.echo(json.dumps(data, indent=2))
+    else:
+        columns = data.get("columns", [])
+        if not columns:
+            typer.echo(f"No column metadata for table: {table_id}")
+            return
+        typer.echo(f"Column metadata for table: {table_id} ({len(columns)} columns)")
+        typer.echo(f"  {'COLUMN':<30s} {'BASETYPE':<12s} {'CONFIDENCE':<12s} DESCRIPTION")
+        typer.echo("  " + "-" * 80)
+        for col in columns:
+            typer.echo(
+                f"  {col['column_name']:<30s} {col.get('basetype') or '':^12s} "
+                f"{col.get('confidence') or '':^12s} {col.get('description') or ''}"
+            )
+
+
+@admin_app.command("metadata-apply")
+def metadata_apply(
+    proposal_path: str = typer.Argument(..., help="Path to proposal JSON file"),
+    push_to_source: bool = typer.Option(False, "--push-to-source", help="Push metadata to Keboola after import"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would change without applying"),
+):
+    """Apply a metadata proposal JSON to DuckDB."""
+    import os
+
+    if not os.path.exists(proposal_path):
+        typer.echo(f"Proposal file not found: {proposal_path}", err=True)
+        raise typer.Exit(1)
+
+    with open(proposal_path, "r", encoding="utf-8") as f:
+        proposal = json.load(f)
+
+    tables = proposal.get("tables", {})
+    total = sum(len(t.get("columns", {})) for t in tables.values())
+
+    if dry_run:
+        typer.echo(f"[DRY RUN] Would import {total} column(s) from {len(tables)} table(s):")
+        for table_id, table_data in tables.items():
+            columns = table_data.get("columns", {})
+            for col_name, col_data in columns.items():
+                typer.echo(
+                    f"  {table_id}.{col_name}: basetype={col_data.get('basetype')} "
+                    f"description={col_data.get('description')}"
+                )
+        return
+
+    from src.repositories.column_metadata import ColumnMetadataRepository
+    from src.db import get_system_db
+
+    conn = get_system_db()
+    try:
+        repo = ColumnMetadataRepository(conn)
+        count = repo.import_proposal(proposal_path)
+        typer.echo(f"Imported {count} column(s) from proposal.")
+    finally:
+        conn.close()
+
+    if push_to_source:
+        for table_id in tables:
+            resp = api_post(f"/api/admin/metadata/{table_id}/push")
+            if resp.status_code == 200:
+                typer.echo(f"Pushed metadata for {table_id} to source.")
+            else:
+                typer.echo(f"Failed to push {table_id}: {resp.json().get('detail', resp.text)}", err=True)
