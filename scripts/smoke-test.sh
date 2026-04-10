@@ -13,10 +13,10 @@ check() {
     local name="$1" ok="$2"
     if [ "$ok" = "true" ]; then
         echo "  PASS $name"
-        ((PASS++))
+        PASS=$((PASS + 1))
     else
         echo "  FAIL $name"
-        ((FAIL++))
+        FAIL=$((FAIL + 1))
     fi
 }
 
