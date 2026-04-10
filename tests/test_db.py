@@ -415,7 +415,7 @@ class TestSchemaV4:
         """Simulate a v3 database, call get_system_db(), verify it migrates to v4."""
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         import duckdb as _duckdb
-        from src.db import get_system_db, get_schema_version
+        from src.db import get_system_db, get_schema_version, SCHEMA_VERSION
 
         # Build a minimal v3 database manually
         db_path = tmp_path / "state" / "system.duckdb"
@@ -449,7 +449,7 @@ class TestSchemaV4:
 
         conn2 = get_system_db()
         try:
-            assert get_schema_version(conn2) == 4, f"Expected version 4, got {get_schema_version(conn2)}"
+            assert get_schema_version(conn2) == SCHEMA_VERSION, f"Expected version {SCHEMA_VERSION}, got {get_schema_version(conn2)}"
             tables = {
                 row[0]
                 for row in conn2.execute(
