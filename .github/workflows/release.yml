@@ -121,6 +121,8 @@ jobs:
 
       - name: Start Agnes from built image
         run: |
+          # Create empty .env (docker-compose.yml requires env_file: .env, gitignored)
+          touch .env
           # Use prod compose (GHCR images) + CI overlay (test secrets)
           export AGNES_TAG="${{ needs.build-and-push.outputs.image_tag }}"
           docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.ci.yml up -d app

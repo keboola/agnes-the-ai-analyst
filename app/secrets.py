@@ -15,7 +15,10 @@ def _load_or_generate(env_var: str, file_name: str) -> str:
     data_dir = Path(os.environ.get("DATA_DIR", "./data"))
     secret_path = data_dir / "state" / file_name
     if secret_path.exists():
-        return secret_path.read_text().strip()
+        val = secret_path.read_text().strip()
+        if val:
+            return val
+        logger.warning("Secret file %s is empty, regenerating", secret_path)
     secret_path.parent.mkdir(parents=True, exist_ok=True)
     val = secrets.token_hex(32)
     secret_path.write_text(val)
