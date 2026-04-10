@@ -1,11 +1,9 @@
 """Catalog endpoints — table profiles, metrics."""
 
 import json
-import re
 
 from fastapi import APIRouter, Depends, HTTPException
 import duckdb
-import yaml
 
 from app.auth.dependencies import get_current_user, _get_db
 from app.utils import get_data_dir as _get_data_dir
@@ -70,30 +68,15 @@ async def list_catalog_tables(
     return {"tables": tables, "count": len(tables)}
 
 
-@router.get("/metrics/{metric_path:path}")
+@router.get("/metrics/{metric_path:path}", deprecated=True)
 async def get_metric(
     metric_path: str,
     user: dict = Depends(get_current_user),
 ):
-    """Get a metric YAML definition parsed as structured JSON."""
-    if not re.match(r"^[a-z_]+/[a-z_]+\.yml$", metric_path):
-        raise HTTPException(status_code=400, detail="Invalid metric path")
-
-    docs_dir = _get_data_dir() / "docs" / "metrics"
-    file_path = docs_dir / metric_path
-
-    if not file_path.is_file():
-        raise HTTPException(status_code=404, detail="Metric file not found")
-
-    # Security: ensure path doesn't escape docs dir
-    if not file_path.resolve().is_relative_to(docs_dir.resolve()):
-        raise HTTPException(status_code=400, detail="Invalid path")
-
-    try:
-        content = yaml.safe_load(file_path.read_text())
-        return content
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error parsing metric: {e}")
+    """Deprecated: use GET /api/metrics/{metric_id} instead."""
+    from fastapi.responses import RedirectResponse
+    metric_id = metric_path.replace(".yml", "")
+    return RedirectResponse(url=f"/api/metrics/{metric_id}", status_code=301)
 
 
 @router.post("/profile/{table_name}/refresh")
