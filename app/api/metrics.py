@@ -1,9 +1,12 @@
 """Metrics API endpoints — CRUD for metric definitions stored in DuckDB."""
 
+import os
+import tempfile
 from typing import List, Optional
 
 import duckdb
-from fastapi import APIRouter, Depends, HTTPException
+import yaml
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from app.auth.dependencies import get_current_user, require_admin, _get_db
@@ -106,3 +109,24 @@ async def delete_metric(
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Metric '{metric_id}' not found")
     return {"status": "deleted", "id": metric_id}
+
+
+@router.post("/api/admin/metrics/import", status_code=200)
+async def import_metrics(
+    file: UploadFile = File(...),
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Import metrics from uploaded YAML file."""
+    content = await file.read()
+
+    with tempfile.NamedTemporaryFile(suffix=".yml", delete=False, mode="wb") as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    try:
+        repo = MetricRepository(conn)
+        count = repo.import_from_yaml(tmp_path)
+        return {"status": "imported", "count": count}
+    finally:
+        os.unlink(tmp_path)

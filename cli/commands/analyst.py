@@ -1,12 +1,15 @@
 """Analyst bootstrap commands — da analyst setup, da analyst status."""
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
 import typer
+
+_SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
 analyst_app = typer.Typer(help="Analyst workspace bootstrap and status")
 
@@ -59,6 +62,17 @@ def _connect_to_instance(server_url: str) -> str:
         )
         resp.raise_for_status()
         data = resp.json()
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 401:
+            typer.echo("Authentication failed: invalid credentials", err=True)
+        elif e.response.status_code == 403:
+            typer.echo("Authentication failed: account disabled or forbidden", err=True)
+        else:
+            typer.echo(f"Authentication failed: HTTP {e.response.status_code}", err=True)
+        raise typer.Exit(1)
+    except httpx.TimeoutException:
+        typer.echo(f"Authentication failed: connection timeout to {server_url}", err=True)
+        raise typer.Exit(1)
     except Exception as e:
         typer.echo(f"Authentication failed: {e}", err=True)
         raise typer.Exit(1)
@@ -199,9 +213,21 @@ def _initialize_duckdb(workspace: Path) -> int:
     conn = duckdb.connect(str(db_path))
     total_rows = 0
 
+    parquet_dir_resolved = parquet_dir.resolve()
     for pq_file in parquet_dir.glob("*.parquet"):
         view_name = pq_file.stem
-        abs_path = str(pq_file.resolve())
+        # Validate path is within the expected parquet directory (no path traversal)
+        try:
+            pq_resolved = pq_file.resolve()
+            pq_resolved.relative_to(parquet_dir_resolved)
+        except ValueError:
+            typer.echo(f"  Warning: Skipping {pq_file.name}: path traversal detected", err=True)
+            continue
+        # Validate view name is a safe SQL identifier
+        if not _SAFE_IDENTIFIER.match(view_name):
+            typer.echo(f"  Warning: Skipping {pq_file.name}: unsafe view name", err=True)
+            continue
+        abs_path = str(pq_resolved)
         try:
             conn.execute(f'DROP VIEW IF EXISTS "{view_name}"')
             conn.execute(
@@ -284,6 +310,11 @@ def _generate_claude_md(
             "Personal notes for this workspace. Uploaded to the server on `da sync --upload-only`.\n",
             encoding="utf-8",
         )
+
+    settings_path = workspace / ".claude" / "settings.json"
+    if not settings_path.exists():
+        settings = {"model": "sonnet", "permissions": {"allow": ["Read", "Bash", "Grep", "Glob"]}}
+        settings_path.write_text(json.dumps(settings, indent=2))
 
 
 # ---------------------------------------------------------------------------

@@ -330,6 +330,17 @@ class TestMetricsAPI:
         assert data["count"] == 1
         assert data["metrics"][0]["category"] == "finance"
 
+    def test_import_metrics_yaml(self, seeded_client):
+        client, admin_token, _ = seeded_client
+        yaml_content = b"- name: test_metric\n  display_name: Test\n  category: test\n  sql: SELECT 1\n"
+        resp = client.post(
+            "/api/admin/metrics/import",
+            files={"file": ("test.yml", yaml_content, "application/x-yaml")},
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["count"] == 1
+
 
 class TestMetadataAPI:
     def test_get_metadata_empty(self, seeded_client):
