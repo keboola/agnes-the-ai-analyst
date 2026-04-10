@@ -6,6 +6,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf 
 # Install uv for fast dependency management
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
+ARG AGNES_VERSION=dev
+ARG RELEASE_CHANNEL=dev
+ENV AGNES_VERSION=${AGNES_VERSION}
+ENV RELEASE_CHANNEL=${RELEASE_CHANNEL}
+
 WORKDIR /app
 
 # Copy application code

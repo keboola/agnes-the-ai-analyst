@@ -1,6 +1,6 @@
 # Agnes AI Data Analyst — Development Makefile
 
-.PHONY: help test lint dev docker
+.PHONY: help test lint dev docker update-openapi-snapshot
 
 help:
 	@echo "Available targets:"
@@ -20,3 +20,7 @@ docker:
 
 lint:
 	@ruff check . 2>/dev/null || echo "ruff not installed: pip install ruff"
+
+update-openapi-snapshot:
+	TESTING=1 python scripts/generate_openapi.py > tests/snapshots/openapi.json
+	@echo "Snapshot updated. Review diff and commit."

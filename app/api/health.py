@@ -1,11 +1,13 @@
 """Health check endpoint — structured diagnostics for AI agents."""
 
+import os
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends
 import duckdb
 
 from app.auth.dependencies import _get_db
+from src.db import SCHEMA_VERSION
 from src.repositories.sync_state import SyncStateRepository
 
 router = APIRouter(tags=["health"])
@@ -69,6 +71,9 @@ async def health_check(conn: duckdb.DuckDBPyConnection = Depends(_get_db)):
 
     return {
         "status": overall,
+        "version": os.environ.get("AGNES_VERSION", "dev"),
+        "channel": os.environ.get("RELEASE_CHANNEL", "dev"),
+        "schema_version": SCHEMA_VERSION,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "services": checks,
     }

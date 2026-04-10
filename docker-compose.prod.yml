@@ -1,17 +1,18 @@
 # Production override — uses pre-built GHCR image instead of local build.
 # Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# Override tag: AGNES_TAG=stable-2026.04.3 docker compose -f ... up -d
 services:
   app:
-    image: ghcr.io/keboola/agnes-the-ai-analyst:latest
+    image: ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}
   scheduler:
-    image: ghcr.io/keboola/agnes-the-ai-analyst:latest
+    image: ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}
   extract:
-    image: ghcr.io/keboola/agnes-the-ai-analyst:latest
+    image: ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}
   telegram-bot:
-    image: ghcr.io/keboola/agnes-the-ai-analyst:latest
+    image: ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}
   ws-gateway:
-    image: ghcr.io/keboola/agnes-the-ai-analyst:latest
+    image: ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}
   corporate-memory:
-    image: ghcr.io/keboola/agnes-the-ai-analyst:latest
+    image: ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}
   session-collector:
-    image: ghcr.io/keboola/agnes-the-ai-analyst:latest
+    image: ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}

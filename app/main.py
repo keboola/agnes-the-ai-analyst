@@ -48,8 +48,8 @@ def create_app() -> FastAPI:
     )
 
     # Session middleware (required for OAuth state)
-    import secrets as _secrets
-    session_secret = os.environ.get("SESSION_SECRET", os.environ.get("JWT_SECRET_KEY", _secrets.token_hex(32)))
+    from app.secrets import get_session_secret
+    session_secret = get_session_secret()
     app.add_middleware(SessionMiddleware, secret_key=session_secret)
 
     # CORS for CLI and external clients
@@ -62,6 +62,14 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # Load .env_overlay (persisted by /api/admin/configure)
+    _overlay = Path(os.environ.get("DATA_DIR", "./data")) / "state" / ".env_overlay"
+    if _overlay.exists():
+        for line in _overlay.read_text().splitlines():
+            if "=" in line and not line.startswith("#"):
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip())
+
     # Load instance config on startup
     try:
         from app.instance_config import load_instance_config
@@ -69,6 +77,15 @@ def create_app() -> FastAPI:
         logger.info("Instance config loaded")
     except Exception as e:
         logger.warning(f"Could not load instance config: {e}")
+
+    # Startup banner
+    from src.db import SCHEMA_VERSION
+    logger.info(
+        "Agnes %s | channel: %s | schema v%s",
+        os.environ.get("AGNES_VERSION", "dev"),
+        os.environ.get("RELEASE_CHANNEL", "dev"),
+        SCHEMA_VERSION,
+    )
 
     # Seed admin user for testing/CI (when SEED_ADMIN_EMAIL is set)
     seed_email = os.environ.get("SEED_ADMIN_EMAIL")
