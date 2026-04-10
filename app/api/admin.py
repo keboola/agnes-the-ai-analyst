@@ -66,7 +66,7 @@ async def discover_tables(
         if source_type == "keboola":
             from connectors.keboola.client import KeboolaClient
             from app.instance_config import get_value
-            url = get_value("data_source", "keboola", "url", default="")
+            url = get_value("data_source", "keboola", "stack_url", default="")
             token_env = get_value("data_source", "keboola", "token_env", default="KEBOOLA_STORAGE_TOKEN")
             token = os.environ.get(token_env, "") if token_env else ""
             if not token:
@@ -182,7 +182,7 @@ async def configure_instance(
         try:
             from connectors.keboola.client import KeboolaClient
             client = KeboolaClient(token=request.keboola_token, url=request.keboola_url)
-            client.verify_token()
+            client.test_connection()
         except Exception as e:
             logger.error("Keboola connection validation failed: %s", e)
             raise HTTPException(status_code=400, detail="Keboola connection failed. Check your token and URL.")
@@ -223,7 +223,7 @@ async def configure_instance(
     existing["data_source"] = {"type": request.data_source}
     if request.data_source == "keboola":
         existing["data_source"]["keboola"] = {
-            "url": request.keboola_url,
+            "stack_url": request.keboola_url,
             "token_env": "KEBOOLA_STORAGE_TOKEN",
         }
     elif request.data_source == "bigquery":
@@ -292,7 +292,7 @@ def _discover_and_register_tables(conn: duckdb.DuckDBPyConnection, user_email: s
 
     from connectors.keboola.client import KeboolaClient
     # Read from data_source.keboola (matches what /api/admin/configure writes)
-    url = get_value("data_source", "keboola", "url", default="")
+    url = get_value("data_source", "keboola", "stack_url", default="")
     token_env = get_value("data_source", "keboola", "token_env", default="KEBOOLA_STORAGE_TOKEN")
     token = os.environ.get(token_env, "") if token_env else ""
     if not token:
