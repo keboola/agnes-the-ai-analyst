@@ -250,3 +250,8 @@ class TestMetricsHelp:
         result = runner.invoke(app, ["analyst", "--help"])
         assert result.exit_code == 0
         assert "setup" in result.output
+
+    def test_analyst_status_help(self):
+        result = runner.invoke(app, ["analyst", "status", "--help"])
+        assert result.exit_code == 0
+        assert "freshness" in result.output.lower() or "workspace" in result.output.lower()
