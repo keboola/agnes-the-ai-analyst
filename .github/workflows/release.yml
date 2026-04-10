@@ -58,6 +58,7 @@ jobs:
 
           # Claim a unique version by pushing a git tag BEFORE building.
           # Retry up to 5 times if another CI run took our N.
+          TAG_CLAIMED=false
           for ATTEMPT in 1 2 3 4 5; do
             git fetch --tags --force
             EXISTING=$(git tag -l "*-${YEAR_MONTH}.*" | wc -l | tr -d ' ')
@@ -68,13 +69,19 @@ jobs:
             git tag -a "$TAG" -m "Release $TAG"
             if git push origin "$TAG" 2>/dev/null; then
               echo "Claimed tag $TAG (attempt $ATTEMPT)"
+              TAG_CLAIMED=true
               break
             else
               echo "Tag $TAG already exists, retrying... (attempt $ATTEMPT)"
               git tag -d "$TAG"
-              sleep 1
+              sleep 2
             fi
           done
+
+          if [ "$TAG_CLAIMED" != "true" ]; then
+            echo "::error::Failed to claim a unique version tag after 5 attempts"
+            exit 1
+          fi
 
           echo "channel=${CHANNEL}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
