@@ -58,7 +58,13 @@ CREATE TABLE metric_definitions (
 
 ### 1.2 Schema Versioning
 
-Added to `src/db.py` as `SCHEMA_VERSION = 4` migration (v3→v4). Migration creates both `metric_definitions` and `column_metadata` tables. Existing data untouched.
+Bump `SCHEMA_VERSION` from 3 to 4 in `src/db.py`. Implementation requires:
+
+1. Define `_V3_TO_V4_MIGRATIONS` list with CREATE TABLE statements for `metric_definitions` and `column_metadata`
+2. Extend the `_ensure_schema()` function's `if current < N` chain with `if current < 4: _apply(_V3_TO_V4_MIGRATIONS)`
+3. After table creation, auto-import YAML metrics if `docs/metrics/*/*.yml` files exist
+
+Follows the established pattern of `_V1_TO_V2_MIGRATIONS` and `_V2_TO_V3_MIGRATIONS`.
 
 ### 1.3 Repository (`src/repositories/metrics.py`)
 
@@ -87,12 +93,24 @@ Format remains compatible with the internal repo (same fields as `total_revenue.
 ### 1.5 Migration Script (`scripts/migrate_metrics_to_duckdb.py`)
 
 1. Scans `docs/metrics/*/*.yml` via glob
-2. Parses YAML, maps fields to DuckDB columns
-3. `sql_by_*` variants → `sql_variants` JSON
-4. INSERT OR REPLACE into `metric_definitions`
-5. Idempotent — safe to run repeatedly
+2. Parses YAML, maps fields to DuckDB columns using this mapping:
 
-Auto-runs during schema migration v3→v4 if YAML files exist.
+   | YAML field | DuckDB column | Notes |
+   |---|---|---|
+   | `name` | `name` | direct |
+   | `display_name` | `display_name` | direct |
+   | `category` | `category` | direct |
+   | `table` | `table_name` | **renamed** — YAML uses `table`, DuckDB uses `table_name` |
+   | `tables` | `tables` | direct (for JOIN metrics) |
+   | `sql_by_*` | `sql_variants` | all `sql_by_X` keys collected into JSON dict `{"by_X": "..."}` |
+   | all other fields | same name | direct mapping |
+
+   The `id` is computed as `"{category}/{name}"`.
+
+3. INSERT OR REPLACE into `metric_definitions`
+4. Idempotent — safe to run repeatedly
+
+Auto-runs during schema migration v3→v4 if YAML files exist. Also callable standalone: `python scripts/migrate_metrics_to_duckdb.py`
 
 ### 1.6 Metrics Index (`docs/metrics/metrics.yml`)
 
@@ -133,25 +151,34 @@ SQL queries are **generic templates** referencing typical tables (`orders`, `sub
 ```
 da metrics list [--category revenue]     # list from DuckDB
 da metrics show revenue/mrr              # detail
-da metrics import docs/metrics/          # YAML → DuckDB
+da metrics import docs/metrics/          # YAML → DuckDB (single file or directory)
 da metrics export [--dir ./export/]      # DuckDB → YAML
 da metrics validate                      # verify consistency (tables exist?)
-da metrics add                           # interactive wizard
 ```
+
+Note: `da metrics add --file metric.yml` imports a single YAML file. Interactive wizard deferred to a future iteration.
 
 ### 1.9 API Endpoints
 
 ```
-GET  /api/metrics                        → list categories and metrics
-GET  /api/metrics/{category}/{name}      → metric detail
-POST /api/admin/metrics                  → create/update metric
-DELETE /api/admin/metrics/{id}           → delete metric
-POST /api/admin/metrics/import           → YAML upload → DuckDB
+GET  /api/metrics                              → list categories and metrics
+GET  /api/metrics/{metric_id:path}             → metric detail (path param to handle slashes in ID)
+POST /api/admin/metrics                        → create/update metric
+DELETE /api/admin/metrics/{metric_id:path}     → delete metric
+POST /api/admin/metrics/import                 → YAML upload → DuckDB
 ```
+
+**Deprecation:** The existing `GET /api/catalog/metrics/{metric_path:path}` endpoint (serves raw YAML) will be deprecated. After migration, it redirects to the new DuckDB-backed `GET /api/metrics/{metric_id:path}` endpoint. Remove the old endpoint after one release cycle.
 
 ### 1.10 Profiler Integration
 
-`src/profiler.py` already has `load_metrics()` logic. Wire new `src/repositories/metrics.py` into profiler so `profiles.json` includes metrics assigned to tables. Read from DuckDB instead of scanning YAML.
+`src/profiler.py` has `load_metrics()` (line ~343) that reads YAML files directly. This must be refactored to read from DuckDB instead.
+
+**Specific changes required:**
+1. `load_metrics(metrics_yml_path)` at profiler lines ~1154 and ~1248 must be replaced with calls to `MetricRepository(conn).find_by_table()` or a new `get_table_map()` method
+2. The DuckDB connection must be threaded through to `run_profiler()` and `profile_single_table()` entry points
+3. The `metrics_map` dict structure (`{table_name: [metric_name, ...]}`) must remain the same for compatibility with the rest of the profiler
+4. If DuckDB has no metrics yet (empty table), fall back gracefully to empty map (no error)
 
 ### 1.11 CLAUDE.md Instructions
 
@@ -176,13 +203,16 @@ Add section to CLAUDE.md:
 
 ### 2.2 Flow: `da analyst setup`
 
-New command (subcommand of `da setup` or standalone `da analyst`):
+New top-level Typer command `da analyst` registered in `cli/main.py` (follows same pattern as existing `da sync`, `da admin`, etc.). Implemented in `cli/commands/analyst.py`.
+
+Use `--force` flag to re-run from scratch (cleans up partial state).
 
 ```
 Step 1: detect_existing_project
-  → looks for ./CLAUDE.md with Agnes identifier
+  → looks for ./CLAUDE.md with Agnes identifier string
   → if found: "Project already set up. Want to resync? (da sync)"
   → if not: continue
+  → if --force: skip detection, clean up and re-run
 
 Step 2: connect_to_instance
   → asks for instance URL (https://data.acme.com)
@@ -198,16 +228,19 @@ Step 3: create_workspace
     ./data/metadata/         ← profiles, schema
     ./user/artifacts/        ← analyst work output
     ./user/sessions/         ← Claude Code session logs
+    ./.claude/               ← Claude Code config
 
 Step 4: download_schema_and_metrics
-  → GET /api/data/tables → list of available tables
+  → GET /api/catalog/tables → list of available tables
   → GET /api/metrics → all metrics
-  → saves as local JSON/YAML cache
+  → saves as local JSON/YAML cache in data/metadata/
 
 Step 5: download_data
   → for each table the user has access to:
-    GET /api/data/table/{id}/download → parquet
+    GET /api/data/{table_id}/download → parquet
   → Rich progress bar
+  → on failure: logs which tables failed, continues with remaining
+  → partial state is resumable (re-run skips already-downloaded parquets by checking file existence + size)
 
 Step 6: initialize_duckdb
   → creates local analytics.duckdb
@@ -216,7 +249,7 @@ Step 6: initialize_duckdb
 
 Step 7: generate_claude_md
   → generates CLAUDE.md from template (see 2.3)
-  → creates empty CLAUDE.local.md
+  → creates empty .claude/CLAUDE.local.md (matches existing sync.py _upload() path)
   → writes .claude/settings.json
 
 Step 8: verify
@@ -249,7 +282,7 @@ Generated template for analysts, adapted from internal repo:
 ## Directory Structure
 - `data/` — read-only (downloaded from server)
 - `user/` — your workspace
-- `CLAUDE.local.md` — your personal notes (never overwritten)
+- `.claude/CLAUDE.local.md` — your personal notes (never overwritten, uploaded on sync)
 ```
 
 Placeholders `{instance_name}`, `{sync_interval}` substituted at generation time from instance config.
@@ -261,14 +294,13 @@ On every `da` CLI invocation:
 - If >24h: suggest `da sync`
 - If CLAUDE.md missing: suggest `da analyst setup`
 
-### 2.5 Sync Command Extensions
+### 2.5 Sync Command — Existing Capabilities
 
-Extensions to existing `da sync`:
-```
-da sync                    # download updated data from server
-da sync --docs-only        # just metadata and metrics (fast)
-da sync --upload-local     # upload CLAUDE.local.md to server (corporate memory)
-```
+The existing `da sync` already supports these flags (no changes needed):
+- `da sync --docs-only` — just metadata and metrics (already implemented)
+- `da sync --upload-only` — uploads sessions + `.claude/CLAUDE.local.md` to server (already implemented)
+
+No new flags required for the bootstrap flow.
 
 ---
 
@@ -299,7 +331,8 @@ da admin metadata discover [--table orders]
   → for each column without description:
     sample 500 rows → heuristics for basetype
     if Claude Code agent: generate descriptions
-  → saves as "proposal" JSON (same format as internal repo)
+  → saves as "proposal" JSON to ./data/metadata/proposals/ directory
+    (same format as internal repo: {project}_metadata_{YYYYMMDD_HHMMSS}.json)
 ```
 
 **Phase 2: Review** — user reviews proposals
@@ -349,7 +382,7 @@ POST /api/admin/metadata/{table_id}/push      → push to source system
 
 | Component | Files |
 |---|---|
-| **Metrics** | `src/repositories/metrics.py`, `src/metrics.py`, `cli/commands/metrics.py`, `app/api/metrics.py`, `scripts/migrate_metrics_to_duckdb.py`, 10-15 YAML in `docs/metrics/` |
+| **Metrics** | `src/repositories/metrics.py`, `cli/commands/metrics.py`, `app/api/metrics.py`, `scripts/migrate_metrics_to_duckdb.py`, 10-15 YAML in `docs/metrics/` |
 | **Bootstrap** | `cli/commands/analyst.py`, `config/claude_md_template.txt` |
 | **Metadata** | `src/repositories/column_metadata.py`, `app/api/metadata.py` (metadata commands added as subcommands of `da admin`) |
 
@@ -360,8 +393,9 @@ POST /api/admin/metadata/{table_id}/push      → push to source system
 | `src/db.py` | SCHEMA_VERSION=4, `metric_definitions` + `column_metadata` tables, v3→v4 migration |
 | `src/profiler.py` | Read metrics + column_metadata from DuckDB instead of YAML scan |
 | `app/main.py` | Register metrics + metadata routers |
-| `cli/main.py` | Register `metrics` + `analyst` commands |
-| `cli/commands/sync.py` | `--docs-only`, `--upload-local` flags |
+| `app/api/catalog.py` | Deprecate `GET /api/catalog/metrics/` → redirect to new metrics API |
+| `cli/main.py` | Register `metrics` + `analyst` top-level Typer commands |
+| `cli/commands/sync.py` | No changes needed (flags already exist) |
 | `CLAUDE.md` | Metrics workflow instructions |
 
 ### Schema Migration v3→v4
