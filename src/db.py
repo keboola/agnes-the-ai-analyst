@@ -269,8 +269,17 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             try:
                 db_path = Path(os.environ.get("DATA_DIR", "./data")) / "state" / "system.duckdb"
                 if db_path.exists():
+                    # Flush WAL to main DB file before copying
+                    try:
+                        conn.execute("CHECKPOINT")
+                    except Exception:
+                        pass  # CHECKPOINT may fail on read-only or in-memory DBs
                     snapshot = db_path.parent / "system.duckdb.pre-migrate"
                     shutil.copy2(str(db_path), str(snapshot))
+                    # Also copy WAL if it still exists (belt and suspenders)
+                    wal_path = Path(str(db_path) + ".wal")
+                    if wal_path.exists():
+                        shutil.copy2(str(wal_path), str(snapshot) + ".wal")
                     logger.info("Pre-migration snapshot saved: %s", snapshot)
             except Exception as e:
                 logger.warning("Could not create pre-migration snapshot: %s", e)

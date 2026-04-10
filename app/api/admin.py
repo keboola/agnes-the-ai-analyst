@@ -65,10 +65,12 @@ async def discover_tables(
 
         if source_type == "keboola":
             from connectors.keboola.client import KeboolaClient
-            import os
             from app.instance_config import get_value
-            url = get_value("keboola", "url", default="")
-            token = os.environ.get(get_value("keboola", "token_env", default="KEBOOLA_STORAGE_TOKEN"), "")
+            url = get_value("data_source", "keboola", "url", default="")
+            token_env = get_value("data_source", "keboola", "token_env", default="KEBOOLA_STORAGE_TOKEN")
+            token = os.environ.get(token_env, "") if token_env else ""
+            if not token:
+                token = os.environ.get("KEBOOLA_STORAGE_TOKEN", "")
             client = KeboolaClient(token=token, url=url)
             tables = client.discover_all_tables()
             return {"tables": tables, "count": len(tables), "source": "keboola"}
