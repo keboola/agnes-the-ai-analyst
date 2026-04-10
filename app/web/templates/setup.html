@@ -1,0 +1,261 @@
+{% extends "base_login.html" %}
+
+{% block title %}Setup - Agnes AI Data Analyst{% endblock %}
+
+{% block content %}
+<div class="login-page">
+    <div class="login-card-wrapper" style="max-width: 520px; margin: 40px auto; padding: 0 20px;">
+        <div class="login-card" style="max-width: 520px;">
+            <h2 id="wizard-title">Setup Agnes</h2>
+            <p class="login-description" id="wizard-description">
+                Create your admin account to get started.
+            </p>
+
+            <!-- Progress -->
+            <div style="display: flex; gap: 8px; margin-bottom: 24px;">
+                <div id="step-dot-1" style="flex: 1; height: 4px; border-radius: 2px; background: var(--primary, #2563eb);"></div>
+                <div id="step-dot-2" style="flex: 1; height: 4px; border-radius: 2px; background: #e5e7eb;"></div>
+                <div id="step-dot-3" style="flex: 1; height: 4px; border-radius: 2px; background: #e5e7eb;"></div>
+                <div id="step-dot-4" style="flex: 1; height: 4px; border-radius: 2px; background: #e5e7eb;"></div>
+            </div>
+
+            <!-- Status message -->
+            <div id="status-msg" style="display: none; padding: 10px 14px; border-radius: 6px; margin-bottom: 16px; font-size: 14px;"></div>
+
+            <!-- Step 1: Create Admin -->
+            <div id="step-1">
+                <form id="admin-form" onsubmit="return createAdmin(event)">
+                    <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">Email</label>
+                    <input type="email" id="admin-email" required placeholder="admin@company.com"
+                        style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 12px; font-size: 14px; box-sizing: border-box;">
+
+                    <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">Password</label>
+                    <input type="password" id="admin-password" required minlength="8" placeholder="Min. 8 characters"
+                        style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 16px; font-size: 14px; box-sizing: border-box;">
+
+                    <button type="submit" class="btn btn-primary" style="width: 100%;" id="btn-admin">
+                        Create Admin Account
+                    </button>
+                </form>
+            </div>
+
+            <!-- Step 2: Data Source -->
+            <div id="step-2" style="display: none;">
+                <form id="source-form" onsubmit="return configureSource(event)">
+                    <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">Data Source</label>
+                    <select id="data-source" onchange="toggleSourceFields()"
+                        style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 12px; font-size: 14px; box-sizing: border-box;">
+                        <option value="keboola">Keboola</option>
+                        <option value="bigquery">BigQuery</option>
+                        <option value="local">Local / CSV</option>
+                    </select>
+
+                    <div id="keboola-fields">
+                        <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">Keboola URL</label>
+                        <input type="url" id="keboola-url" placeholder="https://connection.keboola.com"
+                            style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 12px; font-size: 14px; box-sizing: border-box;">
+
+                        <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">Storage API Token</label>
+                        <input type="password" id="keboola-token" placeholder="Your Keboola storage token"
+                            style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 16px; font-size: 14px; box-sizing: border-box;">
+                    </div>
+
+                    <div id="bigquery-fields" style="display: none;">
+                        <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">GCP Project</label>
+                        <input type="text" id="bq-project" placeholder="my-gcp-project"
+                            style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 12px; font-size: 14px; box-sizing: border-box;">
+
+                        <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500;">Location</label>
+                        <input type="text" id="bq-location" value="us" placeholder="us"
+                            style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 16px; font-size: 14px; box-sizing: border-box;">
+                    </div>
+
+                    <button type="submit" class="btn btn-primary" style="width: 100%;" id="btn-source">
+                        Configure Data Source
+                    </button>
+                    <button type="button" onclick="skipToStep(4)" class="btn btn-secondary" style="width: 100%; margin-top: 8px;" id="btn-skip-source">
+                        Skip (configure later)
+                    </button>
+                </form>
+            </div>
+
+            <!-- Step 3: Discover Tables -->
+            <div id="step-3" style="display: none;">
+                <p style="font-size: 14px; color: #6b7280; margin-bottom: 16px;">
+                    Discover and register tables from your data source.
+                </p>
+                <button onclick="discoverTables()" class="btn btn-primary" style="width: 100%;" id="btn-discover">
+                    Discover Tables
+                </button>
+                <div id="discover-result" style="display: none; margin-top: 12px; padding: 12px; background: #f0fdf4; border-radius: 6px; font-size: 14px;"></div>
+                <button onclick="goToStep(4)" class="btn btn-primary" style="width: 100%; margin-top: 12px; display: none;" id="btn-next-sync">
+                    Continue
+                </button>
+            </div>
+
+            <!-- Step 4: First Sync & Done -->
+            <div id="step-4" style="display: none;">
+                <p style="font-size: 14px; color: #6b7280; margin-bottom: 16px;">
+                    Start the first data sync and go to your dashboard.
+                </p>
+                <button onclick="triggerSync()" class="btn btn-primary" style="width: 100%;" id="btn-sync">
+                    Start First Sync
+                </button>
+                <a href="/dashboard" class="btn btn-primary" style="width: 100%; margin-top: 12px; display: none; text-align: center; text-decoration: none;" id="btn-dashboard">
+                    Go to Dashboard
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+let token = '';
+const steps = {
+    1: { title: 'Setup Agnes', desc: 'Create your admin account to get started.' },
+    2: { title: 'Data Source', desc: 'Connect to your data source.' },
+    3: { title: 'Discover Tables', desc: 'Find and register tables from your data source.' },
+    4: { title: 'Almost Done', desc: 'Start syncing data and open your dashboard.' },
+};
+
+function showStatus(msg, type) {
+    const el = document.getElementById('status-msg');
+    el.textContent = msg;
+    el.style.display = 'block';
+    el.style.background = type === 'error' ? '#fef2f2' : '#f0fdf4';
+    el.style.color = type === 'error' ? '#dc2626' : '#16a34a';
+}
+
+function hideStatus() {
+    document.getElementById('status-msg').style.display = 'none';
+}
+
+function goToStep(n) {
+    hideStatus();
+    for (let i = 1; i <= 4; i++) {
+        document.getElementById('step-' + i).style.display = i === n ? 'block' : 'none';
+        document.getElementById('step-dot-' + i).style.background = i <= n ? 'var(--primary, #2563eb)' : '#e5e7eb';
+    }
+    document.getElementById('wizard-title').textContent = steps[n].title;
+    document.getElementById('wizard-description').textContent = steps[n].desc;
+}
+
+function skipToStep(n) {
+    goToStep(n);
+}
+
+function toggleSourceFields() {
+    const src = document.getElementById('data-source').value;
+    document.getElementById('keboola-fields').style.display = src === 'keboola' ? 'block' : 'none';
+    document.getElementById('bigquery-fields').style.display = src === 'bigquery' ? 'block' : 'none';
+}
+
+async function apiCall(url, body) {
+    const headers = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = 'Bearer ' + token;
+    const resp = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || 'Request failed');
+    return data;
+}
+
+async function createAdmin(e) {
+    e.preventDefault();
+    const btn = document.getElementById('btn-admin');
+    btn.disabled = true;
+    btn.textContent = 'Creating...';
+    try {
+        const data = await apiCall('/auth/bootstrap', {
+            email: document.getElementById('admin-email').value,
+            password: document.getElementById('admin-password').value,
+        });
+        token = data.access_token;
+        sessionStorage.setItem('setup_token', token);
+        goToStep(2);
+    } catch (err) {
+        showStatus(err.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Create Admin Account';
+    }
+    return false;
+}
+
+async function configureSource(e) {
+    e.preventDefault();
+    const btn = document.getElementById('btn-source');
+    btn.disabled = true;
+    btn.textContent = 'Verifying...';
+    try {
+        const src = document.getElementById('data-source').value;
+        const body = { data_source: src };
+        if (src === 'keboola') {
+            body.keboola_url = document.getElementById('keboola-url').value;
+            body.keboola_token = document.getElementById('keboola-token').value;
+        } else if (src === 'bigquery') {
+            body.bigquery_project = document.getElementById('bq-project').value;
+            body.bigquery_location = document.getElementById('bq-location').value;
+        }
+        await apiCall('/api/admin/configure', body);
+        showStatus('Connection verified!', 'success');
+        if (src === 'local') {
+            goToStep(4);
+        } else {
+            goToStep(3);
+        }
+    } catch (err) {
+        showStatus(err.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Configure Data Source';
+    }
+    return false;
+}
+
+async function discoverTables() {
+    const btn = document.getElementById('btn-discover');
+    btn.disabled = true;
+    btn.textContent = 'Discovering...';
+    try {
+        const headers = { 'Content-Type': 'application/json' };
+        if (token) headers['Authorization'] = 'Bearer ' + token;
+        const resp = await fetch('/api/admin/discover-and-register', { method: 'POST', headers });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.detail || 'Discovery failed');
+
+        const el = document.getElementById('discover-result');
+        el.style.display = 'block';
+        el.textContent = `Registered ${data.registered} tables, skipped ${data.skipped}.`;
+        document.getElementById('btn-next-sync').style.display = 'block';
+        btn.style.display = 'none';
+    } catch (err) {
+        showStatus(err.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Discover Tables';
+    }
+}
+
+async function triggerSync() {
+    const btn = document.getElementById('btn-sync');
+    btn.disabled = true;
+    btn.textContent = 'Starting sync...';
+    try {
+        const headers = {};
+        if (token) headers['Authorization'] = 'Bearer ' + token;
+        await fetch('/api/sync/trigger', { method: 'POST', headers });
+        btn.style.display = 'none';
+        document.getElementById('btn-dashboard').style.display = 'block';
+        showStatus('Sync started! You can now go to your dashboard.', 'success');
+    } catch (err) {
+        showStatus(err.message, 'error');
+        btn.disabled = false;
+        btn.textContent = 'Start First Sync';
+    }
+}
+
+// Restore token from sessionStorage (in case of page reload)
+const savedToken = sessionStorage.getItem('setup_token');
+if (savedToken) token = savedToken;
+</script>
+{% endblock %}

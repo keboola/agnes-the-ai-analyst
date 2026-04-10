@@ -120,6 +120,7 @@ _URL_MAP = {
     "email_auth.login_email_form": "/login/email",
     "email_auth.send_magic_link": "/auth/email/send-link",
     "register": "/auth/password/setup",
+    "setup": "/setup",
 }
 
 
@@ -175,6 +176,18 @@ async def index(request: Request, user: Optional[dict] = Depends(get_optional_us
     if user:
         return RedirectResponse(url="/dashboard", status_code=302)
     return RedirectResponse(url="/login", status_code=302)
+
+
+@router.get("/setup", response_class=HTMLResponse)
+async def setup_wizard(request: Request, conn: duckdb.DuckDBPyConnection = Depends(_get_db)):
+    """First-time setup wizard. Redirects to dashboard if users already exist."""
+    try:
+        user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        if user_count > 0:
+            return RedirectResponse(url="/dashboard", status_code=302)
+    except Exception:
+        pass  # No users table yet — show setup
+    return templates.TemplateResponse(request, "setup.html", _build_context(request))
 
 
 @router.get("/login", response_class=HTMLResponse)

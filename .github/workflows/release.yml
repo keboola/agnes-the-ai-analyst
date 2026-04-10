@@ -1,0 +1,130 @@
+name: Release
+
+on:
+  push:
+    branches: [main, "feature/**"]
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install dependencies
+        run: uv pip install --system ".[dev]"
+
+      - name: Run tests
+        run: pytest tests/ -v --tb=short
+        env:
+          TESTING: "1"
+
+  build-and-push:
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.versioned_tag }}
+      version: ${{ steps.meta.outputs.version }}
+      channel: ${{ steps.meta.outputs.channel }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Determine channel and version
+        id: meta
+        run: |
+          YEAR_MONTH=$(date +%Y.%m)
+
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            CHANNEL="stable"
+          else
+            CHANNEL="dev"
+          fi
+
+          # Count existing tags for this channel+month to get next N
+          EXISTING=$(git tag -l "${CHANNEL}-${YEAR_MONTH}.*" | wc -l | tr -d ' ')
+          N=$((EXISTING + 1))
+          VERSION="${YEAR_MONTH}.${N}"
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+
+          echo "channel=${CHANNEL}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "versioned_tag=${CHANNEL}-${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+          echo "Channel: ${CHANNEL}"
+          echo "Version: ${VERSION}"
+          echo "Versioned tag: ${CHANNEL}-${VERSION}"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          push: true
+          build-args: |
+            AGNES_VERSION=${{ steps.meta.outputs.version }}
+            RELEASE_CHANNEL=${{ steps.meta.outputs.channel }}
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.channel }}
+            ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.versioned_tag }}
+            ghcr.io/${{ github.repository }}:sha-${{ steps.meta.outputs.short_sha }}
+
+      - name: Create git tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          TAG="${{ steps.meta.outputs.versioned_tag }}"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG" || echo "Tag $TAG already exists, skipping"
+
+  smoke-test:
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Start Agnes from built image
+        run: |
+          # Override image to use the just-built version
+          export AGNES_IMAGE="ghcr.io/${{ github.repository }}:${{ needs.build-and-push.outputs.image_tag }}"
+          sed -i "s|build: \.|image: ${AGNES_IMAGE}|g" docker-compose.yml
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d
+          # Wait for healthy (max 60s)
+          timeout 60 bash -c 'until curl -sf http://localhost:8000/api/health | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d[\"status\"]!=\"unhealthy\" else 1)"; do sleep 3; done'
+
+      - name: Run smoke tests
+        run: bash scripts/smoke-test.sh http://localhost:8000
+
+      - name: Collect logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml logs > smoke-test-logs.txt
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-logs
+          path: smoke-test-logs.txt
+
+      - name: Teardown
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml down -v
