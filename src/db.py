@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -168,6 +168,42 @@ CREATE TABLE IF NOT EXISTS access_requests (
     reviewed_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT current_timestamp
 );
+
+CREATE TABLE IF NOT EXISTS metric_definitions (
+    id              VARCHAR PRIMARY KEY,
+    name            VARCHAR NOT NULL,
+    display_name    VARCHAR NOT NULL,
+    category        VARCHAR NOT NULL,
+    description     TEXT,
+    type            VARCHAR DEFAULT 'sum',
+    unit            VARCHAR,
+    grain           VARCHAR DEFAULT 'monthly',
+    table_name      VARCHAR,
+    tables          VARCHAR[],
+    expression      VARCHAR,
+    time_column     VARCHAR,
+    dimensions      VARCHAR[],
+    filters         VARCHAR[],
+    synonyms        VARCHAR[],
+    notes           VARCHAR[],
+    sql             TEXT NOT NULL,
+    sql_variants    JSON,
+    validation      JSON,
+    source          VARCHAR DEFAULT 'manual',
+    created_at      TIMESTAMP DEFAULT current_timestamp,
+    updated_at      TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS column_metadata (
+    table_id        VARCHAR NOT NULL,
+    column_name     VARCHAR NOT NULL,
+    basetype        VARCHAR,
+    description     VARCHAR,
+    confidence      VARCHAR DEFAULT 'manual',
+    source          VARCHAR DEFAULT 'manual',
+    updated_at      TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (table_id, column_name)
+);
 """
 
 
@@ -259,6 +295,47 @@ _V2_TO_V3_MIGRATIONS = [
     "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS is_public BOOLEAN DEFAULT true",
 ]
 
+_V3_TO_V4_MIGRATIONS = [
+    """
+    CREATE TABLE IF NOT EXISTS metric_definitions (
+        id              VARCHAR PRIMARY KEY,
+        name            VARCHAR NOT NULL,
+        display_name    VARCHAR NOT NULL,
+        category        VARCHAR NOT NULL,
+        description     TEXT,
+        type            VARCHAR DEFAULT 'sum',
+        unit            VARCHAR,
+        grain           VARCHAR DEFAULT 'monthly',
+        table_name      VARCHAR,
+        tables          VARCHAR[],
+        expression      VARCHAR,
+        time_column     VARCHAR,
+        dimensions      VARCHAR[],
+        filters         VARCHAR[],
+        synonyms        VARCHAR[],
+        notes           VARCHAR[],
+        sql             TEXT NOT NULL,
+        sql_variants    JSON,
+        validation      JSON,
+        source          VARCHAR DEFAULT 'manual',
+        created_at      TIMESTAMP DEFAULT current_timestamp,
+        updated_at      TIMESTAMP DEFAULT current_timestamp
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS column_metadata (
+        table_id        VARCHAR NOT NULL,
+        column_name     VARCHAR NOT NULL,
+        basetype        VARCHAR,
+        description     VARCHAR,
+        confidence      VARCHAR DEFAULT 'manual',
+        source          VARCHAR DEFAULT 'manual',
+        updated_at      TIMESTAMP DEFAULT current_timestamp,
+        PRIMARY KEY (table_id, column_name)
+    )
+    """,
+]
+
 
 def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
     """Create tables if they don't exist. Apply migrations if schema version changed."""
@@ -295,6 +372,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                     conn.execute(sql)
             if current < 3:
                 for sql in _V2_TO_V3_MIGRATIONS:
+                    conn.execute(sql)
+            if current < 4:
+                for sql in _V3_TO_V4_MIGRATIONS:
                     conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
