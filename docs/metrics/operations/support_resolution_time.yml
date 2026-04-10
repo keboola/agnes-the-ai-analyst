@@ -1,0 +1,36 @@
+name: support_resolution_time
+display_name: Support Resolution Time
+category: operations
+type: avg
+unit: hours
+grain: monthly
+table: tickets
+expression: "AVG(resolution_hours)"
+time_column: created_at
+description: "Average Support Resolution Time — the mean time in hours from ticket creation to resolution. Key support quality and efficiency metric."
+dimensions:
+  - priority
+  - category
+synonyms:
+  - mean_resolution_time
+  - avg_resolution_time
+  - time_to_resolve
+  - ttr
+notes:
+  - "Resolution time = resolved_at - created_at, in hours"
+  - "Exclude tickets still open (no resolved_at)"
+  - "SLA targets vary by priority: Critical <4h, High <24h, Normal <72h"
+  - "Consider p50/p95 in addition to mean to detect outliers"
+sql: |
+  SELECT
+      DATE_TRUNC('month', created_at) AS month,
+      priority,
+      category,
+      COUNT(*) AS tickets_resolved,
+      ROUND(AVG(resolution_hours), 2) AS avg_resolution_hours,
+      ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY resolution_hours), 2) AS p50_hours,
+      ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY resolution_hours), 2) AS p95_hours
+  FROM tickets
+  WHERE resolved_at IS NOT NULL
+  GROUP BY 1, 2, 3
+  ORDER BY 1, priority, avg_resolution_hours DESC
