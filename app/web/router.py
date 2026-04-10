@@ -184,7 +184,7 @@ async def setup_wizard(request: Request, conn: duckdb.DuckDBPyConnection = Depen
     try:
         user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         if user_count > 0:
-            return RedirectResponse(url="/dashboard", status_code=302)
+            return RedirectResponse(url="/login", status_code=302)
     except Exception:
         pass  # No users table yet — show setup
     return templates.TemplateResponse(request, "setup.html", _build_context(request))
