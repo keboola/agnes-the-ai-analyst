@@ -245,3 +245,8 @@ class TestMetricsHelp:
         assert "list" in result.output
         assert "show" in result.output
         assert "import" in result.output
+
+    def test_analyst_help(self):
+        result = runner.invoke(app, ["analyst", "--help"])
+        assert result.exit_code == 0
+        assert "setup" in result.output
