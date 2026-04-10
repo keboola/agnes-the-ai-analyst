@@ -233,3 +233,99 @@ class TestUpload:
         )
         assert resp.status_code == 200
         assert resp.json()["user"] == "analyst@acme.com"
+
+
+# ---- Metrics API ----
+
+SAMPLE_METRIC = {
+    "id": "finance/mrr",
+    "name": "mrr",
+    "display_name": "Monthly Recurring Revenue",
+    "category": "finance",
+    "sql": "SELECT SUM(amount) FROM subscriptions WHERE active = true",
+}
+
+
+class TestMetricsAPI:
+    def test_list_metrics_empty(self, seeded_client):
+        client, admin_token, _ = seeded_client
+        headers = {"Authorization": f"Bearer {admin_token}"}
+        resp = client.get("/api/metrics", headers=headers)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["count"] == 0
+        assert data["metrics"] == []
+
+    def test_create_and_list_metric(self, seeded_client):
+        client, admin_token, _ = seeded_client
+        headers = {"Authorization": f"Bearer {admin_token}"}
+
+        resp = client.post("/api/admin/metrics", json=SAMPLE_METRIC, headers=headers)
+        assert resp.status_code == 201
+
+        resp = client.get("/api/metrics", headers=headers)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["count"] == 1
+        assert data["metrics"][0]["id"] == "finance/mrr"
+
+    def test_get_metric_detail(self, seeded_client):
+        client, admin_token, _ = seeded_client
+        headers = {"Authorization": f"Bearer {admin_token}"}
+
+        client.post("/api/admin/metrics", json=SAMPLE_METRIC, headers=headers)
+
+        resp = client.get("/api/metrics/finance/mrr", headers=headers)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["id"] == "finance/mrr"
+        assert data["display_name"] == "Monthly Recurring Revenue"
+        assert data["category"] == "finance"
+
+    def test_get_metric_not_found(self, seeded_client):
+        client, admin_token, _ = seeded_client
+        headers = {"Authorization": f"Bearer {admin_token}"}
+
+        resp = client.get("/api/metrics/nonexistent/metric", headers=headers)
+        assert resp.status_code == 404
+
+    def test_delete_metric(self, seeded_client):
+        client, admin_token, _ = seeded_client
+        headers = {"Authorization": f"Bearer {admin_token}"}
+
+        client.post("/api/admin/metrics", json=SAMPLE_METRIC, headers=headers)
+
+        resp = client.delete("/api/admin/metrics/finance/mrr", headers=headers)
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "deleted"
+
+        resp = client.get("/api/metrics/finance/mrr", headers=headers)
+        assert resp.status_code == 404
+
+    def test_analyst_cannot_create_metric(self, seeded_client):
+        client, _, analyst_token = seeded_client
+        headers = {"Authorization": f"Bearer {analyst_token}"}
+
+        resp = client.post("/api/admin/metrics", json=SAMPLE_METRIC, headers=headers)
+        assert resp.status_code == 403
+
+    def test_list_metrics_filter_by_category(self, seeded_client):
+        client, admin_token, _ = seeded_client
+        headers = {"Authorization": f"Bearer {admin_token}"}
+
+        finance_metric = {**SAMPLE_METRIC}
+        support_metric = {
+            "id": "support/tickets",
+            "name": "tickets",
+            "display_name": "Open Tickets",
+            "category": "support",
+            "sql": "SELECT COUNT(*) FROM tickets WHERE status = 'open'",
+        }
+        client.post("/api/admin/metrics", json=finance_metric, headers=headers)
+        client.post("/api/admin/metrics", json=support_metric, headers=headers)
+
+        resp = client.get("/api/metrics?category=finance", headers=headers)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["count"] == 1
+        assert data["metrics"][0]["category"] == "finance"
