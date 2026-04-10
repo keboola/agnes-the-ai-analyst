@@ -289,8 +289,10 @@ def _discover_and_register_tables(conn: duckdb.DuckDBPyConnection, user_email: s
         return {"registered": 0, "skipped": 0, "errors": 0, "tables": [], "source": source_type}
 
     from connectors.keboola.client import KeboolaClient
-    url = get_value("keboola", "url", default="")
-    token = os.environ.get(get_value("keboola", "token_env", default="KEBOOLA_STORAGE_TOKEN"), "")
+    # Read from data_source.keboola (matches what /api/admin/configure writes)
+    url = get_value("data_source", "keboola", "url", default="")
+    token_env = get_value("data_source", "keboola", "token_env", default="KEBOOLA_STORAGE_TOKEN")
+    token = os.environ.get(token_env, "") if token_env else ""
     if not token:
         token = os.environ.get("KEBOOLA_STORAGE_TOKEN", "")
 

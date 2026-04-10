@@ -42,32 +42,48 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Determine channel and version
+      - name: Claim version tag (with retry to avoid race conditions)
         id: meta
         run: |
-          YEAR_MONTH=$(date +%Y.%m)
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
+          YEAR_MONTH=$(date +%Y.%m)
           if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
             CHANNEL="stable"
           else
             CHANNEL="dev"
           fi
-
-          # Count existing tags GLOBALLY across all channels for this month
-          # (spec requires unique N per month: dev-2026.04.1 and stable-2026.04.2, never both .1)
-          EXISTING=$(git tag -l "*-${YEAR_MONTH}.*" | wc -l | tr -d ' ')
-          N=$((EXISTING + 1))
-          VERSION="${YEAR_MONTH}.${N}"
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+
+          # Claim a unique version by pushing a git tag BEFORE building.
+          # Retry up to 5 times if another CI run took our N.
+          for ATTEMPT in 1 2 3 4 5; do
+            git fetch --tags --force
+            EXISTING=$(git tag -l "*-${YEAR_MONTH}.*" | wc -l | tr -d ' ')
+            N=$((EXISTING + 1))
+            VERSION="${YEAR_MONTH}.${N}"
+            TAG="${CHANNEL}-${VERSION}"
+
+            git tag -a "$TAG" -m "Release $TAG"
+            if git push origin "$TAG" 2>/dev/null; then
+              echo "Claimed tag $TAG (attempt $ATTEMPT)"
+              break
+            else
+              echo "Tag $TAG already exists, retrying... (attempt $ATTEMPT)"
+              git tag -d "$TAG"
+              sleep 1
+            fi
+          done
 
           echo "channel=${CHANNEL}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "versioned_tag=${CHANNEL}-${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "versioned_tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
 
           echo "Channel: ${CHANNEL}"
           echo "Version: ${VERSION}"
-          echo "Versioned tag: ${CHANNEL}-${VERSION}"
+          echo "Versioned tag: ${TAG}"
 
       - name: Log in to GHCR
         uses: docker/login-action@v4
@@ -87,14 +103,6 @@ jobs:
             ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.channel }}
             ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.versioned_tag }}
             ghcr.io/${{ github.repository }}:sha-${{ steps.meta.outputs.short_sha }}
-
-      - name: Create git tag
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          TAG="${{ steps.meta.outputs.versioned_tag }}"
-          git tag -a "$TAG" -m "Release $TAG"
-          git push origin "$TAG" || echo "Tag $TAG already exists, skipping"
 
   smoke-test:
     needs: build-and-push
