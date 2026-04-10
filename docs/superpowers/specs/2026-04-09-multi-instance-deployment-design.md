@@ -27,19 +27,21 @@ No manual release decisions. Every merge to main is a release.
 
 ### Three channels
 
-| Channel | Docker tag | Source | Who uses it |
-|---------|-----------|--------|-------------|
-| **dev** | `:dev`, `:dev-sha-abc1234` | Every CI-passing push on any feature branch | Developers, PR testing |
-| **stable** | `:stable`, `:2026.04.N` | Every merge to main + CI pass | All production customers |
-| **deprecated** | `:deprecated-2026.04.N` | Previous stable after breaking change or failed smoke test | Grace period (30 days) |
+| Channel | Floating tag | Versioned tag | Source | Who uses it |
+|---------|-------------|---------------|--------|-------------|
+| **dev** | `:dev` | `:dev-2026.04.N` | Every CI-passing push on any feature branch | Developers, PR testing |
+| **stable** | `:stable` | `:stable-2026.04.N` | Every merge to main + CI pass | All production customers |
+| **deprecated** | — | `:deprecated-2026.04.N` | Previous stable after breaking change or failed smoke test | Grace period (30 days) |
+
+Every image also gets a `:sha-abc1234` tag for exact commit traceability.
 
 ### Tag lifecycle
 
 ```
-feature branch push → CI ✅ → :dev + :dev-sha-abc1234
+feature branch push → CI ✅ → :dev + :dev-2026.04.N + :sha-abc1234
                          ❌ → nothing pushed
 
-merge to main       → CI ✅ → :stable + :2026.04.N + :sha-abc1234
+merge to main       → CI ✅ → :stable + :stable-2026.04.N + :sha-abc1234
                          ❌ → merge blocked (CI required)
                                 │
                                 ▼
@@ -50,6 +52,21 @@ merge to main       → CI ✅ → :stable + :2026.04.N + :sha-abc1234
                               broken build tagged :deprecated-2026.04.N
 ```
 
+### Version numbering
+
+CalVer `YYYY.MM.N` where N is a global auto-incrementing counter per month across both channels.
+
+Example timeline:
+```
+Apr 8  feature/foo push     → :dev-2026.04.1
+Apr 8  feature/bar push     → :dev-2026.04.2
+Apr 8  merge foo to main    → :stable-2026.04.3
+Apr 9  feature/baz push     → :dev-2026.04.4
+Apr 9  merge bar to main    → :stable-2026.04.5
+```
+
+This avoids confusion — version `2026.04.3` exists only once, in one channel.
+
 ### Customer pins version
 
 ```yaml
@@ -58,8 +75,14 @@ merge to main       → CI ✅ → :stable + :2026.04.N + :sha-abc1234
 # Auto-update (recommended): always latest stable
 image: ghcr.io/keboola/agnes-the-ai-analyst:stable
 
-# Pinned: specific release, manual update
-image: ghcr.io/keboola/agnes-the-ai-analyst:2026.04.3
+# Pinned: specific stable release, manual update
+image: ghcr.io/keboola/agnes-the-ai-analyst:stable-2026.04.3
+
+# Testing: latest dev
+image: ghcr.io/keboola/agnes-the-ai-analyst:dev
+
+# Testing: specific dev build
+image: ghcr.io/keboola/agnes-the-ai-analyst:dev-2026.04.2
 ```
 
 ### Main = stable
