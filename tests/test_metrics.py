@@ -396,6 +396,21 @@ class TestMetricRepositoryImport:
         assert len(all_metrics) == 2
 
 
+class TestStarterPack:
+    def test_import_starter_pack(self, db_conn):
+        from src.repositories.metrics import MetricRepository
+        from pathlib import Path
+        repo = MetricRepository(db_conn)
+        starter_dir = Path(__file__).parent.parent / "docs" / "metrics"
+        if not starter_dir.exists():
+            pytest.skip("Starter pack not found")
+        count = repo.import_from_yaml(starter_dir)
+        assert count >= 11  # total_revenue + 10 new
+        assert repo.get("revenue/total_revenue") is not None
+        assert repo.get("revenue/mrr") is not None
+        assert repo.get("operations/infrastructure_cost") is not None
+
+
 class TestMetricRepositoryExport:
     def test_export_to_yaml(self, db_conn, metrics_dir, tmp_path):
         from src.repositories.metrics import MetricRepository
