@@ -64,8 +64,29 @@ def _run_sync(tables: Optional[List[str]] = None):
             sys_conn.close()
 
         if not table_configs:
-            logger.warning("No tables to sync for source_type=%s", source_type)
-            return
+            # Auto-discover tables on first sync when registry is empty
+            if source_type == "keboola" and os.environ.get("KEBOOLA_STORAGE_TOKEN"):
+                logger.info("No tables registered — running auto-discovery from Keboola")
+                try:
+                    from app.api.admin import _discover_and_register_tables
+                    auto_conn = get_system_db()
+                    try:
+                        result = _discover_and_register_tables(auto_conn, "auto-discovery")
+                        logger.info("Auto-discovered %d tables, skipped %d", result["registered"], result["skipped"])
+                    finally:
+                        auto_conn.close()
+                    # Re-read table configs after auto-registration
+                    sys_conn2 = get_system_db()
+                    try:
+                        table_configs = TableRegistryRepository(sys_conn2).list_local(source_type)
+                    finally:
+                        sys_conn2.close()
+                except Exception as e:
+                    logger.warning("Auto-discovery failed: %s", e)
+
+            if not table_configs:
+                logger.warning("No tables to sync for source_type=%s", source_type)
+                return
 
         # Serialize configs — strip non-serializable fields
         serializable = []
@@ -112,6 +133,29 @@ print(json.dumps(result))
             print(f"[SYNC] Extractor FAILED (exit {result.returncode})", file=_sys.stderr, flush=True)
         else:
             print(f"[SYNC] Extractor OK", file=_sys.stderr, flush=True)
+
+        # Run custom connectors (Tier A: local mount)
+        connectors_dir = Path(os.environ.get("CONNECTORS_DIR", str(Path(__file__).parent.parent.parent / "connectors" / "custom")))
+        if connectors_dir.exists():
+            for connector_dir in sorted(connectors_dir.iterdir()):
+                if not connector_dir.is_dir():
+                    continue
+                extractor = connector_dir / "extractor.py"
+                if not extractor.exists():
+                    continue
+                logger.info("Running custom connector: %s", connector_dir.name)
+                try:
+                    custom_result = subprocess.run(
+                        [sys.executable, str(extractor)],
+                        env=env, capture_output=True, text=True, timeout=600,
+                        cwd=str(Path(__file__).parent.parent.parent),
+                    )
+                    if custom_result.returncode != 0:
+                        logger.error("Custom connector %s failed: %s", connector_dir.name, custom_result.stderr[-500:])
+                    else:
+                        logger.info("Custom connector %s completed", connector_dir.name)
+                except subprocess.TimeoutExpired:
+                    logger.error("Custom connector %s timed out", connector_dir.name)
 
         # Rebuild master views (reads extract.duckdb files, no write conflict)
         from src.orchestrator import SyncOrchestrator

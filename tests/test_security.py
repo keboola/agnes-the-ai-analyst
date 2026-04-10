@@ -304,26 +304,37 @@ class TestJwtClaims:
 # ---- JWT Secret Hardening ----
 
 class TestJwtSecretHardening:
-    def test_raises_without_jwt_secret_in_non_test_env(self):
-        """Module-level code must raise RuntimeError when JWT_SECRET_KEY is absent
-        and TESTING is not set, preventing accidental production deploys with no secret."""
+    def test_auto_generates_jwt_secret_when_absent(self, tmp_path):
+        """When JWT_SECRET_KEY is absent and TESTING is not set,
+        the secret is auto-generated and persisted to a file."""
         saved_key = os.environ.pop("JWT_SECRET_KEY", None)
         saved_testing = os.environ.pop("TESTING", None)
-        # Eject any cached module so the re-import re-executes module-level code
+        saved_data_dir = os.environ.get("DATA_DIR")
+        os.environ["DATA_DIR"] = str(tmp_path)
+        # Eject cached modules so the re-import re-executes module-level code
         sys.modules.pop("app.auth.jwt", None)
+        sys.modules.pop("app.secrets", None)
         try:
-            with pytest.raises(RuntimeError, match="JWT_SECRET_KEY environment variable is required"):
-                importlib.import_module("app.auth.jwt")
+            importlib.import_module("app.auth.jwt")
+            secret_file = tmp_path / "state" / ".jwt_secret"
+            assert secret_file.exists(), "JWT secret file should be auto-generated"
+            secret = secret_file.read_text().strip()
+            assert len(secret) == 64, "Auto-generated secret should be 64 hex chars (32 bytes)"
         finally:
             # Restore environment before re-importing so the module loads cleanly
             if saved_key is not None:
                 os.environ["JWT_SECRET_KEY"] = saved_key
             if saved_testing is not None:
                 os.environ["TESTING"] = saved_testing
+            if saved_data_dir is not None:
+                os.environ["DATA_DIR"] = saved_data_dir
+            else:
+                os.environ.pop("DATA_DIR", None)
             # If neither was set (bare test run), use TESTING flag so reload works
             if saved_key is None and saved_testing is None:
                 os.environ["TESTING"] = "1"
             sys.modules.pop("app.auth.jwt", None)
+            sys.modules.pop("app.secrets", None)
             importlib.import_module("app.auth.jwt")
             # Clean up the temporary TESTING flag if we added it
             if saved_key is None and saved_testing is None:
