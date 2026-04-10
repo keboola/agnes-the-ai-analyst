@@ -46,6 +46,10 @@ class TestCLIHelp:
         result = runner.invoke(app, ["admin", "--help"])
         assert result.exit_code == 0
 
+    def test_admin_metadata_help(self):
+        result = runner.invoke(app, ["admin", "metadata-show", "--help"])
+        assert result.exit_code == 0
+
     def test_diagnose_help(self):
         result = runner.invoke(app, ["diagnose", "--help"])
         assert result.exit_code == 0
