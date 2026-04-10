@@ -232,3 +232,12 @@ class TestAdminCommands:
         with patch("cli.commands.admin.api_get", return_value=mock_resp):
             result = runner.invoke(app, ["admin", "list-tables"])
             assert result.exit_code == 1
+
+
+class TestMetricsHelp:
+    def test_metrics_help(self):
+        result = runner.invoke(app, ["metrics", "--help"])
+        assert result.exit_code == 0
+        assert "list" in result.output
+        assert "show" in result.output
+        assert "import" in result.output
