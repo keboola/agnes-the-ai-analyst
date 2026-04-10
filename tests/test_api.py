@@ -329,3 +329,38 @@ class TestMetricsAPI:
         data = resp.json()
         assert data["count"] == 1
         assert data["metrics"][0]["category"] == "finance"
+
+
+class TestMetadataAPI:
+    def test_get_metadata_empty(self, seeded_client):
+        client, admin_token, _ = seeded_client
+        resp = client.get("/api/admin/metadata/orders", headers={"Authorization": f"Bearer {admin_token}"})
+        assert resp.status_code == 200
+        assert resp.json()["columns"] == []
+
+    def test_save_and_get_metadata(self, seeded_client):
+        client, admin_token, _ = seeded_client
+        resp = client.post(
+            "/api/admin/metadata/orders",
+            json={"columns": [
+                {"column_name": "id", "basetype": "STRING", "description": "Order ID"},
+                {"column_name": "total", "basetype": "NUMERIC", "description": "Total"},
+            ]},
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+        assert resp.json()["count"] == 2
+
+        resp = client.get("/api/admin/metadata/orders", headers={"Authorization": f"Bearer {admin_token}"})
+        assert resp.status_code == 200
+        assert len(resp.json()["columns"]) == 2
+
+    def test_analyst_cannot_save_metadata(self, seeded_client):
+        client, _, analyst_token = seeded_client
+        resp = client.post(
+            "/api/admin/metadata/orders",
+            json={"columns": [{"column_name": "id", "basetype": "STRING"}]},
+            headers={"Authorization": f"Bearer {analyst_token}"},
+        )
+        assert resp.status_code == 403
