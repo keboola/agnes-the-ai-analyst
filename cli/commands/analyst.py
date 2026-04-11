@@ -77,7 +77,10 @@ def _connect_to_instance(server_url: str) -> str:
         typer.echo(f"Authentication failed: {e}", err=True)
         raise typer.Exit(1)
 
-    token = data["access_token"]
+    token = data.get("access_token")
+    if not token:
+        typer.echo("Authentication failed: server response missing access_token", err=True)
+        raise typer.Exit(1)
     role = data.get("role", "analyst")
 
     save_config({"server": server_url})

@@ -97,32 +97,33 @@ async def push_metadata_to_source(
     pushed = 0
     errors = []
 
-    for col in columns:
-        column_name = col["column_name"]
-        metadata_payload = []
+    async with httpx.AsyncClient() as client:
+        for col in columns:
+            column_name = col["column_name"]
+            metadata_payload = []
 
-        if col.get("basetype"):
-            metadata_payload.append({"key": "KBC.datatype.basetype", "value": col["basetype"]})
-        if col.get("description"):
-            metadata_payload.append({"key": "KBC.description", "value": col["description"]})
+            if col.get("basetype"):
+                metadata_payload.append({"key": "KBC.datatype.basetype", "value": col["basetype"]})
+            if col.get("description"):
+                metadata_payload.append({"key": "KBC.description", "value": col["description"]})
 
-        if not metadata_payload:
-            continue
+            if not metadata_payload:
+                continue
 
-        endpoint = f"{stack_url}/v2/storage/tables/{source_table}/columns/{column_name}/metadata"
-        try:
-            resp = httpx.post(
-                endpoint,
-                headers={"X-StorageApi-Token": token},
-                json={"provider": "ai-metadata-enrichment", "metadata": metadata_payload},
-                timeout=30,
-            )
-            if resp.status_code in (200, 201):
-                pushed += 1
-            else:
-                errors.append(f"{column_name}: {resp.status_code} {resp.text[:200]}")
-        except httpx.RequestError as e:
-            errors.append(f"{column_name}: request error — {e}")
+            endpoint = f"{stack_url}/v2/storage/tables/{source_table}/columns/{column_name}/metadata"
+            try:
+                resp = await client.post(
+                    endpoint,
+                    headers={"X-StorageApi-Token": token},
+                    json={"provider": "ai-metadata-enrichment", "metadata": metadata_payload},
+                    timeout=30,
+                )
+                if resp.status_code in (200, 201):
+                    pushed += 1
+                else:
+                    errors.append(f"{column_name}: {resp.status_code} {resp.text[:200]}")
+            except httpx.RequestError as e:
+                errors.append(f"{column_name}: request error — {e}")
 
     result = {"status": "ok", "pushed": pushed}
     if errors:

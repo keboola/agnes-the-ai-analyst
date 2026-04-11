@@ -375,3 +375,79 @@ class TestMetadataAPI:
             headers={"Authorization": f"Bearer {analyst_token}"},
         )
         assert resp.status_code == 403
+
+    def test_push_non_keboola_table_fails(self, seeded_client):
+        client, admin_token, _ = seeded_client
+        resp = client.post(
+            "/api/admin/metadata/orders/push",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        # 'orders' is not in table_registry — expect 404 or 400
+        assert resp.status_code in (400, 404)
+
+    def test_push_keboola_table(self, seeded_client, monkeypatch):
+        client, admin_token, _ = seeded_client
+
+        # 1. Register a keboola table
+        from src.db import get_system_db
+        from src.repositories.table_registry import TableRegistryRepository
+
+        conn = get_system_db()
+        TableRegistryRepository(conn).register(
+            id="kbc_orders",
+            name="Orders",
+            source_type="keboola",
+            source_table="in.c-main.orders",
+        )
+        conn.close()
+
+        # 2. Save column metadata
+        client.post(
+            "/api/admin/metadata/kbc_orders",
+            json={"columns": [
+                {"column_name": "id", "basetype": "STRING", "description": "Order ID"},
+            ]},
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+        # 3. Set required env vars
+        monkeypatch.setenv("KBC_STACK_URL", "https://connection.keboola.com")
+        monkeypatch.setenv("KBC_STORAGE_TOKEN", "test-token")
+
+        # 4. Mock httpx.AsyncClient so no real HTTP call is made
+        import httpx as _httpx
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        mock_response = _httpx.Response(200, json={"ok": True})
+        mock_post = AsyncMock(return_value=mock_response)
+
+        # AsyncClient is used as "async with httpx.AsyncClient() as client: await client.post(...)"
+        # We patch the class so the context-manager instance has our mock_post.
+        mock_async_client_instance = MagicMock()
+        mock_async_client_instance.post = mock_post
+        mock_async_client_instance.__aenter__ = AsyncMock(return_value=mock_async_client_instance)
+        mock_async_client_instance.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient", return_value=mock_async_client_instance):
+            resp = client.post(
+                "/api/admin/metadata/kbc_orders/push",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+
+        # 5. Assertions
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data.get("pushed") == 1
+
+        mock_post.assert_called_once()
+        call_args = mock_post.call_args
+        # Verify URL contains the source table name
+        called_url = call_args[0][0] if call_args[0] else call_args.kwargs.get("url", "")
+        assert "in.c-main.orders" in called_url
+        # Verify auth header
+        called_headers = call_args.kwargs.get("headers", {})
+        assert called_headers.get("X-StorageApi-Token") == "test-token"
+        # Verify payload structure
+        called_json = call_args.kwargs.get("json", {})
+        assert called_json.get("provider") == "ai-metadata-enrichment"
+        assert isinstance(called_json.get("metadata"), list)
