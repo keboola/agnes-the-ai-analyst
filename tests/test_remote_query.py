@@ -9,7 +9,7 @@ import duckdb
 import pyarrow as pa
 import pytest
 
-from src.remote_query import RemoteQueryEngine, RemoteQueryError, _validate_sql
+from src.remote_query import RemoteQueryEngine, RemoteQueryError, _validate_bq_sql, _validate_sql
 
 
 # ---------------------------------------------------------------------------
@@ -243,3 +243,48 @@ class TestValidateSql:
     def test_allowed_sql(self, sql):
         # Should not raise
         _validate_sql(sql)
+
+
+# ---------------------------------------------------------------------------
+# _validate_bq_sql unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestValidateBqSql:
+    def test_information_schema_is_allowed(self):
+        """INFORMATION_SCHEMA queries must pass BQ SQL validation."""
+        # Should not raise
+        _validate_bq_sql("SELECT * FROM dataset.INFORMATION_SCHEMA.COLUMNS")
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "DROP TABLE x",
+            "INSERT INTO x VALUES (1)",
+            "DELETE FROM x",
+            "UPDATE x SET y=1",
+            "ALTER TABLE x ADD COLUMN z INT",
+            "CREATE TABLE x (y INT)",
+            "TRUNCATE TABLE x",
+            "MERGE INTO x USING y ON x.id=y.id WHEN MATCHED THEN UPDATE SET x.a=y.a",
+            "SELECT 1; DROP TABLE x",
+        ],
+    )
+    def test_blocked_bq_sql(self, sql):
+        """Write/mutation operations must be rejected."""
+        with pytest.raises(RemoteQueryError) as exc_info:
+            _validate_bq_sql(sql)
+        assert exc_info.value.error_type == "query_error"
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "SELECT * FROM dataset.INFORMATION_SCHEMA.COLUMNS",
+            "SELECT id FROM project.dataset.table",
+            "WITH cte AS (SELECT 1 AS x) SELECT x FROM cte",
+        ],
+    )
+    def test_allowed_bq_sql(self, sql):
+        """Valid read-only BQ queries must pass."""
+        # Should not raise
+        _validate_bq_sql(sql)

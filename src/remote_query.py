@@ -145,6 +145,36 @@ def _validate_sql(sql: str) -> None:
         )
 
 
+# BQ SQL blocklist — only blocks write/mutation operations
+_BQ_BLOCKED_KEYWORDS = [
+    "drop ",
+    "delete ",
+    "insert ",
+    "update ",
+    "alter ",
+    "create ",
+    "truncate ",
+    "merge ",
+    ";",  # prevent multi-statement
+]
+
+
+def _validate_bq_sql(sql: str) -> None:
+    """Validate BQ SQL — narrower than DuckDB blocklist, only blocks writes."""
+    sql_lower = sql.strip().lower()
+    for keyword in _BQ_BLOCKED_KEYWORDS:
+        if keyword in sql_lower:
+            raise RemoteQueryError(
+                f"Blocked BQ SQL keyword: {keyword.strip()}",
+                error_type="query_error",
+            )
+    if not sql_lower.startswith("select ") and not sql_lower.startswith("with "):
+        raise RemoteQueryError(
+            "BQ query must start with SELECT or WITH",
+            error_type="query_error",
+        )
+
+
 def load_config() -> Dict[str, Any]:
     """Load the ``remote_query:`` section from instance.yaml.
 
@@ -232,7 +262,7 @@ class RemoteQueryEngine:
                 error_type="query_error",
             )
 
-        _validate_sql(bq_sql)
+        _validate_bq_sql(bq_sql)
 
         client = self._get_bq_client()
 
