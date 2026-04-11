@@ -285,7 +285,7 @@ def _reattach_remote_extensions(
         try:
             has_table = conn.execute(
                 "SELECT 1 FROM information_schema.tables "
-                f"WHERE table_schema='{ext_dir.name}' AND table_name='_remote_attach'"
+                f"WHERE table_catalog='{ext_dir.name}' AND table_name='_remote_attach'"
             ).fetchone()
             if not has_table:
                 continue
