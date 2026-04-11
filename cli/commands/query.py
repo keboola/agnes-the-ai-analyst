@@ -41,6 +41,10 @@ def query_command(
         try:
             payload = json.loads(raw)
             resolved_sql = payload["sql"]
+            # Extract register_bq from stdin JSON
+            stdin_bq = payload.get("register_bq", {})
+            if stdin_bq and isinstance(stdin_bq, dict):
+                register_bq = [f"{k}={v}" for k, v in stdin_bq.items()]
         except (json.JSONDecodeError, KeyError) as exc:
             typer.echo(f"Error: failed to parse stdin JSON: {exc}", err=True)
             raise typer.Exit(1)
