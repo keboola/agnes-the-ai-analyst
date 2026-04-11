@@ -385,7 +385,7 @@ class TestMetadataAPI:
         # 'orders' is not in table_registry — expect 404 or 400
         assert resp.status_code in (400, 404)
 
-    def test_push_keboola_table(self, seeded_client, monkeypatch):
+    def test_push_keboola_table(self, seeded_client, monkeypatch):  # noqa: F811
         client, admin_token, _ = seeded_client
 
         # 1. Register a keboola table
@@ -451,3 +451,53 @@ class TestMetadataAPI:
         called_json = call_args.kwargs.get("json", {})
         assert called_json.get("provider") == "ai-metadata-enrichment"
         assert isinstance(called_json.get("metadata"), list)
+
+
+# ---- Hybrid Query ----
+
+class TestHybridQueryAPI:
+    def test_hybrid_query_requires_admin(self, seeded_client):
+        client, _, analyst_token = seeded_client
+        resp = client.post(
+            "/api/query/hybrid",
+            json={"sql": "SELECT 1 AS val", "register_bq": {}},
+            headers={"Authorization": f"Bearer {analyst_token}"},
+        )
+        assert resp.status_code == 403
+
+    def test_hybrid_query_local_only(self, seeded_client):
+        client, admin_token, _ = seeded_client
+        resp = client.post(
+            "/api/query/hybrid",
+            json={"sql": "SELECT 1 AS val", "register_bq": {}},
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "columns" in data
+        assert "rows" in data
+        assert data["columns"] == ["val"]
+        assert data["rows"] == [[1]]
+
+    def test_hybrid_query_blocked_sql(self, seeded_client):
+        client, admin_token, _ = seeded_client
+        resp = client.post(
+            "/api/query/hybrid",
+            json={"sql": "DROP TABLE users", "register_bq": {}},
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert resp.status_code == 400
+        assert "query_error" in resp.json()["detail"]
+
+    def test_hybrid_query_blocked_bq_sql(self, seeded_client):
+        client, admin_token, _ = seeded_client
+        resp = client.post(
+            "/api/query/hybrid",
+            json={
+                "sql": "SELECT 1",
+                "register_bq": {"bad_alias": "DROP TABLE sensitive"},
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert resp.status_code == 400
+        assert "query_error" in resp.json()["detail"]
