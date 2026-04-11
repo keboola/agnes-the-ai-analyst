@@ -105,7 +105,7 @@ def _query_hybrid(sql: str, fmt: str, limit: int, register_bq_specs: List[str]):
         typer.echo("Local DuckDB not found. Run: da sync", err=True)
         raise typer.Exit(1)
 
-    conn = duckdb.connect(str(db_path))
+    conn = duckdb.connect(str(db_path), read_only=True)
     try:
         config = load_config()
         engine = RemoteQueryEngine(conn, **{k: v for k, v in config.items() if k in (

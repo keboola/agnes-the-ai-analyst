@@ -102,6 +102,27 @@ class TestRemoteQueryEngineRegister:
         assert exc_info.value.error_type == "row_limit"
         assert exc_info.value.details["count"] == 1_000_000
 
+    def test_register_bq_invalid_alias(self, analytics_conn):
+        engine = RemoteQueryEngine(analytics_conn)
+        # Space in alias — invalid identifier
+        with pytest.raises(RemoteQueryError) as exc_info:
+            engine.register_bq("bad alias", "SELECT 1")
+        assert exc_info.value.error_type == "query_error"
+
+        # Reserved alias — information_schema
+        with pytest.raises(RemoteQueryError) as exc_info:
+            engine.register_bq("information_schema", "SELECT 1")
+        assert exc_info.value.error_type == "query_error"
+
+        # Valid alias — should not raise from alias validation
+        # (will raise later trying to reach BQ without a client, but not from alias check)
+        try:
+            engine.register_bq("valid_name", "SELECT 1")
+        except RemoteQueryError as exc:
+            assert exc.error_type != "query_error" or "Invalid alias" not in str(exc)
+        except (ImportError, ModuleNotFoundError):
+            pass  # Expected — no BQ package in test env
+
     def test_register_bq_missing_package(self, analytics_conn):
         """When google-cloud-bigquery is not installed, engine must raise ImportError."""
         engine = RemoteQueryEngine(
