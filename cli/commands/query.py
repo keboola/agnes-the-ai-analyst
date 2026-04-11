@@ -112,9 +112,12 @@ def _query_hybrid(sql: str, fmt: str, limit: int, register_bq_specs: List[str]):
     conn = duckdb.connect(str(db_path), read_only=True)
     try:
         config = load_config()
-        engine = RemoteQueryEngine(conn, **{k: v for k, v in config.items() if k in (
+        engine_kwargs = {k: v for k, v in config.items() if k in (
             "max_bq_registration_rows", "max_memory_mb", "max_result_rows", "timeout_seconds"
-        )})
+        )}
+        # CLI --limit flag overrides config max_result_rows
+        engine_kwargs["max_result_rows"] = limit
+        engine = RemoteQueryEngine(conn, **engine_kwargs)
 
         for spec in register_bq_specs:
             if "=" not in spec:
