@@ -267,7 +267,7 @@ class RemoteQueryEngine:
         client = self._get_bq_client()
 
         # --- Phase 1a: COUNT(*) pre-check ---
-        count_sql = f"SELECT COUNT(*) FROM ({bq_sql})"
+        count_sql = f"SELECT COUNT(*) FROM ({bq_sql}) AS _cnt"
         try:
             count_job = client.query(count_sql)
             count_arrow = count_job.to_arrow()
@@ -413,9 +413,14 @@ class RemoteQueryEngine:
             project = os.environ.get("BIGQUERY_PROJECT", "unknown")
             return self._bq_client_factory(project)
 
-        # Trigger ImportError early if the package is missing.
-        # This is a lazy import so the module stays usable without BQ installed.
-        import google.cloud.bigquery as _bq_module  # noqa: PLC0415, F401
+        # Lazy import so the module stays usable without BQ installed.
+        try:
+            import google.cloud.bigquery as _bq_module  # noqa: PLC0415, F401
+        except ImportError:
+            raise RemoteQueryError(
+                "google-cloud-bigquery is not installed. Install with: pip install google-cloud-bigquery",
+                error_type="bq_error",
+            )
 
         project = os.environ.get("BIGQUERY_PROJECT")
         if not project:

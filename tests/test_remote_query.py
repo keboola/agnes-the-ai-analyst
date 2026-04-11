@@ -124,7 +124,7 @@ class TestRemoteQueryEngineRegister:
             pass  # Expected — no BQ package in test env
 
     def test_register_bq_missing_package(self, analytics_conn):
-        """When google-cloud-bigquery is not installed, engine must raise ImportError."""
+        """When google-cloud-bigquery is not installed, engine must raise RemoteQueryError."""
         engine = RemoteQueryEngine(
             analytics_conn,
             # No factory — will try to import google.cloud.bigquery
@@ -133,7 +133,7 @@ class TestRemoteQueryEngineRegister:
         )
 
         with patch.dict(sys.modules, {"google": None, "google.cloud": None, "google.cloud.bigquery": None}):
-            with pytest.raises((ImportError, ModuleNotFoundError)):
+            with pytest.raises(RemoteQueryError, match="google-cloud-bigquery"):
                 engine.register_bq("bq_alias", "SELECT 1")
 
 
