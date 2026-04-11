@@ -154,6 +154,22 @@ Before computing any business metric, look up the canonical definition:
 
 Never invent metric calculations — always use the canonical definitions.
 
+## Hybrid Queries (BigQuery + Local)
+
+For tables too large to sync locally, use hybrid queries that JOIN local data with on-demand BigQuery results:
+
+```bash
+da query --sql "SELECT o.*, t.views FROM orders o JOIN traffic t ON o.date = t.date" \
+         --register-bq "traffic=SELECT date, SUM(views) as views FROM dataset.web WHERE date > '2026-01-01' GROUP BY 1"
+```
+
+The `--register-bq` flag executes a BigQuery subquery, loads the result into memory, and makes it available as a DuckDB view for the final SQL. Multiple `--register-bq` flags can be used for multiple BQ sources.
+
+For complex SQL, use stdin mode:
+```bash
+echo '{"register_bq": {"traffic": "SELECT ..."}, "sql": "SELECT ..."}' | da query --stdin
+```
+
 ## Extensibility
 
 ### Data Sources (extract.duckdb contract)
