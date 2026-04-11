@@ -233,3 +233,221 @@ class TestUpload:
         )
         assert resp.status_code == 200
         assert resp.json()["user"] == "analyst@acme.com"
+
+
+# ---- Metrics API ----
+
+SAMPLE_METRIC = {
+    "id": "finance/mrr",
+    "name": "mrr",
+    "display_name": "Monthly Recurring Revenue",
+    "category": "finance",
+    "sql": "SELECT SUM(amount) FROM subscriptions WHERE active = true",
+}
+
+
+class TestMetricsAPI:
+    def test_list_metrics_empty(self, seeded_client):
+        client, admin_token, _ = seeded_client
+        headers = {"Authorization": f"Bearer {admin_token}"}
+        resp = client.get("/api/metrics", headers=headers)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["count"] == 0
+        assert data["metrics"] == []
+
+    def test_create_and_list_metric(self, seeded_client):
+        client, admin_token, _ = seeded_client
+        headers = {"Authorization": f"Bearer {admin_token}"}
+
+        resp = client.post("/api/admin/metrics", json=SAMPLE_METRIC, headers=headers)
+        assert resp.status_code == 201
+
+        resp = client.get("/api/metrics", headers=headers)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["count"] == 1
+        assert data["metrics"][0]["id"] == "finance/mrr"
+
+    def test_get_metric_detail(self, seeded_client):
+        client, admin_token, _ = seeded_client
+        headers = {"Authorization": f"Bearer {admin_token}"}
+
+        client.post("/api/admin/metrics", json=SAMPLE_METRIC, headers=headers)
+
+        resp = client.get("/api/metrics/finance/mrr", headers=headers)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["id"] == "finance/mrr"
+        assert data["display_name"] == "Monthly Recurring Revenue"
+        assert data["category"] == "finance"
+
+    def test_get_metric_not_found(self, seeded_client):
+        client, admin_token, _ = seeded_client
+        headers = {"Authorization": f"Bearer {admin_token}"}
+
+        resp = client.get("/api/metrics/nonexistent/metric", headers=headers)
+        assert resp.status_code == 404
+
+    def test_delete_metric(self, seeded_client):
+        client, admin_token, _ = seeded_client
+        headers = {"Authorization": f"Bearer {admin_token}"}
+
+        client.post("/api/admin/metrics", json=SAMPLE_METRIC, headers=headers)
+
+        resp = client.delete("/api/admin/metrics/finance/mrr", headers=headers)
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "deleted"
+
+        resp = client.get("/api/metrics/finance/mrr", headers=headers)
+        assert resp.status_code == 404
+
+    def test_analyst_cannot_create_metric(self, seeded_client):
+        client, _, analyst_token = seeded_client
+        headers = {"Authorization": f"Bearer {analyst_token}"}
+
+        resp = client.post("/api/admin/metrics", json=SAMPLE_METRIC, headers=headers)
+        assert resp.status_code == 403
+
+    def test_list_metrics_filter_by_category(self, seeded_client):
+        client, admin_token, _ = seeded_client
+        headers = {"Authorization": f"Bearer {admin_token}"}
+
+        finance_metric = {**SAMPLE_METRIC}
+        support_metric = {
+            "id": "support/tickets",
+            "name": "tickets",
+            "display_name": "Open Tickets",
+            "category": "support",
+            "sql": "SELECT COUNT(*) FROM tickets WHERE status = 'open'",
+        }
+        client.post("/api/admin/metrics", json=finance_metric, headers=headers)
+        client.post("/api/admin/metrics", json=support_metric, headers=headers)
+
+        resp = client.get("/api/metrics?category=finance", headers=headers)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["count"] == 1
+        assert data["metrics"][0]["category"] == "finance"
+
+    def test_import_metrics_yaml(self, seeded_client):
+        client, admin_token, _ = seeded_client
+        yaml_content = b"- name: test_metric\n  display_name: Test\n  category: test\n  sql: SELECT 1\n"
+        resp = client.post(
+            "/api/admin/metrics/import",
+            files={"file": ("test.yml", yaml_content, "application/x-yaml")},
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["count"] == 1
+
+
+class TestMetadataAPI:
+    def test_get_metadata_empty(self, seeded_client):
+        client, admin_token, _ = seeded_client
+        resp = client.get("/api/admin/metadata/orders", headers={"Authorization": f"Bearer {admin_token}"})
+        assert resp.status_code == 200
+        assert resp.json()["columns"] == []
+
+    def test_save_and_get_metadata(self, seeded_client):
+        client, admin_token, _ = seeded_client
+        resp = client.post(
+            "/api/admin/metadata/orders",
+            json={"columns": [
+                {"column_name": "id", "basetype": "STRING", "description": "Order ID"},
+                {"column_name": "total", "basetype": "NUMERIC", "description": "Total"},
+            ]},
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+        assert resp.json()["count"] == 2
+
+        resp = client.get("/api/admin/metadata/orders", headers={"Authorization": f"Bearer {admin_token}"})
+        assert resp.status_code == 200
+        assert len(resp.json()["columns"]) == 2
+
+    def test_analyst_cannot_save_metadata(self, seeded_client):
+        client, _, analyst_token = seeded_client
+        resp = client.post(
+            "/api/admin/metadata/orders",
+            json={"columns": [{"column_name": "id", "basetype": "STRING"}]},
+            headers={"Authorization": f"Bearer {analyst_token}"},
+        )
+        assert resp.status_code == 403
+
+    def test_push_non_keboola_table_fails(self, seeded_client):
+        client, admin_token, _ = seeded_client
+        resp = client.post(
+            "/api/admin/metadata/orders/push",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        # 'orders' is not in table_registry — expect 404 or 400
+        assert resp.status_code in (400, 404)
+
+    def test_push_keboola_table(self, seeded_client, monkeypatch):
+        client, admin_token, _ = seeded_client
+
+        # 1. Register a keboola table
+        from src.db import get_system_db
+        from src.repositories.table_registry import TableRegistryRepository
+
+        conn = get_system_db()
+        TableRegistryRepository(conn).register(
+            id="kbc_orders",
+            name="Orders",
+            source_type="keboola",
+            source_table="in.c-main.orders",
+        )
+        conn.close()
+
+        # 2. Save column metadata
+        client.post(
+            "/api/admin/metadata/kbc_orders",
+            json={"columns": [
+                {"column_name": "id", "basetype": "STRING", "description": "Order ID"},
+            ]},
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+        # 3. Set required env vars
+        monkeypatch.setenv("KBC_STACK_URL", "https://connection.keboola.com")
+        monkeypatch.setenv("KBC_STORAGE_TOKEN", "test-token")
+
+        # 4. Mock httpx.AsyncClient so no real HTTP call is made
+        import httpx as _httpx
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        mock_response = _httpx.Response(200, json={"ok": True})
+        mock_post = AsyncMock(return_value=mock_response)
+
+        # AsyncClient is used as "async with httpx.AsyncClient() as client: await client.post(...)"
+        # We patch the class so the context-manager instance has our mock_post.
+        mock_async_client_instance = MagicMock()
+        mock_async_client_instance.post = mock_post
+        mock_async_client_instance.__aenter__ = AsyncMock(return_value=mock_async_client_instance)
+        mock_async_client_instance.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient", return_value=mock_async_client_instance):
+            resp = client.post(
+                "/api/admin/metadata/kbc_orders/push",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+
+        # 5. Assertions
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data.get("pushed") == 1
+
+        mock_post.assert_called_once()
+        call_args = mock_post.call_args
+        # Verify URL contains the source table name
+        called_url = call_args[0][0] if call_args[0] else call_args.kwargs.get("url", "")
+        assert "in.c-main.orders" in called_url
+        # Verify auth header
+        called_headers = call_args.kwargs.get("headers", {})
+        assert called_headers.get("X-StorageApi-Token") == "test-token"
+        # Verify payload structure
+        called_json = call_args.kwargs.get("json", {})
+        assert called_json.get("provider") == "ai-metadata-enrichment"
+        assert isinstance(called_json.get("metadata"), list)

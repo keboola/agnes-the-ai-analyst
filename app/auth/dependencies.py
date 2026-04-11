@@ -80,3 +80,13 @@ def require_role(minimum_role: Role):
             )
         return user
     return _check
+
+
+async def require_admin(user: dict = Depends(get_current_user)) -> dict:
+    """Dependency: require user is an admin. Raises 403 otherwise."""
+    if user.get("role") != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required",
+        )
+    return user

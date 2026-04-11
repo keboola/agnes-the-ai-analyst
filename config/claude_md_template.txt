@@ -1,0 +1,32 @@
+# {instance_name} — AI Data Analyst
+
+This workspace is connected to {server_url}.
+
+## Rules
+- Before computing any business metric: run `da metrics show <category>/<name>`
+- For current schema: read `data/metadata/schema.json`
+- Do not use DESCRIBE/SHOW COLUMNS — read metadata files instead
+- Save work output to `user/artifacts/`
+- Sync data regularly with `da sync`
+
+## Metrics Workflow
+1. `da metrics list` — find the relevant metric
+2. `da metrics show revenue/mrr` — read SQL and business rules
+3. Use the canonical SQL from the metric definition, adapt to the question
+4. Never invent metric calculations — always check existing definitions first
+
+## Data Sync
+- `da sync` — download current data from server
+- `da sync --docs-only` — just metadata and metrics (fast refresh)
+- `da sync --upload-only` — upload sessions and local notes to server
+- Data on the server refreshes every {sync_interval}
+
+## Directory Structure
+- `data/` — read-only data downloaded from server
+  - `data/parquet/` — table data in Parquet format
+  - `data/duckdb/` — local analytics DuckDB database
+  - `data/metadata/` — profiles, schema, metrics cache
+- `user/` — your workspace (persistent across syncs)
+  - `user/artifacts/` — analysis outputs, reports, charts
+  - `user/sessions/` — Claude Code session logs
+- `.claude/CLAUDE.local.md` — your personal notes (never overwritten, uploaded on sync)

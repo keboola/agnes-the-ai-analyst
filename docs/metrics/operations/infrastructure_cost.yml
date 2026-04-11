@@ -1,0 +1,40 @@
+name: infrastructure_cost
+display_name: Infrastructure Cost
+category: operations
+type: sum
+unit: USD
+grain: monthly
+table: infra_costs
+expression: "SUM(cost_usd)"
+time_column: usage_date
+description: "Infrastructure Cost — total cloud infrastructure spend per month, broken down by provider, service, and environment."
+dimensions:
+  - provider
+  - service
+  - environment
+synonyms:
+  - cloud_cost
+  - infra_spend
+  - cloud_spend
+notes:
+  - "Includes compute, storage, networking, and managed services"
+  - "Production and staging costs should be tracked separately via environment dimension"
+  - "Compare month-over-month to detect unexpected cost spikes"
+  - "Calculate cost per MAU to normalize against growth"
+sql: |
+  SELECT
+      DATE_TRUNC('month', usage_date) AS month,
+      SUM(cost_usd) AS infrastructure_cost
+  FROM infra_costs
+  GROUP BY 1
+  ORDER BY 1
+sql_by_provider: |
+  SELECT
+      DATE_TRUNC('month', usage_date) AS month,
+      provider,
+      service,
+      environment,
+      SUM(cost_usd) AS cost
+  FROM infra_costs
+  GROUP BY 1, 2, 3, 4
+  ORDER BY 1, cost DESC

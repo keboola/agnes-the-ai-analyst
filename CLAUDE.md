@@ -138,6 +138,22 @@ curl -X POST http://localhost:8000/api/sync/trigger
 docker compose up
 ```
 
+## Business Metrics
+
+Standardized metric definitions live in DuckDB (`metric_definitions` table). Import starter pack:
+
+```bash
+da metrics import docs/metrics/
+```
+
+### For AI agents analyzing data:
+Before computing any business metric, look up the canonical definition:
+1. `da metrics list` — find the relevant metric
+2. `da metrics show revenue/mrr` — read the SQL and business rules
+3. Use the SQL from the metric definition, adapt to the specific question
+
+Never invent metric calculations — always use the canonical definitions.
+
 ## Extensibility
 
 ### Data Sources (extract.duckdb contract)
@@ -154,7 +170,7 @@ Auth providers in `app/auth/` (FastAPI-based):
 ## Key Implementation Details
 
 ### DuckDB Schema (src/db.py)
-- Schema v3 with auto-migration from v1→v2→v3
+- Schema v4 with auto-migration from v1→v2→v3→v4
 - `table_registry`: id, name, source_type, bucket, source_table, query_mode, sync_schedule, etc.
 - `sync_state`, `sync_history`: track extraction progress
 - `users`, `dataset_permissions`, `audit_log`: auth + RBAC

@@ -260,10 +260,10 @@ class TestSchemaMigration:
         conn.close()
 
         # Open via get_system_db -> triggers migration
-        from src.db import get_system_db, get_schema_version
+        from src.db import get_system_db, get_schema_version, SCHEMA_VERSION
         conn2 = get_system_db()
 
-        assert get_schema_version(conn2) == 3
+        assert get_schema_version(conn2) == SCHEMA_VERSION
 
         # Old data preserved
         old = conn2.execute("SELECT name, folder FROM table_registry WHERE id='old_table'").fetchone()

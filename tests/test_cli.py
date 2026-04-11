@@ -46,6 +46,10 @@ class TestCLIHelp:
         result = runner.invoke(app, ["admin", "--help"])
         assert result.exit_code == 0
 
+    def test_admin_metadata_help(self):
+        result = runner.invoke(app, ["admin", "metadata-show", "--help"])
+        assert result.exit_code == 0
+
     def test_diagnose_help(self):
         result = runner.invoke(app, ["diagnose", "--help"])
         assert result.exit_code == 0
@@ -232,3 +236,22 @@ class TestAdminCommands:
         with patch("cli.commands.admin.api_get", return_value=mock_resp):
             result = runner.invoke(app, ["admin", "list-tables"])
             assert result.exit_code == 1
+
+
+class TestMetricsHelp:
+    def test_metrics_help(self):
+        result = runner.invoke(app, ["metrics", "--help"])
+        assert result.exit_code == 0
+        assert "list" in result.output
+        assert "show" in result.output
+        assert "import" in result.output
+
+    def test_analyst_help(self):
+        result = runner.invoke(app, ["analyst", "--help"])
+        assert result.exit_code == 0
+        assert "setup" in result.output
+
+    def test_analyst_status_help(self):
+        result = runner.invoke(app, ["analyst", "status", "--help"])
+        assert result.exit_code == 0
+        assert "freshness" in result.output.lower() or "workspace" in result.output.lower()

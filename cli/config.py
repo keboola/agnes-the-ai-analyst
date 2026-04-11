@@ -58,3 +58,15 @@ def get_sync_state() -> dict:
 def save_sync_state(state: dict):
     state_file = _config_dir() / "sync_state.json"
     state_file.write_text(json.dumps(state, indent=2))
+
+
+def save_config(data: dict):
+    """Persist server URL and other config to config.yaml."""
+    import yaml
+
+    config_file = _config_dir() / "config.yaml"
+    existing = {}
+    if config_file.exists():
+        existing = yaml.safe_load(config_file.read_text()) or {}
+    existing.update(data)
+    config_file.write_text(yaml.dump(existing, default_flow_style=False))
