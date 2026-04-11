@@ -321,14 +321,15 @@ def _reattach_remote_extensions(
             try:
                 conn.execute(f"LOAD {extension};")
                 token = os.environ.get(token_env, "") if token_env else ""
+                safe_url = url.replace("'", "''")
                 if token:
                     escaped_token = token.replace("'", "''")
                     conn.execute(
-                        f"ATTACH '{url}' AS {alias} (TYPE {extension}, TOKEN '{escaped_token}')"
+                        f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, TOKEN '{escaped_token}')"
                     )
                 else:
                     conn.execute(
-                        f"ATTACH '{url}' AS {alias} (TYPE {extension}, READ_ONLY)"
+                        f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)"
                     )
                 attached_dbs.add(alias)
                 logger.debug("Re-attached remote source %s via %s extension", alias, extension)

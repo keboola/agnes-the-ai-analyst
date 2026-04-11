@@ -11,14 +11,24 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 import duckdb
 
+_SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
+
+_RESERVED_ALIASES = {
+    "information_schema", "duckdb_tables", "duckdb_columns",
+    "duckdb_databases", "duckdb_settings", "duckdb_functions",
+    "duckdb_views", "duckdb_indexes", "duckdb_schemas",
+    "main", "memory", "system", "temp",
+}
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# SQL blocklist — mirrors app/api/query.py lines 40-63
+# SQL blocklist — based on app/api/query.py, extended with additional DuckDB metadata tables
 # ---------------------------------------------------------------------------
 
 _BLOCKED_KEYWORDS: List[str] = [
@@ -211,6 +221,17 @@ class RemoteQueryEngine:
             RemoteQueryError: For row/memory limits or BQ errors.
             ImportError: If google-cloud-bigquery is not installed.
         """
+        if not _SAFE_IDENTIFIER.match(alias or ""):
+            raise RemoteQueryError(
+                f"Invalid alias {alias!r}: must be a valid SQL identifier",
+                error_type="query_error",
+            )
+        if alias.lower() in _RESERVED_ALIASES:
+            raise RemoteQueryError(
+                f"Reserved alias {alias!r}: cannot shadow system objects",
+                error_type="query_error",
+            )
+
         _validate_sql(bq_sql)
 
         client = self._get_bq_client()
