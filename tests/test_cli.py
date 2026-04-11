@@ -242,7 +242,11 @@ class TestQueryHybrid:
     def test_register_bq_flag_help(self):
         result = runner.invoke(app, ["query", "--help"])
         assert result.exit_code == 0
-        assert "register-bq" in result.output
+        # Rich/Typer may insert ANSI escape codes within option names,
+        # so check for the parts separately
+        assert "register" in result.output
+        assert "bq" in result.output
+        assert "BigQuery" in result.output
 
 
 class TestMetricsHelp:
