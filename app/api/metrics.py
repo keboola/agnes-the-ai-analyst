@@ -1,7 +1,5 @@
 """Metrics API endpoints — CRUD for metric definitions stored in DuckDB."""
 
-import os
-import tempfile
 from typing import List, Optional
 
 import duckdb
@@ -119,14 +117,60 @@ async def import_metrics(
 ):
     """Import metrics from uploaded YAML file."""
     content = await file.read()
-
-    with tempfile.NamedTemporaryFile(suffix=".yml", delete=False, mode="wb") as tmp:
-        tmp.write(content)
-        tmp_path = tmp.name
-
     try:
-        repo = MetricRepository(conn)
-        count = repo.import_from_yaml(tmp_path)
-        return {"status": "imported", "count": count}
-    finally:
-        os.unlink(tmp_path)
+        data = yaml.safe_load(content)
+    except yaml.YAMLError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid YAML: {e}")
+
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty YAML file")
+
+    metric_list = data if isinstance(data, list) else [data]
+    repo = MetricRepository(conn)
+    count = 0
+
+    for metric in metric_list:
+        if not isinstance(metric, dict):
+            continue
+        name = metric.get("name")
+        category = metric.get("category")
+        if not name or not category:
+            raise HTTPException(
+                status_code=400,
+                detail="Each metric must have 'name' and 'category' fields",
+            )
+
+        metric_id = f"{category}/{name}"
+        table_name = metric.pop("table", None) or metric.get("table_name")
+
+        # Collect sql_by_* variants
+        sql_variants = {}
+        for key in list(metric.keys()):
+            if key.startswith("sql_by_"):
+                sql_variants[key[4:]] = metric.pop(key)
+
+        repo.create(
+            id=metric_id,
+            name=name,
+            display_name=metric.get("display_name", name),
+            category=category,
+            description=metric.get("description"),
+            type=metric.get("type", "sum"),
+            unit=metric.get("unit"),
+            grain=metric.get("grain", "monthly"),
+            table_name=table_name,
+            tables=metric.get("tables"),
+            expression=metric.get("expression"),
+            time_column=metric.get("time_column"),
+            dimensions=metric.get("dimensions"),
+            filters=metric.get("filters"),
+            synonyms=metric.get("synonyms"),
+            notes=metric.get("notes"),
+            sql=metric.get("sql", ""),
+            sql_variants=sql_variants if sql_variants else None,
+            validation=metric.get("validation"),
+            source="yaml_import",
+        )
+        count += 1
+
+    return {"status": "imported", "count": count}
