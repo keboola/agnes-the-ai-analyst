@@ -462,6 +462,76 @@ class TestSchemaV4:
             conn2.close()
 
 
+class TestExtensionReattach:
+    """Resilience tests for _reattach_remote_extensions() called by get_analytics_db_readonly()."""
+
+    def _make_analytics_db(self, tmp_path):
+        """Create an empty analytics server.duckdb so get_analytics_db_readonly() takes the read_only path."""
+        analytics_dir = tmp_path / "analytics"
+        analytics_dir.mkdir(parents=True, exist_ok=True)
+        import duckdb as _duckdb
+        conn = _duckdb.connect(str(analytics_dir / "server.duckdb"))
+        conn.close()
+
+    def _make_extract_db(self, tmp_path, source_name, with_remote_attach=True):
+        """Create a minimal extract.duckdb, optionally with a _remote_attach table."""
+        ext_dir = tmp_path / "extracts" / source_name
+        ext_dir.mkdir(parents=True, exist_ok=True)
+        import duckdb as _duckdb
+        conn = _duckdb.connect(str(ext_dir / "extract.duckdb"))
+        try:
+            conn.execute(
+                "CREATE TABLE _meta (table_name VARCHAR, description VARCHAR, rows BIGINT, "
+                "size_bytes BIGINT, extracted_at TIMESTAMP, query_mode VARCHAR)"
+            )
+            if with_remote_attach:
+                conn.execute(
+                    "CREATE TABLE _remote_attach (alias VARCHAR, extension VARCHAR, url VARCHAR, token_env VARCHAR)"
+                )
+                # Use 'bigquery' which won't be installed in CI — tests resilience
+                conn.execute(
+                    "INSERT INTO _remote_attach VALUES ('bq', 'bigquery', 'project/dataset', '')"
+                )
+        finally:
+            conn.close()
+
+    def test_reads_remote_attach_table(self, tmp_path, monkeypatch):
+        """get_analytics_db_readonly() doesn't crash even when LOAD fails for missing extension."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        import importlib
+        import src.db as db_module
+        importlib.reload(db_module)
+
+        self._make_analytics_db(tmp_path)
+        self._make_extract_db(tmp_path, "mysource", with_remote_attach=True)
+
+        # Should not raise even though 'bigquery' extension is not installed
+        conn = db_module.get_analytics_db_readonly()
+        try:
+            # Connection must still be usable for local queries
+            result = conn.execute("SELECT 42 AS n").fetchone()
+            assert result[0] == 42
+        finally:
+            conn.close()
+
+    def test_skips_missing_remote_attach(self, tmp_path, monkeypatch):
+        """get_analytics_db_readonly() works fine when _remote_attach table is absent."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        import importlib
+        import src.db as db_module
+        importlib.reload(db_module)
+
+        self._make_analytics_db(tmp_path)
+        self._make_extract_db(tmp_path, "localsource", with_remote_attach=False)
+
+        conn = db_module.get_analytics_db_readonly()
+        try:
+            result = conn.execute("SELECT 'ok' AS status").fetchone()
+            assert result[0] == "ok"
+        finally:
+            conn.close()
+
+
 class TestGetAnalyticsDbReadonly:
     def test_analytics_readonly_rejects_malicious_dir_name(self, tmp_path, monkeypatch):
         """Directories with SQL-injection chars in their name are skipped."""
