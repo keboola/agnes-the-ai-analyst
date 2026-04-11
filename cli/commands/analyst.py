@@ -197,6 +197,8 @@ def _download_data(workspace: Path, server_url: str, token: str) -> int:
             typer.echo(f"  Downloaded {table_id}")
         except Exception as e:
             typer.echo(f"  Warning: could not download {table_id}: {e}", err=True)
+            if target.exists():
+                target.unlink()
 
     return downloaded
 
@@ -231,10 +233,11 @@ def _initialize_duckdb(workspace: Path) -> int:
             typer.echo(f"  Warning: Skipping {pq_file.name}: unsafe view name", err=True)
             continue
         abs_path = str(pq_resolved)
+        safe_path = abs_path.replace("'", "''")
         try:
             conn.execute(f'DROP VIEW IF EXISTS "{view_name}"')
             conn.execute(
-                f"CREATE VIEW \"{view_name}\" AS SELECT * FROM read_parquet('{abs_path}')"
+                f"CREATE VIEW \"{view_name}\" AS SELECT * FROM read_parquet('{safe_path}')"
             )
             count = conn.execute(f'SELECT count(*) FROM "{view_name}"').fetchone()[0]
             total_rows += count
