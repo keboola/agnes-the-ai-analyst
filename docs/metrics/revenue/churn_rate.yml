@@ -1,0 +1,48 @@
+name: churn_rate
+display_name: Monthly Churn Rate
+category: revenue
+type: ratio
+unit: percentage
+grain: monthly
+table: subscriptions
+expression: "churned_mrr / beginning_mrr * 100"
+time_column: billing_date
+description: "Monthly revenue churn rate — the percentage of MRR lost due to cancellations and downgrades in a given month."
+dimensions:
+  - plan_type
+  - region
+synonyms:
+  - mrr_churn
+  - revenue_churn
+  - monthly_churn
+notes:
+  - "Revenue churn differs from customer churn — one large customer churning can dominate"
+  - "Negative churn occurs when expansion revenue exceeds lost revenue"
+  - "Target: <2% monthly for healthy SaaS businesses"
+  - "Churned MRR includes full cancellations and partial downgrades"
+sql: |
+  WITH monthly_mrr AS (
+      SELECT
+          DATE_TRUNC('month', billing_date) AS month,
+          SUM(CASE WHEN status = 'active' THEN mrr_amount ELSE 0 END) AS active_mrr,
+          SUM(CASE WHEN status = 'churned'
+                   AND DATE_TRUNC('month', churned_at) = DATE_TRUNC('month', billing_date)
+                   THEN mrr_amount ELSE 0 END) AS churned_mrr
+      FROM subscriptions
+      GROUP BY 1
+  ),
+  lagged AS (
+      SELECT
+          month,
+          churned_mrr,
+          LAG(active_mrr) OVER (ORDER BY month) AS beginning_mrr
+      FROM monthly_mrr
+  )
+  SELECT
+      month,
+      churned_mrr,
+      beginning_mrr,
+      ROUND(churned_mrr / NULLIF(beginning_mrr, 0) * 100, 2) AS churn_rate_pct
+  FROM lagged
+  WHERE beginning_mrr IS NOT NULL
+  ORDER BY month

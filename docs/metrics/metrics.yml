@@ -1,0 +1,15 @@
+version: "2.0"
+description: "Business metrics starter pack. Import with: da metrics import docs/metrics/"
+categories:
+  - name: revenue
+    folder: revenue/
+    metrics: [total_revenue, mrr, arr, churn_rate]
+  - name: product_usage
+    folder: product_usage/
+    metrics: [active_users, feature_adoption]
+  - name: sales
+    folder: sales/
+    metrics: [new_customers, upsell_expansion, pipeline_value]
+  - name: operations
+    folder: operations/
+    metrics: [support_resolution_time, infrastructure_cost]

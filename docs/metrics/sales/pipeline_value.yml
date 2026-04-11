@@ -1,0 +1,34 @@
+name: pipeline_value
+display_name: Pipeline Value
+category: sales
+type: sum
+unit: USD
+grain: monthly
+table: opportunities
+expression: "SUM(deal_value * probability / 100)"
+time_column: created_at
+description: "Pipeline Value — the probability-weighted total value of open sales opportunities, used for revenue forecasting."
+dimensions:
+  - stage
+  - owner
+  - region
+synonyms:
+  - weighted_pipeline
+  - pipeline_forecast
+  - opportunity_value
+notes:
+  - "Weighted by close probability for each stage (e.g., 20% at Qualify, 80% at Proposal)"
+  - "Snapshot the pipeline at month-end for trend analysis"
+  - "Exclude closed-won and closed-lost opportunities"
+  - "Compare to quota to assess pipeline coverage ratio (target: 3-4x)"
+sql: |
+  SELECT
+      DATE_TRUNC('month', created_at) AS month,
+      stage,
+      COUNT(*) AS opportunity_count,
+      SUM(deal_value) AS total_deal_value,
+      SUM(deal_value * probability / 100.0) AS weighted_pipeline_value
+  FROM opportunities
+  WHERE status = 'open'
+  GROUP BY 1, 2
+  ORDER BY 1, weighted_pipeline_value DESC

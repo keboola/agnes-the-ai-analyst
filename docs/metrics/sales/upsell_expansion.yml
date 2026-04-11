@@ -1,0 +1,30 @@
+name: upsell_expansion
+display_name: Upsell & Expansion Revenue
+category: sales
+type: sum
+unit: USD
+grain: monthly
+table: subscriptions
+expression: "SUM(delta_mrr)"
+time_column: billing_date
+description: "Upsell & Expansion MRR — incremental recurring revenue gained from existing customers upgrading or expanding their subscriptions."
+dimensions:
+  - plan_type
+  - region
+synonyms:
+  - expansion_mrr
+  - upsell_revenue
+  - expansion_revenue
+notes:
+  - "Only includes positive MRR changes (upgrades, seat additions, add-ons)"
+  - "Excludes new business — filter on customers with prior active subscriptions"
+  - "Negative expansion (downgrades) is tracked separately as contraction MRR"
+sql: |
+  SELECT
+      DATE_TRUNC('month', billing_date) AS month,
+      SUM(delta_mrr) AS expansion_mrr
+  FROM subscriptions
+  WHERE change_type IN ('upgrade', 'expansion', 'seat_add')
+    AND delta_mrr > 0
+  GROUP BY 1
+  ORDER BY 1
