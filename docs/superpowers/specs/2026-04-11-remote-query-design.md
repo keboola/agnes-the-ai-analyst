@@ -22,20 +22,26 @@ The `padak/tmp_oss` v1 repo has `src/remote_query.py` with a two-phase protocol.
 
 ### Solution
 
-After ATTACHing extract.duckdb files in `get_analytics_db_readonly()`, scan each for a `_remote_attach` table. For each record:
+After ATTACHing extract.duckdb files in `get_analytics_db_readonly()`, scan each for a `_remote_attach` table. For each record, re-load the extension and re-attach the remote source.
 
-1. `LOAD {extension}` — loads pre-installed extension from disk (no INSTALL needed in read-only mode; orchestrator pre-installs during rebuild)
-2. `ATTACH '{url}' AS {alias} (TYPE {extension}, READ_ONLY)` — re-attaches the remote source
+**Important: DuckDB read-only LOAD behavior.** The `read_only=True` flag on `duckdb.connect()` blocks writes to the DB file, but `LOAD` writes to the extension cache in `~/.duckdb/extensions/` (separate from the DB file). This should work, but MUST be empirically verified as the first implementation step. If LOAD fails in read-only mode, the workaround is to open the analytics DB WITHOUT `read_only=True` but still use read-only SQL patterns (no INSERT/UPDATE/DELETE), or to call `LOAD` on a separate in-memory connection first (DuckDB extension cache is process-wide).
 
-If LOAD fails (extension not installed), log a warning and continue — local views still work.
+Steps for each `_remote_attach` record:
+1. `LOAD {extension}` — loads pre-installed extension from disk
+2. Read token from `os.environ[token_env]` if `token_env` is non-empty
+3. `ATTACH '{url}' AS {alias} (TYPE {extension}, READ_ONLY)` — with TOKEN if needed
+
+If LOAD or ATTACH fails, log a warning and continue — local views still work.
 
 ### Changes
 
 **File:** `src/db.py` — `get_analytics_db_readonly()` function
 
-Add ~20 lines after the existing extract.duckdb ATTACH loop. Read `_remote_attach` table from each attached extract DB, collect unique (alias, extension, url, token_env) tuples, and re-attach.
+Add ~25 lines after the existing extract.duckdb ATTACH loop. Read `_remote_attach` table from each attached extract DB, collect unique (alias, extension, url, token_env) tuples, and re-attach.
 
-Pattern follows `src/orchestrator.py:_attach_remote_extensions()` but simplified for read-only context (no INSTALL, just LOAD + ATTACH).
+Pattern follows `src/orchestrator.py:_attach_remote_extensions()` but simplified (no INSTALL — orchestrator pre-installs during rebuild).
+
+**Concurrency note:** If the orchestrator runs `_atomic_swap_db()` while a read-only connection is open, the existing connection holds a file descriptor to the old inode (Unix semantics). This is safe — the old data remains accessible until the connection is closed.
 
 ---
 
@@ -63,10 +69,12 @@ class RemoteQueryEngine:
 ### Two-Phase Flow
 
 1. **Phase 1 — BQ Registration:** For each `register_bq(alias, bq_sql)` call:
-   - COUNT(*) pre-check via Python BQ client → reject if >max_bq_rows
-   - Memory estimate: ~50 bytes/cell × rows × cols → reject if >max_memory_mb
+   - COUNT(*) pre-check via Python BQ client → reject if >max_bq_registration_rows
+   - Memory estimate: ~50 bytes/cell × rows × cols → reject if >max_memory_mb. Note: this is approximate. After query completes, use `arrow_table.nbytes` for accurate reporting in `bq_stats`.
    - Execute BQ query → `job.to_arrow()` → `conn.register(alias, arrow_table)`
-   - Uses `scripts/duckdb_manager.py:_create_bq_client()` for client creation and `register_bq_table()` logic (reuse, not reimplement)
+   - Uses `scripts/duckdb_manager.py:_create_bq_client()` for BQ client creation (reuse)
+   - Does NOT delegate to `register_bq_table()` directly — `RemoteQueryEngine.register_bq()` wraps BQ query execution with its own pre-check logic (COUNT, memory estimate), then calls `conn.register(alias, arrow_table)`. The existing `register_bq_table()` has no pre-check capability and would need signature changes to add one. Wrapping is cleaner than modifying shared code.
+   - Gracefully handle missing `google-cloud-bigquery` package: catch `ImportError` and raise `RemoteQueryError(error_type="bq_error", message="google-cloud-bigquery not installed")`
 
 2. **Phase 2 — DuckDB Query:** Execute final SQL against all views (local Parquet + registered BQ Arrow tables). Apply max_result_rows limit.
 
@@ -76,11 +84,13 @@ Configurable in `config/instance.yaml` under `remote_query:`:
 
 ```yaml
 remote_query:
-  max_bq_rows: 500000        # max rows from a single BQ subquery
-  max_memory_mb: 2048         # max estimated memory for BQ result
-  max_result_rows: 100000     # max rows in final result
-  timeout_seconds: 300        # BQ query timeout
+  max_bq_registration_rows: 500000   # max rows from a single BQ subquery (matches existing instance.yaml.example key)
+  max_memory_mb: 2048                # max estimated memory for BQ result
+  max_result_rows: 100000            # max rows in final result
+  timeout_seconds: 300               # BQ query timeout
 ```
+
+Note: `max_bq_registration_rows` matches the key already documented in `config/instance.yaml.example`.
 
 Defaults are hardcoded in `RemoteQueryEngine` and overridden by instance config.
 
@@ -110,6 +120,8 @@ da query --sql "SELECT o.*, t.views FROM orders o JOIN traffic t ON o.date = t.d
   {"register_bq": {"traffic": "SELECT ..."}, "sql": "SELECT ..."}
   ```
 - Output formats: `table` (default), `csv`, `json`
+
+**CLI argument handling:** The existing `query_command` has `sql` as a required positional argument. When `--register-bq` is used, `sql` should be provided via `--sql` flag instead (named option, not positional). When `--stdin` is used, both `sql` and `register_bq` come from stdin JSON. Make `sql` an optional positional (`typer.Argument(None)`) and validate that exactly one of (positional sql, --sql flag, --stdin) is provided.
 
 ### API: `POST /api/query/hybrid`
 
@@ -141,7 +153,20 @@ Authorization: Bearer <admin_token>
 
 **Auth:** `require_admin` — BQ queries cost money, only admins can trigger them.
 
-**Validation:** `register_bq` SQL strings are validated as SELECT-only (no INSERT/UPDATE/DELETE/DROP).
+**Validation — both `register_bq` SQL and final `sql`:**
+- Apply the same SQL blocklist from `app/api/query.py` (blocks LOAD, ATTACH, INSTALL, read_parquet with paths, path traversal patterns, etc.)
+- `register_bq` SQL additionally validated as SELECT-only (no INSERT/UPDATE/DELETE/DROP)
+- Reuse the existing `_validate_sql()` helper from `app/api/query.py` (extract to shared utility if needed)
+
+**Connection lifecycle:** The API endpoint owns the connection. Pattern:
+```python
+analytics = get_analytics_db_readonly()
+try:
+    engine = RemoteQueryEngine(analytics)
+    # ... register_bq + execute
+finally:
+    analytics.close()
+```
 
 ---
 
