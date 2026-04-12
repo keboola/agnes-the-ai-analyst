@@ -109,3 +109,7 @@ class TestAdminRoleGuards:
     def test_admin_can_access_admin_permissions(self, web_client, admin_cookie):
         resp = web_client.get("/admin/permissions", cookies=admin_cookie)
         assert resp.status_code == 200
+
+    def test_analyst_cannot_access_corporate_memory_admin(self, web_client, admin_cookie, analyst_cookie):
+        resp = web_client.get("/corporate-memory/admin", cookies=analyst_cookie)
+        assert resp.status_code == 403
