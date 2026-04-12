@@ -281,6 +281,50 @@ class TestAuthSecurity:
         assert resp.status_code == 401
 
 
+# ---- Script RBAC ----
+
+@pytest.fixture
+def viewer_client(tmp_path, monkeypatch):
+    """TestClient with a viewer-role user seeded."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-32chars-minimum!!!!!")
+    monkeypatch.setenv("SCRIPT_TIMEOUT", "5")
+
+    from app.main import create_app
+    from src.db import get_system_db
+    from src.repositories.users import UserRepository
+    from app.auth.jwt import create_access_token
+    from fastapi.testclient import TestClient
+
+    conn = get_system_db()
+    UserRepository(conn).create(id="viewer1", email="viewer@test.com", name="Viewer", role="viewer")
+    conn.close()
+
+    app = create_app()
+    c = TestClient(app)
+    token = create_access_token(user_id="viewer1", email="viewer@test.com", role="viewer")
+    return c, token
+
+
+class TestScriptRBAC:
+    def test_viewer_cannot_run_scripts(self, viewer_client):
+        """Viewers should not be able to execute scripts."""
+        c, token = viewer_client
+        headers = {"Authorization": f"Bearer {token}"}
+        resp = c.post("/api/scripts/run", json={
+            "name": "test", "source": "print('hi')"
+        }, headers=headers)
+        assert resp.status_code == 403
+
+    def test_viewer_cannot_deploy_scripts(self, viewer_client):
+        c, token = viewer_client
+        headers = {"Authorization": f"Bearer {token}"}
+        resp = c.post("/api/scripts/deploy", json={
+            "name": "test", "source": "print('hi')", "schedule": ""
+        }, headers=headers)
+        assert resp.status_code == 403
+
+
 # ---- JWT Claims ----
 
 class TestJwtClaims:
