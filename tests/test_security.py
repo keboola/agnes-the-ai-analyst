@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-32chars-minimum!!!!!")
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-e2e")
     monkeypatch.setenv("SCRIPT_TIMEOUT", "5")
 
     from app.main import create_app
@@ -287,7 +287,7 @@ class TestAuthSecurity:
 def viewer_client(tmp_path, monkeypatch):
     """TestClient with a viewer-role user seeded."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-32chars-minimum!!!!!")
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-e2e")
     monkeypatch.setenv("SCRIPT_TIMEOUT", "5")
 
     from app.main import create_app
