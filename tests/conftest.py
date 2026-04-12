@@ -113,3 +113,48 @@ def seeded_app(e2e_env):
         "analyst_token": analyst_token,
         "env": e2e_env,
     }
+
+
+@pytest.fixture
+def mock_extract_factory(e2e_env):
+    """Factory fixture for creating mock extract.duckdb files.
+
+    Returns a callable: factory(source_name, tables, remote_attach=None)
+      - source_name: str — name of the connector source directory
+      - tables: list[dict] — same format as create_mock_extract
+      - remote_attach: list[dict] | None — rows for _remote_attach table,
+        each dict with keys: alias, extension, url, token_env
+    """
+    def _factory(source_name: str, tables: list[dict], remote_attach=None):
+        db_path = create_mock_extract(e2e_env["extracts_dir"], source_name, tables)
+        if remote_attach:
+            conn = duckdb.connect(str(db_path))
+            conn.execute("""CREATE TABLE IF NOT EXISTS _remote_attach (
+                alias VARCHAR,
+                extension VARCHAR,
+                url VARCHAR,
+                token_env VARCHAR
+            )""")
+            for row in remote_attach:
+                conn.execute(
+                    "INSERT INTO _remote_attach VALUES (?, ?, ?, ?)",
+                    [row["alias"], row["extension"], row["url"], row["token_env"]],
+                )
+            conn.close()
+        return db_path
+
+    return _factory
+
+
+@pytest.fixture
+def analyst_user(seeded_app):
+    """Convenience fixture returning analyst auth headers dict."""
+    token = seeded_app["analyst_token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+def admin_user(seeded_app):
+    """Convenience fixture returning admin auth headers dict."""
+    token = seeded_app["admin_token"]
+    return {"Authorization": f"Bearer {token}"}
