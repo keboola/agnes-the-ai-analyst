@@ -250,6 +250,93 @@ def get_analytics_db() -> duckdb.DuckDBPyConnection:
     return duckdb.connect(str(db_path))
 
 
+def _reattach_remote_extensions(
+    conn: duckdb.DuckDBPyConnection, extracts_dir: Path
+) -> None:
+    """Re-LOAD DuckDB extensions listed in _remote_attach tables of each extract.duckdb.
+
+    Called from get_analytics_db_readonly() after ATTACHing extract.duckdb files so
+    that remote views (e.g. BigQuery) resolve correctly.  Uses LOAD only — no INSTALL —
+    to avoid touching the network in read-only query paths.
+    """
+    if not extracts_dir.exists():
+        return
+
+    try:
+        attached_dbs = {
+            r[0] for r in conn.execute("SELECT database_name FROM duckdb_databases()").fetchall()
+        }
+    except Exception:
+        return
+
+    for ext_dir in sorted(extracts_dir.iterdir()):
+        if not ext_dir.is_dir():
+            continue
+        if not _SAFE_IDENTIFIER.match(ext_dir.name):
+            continue
+        db_file = ext_dir / "extract.duckdb"
+        if not db_file.exists():
+            continue
+        # Only process sources that were successfully attached
+        if ext_dir.name not in attached_dbs:
+            continue
+
+        # Check whether this extract has a _remote_attach table
+        try:
+            has_table = conn.execute(
+                "SELECT 1 FROM information_schema.tables "
+                f"WHERE table_catalog='{ext_dir.name}' AND table_name='_remote_attach'"
+            ).fetchone()
+            if not has_table:
+                continue
+        except Exception:
+            continue
+
+        try:
+            rows = conn.execute(
+                f"SELECT alias, extension, url, token_env FROM {ext_dir.name}._remote_attach"
+            ).fetchall()
+        except Exception as e:
+            logger.debug("Could not read _remote_attach from %s: %s", ext_dir.name, e)
+            continue
+
+        # Refresh attached list before processing each source's rows
+        try:
+            attached_dbs = {
+                r[0] for r in conn.execute("SELECT database_name FROM duckdb_databases()").fetchall()
+            }
+        except Exception:
+            pass
+
+        for alias, extension, url, token_env in rows:
+            if not _SAFE_IDENTIFIER.match(alias or ""):
+                logger.debug("Skipping unsafe remote_attach alias: %r", alias)
+                continue
+            if not _SAFE_IDENTIFIER.match(extension or ""):
+                logger.debug("Skipping unsafe remote_attach extension: %r", extension)
+                continue
+            if alias in attached_dbs:
+                logger.debug("Remote source %s already attached, skipping", alias)
+                continue
+            try:
+                conn.execute(f"LOAD {extension};")
+                token = os.environ.get(token_env, "") if token_env else ""
+                safe_url = url.replace("'", "''")
+                if token:
+                    escaped_token = token.replace("'", "''")
+                    conn.execute(
+                        f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, TOKEN '{escaped_token}')"
+                    )
+                else:
+                    conn.execute(
+                        f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)"
+                    )
+                attached_dbs.add(alias)
+                logger.debug("Re-attached remote source %s via %s extension", alias, extension)
+            except Exception as e:
+                logger.debug("Could not re-attach remote source %s: %s", alias, e)
+
+
 def get_analytics_db_readonly() -> duckdb.DuckDBPyConnection:
     """Read-only connection to analytics DB. Blocks writes and external access.
 
@@ -277,6 +364,8 @@ def get_analytics_db_readonly() -> duckdb.DuckDBPyConnection:
                     conn.execute(f"ATTACH '{db_file}' AS {ext_dir.name} (READ_ONLY)")
                 except Exception:
                     pass
+    # Re-attach remote extensions so BigQuery / other remote views resolve.
+    _reattach_remote_extensions(conn, extracts_dir)
     # Note: external_access stays enabled because views use read_parquet() on local files.
     # File-path-based attacks are blocked by the SQL blocklist in app/api/query.py.
     return conn
