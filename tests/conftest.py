@@ -88,6 +88,31 @@ def write_test_parquet(path: str, data: list[dict]):
 
 
 @pytest.fixture
+def mock_extract_factory(e2e_env):
+    """Factory fixture: returns callable that creates mock extract.duckdb files.
+
+    Usage:
+        mock_extract_factory(source_name, tables_list)
+    """
+    def _factory(source_name: str, tables: list, remote_attach=None):
+        db_path = create_mock_extract(e2e_env["extracts_dir"], source_name, tables)
+        if remote_attach:
+            import duckdb as _duckdb
+            conn = _duckdb.connect(str(db_path))
+            conn.execute("""CREATE TABLE IF NOT EXISTS _remote_attach (
+                alias VARCHAR, extension VARCHAR, url VARCHAR, token_env VARCHAR
+            )""")
+            for row in remote_attach:
+                conn.execute(
+                    "INSERT INTO _remote_attach VALUES (?, ?, ?, ?)",
+                    [row["alias"], row["extension"], row["url"], row["token_env"]],
+                )
+            conn.close()
+        return db_path
+    return _factory
+
+
+@pytest.fixture
 def seeded_app(e2e_env):
     """FastAPI TestClient with seeded admin + analyst users, JWT tokens."""
     from src.db import get_system_db
