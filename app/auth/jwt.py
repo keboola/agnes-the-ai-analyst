@@ -22,10 +22,25 @@ def _get_secret_key() -> str:
     return key
 
 
-SECRET_KEY = _get_secret_key()
+_SECRET_KEY_CACHE: Optional[str] = None
 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 24  # 24 hours
+
+
+def _get_cached_secret_key() -> str:
+    """Return the JWT secret, caching after first call.
+
+    The cache is reset when TESTING env var is set so that each test
+    module picks up the correct JWT_SECRET_KEY from monkeypatch/env.
+    """
+    global _SECRET_KEY_CACHE
+    # In test mode, always re-read from env to respect monkeypatch
+    if os.environ.get("TESTING", "").lower() in ("1", "true"):
+        return os.environ.get("JWT_SECRET_KEY", "test-jwt-secret-key-minimum-32-chars!!")
+    if _SECRET_KEY_CACHE is None:
+        _SECRET_KEY_CACHE = _get_secret_key()
+    return _SECRET_KEY_CACHE
 
 
 def create_access_token(
@@ -45,13 +60,13 @@ def create_access_token(
         "iat": datetime.now(timezone.utc),
         "jti": uuid.uuid4().hex,
     }
-    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+    return jwt.encode(payload, _get_cached_secret_key(), algorithm=ALGORITHM)
 
 
 def verify_token(token: str) -> Optional[dict]:
     """Verify and decode a JWT token. Returns payload dict or None."""
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(token, _get_cached_secret_key(), algorithms=[ALGORITHM])
         return payload
     except jwt.ExpiredSignatureError:
         return None
