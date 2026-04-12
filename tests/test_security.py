@@ -315,7 +315,10 @@ class TestJwtSecretHardening:
         sys.modules.pop("app.auth.jwt", None)
         sys.modules.pop("app.secrets", None)
         try:
-            importlib.import_module("app.auth.jwt")
+            mod = importlib.import_module("app.auth.jwt")
+            # Secret is now lazy — trigger it by calling the accessor
+            mod._SECRET_KEY_CACHE = None
+            mod._get_cached_secret_key()
             secret_file = tmp_path / "state" / ".jwt_secret"
             assert secret_file.exists(), "JWT secret file should be auto-generated"
             secret = secret_file.read_text().strip()
