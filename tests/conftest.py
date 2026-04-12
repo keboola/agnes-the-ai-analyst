@@ -6,6 +6,12 @@ from pathlib import Path
 import duckdb
 import pytest
 
+# Ensure consistent JWT secret across all workers (pytest-xdist).
+# Set at import time so every worker process picks up the same values
+# before any module-level code in app.auth.jwt caches the secret.
+os.environ.setdefault("TESTING", "1")
+os.environ.setdefault("JWT_SECRET_KEY", "test-secret-e2e")
+
 
 @pytest.fixture
 def e2e_env(tmp_path, monkeypatch):
