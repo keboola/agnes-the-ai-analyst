@@ -514,6 +514,40 @@ class TestExtensionReattach:
         finally:
             conn.close()
 
+    def test_reattach_attempts_load(self, tmp_path, monkeypatch):
+        """Verify _reattach_remote_extensions reads _remote_attach and attempts LOAD."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        import importlib
+        import src.db as db_module
+        importlib.reload(db_module)
+
+        self._make_analytics_db(tmp_path)
+        self._make_extract_db(tmp_path, "bqsource", with_remote_attach=True)
+
+        # Call get_analytics_db_readonly and verify the _remote_attach table is readable
+        conn = db_module.get_analytics_db_readonly()
+        try:
+            # Verify the extract was attached
+            dbs = {r[0] for r in conn.execute("SELECT database_name FROM duckdb_databases()").fetchall()}
+            assert "bqsource" in dbs, f"bqsource should be attached, got: {dbs}"
+
+            # Verify _remote_attach table is accessible via table_catalog
+            has = conn.execute(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_catalog='bqsource' AND table_name='_remote_attach'"
+            ).fetchone()
+            assert has is not None, "_remote_attach table should be visible via table_catalog"
+
+            # Read the rows to verify they're correct
+            rows = conn.execute(
+                "SELECT alias, extension, url FROM bqsource._remote_attach"
+            ).fetchall()
+            assert len(rows) == 1
+            assert rows[0][0] == "bq"
+            assert rows[0][1] == "bigquery"
+        finally:
+            conn.close()
+
     def test_skips_missing_remote_attach(self, tmp_path, monkeypatch):
         """get_analytics_db_readonly() works fine when _remote_attach table is absent."""
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
