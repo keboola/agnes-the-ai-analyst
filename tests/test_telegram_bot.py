@@ -1,23 +1,9 @@
 """Tests for Telegram bot message handlers."""
 
 import asyncio
-import os
-import sys
-import tempfile
 from unittest.mock import AsyncMock, patch
 
 import pytest
-
-# Patch BOT_LOG_FILE at import time (before any fixture runs) so that
-# bot.py can be imported even when /data/notifications/ doesn't exist.
-# This is critical for pytest-xdist where module-scoped fixtures
-# may not run before the worker tries to import the module.
-_tmp_log = tempfile.mktemp(suffix=".log")
-
-import services.telegram_bot.config as _cfg
-_cfg.BOT_LOG_FILE = _tmp_log
-# Ensure the bot module is not cached with the old config
-sys.modules.pop("services.telegram_bot.bot", None)
 
 
 def _make_message(text: str, chat_id: int = 10) -> dict:

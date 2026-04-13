@@ -12,6 +12,16 @@ import pytest
 os.environ.setdefault("TESTING", "1")
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-e2e")
 
+# Ensure directories exist for modules with module-level FileHandlers.
+# bot.py creates FileHandler(config.BOT_LOG_FILE) at import time.
+# config.py reads DATA_DIR at import time. We must ensure the directory
+# exists for whatever DATA_DIR resolves to (default: /data in Docker).
+import tempfile as _tf
+if "DATA_DIR" not in os.environ:
+    os.environ["DATA_DIR"] = os.path.join(_tf.gettempdir(), ".agnes-test-data")
+os.makedirs(os.path.join(os.environ["DATA_DIR"], "notifications"), exist_ok=True)
+os.makedirs(os.path.join(os.environ["DATA_DIR"], "state"), exist_ok=True)
+
 
 @pytest.fixture
 def e2e_env(tmp_path, monkeypatch):
