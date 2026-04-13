@@ -33,6 +33,9 @@ def webhook_client(tmp_path, monkeypatch):
     monkeypatch.setattr(svc.Config, "JIRA_WEBHOOK_SECRET", "test-webhook-secret")
     monkeypatch.setattr(svc.Config, "JIRA_DATA_DIR", data_dir)
 
+    # Reset singleton so it picks up fresh Config values
+    svc._jira_service = None
+
     # Reimport app to pick up router
     from app.main import create_app
     app = create_app()
@@ -70,20 +73,27 @@ def test_invalid_signature_401(webhook_client):
 
 
 def test_valid_signature_accepted(webhook_client):
-    """POST with correct HMAC-SHA256 is not rejected as 401."""
+    """POST with correct HMAC-SHA256 passes signature check (not 401)."""
+    from unittest.mock import patch
+
     payload = json.dumps({"webhookEvent": "jira:issue_updated", "issue": {"key": "TEST-1"}}).encode()
     sig = _sign(payload, "test-webhook-secret")
-    resp = webhook_client.post(
-        "/webhooks/jira",
-        content=payload,
-        headers={
-            "Content-Type": "application/json",
-            "X-Hub-Signature-256": sig,
-        },
-    )
-    # Should pass signature check; 200, 500 (service error), or 503 (not configured) are fine
-    # 500 can occur if JIRA_DATA_DIR points to a stale path from another test
-    assert resp.status_code in (200, 500, 503)
+
+    # Mock process_webhook_event so the test only checks HMAC validation,
+    # not the full Jira API flow (which requires a real Jira connection).
+    with patch("app.api.jira_webhooks.get_jira_service") as mock_svc:
+        mock_svc.return_value.is_configured.return_value = True
+        mock_svc.return_value.process_webhook_event.return_value = True
+
+        resp = webhook_client.post(
+            "/webhooks/jira",
+            content=payload,
+            headers={
+                "Content-Type": "application/json",
+                "X-Hub-Signature-256": sig,
+            },
+        )
+    assert resp.status_code == 200
 
 
 def test_empty_payload_400(webhook_client):
