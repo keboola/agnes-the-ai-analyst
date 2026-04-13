@@ -46,13 +46,16 @@ except Exception:
     _bot_domain_suffix = ""
 
 # Configure logging
+_log_handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
+try:
+    os.makedirs(os.path.dirname(config.BOT_LOG_FILE), exist_ok=True)
+    _log_handlers.append(logging.FileHandler(config.BOT_LOG_FILE, mode="a"))
+except OSError:
+    pass  # File logging unavailable (e.g., read-only filesystem in CI)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(config.BOT_LOG_FILE, mode="a"),
-    ],
+    handlers=_log_handlers,
 )
 logger = logging.getLogger("notify-bot")
 
