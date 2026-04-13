@@ -6,7 +6,7 @@ class TestInstanceConfig:
     def test_missing_config_returns_defaults(self, tmp_path, monkeypatch):
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         monkeypatch.setenv("TESTING", "1")
-        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-e2e")
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-minimum-32-characters!!")
         from app.instance_config import get_instance_name
         name = get_instance_name()
         assert isinstance(name, str)
@@ -15,7 +15,7 @@ class TestInstanceConfig:
         """get_instance_name should read instance.name from YAML, not flat instance_name."""
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         monkeypatch.setenv("TESTING", "1")
-        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-e2e")
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-minimum-32-characters!!")
 
         state_dir = tmp_path / "state"
         state_dir.mkdir(exist_ok=True)

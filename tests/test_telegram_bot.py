@@ -30,7 +30,7 @@ def _make_message(text: str, chat_id: int = 10) -> dict:
 
 def _run(coro):
     """Run a coroutine synchronously."""
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 class TestHandleMessage:

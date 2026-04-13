@@ -105,7 +105,8 @@ class WebhookEventFactory:
 
     @staticmethod
     def sign_payload(payload: dict[str, Any], secret: str) -> str:
-        body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        """Sign payload with HMAC-SHA256. Uses default json.dumps() to match production."""
+        body = json.dumps(payload).encode()
         sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
         return f"sha256={sig}"
 
