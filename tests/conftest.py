@@ -10,7 +10,7 @@ import pytest
 # Set at import time so every worker process picks up the same values
 # before any module-level code in app.auth.jwt caches the secret.
 os.environ.setdefault("TESTING", "1")
-os.environ.setdefault("JWT_SECRET_KEY", "test-secret-e2e")
+os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-minimum-32-characters!!")
 
 # Ensure directories exist for modules with module-level FileHandlers.
 # bot.py creates FileHandler(config.BOT_LOG_FILE) at import time.
@@ -27,7 +27,7 @@ os.makedirs(os.path.join(os.environ["DATA_DIR"], "state"), exist_ok=True)
 def e2e_env(tmp_path, monkeypatch):
     """Set up complete E2E environment with DATA_DIR, create dirs."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-e2e")
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-minimum-32-characters!!")
 
     (tmp_path / "extracts").mkdir()
     (tmp_path / "analytics").mkdir()
@@ -101,31 +101,6 @@ def write_test_parquet(path: str, data: list[dict]):
     union_sql = " UNION ALL ".join(selects)
     conn.execute(f"COPY ({union_sql}) TO '{path}' (FORMAT PARQUET)")
     conn.close()
-
-
-@pytest.fixture
-def mock_extract_factory(e2e_env):
-    """Factory fixture: returns callable that creates mock extract.duckdb files.
-
-    Usage:
-        mock_extract_factory(source_name, tables_list)
-    """
-    def _factory(source_name: str, tables: list, remote_attach=None):
-        db_path = create_mock_extract(e2e_env["extracts_dir"], source_name, tables)
-        if remote_attach:
-            import duckdb as _duckdb
-            conn = _duckdb.connect(str(db_path))
-            conn.execute("""CREATE TABLE IF NOT EXISTS _remote_attach (
-                alias VARCHAR, extension VARCHAR, url VARCHAR, token_env VARCHAR
-            )""")
-            for row in remote_attach:
-                conn.execute(
-                    "INSERT INTO _remote_attach VALUES (?, ?, ?, ?)",
-                    [row["alias"], row["extension"], row["url"], row["token_env"]],
-                )
-            conn.close()
-        return db_path
-    return _factory
 
 
 @pytest.fixture
