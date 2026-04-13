@@ -56,7 +56,9 @@ jobs:
         run: uv pip install --system ".[dev]"
 
       - name: Start services
-        run: docker compose up -d --wait --wait-timeout 60
+        run: |
+          touch .env
+          docker compose up -d --wait --wait-timeout 60
 
       - name: Run Docker E2E tests
         run: pytest tests/ -v --tb=short -m docker --timeout=120
