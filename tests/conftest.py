@@ -6,12 +6,28 @@ from pathlib import Path
 import duckdb
 import pytest
 
+# Ensure consistent JWT secret across all workers (pytest-xdist).
+# Set at import time so every worker process picks up the same values
+# before any module-level code in app.auth.jwt caches the secret.
+os.environ.setdefault("TESTING", "1")
+os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-minimum-32-characters!!")
+
+# Ensure directories exist for modules with module-level FileHandlers.
+# bot.py creates FileHandler(config.BOT_LOG_FILE) at import time.
+# config.py reads DATA_DIR at import time. We must ensure the directory
+# exists for whatever DATA_DIR resolves to (default: /data in Docker).
+import tempfile as _tf
+if "DATA_DIR" not in os.environ:
+    os.environ["DATA_DIR"] = os.path.join(_tf.gettempdir(), ".agnes-test-data")
+os.makedirs(os.path.join(os.environ["DATA_DIR"], "notifications"), exist_ok=True)
+os.makedirs(os.path.join(os.environ["DATA_DIR"], "state"), exist_ok=True)
+
 
 @pytest.fixture
 def e2e_env(tmp_path, monkeypatch):
     """Set up complete E2E environment with DATA_DIR, create dirs."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-e2e")
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-minimum-32-characters!!")
 
     (tmp_path / "extracts").mkdir()
     (tmp_path / "analytics").mkdir()
@@ -113,3 +129,48 @@ def seeded_app(e2e_env):
         "analyst_token": analyst_token,
         "env": e2e_env,
     }
+
+
+@pytest.fixture
+def mock_extract_factory(e2e_env):
+    """Factory fixture for creating mock extract.duckdb files.
+
+    Returns a callable: factory(source_name, tables, remote_attach=None)
+      - source_name: str — name of the connector source directory
+      - tables: list[dict] — same format as create_mock_extract
+      - remote_attach: list[dict] | None — rows for _remote_attach table,
+        each dict with keys: alias, extension, url, token_env
+    """
+    def _factory(source_name: str, tables: list[dict], remote_attach=None):
+        db_path = create_mock_extract(e2e_env["extracts_dir"], source_name, tables)
+        if remote_attach:
+            conn = duckdb.connect(str(db_path))
+            conn.execute("""CREATE TABLE IF NOT EXISTS _remote_attach (
+                alias VARCHAR,
+                extension VARCHAR,
+                url VARCHAR,
+                token_env VARCHAR
+            )""")
+            for row in remote_attach:
+                conn.execute(
+                    "INSERT INTO _remote_attach VALUES (?, ?, ?, ?)",
+                    [row["alias"], row["extension"], row["url"], row["token_env"]],
+                )
+            conn.close()
+        return db_path
+
+    return _factory
+
+
+@pytest.fixture
+def analyst_user(seeded_app):
+    """Convenience fixture returning analyst auth headers dict."""
+    token = seeded_app["analyst_token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+def admin_user(seeded_app):
+    """Convenience fixture returning admin auth headers dict."""
+    token = seeded_app["admin_token"]
+    return {"Authorization": f"Bearer {token}"}

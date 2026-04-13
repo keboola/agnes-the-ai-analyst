@@ -237,3 +237,16 @@ class TestUpload:
             headers=_h(client["admin"]),
         )
         assert resp.status_code == 413
+
+    def test_upload_does_not_leak_absolute_path(self, client):
+        """Upload response should not contain absolute filesystem paths."""
+        import io
+        resp = client["client"].post(
+            "/api/upload/artifacts",
+            files={"file": ("test.txt", io.BytesIO(b"hello"), "text/plain")},
+            headers=_h(client["admin"]),
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert not data.get("path", "").startswith("/"), "Response should not leak absolute path"
+        assert "filename" in data, "Response should contain filename"
