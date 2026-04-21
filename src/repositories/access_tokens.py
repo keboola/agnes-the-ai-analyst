@@ -69,8 +69,8 @@ class AccessTokenRepository:
     def delete(self, token_id: str) -> None:
         self.conn.execute("DELETE FROM personal_access_tokens WHERE id = ?", [token_id])
 
-    def mark_used(self, token_id: str) -> None:
+    def mark_used(self, token_id: str, ip: Optional[str] = None) -> None:
         self.conn.execute(
-            "UPDATE personal_access_tokens SET last_used_at = ? WHERE id = ?",
-            [datetime.now(timezone.utc), token_id],
+            "UPDATE personal_access_tokens SET last_used_at = ?, last_used_ip = ? WHERE id = ?",
+            [datetime.now(timezone.utc), ip, token_id],
         )

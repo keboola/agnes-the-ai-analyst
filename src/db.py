@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -218,6 +218,7 @@ CREATE TABLE IF NOT EXISTS personal_access_tokens (
     created_at   TIMESTAMP NOT NULL DEFAULT current_timestamp,
     expires_at   TIMESTAMP,
     last_used_at TIMESTAMP,
+    last_used_ip VARCHAR,
     revoked_at   TIMESTAMP
 );
 """
@@ -427,6 +428,10 @@ _V5_TO_V6_MIGRATIONS = [
     """,
 ]
 
+_V6_TO_V7_MIGRATIONS = [
+    "ALTER TABLE personal_access_tokens ADD COLUMN IF NOT EXISTS last_used_ip VARCHAR",
+]
+
 _V3_TO_V4_MIGRATIONS = [
     """
     CREATE TABLE IF NOT EXISTS metric_definitions (
@@ -513,6 +518,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                     conn.execute(sql)
             if current < 6:
                 for sql in _V5_TO_V6_MIGRATIONS:
+                    conn.execute(sql)
+            if current < 7:
+                for sql in _V6_TO_V7_MIGRATIONS:
                     conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",

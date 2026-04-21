@@ -19,6 +19,17 @@ def _get_db():
         conn.close()
 
 
+def _client_ip(request: Optional[Request]) -> Optional[str]:
+    """Return the request's client IP, preferring the first hop of X-Forwarded-For."""
+    if request is None:
+        return None
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",", 1)[0].strip() or None
+    client = getattr(request, "client", None)
+    return getattr(client, "host", None) if client else None
+
+
 async def get_current_user(
     request: Request = None,
     authorization: Optional[str] = Header(None),
@@ -92,9 +103,28 @@ async def get_current_user(
             actual = hashlib.sha256(token.encode()).hexdigest()
             if actual != stored_hash:
                 _fail("Token mismatch")
-        # Record last_used_at synchronously — acceptable cost; can batch later.
+
+        # First-use-from-new-IP audit entry (#12 acceptance criterion).
+        # Only emit when the IP changes on a *subsequent* use — the very
+        # first use of a token is not surprising and doesn't need an entry.
+        current_ip = _client_ip(request)
+        previous_ip = record.get("last_used_ip")
+        already_used = record.get("last_used_at") is not None
+        if already_used and current_ip and current_ip != previous_ip:
+            try:
+                from src.repositories.audit import AuditRepository
+                AuditRepository(conn).log(
+                    user_id=user["id"],
+                    action="token.first_use_new_ip",
+                    resource=f"token:{payload['jti']}",
+                    params={"ip": current_ip, "previous_ip": previous_ip},
+                )
+            except Exception:
+                pass  # audit failure must not block auth
+
+        # Record last_used_at / last_used_ip synchronously — acceptable cost; can batch later.
         try:
-            tokens_repo.mark_used(payload["jti"])
+            tokens_repo.mark_used(payload["jti"], ip=current_ip)
         except Exception:
             pass
 

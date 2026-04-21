@@ -29,6 +29,20 @@ def test_schema_v6_creates_pat_table(fresh_db):
         close_system_db()
 
 
+def test_schema_v7_adds_last_used_ip_column(fresh_db):
+    """Schema v7: personal_access_tokens has last_used_ip column."""
+    from src.db import get_system_db, get_schema_version, close_system_db
+    conn = get_system_db()
+    try:
+        cols = conn.execute("PRAGMA table_info(personal_access_tokens)").fetchall()
+        col_names = [c[1] for c in cols]
+        assert "last_used_ip" in col_names
+        assert get_schema_version(conn) >= 7
+    finally:
+        conn.close()
+        close_system_db()
+
+
 def test_access_token_repo_create_and_lookup(fresh_db):
     import hashlib, uuid
     from datetime import datetime, timezone, timedelta
@@ -288,3 +302,171 @@ def test_profile_page_renders(fresh_db):
     )
     assert resp.status_code == 200
     assert "Personal access tokens" in resp.text
+
+
+def test_pat_first_use_from_new_ip_audits(fresh_db):
+    """Using a PAT from a different IP than last time emits an audit entry."""
+    from fastapi.testclient import TestClient
+    import hashlib, uuid
+    from datetime import datetime, timezone, timedelta
+    from src.db import get_system_db, close_system_db
+    from src.repositories.users import UserRepository
+    from src.repositories.access_tokens import AccessTokenRepository
+    from app.auth.jwt import create_access_token
+    from app.main import app
+
+    conn = get_system_db()
+    try:
+        uid = str(uuid.uuid4())
+        UserRepository(conn).create(id=uid, email="u@t", name="U", role="admin")
+        tid = str(uuid.uuid4())
+        pat = create_access_token(
+            user_id=uid, email="u@t", role="admin", token_id=tid, typ="pat",
+            expires_delta=timedelta(days=90),
+        )
+        repo = AccessTokenRepository(conn)
+        repo.create(
+            id=tid, user_id=uid, name="ci",
+            token_hash=hashlib.sha256(pat.encode()).hexdigest(),
+            prefix=tid.replace("-", "")[:8],
+            expires_at=datetime.now(timezone.utc) + timedelta(days=90),
+        )
+        # Simulate a prior use from 1.1.1.1 so the upcoming call is a "new IP".
+        repo.mark_used(tid, ip="1.1.1.1")
+    finally:
+        conn.close()
+        close_system_db()
+
+    client = TestClient(app)
+    resp = client.get(
+        "/api/users",
+        headers={
+            "Authorization": f"Bearer {pat}",
+            "Accept": "application/json",
+            "X-Forwarded-For": "2.2.2.2",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+    conn = get_system_db()
+    try:
+        rows = conn.execute(
+            "SELECT params FROM audit_log WHERE action = 'token.first_use_new_ip' AND user_id = ?",
+            [uid],
+        ).fetchall()
+        assert len(rows) == 1, f"expected 1 audit row, got {len(rows)}"
+        params = rows[0][0]
+        # params is stored as JSON text; check the IP appears
+        assert "2.2.2.2" in str(params)
+    finally:
+        conn.close()
+        close_system_db()
+
+
+def test_pat_same_ip_does_not_audit(fresh_db):
+    """Using a PAT from the same IP as last time does NOT emit an audit entry."""
+    from fastapi.testclient import TestClient
+    import hashlib, uuid
+    from datetime import datetime, timezone, timedelta
+    from src.db import get_system_db, close_system_db
+    from src.repositories.users import UserRepository
+    from src.repositories.access_tokens import AccessTokenRepository
+    from app.auth.jwt import create_access_token
+    from app.main import app
+
+    conn = get_system_db()
+    try:
+        uid = str(uuid.uuid4())
+        UserRepository(conn).create(id=uid, email="u@t", name="U", role="admin")
+        tid = str(uuid.uuid4())
+        pat = create_access_token(
+            user_id=uid, email="u@t", role="admin", token_id=tid, typ="pat",
+            expires_delta=timedelta(days=90),
+        )
+        repo = AccessTokenRepository(conn)
+        repo.create(
+            id=tid, user_id=uid, name="ci",
+            token_hash=hashlib.sha256(pat.encode()).hexdigest(),
+            prefix=tid.replace("-", "")[:8],
+            expires_at=datetime.now(timezone.utc) + timedelta(days=90),
+        )
+        repo.mark_used(tid, ip="3.3.3.3")
+    finally:
+        conn.close()
+        close_system_db()
+
+    client = TestClient(app)
+    resp = client.get(
+        "/api/users",
+        headers={
+            "Authorization": f"Bearer {pat}",
+            "Accept": "application/json",
+            "X-Forwarded-For": "3.3.3.3",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+    conn = get_system_db()
+    try:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE action = 'token.first_use_new_ip' AND user_id = ?",
+            [uid],
+        ).fetchone()[0]
+        assert count == 0
+    finally:
+        conn.close()
+        close_system_db()
+
+
+def test_pat_first_ever_use_does_not_audit(fresh_db):
+    """The first-ever use of a PAT (no prior last_used_at) does NOT emit an audit entry."""
+    from fastapi.testclient import TestClient
+    import hashlib, uuid
+    from datetime import datetime, timezone, timedelta
+    from src.db import get_system_db, close_system_db
+    from src.repositories.users import UserRepository
+    from src.repositories.access_tokens import AccessTokenRepository
+    from app.auth.jwt import create_access_token
+    from app.main import app
+
+    conn = get_system_db()
+    try:
+        uid = str(uuid.uuid4())
+        UserRepository(conn).create(id=uid, email="u@t", name="U", role="admin")
+        tid = str(uuid.uuid4())
+        pat = create_access_token(
+            user_id=uid, email="u@t", role="admin", token_id=tid, typ="pat",
+            expires_delta=timedelta(days=90),
+        )
+        AccessTokenRepository(conn).create(
+            id=tid, user_id=uid, name="ci",
+            token_hash=hashlib.sha256(pat.encode()).hexdigest(),
+            prefix=tid.replace("-", "")[:8],
+            expires_at=datetime.now(timezone.utc) + timedelta(days=90),
+        )
+        # No mark_used call → first-ever use
+    finally:
+        conn.close()
+        close_system_db()
+
+    client = TestClient(app)
+    resp = client.get(
+        "/api/users",
+        headers={
+            "Authorization": f"Bearer {pat}",
+            "Accept": "application/json",
+            "X-Forwarded-For": "4.4.4.4",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+    conn = get_system_db()
+    try:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE action = 'token.first_use_new_ip' AND user_id = ?",
+            [uid],
+        ).fetchone()[0]
+        assert count == 0
+    finally:
+        conn.close()
+        close_system_db()
