@@ -171,3 +171,46 @@ class TestUnauthenticatedHtmlRedirects:
         )
         assert resp.status_code == 302
         assert resp.headers["location"] == "/dashboard"
+
+    @pytest.mark.parametrize("hostile_next,expected_location", [
+        ("javascript:alert(1)", "/dashboard"),
+        ("http://evil.example/", "/dashboard"),
+        ("//evil.example/", "/dashboard"),
+        ("dashboard", "/dashboard"),           # missing leading slash
+        ("/foo?bar=baz", "/foo?bar=baz"),       # valid same-origin with query
+    ])
+    def test_password_login_sanitizes_next(self, web_client, tmp_path, hostile_next, expected_location):
+        from argon2 import PasswordHasher
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        import uuid
+        password = "TestPass1!"
+        uid = f"u-{uuid.uuid4().hex[:8]}"
+        conn = get_system_db()
+        UserRepository(conn).create(
+            id=uid, email=f"{uid}@test.com", name=uid, role="admin",
+            password_hash=PasswordHasher().hash(password),
+        )
+        conn.close()
+        resp = web_client.post(
+            "/auth/password/login/web",
+            data={"email": f"{uid}@test.com", "password": password, "next": hostile_next},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 302
+        assert resp.headers["location"] == expected_location
+
+    def test_non_api_post_still_returns_json_401(self, web_client):
+        # POST to a JSON auth endpoint that lives outside /api/ — must NOT be redirected.
+        resp = web_client.post("/auth/token", json={"email": "nope@x.com", "password": "wrong"},
+                               follow_redirects=False)
+        assert resp.status_code == 401
+        assert resp.headers["content-type"].startswith("application/json")
+
+    def test_login_page_propagates_next_to_password_button(self, web_client):
+        resp = web_client.get("/login?next=/catalog")
+        assert resp.status_code == 200
+        body = resp.text
+        # Password button URL should carry next.
+        assert "/login/password?next=%2Fcatalog" in body, \
+            f"Expected /login/password?next=%2Fcatalog in login page HTML; got snippet: {body[:500]}"

@@ -8,6 +8,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -217,9 +218,15 @@ async def login_page(request: Request):
         if p["name"] == "google":
             login_buttons.append({"url": "/auth/google/login", "text": "Sign in with Google", "css_class": "btn-primary", "icon_html": ""})
         elif p["name"] == "password":
-            login_buttons.append({"url": "/login/password", "text": "Sign in with Email & Password", "css_class": "btn-secondary", "icon_html": ""})
+            _url = "/login/password"
+            if next_path:
+                _url += f"?next={quote(next_path, safe='')}"
+            login_buttons.append({"url": _url, "text": "Sign in with Email & Password", "css_class": "btn-secondary", "icon_html": ""})
         elif p["name"] == "email":
-            login_buttons.append({"url": "/login/email", "text": "Sign in with Email Link", "css_class": "btn-secondary", "icon_html": ""})
+            _url = "/login/email"
+            if next_path:
+                _url += f"?next={quote(next_path, safe='')}"
+            login_buttons.append({"url": _url, "text": "Sign in with Email Link", "css_class": "btn-secondary", "icon_html": ""})
 
     ctx = _build_context(request, providers=providers, login_buttons=login_buttons, next_path=next_path)
     return templates.TemplateResponse(request, "login.html", ctx)
