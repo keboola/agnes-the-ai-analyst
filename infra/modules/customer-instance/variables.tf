@@ -70,3 +70,15 @@ variable "image_repo" {
   type        = string
   default     = "ghcr.io/keboola/agnes-the-ai-analyst"
 }
+
+variable "enable_monitoring" {
+  description = "Create uptime checks + alert policies for each VM. Requires notification_channel_ids to be useful."
+  type        = bool
+  default     = true
+}
+
+variable "notification_channel_ids" {
+  description = "Full resource IDs of GCP Monitoring notification channels (create in customer project via gcloud alpha monitoring channels create). Empty list = alerts fire but nothing is notified."
+  type        = list(string)
+  default     = []
+}

@@ -77,6 +77,33 @@ resource "google_compute_firewall" "web" {
   target_tags   = ["agnes-${var.customer_name}"]
 }
 
+# --- Backup policy: daily snapshot with 30-day retention ---
+
+resource "google_compute_resource_policy" "daily_backup" {
+  name    = "agnes-${var.customer_name}-daily-backup"
+  project = var.gcp_project_id
+  region  = var.region
+
+  snapshot_schedule_policy {
+    schedule {
+      daily_schedule {
+        days_in_cycle = 1
+        start_time    = "02:00"
+      }
+    }
+    retention_policy {
+      max_retention_days    = 30
+      on_source_disk_delete = "KEEP_AUTO_SNAPSHOTS"
+    }
+    snapshot_properties {
+      labels = {
+        app      = "agnes"
+        customer = var.customer_name
+      }
+    }
+  }
+}
+
 # --- Persistent data disks + VMs (prod + dev) ---
 
 resource "google_compute_disk" "data" {
@@ -87,6 +114,17 @@ resource "google_compute_disk" "data" {
   zone    = var.zone
   size    = each.value.data_disk_gb
   type    = "pd-ssd"
+}
+
+# Attach daily backup policy to data disks (boot disks are ephemeral,
+# app code lives in the image so no need to snapshot them)
+resource "google_compute_disk_resource_policy_attachment" "data_backup" {
+  for_each = { for inst in local.all_instances : inst.name => inst }
+
+  project = var.gcp_project_id
+  zone    = var.zone
+  disk    = google_compute_disk.data[each.key].name
+  name    = google_compute_resource_policy.daily_backup.name
 }
 
 resource "google_compute_address" "ip" {
@@ -160,4 +198,64 @@ resource "google_compute_instance" "vm" {
   lifecycle {
     ignore_changes = [metadata_startup_script]
   }
+}
+
+# --- Monitoring: uptime check on each VM's /api/health endpoint ---
+
+resource "google_monitoring_uptime_check_config" "health" {
+  for_each = var.enable_monitoring ? { for inst in local.all_instances : inst.name => inst } : {}
+
+  project      = var.gcp_project_id
+  display_name = "agnes-${var.customer_name}-${each.value.name}-health"
+  timeout      = "10s"
+  period       = "60s"
+
+  http_check {
+    path         = "/api/health"
+    port         = "8000"
+    use_ssl      = false
+    validate_ssl = false
+  }
+
+  monitored_resource {
+    type = "uptime_url"
+    labels = {
+      project_id = var.gcp_project_id
+      host       = google_compute_address.ip[each.key].address
+    }
+  }
+}
+
+# --- Monitoring: alert when health fails for > 5 min ---
+
+resource "google_monitoring_alert_policy" "health_failure" {
+  for_each = var.enable_monitoring ? { for inst in local.all_instances : inst.name => inst } : {}
+
+  project      = var.gcp_project_id
+  display_name = "agnes-${var.customer_name}-${each.value.name}-health-failure"
+  combiner     = "OR"
+
+  conditions {
+    display_name = "Uptime check failed > 5 min"
+    condition_threshold {
+      filter = "metric.type=\"monitoring.googleapis.com/uptime_check/check_passed\" AND metric.labels.check_id=\"${google_monitoring_uptime_check_config.health[each.key].uptime_check_id}\" AND resource.type=\"uptime_url\""
+      duration        = "300s"
+      comparison      = "COMPARISON_LT"
+      threshold_value = 1
+
+      aggregations {
+        alignment_period     = "60s"
+        per_series_aligner   = "ALIGN_FRACTION_TRUE"
+        cross_series_reducer = "REDUCE_COUNT_FALSE"
+        group_by_fields      = ["resource.label.host"]
+      }
+
+      trigger {
+        count = 1
+      }
+    }
+  }
+
+  notification_channels = var.notification_channel_ids
+  enabled               = true
 }
