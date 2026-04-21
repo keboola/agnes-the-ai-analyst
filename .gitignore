@@ -141,3 +141,8 @@ docs/AGENT-REPORTS/
 docs/ZS_PADAK_*
 .github/workflows/ci.yml
 /auth/
+/tmp/
+
+# GCP service account keys — never commit
+*-key.json
+/agnes-deploy-*.json
