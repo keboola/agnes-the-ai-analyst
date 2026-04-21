@@ -14,16 +14,19 @@ terraform {
 
 locals {
   # Normalize all instances into a single list so for_each is uniform across prod + dev.
+  # Note: merge({defaults}, d) — d overrides defaults (fix for v1.3.0 bug where
+  # defaults overrode user-supplied values).
+  dev_defaults = {
+    role         = "dev"
+    disk_size_gb = 30
+    data_disk_gb = 20
+    upgrade_mode = "auto"
+    tls_mode     = "none" # dev VMs default to plain HTTP; TLS requires domain
+    domain       = ""
+  }
   all_instances = concat(
     [merge(var.prod_instance, { role = "prod" })],
-    [for d in var.dev_instances : merge(d, {
-      role         = "dev"
-      disk_size_gb = 30
-      data_disk_gb = 20
-      upgrade_mode = "auto"
-      tls_mode     = "caddy"
-      domain       = ""
-    })]
+    [for d in var.dev_instances : merge(local.dev_defaults, d)]
   )
 }
 
@@ -47,7 +50,7 @@ resource "google_secret_manager_secret_version" "jwt" {
   secret_data = random_password.jwt.result
 }
 
-# --- VM service account (dedikovaný, jen read Secret Manageru) ---
+# --- VM service account (dedicated, read-only on specific secrets only) ---
 
 resource "google_service_account" "vm" {
   account_id   = "agnes-${var.customer_name}-vm"
@@ -55,13 +58,36 @@ resource "google_service_account" "vm" {
   project      = var.gcp_project_id
 }
 
-resource "google_project_iam_member" "vm_secrets" {
-  project = var.gcp_project_id
-  role    = "roles/secretmanager.secretAccessor"
-  member  = "serviceAccount:${google_service_account.vm.email}"
+# Grant read access only to the JWT secret this module owns.
+# Not project-wide — if the customer adds unrelated secrets (e.g. Stripe key)
+# to the same project, Agnes VM must NOT be able to read them.
+resource "google_secret_manager_secret_iam_member" "vm_jwt" {
+  project   = var.gcp_project_id
+  secret_id = google_secret_manager_secret.jwt.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.vm.email}"
+}
+
+# Grant read access to additional secrets the app needs (e.g. keboola-storage-token).
+# Caller specifies these via var.runtime_secrets. Each secret must already exist.
+resource "google_secret_manager_secret_iam_member" "vm_runtime" {
+  for_each  = toset(var.runtime_secrets)
+  project   = var.gcp_project_id
+  secret_id = each.value
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.vm.email}"
 }
 
 # --- Network ---
+
+# Web firewall: 80/443 for Caddy (TLS), 8000 only when TLS is disabled (direct HTTP).
+# Separate rule for SSH (port 22) — default restricted to IAP tunnel range.
+locals {
+  # Expose raw :8000 only when any instance has tls_mode != "caddy".
+  # If Caddy handles TLS, customers should hit 80/443, not bypass to 8000.
+  expose_raw_http_port = anytrue([for inst in local.all_instances : inst.tls_mode != "caddy"])
+  web_ports            = local.expose_raw_http_port ? ["80", "443", "8000"] : ["80", "443"]
+}
 
 resource "google_compute_firewall" "web" {
   name    = "agnes-${var.customer_name}-allow-web"
@@ -70,10 +96,24 @@ resource "google_compute_firewall" "web" {
 
   allow {
     protocol = "tcp"
-    ports    = ["22", "80", "443", "8000"]
+    ports    = local.web_ports
   }
 
   source_ranges = ["0.0.0.0/0"]
+  target_tags   = ["agnes-${var.customer_name}"]
+}
+
+resource "google_compute_firewall" "ssh" {
+  name    = "agnes-${var.customer_name}-allow-ssh"
+  project = var.gcp_project_id
+  network = "default"
+
+  allow {
+    protocol = "tcp"
+    ports    = ["22"]
+  }
+
+  source_ranges = var.firewall_ssh_source_ranges
   target_tags   = ["agnes-${var.customer_name}"]
 }
 
@@ -175,10 +215,12 @@ resource "google_compute_instance" "vm" {
     upgrade_mode      = each.value.upgrade_mode
     tls_mode          = each.value.tls_mode
     domain            = each.value.domain
+    acme_email        = var.acme_email != "" ? var.acme_email : var.seed_admin_email
     data_source       = var.data_source
     keboola_stack_url = var.keboola_stack_url
     seed_admin_email  = var.seed_admin_email
     role              = each.value.role
+    compose_ref       = var.compose_ref
   })
 
   service_account {
@@ -193,11 +235,20 @@ resource "google_compute_instance" "vm" {
     managed  = "terraform"
   }
 
-  # Změna startup scriptu nemění běžící VM (script běží jen na boot).
-  # Pro aplikaci změn je potřeba VM restartovat nebo recreate.
+  # Startup script changes do not modify running VMs (script only runs on boot).
+  # To propagate module changes, use:
+  #   terraform apply -replace='module.agnes.google_compute_instance.vm["agnes-prod"]'
   lifecycle {
     ignore_changes = [metadata_startup_script]
   }
+
+  # Ensure VM SA has read access to required secrets BEFORE the VM boots — otherwise
+  # the startup script's `gcloud secrets versions access` can 403 due to IAM lag.
+  depends_on = [
+    google_secret_manager_secret_iam_member.vm_jwt,
+    google_secret_manager_secret_iam_member.vm_runtime,
+    google_secret_manager_secret_version.jwt,
+  ]
 }
 
 # --- Monitoring: uptime check on each VM's /api/health endpoint ---

@@ -71,6 +71,12 @@ variable "image_repo" {
   default     = "ghcr.io/keboola/agnes-the-ai-analyst"
 }
 
+variable "compose_ref" {
+  description = "Git ref to fetch docker-compose.yml and overlays from (in keboola/agnes-the-ai-analyst). Use `main` for latest, or a tag like `stable-2026.04.47` for reproducibility."
+  type        = string
+  default     = "main"
+}
+
 variable "enable_monitoring" {
   description = "Create uptime checks + alert policies for each VM. Requires notification_channel_ids to be useful."
   type        = bool
@@ -81,4 +87,22 @@ variable "notification_channel_ids" {
   description = "Full resource IDs of GCP Monitoring notification channels (create in customer project via gcloud alpha monitoring channels create). Empty list = alerts fire but nothing is notified."
   type        = list(string)
   default     = []
+}
+
+variable "runtime_secrets" {
+  description = "Names of existing Secret Manager secrets the VM needs to read at runtime (e.g. Keboola Storage token). VM SA gets scoped secretAccessor on each."
+  type        = list(string)
+  default     = ["keboola-storage-token"]
+}
+
+variable "firewall_ssh_source_ranges" {
+  description = "CIDR ranges allowed to reach SSH (port 22). Default is IAP tunnel range only (use `gcloud compute ssh --tunnel-through-iap`). Override to `[\"0.0.0.0/0\"]` for unrestricted (not recommended)."
+  type        = list(string)
+  default     = ["35.235.240.0/20"]
+}
+
+variable "acme_email" {
+  description = "Email for Let's Encrypt account (used when tls_mode=caddy). Defaults to seed_admin_email if empty."
+  type        = string
+  default     = ""
 }
