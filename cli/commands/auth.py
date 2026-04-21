@@ -84,3 +84,7 @@ def whoami():
     except Exception:
         typer.echo("Invalid token. Run: da login")
         raise typer.Exit(1)
+
+
+from cli.commands.tokens import token_app
+auth_app.add_typer(token_app, name="token")
