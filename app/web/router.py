@@ -192,6 +192,10 @@ async def setup_wizard(request: Request, conn: duckdb.DuckDBPyConnection = Depen
 
 @router.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
+    next_path = request.query_params.get("next", "")
+    if not next_path.startswith("/") or next_path.startswith("//"):
+        next_path = ""
+
     providers = []
     try:
         from app.auth.providers.google import is_available as google_available
@@ -217,20 +221,23 @@ async def login_page(request: Request):
         elif p["name"] == "email":
             login_buttons.append({"url": "/login/email", "text": "Sign in with Email Link", "css_class": "btn-secondary", "icon_html": ""})
 
-    ctx = _build_context(request, providers=providers, login_buttons=login_buttons)
+    ctx = _build_context(request, providers=providers, login_buttons=login_buttons, next_path=next_path)
     return templates.TemplateResponse(request, "login.html", ctx)
 
 
 @router.get("/login/password", response_class=HTMLResponse)
 async def login_password_page(request: Request):
     """Password login form (email + password)."""
+    next_path = request.query_params.get("next", "")
+    if not next_path.startswith("/") or next_path.startswith("//"):
+        next_path = ""
     google_ok = False
     try:
         from app.auth.providers.google import is_available as google_available
         google_ok = google_available()
     except Exception:
         pass
-    ctx = _build_context(request, google_available=google_ok)
+    ctx = _build_context(request, google_available=google_ok, next_path=next_path)
     return templates.TemplateResponse(request, "login_email.html", ctx)
 
 
