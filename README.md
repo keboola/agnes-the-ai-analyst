@@ -133,6 +133,7 @@ See `config/instance.yaml.example` for all available options.
 
 ## Documentation
 
+- [Hackathon TL;DR](docs/HACKATHON.md) — condensed deploy + dev playbooks (for both humans and AI agents)
 - [Onboarding Guide](docs/ONBOARDING.md) — end-to-end Terraform deployment into a GCP project (recommended for production)
 - [Deployment Guide](docs/DEPLOYMENT.md) — chooses between Terraform and Docker Compose; covers OSS self-host
 - [Configuration Reference](docs/CONFIGURATION.md) — `instance.yaml`, env vars, per-instance options
