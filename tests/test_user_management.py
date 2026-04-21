@@ -193,6 +193,58 @@ def test_cannot_delete_last_admin(app_client, fresh_db):
     assert "last" in detail or "yourself" in detail
 
 
+def test_deactivated_user_cannot_authenticate(app_client, fresh_db):
+    """A deactivated user's old JWT must be rejected."""
+    import uuid
+    from src.db import get_system_db
+    from src.repositories.users import UserRepository
+    from app.auth.jwt import create_access_token
+
+    conn = get_system_db()
+    try:
+        uid = str(uuid.uuid4())
+        UserRepository(conn).create(id=uid, email="u@test", name="U", role="analyst")
+        token = create_access_token(user_id=uid, email="u@test", role="analyst")
+        UserRepository(conn).update(id=uid, active=False)
+    finally:
+        conn.close()
+
+    resp = app_client.get(
+        "/api/users",  # any authenticated endpoint
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+    )
+    # Deactivated — must not succeed.
+    assert resp.status_code in (401, 403)
+
+
+def test_deactivated_admin_rejected_by_active_check(app_client, fresh_db):
+    """Deactivating an admin must cause their token to be rejected as 401 (not succeed)."""
+    import uuid
+    from src.db import get_system_db
+    from src.repositories.users import UserRepository
+    from app.auth.jwt import create_access_token
+
+    # Seed two admins so we can deactivate one without tripping the last-admin rule.
+    admin_id, admin_token = _seed_admin(fresh_db)
+    conn = get_system_db()
+    try:
+        other_uid = str(uuid.uuid4())
+        UserRepository(conn).create(id=other_uid, email="other@test", name="Other", role="admin")
+        other_token = create_access_token(user_id=other_uid, email="other@test", role="admin")
+        # Directly deactivate the "other" admin via repository (bypass safeguard
+        # because we already have 2 admins; this is just a state setup).
+        UserRepository(conn).update(id=other_uid, active=False)
+    finally:
+        conn.close()
+
+    resp = app_client.get(
+        "/api/users",
+        headers={"Authorization": f"Bearer {other_token}", "Accept": "application/json"},
+    )
+    assert resp.status_code == 401
+    assert "deactivated" in resp.json().get("detail", "").lower()
+
+
 def test_cannot_deactivate_last_admin(app_client, fresh_db):
     admin_id, token = _seed_admin(fresh_db)
     # Create a second user and try to demote the current admin via PATCH.
