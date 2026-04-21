@@ -82,3 +82,22 @@ def test_access_token_repo_mark_used(fresh_db):
     finally:
         conn.close()
         close_system_db()
+
+
+def test_pat_token_carries_typ_claim(fresh_db):
+    from app.auth.jwt import create_access_token, verify_token
+    token = create_access_token(
+        user_id="u1", email="u@test", role="analyst",
+        token_id="deadbeef-1234", typ="pat",
+    )
+    payload = verify_token(token)
+    assert payload["typ"] == "pat"
+    assert payload["jti"] == "deadbeef-1234"
+
+
+def test_session_token_defaults_typ(fresh_db):
+    from app.auth.jwt import create_access_token, verify_token
+    token = create_access_token(user_id="u1", email="u@test", role="analyst")
+    payload = verify_token(token)
+    # Default typ is "session".
+    assert payload.get("typ") == "session"

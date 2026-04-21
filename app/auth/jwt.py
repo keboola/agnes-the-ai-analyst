@@ -48,7 +48,10 @@ def create_access_token(
     email: str,
     role: str = "analyst",
     expires_delta: Optional[timedelta] = None,
+    token_id: Optional[str] = None,
+    typ: str = "session",
 ) -> str:
+    """Create a JWT. `typ` is "session" (interactive login) or "pat" (long-lived)."""
     expire = datetime.now(timezone.utc) + (
         expires_delta or timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS)
     )
@@ -56,9 +59,10 @@ def create_access_token(
         "sub": user_id,
         "email": email,
         "role": role,
+        "typ": typ,
         "exp": expire,
         "iat": datetime.now(timezone.utc),
-        "jti": uuid.uuid4().hex,
+        "jti": token_id or uuid.uuid4().hex,
     }
     return jwt.encode(payload, _get_cached_secret_key(), algorithm=ALGORITHM)
 
