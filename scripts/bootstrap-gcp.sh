@@ -26,6 +26,7 @@ gcloud services enable \
     secretmanager.googleapis.com \
     cloudresourcemanager.googleapis.com \
     storage.googleapis.com \
+    monitoring.googleapis.com \
     --project="${PROJECT_ID}"
 
 echo "=== Create deploy service account (if not exists) ==="
@@ -46,7 +47,8 @@ for role in \
     iam.serviceAccountAdmin \
     secretmanager.admin \
     storage.admin \
-    resourcemanager.projectIamAdmin; do
+    resourcemanager.projectIamAdmin \
+    monitoring.editor; do
     gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
         --member="serviceAccount:${SA_EMAIL}" \
         --role="roles/${role}" \
