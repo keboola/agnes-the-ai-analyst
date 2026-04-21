@@ -217,6 +217,40 @@ def test_deactivated_user_cannot_authenticate(app_client, fresh_db):
     assert resp.status_code in (401, 403)
 
 
+def test_admin_users_page_renders_for_admin(app_client, fresh_db):
+    admin_id, token = _seed_admin(fresh_db)
+    resp = app_client.get(
+        "/admin/users",
+        headers={"Accept": "text/html"},
+        cookies={"access_token": token},
+    )
+    assert resp.status_code == 200
+    assert "User management" in resp.text
+
+
+def test_admin_users_page_denies_non_admin(app_client, fresh_db):
+    import uuid
+    from src.db import get_system_db
+    from src.repositories.users import UserRepository
+    from app.auth.jwt import create_access_token
+    conn = get_system_db()
+    try:
+        uid = str(uuid.uuid4())
+        UserRepository(conn).create(id=uid, email="a@test", name="A", role="analyst")
+        token = create_access_token(user_id=uid, email="a@test", role="analyst")
+    finally:
+        conn.close()
+    resp = app_client.get(
+        "/admin/users",
+        headers={"Accept": "text/html"},
+        cookies={"access_token": token},
+        follow_redirects=False,
+    )
+    # HTML request to admin-only page → 302 (to /login) for non-admin per Phase 0, or 403.
+    # Phase 0 is out of scope here so we accept 403 (current behaviour) or 302.
+    assert resp.status_code in (302, 403)
+
+
 def test_deactivated_admin_rejected_by_active_check(app_client, fresh_db):
     """Deactivating an admin must cause their token to be rejected as 401 (not succeed)."""
     import uuid
