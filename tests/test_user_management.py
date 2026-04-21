@@ -1,0 +1,75 @@
+"""Tests for #11 — user management (active flag, safeguards, endpoints)."""
+
+import os
+import tempfile
+import pytest
+
+import duckdb
+
+from src.db import _ensure_schema, get_schema_version
+
+
+@pytest.fixture
+def fresh_db(monkeypatch):
+    with tempfile.TemporaryDirectory() as tmp:
+        monkeypatch.setenv("DATA_DIR", tmp)
+        # Reset cached system DB so we open a brand-new instance in tmp
+        from src.db import close_system_db
+        close_system_db()
+        yield tmp
+        close_system_db()
+
+
+def test_schema_v5_adds_active_column(fresh_db):
+    from src.db import get_system_db, close_system_db
+    conn = get_system_db()
+    try:
+        cols = conn.execute("PRAGMA table_info(users)").fetchall()
+        col_names = [c[1] for c in cols]
+        assert "active" in col_names
+        assert "deactivated_at" in col_names
+        assert "deactivated_by" in col_names
+        assert get_schema_version(conn) >= 5
+    finally:
+        conn.close()
+        close_system_db()
+
+
+def test_schema_v5_backfill_keeps_existing_users_active(fresh_db):
+    """Simulate upgrading from v4: insert a user pre-migration, verify active=TRUE afterwards."""
+    import uuid
+    import duckdb as _duckdb
+    from pathlib import Path
+
+    # 1. Create a v4-era DB by hand.
+    db_dir = Path(fresh_db) / "state"
+    db_dir.mkdir(parents=True, exist_ok=True)
+    db_path = db_dir / "system.duckdb"
+    conn = _duckdb.connect(str(db_path))
+    try:
+        conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL, applied_at TIMESTAMP DEFAULT current_timestamp)")
+        conn.execute("INSERT INTO schema_version (version) VALUES (4)")
+        conn.execute("""CREATE TABLE users (
+            id VARCHAR PRIMARY KEY, email VARCHAR UNIQUE NOT NULL,
+            name VARCHAR, role VARCHAR DEFAULT 'analyst',
+            password_hash VARCHAR, setup_token VARCHAR,
+            setup_token_created TIMESTAMP, reset_token VARCHAR,
+            reset_token_created TIMESTAMP,
+            created_at TIMESTAMP DEFAULT current_timestamp, updated_at TIMESTAMP)""")
+        uid = str(uuid.uuid4())
+        conn.execute("INSERT INTO users (id, email, name, role) VALUES (?, 'pre@v4', 'Pre', 'admin')", [uid])
+    finally:
+        conn.close()
+
+    # 2. Now let the app open it — schema should migrate to v5 and backfill active=TRUE.
+    from src.db import get_system_db, close_system_db, get_schema_version
+    close_system_db()
+    conn = get_system_db()
+    try:
+        assert get_schema_version(conn) >= 5
+        row = conn.execute("SELECT email, active FROM users WHERE email = 'pre@v4'").fetchone()
+        assert row is not None
+        assert row[1] is True
+    finally:
+        conn.close()
+        close_system_db()
