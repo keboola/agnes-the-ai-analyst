@@ -1,0 +1,21 @@
+# Bind-mount overlay — replaces the `data` named volume with a bind mount
+# to /data on the host.
+#
+# Use this when /data is a persistent disk mounted by the VM startup script,
+# so Agnes data lives on the PD (not on the boot disk's Docker volume).
+#
+# Usage (combined with docker-compose.prod.yml):
+#   docker compose \
+#     -f docker-compose.yml \
+#     -f docker-compose.prod.yml \
+#     -f docker-compose.host-mount.yml \
+#     up -d
+#
+# Do NOT use this overlay in CI — /data does not exist on GitHub runners.
+volumes:
+  data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data
