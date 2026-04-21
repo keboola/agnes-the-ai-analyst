@@ -61,3 +61,4 @@ Open the project in Claude Code. The CLAUDE.md file will guide the AI assistant 
 1. Sync latest data: `bash server/scripts/sync_data.sh`
 2. Open Claude Code in your project directory
 3. Ask Claude to analyze your data using DuckDB
+<!-- dryrun 2026-04-21T19:12:08Z -->
