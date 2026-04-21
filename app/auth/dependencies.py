@@ -59,6 +59,45 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Account deactivated",
         )
+
+    # PAT validation: check it's not revoked / expired / unknown in DB.
+    if payload.get("typ") == "pat":
+        from datetime import datetime, timezone
+        import hashlib
+        from src.repositories.access_tokens import AccessTokenRepository
+
+        def _fail(detail: str) -> None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail=detail
+            )
+
+        tokens_repo = AccessTokenRepository(conn)
+        record = tokens_repo.get_by_id(payload.get("jti", ""))
+        if not record:
+            _fail("Token unknown")
+        if record.get("revoked_at") is not None:
+            _fail("Token revoked")
+        exp_at = record.get("expires_at")
+        if exp_at is not None:
+            if isinstance(exp_at, str):
+                exp_at = datetime.fromisoformat(exp_at)
+            if exp_at.tzinfo is None:
+                exp_at = exp_at.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) > exp_at:
+                _fail("Token expired")
+        # Defense-in-depth: stored token_hash must match sha256(bearer JWT).
+        # Protects against a forged-but-unrevoked JWT using a stolen key.
+        stored_hash = record.get("token_hash")
+        if stored_hash:
+            actual = hashlib.sha256(token.encode()).hexdigest()
+            if actual != stored_hash:
+                _fail("Token mismatch")
+        # Record last_used_at synchronously — acceptable cost; can batch later.
+        try:
+            tokens_repo.mark_used(payload["jti"])
+        except Exception:
+            pass
+
     return user
 
 
@@ -94,4 +133,24 @@ async def require_admin(user: dict = Depends(get_current_user)) -> dict:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required",
         )
+    return user
+
+
+async def require_session_token(request: Request, user: dict = Depends(get_current_user)) -> dict:
+    """Like get_current_user but rejects PAT — for endpoints that must not
+    be callable via a long-lived CI token (e.g. creating new tokens, changing password)."""
+    auth = request.headers.get("authorization", "")
+    token = None
+    if auth.startswith("Bearer "):
+        token = auth.removeprefix("Bearer ")
+    if not token and request:
+        token = request.cookies.get("access_token")
+    if token:
+        from app.auth.jwt import verify_token
+        payload = verify_token(token) or {}
+        if payload.get("typ") == "pat":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This endpoint requires an interactive session, not a PAT",
+            )
     return user

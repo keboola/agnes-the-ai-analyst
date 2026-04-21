@@ -553,3 +553,13 @@ async def admin_users_page(
     """Admin page for user management."""
     ctx = _build_context(request, user=user)
     return templates.TemplateResponse(request, "admin_users.html", ctx)
+
+
+@router.get("/profile", response_class=HTMLResponse)
+async def profile_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """User profile page with personal access token management."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "profile.html", ctx)
