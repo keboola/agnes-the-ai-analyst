@@ -125,13 +125,11 @@ Nový token v SM je stále ten stejný, co byl v `.env` na starém VM. Po ověř
 ### Admin heslo `1234` na starém prod
 Migrace dat zkopírovala users table, takže heslo je platné i na novém prod. Rotace je uživatelův úkon přes UI. Nové dev VM má jiný state → jiné hesla.
 
-## Co zbývá
+## Co zbývá (uživatelské akce)
 
-- [ ] Po 24h stability smazat staré `data-analyst` a `data-analyst-dev` VMs
-- [ ] Smazat snapshot `data-analyst-pre-migration-20260421` (až bude jistý úspěch)
-- [ ] Rotovat Keboola Storage token v Keboola UI → `gcloud secrets versions add keboola-storage-token` → smazat starou verzi
-- [ ] Pushnout workflow commit `0ade45c` (per-branch :dev-<slug> tag) po `gh auth refresh -h github.com -s workflow`
-- [ ] Renovate config (opt-in, pro zákazníky co chtějí pinned `:stable-YYYY.MM.N`)
+- [ ] **Approve prod environment** v `apply.yml` runu (https://github.com/keboola/agnes-infra-keboola/actions/runs/24731681502) — jinak se state neaplikuje na prod
+- [ ] **Změnit heslo admin usera** z `1234` (http://34.77.102.61:8000/login → profil)
+- [ ] **Rotovat Keboola Storage token** v Keboola UI → `gcloud secrets versions add keboola-storage-token --data-file=- --project=kids-ai-data-analysis` → restart app containerů na obou VMs (cron to zachytí při dalším tiku nebo `sudo /usr/local/bin/agnes-auto-upgrade.sh`)
 
 ## Aktualizace průběhu (2026-04-21 pozdně)
 
@@ -146,27 +144,41 @@ Migrace dat zkopírovala users table, takže heslo je platné i na novém prod. 
 3. **Ověření auto-upgrade:**
    Během finálního verify cyklu cron pullnul novější `:stable-2026.04.33` (nejnovější release) a recreate containers na prod. Fungování potvrzené.
 
-### Finální stav
+### Iterace 2 — finalizace (2026-04-21 večer)
+
+1. **Workflow commit pushnut** — po `gh auth refresh -s workflow` protlačen `0ade45c` + merge do main. Per-branch tagging `:dev-<slug>` v GHCR aktivní.
+2. **Dev data zmigrovaná** — `data-analyst-dev` → lokál → `agnes-dev`. DuckDB registry obsahuje 99 tabulek + 1 admin usera.
+3. **Module bumpnut na v1.2.0 v Keboola infra repu** — README plně v EN, CI spustí čistý plan.
+4. **Backup + monitoring → infra-v1.3.0:** daily snapshot schedule na `/data` disku (30d retention), per-VM uptime check + alert policy. Template repo bumpnut na v1.3.0.
+5. **Renovate config** v template + keboola-infra repu — tracks `infra-v*` tagy, otevírá PR při nové verzi.
+6. **Staré VMs smazané** — `data-analyst`, `data-analyst-dev`, jejich static IP, pre-migration snapshot, migration tar z bucketu.
+7. **Temporary IAM grants revokovány** — `secretmanager.secretAccessor` odebrán z default compute SA (na secrets), `storage.objectViewer` odebrán z `agnes-keboola-vm` na tfstate bucket.
+8. **Onboarding ONBOARDING.md rozšířen** o propagation přes `-replace`, backup restore, monitoring setup, race condition fix.
+9. **Auth v2 → v3 action bump** v obou workflow repech (silences Node 20 deprecation warning).
+10. **Prod apply-dev úspěšně proběhl** po manuálním triggeru (initial apply měl race s timing secret creation). apply-prod čeká na reviewera.
+
+### Finální stav (po iteraci 2)
 
 | Resource | Value |
 |---|---|
-| **Prod VM** | `agnes-prod` @ 34.77.102.61 (e2-small, 50GB /data PD) |
-| **Dev VM** | `agnes-dev` @ 34.77.94.14 (e2-small, 20GB /data PD) |
-| **Starý prod VM** (decommission pending 24h) | `data-analyst` @ 35.195.96.98, app stopped |
-| **Starý dev VM** (decommission pending 24h) | `data-analyst-dev` @ 34.62.223.189, app stopped |
-| **Image verze na prod** | `ghcr.io/keboola/agnes-the-ai-analyst:stable` (aktuálně `stable-2026.04.33`) |
-| **Image verze na dev** | `ghcr.io/keboola/agnes-the-ai-analyst:dev` |
+| **Prod VM** | `agnes-prod` @ 34.77.102.61 (e2-small, 50GB /data PD, daily snapshot) |
+| **Dev VM** | `agnes-dev` @ 34.77.94.14 (e2-small, 20GB /data PD, daily snapshot) |
+| **Staré VMs** | 🗑️ smazané |
+| **Image tagy** | prod `:stable`, dev `:dev`, feature branches `:dev-<slug>` |
 | **Auto-upgrade** | Cron `*/5 * * * *` — bash skript, detekce digest change → restart |
-| **Prod health** | `degraded` (stale tables — první sync po migraci pending), 103 tables, 9.3M rows, 2 users |
-| **Login** | Zachovaný admin `zdenek.srotyr@keboola.com / 1234` |
+| **Prod health** | `degraded` (stale tables), 103 tables, 9.3M rows, 2 users |
+| **Dev DB** | 99 tables v registry, 1 user (`admin@keboola.com`) |
+| **Backups** | Daily snapshot @ 02:00, 30-day retention (oba disky) |
+| **Monitoring** | uptime check 60s/10s per VM, alert po 5 min failure (notification channels nenapojené — user musí dodat) |
+| **Login prod** | `zdenek.srotyr@keboola.com` / `1234` *(pending user: rotate)* |
 | **TF state** | `gs://agnes-kids-ai-data-analysis-tfstate/keboola/` (versioned, GCS backend) |
 | **Deploy SA** | `agnes-deploy@kids-ai-data-analysis.iam.gserviceaccount.com` |
-| **VM SA** (scope: secretmanager.secretAccessor) | `agnes-keboola-vm@kids-ai-data-analysis.iam.gserviceaccount.com` |
-| **Secrets** | `keboola-storage-token`, `agnes-keboola-jwt-secret` (TF-managed) |
+| **VM SA** | `agnes-keboola-vm@kids-ai-data-analysis.iam.gserviceaccount.com` (scope: secretmanager.secretAccessor) |
+| **Secrets** | `keboola-storage-token`, `jwt-secret-key`, `agnes-keboola-jwt-secret` |
 | **Public upstream repo** | https://github.com/keboola/agnes-the-ai-analyst |
-| **Template repo** | https://github.com/keboola/agnes-infra-template (is_template=true) |
-| **Keboola private infra repo** | https://github.com/keboola/agnes-infra-keboola (dev + prod GitHub environments configured) |
-| **Module tag** | `infra-v1.1.0` (obsahuje bind-volume fix + cron auto-upgrade) |
+| **Template repo** | https://github.com/keboola/agnes-infra-template (is_template=true, ref infra-v1.3.0) |
+| **Keboola infra repo** | https://github.com/keboola/agnes-infra-keboola (EN README, Renovate, ref infra-v1.2.0) |
+| **Module tagy** | `infra-v1.0.0` (initial), `v1.1.0` (volume + cron), `v1.2.0` (CI fix), `v1.3.0` (backups + monitoring) |
 
 ### Onboarding druhého zákazníka — kompletní flow
 
