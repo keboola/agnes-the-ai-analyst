@@ -180,3 +180,84 @@ def test_expired_pat_is_rejected_from_db(fresh_db):
         headers={"Authorization": f"Bearer {pat}", "Accept": "application/json"},
     )
     assert resp.status_code == 401
+
+
+def test_create_pat_returns_raw_once(fresh_db):
+    from fastapi.testclient import TestClient
+    import uuid
+    from src.db import get_system_db, close_system_db
+    from src.repositories.users import UserRepository
+    from app.auth.jwt import create_access_token
+    from app.main import app
+
+    conn = get_system_db()
+    try:
+        uid = str(uuid.uuid4())
+        UserRepository(conn).create(id=uid, email="u@t", name="U", role="admin")
+        sess_token = create_access_token(user_id=uid, email="u@t", role="admin")  # typ=session
+    finally:
+        conn.close()
+        close_system_db()
+
+    client = TestClient(app)
+    resp = client.post(
+        "/auth/tokens",
+        headers={"Authorization": f"Bearer {sess_token}"},
+        json={"name": "laptop", "expires_in_days": 30},
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["name"] == "laptop"
+    assert "token" in data and data["token"]  # raw token returned exactly once
+
+    # Listing returns prefix, never raw.
+    # Prefix is derived from the token id (jti), not the JWT string, to avoid
+    # all tokens having the useless "eyJhbGci" JWT-header prefix.
+    list_resp = client.get(
+        "/auth/tokens", headers={"Authorization": f"Bearer {sess_token}"},
+    )
+    assert list_resp.status_code == 200
+    rows = list_resp.json()
+    assert len(rows) == 1
+    assert "token" not in rows[0]
+    assert rows[0]["prefix"] == data["prefix"]
+    assert len(rows[0]["prefix"]) == 8
+    assert not data["prefix"].startswith("eyJ")  # regression: not the JWT header
+
+
+def test_pat_cannot_create_pat(fresh_db):
+    from fastapi.testclient import TestClient
+    import hashlib, uuid
+    from datetime import datetime, timezone, timedelta
+    from src.db import get_system_db, close_system_db
+    from src.repositories.users import UserRepository
+    from src.repositories.access_tokens import AccessTokenRepository
+    from app.auth.jwt import create_access_token
+    from app.main import app
+
+    conn = get_system_db()
+    try:
+        uid = str(uuid.uuid4())
+        UserRepository(conn).create(id=uid, email="u@t", name="U", role="admin")
+        tid = str(uuid.uuid4())
+        # Create the JWT first so we can store its sha256 as token_hash (otherwise
+        # the defense-in-depth check in get_current_user would reject it with 401
+        # before require_session_token ever runs).
+        pat = create_access_token(user_id=uid, email="u@t", role="admin", token_id=tid, typ="pat")
+        AccessTokenRepository(conn).create(
+            id=tid, user_id=uid, name="x",
+            token_hash=hashlib.sha256(pat.encode()).hexdigest(),
+            prefix=tid.replace("-", "")[:8],
+            expires_at=datetime.now(timezone.utc) + timedelta(days=90),
+        )
+    finally:
+        conn.close()
+        close_system_db()
+
+    client = TestClient(app)
+    resp = client.post(
+        "/auth/tokens",
+        headers={"Authorization": f"Bearer {pat}"},
+        json={"name": "bad", "expires_in_days": 30},
+    )
+    assert resp.status_code == 403

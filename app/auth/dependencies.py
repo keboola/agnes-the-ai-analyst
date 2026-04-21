@@ -134,3 +134,23 @@ async def require_admin(user: dict = Depends(get_current_user)) -> dict:
             detail="Admin access required",
         )
     return user
+
+
+async def require_session_token(request: Request, user: dict = Depends(get_current_user)) -> dict:
+    """Like get_current_user but rejects PAT — for endpoints that must not
+    be callable via a long-lived CI token (e.g. creating new tokens, changing password)."""
+    auth = request.headers.get("authorization", "")
+    token = None
+    if auth.startswith("Bearer "):
+        token = auth.removeprefix("Bearer ")
+    if not token and request:
+        token = request.cookies.get("access_token")
+    if token:
+        from app.auth.jwt import verify_token
+        payload = verify_token(token) or {}
+        if payload.get("typ") == "pat":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This endpoint requires an interactive session, not a PAT",
+            )
+    return user
