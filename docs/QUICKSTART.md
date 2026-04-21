@@ -61,4 +61,8 @@ Open the project in Claude Code. The CLAUDE.md file will guide the AI assistant 
 1. Sync latest data: `bash server/scripts/sync_data.sh`
 2. Open Claude Code in your project directory
 3. Ask Claude to analyze your data using DuckDB
+
+## Hackathon
+
+Point the shared `agnes-dev` VM at your branch image with `scripts/switch-dev-vm.sh <branch-slug>`. See [`HACKATHON.md`](HACKATHON.md) for the full deploy-and-develop playbook.
 <!-- dryrun 2026-04-21T19:12:08Z -->
