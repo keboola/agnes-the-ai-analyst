@@ -27,3 +27,58 @@ def test_schema_v6_creates_pat_table(fresh_db):
     finally:
         conn.close()
         close_system_db()
+
+
+def test_access_token_repo_create_and_lookup(fresh_db):
+    import hashlib, uuid
+    from datetime import datetime, timezone, timedelta
+    from src.db import get_system_db, close_system_db
+    from src.repositories.access_tokens import AccessTokenRepository
+
+    conn = get_system_db()
+    try:
+        repo = AccessTokenRepository(conn)
+        token_id = str(uuid.uuid4())
+        raw = "abcdefgh" + "x" * 32
+        repo.create(
+            id=token_id,
+            user_id="u1",
+            name="laptop",
+            token_hash=hashlib.sha256(raw.encode()).hexdigest(),
+            prefix=raw[:8],
+            expires_at=datetime.now(timezone.utc) + timedelta(days=90),
+        )
+        row = repo.get_by_id(token_id)
+        assert row is not None
+        assert row["name"] == "laptop"
+        assert row["prefix"] == "abcdefgh"
+        assert row["revoked_at"] is None
+
+        rows = repo.list_for_user("u1")
+        assert len(rows) == 1
+
+        repo.revoke(token_id)
+        assert repo.get_by_id(token_id)["revoked_at"] is not None
+    finally:
+        conn.close()
+        close_system_db()
+
+
+def test_access_token_repo_mark_used(fresh_db):
+    import hashlib, uuid
+    from datetime import datetime, timezone
+    from src.db import get_system_db, close_system_db
+    from src.repositories.access_tokens import AccessTokenRepository
+
+    conn = get_system_db()
+    try:
+        repo = AccessTokenRepository(conn)
+        tid = str(uuid.uuid4())
+        repo.create(id=tid, user_id="u1", name="x",
+                    token_hash=hashlib.sha256(b"r").hexdigest(), prefix="rrrrrrrr")
+        assert repo.get_by_id(tid)["last_used_at"] is None
+        repo.mark_used(tid)
+        assert repo.get_by_id(tid)["last_used_at"] is not None
+    finally:
+        conn.close()
+        close_system_db()
