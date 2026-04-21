@@ -1,9 +1,9 @@
-# Production override — uses pre-built GHCR image instead of local build,
-# and binds the `data` volume to /data on the host (so persistent-disk mounts
-# at /data are used by all services).
-#
+# Production override — uses pre-built GHCR image instead of local build.
 # Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 # Override tag: AGNES_TAG=stable-2026.04.3 docker compose -f ... up -d
+#
+# For persistent-disk-backed /data on GCE, compose this overlay with
+# docker-compose.host-mount.yml — which binds the `data` named volume to /data.
 services:
   app:
     image: ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}
@@ -19,15 +19,3 @@ services:
     image: ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}
   session-collector:
     image: ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}
-
-# Override the `data` named volume to bind-mount /data from the host.
-# This ensures a persistent disk mounted at /data (by Terraform startup
-# script) is the actual backing store, not a Docker-managed volume on the
-# boot disk.
-volumes:
-  data:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: /data

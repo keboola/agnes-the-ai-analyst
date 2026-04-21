@@ -46,6 +46,8 @@ cd "$APP_DIR"
 # Fetch minimal docker-compose from public repo (main branch — stable)
 curl -fsSL "https://raw.githubusercontent.com/keboola/agnes-the-ai-analyst/main/docker-compose.yml" -o docker-compose.yml
 curl -fsSL "https://raw.githubusercontent.com/keboola/agnes-the-ai-analyst/main/docker-compose.prod.yml" -o docker-compose.prod.yml
+# Overlay which binds `data` volume to host /data (persistent disk mounted above)
+curl -fsSL "https://raw.githubusercontent.com/keboola/agnes-the-ai-analyst/main/docker-compose.host-mount.yml" -o docker-compose.host-mount.yml
 
 # TLS overlay (Caddy + Let's Encrypt) — jen pokud potřeba
 if [ "$TLS_MODE" = "caddy" ] && [ -n "$DOMAIN" ]; then
@@ -79,8 +81,10 @@ if [ "$TLS_MODE" = "caddy" ] && [ -n "$DOMAIN" ]; then
     COMPOSE_PROFILES_ARG="--profile tls"
 fi
 
-docker compose -f docker-compose.yml -f docker-compose.prod.yml $COMPOSE_PROFILES_ARG pull
-docker compose -f docker-compose.yml -f docker-compose.prod.yml $COMPOSE_PROFILES_ARG up -d
+COMPOSE_FILES="-f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.host-mount.yml"
+
+docker compose $COMPOSE_FILES $COMPOSE_PROFILES_ARG pull
+docker compose $COMPOSE_FILES $COMPOSE_PROFILES_ARG up -d
 
 # --- 6. Auto-upgrade via cron (pullne nový tag každých 5 min) ---
 if [ "$UPGRADE_MODE" = "auto" ]; then
@@ -89,12 +93,13 @@ if [ "$UPGRADE_MODE" = "auto" ]; then
 # Spouští se z cronu — pullne nový image, pokud je, a restartne containers.
 set -euo pipefail
 cd /opt/agnes
+COMPOSE_FILES="-f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.host-mount.yml"
 BEFORE=$(docker images --no-trunc --format '{{.Digest}}' ghcr.io/keboola/agnes-the-ai-analyst:$${AGNES_TAG:-stable} | head -1)
-docker compose -f docker-compose.yml -f docker-compose.prod.yml pull >/dev/null 2>&1
+docker compose $COMPOSE_FILES pull >/dev/null 2>&1
 AFTER=$(docker images --no-trunc --format '{{.Digest}}' ghcr.io/keboola/agnes-the-ai-analyst:$${AGNES_TAG:-stable} | head -1)
 if [ "$BEFORE" != "$AFTER" ]; then
     echo "$(date): new image digest — recreating containers"
-    docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+    docker compose $COMPOSE_FILES up -d
     docker image prune -f >/dev/null 2>&1
 fi
 SCRIPTEOF
