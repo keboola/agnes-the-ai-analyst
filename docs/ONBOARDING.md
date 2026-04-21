@@ -42,11 +42,13 @@ echo -n "<KEBOOLA_STORAGE_TOKEN>" | gcloud secrets create keboola-storage-token 
 
 ## 3. Create private infra repo from template
 
+Create and clone in one step (the `--clone` flag waits for the template copy to finish; cloning in two steps can race):
+
 ```bash
 gh repo create <customer-org>/agnes-infra-<customer> \
     --template keboola/agnes-infra-template \
-    --private
-gh repo clone <customer-org>/agnes-infra-<customer>
+    --private \
+    --clone
 cd agnes-infra-<customer>
 ```
 
