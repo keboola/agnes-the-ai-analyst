@@ -261,6 +261,30 @@ gcloud alpha monitoring channels create \
 
 For Slack integrations, use type `slack` with a webhook URL.
 
+## Keeping the template up-to-date (maintainer note)
+
+New customers clone `keboola/agnes-infra-template` — so the template's `terraform/main.tf` must always point at the **latest stable** `infra-v*` tag. Two cooperating mechanisms keep it current:
+
+1. **Upstream release hook** (`.github/workflows/propagate-infra-tag.yml` in `keboola/agnes-the-ai-analyst`): on push of any `infra-v*` tag, opens a PR in the template repo that bumps the module ref. Requires a repository secret `TEMPLATE_REPO_TOKEN` (fine-grained PAT or GitHub App token with `Contents:write` + `Pull requests:write` on the template repo). Without the secret, the job is skipped — fail-soft.
+
+2. **Renovate on the template repo**: tracks `infra-v*` tags on polling cycles as a fallback when the release hook is unavailable. Config is already in `renovate.json`.
+
+For both to land automatically (no human clicks needed):
+
+- **`allow_auto_merge: true`** on the template repo (set via `gh api -X PATCH repos/keboola/agnes-infra-template -f allow_auto_merge=true`)
+- **`automerge: true`** in `renovate.json` for minor+patch (already configured)
+- **CI validate gate** (`.github/workflows/validate.yml` in the template repo — runs `terraform init -backend=false` + `terraform validate` on the PR). Renovate's `platformAutomerge` waits for this check to pass before merging.
+- **Major bumps stay manual** (labeled `breaking`, `automerge: false`).
+
+Customer-owned infra repos (e.g. `keboola/agnes-infra-keboola`) share the same Renovate config but typically leave patch/minor auto-merge **disabled** (because `terraform apply` touches live infrastructure; customers want a human to approve each bump). The template repo is different — it holds no state and doesn't touch GCP.
+
+### One-time setup checklist
+
+- [ ] Install Renovate GitHub App on `keboola/agnes-infra-template` and on each `keboola/agnes-infra-<customer>` repo
+- [ ] Create a fine-grained PAT with `Contents:write` + `Pull requests:write` on the template repo
+- [ ] Add it as `TEMPLATE_REPO_TOKEN` secret on `keboola/agnes-the-ai-analyst`
+- [ ] Verify: tag a test `infra-vX.Y.Z` in upstream → PR appears in template → CI validates → auto-merges
+
 ## Decommission
 
 ```bash
