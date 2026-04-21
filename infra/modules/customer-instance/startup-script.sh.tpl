@@ -68,24 +68,11 @@ if [ "$DATA_SOURCE" = "keboola" ]; then
 fi
 JWT_KEY=$(gcloud secrets versions access latest --secret=agnes-$${CUSTOMER_NAME}-jwt-secret)
 
-# Resolve the actual version/commit behind the requested tag so the UI can
-# show specific `stable-2026.04.47` + commit SHA instead of just `stable`.
-IMAGE_DIGEST=$(docker pull "$IMAGE_REPO:$IMAGE_TAG" 2>/dev/null | grep -o 'sha256:[a-f0-9]*' | head -1 || echo "unknown")
-IMAGE_INFO=$(curl -fsSL "https://ghcr.io/v2/keboola/agnes-the-ai-analyst/manifests/$IMAGE_TAG" -H "Accept: application/vnd.oci.image.manifest.v1+json" 2>/dev/null || echo "{}")
-
-# Channel derived from tag prefix (stable-*/dev-*/release-*) — simple heuristic.
-case "$IMAGE_TAG" in
-    stable*) RELEASE_CHANNEL="stable" ;;
-    dev*)    RELEASE_CHANNEL="dev" ;;
-    release*) RELEASE_CHANNEL="release" ;;
-    *)       RELEASE_CHANNEL="custom" ;;
-esac
-
-# Version extracted from versioned tags (stable-2026.04.N); floating tags stay "dev".
-case "$IMAGE_TAG" in
-    *-[0-9]*.[0-9]*.[0-9]*) AGNES_VERSION="$${IMAGE_TAG#*-}" ;;
-    *)                      AGNES_VERSION="$IMAGE_TAG" ;;
-esac
+# AGNES_VERSION, RELEASE_CHANNEL, AGNES_COMMIT_SHA are baked into the image
+# itself as ENV (see Dockerfile ARG/ENV + release.yml build-args). We do NOT
+# set them here — doing so would override the image-level values with the
+# floating tag name ("stable"/"dev"), hiding the real CalVer / git SHA.
+# The app picks them up from the image's runtime environment.
 
 cat > "$APP_DIR/.env" <<ENVEOF
 JWT_SECRET_KEY=$JWT_KEY
@@ -97,9 +84,6 @@ SEED_ADMIN_EMAIL=$SEED_ADMIN_EMAIL
 LOG_LEVEL=info
 DOMAIN=$DOMAIN
 AGNES_TAG=$IMAGE_TAG
-AGNES_VERSION=$AGNES_VERSION
-RELEASE_CHANNEL=$RELEASE_CHANNEL
-AGNES_COMMIT_SHA=$IMAGE_DIGEST
 ACME_EMAIL=$ACME_EMAIL
 ENVEOF
 chmod 600 "$APP_DIR/.env"
