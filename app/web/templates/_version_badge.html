@@ -1,0 +1,26 @@
+<div class="version-badge" style="position: fixed; bottom: 0.5rem; right: 0.75rem; font-size: 0.7rem; color: #888; background: rgba(255,255,255,0.85); padding: 0.25rem 0.5rem; border-radius: 0.25rem; z-index: 9999; pointer-events: auto;">
+  <span id="agnes-version-badge">Loading…</span>
+</div>
+<script>
+(function() {
+  fetch('/api/version').then(r => r.ok ? r.json() : null).then(v => {
+    if (!v) return;
+    var el = document.getElementById('agnes-version-badge');
+    if (!el) return;
+    var deployed = new Date(v.deployed_at);
+    var s = Math.floor((Date.now() - deployed.getTime()) / 1000);
+    var rel = s < 60 ? s + 's ago'
+            : s < 3600 ? Math.floor(s/60) + 'm ago'
+            : s < 86400 ? Math.floor(s/3600) + 'h ago'
+            : Math.floor(s/86400) + 'd ago';
+    var tag = v.image_tag && v.image_tag !== 'unknown' ? ' · ' + v.image_tag : '';
+    el.textContent = v.channel + '-' + v.version + tag + ' · ' + rel;
+    el.title = 'version ' + v.version +
+               '\nchannel ' + v.channel +
+               '\nimage tag ' + v.image_tag +
+               '\ncommit ' + v.commit_sha +
+               '\nschema v' + v.schema_version +
+               '\ndeployed ' + v.deployed_at;
+  }).catch(function() {});
+})();
+</script>

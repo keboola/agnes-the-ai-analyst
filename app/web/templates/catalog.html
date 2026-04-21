@@ -1748,8 +1748,7 @@
 
     <footer class="footer">
         <p>&copy; {{ config.INSTANCE_COPYRIGHT or 'AI Data Analyst' }} &middot; Updated daily</p>
-    </footer>
-
+        </footer>
 <script>
 /* ═══════════════ ACCORDION ═══════════════ */
 function toggleAccordion(trigger) {
@@ -2761,5 +2760,6 @@ async function submitAccessRequest() {
     // Expose mermaid globally for lazy rendering
     window.mermaid = mermaid;
 </script>
+    {% include "_version_badge.html" %}
 </body>
 </html>
