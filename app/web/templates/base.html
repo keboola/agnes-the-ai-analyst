@@ -46,31 +46,8 @@
 
         <footer>
             <p>&copy; {{ now().year if now is defined else 2024 }} {{ config.INSTANCE_COPYRIGHT or 'AI Data Analyst' }}</p>
-            <p class="version-badge" style="font-size: 0.75rem; color: var(--muted, #888); margin-top: 0.5rem;">
-                <span id="agnes-version-badge">Loading version…</span>
-            </p>
         </footer>
     </div>
-    <script>
-    // Version badge — fetched from /api/version, no auth needed.
-    (function() {
-      fetch('/api/version').then(r => r.ok ? r.json() : null).then(v => {
-        if (!v) return;
-        const el = document.getElementById('agnes-version-badge');
-        if (!el) return;
-        const deployed = new Date(v.deployed_at);
-        const relative = (() => {
-          const s = Math.floor((Date.now() - deployed.getTime()) / 1000);
-          if (s < 60) return s + 's ago';
-          if (s < 3600) return Math.floor(s/60) + 'm ago';
-          if (s < 86400) return Math.floor(s/3600) + 'h ago';
-          return Math.floor(s/86400) + 'd ago';
-        })();
-        const tag = v.image_tag && v.image_tag !== 'unknown' ? ' · ' + v.image_tag : '';
-        el.textContent = `${v.channel}-${v.version}${tag} · deployed ${relative} (${deployed.toISOString().slice(0,19).replace('T',' ')}Z)`;
-        el.title = `version ${v.version}\nchannel ${v.channel}\nimage tag ${v.image_tag}\ncommit ${v.commit_sha}\nschema v${v.schema_version}\ndeployed at ${v.deployed_at}`;
-      }).catch(() => {});
-    })();
-    </script>
+    {% include "_version_badge.html" %}
 </body>
 </html>

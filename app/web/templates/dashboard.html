@@ -2378,8 +2378,7 @@
 
     <footer class="footer">
         <p>&copy; {{ now().year if now is defined else 2024 }} {{ config.INSTANCE_COPYRIGHT or 'AI Data Analyst' }}</p>
-    </footer>
-
+        </footer>
     <script>
     function copyToClipboard(text) {
         if (navigator.clipboard && window.isSecureContext) {
@@ -2574,5 +2573,6 @@
         }
     }
     </script>
+    {% include "_version_badge.html" %}
 </body>
 </html>
