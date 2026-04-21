@@ -82,18 +82,26 @@ fi
 docker compose -f docker-compose.yml -f docker-compose.prod.yml $COMPOSE_PROFILES_ARG pull
 docker compose -f docker-compose.yml -f docker-compose.prod.yml $COMPOSE_PROFILES_ARG up -d
 
-# --- 6. Watchtower (auto-pull new images) ---
+# --- 6. Auto-upgrade via cron (pullne nový tag každých 5 min) ---
 if [ "$UPGRADE_MODE" = "auto" ]; then
-    # Odstraň starý watchtower pokud existuje (pro idempotenci)
-    docker rm -f agnes-watchtower 2>/dev/null || true
-    docker run -d \
-        --name agnes-watchtower \
-        --restart=unless-stopped \
-        -v /var/run/docker.sock:/var/run/docker.sock \
-        containrrr/watchtower \
-        --interval 300 \
-        --cleanup \
-        --include-restarting
+    cat > /usr/local/bin/agnes-auto-upgrade.sh <<'SCRIPTEOF'
+#!/bin/bash
+# Spouští se z cronu — pullne nový image, pokud je, a restartne containers.
+set -euo pipefail
+cd /opt/agnes
+BEFORE=$(docker images --no-trunc --format '{{.Digest}}' ghcr.io/keboola/agnes-the-ai-analyst:$${AGNES_TAG:-stable} | head -1)
+docker compose -f docker-compose.yml -f docker-compose.prod.yml pull >/dev/null 2>&1
+AFTER=$(docker images --no-trunc --format '{{.Digest}}' ghcr.io/keboola/agnes-the-ai-analyst:$${AGNES_TAG:-stable} | head -1)
+if [ "$BEFORE" != "$AFTER" ]; then
+    echo "$(date): new image digest — recreating containers"
+    docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+    docker image prune -f >/dev/null 2>&1
+fi
+SCRIPTEOF
+    chmod +x /usr/local/bin/agnes-auto-upgrade.sh
+
+    # Přidat do crontab (idempotentně — `sort -u` vyhodí duplikáty)
+    (crontab -l 2>/dev/null; echo "*/5 * * * * AGNES_TAG=$IMAGE_TAG /usr/local/bin/agnes-auto-upgrade.sh >> /var/log/agnes-auto-upgrade.log 2>&1") | sort -u | crontab -
 fi
 
 echo "=== [Agnes $CUSTOMER_NAME $ROLE] Startup complete at $(date) ==="
