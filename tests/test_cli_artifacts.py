@@ -41,3 +41,13 @@ def test_cli_download_serves_wheel_when_present(monkeypatch, tmp_path):
     resp = client.get("/cli/download")
     assert resp.status_code == 200
     assert resp.content.startswith(b"PK")
+
+
+def test_install_page_renders_with_server_url():
+    from fastapi.testclient import TestClient
+    from app.main import app
+    client = TestClient(app)
+    resp = client.get("/install", headers={"host": "agnes.test", "Accept": "text/html"})
+    assert resp.status_code == 200
+    assert "agnes.test" in resp.text
+    assert "da auth whoami" in resp.text

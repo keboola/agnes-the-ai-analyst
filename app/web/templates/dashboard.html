@@ -1850,6 +1850,7 @@
             {% else %}
             <div class="avatar">{{ (user.name or user.email)[:2] | upper }}</div>
             {% endif %}
+            <a class="nav-link" href="/install">Install CLI</a>
             <a href="{{ url_for('auth.logout') }}" class="btn-logout">Logout</a>
         </div>
         {% endif %}
