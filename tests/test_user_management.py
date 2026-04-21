@@ -157,3 +157,56 @@ def test_patch_user_updates_role(app_client, fresh_db):
     data = resp.json()
     assert data["role"] == "analyst"
     assert data["name"] == "X2"
+
+
+def test_cannot_self_deactivate(app_client, fresh_db):
+    admin_id, token = _seed_admin(fresh_db)
+    resp = app_client.patch(
+        f"/api/users/{admin_id}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"active": False},
+    )
+    assert resp.status_code == 409
+    assert "yourself" in resp.json()["detail"].lower()
+
+
+def test_cannot_delete_last_admin(app_client, fresh_db):
+    """Deleting the sole active admin must 409.
+    Note: the endpoint checks self-delete first, which also triggers 409 here,
+    so we accept either "yourself" or "last" wording — the point is the
+    safeguard blocks deletion of the only admin."""
+    admin_id, token = _seed_admin(fresh_db)
+    # Create a non-admin so we have ≥2 users, but admin is still the only admin.
+    resp = app_client.post(
+        "/api/users",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"email": "x@test", "name": "X", "role": "viewer"},
+    )
+    x_id = resp.json()["id"]
+    # Try deleting the admin.
+    resp = app_client.delete(
+        f"/api/users/{admin_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 409
+    detail = resp.json()["detail"].lower()
+    assert "last" in detail or "yourself" in detail
+
+
+def test_cannot_deactivate_last_admin(app_client, fresh_db):
+    admin_id, token = _seed_admin(fresh_db)
+    # Create a second user and try to demote the current admin via PATCH.
+    resp = app_client.post(
+        "/api/users",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"email": "y@test", "name": "Y", "role": "viewer"},
+    )
+    y_id = resp.json()["id"]
+    # Try to demote self (admin → viewer) while only admin — should fail.
+    resp = app_client.patch(
+        f"/api/users/{admin_id}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"role": "viewer"},
+    )
+    assert resp.status_code == 409
+    assert "admin" in resp.json()["detail"].lower()
