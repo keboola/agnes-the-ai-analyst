@@ -3,12 +3,15 @@
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import quote
 
 import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.auth.router import router as auth_router
@@ -160,6 +163,25 @@ def create_app() -> FastAPI:
 
     # Web UI router (must be last — has catch-all routes)
     app.include_router(web_router)
+
+    @app.exception_handler(StarletteHTTPException)
+    async def _html_auth_redirect_handler(request, exc: StarletteHTTPException):
+        """Redirect unauthenticated HTML page loads (GET) to /login.
+
+        Only GET requests outside `/api/` are redirected — that targets browser
+        navigations to HTML pages. POSTs, `/api/*`, and non-401 errors fall
+        through to Starlette's default JSON response so API clients keep their
+        existing contract.
+        """
+        if (
+            exc.status_code == 401
+            and request.method == "GET"
+            and not request.url.path.startswith("/api/")
+        ):
+            next_param = quote(request.url.path, safe="")
+            return RedirectResponse(url=f"/login?next={next_param}", status_code=302)
+        from fastapi.exception_handlers import http_exception_handler
+        return await http_exception_handler(request, exc)
 
     return app
 

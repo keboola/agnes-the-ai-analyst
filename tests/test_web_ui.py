@@ -113,3 +113,61 @@ class TestAdminRoleGuards:
     def test_analyst_cannot_access_corporate_memory_admin(self, web_client, admin_cookie, analyst_cookie):
         resp = web_client.get("/corporate-memory/admin", cookies=analyst_cookie)
         assert resp.status_code == 403
+
+
+class TestUnauthenticatedHtmlRedirects:
+    def test_dashboard_unauthenticated_redirects_to_login(self, web_client):
+        resp = web_client.get("/dashboard", follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["location"].startswith("/login")
+        assert "next=%2Fdashboard" in resp.headers["location"]
+
+    def test_catalog_unauthenticated_redirects_to_login(self, web_client):
+        resp = web_client.get("/catalog", follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["location"].startswith("/login")
+        assert "next=%2Fcatalog" in resp.headers["location"]
+
+    def test_api_route_still_returns_json_401(self, web_client):
+        # /api/sync/manifest requires auth; must keep JSON 401 (no redirect).
+        resp = web_client.get("/api/sync/manifest", follow_redirects=False)
+        assert resp.status_code == 401
+        assert resp.headers["content-type"].startswith("application/json")
+
+    def test_password_login_honors_next(self, web_client, tmp_path):
+        from argon2 import PasswordHasher
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        password = "TestPass1!"
+        conn = get_system_db()
+        UserRepository(conn).create(
+            id="u1", email="u1@test.com", name="U1", role="admin",
+            password_hash=PasswordHasher().hash(password),
+        )
+        conn.close()
+        resp = web_client.post(
+            "/auth/password/login/web",
+            data={"email": "u1@test.com", "password": password, "next": "/catalog"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/catalog"
+
+    def test_password_login_rejects_open_redirect(self, web_client, tmp_path):
+        from argon2 import PasswordHasher
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        password = "TestPass1!"
+        conn = get_system_db()
+        UserRepository(conn).create(
+            id="u2", email="u2@test.com", name="U2", role="admin",
+            password_hash=PasswordHasher().hash(password),
+        )
+        conn.close()
+        resp = web_client.post(
+            "/auth/password/login/web",
+            data={"email": "u2@test.com", "password": password, "next": "//evil.example/"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/dashboard"
