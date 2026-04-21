@@ -289,16 +289,16 @@ resource "google_monitoring_alert_policy" "health_failure" {
   conditions {
     display_name = "Uptime check failed > 5 min"
     condition_threshold {
-      filter = "metric.type=\"monitoring.googleapis.com/uptime_check/check_passed\" AND metric.labels.check_id=\"${google_monitoring_uptime_check_config.health[each.key].uptime_check_id}\" AND resource.type=\"uptime_url\""
+      filter          = "metric.type=\"monitoring.googleapis.com/uptime_check/check_passed\" AND metric.labels.check_id=\"${google_monitoring_uptime_check_config.health[each.key].uptime_check_id}\" AND resource.type=\"uptime_url\""
       duration        = "300s"
+      # ALIGN_FRACTION_TRUE yields fraction of checks that returned true.
+      # If the fraction stays < 1 (i.e. any probe failed) for 5 min → alert.
       comparison      = "COMPARISON_LT"
       threshold_value = 1
 
       aggregations {
-        alignment_period     = "60s"
-        per_series_aligner   = "ALIGN_FRACTION_TRUE"
-        cross_series_reducer = "REDUCE_COUNT_FALSE"
-        group_by_fields      = ["resource.label.host"]
+        alignment_period   = "60s"
+        per_series_aligner = "ALIGN_FRACTION_TRUE"
       }
 
       trigger {
