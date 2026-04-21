@@ -89,6 +89,14 @@ jobs:
           echo "versioned_tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
 
+          # Per-branch slug for dev builds (enables branch-aware dev VMs)
+          if [[ "${{ github.ref }}" != "refs/heads/main" ]]; then
+            BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+            BRANCH_SLUG=$(echo "$BRANCH_NAME" | sed 's|^feature/||' | sed 's|[^a-zA-Z0-9-]|-|g' | tr '[:upper:]' '[:lower:]' | cut -c1-50)
+            echo "branch_slug=${BRANCH_SLUG}" >> "$GITHUB_OUTPUT"
+            echo "Branch slug: ${BRANCH_SLUG}"
+          fi
+
           echo "Channel: ${CHANNEL}"
           echo "Version: ${VERSION}"
           echo "Versioned tag: ${TAG}"
@@ -111,6 +119,7 @@ jobs:
             ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.channel }}
             ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.versioned_tag }}
             ghcr.io/${{ github.repository }}:sha-${{ steps.meta.outputs.short_sha }}
+            ${{ steps.meta.outputs.channel == 'dev' && format('ghcr.io/{0}:dev-{1}', github.repository, steps.meta.outputs.branch_slug) || '' }}
 
   smoke-test:
     needs: build-and-push
