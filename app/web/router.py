@@ -531,3 +531,13 @@ async def admin_permissions_page(
     """Admin page for managing permissions and access requests."""
     ctx = _build_context(request, user=user)
     return templates.TemplateResponse(request, "admin_permissions.html", ctx)
+
+
+@router.get("/admin/users", response_class=HTMLResponse)
+async def admin_users_page(
+    request: Request,
+    user: dict = Depends(require_role(Role.ADMIN)),
+):
+    """Admin page for user management."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_users.html", ctx)

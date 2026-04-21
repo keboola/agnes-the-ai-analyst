@@ -47,8 +47,11 @@ class UserRepository:
         )
 
     def update(self, id: str, **kwargs) -> None:
-        allowed = {"email", "name", "role", "password_hash", "setup_token",
-                    "setup_token_created", "reset_token", "reset_token_created"}
+        allowed = {
+            "email", "name", "role", "password_hash", "setup_token",
+            "setup_token_created", "reset_token", "reset_token_created",
+            "active", "deactivated_at", "deactivated_by",
+        }
         updates = {k: v for k, v in kwargs.items() if k in allowed}
         if not updates:
             return
@@ -56,6 +59,13 @@ class UserRepository:
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         values = list(updates.values()) + [id]
         self.conn.execute(f"UPDATE users SET {set_clause} WHERE id = ?", values)
+
+    def count_admins(self, active_only: bool = True) -> int:
+        sql = "SELECT COUNT(*) FROM users WHERE role = 'admin'"
+        if active_only:
+            sql += " AND COALESCE(active, TRUE) = TRUE"
+        result = self.conn.execute(sql).fetchone()
+        return int(result[0]) if result else 0
 
     def delete(self, user_id: str) -> None:
         self.conn.execute("DELETE FROM users WHERE id = ?", [user_id])
