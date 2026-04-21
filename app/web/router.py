@@ -509,6 +509,18 @@ async def activity_center(
     return templates.TemplateResponse(request, "activity_center.html", ctx)
 
 
+@router.get("/install", response_class=HTMLResponse)
+async def install_page(request: Request):
+    """Public install instructions for the CLI."""
+    base_url = str(request.base_url).rstrip("/")
+    ctx = _build_context(
+        request,
+        server_url=base_url,
+        agnes_version=os.environ.get("AGNES_VERSION", "dev"),
+    )
+    return templates.TemplateResponse(request, "install.html", ctx)
+
+
 @router.get("/admin/tables", response_class=HTMLResponse)
 async def admin_tables(
     request: Request,
