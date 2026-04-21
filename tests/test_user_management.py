@@ -73,3 +73,37 @@ def test_schema_v5_backfill_keeps_existing_users_active(fresh_db):
     finally:
         conn.close()
         close_system_db()
+
+
+def test_repository_update_accepts_active(fresh_db):
+    import uuid
+    from src.db import get_system_db, close_system_db
+    from src.repositories.users import UserRepository
+    conn = get_system_db()
+    try:
+        repo = UserRepository(conn)
+        uid = str(uuid.uuid4())
+        repo.create(id=uid, email="a@b.c", name="A", role="analyst")
+        repo.update(id=uid, active=False, deactivated_by="admin-uuid")
+        row = repo.get_by_id(uid)
+        assert row["active"] is False
+        assert row["deactivated_by"] == "admin-uuid"
+    finally:
+        conn.close()
+        close_system_db()
+
+
+def test_repository_count_admins(fresh_db):
+    import uuid
+    from src.db import get_system_db, close_system_db
+    from src.repositories.users import UserRepository
+    conn = get_system_db()
+    try:
+        repo = UserRepository(conn)
+        assert repo.count_admins() == 0
+        repo.create(id=str(uuid.uuid4()), email="a@b.c", name="A", role="admin")
+        repo.create(id=str(uuid.uuid4()), email="b@b.c", name="B", role="analyst")
+        assert repo.count_admins() == 1
+    finally:
+        conn.close()
+        close_system_db()
