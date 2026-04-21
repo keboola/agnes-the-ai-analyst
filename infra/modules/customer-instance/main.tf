@@ -209,18 +209,19 @@ resource "google_compute_instance" "vm" {
   }
 
   metadata_startup_script = templatefile("${path.module}/startup-script.sh.tpl", {
-    customer_name     = var.customer_name
-    image_repo        = var.image_repo
-    image_tag         = each.value.image_tag
-    upgrade_mode      = each.value.upgrade_mode
-    tls_mode          = each.value.tls_mode
-    domain            = each.value.domain
-    acme_email        = var.acme_email != "" ? var.acme_email : var.seed_admin_email
-    data_source       = var.data_source
-    keboola_stack_url = var.keboola_stack_url
-    seed_admin_email  = var.seed_admin_email
-    role              = each.value.role
-    compose_ref       = var.compose_ref
+    customer_name       = var.customer_name
+    image_repo          = var.image_repo
+    image_tag           = each.value.image_tag
+    upgrade_mode        = each.value.upgrade_mode
+    tls_mode            = each.value.tls_mode
+    domain              = each.value.domain
+    acme_email          = var.acme_email != "" ? var.acme_email : var.seed_admin_email
+    data_source         = var.data_source
+    keboola_stack_url   = var.keboola_stack_url
+    seed_admin_email    = var.seed_admin_email
+    seed_admin_password = var.enable_seed_password ? var.seed_admin_password : ""
+    role                = each.value.role
+    compose_ref         = var.compose_ref
   })
 
   service_account {
@@ -289,8 +290,8 @@ resource "google_monitoring_alert_policy" "health_failure" {
   conditions {
     display_name = "Uptime check failed > 5 min"
     condition_threshold {
-      filter          = "metric.type=\"monitoring.googleapis.com/uptime_check/check_passed\" AND metric.labels.check_id=\"${google_monitoring_uptime_check_config.health[each.key].uptime_check_id}\" AND resource.type=\"uptime_url\""
-      duration        = "300s"
+      filter   = "metric.type=\"monitoring.googleapis.com/uptime_check/check_passed\" AND metric.labels.check_id=\"${google_monitoring_uptime_check_config.health[each.key].uptime_check_id}\" AND resource.type=\"uptime_url\""
+      duration = "300s"
       # ALIGN_FRACTION_TRUE yields fraction of checks that returned true.
       # If the fraction stays < 1 (i.e. any probe failed) for 5 min → alert.
       comparison      = "COMPARISON_LT"

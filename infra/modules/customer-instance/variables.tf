@@ -53,6 +53,19 @@ variable "seed_admin_email" {
   type        = string
 }
 
+variable "enable_seed_password" {
+  description = "Pokud true, seed admin user dostane hned password_hash ze seed_admin_password (dev helper). Ponech false v prod — admin si heslo nastaví přes /auth/bootstrap nebo Google OAuth."
+  type        = bool
+  default     = false
+}
+
+variable "seed_admin_password" {
+  description = "Plain-text heslo pro seed admina. Použije se jen když enable_seed_password=true. POZOR: ukládá se do Terraform state."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
 variable "data_source" {
   description = "Typ data source — keboola | bigquery | csv"
   type        = string
