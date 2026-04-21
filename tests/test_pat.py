@@ -261,3 +261,30 @@ def test_pat_cannot_create_pat(fresh_db):
         json={"name": "bad", "expires_in_days": 30},
     )
     assert resp.status_code == 403
+
+
+def test_profile_page_renders(fresh_db):
+    from fastapi.testclient import TestClient
+    import uuid
+    from src.db import get_system_db, close_system_db
+    from src.repositories.users import UserRepository
+    from app.auth.jwt import create_access_token
+    from app.main import app
+
+    conn = get_system_db()
+    try:
+        uid = str(uuid.uuid4())
+        UserRepository(conn).create(id=uid, email="u@t", name="U", role="analyst")
+        token = create_access_token(user_id=uid, email="u@t", role="analyst")
+    finally:
+        conn.close()
+        close_system_db()
+
+    client = TestClient(app)
+    resp = client.get(
+        "/profile",
+        headers={"Accept": "text/html"},
+        cookies={"access_token": token},
+    )
+    assert resp.status_code == 200
+    assert "Personal access tokens" in resp.text
