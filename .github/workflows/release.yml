@@ -115,6 +115,7 @@ jobs:
           build-args: |
             AGNES_VERSION=${{ steps.meta.outputs.version }}
             RELEASE_CHANNEL=${{ steps.meta.outputs.channel }}
+            AGNES_COMMIT_SHA=${{ github.sha }}
           tags: |
             ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.channel }}
             ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.versioned_tag }}
