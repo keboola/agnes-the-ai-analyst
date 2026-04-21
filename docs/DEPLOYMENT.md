@@ -1,260 +1,128 @@
 # Deployment Guide
 
-## Server Requirements
+Agnes supports two deployment paths. Pick the one that matches your use case.
 
-- Ubuntu 24.04 LTS
-- e2-small (2 vCPU, 2 GB RAM) or larger
-- 30 GB SSD boot disk
-- Docker + Docker Compose
-- Public IP with port 8000 open
+## 1. Terraform — managed, multi-customer (recommended)
 
-## Quick Deploy (GCP)
+For Keboola-operated deployments and anyone running Agnes for multiple customers on GCP.
 
-### 1. Create VM
+**Follow:** [`ONBOARDING.md`](ONBOARDING.md)
+
+Highlights:
+- Per-customer GCP project + private infra repo cloned from [`keboola/agnes-infra-template`](https://github.com/keboola/agnes-infra-template)
+- Reusable Terraform module `infra/modules/customer-instance` (versioned — `infra-vX.Y.Z` tags)
+- Prod + optional branch-aware dev VMs
+- Persistent SSD data disk with daily snapshots
+- Secret Manager for tokens (no plaintext in VM metadata)
+- OS Login for SSH, dedicated VM service account with scoped `secretAccessor`
+- Cron-based auto-upgrade (pulls `:stable` image digest every 5 min)
+- Caddy + Let's Encrypt TLS (opt-in with domain)
+- Uptime check + alert policy per VM (wire a notification channel to be paged)
+- CI/CD in the private repo: PR → `terraform plan`, merge to main → `apply-dev` auto, `apply-prod` gated by reviewer
+- First-boot bootstrap via `POST /auth/bootstrap`
+
+Target onboarding time: **< 1 hour** per customer.
+
+## 2. Docker Compose — OSS self-host
+
+For running Agnes on your own VM / bare metal without Terraform. You're responsible for provisioning and maintenance.
+
+### Prerequisites
+
+- Ubuntu 24.04 (or any Linux with Docker)
+- 2 vCPU, 2 GB RAM, 30 GB SSD minimum
+- Docker Engine + Compose plugin
+- Public IP with ports 80/443 (if using Caddy TLS) or 8000 (plain HTTP) open
+- Data-source credentials (e.g., Keboola Storage token)
+
+### Steps
+
+1. Clone the Agnes repository:
+
+   ```bash
+   git clone https://github.com/keboola/agnes-the-ai-analyst.git /opt/agnes
+   cd /opt/agnes
+   ```
+
+2. Create `.env`:
+
+   ```bash
+   cat > .env <<'EOF'
+   JWT_SECRET_KEY=$(openssl rand -hex 32)
+   DATA_DIR=/data
+   DATA_SOURCE=keboola
+   KEBOOLA_STORAGE_TOKEN=<your-token>
+   KEBOOLA_STACK_URL=<your-stack-url>
+   SEED_ADMIN_EMAIL=<your-email>
+   LOG_LEVEL=info
+   AGNES_TAG=stable
+   EOF
+   chmod 600 .env
+   ```
+
+3. Mount a persistent disk at `/data` (optional but recommended — survives host rebuild). If you do, use the overlay:
+
+   ```bash
+   docker compose \
+       -f docker-compose.yml \
+       -f docker-compose.prod.yml \
+       -f docker-compose.host-mount.yml \
+       up -d
+   ```
+
+   Without a persistent disk (data on Docker named volume, tied to boot disk):
+
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+   ```
+
+4. Bootstrap your admin password via `POST /auth/bootstrap`:
+
+   ```bash
+   curl -X POST http://<host>:8000/auth/bootstrap \
+       -H "Content-Type: application/json" \
+       -d '{"email":"<your-email>","password":"<strong-password>"}'
+   ```
+
+5. Open `http://<host>:8000/login` and sign in.
+
+### TLS (optional)
+
+Set `DOMAIN` in `.env` + point your DNS A-record at the host, then start with the `tls` profile:
 
 ```bash
-gcloud compute instances create data-analyst-dev \
-  --project=YOUR_PROJECT \
-  --zone=europe-west1-b \
-  --machine-type=e2-small \
-  --image-family=ubuntu-2404-lts-amd64 \
-  --image-project=ubuntu-os-cloud \
-  --boot-disk-size=30GB \
-  --boot-disk-type=pd-ssd \
-  --tags=data-analyst-dev
+AGNES_DOMAIN=agnes.example.com ACME_EMAIL=admin@example.com \
+    docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile tls up -d
 ```
 
-### 2. Install Docker
+### Upgrades (manual)
 
 ```bash
-curl -fsSL https://get.docker.com | sh
-sudo usermod -aG docker $USER
-# Log out and back in for group change to take effect
-```
-
-### 3. Set up deploy key
-
-Generate an SSH key for GitHub access:
-
-```bash
-ssh-keygen -t ed25519 -f ~/.ssh/agnes_deploy -N "" -C "agnes-deploy"
-cat ~/.ssh/agnes_deploy.pub
-# Add the public key as a deploy key on the GitHub repo
-```
-
-Configure SSH to use it:
-
-```bash
-cat > ~/.ssh/config << 'EOF'
-Host github.com
-  IdentityFile ~/.ssh/agnes_deploy
-  StrictHostKeyChecking no
-EOF
-chmod 600 ~/.ssh/config
-```
-
-### 4. Clone and configure
-
-```bash
-sudo mkdir -p /opt/data-analyst
-sudo chown $USER:$USER /opt/data-analyst
-git clone git@github.com:keboola/agnes-the-ai-analyst.git /opt/data-analyst
-cd /opt/data-analyst
-```
-
-Create `.env`:
-
-```bash
-cat > .env << 'EOF'
-JWT_SECRET_KEY=<generate: python3 -c "import secrets; print(secrets.token_hex(32))">
-DATA_DIR=/data
-LOG_LEVEL=info
-KEBOOLA_STORAGE_TOKEN=<your-keboola-token>
-KEBOOLA_STACK_URL=<your-keboola-stack-url>
-SEED_ADMIN_EMAIL=<admin-email>
-EOF
-chmod 600 .env
-```
-
-Create `config/instance.yaml` (optional, for Keboola source config):
-
-```bash
-cp config/instance.yaml.example config/instance.yaml
-# Edit with your values
-```
-
-### 5. Create data directories
-
-```bash
-sudo mkdir -p /data/state /data/analytics /data/extracts
-sudo chown -R $USER:$USER /data
-```
-
-### 6. Build and start
-
-```bash
-cd /opt/data-analyst
-docker compose up -d
-```
-
-Wait for health check:
-
-```bash
-curl -s http://localhost:8000/api/health | python3 -m json.tool
-```
-
-### 7. Bootstrap admin user
-
-```bash
-curl -X POST http://localhost:8000/auth/bootstrap
-```
-
-This creates the first admin user using `SEED_ADMIN_EMAIL` from `.env`.
-
-### 8. Register tables and run first extraction
-
-Register tables via the admin API, then:
-
-```bash
-# Stop app first — DuckDB only supports one writer
-docker compose down
-docker compose run --rm extract
-docker compose up -d
-```
-
-### 9. Open firewall (GCP)
-
-```bash
-gcloud compute firewall-rules create allow-data-analyst-dev \
-  --allow tcp:8000 \
-  --target-tags=data-analyst-dev \
-  --project=YOUR_PROJECT
-```
-
-## Production Deployment (pre-built images)
-
-Instead of building locally, use pre-built images from GitHub Container Registry:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
-```
-
-Pin to a specific version for rollback:
-```bash
-# Edit docker-compose.prod.yml, change :latest to a commit SHA
-image: ghcr.io/keboola/agnes-the-ai-analyst:abc1234def
-```
-
-## HTTPS with Caddy (production)
-
-Set your domain in `.env`:
-```bash
-DOMAIN=data.yourcompany.com
-```
-
-Start with the production profile:
-```bash
-docker compose --profile production up -d
-```
-
-Caddy automatically provisions Let's Encrypt TLS certificates. Ensure ports 80 and 443 are open.
-
-## Multi-Instance Deployment
-
-Each customer gets a separate VM with isolated data and config.
-
-### Using Terraform
-
-1. Configure remote state: `cd infra && terraform init` (uses GCS backend)
-2. Create per-customer tfvars: `cp infra/terraform.tfvars.example infra/instances/customer.tfvars`
-3. Apply: `terraform workspace new customer && terraform apply -var-file=instances/customer.tfvars`
-4. The startup script creates `.env`, `instance.yaml`, and starts Docker Compose
-
-### Manual
-
-1. Create VM and install Docker
-2. Clone repo and create `.env` from `config/.env.template`
-3. Create `config/instance.yaml` from `config/instance.yaml.example`
-4. Start: `docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile production up -d`
-5. Bootstrap admin: `curl -X POST http://IP:8000/auth/bootstrap -H 'Content-Type: application/json' -d '{"email":"admin@customer.com","password":"initial-password"}'`
-
-## Updating an Instance
-
-```bash
-# Pull latest image
+cd /opt/agnes
+git pull
 docker compose -f docker-compose.yml -f docker-compose.prod.yml pull
-
-# Restart with new image (zero-downtime for stateless services)
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
-
-# Rollback: edit docker-compose.prod.yml to pin previous commit SHA
 ```
 
-Database migrations run automatically on startup.
+Or set up a cron job — see `infra/modules/customer-instance/startup-script.sh.tpl` for the reference implementation.
 
-## Important Notes
+## Which path should I pick?
 
-### DuckDB Write Locking
+| | Terraform | Docker Compose |
+|---|---|---|
+| Setup time | ~45 min first customer, ~15 min each subsequent | ~30 min |
+| Infra-as-Code | Full (all resources in git) | Partial (compose.yml only) |
+| Secret storage | GCP Secret Manager | `.env` file on host |
+| Upgrades | Auto via cron, gated prod apply | Manual `docker compose pull` |
+| Backups | Daily GCP snapshots, 30-day retention | You set up yourself |
+| Monitoring / alerts | GCP Uptime Checks + alert policy | You set up yourself |
+| TLS | Auto Caddy + LE | Auto Caddy + LE (same) |
+| Best for | Multi-tenant SaaS, production | Single-instance self-host, learning |
 
-DuckDB only supports one writer at a time. When running extraction:
+## Related documentation
 
-```bash
-docker compose down          # Stop app + scheduler
-docker compose run --rm extract   # Run extraction
-docker compose up -d         # Restart
-```
-
-The scheduler triggers extraction via the API, which handles locking internally.
-
-### Environment Variable Changes
-
-`docker compose restart` does NOT reload `.env`. Use:
-
-```bash
-docker compose down && docker compose up -d
-```
-
-### Services
-
-| Service | Profile | Description |
-|---------|---------|-------------|
-| `app` | default | FastAPI server on port 8000 |
-| `scheduler` | default | Periodic sync + extraction |
-| `extract` | extract | One-shot data extraction |
-| `telegram-bot` | full | Telegram notifications |
-| `ws-gateway` | full | WebSocket gateway |
-| `corporate-memory` | full | Knowledge collector |
-| `session-collector` | full | Session collection |
-
-Start all services: `docker compose --profile full up -d`
-
-### Directory Structure on Server
-
-```
-/opt/data-analyst/          # Git repo
-  .env                      # Secrets (chmod 600)
-  config/instance.yaml      # Instance config
-
-/data/                      # Persistent data (Docker volume)
-  state/system.duckdb       # System state (users, registry, sync)
-  analytics/server.duckdb   # Analytics views
-  extracts/                 # Per-source extract.duckdb + parquets
-    keboola/
-    bigquery/
-    jira/
-```
-
-## CI/CD
-
-Push to `main` triggers GitHub Actions:
-1. Run test suite (607 tests)
-2. Build Docker image
-3. Push to GHCR (`ghcr.io/keboola/agnes-the-ai-analyst`)
-4. Deploy via Kamal
-
-## Monitoring
-
-- Health: `GET /api/health`
-- Logs: `docker compose logs -f app`
-- Disk: `df -h /data`
-- Tables: `curl -s http://localhost:8000/api/catalog | python3 -m json.tool`
+- [`ONBOARDING.md`](ONBOARDING.md) — end-to-end Terraform onboarding checklist
+- [`CONFIGURATION.md`](CONFIGURATION.md) — `instance.yaml`, env vars, per-instance config
+- [`architecture.md`](architecture.md) — internal architecture (orchestrator, extractors, DB layout)
+- [`QUICKSTART.md`](QUICKSTART.md) — local development setup
+- [`superpowers/specs/2026-04-21-multi-customer-deployment-spec.md`](superpowers/specs/2026-04-21-multi-customer-deployment-spec.md) — design rationale for the multi-customer model
