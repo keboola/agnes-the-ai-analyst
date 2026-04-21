@@ -83,12 +83,20 @@ Copy the example and fill it in:
 
 ```bash
 cp terraform/terraform.tfvars.example terraform/terraform.tfvars
-# Edit:
+# Required:
 #   gcp_project_id    = "<GCP_PROJECT_ID>"
 #   customer_name     = "<customer>"
 #   seed_admin_email  = "...@customer.com"
-#   (optionally) keboola_stack_url, prod_instance, dev_instances
+#   keboola_stack_url = "https://connection.<region>.gcp.keboola.com/"
+#
+# Optional (module infra-v1.4.0+):
+#   runtime_secrets            = ["keboola-storage-token"]  # empty if non-keboola data_source
+#   firewall_ssh_source_ranges = ["35.235.240.0/20"]        # IAP range; "0.0.0.0/0" if public SSH
+#   notification_channel_ids   = ["projects/<p>/notificationChannels/<id>"]
+#   compose_ref                = "main"                     # or a "stable-YYYY.MM.N" tag
 ```
+
+See the [module README](https://github.com/keboola/agnes-the-ai-analyst/tree/main/infra/modules/customer-instance) for the full variable schema.
 
 ## 5. First apply
 
@@ -111,16 +119,20 @@ Output: `prod_ip` = external IP.
 
 ## 6. Bootstrap admin user
 
-On the first deploy the `users` table is empty. Create the first admin via `POST /auth/bootstrap` (this endpoint auto-disables once ≥1 user exists):
+On first boot the app auto-seeds an admin user from `SEED_ADMIN_EMAIL` — but *without a password*, which means nobody can log in yet. Activate it via `POST /auth/bootstrap`:
 
 ```bash
 PROD_IP=$(terraform output -raw prod_ip)
 curl -X POST "http://$PROD_IP:8000/auth/bootstrap" \
     -H "Content-Type: application/json" \
-    -d '{"email":"admin@<customer>.com","name":"Admin","password":"<STRONG_PASSWORD>"}'
+    -d '{"email":"<seed_admin_email from tfvars>","password":"<STRONG_PASSWORD>"}'
 ```
 
-Log in: `http://<prod_ip>:8000/login`.
+If the email matches the seed user, the endpoint sets its password and promotes to admin. If it doesn't match, a new admin is created. The endpoint self-deactivates once any user has a password — **so do this before exposing the URL**.
+
+Log in: `http://<prod_ip>:8000/login` with the email + password you just set.
+
+**Security:** The bootstrap endpoint is only disabled by a real password being set. Running `terraform destroy` + `apply` recreates the seed user and re-opens bootstrap — so if you destroy/recreate, a new attacker window opens until you re-run bootstrap.
 
 ## 7. DNS + TLS (optional)
 
