@@ -2,7 +2,9 @@ name: Release
 
 on:
   push:
-    branches: [main, "feature/**"]
+    branches:
+      - main
+      - "**"  # build :dev-<slug> image for any branch push (e.g. feature/x, zs/edit, fix/y)
 
 permissions:
   contents: write

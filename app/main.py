@@ -90,7 +90,10 @@ def create_app() -> FastAPI:
         SCHEMA_VERSION,
     )
 
-    # Seed admin user for testing/CI (when SEED_ADMIN_EMAIL is set)
+    # Seed admin user for testing/CI (when SEED_ADMIN_EMAIL is set).
+    # Optional: SEED_ADMIN_PASSWORD sets password_hash on first seed so the user
+    # can log in immediately without bootstrap. Only applied if the user has no
+    # password_hash yet — never overwrites an existing password.
     seed_email = os.environ.get("SEED_ADMIN_EMAIL")
     if seed_email:
         try:
@@ -98,10 +101,25 @@ def create_app() -> FastAPI:
             from src.repositories.users import UserRepository
             conn = get_system_db()
             repo = UserRepository(conn)
-            if not repo.get_by_email(seed_email):
+            seed_password = os.environ.get("SEED_ADMIN_PASSWORD") or None
+            password_hash = None
+            if seed_password:
+                from argon2 import PasswordHasher
+                password_hash = PasswordHasher().hash(seed_password)
+            existing = repo.get_by_email(seed_email)
+            if not existing:
                 import uuid
-                repo.create(id=str(uuid.uuid4()), email=seed_email, name="Admin", role="admin")
-                logger.info("Seeded admin user: %s", seed_email)
+                repo.create(
+                    id=str(uuid.uuid4()),
+                    email=seed_email,
+                    name="Admin",
+                    role="admin",
+                    password_hash=password_hash,
+                )
+                logger.info("Seeded admin user: %s (password=%s)", seed_email, "yes" if password_hash else "no")
+            elif password_hash and not existing.get("password_hash"):
+                repo.update(id=existing["id"], password_hash=password_hash, role="admin")
+                logger.info("Set password on existing seed admin: %s", seed_email)
             conn.close()
         except Exception as e:
             logger.warning(f"Could not seed admin: {e}")
