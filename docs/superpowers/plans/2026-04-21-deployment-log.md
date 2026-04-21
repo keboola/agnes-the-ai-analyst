@@ -157,6 +157,13 @@ Migrace dat zkopírovala users table, takže heslo je platné i na novém prod. 
 9. **Auth v2 → v3 action bump** v obou workflow repech (silences Node 20 deprecation warning).
 10. **Prod apply-dev úspěšně proběhl** po manuálním triggeru (initial apply měl race s timing secret creation). apply-prod čeká na reviewera.
 
+### Iterace 4 — version badge + workflow-driven recreate
+
+1. **Version badge v UI**: `/api/version` endpoint + footer badge v `base.html` loadí asynchronně, zobrazuje `<channel>-<version> · <tag> · deployed <relative> (<UTC>)` s commit SHA v tooltipu.
+2. **Module `infra-v1.5.0`**: startup-script odvozuje `AGNES_VERSION` a `RELEASE_CHANNEL` z image tagu (stable-YYYY.MM.N / dev-…) a zjistí `AGNES_COMMIT_SHA` z `docker pull` digest. Tyto vars jdou do `.env` → app čte → `/api/version` vrací → badge renderuje.
+3. **`workflow_dispatch` s `recreate_targets`** v `apply.yml` (oba repa): manuálně spustitelný workflow input s comma-separated TF resource addresses → `-replace=<addr>` předáno `terraform apply`. Řeší `ignore_changes = [metadata_startup_script]` gotchu. Dev targets routed do `apply-dev`, prod do `apply-prod`.
+4. **Dokumentace propagation přepsána** v `docs/ONBOARDING.md` — Option A (workflow_dispatch, recommended) vs Option B (local TF), plus explicit DO NOT sekce proti ručnímu SSH zásahu.
+
 ### Iterace 3 — code review + bootstrap fix + doc sweep
 
 1. **Code review** dispatched přes `superpowers:requesting-code-review` subagent. Nálezy: 7 critical, 9 important, 10 minor.
