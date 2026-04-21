@@ -157,28 +157,55 @@ Migrace dat zkopírovala users table, takže heslo je platné i na novém prod. 
 9. **Auth v2 → v3 action bump** v obou workflow repech (silences Node 20 deprecation warning).
 10. **Prod apply-dev úspěšně proběhl** po manuálním triggeru (initial apply měl race s timing secret creation). apply-prod čeká na reviewera.
 
-### Finální stav (po iteraci 2)
+### Iterace 3 — code review + bootstrap fix + doc sweep
+
+1. **Code review** dispatched přes `superpowers:requesting-code-review` subagent. Nálezy: 7 critical, 9 important, 10 minor.
+2. **Critical + important fixy → `infra-v1.4.0`:**
+   - C1 VM SA scoped per-secret (ne project-wide)
+   - C3 `chmod 640` na startup log
+   - C4 Fail-fast když `keboola-storage-token` chybí (odstraněn `|| echo ""`)
+   - C5 Cron auto-upgrade sources `.env` pro `AGNES_TAG`
+   - C7 `depends_on` na IAM bindings + secret version (eliminuje první-boot race)
+   - I1 Firewall split: `:8000` conditional na tls_mode; SSH v samostatné rule
+   - I2 `firewall_ssh_source_ranges` var (default: IAP tunnel range)
+   - I4 `compose_ref` var pinuje docker-compose files
+   - I5 `acme_email` var (falls back to seed_admin_email)
+   - I6 Merge order v `dev_instances` (user values win over defaults)
+   - I7 `|| true` na Caddyfile fetch odstraněno
+3. **A test — `/auth/bootstrap` bug fix:** SEED_ADMIN_EMAIL seeded usera bez hesla, který blokoval bootstrap endpoint. Fix: endpoint je teď disabled jen když existuje user s `password_hash`. Seedované passwordless users může endpoint activate (set password + promote to admin). Tests: 8/8 passed.
+4. **B test — dry-run onboarding:** našel 2 gapy v templatu (module pinoval v1.3.0, tfvars.example měl CZ komentáře). Bumpnuto na v1.4.0, komentáře přeloženy, přidány docs pro nové vars.
+5. **Wait timer** na prod GitHub environment v keboola-infra repu odebrán (0 s) — reviewer-only gate.
+6. **Node 20 deprecation warning** — `google-github-actions/auth@v2 → v3`; pro `hashicorp/setup-terraform@v3` (stále Node 20) přidán `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true` env-var, který force Node 24 runtime.
+7. **Docs sweep:**
+   - `docs/DEPLOYMENT.md` přepsán — rozcestník Terraform (recommended) vs Docker Compose (OSS self-host)
+   - `docs/ONBOARDING.md` sekce 4 + 6 aktualizované pro v1.4.0 (nové vars, bootstrap semantics)
+   - `README.md` docs list expanded
+   - `keboola/agnes-infra-keboola` README bumped + wait-timer note
+
+### Finální stav (po iteraci 3)
 
 | Resource | Value |
 |---|---|
-| **Prod VM** | `agnes-prod` @ 34.77.102.61 (e2-small, 50GB /data PD, daily snapshot) |
-| **Dev VM** | `agnes-dev` @ 34.77.94.14 (e2-small, 20GB /data PD, daily snapshot) |
+| **Prod VM** | `agnes-prod` @ 34.77.102.61 (e2-small, 50GB /data PD, daily snapshot, uptime check) |
+| **Dev VM** | `agnes-dev` @ 34.77.94.14 (e2-small, 20GB /data PD, daily snapshot, uptime check) |
 | **Staré VMs** | 🗑️ smazané |
-| **Image tagy** | prod `:stable`, dev `:dev`, feature branches `:dev-<slug>` |
-| **Auto-upgrade** | Cron `*/5 * * * *` — bash skript, detekce digest change → restart |
+| **Image tagy** | prod `:stable`, dev `:dev`, feature branches `:dev-<slug>` (aktivní po v1.4) |
+| **Auto-upgrade** | Cron `*/5 * * * *` — reads AGNES_TAG z .env, digest change → restart |
 | **Prod health** | `degraded` (stale tables), 103 tables, 9.3M rows, 2 users |
-| **Dev DB** | 99 tables v registry, 1 user (`admin@keboola.com`) |
-| **Backups** | Daily snapshot @ 02:00, 30-day retention (oba disky) |
-| **Monitoring** | uptime check 60s/10s per VM, alert po 5 min failure (notification channels nenapojené — user musí dodat) |
-| **Login prod** | `zdenek.srotyr@keboola.com` / `1234` *(pending user: rotate)* |
+| **Dev DB** | 99 tables v registry, admin user `admin@keboola.com` |
+| **Backups** | Daily snapshot @ 02:00, 30-day retention (oba data disky) |
+| **Monitoring** | uptime check 60s/10s per VM, alert > 5 min failure (notification channels nenapojené) |
+| **Firewall** | Web 80/443 + 8000 (jen když TLS off); SSH na IAP range only |
+| **Login prod** | `zdenek.srotyr@keboola.com` / `1234` *(pending: user rotate)* |
+| **Login dev** | `admin@keboola.com` / `1234` *(pending: user rotate)* |
 | **TF state** | `gs://agnes-kids-ai-data-analysis-tfstate/keboola/` (versioned, GCS backend) |
 | **Deploy SA** | `agnes-deploy@kids-ai-data-analysis.iam.gserviceaccount.com` |
-| **VM SA** | `agnes-keboola-vm@kids-ai-data-analysis.iam.gserviceaccount.com` (scope: secretmanager.secretAccessor) |
-| **Secrets** | `keboola-storage-token`, `jwt-secret-key`, `agnes-keboola-jwt-secret` |
+| **VM SA** (scope: secretmanager.secretAccessor per-secret) | `agnes-keboola-vm@kids-ai-data-analysis.iam.gserviceaccount.com` |
+| **Secrets** | `keboola-storage-token` (manual), `agnes-keboola-jwt-secret` (TF), `jwt-secret-key` (legacy) |
 | **Public upstream repo** | https://github.com/keboola/agnes-the-ai-analyst |
-| **Template repo** | https://github.com/keboola/agnes-infra-template (is_template=true, ref infra-v1.3.0) |
-| **Keboola infra repo** | https://github.com/keboola/agnes-infra-keboola (EN README, Renovate, ref infra-v1.2.0) |
-| **Module tagy** | `infra-v1.0.0` (initial), `v1.1.0` (volume + cron), `v1.2.0` (CI fix), `v1.3.0` (backups + monitoring) |
+| **Template repo** | https://github.com/keboola/agnes-infra-template (is_template=true, ref infra-v1.4.0) |
+| **Keboola infra repo** | https://github.com/keboola/agnes-infra-keboola (EN README, Renovate, ref **infra-v1.4.0**) |
+| **Module tagy** | `v1.0.0` → `v1.1.0` (volume+cron) → `v1.2.0` (CI fix) → `v1.3.0` (backups+monitoring) → **`v1.4.0` (review fixes)** |
 
 ### Onboarding druhého zákazníka — kompletní flow
 
