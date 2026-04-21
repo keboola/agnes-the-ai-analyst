@@ -1,8 +1,9 @@
 #!/bin/bash
 # Agnes VM startup script — templated by Terraform.
-# Idempotent — spustí se při každém boot.
+# Idempotent — runs on every boot.
 set -euo pipefail
 exec > /var/log/agnes-startup.log 2>&1
+chmod 640 /var/log/agnes-startup.log  # defense in depth — not readable by non-root
 
 CUSTOMER_NAME="${customer_name}"
 IMAGE_REPO="${image_repo}"
@@ -10,10 +11,12 @@ IMAGE_TAG="${image_tag}"
 UPGRADE_MODE="${upgrade_mode}"
 TLS_MODE="${tls_mode}"
 DOMAIN="${domain}"
+ACME_EMAIL="${acme_email}"
 DATA_SOURCE="${data_source}"
 KEBOOLA_STACK_URL="${keboola_stack_url}"
 SEED_ADMIN_EMAIL="${seed_admin_email}"
 ROLE="${role}"
+COMPOSE_REF="${compose_ref}"
 
 echo "=== [Agnes $CUSTOMER_NAME $ROLE] Startup at $(date) ==="
 
@@ -43,21 +46,25 @@ APP_DIR="/opt/agnes"
 mkdir -p "$APP_DIR"
 cd "$APP_DIR"
 
-# Fetch minimal docker-compose from public repo (main branch — stable)
-curl -fsSL "https://raw.githubusercontent.com/keboola/agnes-the-ai-analyst/main/docker-compose.yml" -o docker-compose.yml
-curl -fsSL "https://raw.githubusercontent.com/keboola/agnes-the-ai-analyst/main/docker-compose.prod.yml" -o docker-compose.prod.yml
+# Fetch docker-compose files pinned to $COMPOSE_REF (defaults to `main`; pin to a
+# stable-YYYY.MM.N tag for reproducibility across VM rebuilds).
+RAW_BASE="https://raw.githubusercontent.com/keboola/agnes-the-ai-analyst/$${COMPOSE_REF}"
+curl -fsSL "$${RAW_BASE}/docker-compose.yml" -o docker-compose.yml
+curl -fsSL "$${RAW_BASE}/docker-compose.prod.yml" -o docker-compose.prod.yml
 # Overlay which binds `data` volume to host /data (persistent disk mounted above)
-curl -fsSL "https://raw.githubusercontent.com/keboola/agnes-the-ai-analyst/main/docker-compose.host-mount.yml" -o docker-compose.host-mount.yml
+curl -fsSL "$${RAW_BASE}/docker-compose.host-mount.yml" -o docker-compose.host-mount.yml
 
-# TLS overlay (Caddy + Let's Encrypt) — jen pokud potřeba
+# TLS overlay (Caddy + Let's Encrypt) — fetch only when actually needed; surface failures
 if [ "$TLS_MODE" = "caddy" ] && [ -n "$DOMAIN" ]; then
-    curl -fsSL "https://raw.githubusercontent.com/keboola/agnes-the-ai-analyst/main/Caddyfile" -o Caddyfile 2>/dev/null || true
+    curl -fsSL "$${RAW_BASE}/Caddyfile" -o Caddyfile
 fi
 
-# --- 4. Fetch secrets from Secret Manager ---
+# --- 4. Fetch secrets from Secret Manager — fail loudly if missing ---
 KEBOOLA_TOKEN=""
 if [ "$DATA_SOURCE" = "keboola" ]; then
-    KEBOOLA_TOKEN=$(gcloud secrets versions access latest --secret=keboola-storage-token 2>/dev/null || echo "")
+    # No `|| echo ""` fallback — if the token secret is missing, boot should fail
+    # loudly rather than silently start an app that will fail sync cryptically later.
+    KEBOOLA_TOKEN=$(gcloud secrets versions access latest --secret=keboola-storage-token)
 fi
 JWT_KEY=$(gcloud secrets versions access latest --secret=agnes-$${CUSTOMER_NAME}-jwt-secret)
 
@@ -71,7 +78,7 @@ SEED_ADMIN_EMAIL=$SEED_ADMIN_EMAIL
 LOG_LEVEL=info
 DOMAIN=$DOMAIN
 AGNES_TAG=$IMAGE_TAG
-ACME_EMAIL=admin@$${DOMAIN#*.}
+ACME_EMAIL=$ACME_EMAIL
 ENVEOF
 chmod 600 "$APP_DIR/.env"
 
@@ -86,27 +93,35 @@ COMPOSE_FILES="-f docker-compose.yml -f docker-compose.prod.yml -f docker-compos
 docker compose $COMPOSE_FILES $COMPOSE_PROFILES_ARG pull
 docker compose $COMPOSE_FILES $COMPOSE_PROFILES_ARG up -d
 
-# --- 6. Auto-upgrade via cron (pullne nový tag každých 5 min) ---
+# --- 6. Auto-upgrade via cron (pulls new image digest every 5 min) ---
 if [ "$UPGRADE_MODE" = "auto" ]; then
+    # Cron script sources /opt/agnes/.env for AGNES_TAG — so if operator edits .env
+    # (e.g. to pin a specific stable-YYYY.MM.N), cron picks it up immediately. No
+    # drift between what compose up reads and what the digest-check inspects.
     cat > /usr/local/bin/agnes-auto-upgrade.sh <<'SCRIPTEOF'
 #!/bin/bash
-# Spouští se z cronu — pullne nový image, pokud je, a restartne containers.
+# Runs from cron — pulls new image if one is available, restarts containers.
 set -euo pipefail
 cd /opt/agnes
+# Source .env so AGNES_TAG reflects any operator edits since boot.
+# shellcheck disable=SC1091
+set -a; . /opt/agnes/.env; set +a
+IMAGE="ghcr.io/keboola/agnes-the-ai-analyst:$${AGNES_TAG:-stable}"
 COMPOSE_FILES="-f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.host-mount.yml"
-BEFORE=$(docker images --no-trunc --format '{{.Digest}}' ghcr.io/keboola/agnes-the-ai-analyst:$${AGNES_TAG:-stable} | head -1)
+BEFORE=$(docker images --no-trunc --format '{{.Digest}}' "$IMAGE" | head -1)
 docker compose $COMPOSE_FILES pull >/dev/null 2>&1
-AFTER=$(docker images --no-trunc --format '{{.Digest}}' ghcr.io/keboola/agnes-the-ai-analyst:$${AGNES_TAG:-stable} | head -1)
+AFTER=$(docker images --no-trunc --format '{{.Digest}}' "$IMAGE" | head -1)
 if [ "$BEFORE" != "$AFTER" ]; then
-    echo "$(date): new image digest — recreating containers"
+    echo "$(date): new image digest for $IMAGE — recreating containers"
     docker compose $COMPOSE_FILES up -d
     docker image prune -f >/dev/null 2>&1
 fi
 SCRIPTEOF
     chmod +x /usr/local/bin/agnes-auto-upgrade.sh
 
-    # Přidat do crontab (idempotentně — `sort -u` vyhodí duplikáty)
-    (crontab -l 2>/dev/null; echo "*/5 * * * * AGNES_TAG=$IMAGE_TAG /usr/local/bin/agnes-auto-upgrade.sh >> /var/log/agnes-auto-upgrade.log 2>&1") | sort -u | crontab -
+    # Install cron entry idempotently: remove any prior agnes-auto-upgrade line, then append ours.
+    CRON_LINE="*/5 * * * * /usr/local/bin/agnes-auto-upgrade.sh >> /var/log/agnes-auto-upgrade.log 2>&1"
+    (crontab -l 2>/dev/null | grep -v agnes-auto-upgrade || true; echo "$CRON_LINE") | crontab -
 fi
 
 echo "=== [Agnes $CUSTOMER_NAME $ROLE] Startup complete at $(date) ==="
