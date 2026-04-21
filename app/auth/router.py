@@ -105,35 +105,51 @@ async def bootstrap(
     request: BootstrapRequest,
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Create the first admin user. Only works when no users exist.
+    """Bootstrap the first admin account.
 
-    This endpoint allows an AI agent to bootstrap a fresh instance
-    without needing docker exec or SSH. It automatically deactivates
-    after the first user is created.
+    Allowed when no user has a password_hash yet. This covers:
+    (a) No users exist at all.
+    (b) Only seed users (created by SEED_ADMIN_EMAIL at startup) exist, which
+        have no password and cannot log in — bootstrap lets the operator
+        activate them with a password.
+
+    If a user with the given email already exists (e.g. as a seed), this
+    endpoint sets its password_hash (or clears it, if no password was supplied —
+    useful for OAuth-only flows) and promotes it to admin.
+
+    Deactivates as soon as any user has a password_hash.
     """
     repo = UserRepository(conn)
     existing = repo.list_all()
-    if existing:
+
+    # Bootstrap is locked once anyone has a password set.
+    users_with_password = [u for u in existing if u.get("password_hash")]
+    if users_with_password:
         raise HTTPException(
             status_code=403,
-            detail=f"Bootstrap disabled — {len(existing)} users already exist. Use /auth/token to login.",
+            detail=f"Bootstrap disabled — {len(users_with_password)} user(s) already have passwords set. Use /auth/password/login.",
         )
 
-    user_id = str(uuid.uuid4())
-    password_hash = None
-    if request.password:
-        password_hash = PasswordHasher().hash(request.password)
+    password_hash = PasswordHasher().hash(request.password) if request.password else None
 
-    repo.create(
-        id=user_id,
-        email=request.email,
-        name=request.name or request.email.split("@")[0],
-        role="admin",
-        password_hash=password_hash,
-    )
+    # If a matching user already exists (e.g. seed), update it; else create fresh.
+    existing_user = next((u for u in existing if u.get("email") == request.email), None)
+    if existing_user:
+        user_id = existing_user["id"]
+        repo.update(id=user_id, password_hash=password_hash, role="admin")
+        _audit(user_id, "bootstrap_activated_seed")
+    else:
+        user_id = str(uuid.uuid4())
+        repo.create(
+            id=user_id,
+            email=request.email,
+            name=request.name or request.email.split("@")[0],
+            role="admin",
+            password_hash=password_hash,
+        )
+        _audit(user_id, "bootstrap_completed")
 
     token = create_access_token(user_id=user_id, email=request.email, role="admin")
-    _audit(user_id, "bootstrap_completed")
     return TokenResponse(
         access_token=token,
         user_id=user_id,

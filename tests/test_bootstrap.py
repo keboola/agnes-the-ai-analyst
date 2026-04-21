@@ -17,7 +17,7 @@ def fresh_client(tmp_path, monkeypatch):
 
 @pytest.fixture
 def seeded_client(tmp_path, monkeypatch):
-    """Client with one existing user."""
+    """Client with one existing seed user (no password_hash — like SEED_ADMIN_EMAIL seeding)."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-32chars-minimum!!!!!")
     from app.main import create_app
@@ -25,6 +25,27 @@ def seeded_client(tmp_path, monkeypatch):
     from src.repositories.users import UserRepository
     conn = get_system_db()
     UserRepository(conn).create(id="existing", email="existing@test.com", name="E", role="admin")
+    conn.close()
+    return TestClient(create_app())
+
+
+@pytest.fixture
+def password_user_client(tmp_path, monkeypatch):
+    """Client with a user who already has a password set — bootstrap must be disabled."""
+    from argon2 import PasswordHasher
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-32chars-minimum!!!!!")
+    from app.main import create_app
+    from src.db import get_system_db
+    from src.repositories.users import UserRepository
+    conn = get_system_db()
+    UserRepository(conn).create(
+        id="existing",
+        email="existing@test.com",
+        name="E",
+        role="admin",
+        password_hash=PasswordHasher().hash("pre-existing-pass"),
+    )
     conn.close()
     return TestClient(create_app())
 
@@ -55,13 +76,30 @@ class TestBootstrap:
         resp2 = fresh_client.get("/api/health")
         assert resp2.status_code == 200
 
-    def test_bootstrap_disabled_when_users_exist(self, seeded_client):
-        """Bootstrap fails with 403 when users already exist."""
+    def test_bootstrap_activates_seed_user(self, seeded_client):
+        """Bootstrap activates a password-less seed user (SEED_ADMIN_EMAIL scenario)."""
         resp = seeded_client.post("/auth/bootstrap", json={
+            "email": "existing@test.com",
+            "password": "newpass123",
+        })
+        assert resp.status_code == 200
+        assert resp.json()["role"] == "admin"
+
+        # Login now works
+        login = seeded_client.post("/auth/password/login", json={
+            "email": "existing@test.com",
+            "password": "newpass123",
+        })
+        assert login.status_code == 200
+
+    def test_bootstrap_disabled_when_password_user_exists(self, password_user_client):
+        """Bootstrap fails with 403 when any user already has a password set."""
+        resp = password_user_client.post("/auth/bootstrap", json={
             "email": "hacker@evil.com",
+            "password": "should-not-work",
         })
         assert resp.status_code == 403
-        assert "already exist" in resp.json()["detail"]
+        assert "already have passwords" in resp.json()["detail"]
 
     def test_bootstrap_then_login(self, fresh_client):
         """After bootstrap with password, /auth/token login works; without password it requires OAuth."""
@@ -90,11 +128,19 @@ class TestBootstrap:
         })
         assert resp.status_code == 401
 
-    def test_bootstrap_second_call_fails(self, fresh_client):
-        """Second bootstrap call fails — endpoint self-deactivates."""
-        fresh_client.post("/auth/bootstrap", json={"email": "admin@test.com"})
+    def test_bootstrap_second_call_fails_once_password_set(self, fresh_client):
+        """Endpoint self-deactivates once any user has a password."""
+        # First call WITH password — locks bootstrap
+        fresh_client.post("/auth/bootstrap", json={
+            "email": "admin@test.com",
+            "password": "realpass123",
+        })
 
-        resp = fresh_client.post("/auth/bootstrap", json={"email": "second@test.com"})
+        # Any subsequent bootstrap attempt fails
+        resp = fresh_client.post("/auth/bootstrap", json={
+            "email": "second@test.com",
+            "password": "other-pass",
+        })
         assert resp.status_code == 403
 
     def test_full_agent_flow(self, fresh_client):
