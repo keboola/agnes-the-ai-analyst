@@ -11,12 +11,12 @@ a shared knowledge base. Currently it's hardwired to call Anthropic's API direct
 
 Different clients deploying this platform use different AI providers:
 
-| Client | AI Provider | Why |
-|--------|------------|-----|
-| Groupon | LiteLLM proxy | Corporate AI gateway, cost control, audit |
+| Client profile | AI Provider | Why |
+|----------------|------------|-----|
+| Enterprise with central AI gateway | LiteLLM proxy | Cost control, audit, policy enforcement |
 | Keboola | Direct Anthropic | Simple setup, single provider |
-| Future client A | OpenRouter | Multi-model access, cost optimization |
-| Future client B | Google Gemini | Existing Google Cloud relationship |
+| Multi-model deployments | OpenRouter | Multi-model access, cost optimization |
+| GCP-native stack | Google Gemini | Existing Google Cloud relationship |
 
 **Problem**: The code only works with Anthropic. Adding a second client means duplicating
 or rewriting the AI calling logic.
@@ -155,18 +155,18 @@ instance.yaml (ai: section)
        ↓
   Extractor routes to the right API:
     ├─ Anthropic SDK  → api.anthropic.com/v1/messages
-    └─ OpenAI SDK     → litellm.groupondev.com/v1/chat/completions
+    └─ OpenAI SDK     → litellm.example.com/v1/chat/completions
                          openrouter.ai/v1/chat/completions
                          any OpenAI-compatible endpoint
 ```
 
 ### Config examples
 
-**Groupon (LiteLLM proxy):**
+**OpenAI-compatible proxy (LiteLLM, OpenRouter, Azure OpenAI, ...):**
 ```yaml
 ai:
   provider: "openai_compat"
-  base_url: "https://litellm.groupondev.com"
+  base_url: "https://litellm.example.com"
   api_key: "${LLM_API_KEY}"
   model: "claude-haiku-4-5-20251001"
 ```
@@ -241,7 +241,7 @@ Each client controls their own provider, model, and API gateway independently.
 
 **In scope (v1):**
 - Anthropic direct provider (existing behavior, tested)
-- OpenAI-compatible proxy provider (LiteLLM, verified against Groupon proxy)
+- OpenAI-compatible proxy provider (LiteLLM, verified against a production proxy deployment)
 - Backward compatibility with existing `ai.anthropic_api_key` config
 - Three-layer structured output fallback
 - Custom error hierarchy (auth / rate limit / timeout / format)
@@ -276,7 +276,7 @@ Each client controls their own provider, model, and API gateway independently.
 - Graceful degradation when `ai:` config is missing
 
 ### Manual Verification (before production)
-- Dry-run against actual Groupon LiteLLM proxy
+- Dry-run against the production LiteLLM proxy deployment
 - Verify structured output works through proxy
 - Verify sensitivity check works through proxy
 - Full collection produces valid knowledge.json
@@ -311,7 +311,7 @@ means existing `ai.anthropic_api_key` still works if we need to roll back.
 | `docs/CONFIGURATION.md` | OSS | Add AI provider docs |
 | `tests/test_llm_connector.py` | OSS | New: connector tests |
 | `tests/test_corporate_memory.py` | OSS | New/expanded: behavior tests |
-| `config/instance.yaml` | Instance | Add ai: section for Groupon |
+| `config/instance.yaml` | Instance | Add ai: section for the target provider |
 | `.github/workflows/deploy.yml` | Instance | Add LLM_API_KEY to .env |
 | `env.example` | Instance | Document LLM_API_KEY |
 

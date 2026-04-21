@@ -433,7 +433,7 @@ class TestStripHtml:
             '<p><strong>Business name: </strong>Live Deals</p>'
             '<p><strong>Purpose:</strong></p>'
             '<p>The&nbsp;<em>Live deals</em>&nbsp;metric measures the&nbsp;breadth '
-            'of active, purchasable supply on Groupon.</p>'
+            'of active, purchasable supply on the platform.</p>'
         )
         result = strip_html(html_desc)
         assert "<" not in result

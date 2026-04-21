@@ -6,7 +6,7 @@
 
 ## 1. Problem Statement
 
-The platform was built iteratively as an internal tool and needs to become a product for external customers (Groupon, others). Key problems:
+The platform was built iteratively as an internal tool and needs to become a product for external customers. Key problems:
 
 1. **Fragile filesystem state** — 10+ JSON files, permission conflicts between processes (www-data, deploy, root, user) cause outages
 2. **No API** — all operations via SSH + bash scripts, no programmatic control
@@ -487,7 +487,7 @@ tests/
 1. **Greenfield demo** — build new system from scratch with sample Keboola data
 2. **Validate** — end-to-end: setup → sync → query → scripts → notifications
 3. **Migrate internal** — point new system at Keboola internal, migrate users
-4. **Migrate Groupon** — deploy new system for Groupon with their config
+4. **Migrate first external customer** — deploy new system with their config
 5. **Deprecate old** — remove old server infrastructure
 
 ## 10. Reused Code
