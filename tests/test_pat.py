@@ -101,3 +101,82 @@ def test_session_token_defaults_typ(fresh_db):
     payload = verify_token(token)
     # Default typ is "session".
     assert payload.get("typ") == "session"
+
+
+def test_revoked_pat_is_rejected(fresh_db, monkeypatch):
+    from fastapi.testclient import TestClient
+    import hashlib, uuid
+    from datetime import datetime, timezone, timedelta
+    from src.db import get_system_db, close_system_db
+    from src.repositories.users import UserRepository
+    from src.repositories.access_tokens import AccessTokenRepository
+    from app.auth.jwt import create_access_token
+    from app.main import app
+
+    conn = get_system_db()
+    try:
+        uid = str(uuid.uuid4())
+        UserRepository(conn).create(id=uid, email="u@t", name="U", role="admin")
+        token_id = str(uuid.uuid4())
+        raw = "secretXX" + "a" * 32
+        AccessTokenRepository(conn).create(
+            id=token_id, user_id=uid, name="ci",
+            token_hash=hashlib.sha256(raw.encode()).hexdigest(),
+            prefix=raw[:8],
+            expires_at=datetime.now(timezone.utc) + timedelta(days=30),
+        )
+        jwt_token = create_access_token(
+            user_id=uid, email="u@t", role="admin", token_id=token_id, typ="pat",
+        )
+        # Revoke
+        AccessTokenRepository(conn).revoke(token_id)
+    finally:
+        conn.close()
+        close_system_db()
+
+    client = TestClient(app)
+    resp = client.get(
+        "/api/users",
+        headers={"Authorization": f"Bearer {jwt_token}", "Accept": "application/json"},
+    )
+    assert resp.status_code == 401
+
+
+def test_expired_pat_is_rejected_from_db(fresh_db):
+    """A PAT with a past expires_at in DB is rejected even if JWT exp is in future."""
+    from fastapi.testclient import TestClient
+    import hashlib, uuid
+    from datetime import datetime, timezone, timedelta
+    from src.db import get_system_db, close_system_db
+    from src.repositories.users import UserRepository
+    from src.repositories.access_tokens import AccessTokenRepository
+    from app.auth.jwt import create_access_token
+    from app.main import app
+
+    conn = get_system_db()
+    try:
+        uid = str(uuid.uuid4())
+        UserRepository(conn).create(id=uid, email="u@t", name="U", role="admin")
+        tid = str(uuid.uuid4())
+        # Past-dated expiry in DB
+        AccessTokenRepository(conn).create(
+            id=tid, user_id=uid, name="stale",
+            token_hash=hashlib.sha256(b"whatever").hexdigest(), prefix=tid.replace("-","")[:8],
+            expires_at=datetime.now(timezone.utc) - timedelta(days=1),
+        )
+        # JWT with much longer TTL so signature-level `exp` would pass
+        pat = create_access_token(
+            user_id=uid, email="u@t", role="admin",
+            token_id=tid, typ="pat",
+            expires_delta=timedelta(days=365),
+        )
+    finally:
+        conn.close()
+        close_system_db()
+
+    client = TestClient(app)
+    resp = client.get(
+        "/api/users",
+        headers={"Authorization": f"Bearer {pat}", "Accept": "application/json"},
+    )
+    assert resp.status_code == 401
