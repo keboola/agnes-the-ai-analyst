@@ -182,29 +182,36 @@ curl -X POST "http://$PROD_IP:8000/api/sync/trigger" \
 
 ## Propagating module (startup-script) changes
 
-**Important gotcha:** The `customer-instance` module has `lifecycle { ignore_changes = [metadata_startup_script] }` on VMs — this is intentional so `terraform apply` doesn't reboot VMs on every rerun. The consequence is that **changes inside the startup script are not picked up on a normal `terraform apply`**.
+**Important gotcha:** The `customer-instance` module has `lifecycle { ignore_changes = [metadata_startup_script] }` on VMs — intentional, so `terraform apply` doesn't reboot VMs on every rerun. The consequence is that **startup-script changes are not picked up on a normal `terraform apply`**.
 
-To propagate a startup-script change (for example, after bumping `ref=infra-v1.3.0`):
+After bumping the module ref (e.g. `ref=infra-v1.5.0` → `infra-v1.6.0`), do one of:
+
+### Option A — Workflow dispatch with `recreate_targets` (recommended)
+
+`apply.yml` has a `workflow_dispatch` input `recreate_targets` that takes a comma-separated list of TF resource addresses and passes each as `-replace=` to `terraform apply`. Use this to destroy + recreate VMs with the new startup script, without any SSH.
+
+```
+Actions → Terraform Apply → Run workflow → recreate_targets:
+  module.agnes.google_compute_instance.vm["agnes-dev"],module.agnes.google_compute_instance.vm["agnes-prod"]
+```
+
+The workflow routes dev targets to `apply-dev` and prod targets to `apply-prod`, so the usual dev-first + prod-reviewer gate still applies. Persistent data disks and static IPs are separate resources and are **preserved** across replacement — only the VM (and its fresh boot disk) is recreated.
+
+Downtime: ~2 min per VM, sequential. Data loss: none (persistent disk keeps `/data`; static IP keeps URL stable).
+
+### Option B — Local terraform (emergency)
 
 ```bash
-# VM is recreated; boot disk is fresh; persistent data disk is preserved
+export GOOGLE_APPLICATION_CREDENTIALS=~/.agnes-keys/agnes-deploy-<project>-key.json
+cd terraform
 terraform apply -replace='module.agnes.google_compute_instance.vm["agnes-prod"]'
 ```
 
-Downtime: ~2 minutes. The persistent data disk (where `/data` lives) is *not* recreated — only the VM. Startup script re-runs on the new VM with the latest template content, and your data is still there.
+Same semantics as Option A, but no CI audit trail. Use only when CI is broken.
 
-Alternative (less disruptive): hot-patch the VM via SSH:
+### Do NOT
 
-```bash
-gcloud compute ssh agnes-prod --zone=... --project=... --command="sudo bash -c '
-  cd /opt/agnes
-  curl -fsSL https://raw.githubusercontent.com/keboola/agnes-the-ai-analyst/main/docker-compose.prod.yml -o docker-compose.prod.yml
-  curl -fsSL https://raw.githubusercontent.com/keboola/agnes-the-ai-analyst/main/docker-compose.host-mount.yml -o docker-compose.host-mount.yml
-  docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.host-mount.yml up -d
-'"
-```
-
-This preserves container state but won't re-install cron / rebuild persistent disk layout.
+Do not manually edit `/opt/agnes/.env` or the docker-compose overlay files on a running VM. Any such change is lost on the next VM recreate, and it drifts from Terraform state. If a value needs changing, route it through a module variable or a module upgrade.
 
 ## Restoring from backup
 
