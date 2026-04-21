@@ -12,6 +12,11 @@ from src.repositories.sync_state import SyncStateRepository
 
 router = APIRouter(tags=["health"])
 
+# Captured at module import (i.e., app process start) — proxy for "deployed at".
+# When the cron auto-upgrade pulls a new digest and recreates the container,
+# this resets. Accurate enough for a UI "last updated" badge.
+_DEPLOYED_AT = datetime.now(timezone.utc).isoformat()
+
 
 @router.get("/api/health")
 async def health_check(conn: duckdb.DuckDBPyConnection = Depends(_get_db)):
@@ -73,7 +78,23 @@ async def health_check(conn: duckdb.DuckDBPyConnection = Depends(_get_db)):
         "status": overall,
         "version": os.environ.get("AGNES_VERSION", "dev"),
         "channel": os.environ.get("RELEASE_CHANNEL", "dev"),
+        "image_tag": os.environ.get("AGNES_TAG", "unknown"),
+        "commit_sha": os.environ.get("AGNES_COMMIT_SHA", "unknown"),
         "schema_version": SCHEMA_VERSION,
+        "deployed_at": _DEPLOYED_AT,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "services": checks,
+    }
+
+
+@router.get("/api/version")
+async def version_info():
+    """Lightweight version info — cacheable, no DB touch. Used by UI footer badge."""
+    return {
+        "version": os.environ.get("AGNES_VERSION", "dev"),
+        "channel": os.environ.get("RELEASE_CHANNEL", "dev"),
+        "image_tag": os.environ.get("AGNES_TAG", "unknown"),
+        "commit_sha": os.environ.get("AGNES_COMMIT_SHA", "unknown"),
+        "schema_version": SCHEMA_VERSION,
+        "deployed_at": _DEPLOYED_AT,
     }
