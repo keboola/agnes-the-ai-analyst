@@ -101,6 +101,15 @@ def sync(
             target = parquet_dir / f"{tid}.parquet"
             try:
                 stream_download(f"/api/data/{tid}/download", str(target))
+                # HTTP 200 is not enough — the server can (and has) returned
+                # a truncated / empty body with a clean status code. Validate
+                # PAR1 magic bytes so we don't commit state for a broken file.
+                if not _is_valid_parquet(target):
+                    target.unlink(missing_ok=True)
+                    raise ValueError(
+                        "downloaded file is not a valid parquet (missing PAR1 magic bytes) — "
+                        "the server-side snapshot may be corrupt or the stream was truncated"
+                    )
                 local_tables[tid] = {
                     "hash": server_tables[tid].get("hash", ""),
                     "rows": server_tables[tid].get("rows", 0),
@@ -216,15 +225,52 @@ def _rebuild_duckdb_views(local_dir: Path, parquet_dir: Path):
     except Exception:
         pass
 
-    # Create views for each parquet file
+    # Create views for each parquet file. One broken file (corrupt download,
+    # leftover partial write from a previous sync) must not abort the whole
+    # rebuild — skip it and keep going so the rest of the catalog still works.
+    skipped_broken: list[str] = []
     for pq_file in parquet_dir.rglob("*.parquet"):
         view_name = pq_file.stem
         if view_name in existing_tables:
             continue  # don't shadow user tables
+        if not _is_valid_parquet(pq_file):
+            skipped_broken.append(view_name)
+            continue
         abs_path = str(pq_file.resolve())
-        conn.execute(f"CREATE VIEW \"{view_name}\" AS SELECT * FROM read_parquet('{abs_path}')")
+        try:
+            conn.execute(f"CREATE VIEW \"{view_name}\" AS SELECT * FROM read_parquet('{abs_path}')")
+        except duckdb.Error:
+            skipped_broken.append(view_name)
 
     conn.close()
+
+    if skipped_broken:
+        typer.echo(
+            f"Warning: skipped {len(skipped_broken)} broken parquet file(s) during view rebuild:",
+            err=True,
+        )
+        for name in skipped_broken:
+            typer.echo(f"  - {name}.parquet", err=True)
+
+
+def _is_valid_parquet(path: Path) -> bool:
+    """Cheap structural check — parquet files begin and end with `PAR1`.
+
+    Catches truncated downloads, 0-byte files, and HTML / JSON error bodies
+    that slipped through with HTTP 200. Does not guarantee the footer is
+    well-formed — that's DuckDB's job at CREATE VIEW time.
+    """
+    try:
+        size = path.stat().st_size
+        if size < 8:
+            return False
+        with open(path, "rb") as f:
+            head = f.read(4)
+            f.seek(-4, 2)
+            tail = f.read(4)
+        return head == b"PAR1" and tail == b"PAR1"
+    except OSError:
+        return False
 
 
 def _upload(as_json: bool, dry_run: bool = False):
