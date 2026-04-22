@@ -138,7 +138,7 @@ def _build_context(request: Request, user: Optional[dict] = None, **extra) -> di
     class ConfigProxy:
         INSTANCE_NAME = get_instance_name()
         INSTANCE_SUBTITLE = get_instance_subtitle()
-        INSTANCE_COPYRIGHT = ""
+        INSTANCE_COPYRIGHT = "AI Data Analyst - RYS"
         LOGO_SVG = ""
         TELEGRAM_BOT_USERNAME = os.environ.get("TELEGRAM_BOT_USERNAME", "")
         SSH_ALIAS = "data-analyst"
