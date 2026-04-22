@@ -224,7 +224,10 @@ async def login_page(request: Request):
     login_buttons = []
     for p in providers:
         if p["name"] == "google":
-            login_buttons.append({"url": "/auth/google/login", "text": "Sign in with Google", "css_class": "btn-primary", "icon_html": ""})
+            _url = "/auth/google/login"
+            if next_path:
+                _url += f"?next={quote(next_path, safe='')}"
+            login_buttons.append({"url": _url, "text": "Sign in with Google", "css_class": "btn-primary", "icon_html": ""})
         elif p["name"] == "password":
             _url = "/login/password"
             if next_path:
@@ -259,13 +262,16 @@ async def login_password_page(request: Request):
 @router.get("/login/email", response_class=HTMLResponse)
 async def login_email_page(request: Request):
     """Email magic link login form."""
+    next_path = request.query_params.get("next", "")
+    if not next_path.startswith("/") or next_path.startswith("//"):
+        next_path = ""
     google_ok = False
     try:
         from app.auth.providers.google import is_available as google_available
         google_ok = google_available()
     except Exception:
         pass
-    ctx = _build_context(request, google_available=google_ok)
+    ctx = _build_context(request, google_available=google_ok, next_path=next_path)
     return templates.TemplateResponse(request, "login_email.html", ctx)
 
 
