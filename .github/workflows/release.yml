@@ -121,6 +121,22 @@ jobs:
           echo "Version: ${VERSION}"
           echo "Versioned tag: ${TAG}"
 
+      - name: Extract package version from pyproject.toml
+        id: pkgver
+        run: |
+          # Single source of truth for the product version: the
+          # pyproject.toml [project] table. The CalVer "${YEAR_MONTH}.${N}"
+          # claimed above stays as the git / image tag (release identity),
+          # but AGNES_VERSION — what /api/version, /cli/latest, and `da
+          # --version` all expose — tracks the package version.
+          VERSION=$(grep '^version' pyproject.toml | head -1 | sed -E 's/^version\s*=\s*"([^"]+)".*/\1/')
+          if [ -z "$VERSION" ]; then
+            echo "::error::Could not extract version from pyproject.toml"
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Package version: ${VERSION}"
+
       - name: Log in to GHCR
         uses: docker/login-action@v4
         with:
@@ -133,9 +149,10 @@ jobs:
         with:
           push: true
           build-args: |
-            AGNES_VERSION=${{ steps.meta.outputs.version }}
+            AGNES_VERSION=${{ steps.pkgver.outputs.version }}
             RELEASE_CHANNEL=${{ steps.meta.outputs.channel }}
             AGNES_COMMIT_SHA=${{ github.sha }}
+            AGNES_TAG=${{ steps.meta.outputs.versioned_tag }}
           tags: |
             ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.channel }}
             ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.versioned_tag }}
