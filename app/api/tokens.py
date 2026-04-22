@@ -101,20 +101,20 @@ async def create_token(
         raise HTTPException(status_code=400, detail="expires_in_days must not exceed 3650 (10 years)")
     repo = AccessTokenRepository(conn)
     token_id = str(uuid.uuid4())
-    expires_at = None
+    expires_at: Optional[datetime] = None
+    expires_delta: Optional[timedelta] = None
+    omit_exp = payload.expires_in_days is None
     if payload.expires_in_days is not None:
         expires_delta = timedelta(days=payload.expires_in_days)
         expires_at = datetime.now(timezone.utc) + expires_delta
-    else:
-        # "No expiry" at the DB level, but the JWT still needs a bounded `exp`
-        # claim — otherwise `create_access_token` falls back to the 24h session
-        # default and the PAT silently dies. Use ~100 years; the DB-level
-        # revocation/expiry check in verify_token is the real enforcement.
-        expires_delta = timedelta(days=36500)
+    # else: "no expiry" — DB stores expires_at=NULL and the JWT carries no
+    # `exp` claim. The authoritative expiry check lives in
+    # app/auth/dependencies.py (via the DB row).
     # Build the JWT that embeds jti=token_id and typ=pat
     jwt_token = create_access_token(
         user_id=user["id"], email=user["email"], role=user["role"],
-        token_id=token_id, typ="pat", expires_delta=expires_delta,
+        token_id=token_id, typ="pat",
+        expires_delta=expires_delta, omit_exp=omit_exp,
     )
     # Prefix: first 8 chars of the jti (UUID) — uniquely identifies the token in UI
     # without exposing JWT headers (which all start with "eyJhbGci…" and are useless
