@@ -78,8 +78,14 @@ async def password_login_web(
     try:
         ph = PasswordHasher()
         ph.verify(user["password_hash"], password)
-    except (VerifyMismatchError, Exception):
+    except VerifyMismatchError:
+        # Genuinely wrong password → usual UX.
         return RedirectResponse(url="/login/password?error=invalid", status_code=302)
+    except Exception:
+        # Corrupted hash / library error → surface a distinct error code so ops
+        # can tell broken-hash cases apart from bad-password cases. Log loudly.
+        logger.exception("Unexpected error during web password verification for %s", email)
+        return RedirectResponse(url="/login/password?err=auth_internal", status_code=302)
 
     token = create_access_token(user["id"], user["email"], user["role"])
     # Secure cookie only over HTTPS (detect via X-Forwarded-Proto or request scheme)
