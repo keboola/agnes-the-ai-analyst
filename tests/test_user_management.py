@@ -225,7 +225,7 @@ def test_admin_users_page_renders_for_admin(app_client, fresh_db):
         cookies={"access_token": token},
     )
     assert resp.status_code == 200
-    assert "User management" in resp.text
+    assert 'class="users-title">Users' in resp.text
 
 
 def test_admin_users_page_denies_non_admin(app_client, fresh_db):
