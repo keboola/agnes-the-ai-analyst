@@ -59,6 +59,26 @@ class TestCLIHelp:
         assert result.exit_code == 0
 
 
+class TestCLIVersion:
+    def test_version_long_flag(self):
+        result = runner.invoke(app, ["--version"])
+        assert result.exit_code == 0
+        assert result.output.startswith("da ")
+        # Version string must be non-empty after the `da ` prefix.
+        assert result.output.strip() != "da"
+
+    def test_version_short_flag(self):
+        result = runner.invoke(app, ["-V"])
+        assert result.exit_code == 0
+        assert result.output.startswith("da ")
+
+    def test_version_exits_before_subcommand_resolution(self):
+        """Eager callback must run even when an unknown subcommand follows."""
+        result = runner.invoke(app, ["--version", "bogus-subcommand"])
+        assert result.exit_code == 0
+        assert "da " in result.output
+
+
 class TestSkills:
     def test_list_skills(self):
         result = runner.invoke(app, ["skills", "list"])
