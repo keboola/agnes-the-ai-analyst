@@ -19,6 +19,7 @@ login flows on deployments that enable CF as *one of several* auth methods.
 """
 
 import logging
+import os
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -31,6 +32,28 @@ logger = logging.getLogger(__name__)
 CF_HEADER = "Cf-Access-Jwt-Assertion"
 COOKIE_NAME = "access_token"
 COOKIE_MAX_AGE = 86400  # 24h — matches ACCESS_TOKEN_EXPIRE_HOURS in app/auth/jwt.py
+
+
+def _inject_cookie(request: Request, name: str, value: str) -> None:
+    """Append/replace a cookie on the inbound request's headers in place.
+
+    Starlette's `Request.cookies` is parsed from the raw `cookie` header on
+    `request.scope["headers"]`. To make a freshly-minted token visible to
+    downstream dependencies on the SAME request (before `call_next`), we
+    mutate that header.
+    """
+    raw_headers = list(request.scope.get("headers", []))
+    existing = b""
+    filtered = []
+    for k, v in raw_headers:
+        if k == b"cookie":
+            existing = v
+        else:
+            filtered.append((k, v))
+    new_entry = f"{name}={value}".encode("ascii")
+    new_cookie = (existing + b"; " + new_entry) if existing else new_entry
+    filtered.append((b"cookie", new_cookie))
+    request.scope["headers"] = filtered
 
 
 class CloudflareAccessMiddleware(BaseHTTPMiddleware):
@@ -74,8 +97,17 @@ class CloudflareAccessMiddleware(BaseHTTPMiddleware):
             role=user["role"],
         )
 
+        # Inject our JWT into the request's Cookie header BEFORE call_next so
+        # the handler's auth dependencies find an `access_token` on this same
+        # request — makes the first CF-authenticated request succeed without
+        # a client-side redirect round-trip.
+        _inject_cookie(request, COOKIE_NAME, app_jwt)
+        # Also stash on request.state for handlers that prefer it.
+        request.state.cf_user = user
+
         response = await call_next(request)
-        import os
+
+        # Persist for subsequent requests (the injected cookie is request-scoped).
         use_secure = os.environ.get("TESTING", "").lower() not in ("1", "true")
         response.set_cookie(
             key=COOKIE_NAME,
@@ -85,9 +117,4 @@ class CloudflareAccessMiddleware(BaseHTTPMiddleware):
             samesite="lax",
             secure=use_secure,
         )
-        # Stash on request.state so this-request handlers can see the identity.
-        # (Not strictly needed — the next request will use the cookie — but it
-        # makes the first CF-authenticated request behave identically to a
-        # cookie-authenticated one.)
-        request.state.cf_user = user
         return response
