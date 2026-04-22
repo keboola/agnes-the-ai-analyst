@@ -3,7 +3,9 @@
 
 {% block content %}
 <style>
-  .users-page { max-width: 1200px; margin: 24px auto; padding: 0 16px; }
+  /* Override base.html's 800px .container cap for this wide table. */
+  .container:has(.users-page) { max-width: none; padding: 24px 16px; }
+  .users-page { max-width: 1400px; margin: 0 auto; padding: 0; }
   .users-toolbar {
     display: flex; justify-content: space-between; align-items: center;
     gap: 16px; margin-bottom: 20px; flex-wrap: wrap;
@@ -23,7 +25,7 @@
     background: var(--surface, #fff);
     border: 1px solid var(--border, #e5e7eb);
     border-radius: 12px;
-    overflow: hidden;
+    overflow-x: auto;
   }
   .users-table { width: 100%; border-collapse: collapse; font-size: 13px; }
   .users-table thead th {
@@ -85,11 +87,13 @@
 
   .date-cell { color: var(--text-secondary, #6b7280); font-size: 12px; white-space: nowrap; }
 
-  .row-actions { display: flex; gap: 6px; justify-content: flex-end; }
+  .row-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: nowrap; white-space: nowrap; }
   .icon-btn {
     background: transparent; border: 1px solid var(--border, #e5e7eb); border-radius: 6px;
     padding: 5px 10px; font-size: 12px; cursor: pointer;
     color: var(--text-secondary, #6b7280); transition: all 0.15s;
+    text-decoration: none; line-height: 1.4;
+    white-space: nowrap;
   }
   .icon-btn:hover { color: var(--text-primary, #111827); border-color: #cbd5e1; background: #f9fafb; }
   .icon-btn.danger:hover { color: #b91c1c; border-color: #fecaca; background: #fef2f2; }
@@ -208,7 +212,7 @@
 <div class="modal-backdrop" id="create-modal" role="dialog" aria-modal="true" aria-labelledby="create-modal-title">
   <div class="modal-card">
     <h3 id="create-modal-title">Add user</h3>
-    <p class="sub">Invites a new account. The user will need a password (set via the Reset link below) or a configured SSO provider to sign in.</p>
+    <p class="sub">Invites a new account. When "Send invitation link" is ticked we generate a setup link the user can follow to pick their own password.</p>
     <label for="new-email">Email</label>
     <input id="new-email" type="email" required autocomplete="off">
     <label for="new-name">Name (optional)</label>
@@ -220,6 +224,10 @@
       <option value="km_admin">km_admin</option>
       <option value="admin">admin</option>
     </select>
+    <label style="display:flex; align-items:center; gap:8px; margin-top:12px; font-size:13px; color: var(--text-primary, #111827); font-weight:500;">
+      <input id="new-send-invite" type="checkbox" checked>
+      Send invitation link (generates setup token, emails it if transport is configured)
+    </label>
     <div class="modal-actions">
       <button class="modal-btn" data-close-modal="create-modal">Cancel</button>
       <button class="modal-btn primary" id="confirm-create-btn">Create</button>
@@ -241,24 +249,34 @@
   </div>
 </div>
 
-<!-- Reset token reveal modal
-     NOTE: The reset_token endpoint still exists for API-level future use,
-     but no matching "consume this token to set a new password" endpoint
-     ships today — the magic-link sender would log the user in without
-     prompting for a password, defeating the reset. Admins should use the
-     "Set pwd" action (/{id}/set-password) instead. This modal is retained
-     for API inspection only; the Reset button in the row actions is gone. -->
+<!-- Reset URL reveal modal -->
 <div class="modal-backdrop" id="reset-modal" role="dialog" aria-modal="true" aria-labelledby="reset-title">
   <div class="modal-card">
-    <h3 id="reset-title">Password reset token</h3>
+    <h3 id="reset-title">Password reset link</h3>
     <p class="sub" id="reset-target"></p>
-    <p class="sub">Admins should use <strong>Set password</strong> directly to assign a new password. The magic-link flow is not available for password-reset tokens in this build — this token currently has no matching consumer endpoint.</p>
+    <p class="sub" id="reset-transport-note"></p>
     <div class="token-reveal">
       <code id="reset-token-text"></code>
       <button class="copy-btn" id="reset-copy-btn">Copy</button>
     </div>
     <div class="modal-actions">
       <button class="modal-btn primary" data-close-modal="reset-modal">Done</button>
+    </div>
+  </div>
+</div>
+
+<!-- Invitation link modal -->
+<div class="modal-backdrop" id="invite-modal" role="dialog" aria-modal="true" aria-labelledby="invite-title">
+  <div class="modal-card">
+    <h3 id="invite-title">Invitation link</h3>
+    <p class="sub" id="invite-target"></p>
+    <p class="sub" id="invite-transport-note"></p>
+    <div class="token-reveal">
+      <code id="invite-url-text"></code>
+      <button class="copy-btn" id="invite-copy-btn">Copy</button>
+    </div>
+    <div class="modal-actions">
+      <button class="modal-btn primary" data-close-modal="invite-modal">Done</button>
     </div>
   </div>
 </div>
@@ -406,7 +424,8 @@ function renderUsers() {
       <td>
         <div class="row-actions">
           <a class="icon-btn" href="/admin/tokens?user=${encodeURIComponent(u.email || "")}" title="View this user's personal access tokens">Tokens</a>
-          <button class="icon-btn" data-action="set-password" data-user-id="${esc(u.id)}" data-user-email="${esc(u.email)}" title="Assign a new password (the 'reset token' flow is not wired end-to-end in this build)">Set pwd</button>
+          <button class="icon-btn" data-action="reset-password" data-user-id="${esc(u.id)}" data-user-email="${esc(u.email)}" title="Generate a reset link (user picks their own new password)">Reset</button>
+          <button class="icon-btn" data-action="set-password" data-user-id="${esc(u.id)}" data-user-email="${esc(u.email)}" title="Assign a password directly">Set pwd</button>
           <button class="icon-btn danger" data-action="delete-user" data-user-id="${esc(u.id)}" data-user-email="${esc(u.email)}">Delete</button>
         </div>
       </td>`;
@@ -418,9 +437,8 @@ function renderUsers() {
     el.addEventListener("click", () => editRole(el.dataset.userId)));
   tbody.querySelectorAll('[data-action="toggle-active"]').forEach(el =>
     el.addEventListener("change", () => toggleActive(el.dataset.userId, el.checked)));
-  // Note: the "Reset" row action has been removed (the reset_token endpoint
-  // has no matching consumer in this build); admins use Set pwd instead.
-  // resetPassword() below is kept for API-level inspection / future use.
+  tbody.querySelectorAll('[data-action="reset-password"]').forEach(el =>
+    el.addEventListener("click", () => resetPassword(el.dataset.userId, el.dataset.userEmail)));
   tbody.querySelectorAll('[data-action="set-password"]').forEach(el =>
     el.addEventListener("click", () => openSetPassword(el.dataset.userId, el.dataset.userEmail)));
   tbody.querySelectorAll('[data-action="delete-user"]').forEach(el =>
@@ -478,17 +496,20 @@ async function patch(id, body, successMsg) {
 
 // ── Reset password ──
 async function resetPassword(id, email) {
-  if (!await confirmModal(`Generate a reset token for ${email}?`)) return;
+  if (!await confirmModal(`Generate a password-reset link for ${email}?`)) return;
   const r = await fetch(`${API}/${id}/reset-password`, { method: "POST", credentials: "include" });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) { toast("Failed: " + (data.detail || r.status), "error"); return; }
   document.getElementById("reset-target").textContent = `For ${email}`;
-  document.getElementById("reset-token-text").textContent = data.reset_token;
+  document.getElementById("reset-transport-note").textContent = data.email_sent
+    ? "Email sent. Copy the link below only if you need to deliver it manually."
+    : "Email transport unavailable — send this link to the user directly.";
+  document.getElementById("reset-token-text").textContent = data.reset_url;
   const copyBtn = document.getElementById("reset-copy-btn");
   copyBtn.textContent = "Copy"; copyBtn.classList.remove("copied");
   copyBtn.onclick = async () => {
     try {
-      await navigator.clipboard.writeText(data.reset_token);
+      await navigator.clipboard.writeText(data.reset_url);
       copyBtn.textContent = "Copied!"; copyBtn.classList.add("copied");
       setTimeout(() => { copyBtn.textContent = "Copy"; copyBtn.classList.remove("copied"); }, 1500);
     } catch { toast("Copy failed — select the text manually", "error"); }
@@ -530,23 +551,45 @@ document.getElementById("open-create-btn").addEventListener("click", () => {
   document.getElementById("new-email").value = "";
   document.getElementById("new-name").value = "";
   document.getElementById("new-role").value = "analyst";
+  document.getElementById("new-send-invite").checked = true;
   openModal("create-modal");
 });
 document.getElementById("confirm-create-btn").addEventListener("click", async () => {
   const email = document.getElementById("new-email").value.trim();
   const name = document.getElementById("new-name").value.trim();
   const role = document.getElementById("new-role").value;
+  const sendInvite = document.getElementById("new-send-invite").checked;
   if (!email) { toast("Email is required", "error"); return; }
   const r = await fetch(API, {
     method: "POST", credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, name: name || email.split("@")[0], role }),
+    body: JSON.stringify({ email, name: name || email.split("@")[0], role, send_invite: sendInvite }),
   });
   if (!r.ok) { toast("Failed: " + (await r.text()), "error"); return; }
+  const data = await r.json().catch(() => ({}));
   closeModal("create-modal");
   toast("User created", "success");
   loadUsers();
+  if (data.invite_url) showInviteLink(email, data.invite_url, data.invite_email_sent);
 });
+
+function showInviteLink(email, url, emailSent) {
+  document.getElementById("invite-target").textContent = `For ${email}`;
+  document.getElementById("invite-transport-note").textContent = emailSent
+    ? "Invitation email sent. Copy the link below only if you need to deliver it manually."
+    : "Email transport unavailable — send this link to the user directly.";
+  document.getElementById("invite-url-text").textContent = url;
+  const copyBtn = document.getElementById("invite-copy-btn");
+  copyBtn.textContent = "Copy"; copyBtn.classList.remove("copied");
+  copyBtn.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(url);
+      copyBtn.textContent = "Copied!"; copyBtn.classList.add("copied");
+      setTimeout(() => { copyBtn.textContent = "Copy"; copyBtn.classList.remove("copied"); }, 1500);
+    } catch { toast("Copy failed — select the text manually", "error"); }
+  };
+  openModal("invite-modal");
+}
 
 loadUsers();
 </script>
