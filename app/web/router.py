@@ -302,7 +302,6 @@ async def dashboard(
         account_status="active",
         account_details=None,
         telegram_status={"linked": False},
-        setup_instructions="Use 'da login' to connect your CLI tool.",
         data_stats={
             "tables": total_tables,
             "total_tables": total_tables,

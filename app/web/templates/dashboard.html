@@ -2425,21 +2425,6 @@
         });
     }
 
-    function copyBootstrapInstructions(btn) {
-        var instructions = {{ setup_instructions | tojson }};
-
-        var button = btn || document.getElementById('bootstrapCopyBtn');
-        var origText = button.textContent;
-        copyToClipboard(instructions).then(function() {
-            button.textContent = 'Copied!';
-            button.classList.add('copied');
-            setTimeout(function() {
-                button.textContent = origText;
-                button.classList.remove('copied');
-            }, 2000);
-        });
-    }
-
     async function updateSyncSettings() {
         const jiraToggle = document.getElementById('toggle-jira');
         const attachmentsToggle = document.getElementById('toggle-jira_attachments');
