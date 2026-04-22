@@ -41,6 +41,7 @@ class CreateUserRequest(BaseModel):
     email: str
     name: str
     role: str = "analyst"
+    send_invite: bool = False
 
 
 class UpdateUserRequest(BaseModel):
@@ -61,9 +62,11 @@ class UserResponse(BaseModel):
     active: bool = True
     created_at: Optional[str]
     deactivated_at: Optional[str] = None
+    invite_url: Optional[str] = None
+    invite_email_sent: Optional[bool] = None
 
 
-def _to_response(u: dict) -> UserResponse:
+def _to_response(u: dict, invite_url: Optional[str] = None, invite_email_sent: Optional[bool] = None) -> UserResponse:
     return UserResponse(
         id=u["id"],
         email=u["email"],
@@ -72,6 +75,8 @@ def _to_response(u: dict) -> UserResponse:
         active=bool(u.get("active", True)),
         created_at=str(u.get("created_at", "")),
         deactivated_at=str(u["deactivated_at"]) if u.get("deactivated_at") else None,
+        invite_url=invite_url,
+        invite_email_sent=invite_email_sent,
     )
 
 
@@ -97,11 +102,27 @@ async def create_user(
         Role(payload.role)
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Unknown role: {payload.role}")
+    import secrets
     user_id = str(uuid.uuid4())
     repo.create(id=user_id, email=payload.email, name=payload.name, role=payload.role)
     _audit(conn, user["id"], "user.create", user_id, {"email": payload.email, "role": payload.role})
+
+    invite_url: Optional[str] = None
+    invite_email_sent: Optional[bool] = None
+    if payload.send_invite:
+        token = secrets.token_urlsafe(32)
+        repo.update(
+            id=user_id,
+            setup_token=token,
+            setup_token_created=datetime.now(timezone.utc),
+        )
+        from app.auth.providers.password import build_setup_url, send_setup_email
+        invite_url = build_setup_url(request, payload.email, token)
+        invite_email_sent = send_setup_email(request, payload.email, token)
+        _audit(conn, user["id"], "user.invite", user_id, {"email": payload.email, "email_sent": invite_email_sent})
+
     created = repo.get_by_id(user_id)
-    return _to_response(created)
+    return _to_response(created, invite_url=invite_url, invite_email_sent=invite_email_sent)
 
 
 @router.patch("/{user_id}", response_model=UserResponse)
@@ -199,14 +220,17 @@ async def reset_password(
         reset_token_created=datetime.now(timezone.utc),
     )
     _audit(conn, user["id"], "user.reset_password", user_id, {"email": target["email"]})
-    # Intentionally do NOT auto-send an email. The magic-link sender
-    # (`app/auth/providers/email.py:_send_email`) would deliver a "Login Link"
-    # that — when clicked — consumes the reset_token via verify_magic_link and
-    # logs the user in WITHOUT prompting for a new password, defeating the
-    # reset. Until a dedicated password-reset email flow with its own token
-    # column exists, admins share the `reset_token` below manually (or use the
-    # `set-password` endpoint directly).
-    return {"reset_token": token, "email_sent": False}
+    # Dedicated password-reset email/URL — points to /auth/password/reset where the
+    # user sets a new password, NOT to the magic-link verify endpoint (which would
+    # log them in without prompting for a new password).
+    from app.auth.providers.password import build_reset_url, send_reset_email
+    reset_url = build_reset_url(request, target["email"], token)
+    email_sent = send_reset_email(request, target["email"], token)
+    return {
+        "reset_token": token,
+        "reset_url": reset_url,
+        "email_sent": email_sent,
+    }
 
 
 @router.post("/{user_id}/set-password", status_code=204)
