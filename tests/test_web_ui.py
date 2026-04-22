@@ -92,6 +92,20 @@ class TestWebUISmoke:
             pytest.skip("Route /admin/permissions does not exist")
         assert resp.status_code == 200
 
+    def test_admin_users_renders_modern_ui(self, web_client, admin_cookie):
+        resp = web_client.get("/admin/users", cookies=admin_cookie)
+        assert resp.status_code == 200
+        body = resp.text
+        # New shared header chrome
+        assert "app-header" in body
+        assert 'href="/profile"' in body
+        assert 'href="/admin/users"' in body
+        # New modern UI markers
+        assert 'class="users-page"' in body
+        assert 'role-pill' in body
+        assert 'class="toggle"' in body
+        assert 'id="confirm-modal"' in body
+
 
 class TestAdminRoleGuards:
     def test_analyst_cannot_access_admin_tables(self, web_client, admin_cookie, analyst_cookie):

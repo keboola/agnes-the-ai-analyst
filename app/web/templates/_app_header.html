@@ -1,0 +1,28 @@
+{# Shared modern header — used by base.html and dashboard.html.
+   Styles live in app/web/static/style-custom.css under the .app-* prefix. #}
+{% if session.user %}
+<header class="app-header">
+    <div class="app-header-left">
+        <a class="app-header-logo" href="/" aria-label="Home">
+            {% if config.LOGO_SVG %}{{ config.LOGO_SVG | safe }}{% else %}{{ config.INSTANCE_NAME or 'Data Analyst Portal' }}{% endif %}
+        </a>
+        <span class="app-header-subtitle">{{ config.INSTANCE_SUBTITLE or 'Data Analyst Portal' }}</span>
+    </div>
+    <div class="app-header-right">
+        {% set _path = request.url.path %}
+        <a class="app-nav-link {% if _path == '/dashboard' or _path == '/' %}is-active{% endif %}" href="/dashboard">Dashboard</a>
+        <a class="app-nav-link {% if _path.startswith('/install') %}is-active{% endif %}" href="/install">Install CLI</a>
+        <a class="app-nav-link {% if _path.startswith('/profile') %}is-active{% endif %}" href="/profile">Profile</a>
+        {% if session.user.role == 'admin' %}
+        <a class="app-nav-link {% if _path.startswith('/admin/users') %}is-active{% endif %}" href="/admin/users">Users</a>
+        {% endif %}
+        <span class="app-header-email">{{ session.user.email }}</span>
+        {% if session.user.picture %}
+        <img src="{{ session.user.picture }}" alt="Profile" class="app-avatar-img">
+        {% else %}
+        <div class="app-avatar">{{ (session.user.name or session.user.email)[:2] | upper }}</div>
+        {% endif %}
+        <a href="{{ url_for('auth.logout') }}" class="app-btn-logout">Logout</a>
+    </div>
+</header>
+{% endif %}

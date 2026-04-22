@@ -9,25 +9,9 @@
     {% include '_theme.html' %}
 </head>
 <body>
-    <div class="container">
-        <header>
-            <div class="logo">
-                <h1>Data Analyst Portal</h1>
-                <p class="subtitle">{{ config.INSTANCE_SUBTITLE }}</p>
-            </div>
-            {% if session.user %}
-            <nav>
-                <span class="user-info">
-                    {% if session.user.picture %}
-                    <img src="{{ session.user.picture }}" alt="Profile" class="avatar">
-                    {% endif %}
-                    {{ session.user.email }}
-                </span>
-                <a href="{{ url_for('auth.logout') }}" class="btn btn-secondary btn-sm">Logout</a>
-            </nav>
-            {% endif %}
-        </header>
+    {% include '_app_header.html' %}
 
+    <div class="container">
         {% with messages = get_flashed_messages(with_categories=true) %}
         {% if messages %}
         <div class="flash-messages">
