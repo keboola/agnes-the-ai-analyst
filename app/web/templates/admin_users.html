@@ -3,7 +3,9 @@
 
 {% block content %}
 <style>
-  .users-page { max-width: 1200px; margin: 24px auto; padding: 0 16px; }
+  /* Override base.html's 800px .container cap for this wide table. */
+  .container:has(.users-page) { max-width: none; padding: 24px 16px; }
+  .users-page { max-width: 1400px; margin: 0 auto; padding: 0; }
   .users-toolbar {
     display: flex; justify-content: space-between; align-items: center;
     gap: 16px; margin-bottom: 20px; flex-wrap: wrap;
