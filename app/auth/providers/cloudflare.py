@@ -85,3 +85,66 @@ def verify_cf_jwt(token: str) -> Optional[dict]:
         # JWKS fetch failure, network error, etc. — never propagate
         logger.warning("CF Access JWT verification error: %s", e)
         return None
+
+
+import uuid
+from typing import Any
+
+import duckdb
+
+from src.repositories.users import UserRepository
+
+
+def _allowed_domains() -> list[str]:
+    """Domain allowlist — CF_ACCESS_DOMAIN_ALLOW env wins, else instance.yaml."""
+    env = os.environ.get("CF_ACCESS_DOMAIN_ALLOW", "").strip()
+    if env:
+        return [d.strip().lower() for d in env.split(",") if d.strip()]
+    try:
+        from app.instance_config import get_allowed_domains
+        return [d.lower() for d in (get_allowed_domains() or [])]
+    except Exception:
+        return []
+
+
+def get_or_create_user_from_cf(
+    email: str,
+    name: str,
+    conn: duckdb.DuckDBPyConnection,
+) -> Optional[dict[str, Any]]:
+    """Look up or provision a user from a verified CF Access identity.
+
+    Returns the user dict on success; returns None when:
+    - email domain is outside the allowlist
+    - user exists but is deactivated
+
+    New users default to `analyst` role (same default as Google OAuth).
+    """
+    if not email or not isinstance(email, str):
+        return None
+
+    allow = _allowed_domains()
+    if allow:
+        domain = email.split("@")[-1].lower()
+        if domain not in allow:
+            logger.info("CF Access: rejecting email outside allowlist: %s", email)
+            return None
+
+    repo = UserRepository(conn)
+    user = repo.get_by_email(email)
+    if user is None:
+        user_id = str(uuid.uuid4())
+        repo.create(
+            id=user_id,
+            email=email,
+            name=name or email.split("@")[0],
+            role="analyst",
+        )
+        user = repo.get_by_email(email)
+        logger.info("CF Access: provisioned new user %s", email)
+
+    if not bool(user.get("active", True)):
+        logger.info("CF Access: rejecting deactivated user %s", email)
+        return None
+
+    return user
