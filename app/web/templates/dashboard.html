@@ -1851,6 +1851,10 @@
             <div class="avatar">{{ (user.name or user.email)[:2] | upper }}</div>
             {% endif %}
             <a class="nav-link" href="/install">Install CLI</a>
+            <a class="nav-link" href="/profile">Profile</a>
+            {% if user_info.is_admin %}
+            <a class="nav-link" href="/admin/users">Users</a>
+            {% endif %}
             <a href="{{ url_for('auth.logout') }}" class="btn-logout">Logout</a>
         </div>
         {% endif %}
