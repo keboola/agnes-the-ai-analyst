@@ -55,8 +55,15 @@ echo "Installing Agnes CLI from $SERVER (version: {version})"
 # 1. Download the wheel
 # Portable mktemp: X's must be at the end of the template on both GNU and BSD/macOS.
 TMPDIR_WHEEL=$(mktemp -d -t agnes_cli.XXXXXX)
-WHEEL="$TMPDIR_WHEEL/agnes_cli.whl"
-curl -fsSL "$SERVER/cli/download" -o "$WHEEL"
+trap 'rm -rf "$TMPDIR_WHEEL"' EXIT
+# Use -OJ so curl honours Content-Disposition and saves the wheel with its real
+# PEP-427 filename (pip / uv tool install reject filenames without a version).
+(cd "$TMPDIR_WHEEL" && curl -fsSL -OJ "$SERVER/cli/download")
+WHEEL=$(ls "$TMPDIR_WHEEL"/*.whl 2>/dev/null | head -n1)
+if [ -z "$WHEEL" ]; then
+    echo "error: wheel download failed (no .whl found in $TMPDIR_WHEEL)" >&2
+    exit 1
+fi
 
 # 2. Install via pip (prefer uv tool install if available)
 if command -v uv >/dev/null 2>&1; then
@@ -64,8 +71,6 @@ if command -v uv >/dev/null 2>&1; then
 else
     python3 -m pip install --user --force-reinstall "$WHEEL"
 fi
-
-rm -rf "$TMPDIR_WHEEL"
 
 # 3. Seed the server URL in CLI config
 CFG_DIR="${{DA_CONFIG_DIR:-$HOME/.config/da}}"
