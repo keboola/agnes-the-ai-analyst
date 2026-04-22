@@ -344,13 +344,29 @@
             border-radius: 8px;
             padding: 14px 16px;
         }
+        .setup-preview-summary {
+            list-style: none;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            user-select: none;
+        }
+        .setup-preview-summary::-webkit-details-marker { display: none; }
+        .setup-preview-chevron {
+            display: inline-block;
+            font-size: 11px;
+            color: var(--text-secondary);
+            transition: transform 0.15s ease;
+        }
+        details[open] > .setup-preview-summary .setup-preview-chevron { transform: rotate(90deg); }
         .setup-preview-title {
             font-size: 12px;
             font-weight: 600;
             letter-spacing: 0.5px;
             text-transform: uppercase;
             color: var(--text-primary);
-            margin: 0 0 2px 0;
+            margin: 0;
         }
         .setup-preview-sub {
             font-size: 12px;
@@ -678,8 +694,11 @@
                 </p>
                 <div id="setupClaudeError" class="oneclick-error" role="alert" style="display:none;"></div>
 
-                <div class="setup-preview-card" aria-label="Preview of the clipboard payload">
-                    <p class="setup-preview-title">What Claude Code will receive</p>
+                <details class="setup-preview-card" aria-label="Preview of the clipboard payload">
+                    <summary class="setup-preview-summary">
+                        <span class="setup-preview-chevron" aria-hidden="true">▸</span>
+                        <span class="setup-preview-title">What Claude Code will receive</span>
+                    </summary>
                     <p class="setup-preview-sub">
                         Read-only preview. The real token is generated when you
                         click the button above and is placed directly in your
@@ -688,7 +707,7 @@
                     {% with preview_mode=True %}
                         {% include "_claude_setup_instructions.jinja" %}
                     {% endwith %}
-                </div>
+                </details>
 
                 <details class="manual-aside" style="margin-top: 18px;">
                     <summary>Or run manually on a restricted environment</summary>
