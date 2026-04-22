@@ -10,7 +10,7 @@ import duckdb
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.auth.dependencies import require_session_token, require_role, _get_db
+from app.auth.dependencies import require_session_token, require_role, get_current_user, _get_db
 from src.rbac import Role
 from src.repositories.access_tokens import AccessTokenRepository
 from src.repositories.audit import AuditRepository
@@ -130,9 +130,12 @@ async def create_token(
 
 @router.get("", response_model=List[TokenListItem])
 async def list_tokens(
-    user: dict = Depends(require_session_token),
+    user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
+    # PATs may list their owner's own tokens — required by the documented
+    # `da auth token list` CLI flow (HEADLESS_USAGE.md). Only `create_token`
+    # is session-only (to block PAT-spawning-PAT chains).
     rows = AccessTokenRepository(conn).list_for_user(user["id"])
     return [_row_to_item(r) for r in rows]
 
@@ -140,7 +143,7 @@ async def list_tokens(
 @router.get("/{token_id}", response_model=TokenListItem)
 async def get_token(
     token_id: str,
-    user: dict = Depends(require_session_token),
+    user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     row = AccessTokenRepository(conn).get_by_id(token_id)
@@ -152,7 +155,7 @@ async def get_token(
 @router.delete("/{token_id}", status_code=204)
 async def revoke_token(
     token_id: str,
-    user: dict = Depends(require_session_token),
+    user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     repo = AccessTokenRepository(conn)
