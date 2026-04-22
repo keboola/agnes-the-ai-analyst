@@ -2,10 +2,25 @@
 
 import logging
 from contextlib import asynccontextmanager
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from urllib.parse import quote
 
 import os
+
+
+def _app_version() -> str:
+    """Product version for FastAPI title / OpenAPI schema.
+
+    Single source of truth is `pyproject.toml` `[project].version`; we read
+    it back via `importlib.metadata` at runtime so `/docs`, `/openapi.json`,
+    `/api/version`, `/cli/latest`, and `da --version` can never drift.
+    """
+    try:
+        return _pkg_version("agnes-the-ai-analyst")
+    except PackageNotFoundError:
+        return "dev"
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -77,7 +92,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="AI Data Analyst",
         description="Data distribution platform for AI analytical systems",
-        version="2.0.0",
+        version=_app_version(),
         lifespan=lifespan,
     )
 
