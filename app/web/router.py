@@ -155,7 +155,13 @@ def _build_context(request: Request, user: Optional[dict] = None, **extra) -> di
 
     # Lines + server_url for the "Setup a new Claude Code" preview/clipboard
     # partial; single source of truth lives in app/web/setup_instructions.py.
-    from app.web.setup_instructions import SETUP_INSTRUCTIONS_LINES
+    # Resolve the wheel filename server-side so the URL in the setup snippet
+    # is a PEP 427-compliant path — `uv tool install` rejects bare `agnes.whl`.
+    from app.web.setup_instructions import resolve_lines
+    from app.api.cli_artifacts import _find_wheel
+    _wheel = _find_wheel()
+    _wheel_filename = _wheel.name if _wheel else "agnes.whl"
+    setup_instructions_lines = resolve_lines(_wheel_filename)
     ctx_server_url = str(request.base_url).rstrip("/")
 
     ctx = {
@@ -168,7 +174,7 @@ def _build_context(request: Request, user: Optional[dict] = None, **extra) -> di
         "get_flashed_messages": lambda **kwargs: [],
         "url_for": lambda endpoint, **kw: _url_for_shim(endpoint, **kw),
         "session": _FlexDict({"user": user}) if user else _FlexDict(),
-        "setup_instructions_lines": SETUP_INSTRUCTIONS_LINES,
+        "setup_instructions_lines": setup_instructions_lines,
         "server_url": ctx_server_url,
     }
     # Flex all extra context values for template compatibility

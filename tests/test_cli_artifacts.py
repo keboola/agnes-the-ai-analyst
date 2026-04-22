@@ -44,9 +44,8 @@ def test_cli_download_serves_wheel_when_present(monkeypatch, tmp_path):
 
 
 def test_cli_agnes_whl_alias_serves_same_bytes_as_download(monkeypatch, tmp_path):
-    """`/cli/agnes.whl` is a stable alias over `/cli/download` whose URL path
-    ends in `.whl`, which `uv tool install` requires to treat the resource as
-    a wheel. Both endpoints must serve identical bytes."""
+    """`/cli/agnes.whl` is a stable alias; after following the redirect to the
+    versioned path it must serve the same bytes as `/cli/download`."""
     wheel = tmp_path / "agnes_fake-1.0-py3-none-any.whl"
     wheel.write_bytes(b"PK\x03\x04fake-wheel-bytes-agnes")
     monkeypatch.setenv("AGNES_CLI_DIST_DIR", str(tmp_path))
@@ -54,6 +53,7 @@ def test_cli_agnes_whl_alias_serves_same_bytes_as_download(monkeypatch, tmp_path
     from app.main import app
     client = TestClient(app)
 
+    # TestClient follows redirects by default — we get the file after the 302.
     resp_alias = client.get("/cli/agnes.whl")
     assert resp_alias.status_code == 200
     assert resp_alias.headers["content-type"] == "application/octet-stream"
@@ -62,6 +62,40 @@ def test_cli_agnes_whl_alias_serves_same_bytes_as_download(monkeypatch, tmp_path
     resp_download = client.get("/cli/download")
     assert resp_download.status_code == 200
     assert resp_alias.content == resp_download.content
+
+
+def test_cli_agnes_whl_alias_redirects_to_pep427_filename(monkeypatch, tmp_path):
+    """`uv tool install` looks at the URL path, not Content-Disposition, and
+    rejects a bare `agnes.whl` with `Must have a version`. The alias must 302
+    to a path that contains the real versioned filename so `uv` accepts it."""
+    wheel = tmp_path / "agnes_fake-1.0-py3-none-any.whl"
+    wheel.write_bytes(b"PK\x03\x04")
+    monkeypatch.setenv("AGNES_CLI_DIST_DIR", str(tmp_path))
+    from fastapi.testclient import TestClient
+    from app.main import app
+    client = TestClient(app)
+
+    resp = client.get("/cli/agnes.whl", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"].endswith("/cli/wheel/agnes_fake-1.0-py3-none-any.whl")
+
+
+def test_cli_wheel_versioned_only_serves_current_wheel(monkeypatch, tmp_path):
+    """Versioned endpoint must not be usable to request arbitrary filenames —
+    it only serves whatever `_find_wheel()` currently returns."""
+    wheel = tmp_path / "agnes_fake-1.0-py3-none-any.whl"
+    wheel.write_bytes(b"PK\x03\x04")
+    monkeypatch.setenv("AGNES_CLI_DIST_DIR", str(tmp_path))
+    from fastapi.testclient import TestClient
+    from app.main import app
+    client = TestClient(app)
+
+    resp_ok = client.get("/cli/wheel/agnes_fake-1.0-py3-none-any.whl")
+    assert resp_ok.status_code == 200
+    assert resp_ok.content == wheel.read_bytes()
+
+    resp_wrong = client.get("/cli/wheel/other-2.0-py3-none-any.whl")
+    assert resp_wrong.status_code == 404
 
 
 def test_cli_agnes_whl_alias_404_when_no_wheel(monkeypatch, tmp_path):
