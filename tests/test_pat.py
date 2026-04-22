@@ -277,7 +277,9 @@ def test_pat_cannot_create_pat(fresh_db):
     assert resp.status_code == 403
 
 
-def test_profile_page_renders(fresh_db):
+def test_profile_page_redirects_to_tokens(fresh_db):
+    """/profile was unified under /tokens in feat/unify-tokens-fullwidth;
+    the route now 302-redirects to /tokens."""
     from fastapi.testclient import TestClient
     import uuid
     from src.db import get_system_db, close_system_db
@@ -295,13 +297,20 @@ def test_profile_page_renders(fresh_db):
         close_system_db()
 
     client = TestClient(app)
+    # Redirect is unauthenticated (no auth guard on the redirect itself)
+    resp = client.get("/profile", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/tokens"
+
+    # Following the redirect with a valid session lands on the unified page.
     resp = client.get(
-        "/profile",
+        "/tokens",
         headers={"Accept": "text/html"},
         cookies={"access_token": token},
     )
     assert resp.status_code == 200
-    assert "Personal access tokens" in resp.text
+    assert "My tokens" in resp.text  # non-admin title
+    assert 'id="new-token-btn"' in resp.text  # non-admin CTA
 
 
 def test_pat_first_use_from_new_ip_audits(fresh_db):

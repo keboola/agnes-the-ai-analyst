@@ -98,13 +98,35 @@ class TestWebUISmoke:
         body = resp.text
         # New shared header chrome
         assert "app-header" in body
-        assert 'href="/profile"' in body
+        # Nav was unified in feat/unify-tokens-fullwidth: single "Tokens" link
+        # replaces the old "Profile" + admin-only "Tokens" pair.
+        assert 'href="/tokens"' in body
+        assert 'href="/profile"' not in body
         assert 'href="/admin/users"' in body
         # New modern UI markers
         assert 'class="users-page"' in body
         assert 'role-pill' in body
         assert 'class="toggle"' in body
         assert 'id="confirm-modal"' in body
+
+    def test_nav_shows_tokens_link_for_non_admin(self, web_client, analyst_cookie):
+        """Every signed-in user sees a single 'Tokens' nav link; 'Profile' is gone."""
+        resp = web_client.get("/dashboard", cookies=analyst_cookie)
+        assert resp.status_code in (200, 302)
+        if resp.status_code == 302:
+            # Dashboard may redirect in some flows; follow it for nav check.
+            resp = web_client.get(resp.headers["location"], cookies=analyst_cookie)
+        body = resp.text
+        assert 'href="/tokens"' in body
+        assert 'href="/profile"' not in body
+        assert ">Tokens<" in body
+        assert ">Profile<" not in body
+
+    def test_profile_redirects_to_tokens(self, web_client, admin_cookie):
+        """Back-compat: /profile 302-redirects to /tokens."""
+        resp = web_client.get("/profile", cookies=admin_cookie, follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/tokens"
 
 
 class TestClaudeSetupPreview:
