@@ -58,25 +58,17 @@ async def cli_download():
     )
 
 
-@router.get("/cli/agnes.whl")
-async def cli_wheel_stable():
-    """Stable `.whl` URL alias so `uv tool install <server>/cli/agnes.whl` works.
+@router.get("/cli/wheel/{wheel_name}")
+async def cli_wheel_versioned(wheel_name: str):
+    """Serve the currently-present wheel at a PEP 427-compliant URL.
 
-    `uv tool install` inspects the URL path to decide how to treat the resource
-    and only accepts it as a wheel when the path ends in `.whl`. The existing
-    `/cli/download` path does not, which forces users through a multi-step
-    curl + tmpfile + install + rm dance. This alias collapses that into a
-    single `uv tool install` invocation.
+    Only the exact filename of the current wheel is honoured; any other
+    `wheel_name` returns 404. No filesystem lookup is done from user input —
+    the path param is only compared against `_find_wheel().name`.
     """
     wheel = _find_wheel()
-    if not wheel:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                "CLI wheel not found in dist dir. Build it with `uv build --wheel` "
-                "or run the official docker image (which builds on image-build)."
-            ),
-        )
+    if not wheel or wheel.name != wheel_name:
+        raise HTTPException(status_code=404, detail="Wheel not found")
     return FileResponse(
         path=str(wheel),
         filename=wheel.name,
