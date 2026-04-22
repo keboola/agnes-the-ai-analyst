@@ -33,7 +33,34 @@ class UpdateInfo:
     def is_outdated(self) -> bool:
         if not self.latest or self.installed == "unknown":
             return False
-        return self.latest != self.installed
+        # Directional: only warn when installed < latest. `!=` would also
+        # fire when the CLI is *newer* than the server (e.g. after a server
+        # rollback) and prompt the user to downgrade.
+        return _version_lt(self.installed, self.latest)
+
+
+def _version_lt(installed: str, latest: str) -> bool:
+    """Is `installed` strictly older than `latest`?
+
+    Prefer packaging.version.Version (PEP 440, handles pre-release tags).
+    Fall back to a naive dotted-int tuple for the simple N.N.N case if
+    packaging is somehow unavailable. Unparseable strings return False —
+    we'd rather miss an upgrade hint than prompt a silent downgrade.
+    """
+    try:
+        from packaging.version import InvalidVersion, Version
+        try:
+            return Version(installed) < Version(latest)
+        except InvalidVersion:
+            pass
+    except ImportError:
+        pass
+    try:
+        a = tuple(int(x) for x in installed.split("."))
+        b = tuple(int(x) for x in latest.split("."))
+        return a < b
+    except ValueError:
+        return False
 
 
 def is_disabled() -> bool:

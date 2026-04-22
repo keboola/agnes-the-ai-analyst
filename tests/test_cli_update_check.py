@@ -131,6 +131,36 @@ def test_is_outdated_false_when_latest_unknown(tmp_config):
     assert info.is_outdated() is False
 
 
+def test_is_outdated_true_when_installed_older(tmp_config):
+    from cli.update_check import UpdateInfo
+    info = UpdateInfo(installed="2.0.0", latest="2.1.0", download_url="…")
+    assert info.is_outdated() is True
+
+
+def test_is_outdated_false_when_installed_newer_than_server(tmp_config):
+    """After a server rollback the CLI may be ahead — don't prompt a downgrade."""
+    from cli.update_check import UpdateInfo
+    info = UpdateInfo(installed="2.1.0", latest="2.0.0", download_url="…")
+    assert info.is_outdated() is False
+
+
+def test_is_outdated_uses_pep440_comparison(tmp_config):
+    """`10.0.0 > 2.1.0` — must not be tripped by lexicographic string compare."""
+    from cli.update_check import UpdateInfo
+    newer_on_server = UpdateInfo(installed="2.1.0", latest="10.0.0", download_url="…")
+    older_on_server = UpdateInfo(installed="10.0.0", latest="2.1.0", download_url="…")
+    assert newer_on_server.is_outdated() is True
+    assert older_on_server.is_outdated() is False
+
+
+def test_is_outdated_false_for_unparseable_strings(tmp_config):
+    """Unparseable versions default to False — we'd rather miss an upgrade
+    hint than suggest a bogus downgrade."""
+    from cli.update_check import UpdateInfo
+    info = UpdateInfo(installed="nightly-abc", latest="nightly-def", download_url="…")
+    assert info.is_outdated() is False
+
+
 def test_format_outdated_notice_drops_upgrade_line_when_no_download_url(tmp_config):
     """`download_url=None` must NOT produce literal "None" in the copy-pasteable command."""
     from cli.update_check import UpdateInfo, format_outdated_notice
