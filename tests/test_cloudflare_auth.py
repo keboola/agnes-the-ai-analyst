@@ -1,6 +1,5 @@
 """Tests for Cloudflare Access auth provider and middleware."""
 
-import json
 import time
 import uuid
 from base64 import urlsafe_b64encode
