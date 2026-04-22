@@ -1884,14 +1884,13 @@
             <p class="env-subtitle">Run Claude Code in your project folder and paste the setup instructions to configure SSH, sync data, and initialize DuckDB.</p>
             <div class="env-setup-row">
                 <span class="code-pill">cd {{ project_dir }} && claude</span>
-                <button onclick="copyBootstrapInstructions(this)" class="btn-setup" id="bootstrapCopyBtn">
+                <a href="/install" class="btn-setup" id="bootstrapCopyBtn">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                        <path d="M5 12h14M13 5l7 7-7 7"/>
                     </svg>
-                    Copy Setup Instructions
-                </button>
-                <span class="env-hint">Paste into Claude Code to complete setup</span>
+                    View Install Instructions
+                </a>
+                <span class="env-hint">Step-by-step setup for SSH, sync, and Claude Code</span>
             </div>
         </div>
         {% endif %}
@@ -2275,11 +2274,11 @@
         <div class="setup-banner">
             <div class="setup-banner-text">
                 <div class="setup-banner-title">Set up a new machine</div>
-                <div class="setup-banner-desc">Copy instructions and paste into Claude Code to configure another local environment.</div>
+                <div class="setup-banner-desc">View install instructions, create a personal access token, and configure Claude Code.</div>
             </div>
-            <button onclick="copyBootstrapInstructions(this)" class="btn-setup-secondary" id="bootstrapCopyBtnBottom">
-                Copy Setup Instructions
-            </button>
+            <a href="/install" class="btn-setup-secondary" id="bootstrapCopyBtnBottom">
+                View Install Instructions
+            </a>
         </div>
 
     </main>
