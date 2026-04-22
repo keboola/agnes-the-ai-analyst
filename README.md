@@ -135,6 +135,7 @@ See `config/instance.yaml.example` for all available options.
 
 - [Hackathon TL;DR](docs/HACKATHON.md) — condensed deploy + dev playbooks (for both humans and AI agents)
 - [Onboarding Guide](docs/ONBOARDING.md) — end-to-end Terraform deployment into a GCP project (recommended for production)
+- [Cloudflare Access Auth](docs/auth-cloudflare.md) — SSO via Cloudflare Zero Trust tunnel
 - [Deployment Guide](docs/DEPLOYMENT.md) — chooses between Terraform and Docker Compose; covers OSS self-host
 - [Configuration Reference](docs/CONFIGURATION.md) — `instance.yaml`, env vars, per-instance options
 - [Architecture](docs/architecture.md) — orchestrator, extractors, DB layout
