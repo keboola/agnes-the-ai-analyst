@@ -509,11 +509,15 @@ async def activity_center(
 
 
 @router.get("/install", response_class=HTMLResponse)
-async def install_page(request: Request):
+async def install_page(
+    request: Request,
+    user: Optional[dict] = Depends(get_optional_user),
+):
     """Public install instructions for the CLI."""
     base_url = str(request.base_url).rstrip("/")
     ctx = _build_context(
         request,
+        user=user,
         server_url=base_url,
         agnes_version=os.environ.get("AGNES_VERSION", "dev"),
     )
