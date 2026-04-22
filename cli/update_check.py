@@ -131,8 +131,14 @@ def check(server_url: Optional[str]) -> Optional[UpdateInfo]:
 
 
 def format_outdated_notice(info: UpdateInfo) -> str:
-    """One-line stderr warning when the CLI is out of date."""
-    return (
-        f"[update] da {info.installed} is out of date — latest on this server is {info.latest}. "
-        f"Upgrade: uv tool install --force {info.download_url}"
-    )
+    """One-line stderr warning when the CLI is out of date.
+
+    `download_url` may be absent (stale cache entry written by an older client,
+    or server returned a version without a download path). Don't emit the
+    literal string "None" into a copy-pasteable command — drop the upgrade
+    snippet in that case.
+    """
+    msg = f"[update] da {info.installed} is out of date — latest on this server is {info.latest}."
+    if info.download_url:
+        msg += f" Upgrade: uv tool install --force {info.download_url}"
+    return msg

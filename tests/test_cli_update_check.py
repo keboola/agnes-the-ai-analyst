@@ -131,6 +131,27 @@ def test_is_outdated_false_when_latest_unknown(tmp_config):
     assert info.is_outdated() is False
 
 
+def test_format_outdated_notice_drops_upgrade_line_when_no_download_url(tmp_config):
+    """`download_url=None` must NOT produce literal "None" in the copy-pasteable command."""
+    from cli.update_check import UpdateInfo, format_outdated_notice
+    info = UpdateInfo(installed="2.0.0", latest="2.1.0", download_url=None)
+    msg = format_outdated_notice(info)
+    assert "None" not in msg
+    assert "uv tool install" not in msg
+    assert "2.0.0" in msg and "2.1.0" in msg
+
+
+def test_format_outdated_notice_includes_upgrade_command_when_url_present(tmp_config):
+    from cli.update_check import UpdateInfo, format_outdated_notice
+    info = UpdateInfo(
+        installed="2.0.0",
+        latest="2.1.0",
+        download_url="http://s/cli/wheel/a-2.1.0-py3-none-any.whl",
+    )
+    msg = format_outdated_notice(info)
+    assert "uv tool install --force http://s/cli/wheel/a-2.1.0-py3-none-any.whl" in msg
+
+
 class TestRootCallbackIntegration:
     """The root callback must not crash a command when the probe fails, and
     must emit a stderr warning when the server advertises a newer version."""
