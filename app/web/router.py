@@ -258,7 +258,17 @@ async def login_page(request: Request):
                 _url += f"?next={quote(next_path, safe='')}"
             login_buttons.append({"url": _url, "text": "Sign in with Email Link", "css_class": "btn-secondary", "icon_html": ""})
 
-    ctx = _build_context(request, providers=providers, login_buttons=login_buttons, next_path=next_path)
+    cf_available = False
+    try:
+        from app.auth.providers.cloudflare import is_available as cf_is_available
+        cf_available = cf_is_available()
+    except Exception:
+        pass
+
+    ctx = _build_context(
+        request, providers=providers, login_buttons=login_buttons,
+        next_path=next_path, cf_available=cf_available,
+    )
     return templates.TemplateResponse(request, "login.html", ctx)
 
 
