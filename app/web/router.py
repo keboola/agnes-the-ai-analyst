@@ -567,30 +567,32 @@ async def admin_users_page(
 
 
 @router.get("/tokens", response_class=HTMLResponse)
-async def tokens_page(
+async def my_tokens_page(
     request: Request,
     user: dict = Depends(get_current_user),
 ):
-    """Unified personal access token page — role-aware.
+    """My tokens — ANY signed-in user (incl. admins' own).
 
-    Admins see all users' tokens (pulled from /auth/admin/tokens) for incident
-    response. Non-admins see only their own tokens with a "New token" CTA that
-    calls /auth/tokens.
+    Always shows the user's own PATs. Create + reveal + revoke-own flow.
+    Admins who need the org-wide view go to /admin/tokens.
     """
-    is_admin = user.get("role") == "admin"
-    ctx = _build_context(request, user=user, is_admin=is_admin)
-    return templates.TemplateResponse(request, "tokens.html", ctx)
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "my_tokens.html", ctx)
 
 
-@router.get("/admin/tokens")
-async def admin_tokens_redirect(request: Request):
-    """Back-compat: /admin/tokens now lives at /tokens (role-aware).
+@router.get("/admin/tokens", response_class=HTMLResponse)
+async def admin_tokens_page(
+    request: Request,
+    user: dict = Depends(require_role(Role.ADMIN)),
+):
+    """Admin — list of ALL tokens for incident response + offboarding.
 
-    Preserves query string (e.g. ?user=foo from the /admin/users deep-link).
+    Admin-only. No create form here (admins mint their own PATs via /tokens).
+    URL param ?user=<email> pre-fills the owner filter (deep-link from
+    /admin/users "Tokens" action).
     """
-    qs = request.url.query
-    target = "/tokens" + (f"?{qs}" if qs else "")
-    return RedirectResponse(url=target, status_code=302)
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_tokens.html", ctx)
 
 
 @router.get("/profile")
