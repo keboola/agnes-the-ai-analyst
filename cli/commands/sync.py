@@ -1,5 +1,6 @@
 """Sync commands — da sync."""
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -99,10 +100,27 @@ def sync(
         for idx, tid in enumerate(to_download, start=1):
             progress.update(task, description=f"[{idx}/{total}] Downloading {tid}...")
             target = parquet_dir / f"{tid}.parquet"
+            expected_hash = server_tables[tid].get("hash", "")
             try:
                 stream_download(f"/api/data/{tid}/download", str(target))
+                # Integrity check against the manifest hash (server uses MD5
+                # over the parquet — see app/api/sync.py:_file_hash). A
+                # structural PAR1 check is kept as a fallback for when the
+                # manifest hash is empty (legacy snapshots).
+                if expected_hash:
+                    actual_hash = _md5_file(target)
+                    if actual_hash != expected_hash:
+                        target.unlink(missing_ok=True)
+                        raise ValueError(
+                            f"hash mismatch: expected {expected_hash[:12]}…, got {actual_hash[:12]}…"
+                        )
+                elif not _is_valid_parquet(target):
+                    target.unlink(missing_ok=True)
+                    raise ValueError(
+                        "downloaded file is not a valid parquet (missing PAR1 magic bytes)"
+                    )
                 local_tables[tid] = {
-                    "hash": server_tables[tid].get("hash", ""),
+                    "hash": expected_hash,
                     "rows": server_tables[tid].get("rows", 0),
                     "size_bytes": server_tables[tid].get("size_bytes", 0),
                 }
@@ -216,15 +234,62 @@ def _rebuild_duckdb_views(local_dir: Path, parquet_dir: Path):
     except Exception:
         pass
 
-    # Create views for each parquet file
+    # Create views for each parquet file. One broken file (corrupt download,
+    # partial write left over from a previous sync, …) must not abort the
+    # whole rebuild — skip it with a warning and keep going.
+    skipped_broken: list[str] = []
     for pq_file in parquet_dir.rglob("*.parquet"):
         view_name = pq_file.stem
         if view_name in existing_tables:
             continue  # don't shadow user tables
+        if not _is_valid_parquet(pq_file):
+            skipped_broken.append(view_name)
+            continue
         abs_path = str(pq_file.resolve())
-        conn.execute(f"CREATE VIEW \"{view_name}\" AS SELECT * FROM read_parquet('{abs_path}')")
+        try:
+            conn.execute(f"CREATE VIEW \"{view_name}\" AS SELECT * FROM read_parquet('{abs_path}')")
+        except duckdb.Error:
+            skipped_broken.append(view_name)
 
     conn.close()
+
+    if skipped_broken:
+        typer.echo(
+            f"Warning: skipped {len(skipped_broken)} broken parquet file(s) during view rebuild:",
+            err=True,
+        )
+        for name in skipped_broken:
+            typer.echo(f"  - {name}.parquet", err=True)
+
+
+def _md5_file(path: Path) -> str:
+    """MD5 of a file, same chunking as app/api/sync.py:_file_hash so the
+    client-side verification matches the manifest hash byte-for-byte."""
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _is_valid_parquet(path: Path) -> bool:
+    """Cheap structural check — parquet files begin and end with `PAR1`.
+
+    Used as a fallback when the manifest has no hash (legacy snapshots) and
+    during view rebuild to skip obviously-broken files. Does not guarantee
+    the footer is well-formed — that's DuckDB's job at CREATE VIEW time.
+    """
+    try:
+        size = path.stat().st_size
+        if size < 8:
+            return False
+        with open(path, "rb") as f:
+            head = f.read(4)
+            f.seek(-4, 2)
+            tail = f.read(4)
+        return head == b"PAR1" and tail == b"PAR1"
+    except OSError:
+        return False
 
 
 def _upload(as_json: bool, dry_run: bool = False):
