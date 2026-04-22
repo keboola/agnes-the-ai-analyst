@@ -199,16 +199,14 @@ async def reset_password(
         reset_token_created=datetime.now(timezone.utc),
     )
     _audit(conn, user["id"], "user.reset_password", user_id, {"email": target["email"]})
-    # Best-effort email
-    email_sent = False
-    try:
-        from app.auth.providers.email import _send_email, is_available
-        if is_available():
-            _send_email(target["email"], token)
-            email_sent = True
-    except Exception:
-        pass
-    return {"reset_token": token, "email_sent": email_sent}
+    # Intentionally do NOT auto-send an email. The magic-link sender
+    # (`app/auth/providers/email.py:_send_email`) would deliver a "Login Link"
+    # that — when clicked — consumes the reset_token via verify_magic_link and
+    # logs the user in WITHOUT prompting for a new password, defeating the
+    # reset. Until a dedicated password-reset email flow with its own token
+    # column exists, admins share the `reset_token` below manually (or use the
+    # `set-password` endpoint directly).
+    return {"reset_token": token, "email_sent": False}
 
 
 @router.post("/{user_id}/set-password", status_code=204)

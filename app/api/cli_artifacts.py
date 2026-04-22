@@ -1,10 +1,19 @@
 """CLI artifact download + install script endpoints (#9)."""
 
 import os
+import re
+import shlex
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, PlainTextResponse
+
+# Strict allowlists for values interpolated into the generated install.sh.
+# The endpoint is unauthenticated and users `curl | bash` it, so any shell
+# metacharacter leaking through the Host header or AGNES_VERSION env var
+# would become RCE. `shlex.quote` is applied on top for defense in depth.
+_SAFE_URL_RE = re.compile(r"^https?://[A-Za-z0-9.\-]+(:\d+)?/?$")
+_SAFE_VERSION_RE = re.compile(r"^[A-Za-z0-9._\-]+$")
 
 router = APIRouter(tags=["cli"])
 
@@ -44,13 +53,20 @@ async def cli_download():
 async def cli_install_script(request: Request):
     """Shell installer — bakes this server's URL into the generated config."""
     base_url = str(request.base_url).rstrip("/")
+    if not _SAFE_URL_RE.match(base_url):
+        raise HTTPException(status_code=400, detail="Unexpected server URL format")
     version = os.environ.get("AGNES_VERSION", "dev")
+    if not _SAFE_VERSION_RE.match(version):
+        version = "dev"
+    # shlex.quote hardens against anything that slipped past the regex
+    server_q = shlex.quote(base_url)
+    version_q = shlex.quote(version)
     script = f"""#!/usr/bin/env bash
 # Agnes CLI installer — server: {base_url}
 set -euo pipefail
 
-SERVER="{base_url}"
-echo "Installing Agnes CLI from $SERVER (version: {version})"
+SERVER={server_q}
+echo "Installing Agnes CLI from $SERVER (version: {version_q})"
 
 # 1. Download the wheel
 # Portable mktemp: X's must be at the end of the template on both GNU and BSD/macOS.
