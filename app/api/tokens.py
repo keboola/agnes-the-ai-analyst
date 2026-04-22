@@ -92,6 +92,13 @@ async def create_token(
         raise HTTPException(status_code=400, detail="name is required")
     if payload.expires_in_days is not None and payload.expires_in_days <= 0:
         raise HTTPException(status_code=400, detail="expires_in_days must be a positive integer")
+    # Cap at 10 years — larger values overflow datetime.max during the
+    # `datetime.now(utc) + timedelta(days=...)` addition and surface as an
+    # unhandled OverflowError → 500. 10y is well past any legitimate PAT
+    # lifetime (the no-expiry path below uses ~100y and doesn't compute
+    # expires_at on the datetime object).
+    if payload.expires_in_days is not None and payload.expires_in_days > 3650:
+        raise HTTPException(status_code=400, detail="expires_in_days must not exceed 3650 (10 years)")
     repo = AccessTokenRepository(conn)
     token_id = str(uuid.uuid4())
     expires_at = None
