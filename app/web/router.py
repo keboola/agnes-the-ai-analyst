@@ -566,21 +566,34 @@ async def admin_users_page(
     return templates.TemplateResponse(request, "admin_users.html", ctx)
 
 
-@router.get("/admin/tokens", response_class=HTMLResponse)
-async def admin_tokens_page(
-    request: Request,
-    user: dict = Depends(require_role(Role.ADMIN)),
-):
-    """Admin page for personal access token management across all users."""
-    ctx = _build_context(request, user=user)
-    return templates.TemplateResponse(request, "admin_tokens.html", ctx)
-
-
-@router.get("/profile", response_class=HTMLResponse)
-async def profile_page(
+@router.get("/tokens", response_class=HTMLResponse)
+async def tokens_page(
     request: Request,
     user: dict = Depends(get_current_user),
 ):
-    """User profile page with personal access token management."""
-    ctx = _build_context(request, user=user)
-    return templates.TemplateResponse(request, "profile.html", ctx)
+    """Unified personal access token page — role-aware.
+
+    Admins see all users' tokens (pulled from /auth/admin/tokens) for incident
+    response. Non-admins see only their own tokens with a "New token" CTA that
+    calls /auth/tokens.
+    """
+    is_admin = user.get("role") == "admin"
+    ctx = _build_context(request, user=user, is_admin=is_admin)
+    return templates.TemplateResponse(request, "tokens.html", ctx)
+
+
+@router.get("/admin/tokens")
+async def admin_tokens_redirect(request: Request):
+    """Back-compat: /admin/tokens now lives at /tokens (role-aware).
+
+    Preserves query string (e.g. ?user=foo from the /admin/users deep-link).
+    """
+    qs = request.url.query
+    target = "/tokens" + (f"?{qs}" if qs else "")
+    return RedirectResponse(url=target, status_code=302)
+
+
+@router.get("/profile")
+async def profile_redirect(request: Request):
+    """Back-compat: /profile (PAT CRUD) has been unified under /tokens."""
+    return RedirectResponse(url="/tokens", status_code=302)

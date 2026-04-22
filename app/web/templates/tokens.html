@@ -1,11 +1,13 @@
 {% extends "base.html" %}
-{% block title %}Access tokens — {{ config.INSTANCE_NAME }}{% endblock %}
+{% block title %}{% if is_admin %}Access tokens{% else %}My tokens{% endif %} — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block content %}
 <style>
   /* ─────────────────────────────────────────────────────────────────────────
-     /admin/tokens — card-stack (GitHub-style list). No table; each token is
-     an independent card inside a <ul role="list">.
+     /tokens — role-aware card-stack (GitHub-style list). No table; each
+     token is an independent card inside a <ul role="list">.
+     Admins see all users' tokens with owner column + stat chips for incident
+     response. Non-admins see only their own tokens + a "New token" button.
      ───────────────────────────────────────────────────────────────────────── */
 
   .tokens-page {
@@ -23,7 +25,43 @@
     margin-bottom: 20px;
     box-shadow: 0 4px 16px rgba(0, 115, 209, 0.2);
     color: #fff;
+    position: relative;
   }
+  .tokens-hero .hero-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+  }
+  .tokens-hero .hero-text { min-width: 0; }
+  .hero-action-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    height: 38px;
+    padding: 0 16px;
+    border-radius: 8px;
+    background: #fff;
+    color: #0056A3;
+    font-size: 13px;
+    font-weight: 600;
+    font-family: inherit;
+    border: none;
+    cursor: pointer;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+    transition: all 0.15s ease;
+    flex-shrink: 0;
+  }
+  .hero-action-btn:hover {
+    background: #f8fafc;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.14);
+  }
+  .hero-action-btn:focus-visible {
+    outline: 2px solid #fff;
+    outline-offset: 3px;
+  }
+  .hero-action-btn svg { width: 14px; height: 14px; }
   .tokens-hero .hero-eyebrow {
     font-size: 11px;
     font-weight: 600;
@@ -592,11 +630,126 @@
   .toast.success { background: #047857; }
   .toast.error   { background: #b91c1c; }
 
+  /* ── New-token reveal banner (non-admin only) ─────────────────────────── */
+  .reveal-banner {
+    display: none;
+    background: linear-gradient(135deg, #fef9c3 0%, #fef3c7 100%);
+    border: 1px solid #fcd34d;
+    border-radius: 12px;
+    padding: 18px 22px;
+    margin-bottom: 16px;
+    box-shadow: 0 4px 14px rgba(234, 179, 8, 0.18);
+  }
+  .reveal-banner.is-open { display: block; }
+  .reveal-banner h4 {
+    margin: 0 0 6px;
+    font-size: 14px;
+    font-weight: 700;
+    color: #713f12;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .reveal-banner p {
+    margin: 0 0 12px;
+    font-size: 13px;
+    color: #78350f;
+    line-height: 1.5;
+  }
+  .reveal-banner .reveal-row {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .reveal-banner .reveal-token {
+    flex: 1 1 320px;
+    min-width: 0;
+    font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+    font-size: 12px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid #fcd34d;
+    background: #fff;
+    color: #1A253C;
+    word-break: break-all;
+  }
+  .reveal-banner .reveal-btn {
+    height: 38px;
+    padding: 0 14px;
+    border-radius: 8px;
+    border: 1px solid #fcd34d;
+    background: #fff;
+    color: #713f12;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    font-family: inherit;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .reveal-banner .reveal-btn:hover {
+    background: #fef3c7;
+  }
+  .reveal-banner .reveal-btn.primary {
+    background: #713f12;
+    color: #fff;
+    border-color: #713f12;
+  }
+  .reveal-banner .reveal-btn.primary:hover {
+    background: #5a3411;
+  }
+
+  /* ── Create-token modal form ───────────────────────────────────────────── */
+  .modal-form-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 14px;
+  }
+  .modal-form-field label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--text-secondary, #6b7280);
+  }
+  .modal-form-field input[type="text"],
+  .modal-form-field select {
+    height: 38px;
+    padding: 0 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border, #e5e7eb);
+    font-size: 13.5px;
+    font-family: inherit;
+    color: var(--text-primary, #1A253C);
+    background: var(--surface, #fff);
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  .modal-form-field input[type="text"]:focus,
+  .modal-form-field select:focus {
+    outline: none;
+    border-color: #0073D1;
+    box-shadow: 0 0 0 3px rgba(0, 115, 209, 0.15);
+  }
+  .modal-btn.primary {
+    background: #0073D1;
+    color: #fff;
+    border-color: #0073D1;
+  }
+  .modal-btn.primary:hover {
+    background: #0056A3;
+    border-color: #0056A3;
+  }
+
   /* ── Responsive ────────────────────────────────────────────────────────── */
   @media (max-width: 720px) {
     .tokens-page { padding: 20px 16px 32px; }
     .tokens-hero { padding: 24px 20px 20px; }
     .tokens-hero .tokens-title { font-size: 22px; }
+    .tokens-hero .hero-top { flex-direction: column; align-items: stretch; }
+    .hero-action-btn { align-self: flex-start; }
 
     .token-card {
       flex-direction: column;
@@ -622,15 +775,33 @@
   }
 </style>
 
-<div class="tokens-page">
+<div class="tokens-page" data-is-admin="{{ 'true' if is_admin else 'false' }}">
   <!-- ═════════ HERO ═════════ -->
   <section class="tokens-hero" aria-labelledby="tokens-title">
-    <div class="hero-eyebrow">Administration</div>
-    <h2 class="tokens-title" id="tokens-title">Access tokens</h2>
-    <p class="tokens-subtitle">
-      Personal access tokens across all users &mdash; for incident response and offboarding.
-    </p>
+    <div class="hero-top">
+      <div class="hero-text">
+        <div class="hero-eyebrow">{% if is_admin %}Administration{% else %}Your account{% endif %}</div>
+        <h2 class="tokens-title" id="tokens-title">{% if is_admin %}Access tokens{% else %}My tokens{% endif %}</h2>
+        <p class="tokens-subtitle">
+          {% if is_admin %}
+          Personal access tokens across all users &mdash; for incident response and offboarding.
+          {% else %}
+          Long-lived tokens for CLI and headless clients.
+          {% endif %}
+        </p>
+      </div>
+      {% if not is_admin %}
+      <button type="button" class="hero-action-btn" id="new-token-btn" aria-haspopup="dialog" aria-controls="create-modal">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <line x1="12" y1="5" x2="12" y2="19"></line>
+          <line x1="5" y1="12" x2="19" y2="12"></line>
+        </svg>
+        New token
+      </button>
+      {% endif %}
+    </div>
 
+    {% if is_admin %}
     <div class="tokens-counts" id="tokens-counts" aria-live="polite" aria-label="Token counts summary">
       <div class="count-chip active">
         <span class="dot" aria-hidden="true"></span>
@@ -661,7 +832,32 @@
         </div>
       </div>
     </div>
+    {% endif %}
   </section>
+
+  {% if not is_admin %}
+  <!-- ═════════ NEW-TOKEN REVEAL (non-admin only) ═════════ -->
+  <div class="reveal-banner" id="reveal-banner" role="region" aria-live="polite" aria-label="Newly created token">
+    <h4>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 9v4M12 17h.01M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+      </svg>
+      Copy your token now — it will not be shown again.
+    </h4>
+    <p>This is the only time the full token is visible. Store it securely (a password manager or CI secret store).</p>
+    <div class="reveal-row">
+      <input id="reveal-token" class="reveal-token" type="text" readonly aria-label="New token value">
+      <button type="button" class="reveal-btn primary" id="reveal-copy-btn">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+        </svg>
+        Copy token
+      </button>
+      <button type="button" class="reveal-btn" id="reveal-hide-btn">Hide</button>
+    </div>
+  </div>
+  {% endif %}
 
   <!-- ═════════ TOOLBAR ═════════ -->
   <section class="toolbar" aria-label="Filter and sort tokens">
@@ -696,9 +892,11 @@
         <button type="button" class="chip-btn" data-sort-key="expires_at"   aria-pressed="false">
           Expires<svg class="chip-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
         </button>
+        {% if is_admin %}
         <button type="button" class="chip-btn" data-sort-key="user_email"   aria-pressed="false">
           Owner<svg class="chip-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
         </button>
+        {% endif %}
       </div>
       <!-- Hidden legacy select — kept so test assertion id="flt-last-used" stays valid -->
       <select id="flt-last-used" class="sr-only" tabindex="-1" aria-hidden="true">
@@ -712,6 +910,7 @@
     </div>
 
     <div class="search-row">
+      {% if is_admin %}
       <div class="search-wrap">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <circle cx="11" cy="11" r="7"></circle>
@@ -719,6 +918,10 @@
         </svg>
         <input id="flt-user" type="search" placeholder="Search by owner email&hellip;" autocomplete="off" aria-label="Filter by user email">
       </div>
+      {% else %}
+      {# Non-admin: no owner search, but keep the legacy id hidden for tests/compat. #}
+      <input id="flt-user" type="hidden" value="">
+      {% endif %}
       <button type="button" class="clear-link" id="clear-filters-toolbar">Clear filters</button>
     </div>
   </section>
@@ -739,7 +942,7 @@
   </div>
 </div>
 
-<!-- ═════════ MODAL ═════════ -->
+<!-- ═════════ REVOKE MODAL ═════════ -->
 <div class="modal-backdrop" id="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
   <div class="modal-card">
     <h3 id="confirm-title">Revoke this token?</h3>
@@ -754,11 +957,47 @@
   </div>
 </div>
 
+{% if not is_admin %}
+<!-- ═════════ CREATE-TOKEN MODAL (non-admin only) ═════════ -->
+<div class="modal-backdrop" id="create-modal" role="dialog" aria-modal="true" aria-labelledby="create-title">
+  <div class="modal-card">
+    <h3 id="create-title">Create a personal access token</h3>
+    <p class="sub">
+      Long-lived tokens let the CLI, CI jobs, and Claude Code talk to the server without
+      a browser session. You'll see the token value exactly once.
+    </p>
+    <form id="create-form" onsubmit="return false;">
+      <div class="modal-form-field">
+        <label for="create-name">Token name</label>
+        <input type="text" id="create-name" name="name" maxlength="64" placeholder="e.g. laptop, github-ci" required autocomplete="off">
+      </div>
+      <div class="modal-form-field">
+        <label for="create-ttl">Expires in</label>
+        <select id="create-ttl" name="expires_in_days">
+          <option value="30">30 days</option>
+          <option value="90" selected>90 days</option>
+          <option value="365">1 year</option>
+          <option value="">Never</option>
+        </select>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="modal-btn" data-close-modal="create-modal">Cancel</button>
+        <button type="submit" class="modal-btn primary" id="create-submit-btn">Create token</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endif %}
+
 <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
 
 <script>
-const API_LIST   = "/auth/admin/tokens";
-const API_REVOKE = (id) => `/auth/admin/tokens/${encodeURIComponent(id)}`;
+const IS_ADMIN = document.querySelector('.tokens-page')?.dataset.isAdmin === "true";
+const API_LIST   = IS_ADMIN ? "/auth/admin/tokens" : "/auth/tokens";
+const API_REVOKE = (id) => (IS_ADMIN
+  ? `/auth/admin/tokens/${encodeURIComponent(id)}`
+  : `/auth/tokens/${encodeURIComponent(id)}`);
+const API_CREATE = "/auth/tokens";
 const SEVEN_DAYS = 7 * 86_400_000;
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -949,6 +1188,8 @@ function sortItems(items) {
 }
 
 function updateCounts() {
+  // Non-admin view hides the stat strip — skip counts entirely.
+  if (!IS_ADMIN) return;
   const now = Date.now();
   let active = 0, revoked = 0, expired = 0, expiring = 0;
   for (const t of allTokens) {
@@ -958,10 +1199,11 @@ function updateCounts() {
     else if (s === "revoked")  revoked++;
     else if (s === "expired")  expired++;
   }
-  document.getElementById("count-active").textContent   = active;
-  document.getElementById("count-revoked").textContent  = revoked;
-  document.getElementById("count-expired").textContent  = expired;
-  document.getElementById("count-expiring").textContent = expiring;
+  const byId = (id) => document.getElementById(id);
+  if (byId("count-active"))   byId("count-active").textContent   = active;
+  if (byId("count-revoked"))  byId("count-revoked").textContent  = revoked;
+  if (byId("count-expired"))  byId("count-expired").textContent  = expired;
+  if (byId("count-expiring")) byId("count-expiring").textContent = expiring;
 }
 
 // ── Card render ────────────────────────────────────────────────────────────
@@ -970,7 +1212,10 @@ const TRASH_SVG = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" s
 function renderCard(t, now) {
   const status = computeStatus(t, now);
   const ownerEmail = t.user_email || t.user_id || "—";
-  const initials = initialsFor(ownerEmail);
+  // For non-admin, avatar uses token name instead of owner email (since the
+  // list is self-owned, the email is redundant and would be the same on every card).
+  const avatarSeed = IS_ADMIN ? ownerEmail : (t.name || "");
+  const initials = initialsFor(avatarSeed);
   const exp = parseDate(t.expires_at);
 
   // Usage column: show expiration info when not active-looking, otherwise last-used.
@@ -1013,14 +1258,17 @@ function renderCard(t, now) {
   card.setAttribute("data-token-card", t.id);
   card.setAttribute("data-status", status);
 
+  const ownerInMeta = IS_ADMIN
+    ? `<span class="owner-email">${esc(ownerEmail)}</span>
+       <span aria-hidden="true"> &middot; </span>`
+    : "";
   card.innerHTML = `
     <div class="token-main">
       <span class="avatar-sm" aria-hidden="true">${esc(initials)}</span>
       <div class="token-text">
         <span class="token-name" title="${esc(t.name)}">${esc(t.name)}</span>
         <span class="token-meta">
-          <span class="owner-email">${esc(ownerEmail)}</span>
-          <span aria-hidden="true"> &middot; </span>
+          ${ownerInMeta}
           <span class="chip-mono">${esc(t.prefix)}&hellip;</span>
           <span aria-hidden="true"> &middot; </span>
           <span>Created ${esc(createdRel)}</span>
@@ -1094,14 +1342,13 @@ async function loadTokens() {
 }
 
 async function revokeToken({ id, name, owner, prefix }) {
+  const meta = { "Name": name };
+  if (IS_ADMIN) meta["Owner"] = owner;
+  meta["Prefix"] = (prefix || "") + "…";
   const confirmed = await confirmModal({
     title: "Revoke this token?",
     sub: "This cannot be undone and will immediately sign out any session using this token.",
-    meta: {
-      "Name":   name,
-      "Owner":  owner,
-      "Prefix": (prefix || "") + "…",
-    },
+    meta,
     okLabel: "Revoke token",
   });
   if (!confirmed) return;
@@ -1152,10 +1399,14 @@ document.querySelectorAll("#sort-group .chip-btn").forEach(btn => {
   btn.addEventListener("click", () => setSort(btn.dataset.sortKey));
 });
 
-// ── User email search ──────────────────────────────────────────────────────
-document.getElementById("flt-user").addEventListener("input", e => {
-  filters.user = e.target.value.trim(); renderList();
-});
+// ── User email search (admin only — the element is type=hidden for non-admins) ──
+(function bindUserFilter() {
+  const el = document.getElementById("flt-user");
+  if (!el || el.type === "hidden") return;
+  el.addEventListener("input", e => {
+    filters.user = e.target.value.trim(); renderList();
+  });
+})();
 
 function clearFilters() {
   filters = { status: "all", user: "" };
@@ -1170,14 +1421,81 @@ document.getElementById("clear-filters-toolbar").addEventListener("click", clear
 
 // Pre-fill user filter from ?user=... query string (deep-link from /admin/users)
 (function initFromQuery() {
+  if (!IS_ADMIN) return; // only admins have the owner filter
   try {
     const q = new URLSearchParams(window.location.search);
     const u = q.get("user");
     if (u) {
       filters.user = u;
-      document.getElementById("flt-user").value = u;
+      const el = document.getElementById("flt-user");
+      if (el && el.type !== "hidden") el.value = u;
     }
   } catch (_) {}
+})();
+
+// ── Create-token flow (non-admin only) ─────────────────────────────────────
+(function bindCreateFlow() {
+  if (IS_ADMIN) return;
+  const openBtn = document.getElementById("new-token-btn");
+  const form    = document.getElementById("create-form");
+  const submitBtn = document.getElementById("create-submit-btn");
+  const nameIn  = document.getElementById("create-name");
+  const ttlIn   = document.getElementById("create-ttl");
+  const banner  = document.getElementById("reveal-banner");
+  const revealIn  = document.getElementById("reveal-token");
+  const copyBtn   = document.getElementById("reveal-copy-btn");
+  const hideBtn   = document.getElementById("reveal-hide-btn");
+
+  if (!openBtn || !form) return;
+
+  openBtn.addEventListener("click", () => {
+    nameIn.value = "";
+    ttlIn.value = "90";
+    openModal("create-modal");
+    setTimeout(() => nameIn.focus(), 20);
+  });
+
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const name = (nameIn.value || "").trim();
+    if (!name) { toast("Token name is required", "error"); return; }
+    const ttl = ttlIn.value;
+    const body = {name, expires_in_days: ttl ? Number(ttl) : null};
+    submitBtn.disabled = true;
+    try {
+      const r = await fetch(API_CREATE, {
+        method: "POST", credentials: "include",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) { toast("Failed: " + (await r.text()), "error"); return; }
+      const data = await r.json();
+      revealIn.value = data.token || "";
+      banner.classList.add("is-open");
+      closeModal("create-modal");
+      toast("Token created", "success");
+      await loadTokens();
+      // Scroll banner into view so user sees the token
+      banner.scrollIntoView({ behavior: "smooth", block: "start" });
+    } finally {
+      submitBtn.disabled = false;
+    }
+  });
+
+  copyBtn?.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(revealIn.value);
+      toast("Token copied to clipboard", "success");
+    } catch {
+      revealIn.select();
+      document.execCommand("copy");
+      toast("Token copied", "success");
+    }
+  });
+  hideBtn?.addEventListener("click", () => {
+    banner.classList.remove("is-open");
+    revealIn.value = ""; // do not retain in DOM
+  });
 })();
 
 loadTokens();
