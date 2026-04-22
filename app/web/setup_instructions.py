@@ -78,8 +78,9 @@ def resolve_lines(wheel_filename: str) -> list[str]:
     the wheel filename and keeps the two renderers byte-identical.
 
     Fallback: callers pass `"agnes.whl"` when no wheel is present on disk.
-    The resulting URL will 404 at download time, but the instruction text
-    still renders — and `/cli/agnes.whl` also 404s with a helpful message.
+    The resulting URL (`/cli/wheel/agnes.whl`) will 404 at download time, but
+    the instruction text still renders so operators can see the snippet shape
+    and diagnose the missing wheel on the server.
     """
     return [line.replace("{wheel_filename}", wheel_filename) for line in SETUP_INSTRUCTIONS_LINES]
 

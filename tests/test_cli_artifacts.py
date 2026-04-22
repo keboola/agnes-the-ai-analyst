@@ -43,9 +43,8 @@ def test_cli_download_serves_wheel_when_present(monkeypatch, tmp_path):
     assert resp.content.startswith(b"PK")
 
 
-def test_cli_agnes_whl_alias_serves_same_bytes_as_download(monkeypatch, tmp_path):
-    """`/cli/agnes.whl` is a stable alias; after following the redirect to the
-    versioned path it must serve the same bytes as `/cli/download`."""
+def test_cli_wheel_versioned_serves_current_wheel(monkeypatch, tmp_path):
+    """`/cli/wheel/{filename}` serves the current wheel and matches `/cli/download` bytes."""
     wheel = tmp_path / "agnes_fake-1.0-py3-none-any.whl"
     wheel.write_bytes(b"PK\x03\x04fake-wheel-bytes-agnes")
     monkeypatch.setenv("AGNES_CLI_DIST_DIR", str(tmp_path))
@@ -53,58 +52,40 @@ def test_cli_agnes_whl_alias_serves_same_bytes_as_download(monkeypatch, tmp_path
     from app.main import app
     client = TestClient(app)
 
-    # TestClient follows redirects by default — we get the file after the 302.
-    resp_alias = client.get("/cli/agnes.whl")
-    assert resp_alias.status_code == 200
-    assert resp_alias.headers["content-type"] == "application/octet-stream"
-    assert resp_alias.content == wheel.read_bytes()
+    resp = client.get("/cli/wheel/agnes_fake-1.0-py3-none-any.whl")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/octet-stream"
+    assert resp.content == wheel.read_bytes()
 
     resp_download = client.get("/cli/download")
     assert resp_download.status_code == 200
-    assert resp_alias.content == resp_download.content
+    assert resp.content == resp_download.content
 
 
-def test_cli_agnes_whl_alias_redirects_to_pep427_filename(monkeypatch, tmp_path):
-    """`uv tool install` looks at the URL path, not Content-Disposition, and
-    rejects a bare `agnes.whl` with `Must have a version`. The alias must 302
-    to a path that contains the real versioned filename so `uv` accepts it."""
+def test_cli_wheel_versioned_rejects_other_filenames(monkeypatch, tmp_path):
+    """Arbitrary `wheel_name` values must 404 — no filesystem lookup from user input."""
     wheel = tmp_path / "agnes_fake-1.0-py3-none-any.whl"
     wheel.write_bytes(b"PK\x03\x04")
     monkeypatch.setenv("AGNES_CLI_DIST_DIR", str(tmp_path))
     from fastapi.testclient import TestClient
     from app.main import app
     client = TestClient(app)
-
-    resp = client.get("/cli/agnes.whl", follow_redirects=False)
-    assert resp.status_code == 302
-    assert resp.headers["location"].endswith("/cli/wheel/agnes_fake-1.0-py3-none-any.whl")
-
-
-def test_cli_wheel_versioned_only_serves_current_wheel(monkeypatch, tmp_path):
-    """Versioned endpoint must not be usable to request arbitrary filenames —
-    it only serves whatever `_find_wheel()` currently returns."""
-    wheel = tmp_path / "agnes_fake-1.0-py3-none-any.whl"
-    wheel.write_bytes(b"PK\x03\x04")
-    monkeypatch.setenv("AGNES_CLI_DIST_DIR", str(tmp_path))
-    from fastapi.testclient import TestClient
-    from app.main import app
-    client = TestClient(app)
-
-    resp_ok = client.get("/cli/wheel/agnes_fake-1.0-py3-none-any.whl")
-    assert resp_ok.status_code == 200
-    assert resp_ok.content == wheel.read_bytes()
 
     resp_wrong = client.get("/cli/wheel/other-2.0-py3-none-any.whl")
     assert resp_wrong.status_code == 404
 
 
-def test_cli_agnes_whl_alias_404_when_no_wheel(monkeypatch, tmp_path):
-    """Alias returns 404 with a helpful message when no wheel is present."""
+def test_cli_agnes_whl_alias_is_gone(monkeypatch, tmp_path):
+    """The bareword alias was removed — it never worked with `uv tool install`
+    (uv validates the filename before fetching) and only confused users. The
+    only CLI wheel URL is now `/cli/wheel/{filename}`."""
+    wheel = tmp_path / "agnes_fake-1.0-py3-none-any.whl"
+    wheel.write_bytes(b"PK\x03\x04")
     monkeypatch.setenv("AGNES_CLI_DIST_DIR", str(tmp_path))
     from fastapi.testclient import TestClient
     from app.main import app
     client = TestClient(app)
-    resp = client.get("/cli/agnes.whl")
+    resp = client.get("/cli/agnes.whl", follow_redirects=False)
     assert resp.status_code == 404
 
 
