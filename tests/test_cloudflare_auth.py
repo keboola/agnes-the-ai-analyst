@@ -178,3 +178,66 @@ class TestCloudflareProviderAvailability:
         from app.auth.providers import cloudflare as cf_mod
         importlib.reload(cf_mod)
         assert cf_mod.is_available() is True
+
+
+class TestVerifyCfJwt:
+    def test_valid_token_returns_claims(self, monkeypatch, patch_jwks, make_cf_jwt):
+        monkeypatch.setenv("CF_ACCESS_TEAM", "testteam")
+        monkeypatch.setenv("CF_ACCESS_AUD", "test-aud-123")
+        import importlib
+        from app.auth.providers import cloudflare as cf_mod
+        importlib.reload(cf_mod)
+
+        token = make_cf_jwt(email="alice@example.com")
+        claims = cf_mod.verify_cf_jwt(token)
+        assert claims is not None
+        assert claims["email"] == "alice@example.com"
+
+    def test_wrong_audience_rejected(self, monkeypatch, patch_jwks, make_cf_jwt):
+        monkeypatch.setenv("CF_ACCESS_TEAM", "testteam")
+        monkeypatch.setenv("CF_ACCESS_AUD", "test-aud-123")
+        import importlib
+        from app.auth.providers import cloudflare as cf_mod
+        importlib.reload(cf_mod)
+
+        token = make_cf_jwt(aud="wrong-aud")
+        assert cf_mod.verify_cf_jwt(token) is None
+
+    def test_wrong_issuer_rejected(self, monkeypatch, patch_jwks, make_cf_jwt):
+        monkeypatch.setenv("CF_ACCESS_TEAM", "testteam")
+        monkeypatch.setenv("CF_ACCESS_AUD", "test-aud-123")
+        import importlib
+        from app.auth.providers import cloudflare as cf_mod
+        importlib.reload(cf_mod)
+
+        token = make_cf_jwt(iss="https://evil.example.com")
+        assert cf_mod.verify_cf_jwt(token) is None
+
+    def test_expired_token_rejected(self, monkeypatch, patch_jwks, make_cf_jwt):
+        monkeypatch.setenv("CF_ACCESS_TEAM", "testteam")
+        monkeypatch.setenv("CF_ACCESS_AUD", "test-aud-123")
+        import importlib
+        from app.auth.providers import cloudflare as cf_mod
+        importlib.reload(cf_mod)
+
+        token = make_cf_jwt(exp_offset=-60)  # expired 60s ago
+        assert cf_mod.verify_cf_jwt(token) is None
+
+    def test_malformed_token_rejected(self, monkeypatch, patch_jwks):
+        monkeypatch.setenv("CF_ACCESS_TEAM", "testteam")
+        monkeypatch.setenv("CF_ACCESS_AUD", "test-aud-123")
+        import importlib
+        from app.auth.providers import cloudflare as cf_mod
+        importlib.reload(cf_mod)
+
+        assert cf_mod.verify_cf_jwt("not-a-jwt") is None
+        assert cf_mod.verify_cf_jwt("") is None
+
+    def test_verify_returns_none_when_unavailable(self, monkeypatch):
+        monkeypatch.delenv("CF_ACCESS_TEAM", raising=False)
+        monkeypatch.delenv("CF_ACCESS_AUD", raising=False)
+        import importlib
+        from app.auth.providers import cloudflare as cf_mod
+        importlib.reload(cf_mod)
+
+        assert cf_mod.verify_cf_jwt("anything") is None
