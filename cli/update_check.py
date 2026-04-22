@@ -20,7 +20,10 @@ from typing import Optional
 from cli.config import _config_dir
 
 _CACHE_FILENAME = "update_check.json"
-_CACHE_TTL_SECONDS = 24 * 60 * 60  # 24h
+_CACHE_TTL_SECONDS = 24 * 60 * 60  # 24h on a successful probe
+_NEGATIVE_CACHE_TTL_SECONDS = 5 * 60  # 5min on a failed probe, to avoid
+# re-probing 3s of silence (drop-packet networks: corporate firewall, VPN)
+# on every `da` invocation.
 _REQUEST_TIMEOUT_SECONDS = 3.0  # keep startup snappy
 
 
@@ -131,16 +134,32 @@ def check(server_url: Optional[str]) -> Optional[UpdateInfo]:
         and cache.get("installed") == installed
         and cache.get("server_url") == server_url
         and isinstance(cache.get("checked_at"), (int, float))
-        and now - cache["checked_at"] < _CACHE_TTL_SECONDS
     ):
-        return UpdateInfo(
-            installed=installed,
-            latest=cache.get("latest"),
-            download_url=cache.get("download_url"),
-        )
+        age = now - cache["checked_at"]
+        cached_latest = cache.get("latest")
+        # Positive cache — keep for 24h. Negative cache (failed probe,
+        # latest=None) — keep for 5min so we don't re-probe the 3s
+        # timeout on every command when the server is silently dropping.
+        ttl = _CACHE_TTL_SECONDS if cached_latest else _NEGATIVE_CACHE_TTL_SECONDS
+        if age < ttl:
+            if cached_latest is None:
+                return None
+            return UpdateInfo(
+                installed=installed,
+                latest=cached_latest,
+                download_url=cache.get("download_url"),
+            )
 
     payload = _fetch_latest(server_url)
     if not payload:
+        # Negative cache — avoid re-probing on every invocation.
+        _write_cache({
+            "installed": installed,
+            "server_url": server_url,
+            "latest": None,
+            "download_url": None,
+            "checked_at": now,
+        })
         return None
 
     latest = payload.get("version")

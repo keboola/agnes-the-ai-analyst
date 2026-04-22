@@ -198,13 +198,21 @@ def _print_dry_run_plan(
 
 
 def _fmt_bytes(n: int) -> str:
+    """Human-readable byte size.
+
+    Every named unit must appear inside the loop so `n` gets divided one
+    more time than the label it's attached to. Otherwise the fallback
+    reports 1 unit-of-next-magnitude as "1024.0 <prev-unit>".
+    """
     if n < 1024:
         return f"{n} B"
-    for unit in ("KiB", "MiB", "GiB", "TiB"):
-        n /= 1024
-        if n < 1024:
-            return f"{n:.1f} {unit}"
-    return f"{n:.1f} PiB"
+    value = float(n)
+    for unit in ("KiB", "MiB", "GiB", "TiB", "PiB", "EiB"):
+        value /= 1024
+        if value < 1024:
+            return f"{value:.1f} {unit}"
+    # Beyond EiB is astronomical — just keep dividing and label as EiB.
+    return f"{value:.1f} EiB"
 
 
 def _rebuild_duckdb_views(local_dir: Path, parquet_dir: Path):

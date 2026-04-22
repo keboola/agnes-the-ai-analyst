@@ -130,6 +130,28 @@ class TestSyncErrors:
         assert "Downloaded: 0" in result.output
 
 
+class TestFmtBytes:
+    """_fmt_bytes must label magnitudes correctly — the fallback unit has
+    to match the final loop exit, not be a fixed label."""
+
+    def test_small_and_medium_sizes(self):
+        from cli.commands.sync import _fmt_bytes
+        assert _fmt_bytes(0) == "0 B"
+        assert _fmt_bytes(512) == "512 B"
+        assert _fmt_bytes(2048) == "2.0 KiB"
+        assert _fmt_bytes(2 * 1024**2) == "2.0 MiB"
+        assert _fmt_bytes(5 * 1024**3) == "5.0 GiB"
+        assert _fmt_bytes(3 * 1024**4) == "3.0 TiB"
+
+    def test_pib_and_eib_are_labelled_correctly(self):
+        """Off-by-unit regression: 1 PiB must render as '1.0 PiB', not '1024.0 PiB'."""
+        from cli.commands.sync import _fmt_bytes
+        assert _fmt_bytes(1024**5) == "1.0 PiB"
+        assert _fmt_bytes(2 * 1024**5) == "2.0 PiB"
+        # Fallback unit at the very top.
+        assert _fmt_bytes(1024**6) == "1.0 EiB"
+
+
 class TestSyncDurability:
     """Durability & integrity layer: hash check, PAR1 fallback, broken-rebuild recovery."""
 

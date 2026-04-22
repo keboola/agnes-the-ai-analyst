@@ -119,6 +119,47 @@ def test_check_handles_network_failure_silently(tmp_config):
             assert update_check.check("http://server.test:8000") is None
 
 
+def test_negative_cache_avoids_reprobe_on_repeated_failure(tmp_config):
+    """Two consecutive check() calls after a failed probe must fire the
+    network once — the second call hits the 5-minute negative cache."""
+    from cli import update_check
+
+    with patch("cli.update_check._installed_version", return_value="2.0.0"):
+        with patch("cli.update_check._fetch_latest", return_value=None) as mock_fetch:
+            assert update_check.check("http://server.test:8000") is None
+            # Second call within the negative-cache window.
+            assert update_check.check("http://server.test:8000") is None
+
+    assert mock_fetch.call_count == 1  # no re-probe
+
+
+def test_negative_cache_expires_after_ttl(tmp_config):
+    """After the negative TTL elapses, the probe fires again."""
+    import time
+    import json as _json
+
+    from cli import update_check
+
+    # Seed a stale negative-cache entry (older than 5min).
+    stale_ts = time.time() - (update_check._NEGATIVE_CACHE_TTL_SECONDS + 60)
+    (tmp_config / "update_check.json").write_text(_json.dumps({
+        "installed": "2.0.0",
+        "server_url": "http://server.test:8000",
+        "latest": None,
+        "download_url": None,
+        "checked_at": stale_ts,
+    }))
+
+    payload = {"version": "2.1.0", "download_url_path": "/cli/wheel/x.whl"}
+    with patch("cli.update_check._installed_version", return_value="2.0.0"):
+        with patch("cli.update_check._fetch_latest", return_value=payload) as mock_fetch:
+            info = update_check.check("http://server.test:8000")
+
+    assert mock_fetch.call_count == 1  # cache expired, refetch
+    assert info is not None
+    assert info.latest == "2.1.0"
+
+
 def test_is_outdated_false_when_same_version(tmp_config):
     from cli.update_check import UpdateInfo
     info = UpdateInfo(installed="2.0.0", latest="2.0.0", download_url="…")
