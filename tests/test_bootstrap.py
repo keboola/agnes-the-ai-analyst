@@ -101,6 +101,51 @@ class TestBootstrap:
         assert resp.status_code == 403
         assert "already have passwords" in resp.json()["detail"]
 
+    def test_bootstrap_rejects_new_email_when_seed_exists(self, seeded_client):
+        """Seed admin (passwordless) exists → attacker must not be able to
+        register a brand-new admin account for a different email. They have
+        to activate the existing seed instead, which requires knowing its
+        email — and the endpoint itself must not disclose that email
+        (see test_bootstrap_does_not_leak_seed_email_in_rejection below)."""
+        resp = seeded_client.post("/auth/bootstrap", json={
+            "email": "hacker@evil.com",
+            "password": "takeover",
+        })
+        assert resp.status_code == 403
+        detail = resp.json()["detail"].lower()
+        assert "without a password" in detail
+
+    def test_bootstrap_does_not_leak_seed_email_in_rejection(self, seeded_client):
+        """/auth/bootstrap is unauthenticated. Listing the existing seed
+        email in the 403 body would let an attacker probe once to discover
+        the email, then bootstrap again with that email + their own
+        password — a full takeover in two unauthenticated requests.
+
+        The rejection body must stay generic; operators who need to know
+        which seed exists use `da admin users list` (authenticated) or
+        the audit log."""
+        resp = seeded_client.post("/auth/bootstrap", json={
+            "email": "hacker@evil.com",
+            "password": "takeover",
+        })
+        assert resp.status_code == 403
+        body = resp.text  # full response body, not just detail
+        assert "existing@test.com" not in body
+        assert "@test.com" not in body
+        # Sanity: the generic guidance is still there.
+        assert "without a password" in body.lower()
+
+    def test_bootstrap_still_activates_matching_seed_when_seed_exists(self, seeded_client):
+        """The legitimate path — bootstrap with the same email as the seed —
+        keeps working. Covered by test_bootstrap_activates_seed_user; this
+        is the adversarial sibling (above) confirming the allow-list stance."""
+        resp = seeded_client.post("/auth/bootstrap", json={
+            "email": "existing@test.com",
+            "password": "legitimate-operator-pw",
+        })
+        assert resp.status_code == 200
+        assert resp.json()["role"] == "admin"
+
     def test_bootstrap_then_login(self, fresh_client):
         """After bootstrap with password, /auth/token login works; without password it requires OAuth."""
         # Bootstrap with a password

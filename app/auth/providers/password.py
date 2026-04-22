@@ -220,7 +220,9 @@ async def password_login_web(
         logger.exception("Unexpected error during web password verification for %s", email)
         return RedirectResponse(url="/login/password?err=auth_internal", status_code=302)
 
-    target = next if (next.startswith("/") and not next.startswith("//")) else "/dashboard"
+    # Unified with safe_next_path so the `/\evil.com` backslash bypass doesn't slip through.
+    from app.auth._common import safe_next_path
+    target = safe_next_path(next, default="/dashboard")
     response = RedirectResponse(url=target, status_code=302)
     _set_login_cookie(response, user["id"], user["email"], user["role"])
     return response

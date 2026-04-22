@@ -60,6 +60,30 @@ class UserRepository:
         values = list(updates.values()) + [id]
         self.conn.execute(f"UPDATE users SET {set_clause} WHERE id = ?", values)
 
+    def consume_reset_token(self, user_id: str, token: str) -> int:
+        """Atomically clear `reset_token` iff it still matches `token`.
+
+        Returns the number of rows affected: 1 when this caller won the race
+        and is authorised to issue a JWT, 0 when another concurrent request
+        already consumed the token (or the token never matched). Caller
+        MUST raise 401 on 0 to avoid double-issuing JWTs for the same link.
+
+        Implementation: DuckDB does not expose `cursor.rowcount` for UPDATE
+        (returns -1), so we use UPDATE … RETURNING and count the rows in
+        the result set.
+        """
+        now = datetime.now(timezone.utc)
+        result = self.conn.execute(
+            """UPDATE users
+               SET reset_token = NULL,
+                   reset_token_created = NULL,
+                   updated_at = ?
+               WHERE id = ? AND reset_token = ?
+               RETURNING id""",
+            [now, user_id, token],
+        ).fetchall()
+        return len(result)
+
     def count_admins(self, active_only: bool = True) -> int:
         sql = "SELECT COUNT(*) FROM users WHERE role = 'admin'"
         if active_only:
