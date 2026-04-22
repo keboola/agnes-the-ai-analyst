@@ -104,7 +104,17 @@ async def send_magic_link(
 
 
 def _consume_token(conn: duckdb.DuckDBPyConnection, email: str, token: str) -> dict:
-    """Validate & consume a magic-link token. Returns the user dict or raises 401."""
+    """Validate & atomically consume a magic-link token.
+
+    Race: previously this did `read user → compare token → update clear`,
+    which lets two concurrent clicks on the same link both pass the compare
+    before either clears, so each could issue its own JWT. The fix pushes
+    the compare-and-clear into a single SQL UPDATE guarded by the current
+    token value; exactly one caller gets rowcount=1, the rest see 0.
+
+    Expiry check is read-only so it's safe to run beforehand and return 401
+    without mutating state when the link has aged out.
+    """
     repo = UserRepository(conn)
     user = repo.get_by_email(email)
     if not user:
@@ -123,8 +133,9 @@ def _consume_token(conn: duckdb.DuckDBPyConnection, email: str, token: str) -> d
         if (datetime.now(timezone.utc) - created).total_seconds() > MAGIC_LINK_EXPIRY:
             raise HTTPException(status_code=401, detail="Link expired")
 
-    # Clear token (one-time use)
-    repo.update(id=user["id"], reset_token=None, reset_token_created=None)
+    # Atomic one-time consume. If two requests raced, only one wins here.
+    if repo.consume_reset_token(user["id"], token) != 1:
+        raise HTTPException(status_code=401, detail="Invalid or expired link")
     return user
 
 
