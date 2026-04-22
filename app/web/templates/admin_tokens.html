@@ -1,218 +1,719 @@
 {% extends "base.html" %}
-{% block title %}Tokens — {{ config.INSTANCE_NAME }}{% endblock %}
+{% block title %}Access tokens — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block content %}
 <style>
-  .tokens-page { max-width: 1300px; margin: 24px auto; padding: 0 16px; }
-  .tokens-header { margin-bottom: 20px; }
-  .tokens-title { margin: 0 0 4px; font-size: 22px; font-weight: 600; }
-  .tokens-subtitle { margin: 0; font-size: 13px; color: var(--text-secondary, #6b7280); }
+  /* ─────────────────────────────────────────────────────────────────────────
+     /admin/tokens — modernized layout (matches /install + /dashboard visual
+     language: gradient hero, card-based sections, soft shadows, refined pills).
+     ───────────────────────────────────────────────────────────────────────── */
+
+  .tokens-page {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 28px 32px 48px;
+    font-family: var(--font-primary, 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif);
+  }
+
+  /* ── Hero ──────────────────────────────────────────────────────────────── */
+  .tokens-hero {
+    background: linear-gradient(135deg, #0073D1 0%, #0056A3 100%);
+    border-radius: 14px;
+    padding: 28px 32px 24px;
+    margin-bottom: 20px;
+    box-shadow: 0 4px 16px rgba(0, 115, 209, 0.2);
+    color: #fff;
+  }
+  .tokens-hero .hero-eyebrow {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: rgba(255, 255, 255, 0.75);
+    margin-bottom: 8px;
+  }
+  .tokens-hero .tokens-title {
+    font-size: 28px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    margin: 0 0 6px;
+    color: #fff;
+  }
+  .tokens-hero .tokens-subtitle {
+    font-size: 14px;
+    font-weight: 400;
+    color: rgba(255, 255, 255, 0.9);
+    margin: 0;
+    line-height: 1.5;
+  }
 
   .tokens-counts {
-    display: flex; gap: 16px; margin: 16px 0;
-    font-size: 13px; color: var(--text-secondary, #6b7280);
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+    margin-top: 20px;
   }
   .tokens-counts .count-chip {
-    background: var(--surface, #fff);
-    border: 1px solid var(--border, #e5e7eb);
-    border-radius: 999px;
-    padding: 4px 12px;
+    background: rgba(255, 255, 255, 0.12);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 10px;
+    padding: 12px 14px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    backdrop-filter: saturate(140%) blur(2px);
   }
-  .tokens-counts .count-chip strong { color: var(--text-primary, #111827); font-weight: 600; }
-  .count-chip.active strong { color: #047857; }
-  .count-chip.revoked strong { color: #6b7280; }
-  .count-chip.expired strong { color: #c2410c; }
+  .tokens-counts .count-chip .dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    flex-shrink: 0;
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.15);
+  }
+  .tokens-counts .count-chip.active    .dot { background: #16a34a; }
+  .tokens-counts .count-chip.revoked   .dot { background: #6b7280; }
+  .tokens-counts .count-chip.expired   .dot { background: #dc2626; }
+  .tokens-counts .count-chip.expiring  .dot { background: #ea580c; }
+  .tokens-counts .count-chip .count-value {
+    font-size: 24px;
+    font-weight: 600;
+    line-height: 1;
+    color: #fff;
+    letter-spacing: -0.01em;
+  }
+  .tokens-counts .count-chip .count-label {
+    font-size: 11px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: rgba(255, 255, 255, 0.85);
+    margin-top: 2px;
+  }
+  .tokens-counts .count-chip .count-text {
+    display: flex;
+    flex-direction: column;
+  }
 
-  .tokens-filters {
-    display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
-    margin-bottom: 16px;
-  }
-  .tokens-filters select,
-  .tokens-filters input {
-    padding: 7px 10px;
-    border: 1px solid var(--border, #e5e7eb);
-    border-radius: 8px;
-    font-size: 13px;
-    background: var(--surface, #fff);
-    color: var(--text-primary, #111827);
-  }
-  .tokens-filters input[type="search"] { min-width: 220px; }
-  .tokens-filters select:focus,
-  .tokens-filters input:focus { outline: 2px solid var(--primary, #6366f1); outline-offset: -1px; }
-  .tokens-filters label {
-    font-size: 12px; color: var(--text-secondary, #6b7280);
-    display: inline-flex; align-items: center; gap: 6px;
-  }
-
-  .tokens-table-wrap {
+  /* ── Card base ─────────────────────────────────────────────────────────── */
+  .t-card {
     background: var(--surface, #fff);
     border: 1px solid var(--border, #e5e7eb);
     border-radius: 12px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+    margin-bottom: 20px;
     overflow: hidden;
   }
-  .tokens-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  .tokens-table thead th {
-    text-align: left; padding: 10px 14px;
-    background: var(--border-light, #f9fafb);
-    border-bottom: 1px solid var(--border, #e5e7eb);
-    font-weight: 600; color: var(--text-secondary, #6b7280);
-    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
-    user-select: none; cursor: pointer;
-    white-space: nowrap;
+
+  /* ── Toolbar (filters + search) ────────────────────────────────────────── */
+  .toolbar {
+    padding: 16px 20px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    align-items: flex-end;
   }
-  .tokens-table thead th.sort-asc::after { content: " \25B2"; font-size: 9px; }
-  .tokens-table thead th.sort-desc::after { content: " \25BC"; font-size: 9px; }
-  .tokens-table thead th.no-sort { cursor: default; }
+  .toolbar .flt-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+  .toolbar .flt-group.grow { flex: 1 1 240px; }
+  .toolbar label.flt-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--text-secondary, #6b7280);
+  }
+  .toolbar select,
+  .toolbar input[type="search"] {
+    height: 36px;
+    padding: 0 12px;
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px;
+    font-size: 13px;
+    font-family: var(--font-primary, inherit);
+    background: var(--surface, #fff);
+    color: var(--text-primary, #111827);
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+  .toolbar select {
+    appearance: none;
+    -webkit-appearance: none;
+    padding-right: 34px;
+    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    background-size: 12px 12px;
+  }
+  .toolbar input[type="search"] {
+    min-width: 220px;
+    width: 100%;
+  }
+  .toolbar select:hover,
+  .toolbar input[type="search"]:hover {
+    border-color: #cbd5e1;
+  }
+  .toolbar select:focus,
+  .toolbar input[type="search"]:focus {
+    outline: none;
+    border-color: #0073D1;
+    box-shadow: 0 0 0 3px rgba(0, 115, 209, 0.15);
+  }
+
+  .toolbar .clear-btn {
+    height: 36px;
+    padding: 0 14px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    font-family: var(--font-primary, inherit);
+    border: 1px solid var(--border, #e5e7eb);
+    background: var(--surface, #fff);
+    color: var(--text-secondary, #6b7280);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .toolbar .clear-btn:hover {
+    color: var(--text-primary, #111827);
+    border-color: #cbd5e1;
+    background: #f9fafb;
+  }
+
+  /* ── Table ─────────────────────────────────────────────────────────────── */
+  .table-wrap {
+    padding: 0;
+  }
+  .tokens-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+  }
+  .tokens-table thead th {
+    text-align: left;
+    padding: 14px 16px;
+    background: transparent;
+    border-bottom: 1px solid var(--border, #e5e7eb);
+    font-weight: 600;
+    color: var(--text-secondary, #6b7280);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    white-space: nowrap;
+    user-select: none;
+  }
+  .tokens-table thead th .sort-btn {
+    all: unset;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    color: inherit;
+    font: inherit;
+    letter-spacing: inherit;
+    text-transform: inherit;
+  }
+  .tokens-table thead th .sort-btn:focus-visible {
+    outline: 2px solid #0073D1;
+    outline-offset: 2px;
+    border-radius: 3px;
+  }
+  .tokens-table thead th .sort-btn::after {
+    content: "";
+    width: 8px; height: 8px;
+    opacity: 0;
+    transition: opacity 0.15s ease, transform 0.15s ease;
+    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-size: 8px 8px;
+  }
+  .tokens-table thead th[aria-sort="ascending"]  .sort-btn::after { opacity: 1; transform: rotate(180deg); }
+  .tokens-table thead th[aria-sort="descending"] .sort-btn::after { opacity: 1; }
+
   .tokens-table tbody td {
-    padding: 10px 14px;
+    padding: 14px 16px;
     border-bottom: 1px solid var(--border-light, #f3f4f6);
     vertical-align: middle;
   }
-  .tokens-table tbody tr.is-revoked { opacity: 0.55; }
-  .tokens-table tbody tr:hover { background: var(--border-light, #fafafa); }
-
-  .prefix-cell {
-    font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
-    font-size: 12px; color: var(--text-secondary, #6b7280);
+  .tokens-table tbody tr:last-child td { border-bottom: none; }
+  .tokens-table tbody tr { transition: background-color 0.12s ease; }
+  .tokens-table tbody tr:hover { background: rgba(0, 115, 209, 0.04); }
+  .tokens-table tbody tr:hover .icon-btn.danger {
+    color: #dc2626;
+    border-color: rgba(220, 38, 38, 0.35);
   }
-  .date-cell { color: var(--text-secondary, #6b7280); font-size: 12px; white-space: nowrap; }
-  .date-cell.expired { color: #b91c1c; font-weight: 500; }
-  .date-cell.soon    { color: #c2410c; font-weight: 500; }
+  .tokens-table tbody tr.is-revoked { opacity: 0.65; }
+  .tokens-table tbody tr.is-revoked .owner-email,
+  .tokens-table tbody tr.is-revoked .token-name {
+    text-decoration: line-through;
+  }
 
-  .status-pill {
+  /* ── Owner cell ────────────────────────────────────────────────────────── */
+  .owner-cell {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+  }
+  .avatar-sm {
+    width: 32px; height: 32px;
+    border-radius: 50%;
+    background: #0073D1;
+    color: #fff;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    text-transform: uppercase;
+  }
+  .owner-email {
+    color: var(--text-primary, #1A253C);
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 260px;
+  }
+  .token-name {
+    color: var(--text-primary, #1A253C);
+    font-weight: 500;
+  }
+
+  /* ── Mono chip (prefix) ────────────────────────────────────────────────── */
+  .chip-mono {
     display: inline-block;
-    padding: 3px 10px; border-radius: 999px;
-    font-size: 11px; font-weight: 600;
-    text-transform: uppercase; letter-spacing: 0.4px;
+    padding: 4px 8px;
+    background: var(--border-light, #f3f4f6);
+    border-radius: 6px;
+    font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
+    font-size: 12px;
+    color: var(--text-secondary, #6b7280);
+    letter-spacing: 0.2px;
   }
-  .status-pill.status-active     { background: #d1fae5; color: #047857; }
-  .status-pill.status-revoked    { background: #f3f4f6; color: #4b5563; }
-  .status-pill.status-expired    { background: #ffedd5; color: #c2410c; }
-  .status-pill.status-expired-unrevoked { background: #fee2e2; color: #b91c1c; }
 
-  .row-actions { display: flex; gap: 6px; justify-content: flex-end; }
+  /* ── Date cells ────────────────────────────────────────────────────────── */
+  .date-cell {
+    color: var(--text-primary, #1A253C);
+    font-size: 13px;
+    white-space: nowrap;
+  }
+  .date-cell .date-sub {
+    display: block;
+    color: var(--text-secondary, #6b7280);
+    font-size: 11px;
+    margin-top: 2px;
+    font-weight: 400;
+  }
+  .date-cell.expired      { color: #dc2626; font-weight: 500; }
+  .date-cell.soon         { color: #ea580c; font-weight: 500; }
+  .date-cell.strike       { text-decoration: line-through; color: #9ca3af; font-weight: 400; }
+
+  /* ── Status pill ───────────────────────────────────────────────────────── */
+  .status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+  }
+  .status-pill .pill-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .status-pill.status-active     { background: rgba(22, 163, 74, 0.12);  color: #15803d; }
+  .status-pill.status-active     .pill-dot { background: #16a34a; }
+  .status-pill.status-expiring   { background: rgba(234, 88, 12, 0.12);  color: #c2410c; }
+  .status-pill.status-expiring   .pill-dot { background: #ea580c; }
+  .status-pill.status-expired    { background: rgba(220, 38, 38, 0.12);  color: #b91c1c; }
+  .status-pill.status-expired    .pill-dot { background: #dc2626; }
+  .status-pill.status-revoked    { background: rgba(107, 114, 128, 0.12); color: #4b5563; }
+  .status-pill.status-revoked    .pill-dot { background: #6b7280; }
+
+  /* ── Row actions ───────────────────────────────────────────────────────── */
+  .row-actions {
+    display: flex;
+    gap: 6px;
+    justify-content: flex-end;
+  }
   .icon-btn {
-    background: transparent; border: 1px solid var(--border, #e5e7eb); border-radius: 6px;
-    padding: 5px 10px; font-size: 12px; cursor: pointer;
-    color: var(--text-secondary, #6b7280); transition: all 0.15s;
-  }
-  .icon-btn:hover:not([disabled]) { color: var(--text-primary, #111827); border-color: #cbd5e1; background: #f9fafb; }
-  .icon-btn.danger:hover:not([disabled]) { color: #b91c1c; border-color: #fecaca; background: #fef2f2; }
-  .icon-btn[disabled] { opacity: 0.4; cursor: not-allowed; }
-
-  .tokens-empty, .tokens-loading {
-    text-align: center; padding: 48px 16px;
-    color: var(--text-secondary, #6b7280); font-size: 13px;
-  }
-  .tokens-empty .big { font-size: 15px; color: var(--text-primary, #111827); margin-bottom: 6px; font-weight: 500; }
-  .tokens-empty button {
-    margin-top: 12px;
-    padding: 6px 14px; border-radius: 8px; font-size: 13px;
-    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    padding: 7px;
     cursor: pointer;
+    color: var(--text-secondary, #9ca3af);
+    transition: all 0.12s ease;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 0;
+  }
+  .icon-btn:hover:not([disabled]) {
+    background: rgba(220, 38, 38, 0.08);
+    color: #dc2626;
+    border-color: rgba(220, 38, 38, 0.35);
+  }
+  .icon-btn:focus-visible {
+    outline: 2px solid #0073D1;
+    outline-offset: 2px;
+  }
+  .icon-btn[disabled] {
+    opacity: 0.3;
+    cursor: not-allowed;
+  }
+  .icon-btn svg { display: block; }
+
+  /* ── Empty / loading states ────────────────────────────────────────────── */
+  .tokens-empty, .tokens-loading {
+    text-align: center;
+    padding: 56px 24px;
+    color: var(--text-secondary, #6b7280);
+    font-size: 14px;
+  }
+  .tokens-empty .empty-icon {
+    margin: 0 auto 16px;
+    width: 64px; height: 64px;
+    color: #d1d5db;
+  }
+  .tokens-empty .empty-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary, #1A253C);
+    margin: 0 0 4px;
+  }
+  .tokens-empty .empty-body {
+    font-size: 13px;
+    margin: 0 0 16px;
+  }
+  .tokens-empty button {
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    font-family: var(--font-primary, inherit);
+    border: 1px solid var(--border, #e5e7eb);
+    background: var(--surface, #fff);
+    color: var(--text-primary, #1A253C);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .tokens-empty button:hover {
+    border-color: #0073D1;
+    color: #0073D1;
+    background: rgba(0, 115, 209, 0.04);
   }
 
-  /* Modal (same style as admin_users) */
+  /* ── Card rows (responsive) ────────────────────────────────────────────── */
+  .card-rows { display: none; }
+  .card-row {
+    padding: 16px;
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+  }
+  .card-row:last-child { border-bottom: none; }
+  .card-row.is-revoked { opacity: 0.65; }
+  .card-row .card-row-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 10px;
+  }
+  .card-row .kv-grid {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    row-gap: 6px;
+    column-gap: 12px;
+    font-size: 13px;
+  }
+  .card-row .kv-key {
+    color: var(--text-secondary, #6b7280);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    font-weight: 600;
+    align-self: center;
+  }
+  .card-row .kv-val { color: var(--text-primary, #1A253C); }
+  .card-row .card-row-footer {
+    margin-top: 12px;
+    display: flex;
+    justify-content: flex-end;
+  }
+  .card-row .card-row-footer .icon-btn {
+    border-color: var(--border, #e5e7eb);
+  }
+
+  /* ── Modal ─────────────────────────────────────────────────────────────── */
   .modal-backdrop {
-    position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55);
-    display: none; align-items: center; justify-content: center; z-index: 1000;
+    position: fixed; inset: 0;
+    background: rgba(15, 23, 42, 0.55);
+    backdrop-filter: blur(2px);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
     padding: 16px;
   }
   .modal-backdrop.is-open { display: flex; }
   .modal-card {
-    background: var(--surface, #fff); border-radius: 12px;
-    padding: 24px; width: 100%; max-width: 440px;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+    background: var(--surface, #fff);
+    border-radius: 16px;
+    padding: 28px;
+    width: 100%;
+    max-width: 480px;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.28);
+    animation: modal-in 0.18s ease-out;
   }
-  .modal-card h3 { margin: 0 0 6px; font-size: 17px; font-weight: 600; }
-  .modal-card p.sub { margin: 0 0 18px; font-size: 13px; color: var(--text-secondary, #6b7280); }
-  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
+  @keyframes modal-in {
+    from { opacity: 0; transform: translateY(8px) scale(0.98); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  .modal-card h3 {
+    margin: 0 0 8px;
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text-primary, #1A253C);
+    letter-spacing: -0.01em;
+  }
+  .modal-card p.sub {
+    margin: 0 0 18px;
+    font-size: 13px;
+    color: var(--text-secondary, #6b7280);
+    line-height: 1.55;
+  }
+  .modal-meta {
+    margin: 14px 0 4px;
+    padding: 14px 16px;
+    background: var(--background, #F5F7FA);
+    border: 1px solid var(--border-light, #f3f4f6);
+    border-radius: 10px;
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 6px 14px;
+    font-size: 13px;
+  }
+  .modal-meta .mk {
+    color: var(--text-secondary, #6b7280);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    font-weight: 600;
+    align-self: center;
+  }
+  .modal-meta .mv {
+    color: var(--text-primary, #1A253C);
+    font-weight: 500;
+    word-break: break-all;
+  }
+  .modal-meta .mv.mono {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 12px;
+    font-weight: 400;
+  }
+  .modal-actions {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+    margin-top: 22px;
+  }
   .modal-btn {
-    padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 500;
-    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
+    padding: 9px 18px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    font-family: var(--font-primary, inherit);
     cursor: pointer;
+    transition: all 0.15s ease;
+    border: 1px solid var(--border, #e5e7eb);
+    background: var(--surface, #fff);
+    color: var(--text-primary, #1A253C);
   }
-  .modal-btn.danger { background: #dc2626; color: #fff; border-color: #dc2626; }
+  .modal-btn:hover {
+    border-color: #cbd5e1;
+    background: var(--background, #F5F7FA);
+  }
+  .modal-btn.danger {
+    background: #dc2626;
+    color: #fff;
+    border-color: #dc2626;
+  }
+  .modal-btn.danger:hover {
+    background: #b91c1c;
+    border-color: #b91c1c;
+  }
+  .modal-btn:focus-visible {
+    outline: 2px solid #0073D1;
+    outline-offset: 2px;
+  }
 
-  .toast-stack { position: fixed; bottom: 24px; right: 24px; z-index: 2000;
-    display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
+  /* ── Toast ─────────────────────────────────────────────────────────────── */
+  .toast-stack {
+    position: fixed; bottom: 24px; right: 24px; z-index: 2000;
+    display: flex; flex-direction: column; gap: 8px; pointer-events: none;
+  }
   .toast {
-    background: #111827; color: #fff; padding: 10px 16px;
-    border-radius: 8px; font-size: 13px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
-    opacity: 0; transform: translateY(8px);
+    background: #111827;
+    color: #fff;
+    padding: 11px 18px;
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 500;
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.28);
+    opacity: 0;
+    transform: translateY(8px);
     transition: opacity 0.2s, transform 0.2s;
-    pointer-events: auto; max-width: 380px;
+    pointer-events: auto;
+    max-width: 400px;
   }
   .toast.show { opacity: 1; transform: translateY(0); }
   .toast.success { background: #047857; }
-  .toast.error { background: #b91c1c; }
+  .toast.error   { background: #b91c1c; }
+
+  /* ── Responsive ────────────────────────────────────────────────────────── */
+  @media (max-width: 900px) {
+    .tokens-page { padding: 20px 16px 32px; }
+    .tokens-hero { padding: 24px 20px 20px; }
+    .tokens-hero .tokens-title { font-size: 22px; }
+    .tokens-counts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .toolbar { flex-direction: column; align-items: stretch; }
+    .toolbar .flt-group { width: 100%; }
+    .toolbar input[type="search"] { min-width: 0; }
+    /* Swap to card rows */
+    .tokens-table { display: none; }
+    .card-rows { display: block; }
+  }
+  @media (max-width: 520px) {
+    .tokens-counts { grid-template-columns: 1fr; }
+  }
 </style>
 
 <div class="tokens-page">
-  <div class="tokens-header">
-    <h2 class="tokens-title">Tokens</h2>
-    <p class="tokens-subtitle">Personal access tokens across all users &mdash; for incident response and offboarding.</p>
-  </div>
+  <!-- ═════════ HERO ═════════ -->
+  <section class="tokens-hero" aria-labelledby="tokens-heading">
+    <div class="hero-eyebrow">Administration</div>
+    <h2 class="tokens-title" id="tokens-heading">Access tokens</h2>
+    <p class="tokens-subtitle">
+      Personal access tokens across all users &mdash; for incident response and offboarding.
+    </p>
 
-  <div class="tokens-counts" id="tokens-counts">
-    <span class="count-chip active"><strong id="count-active">0</strong> active</span>
-    <span class="count-chip revoked"><strong id="count-revoked">0</strong> revoked</span>
-    <span class="count-chip expired"><strong id="count-expired">0</strong> expired</span>
-  </div>
-
-  <div class="tokens-filters">
-    <label>Status
-      <select id="flt-status">
-        <option value="all">All</option>
-        <option value="active">Active</option>
-        <option value="revoked">Revoked</option>
-        <option value="expired">Expired</option>
-      </select>
-    </label>
-    <label>Last used
-      <select id="flt-last-used">
-        <option value="any">Any</option>
-        <option value="never">Never</option>
-        <option value="7d">&lt; 7 days</option>
-        <option value="30d">&lt; 30 days</option>
-        <option value="gt30d">&gt; 30 days</option>
-        <option value="gt90d">&gt; 90 days</option>
-      </select>
-    </label>
-    <input id="flt-user" type="search" placeholder="Filter by user email…" autocomplete="off">
-  </div>
-
-  <div class="tokens-table-wrap">
-    <table class="tokens-table" id="tokens-table">
-      <thead>
-        <tr>
-          <th data-sort="user_email">Owner</th>
-          <th data-sort="name">Name</th>
-          <th data-sort="prefix">Prefix</th>
-          <th data-sort="created_at" class="sort-desc">Created</th>
-          <th data-sort="last_used_at">Last used</th>
-          <th data-sort="expires_at">Expires</th>
-          <th data-sort="status">Status</th>
-          <th class="no-sort" style="text-align:right">Actions</th>
-        </tr>
-      </thead>
-      <tbody id="tokens-tbody"></tbody>
-    </table>
-    <div id="tokens-loading" class="tokens-loading">Loading tokens…</div>
-    <div id="tokens-empty" class="tokens-empty" style="display:none;">
-      <div class="big">No tokens match the current filter.</div>
-      <button type="button" id="clear-filters-btn">Clear filters</button>
+    <div class="tokens-counts" id="tokens-counts" aria-live="polite" aria-label="Token counts summary">
+      <div class="count-chip active">
+        <span class="dot" aria-hidden="true"></span>
+        <div class="count-text">
+          <span class="count-value" id="count-active">0</span>
+          <span class="count-label">Active</span>
+        </div>
+      </div>
+      <div class="count-chip revoked">
+        <span class="dot" aria-hidden="true"></span>
+        <div class="count-text">
+          <span class="count-value" id="count-revoked">0</span>
+          <span class="count-label">Revoked</span>
+        </div>
+      </div>
+      <div class="count-chip expired">
+        <span class="dot" aria-hidden="true"></span>
+        <div class="count-text">
+          <span class="count-value" id="count-expired">0</span>
+          <span class="count-label">Expired</span>
+        </div>
+      </div>
+      <div class="count-chip expiring" title="Active tokens expiring in the next 7 days">
+        <span class="dot" aria-hidden="true"></span>
+        <div class="count-text">
+          <span class="count-value" id="count-expiring">0</span>
+          <span class="count-label">Expiring soon</span>
+        </div>
+      </div>
     </div>
-  </div>
+  </section>
+
+  <!-- ═════════ TOOLBAR ═════════ -->
+  <section class="t-card" aria-label="Filter tokens">
+    <div class="toolbar">
+      <div class="flt-group">
+        <label class="flt-label" for="flt-status">Status</label>
+        <select id="flt-status">
+          <option value="all">All</option>
+          <option value="active">Active</option>
+          <option value="revoked">Revoked</option>
+          <option value="expired">Expired</option>
+        </select>
+      </div>
+      <div class="flt-group">
+        <label class="flt-label" for="flt-last-used">Last used</label>
+        <select id="flt-last-used">
+          <option value="any">Any time</option>
+          <option value="never">Never used</option>
+          <option value="7d">&lt; 7 days ago</option>
+          <option value="30d">&lt; 30 days ago</option>
+          <option value="gt30d">&gt; 30 days ago</option>
+          <option value="gt90d">&gt; 90 days ago</option>
+        </select>
+      </div>
+      <div class="flt-group grow">
+        <label class="flt-label" for="flt-user">Filter by user email</label>
+        <input id="flt-user" type="search" placeholder="Search by email…" autocomplete="off">
+      </div>
+      <div class="flt-group">
+        <span class="flt-label" aria-hidden="true">&nbsp;</span>
+        <button type="button" class="clear-btn" id="clear-filters-toolbar">Clear</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═════════ TABLE ═════════ -->
+  <section class="t-card">
+    <div class="table-wrap">
+      <table class="tokens-table" id="tokens-table">
+        <thead>
+          <tr>
+            <th data-sort="user_email" aria-sort="none"><button type="button" class="sort-btn">Owner</button></th>
+            <th data-sort="name"       aria-sort="none"><button type="button" class="sort-btn">Name</button></th>
+            <th data-sort="prefix"     aria-sort="none"><button type="button" class="sort-btn">Prefix</button></th>
+            <th data-sort="created_at" aria-sort="descending"><button type="button" class="sort-btn">Created</button></th>
+            <th data-sort="last_used_at" aria-sort="none"><button type="button" class="sort-btn">Last used</button></th>
+            <th data-sort="expires_at" aria-sort="none"><button type="button" class="sort-btn">Expires</button></th>
+            <th data-sort="status"     aria-sort="none"><button type="button" class="sort-btn">Status</button></th>
+            <th class="no-sort" style="text-align:right">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="tokens-tbody"></tbody>
+      </table>
+      <div class="card-rows" id="tokens-cards" aria-hidden="true"></div>
+      <div id="tokens-loading" class="tokens-loading">Loading tokens…</div>
+      <div id="tokens-empty" class="tokens-empty" style="display:none;">
+        <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="8" cy="15" r="4"></circle>
+          <line x1="10.85" y1="12.15" x2="19" y2="4"></line>
+          <line x1="18" y1="5" x2="20" y2="7"></line>
+          <line x1="15" y1="8" x2="17" y2="10"></line>
+        </svg>
+        <p class="empty-title">No tokens match these filters.</p>
+        <p class="empty-body">Adjust the filters or clear them to see everything.</p>
+        <button type="button" id="clear-filters-btn">Clear filters</button>
+      </div>
+    </div>
+  </section>
 </div>
 
+<!-- ═════════ MODAL ═════════ -->
 <div class="modal-backdrop" id="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
   <div class="modal-card">
-    <h3 id="confirm-title">Revoke token?</h3>
-    <p class="sub" id="confirm-text"></p>
+    <h3 id="confirm-title">Revoke this token?</h3>
+    <p class="sub" id="confirm-text">
+      This cannot be undone and will immediately sign out any session using this token.
+    </p>
+    <div class="modal-meta" id="confirm-meta" aria-hidden="true"></div>
     <div class="modal-actions">
-      <button class="modal-btn" data-close-modal="confirm-modal">Cancel</button>
-      <button class="modal-btn danger" id="confirm-ok-btn">Revoke</button>
+      <button class="modal-btn" id="confirm-cancel-btn" data-close-modal="confirm-modal">Cancel</button>
+      <button class="modal-btn danger" id="confirm-ok-btn">Revoke token</button>
     </div>
   </div>
 </div>
@@ -222,9 +723,14 @@
 <script>
 const API_LIST   = "/auth/admin/tokens";
 const API_REVOKE = (id) => `/auth/admin/tokens/${encodeURIComponent(id)}`;
+const SEVEN_DAYS = 7 * 86_400_000;
 
-// ── Helpers ──
-function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+// ── Helpers ────────────────────────────────────────────────────────────────
+function esc(s) {
+  const d = document.createElement("div");
+  d.textContent = s == null ? "" : String(s);
+  return d.innerHTML;
+}
 function fmtAbs(s) { return s ? String(s).replace("T", " ").slice(0, 19) : "—"; }
 function parseDate(s) {
   if (!s) return null;
@@ -238,35 +744,63 @@ function relTime(s) {
   const diff = Date.now() - d.getTime();
   const abs = Math.abs(diff);
   const sign = diff < 0 ? "in " : "";
-  const suf = diff >= 0 ? " ago" : "";
+  const suf  = diff >= 0 ? " ago" : "";
   const min = 60_000, hr = 3_600_000, day = 86_400_000;
   if (abs < min) return sign + "just now";
-  if (abs < hr)  return sign + Math.floor(abs / min) + "m" + suf;
-  if (abs < day) return sign + Math.floor(abs / hr)  + "h" + suf;
+  if (abs < hr)  return sign + Math.floor(abs / min) + "m"  + suf;
+  if (abs < day) return sign + Math.floor(abs / hr)  + "h"  + suf;
   const days = Math.floor(abs / day);
-  if (days < 60) return sign + days + " days" + suf;
+  if (days === 1) return sign + "1 day" + suf;
+  if (days < 60)  return sign + days + " days" + suf;
   const months = Math.floor(days / 30);
   if (months < 24) return sign + months + "mo" + suf;
   return sign + Math.floor(days / 365) + "y" + suf;
+}
+function initialsFor(email) {
+  if (!email) return "??";
+  const clean = String(email).trim();
+  if (clean.includes("@")) {
+    const local = clean.split("@")[0];
+    if (local.includes(".")) {
+      const parts = local.split(".").filter(Boolean);
+      return (parts[0][0] + (parts[1] ? parts[1][0] : parts[0][1] || "")).toUpperCase();
+    }
+    return (local[0] + (local[1] || "")).toUpperCase();
+  }
+  return clean.slice(0, 2).toUpperCase();
 }
 
 function computeStatus(t, now) {
   if (t.revoked_at) return "revoked";
   const exp = parseDate(t.expires_at);
   if (exp && exp.getTime() < now) return "expired";
+  if (exp && (exp.getTime() - now) < SEVEN_DAYS) return "expiring";
   return "active";
 }
 function statusPill(status) {
   const map = {
-    active:  ["status-active", "active"],
-    revoked: ["status-revoked", "revoked"],
-    expired: ["status-expired", "expired"],
+    active:   { cls: "status-active",   label: "active",   aria: "active token" },
+    expiring: { cls: "status-expiring", label: "expiring", aria: "token expiring soon" },
+    expired:  { cls: "status-expired",  label: "expired",  aria: "expired token" },
+    revoked:  { cls: "status-revoked",  label: "revoked",  aria: "revoked token" },
   };
-  const [cls, label] = map[status] || ["status-revoked", status];
-  return `<span class="status-pill ${cls}">${label}</span>`;
+  const info = map[status] || map.revoked;
+  return `<span class="status-pill ${info.cls}" aria-label="${info.aria}"><span class="pill-dot" aria-hidden="true"></span>${info.label}</span>`;
+}
+function statusTooltip(t, status, now) {
+  if (status === "revoked") {
+    return t.revoked_at ? "Revoked " + relTime(t.revoked_at) : "Revoked";
+  }
+  if (status === "expired") {
+    return t.expires_at ? "Expired " + relTime(t.expires_at) : "Expired";
+  }
+  if (status === "expiring") {
+    return t.expires_at ? "Expires " + relTime(t.expires_at) : "Expiring soon";
+  }
+  return t.expires_at ? "Active, expires " + relTime(t.expires_at) : "Active";
 }
 
-// ── Toast ──
+// ── Toast ──────────────────────────────────────────────────────────────────
 function toast(msg, kind = "") {
   const el = document.createElement("div");
   el.className = "toast " + kind;
@@ -276,30 +810,82 @@ function toast(msg, kind = "") {
   setTimeout(() => { el.classList.remove("show"); setTimeout(() => el.remove(), 250); }, 3500);
 }
 
-// ── Modal ──
-function openModal(id) { document.getElementById(id).classList.add("is-open"); }
-function closeModal(id) { document.getElementById(id).classList.remove("is-open"); }
+// ── Modal ──────────────────────────────────────────────────────────────────
+let _modalPrevFocus = null;
+function openModal(id) {
+  const m = document.getElementById(id);
+  _modalPrevFocus = document.activeElement;
+  m.classList.add("is-open");
+  // Initial focus on Cancel (least destructive).
+  const cancel = m.querySelector("#confirm-cancel-btn");
+  if (cancel) setTimeout(() => cancel.focus(), 10);
+}
+function closeModal(id) {
+  const m = document.getElementById(id);
+  m.classList.remove("is-open");
+  if (_modalPrevFocus && typeof _modalPrevFocus.focus === "function") {
+    try { _modalPrevFocus.focus(); } catch (_) {}
+  }
+  _modalPrevFocus = null;
+}
 document.querySelectorAll("[data-close-modal]").forEach(el =>
   el.addEventListener("click", () => closeModal(el.dataset.closeModal)));
 document.querySelectorAll(".modal-backdrop").forEach(el => {
-  el.addEventListener("click", e => { if (e.target === el) el.classList.remove("is-open"); });
+  el.addEventListener("click", e => { if (e.target === el) closeModal(el.id); });
 });
 document.addEventListener("keydown", e => {
-  if (e.key === "Escape") document.querySelectorAll(".modal-backdrop.is-open").forEach(m => m.classList.remove("is-open"));
+  if (e.key === "Escape") {
+    document.querySelectorAll(".modal-backdrop.is-open").forEach(m => closeModal(m.id));
+  }
+  // Focus trap inside an open modal
+  if (e.key === "Tab") {
+    const open = document.querySelector(".modal-backdrop.is-open");
+    if (!open) return;
+    const focusables = open.querySelectorAll("button, [href], input, select, textarea, [tabindex]:not([tabindex=\"-1\"])");
+    if (!focusables.length) return;
+    const first = focusables[0];
+    const last  = focusables[focusables.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault(); last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault(); first.focus();
+    }
+  }
 });
-function confirmModal(title, text, okLabel = "Revoke") {
+
+function confirmModal({ title, sub, meta, okLabel = "Revoke token" }) {
   document.getElementById("confirm-title").textContent = title;
-  document.getElementById("confirm-text").textContent = text;
+  document.getElementById("confirm-text").textContent = sub;
+  const metaEl = document.getElementById("confirm-meta");
+  if (meta && Object.keys(meta).length) {
+    let html = "";
+    for (const [k, v] of Object.entries(meta)) {
+      const isMono = k === "Prefix";
+      html += `<span class="mk">${esc(k)}</span><span class="mv${isMono ? " mono" : ""}">${esc(v)}</span>`;
+    }
+    metaEl.innerHTML = html;
+    metaEl.style.display = "grid";
+  } else {
+    metaEl.style.display = "none";
+  }
   const okBtn = document.getElementById("confirm-ok-btn");
   okBtn.textContent = okLabel;
   return new Promise(resolve => {
-    const ok = () => { closeModal("confirm-modal"); okBtn.removeEventListener("click", ok); resolve(true); };
+    const ok = () => { closeModal("confirm-modal"); cleanup(); resolve(true); };
+    const cancel = () => { cleanup(); resolve(false); };
+    const onCancelClick = () => cancel();
+    const cancelBtn = document.getElementById("confirm-cancel-btn");
+    function cleanup() {
+      okBtn.removeEventListener("click", ok);
+      cancelBtn.removeEventListener("click", onCancelClick);
+    }
     okBtn.addEventListener("click", ok, { once: true });
+    cancelBtn.addEventListener("click", onCancelClick, { once: true });
     openModal("confirm-modal");
   });
 }
 
-// ── State ──
+// ── State ──────────────────────────────────────────────────────────────────
 let allTokens = [];
 let filters = { status: "all", lastUsed: "any", user: "" };
 let sort = { key: "created_at", dir: "desc" };
@@ -308,7 +894,10 @@ function applyFilters(items) {
   const now = Date.now();
   return items.filter(t => {
     const s = computeStatus(t, now);
-    if (filters.status !== "all" && s !== filters.status) return false;
+    // Treat "expiring" as a sub-state of "active" for the status filter — the
+    // stat strip shows it separately but the filter still talks about lifecycle.
+    const lifecycle = s === "expiring" ? "active" : s;
+    if (filters.status !== "all" && lifecycle !== filters.status) return false;
 
     if (filters.user) {
       const q = filters.user.toLowerCase();
@@ -347,73 +936,172 @@ function sortItems(items) {
 
 function updateCounts() {
   const now = Date.now();
-  let active = 0, revoked = 0, expired = 0;
+  let active = 0, revoked = 0, expired = 0, expiring = 0;
   for (const t of allTokens) {
     const s = computeStatus(t, now);
-    if (s === "active") active++;
-    else if (s === "revoked") revoked++;
-    else if (s === "expired") expired++;
+    if (s === "active")        active++;
+    else if (s === "expiring") { active++; expiring++; }
+    else if (s === "revoked")  revoked++;
+    else if (s === "expired")  expired++;
   }
-  document.getElementById("count-active").textContent = active;
-  document.getElementById("count-revoked").textContent = revoked;
-  document.getElementById("count-expired").textContent = expired;
+  document.getElementById("count-active").textContent   = active;
+  document.getElementById("count-revoked").textContent  = revoked;
+  document.getElementById("count-expired").textContent  = expired;
+  document.getElementById("count-expiring").textContent = expiring;
+}
+
+function renderRow(t, now) {
+  const status = computeStatus(t, now);
+  const exp = parseDate(t.expires_at);
+  let expClass = "";
+  if (status === "revoked") expClass = "strike";
+  else if (exp) {
+    const delta = exp.getTime() - now;
+    if (delta < 0) expClass = "expired";
+    else if (delta < SEVEN_DAYS) expClass = "soon";
+  }
+
+  const ownerEmail = t.user_email || t.user_id || "—";
+  const initials = initialsFor(t.user_email || t.user_id || "");
+  const lastUsedRel = t.last_used_at ? relTime(t.last_used_at) : "Never";
+  const lastUsedIp = t.last_used_ip ? esc(t.last_used_ip) : "";
+  const lastUsedTitle = t.last_used_at
+    ? `${fmtAbs(t.last_used_at)}${t.last_used_ip ? " from " + t.last_used_ip : ""}`
+    : "never used";
+
+  return {
+    status,
+    html: `
+      <td>
+        <div class="owner-cell">
+          <span class="avatar-sm" aria-hidden="true">${esc(initials)}</span>
+          <span class="owner-email" title="${esc(ownerEmail)}">${esc(ownerEmail)}</span>
+        </div>
+      </td>
+      <td><span class="token-name">${esc(t.name)}</span></td>
+      <td><span class="chip-mono">${esc(t.prefix)}…</span></td>
+      <td class="date-cell" title="${esc(fmtAbs(t.created_at))}">${esc(relTime(t.created_at))}</td>
+      <td class="date-cell" title="${esc(lastUsedTitle)}">
+        ${esc(lastUsedRel)}
+        ${lastUsedIp ? `<span class="date-sub">from ${lastUsedIp}</span>` : ""}
+      </td>
+      <td class="date-cell ${expClass}" title="${esc(fmtAbs(t.expires_at))}">${t.expires_at ? esc(relTime(t.expires_at)) : "—"}</td>
+      <td><span title="${esc(statusTooltip(t, status, now))}">${statusPill(status)}</span></td>
+      <td>
+        <div class="row-actions">
+          <button class="icon-btn danger" data-revoke
+                  data-token-id="${esc(t.id)}"
+                  data-token-name="${esc(t.name)}"
+                  data-token-owner="${esc(ownerEmail)}"
+                  data-token-prefix="${esc(t.prefix)}"
+                  aria-label="Revoke token ${esc(t.name)} for ${esc(ownerEmail)}"
+                  title="Revoke token"
+                  ${t.revoked_at ? "disabled" : ""}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="3 6 5 6 21 6"></polyline>
+              <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>
+              <path d="M10 11v6"></path>
+              <path d="M14 11v6"></path>
+              <path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"></path>
+            </svg>
+          </button>
+        </div>
+      </td>`
+  };
+}
+
+function renderCardRow(t, now) {
+  const status = computeStatus(t, now);
+  const ownerEmail = t.user_email || t.user_id || "—";
+  const initials = initialsFor(ownerEmail);
+  const lastUsedRel = t.last_used_at ? relTime(t.last_used_at) : "Never";
+
+  const exp = parseDate(t.expires_at);
+  let expClass = "";
+  if (status === "revoked") expClass = "strike";
+  else if (exp) {
+    const delta = exp.getTime() - now;
+    if (delta < 0) expClass = "expired";
+    else if (delta < SEVEN_DAYS) expClass = "soon";
+  }
+
+  const card = document.createElement("div");
+  card.className = "card-row" + (status === "revoked" ? " is-revoked" : "");
+  card.innerHTML = `
+    <div class="card-row-head">
+      <div class="owner-cell">
+        <span class="avatar-sm" aria-hidden="true">${esc(initials)}</span>
+        <div>
+          <div class="token-name">${esc(t.name)}</div>
+          <div class="owner-email" style="font-size:12px;">${esc(ownerEmail)}</div>
+        </div>
+      </div>
+      ${statusPill(status)}
+    </div>
+    <div class="kv-grid">
+      <span class="kv-key">Prefix</span>       <span class="kv-val"><span class="chip-mono">${esc(t.prefix)}…</span></span>
+      <span class="kv-key">Created</span>      <span class="kv-val">${esc(relTime(t.created_at))}</span>
+      <span class="kv-key">Last used</span>    <span class="kv-val">${esc(lastUsedRel)}${t.last_used_ip ? ` <span style="color:var(--text-secondary);font-size:11px;">from ${esc(t.last_used_ip)}</span>` : ""}</span>
+      <span class="kv-key">Expires</span>      <span class="kv-val ${expClass}">${t.expires_at ? esc(relTime(t.expires_at)) : "—"}</span>
+    </div>
+    <div class="card-row-footer">
+      <button class="icon-btn danger" data-revoke
+              data-token-id="${esc(t.id)}"
+              data-token-name="${esc(t.name)}"
+              data-token-owner="${esc(ownerEmail)}"
+              data-token-prefix="${esc(t.prefix)}"
+              aria-label="Revoke token ${esc(t.name)} for ${esc(ownerEmail)}"
+              title="Revoke token"
+              ${t.revoked_at ? "disabled" : ""}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polyline points="3 6 5 6 21 6"></polyline>
+          <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>
+          <path d="M10 11v6"></path>
+          <path d="M14 11v6"></path>
+          <path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"></path>
+        </svg>
+      </button>
+    </div>`;
+  return card;
 }
 
 function renderTable() {
   const tbody = document.getElementById("tokens-tbody");
+  const cards = document.getElementById("tokens-cards");
   const loading = document.getElementById("tokens-loading");
   const empty = document.getElementById("tokens-empty");
   loading.style.display = "none";
 
   const filtered = sortItems(applyFilters(allTokens));
+  tbody.innerHTML = "";
+  cards.innerHTML = "";
+
   if (filtered.length === 0) {
     empty.style.display = "block";
-    tbody.innerHTML = "";
     return;
   }
   empty.style.display = "none";
 
   const now = Date.now();
-  const SEVEN_DAYS = 7 * 86_400_000;
-  tbody.innerHTML = "";
   for (const t of filtered) {
+    const row = renderRow(t, now);
     const tr = document.createElement("tr");
-    const status = computeStatus(t, now);
-    if (status === "revoked") tr.classList.add("is-revoked");
-
-    const exp = parseDate(t.expires_at);
-    let expClass = "";
-    if (exp) {
-      const delta = exp.getTime() - now;
-      if (delta < 0) expClass = "expired";
-      else if (delta < SEVEN_DAYS) expClass = "soon";
-    }
-
-    const lastUsedTooltip = t.last_used_at
-      ? `${fmtAbs(t.last_used_at)}${t.last_used_ip ? " from " + t.last_used_ip : ""}`
-      : "never used";
-
-    tr.innerHTML = `
-      <td>${esc(t.user_email || t.user_id || "—")}</td>
-      <td>${esc(t.name)}</td>
-      <td class="prefix-cell">${esc(t.prefix)}…</td>
-      <td class="date-cell" title="${esc(fmtAbs(t.created_at))}">${esc(relTime(t.created_at))}</td>
-      <td class="date-cell" title="${esc(lastUsedTooltip)}">${t.last_used_at ? esc(relTime(t.last_used_at)) : "—"}</td>
-      <td class="date-cell ${expClass}" title="${esc(fmtAbs(t.expires_at))}">${t.expires_at ? esc(relTime(t.expires_at)) : "—"}</td>
-      <td>${statusPill(status)}</td>
-      <td>
-        <div class="row-actions">
-          <button class="icon-btn danger" data-revoke data-token-id="${esc(t.id)}"
-            data-token-name="${esc(t.name)}" data-token-owner="${esc(t.user_email || t.user_id || "")}"
-            ${t.revoked_at ? "disabled" : ""}>Revoke</button>
-        </div>
-      </td>`;
+    if (row.status === "revoked") tr.classList.add("is-revoked");
+    tr.innerHTML = row.html;
     tbody.appendChild(tr);
+    cards.appendChild(renderCardRow(t, now));
   }
 
-  tbody.querySelectorAll("[data-revoke]").forEach(el =>
-    el.addEventListener("click", () => revokeToken(
-      el.dataset.tokenId, el.dataset.tokenName, el.dataset.tokenOwner)));
+  const bindRevoke = (el) => {
+    el.addEventListener("click", () => revokeToken({
+      id: el.dataset.tokenId,
+      name: el.dataset.tokenName,
+      owner: el.dataset.tokenOwner,
+      prefix: el.dataset.tokenPrefix,
+    }));
+  };
+  tbody.querySelectorAll("[data-revoke]").forEach(bindRevoke);
+  cards.querySelectorAll("[data-revoke]").forEach(bindRevoke);
 }
 
 async function loadTokens() {
@@ -429,32 +1117,48 @@ async function loadTokens() {
   }
 }
 
-async function revokeToken(id, name, owner) {
-  if (!await confirmModal(
-    "Revoke token?",
-    `Revoke "${name}" for ${owner}? This cannot be undone and will immediately sign out any session using this token.`,
-    "Revoke"
-  )) return;
+async function revokeToken({ id, name, owner, prefix }) {
+  const confirmed = await confirmModal({
+    title: "Revoke this token?",
+    sub: "This cannot be undone and will immediately sign out any session using this token.",
+    meta: {
+      "Name":   name,
+      "Owner":  owner,
+      "Prefix": (prefix || "") + "…",
+    },
+    okLabel: "Revoke token",
+  });
+  if (!confirmed) return;
   const r = await fetch(API_REVOKE(id), { method: "DELETE", credentials: "include" });
   if (!r.ok) { toast("Failed: " + (await r.text()), "error"); return; }
   toast("Token revoked", "success");
   await loadTokens();
 }
 
-// ── Events ──
-document.getElementById("flt-status").addEventListener("change", e => { filters.status = e.target.value; renderTable(); });
-document.getElementById("flt-last-used").addEventListener("change", e => { filters.lastUsed = e.target.value; renderTable(); });
-document.getElementById("flt-user").addEventListener("input", e => { filters.user = e.target.value.trim(); renderTable(); });
-document.getElementById("clear-filters-btn").addEventListener("click", () => {
-  filters = { status: "all", lastUsed: "any", user: "" };
-  document.getElementById("flt-status").value = "all";
-  document.getElementById("flt-last-used").value = "any";
-  document.getElementById("flt-user").value = "";
-  renderTable();
+// ── Events ─────────────────────────────────────────────────────────────────
+document.getElementById("flt-status").addEventListener("change", e => {
+  filters.status = e.target.value; renderTable();
+});
+document.getElementById("flt-last-used").addEventListener("change", e => {
+  filters.lastUsed = e.target.value; renderTable();
+});
+document.getElementById("flt-user").addEventListener("input", e => {
+  filters.user = e.target.value.trim(); renderTable();
 });
 
+function clearFilters() {
+  filters = { status: "all", lastUsed: "any", user: "" };
+  document.getElementById("flt-status").value    = "all";
+  document.getElementById("flt-last-used").value = "any";
+  document.getElementById("flt-user").value      = "";
+  renderTable();
+}
+document.getElementById("clear-filters-btn").addEventListener("click", clearFilters);
+document.getElementById("clear-filters-toolbar").addEventListener("click", clearFilters);
+
 document.querySelectorAll(".tokens-table thead th[data-sort]").forEach(th => {
-  th.addEventListener("click", () => {
+  const btn = th.querySelector(".sort-btn") || th;
+  btn.addEventListener("click", () => {
     const key = th.dataset.sort;
     if (sort.key === key) {
       sort.dir = sort.dir === "asc" ? "desc" : "asc";
@@ -462,15 +1166,15 @@ document.querySelectorAll(".tokens-table thead th[data-sort]").forEach(th => {
       sort.key = key;
       sort.dir = "asc";
     }
-    document.querySelectorAll(".tokens-table thead th").forEach(h => {
-      h.classList.remove("sort-asc", "sort-desc");
+    document.querySelectorAll(".tokens-table thead th[data-sort]").forEach(h => {
+      h.setAttribute("aria-sort", "none");
     });
-    th.classList.add(sort.dir === "asc" ? "sort-asc" : "sort-desc");
+    th.setAttribute("aria-sort", sort.dir === "asc" ? "ascending" : "descending");
     renderTable();
   });
 });
 
-// Pre-fill user filter from ?user=... query string (deep-link from admin/users)
+// Pre-fill user filter from ?user=... query string (deep-link from /admin/users)
 (function initFromQuery() {
   try {
     const q = new URLSearchParams(window.location.search);
