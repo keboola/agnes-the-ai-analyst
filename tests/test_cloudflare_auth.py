@@ -373,3 +373,34 @@ class TestGetOrCreateUserFromCf:
             assert cf_mod.get_or_create_user_from_cf(email=123, name="x", conn=conn) is None
         finally:
             conn.close()
+
+
+class TestMiddlewarePassthrough:
+    def test_no_header_no_cookie_redirects_to_login(self, cf_client):
+        """Dashboard without any auth → normal 302 to /login (middleware must not interfere)."""
+        resp = cf_client.get("/dashboard", follow_redirects=False)
+        assert resp.status_code == 302
+        assert "/login" in resp.headers.get("location", "")
+
+    def test_invalid_cf_header_passes_through(self, cf_client):
+        """Garbage CF header → middleware ignores it → normal 302 to login."""
+        resp = cf_client.get(
+            "/dashboard",
+            headers={"Cf-Access-Jwt-Assertion": "not-a-valid-jwt"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 302
+        assert "/login" in resp.headers.get("location", "")
+
+    def test_middleware_unavailable_when_env_missing(self, no_cf_client, make_cf_jwt):
+        """Without CF_ACCESS_* env, middleware must be inert even if header is present."""
+        # Note: make_cf_jwt still produces a token but middleware should ignore it.
+        token = make_cf_jwt()
+        resp = no_cf_client.get(
+            "/dashboard",
+            headers={"Cf-Access-Jwt-Assertion": token},
+            follow_redirects=False,
+        )
+        # No cookie set, normal redirect to login
+        assert resp.status_code == 302
+        assert "access_token" not in resp.cookies
