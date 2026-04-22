@@ -120,7 +120,7 @@
             margin-bottom: 10px;
         }
         .hero h1 {
-            font-size: 26px;
+            font-size: 30px;
             font-weight: 700;
             margin: 0 0 8px 0;
             color: white;
@@ -254,6 +254,40 @@
             border-color: #a6e3a1;
             color: #a6e3a1;
             background: rgba(166, 227, 161, 0.08);
+        }
+
+        /* ── Anon sign-in banner (shown only when logged out) ── */
+        .auth-banner {
+            background: var(--background);
+            border: 1px solid var(--border);
+            border-left: 3px solid var(--primary);
+            border-radius: 8px;
+            padding: 12px 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 16px;
+            font-size: 13px;
+            color: var(--text-primary);
+        }
+        .auth-banner-text { line-height: 1.5; }
+        .auth-banner a {
+            color: var(--primary);
+            text-decoration: none;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+        .auth-banner a:hover { text-decoration: underline; }
+
+        /* ── Section label inside a card (separates subsections) ── */
+        .card-section-label {
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            color: var(--text-secondary);
+            margin: 18px 0 10px;
         }
 
         /* ── Inline CTA link (Open /profile etc.) ── */
@@ -509,6 +543,14 @@
         </section>
 
         <!-- ═══════════════ STEP 2 — TOKEN ═══════════════ -->
+        {% if not session.user %}
+        <div class="auth-banner">
+            <span class="auth-banner-text">
+                You'll need to sign in first to create a personal access token.
+            </span>
+            <a href="/login">Sign in →</a>
+        </div>
+        {% endif %}
         <section class="card">
             <div class="card-header">
                 <span class="step-num">2</span>
@@ -525,9 +567,9 @@
                         <path d="M5 12h14M13 5l7 7-7 7"/>
                     </svg>
                 </a>
+                <div class="card-section-label">After generating your token</div>
                 <p class="card-sub">
-                    Once you've generated a token, export it for the current
-                    shell and verify the connection:
+                    Export it for the current shell and verify the connection:
                 </p>
                 <div class="code-block">
                     <span class="prompt">$</span>
