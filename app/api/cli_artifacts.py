@@ -39,6 +39,29 @@ def _find_wheel() -> Path | None:
     return wheels[-1] if wheels else None
 
 
+@router.get("/cli/latest")
+async def cli_latest():
+    """Metadata for the currently-shipped CLI wheel.
+
+    Consumed by `da` CLI's auto-update check so it can warn when a newer
+    version is on the server. Public + cacheable — no secrets here.
+    Returns `version=None` when the server has no wheel yet (dev image that
+    didn't run `uv build`).
+    """
+    wheel = _find_wheel()
+    if not wheel:
+        return {"version": None, "wheel_filename": None, "download_url_path": None}
+    # PEP 427 wheel filename: {name}-{version}(-{build})?-{py}-{abi}-{plat}.whl
+    # The version is the second `-`-separated token.
+    parts = wheel.stem.split("-")
+    version = parts[1] if len(parts) >= 2 else None
+    return {
+        "version": version,
+        "wheel_filename": wheel.name,
+        "download_url_path": f"/cli/wheel/{wheel.name}",
+    }
+
+
 @router.get("/cli/download")
 async def cli_download():
     wheel = _find_wheel()
@@ -58,25 +81,17 @@ async def cli_download():
     )
 
 
-@router.get("/cli/agnes.whl")
-async def cli_wheel_stable():
-    """Stable `.whl` URL alias so `uv tool install <server>/cli/agnes.whl` works.
+@router.get("/cli/wheel/{wheel_name}")
+async def cli_wheel_versioned(wheel_name: str):
+    """Serve the currently-present wheel at a PEP 427-compliant URL.
 
-    `uv tool install` inspects the URL path to decide how to treat the resource
-    and only accepts it as a wheel when the path ends in `.whl`. The existing
-    `/cli/download` path does not, which forces users through a multi-step
-    curl + tmpfile + install + rm dance. This alias collapses that into a
-    single `uv tool install` invocation.
+    Only the exact filename of the current wheel is honoured; any other
+    `wheel_name` returns 404. No filesystem lookup is done from user input —
+    the path param is only compared against `_find_wheel().name`.
     """
     wheel = _find_wheel()
-    if not wheel:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                "CLI wheel not found in dist dir. Build it with `uv build --wheel` "
-                "or run the official docker image (which builds on image-build)."
-            ),
-        )
+    if not wheel or wheel.name != wheel_name:
+        raise HTTPException(status_code=404, detail="Wheel not found")
     return FileResponse(
         path=str(wheel),
         filename=wheel.name,

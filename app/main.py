@@ -2,17 +2,58 @@
 
 import logging
 from contextlib import asynccontextmanager
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from urllib.parse import quote
 
 import os
+
+
+def _app_version() -> str:
+    """Product version for FastAPI title / OpenAPI schema.
+
+    Single source of truth is `pyproject.toml` `[project].version`; we read
+    it back via `importlib.metadata` at runtime so `/docs`, `/openapi.json`,
+    `/api/version`, `/cli/latest`, and `da --version` can never drift.
+    """
+    try:
+        return _pkg_version("agnes-the-ai-analyst")
+    except PackageNotFoundError:
+        return "dev"
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.types import ASGIApp, Receive, Scope, Send
+
+
+class _SelectiveGZipMiddleware:
+    """GZipMiddleware wrapper that skips a set of path prefixes.
+
+    Parquet-serving endpoints send responses that are already columnar-
+    compressed (parquet's internal codec) and — for /api/data — can reach
+    hundreds of MB. Gzipping them on the way out costs CPU and latency with
+    no meaningful size reduction. Skip those paths; every other endpoint
+    (JSON manifests, HTML previews, install.sh) still gets compressed.
+    """
+
+    def __init__(self, app: ASGIApp, minimum_size: int = 1024, skip_prefixes: tuple[str, ...] = ()) -> None:
+        self._raw = app
+        self._gzip = GZipMiddleware(app, minimum_size=minimum_size)
+        self._skip_prefixes = skip_prefixes
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope.get("type") == "http":
+            path = scope.get("path", "")
+            if any(path.startswith(p) for p in self._skip_prefixes):
+                await self._raw(scope, receive, send)
+                return
+        await self._gzip(scope, receive, send)
 
 from app.auth.router import router as auth_router
 from app.api.health import router as health_router
@@ -51,8 +92,18 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="AI Data Analyst",
         description="Data distribution platform for AI analytical systems",
-        version="2.0.0",
+        version=_app_version(),
         lifespan=lifespan,
+    )
+
+    # Compress JSON / HTML responses on the wire. Parquet downloads are
+    # excluded — they're already columnar-compressed and re-gzipping them
+    # just burns CPU with no size win. minimum_size=1024 keeps tiny
+    # responses uncompressed too (cheaper than the header overhead).
+    app.add_middleware(
+        _SelectiveGZipMiddleware,
+        minimum_size=1024,
+        skip_prefixes=("/api/data/", "/cli/wheel/", "/cli/download"),
     )
 
     # Session middleware (required for OAuth state)

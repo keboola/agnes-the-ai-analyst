@@ -160,8 +160,11 @@ class TestClaudeSetupPreview:
         assert "What Claude Code will receive" in body
         assert "&lt;will be generated on click&gt;" in body
         assert 'class="placeholder-token"' in body
-        # Setup payload text substituted with real server URL
-        assert "/cli/agnes.whl" in body
+        # Setup payload text substituted with real server URL. The wheel URL
+        # must be under /cli/wheel/ (uv tool install rejects a bare .whl alias
+        # because it validates the PEP 427 filename in the URL before fetch).
+        assert "/cli/wheel/" in body
+        assert "/cli/agnes.whl" not in body
         # New numbered headers + da diagnose step
         assert "1) Install the CLI" in body
         assert "4) Run diagnostics" in body

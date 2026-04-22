@@ -1,11 +1,19 @@
 """Sync commands — da sync."""
 
+import hashlib
 import json
 import os
 from pathlib import Path
 
 import typer
-from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
 
 from cli.client import api_get, api_post, stream_download
 from cli.config import get_sync_state, save_sync_state
@@ -23,14 +31,25 @@ def sync(
     upload_only: bool = typer.Option(False, "--upload-only", help="Only upload sessions/artifacts"),
     docs_only: bool = typer.Option(False, "--docs-only", help="Only sync documentation"),
     as_json: bool = typer.Option(False, "--json", help="Output as JSON"),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Show what would be synced without downloading, uploading, or writing local state.",
+    ),
 ):
     """Sync data between server and local machine."""
     if upload_only:
-        _upload(as_json)
+        _upload(as_json, dry_run=dry_run)
         return
 
-    with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}")) as progress:
-        # 1. Get manifest
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeElapsedColumn(),
+    ) as progress:
+        # 1. Get manifest — indeterminate spinner (total unknown until manifest lands)
         task = progress.add_task("Fetching manifest...", total=None)
         try:
             resp = api_get("/api/sync/manifest")
@@ -57,35 +76,66 @@ def sync(
             if server_hash != local_hash or tid not in local_tables or not server_hash:
                 to_download.append(tid)
 
-        progress.update(task, description=f"Found {len(to_download)} tables to sync")
+        # Switch the bar from indeterminate to "X/N" progress once we know the total.
+        progress.update(
+            task,
+            description=f"Found {len(to_download)} tables to sync",
+            total=len(to_download) or None,
+            completed=0,
+        )
 
-        # 3. Download parquets
+        # 3. Dry-run short-circuit — report what would happen, touch nothing on disk.
+        if dry_run:
+            progress.update(task, description="Dry run — nothing will be downloaded")
+            _print_dry_run_plan(to_download, server_tables, len(server_tables), as_json)
+            return
+
+        # 4. Download parquets
         local_dir = _local_data_dir()
         parquet_dir = local_dir / "server" / "parquet"
         parquet_dir.mkdir(parents=True, exist_ok=True)
 
         results = {"downloaded": [], "skipped": [], "errors": []}
-        for tid in to_download:
-            progress.update(task, description=f"Downloading {tid}...")
+        total = len(to_download)
+        for idx, tid in enumerate(to_download, start=1):
+            progress.update(task, description=f"[{idx}/{total}] Downloading {tid}...")
             target = parquet_dir / f"{tid}.parquet"
+            expected_hash = server_tables[tid].get("hash", "")
             try:
                 stream_download(f"/api/data/{tid}/download", str(target))
+                # Integrity check against the manifest hash (server uses MD5
+                # over the parquet — see app/api/sync.py:_file_hash). A
+                # structural PAR1 check is kept as a fallback for when the
+                # manifest hash is empty (legacy snapshots).
+                if expected_hash:
+                    actual_hash = _md5_file(target)
+                    if actual_hash != expected_hash:
+                        target.unlink(missing_ok=True)
+                        raise ValueError(
+                            f"hash mismatch: expected {expected_hash[:12]}…, got {actual_hash[:12]}…"
+                        )
+                elif not _is_valid_parquet(target):
+                    target.unlink(missing_ok=True)
+                    raise ValueError(
+                        "downloaded file is not a valid parquet (missing PAR1 magic bytes)"
+                    )
                 local_tables[tid] = {
-                    "hash": server_tables[tid].get("hash", ""),
+                    "hash": expected_hash,
                     "rows": server_tables[tid].get("rows", 0),
                     "size_bytes": server_tables[tid].get("size_bytes", 0),
                 }
                 results["downloaded"].append(tid)
             except Exception as e:
                 results["errors"].append({"table": tid, "error": str(e)})
+            progress.advance(task, 1)
 
-        # 4. Save local state
+        # 5. Save local state
         from datetime import datetime, timezone
         local_state["tables"] = local_tables
         local_state["last_sync"] = datetime.now(timezone.utc).isoformat()
         save_sync_state(local_state)
 
-        # 5. Rebuild DuckDB views
+        # 6. Rebuild DuckDB views
         if results["downloaded"]:
             progress.update(task, description="Rebuilding DuckDB views...")
             _rebuild_duckdb_views(local_dir, parquet_dir)
@@ -103,6 +153,66 @@ def sync(
             typer.echo(f"Errors: {len(results['errors'])}")
             for err in results["errors"]:
                 typer.echo(f"  {err['table']}: {err['error']}")
+
+
+def _print_dry_run_plan(
+    to_download: list[str],
+    server_tables: dict,
+    total_tables: int,
+    as_json: bool,
+) -> None:
+    """Render the dry-run plan for the download flow (no disk writes).
+
+    Pairs table IDs with their manifest `size_bytes` / `rows` so the operator
+    can judge cost before committing to the real sync.
+    """
+    total_bytes = sum(server_tables.get(tid, {}).get("size_bytes", 0) or 0 for tid in to_download)
+    plan = [
+        {
+            "table": tid,
+            "rows": server_tables.get(tid, {}).get("rows", 0) or 0,
+            "size_bytes": server_tables.get(tid, {}).get("size_bytes", 0) or 0,
+        }
+        for tid in to_download
+    ]
+    if as_json:
+        typer.echo(json.dumps(
+            {
+                "dry_run": True,
+                "would_download": plan,
+                "summary": {
+                    "tables_total": total_tables,
+                    "tables_to_download": len(to_download),
+                    "tables_skipped_unchanged": total_tables - len(to_download),
+                    "bytes_total": total_bytes,
+                },
+            },
+            indent=2,
+        ))
+        return
+
+    typer.echo(f"Dry run — would download {len(to_download)} tables ({_fmt_bytes(total_bytes)})")
+    typer.echo(f"Skipped (unchanged): {total_tables - len(to_download)}")
+    for row in plan:
+        typer.echo(f"  {row['table']}  rows={row['rows']}  size={_fmt_bytes(row['size_bytes'])}")
+
+
+def _fmt_bytes(n: int) -> str:
+    """Human-readable byte size.
+
+    Every named unit must appear inside the loop so `n` gets divided one
+    more time than the label it's attached to. Otherwise the fallback
+    reports 1 unit-of-next-magnitude as "1024.0 <prev-unit>".
+    """
+    if n < 1024:
+        return f"{n} B"
+    value = float(n)
+    for unit in ("KiB", "MiB", "GiB", "TiB", "PiB", "EiB"):
+        value /= 1024
+        if value < 1024:
+            return f"{value:.1f} {unit}"
+    # Beyond EiB is astronomical — just keep dividing and label as EiB.
+    return f"{value:.1f} EiB"
 
 
 def _rebuild_duckdb_views(local_dir: Path, parquet_dir: Path):
@@ -132,24 +242,102 @@ def _rebuild_duckdb_views(local_dir: Path, parquet_dir: Path):
     except Exception:
         pass
 
-    # Create views for each parquet file
+    # Create views for each parquet file. One broken file (corrupt download,
+    # partial write left over from a previous sync, …) must not abort the
+    # whole rebuild — skip it with a warning and keep going.
+    skipped_broken: list[str] = []
     for pq_file in parquet_dir.rglob("*.parquet"):
         view_name = pq_file.stem
         if view_name in existing_tables:
             continue  # don't shadow user tables
+        if not _is_valid_parquet(pq_file):
+            skipped_broken.append(view_name)
+            continue
         abs_path = str(pq_file.resolve())
-        conn.execute(f"CREATE VIEW \"{view_name}\" AS SELECT * FROM read_parquet('{abs_path}')")
+        try:
+            conn.execute(f"CREATE VIEW \"{view_name}\" AS SELECT * FROM read_parquet('{abs_path}')")
+        except duckdb.Error:
+            skipped_broken.append(view_name)
 
     conn.close()
 
+    if skipped_broken:
+        typer.echo(
+            f"Warning: skipped {len(skipped_broken)} broken parquet file(s) during view rebuild:",
+            err=True,
+        )
+        for name in skipped_broken:
+            typer.echo(f"  - {name}.parquet", err=True)
 
-def _upload(as_json: bool):
-    """Upload sessions and CLAUDE.local.md to server."""
+
+def _md5_file(path: Path) -> str:
+    """MD5 of a file, same chunking as app/api/sync.py:_file_hash so the
+    client-side verification matches the manifest hash byte-for-byte."""
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _is_valid_parquet(path: Path) -> bool:
+    """Cheap structural check — parquet files begin and end with `PAR1`.
+
+    Used as a fallback when the manifest has no hash (legacy snapshots) and
+    during view rebuild to skip obviously-broken files. Does not guarantee
+    the footer is well-formed — that's DuckDB's job at CREATE VIEW time.
+    """
+    try:
+        size = path.stat().st_size
+        if size < 8:
+            return False
+        with open(path, "rb") as f:
+            head = f.read(4)
+            f.seek(-4, 2)
+            tail = f.read(4)
+        return head == b"PAR1" and tail == b"PAR1"
+    except OSError:
+        return False
+
+
+def _upload(as_json: bool, dry_run: bool = False):
+    """Upload sessions and CLAUDE.local.md to server.
+
+    When `dry_run=True`, enumerate what would be uploaded without hitting the
+    API or mutating anything on disk.
+    """
     local_dir = _local_data_dir()
+    sessions_dir = local_dir / "user" / "sessions"
+    local_md = local_dir / ".claude" / "CLAUDE.local.md"
+
+    if dry_run:
+        session_files = sorted(str(f) for f in sessions_dir.glob("*.jsonl")) if sessions_dir.exists() else []
+        plan = {
+            "dry_run": True,
+            "would_upload": {
+                "sessions": session_files,
+                "local_md": str(local_md) if local_md.exists() else None,
+            },
+            "summary": {
+                "sessions_count": len(session_files),
+                "local_md_present": local_md.exists(),
+            },
+        }
+        if as_json:
+            typer.echo(json.dumps(plan, indent=2))
+            return
+        typer.echo(f"Dry run — would upload {len(session_files)} session file(s)")
+        for f in session_files:
+            typer.echo(f"  {f}")
+        if local_md.exists():
+            typer.echo(f"Would upload CLAUDE.local.md  ({local_md})")
+        else:
+            typer.echo("No CLAUDE.local.md to upload")
+        return
+
     results = {"sessions": 0, "local_md": False}
 
     # Upload sessions
-    sessions_dir = local_dir / "user" / "sessions"
     if sessions_dir.exists():
         for f in sessions_dir.glob("*.jsonl"):
             try:
@@ -161,7 +349,6 @@ def _upload(as_json: bool):
                 pass
 
     # Upload CLAUDE.local.md
-    local_md = local_dir / ".claude" / "CLAUDE.local.md"
     if local_md.exists():
         content = local_md.read_text(encoding="utf-8")
         try:
