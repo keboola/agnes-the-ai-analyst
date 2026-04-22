@@ -429,7 +429,7 @@
             {% if session.user.picture %}
             <img src="{{ session.user.picture }}" alt="Profile" class="avatar-img">
             {% else %}
-            <div class="avatar">{{ (user.name or user.email)[:2] | upper }}</div>
+            <div class="avatar">{{ (session.user.name or session.user.email)[:2] | upper }}</div>
             {% endif %}
             <a class="nav-link" href="/dashboard">Dashboard</a>
             <a class="nav-link" href="/profile">Profile</a>
