@@ -97,6 +97,24 @@ jobs:
             BRANCH_SLUG=$(echo "$BRANCH_NAME" | sed 's|^feature/||' | sed 's|[^a-zA-Z0-9-]|-|g' | tr '[:upper:]' '[:lower:]' | cut -c1-50)
             echo "branch_slug=${BRANCH_SLUG}" >> "$GITHUB_OUTPUT"
             echo "Branch slug: ${BRANCH_SLUG}"
+
+            # User prefix for <prefix>/<whatever> branches — powers the
+            # dev-<prefix>-latest alias tag so each developer's personal VM
+            # can pin to their prefix and auto-pull the latest push. Common
+            # Git Flow prefixes are skipped so `feature/x`, `fix/y` etc.
+            # don't create noisy -latest tags.
+            if [[ "$BRANCH_NAME" == *"/"* ]]; then
+              USER_PREFIX=$(echo "$BRANCH_NAME" | cut -d/ -f1 | sed 's|[^a-zA-Z0-9-]|-|g' | tr '[:upper:]' '[:lower:]')
+              case "$USER_PREFIX" in
+                feature|fix|hotfix|bugfix|docs|chore|test|ci|ops|refactor|perf|style|build)
+                  echo "Branch prefix '$USER_PREFIX' is a Git Flow convention — skipping dev-*-latest alias"
+                  ;;
+                *)
+                  echo "user_prefix=${USER_PREFIX}" >> "$GITHUB_OUTPUT"
+                  echo "User prefix: ${USER_PREFIX} (will push dev-${USER_PREFIX}-latest alias)"
+                  ;;
+              esac
+            fi
           fi
 
           echo "Channel: ${CHANNEL}"
@@ -123,6 +141,7 @@ jobs:
             ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.versioned_tag }}
             ghcr.io/${{ github.repository }}:sha-${{ steps.meta.outputs.short_sha }}
             ${{ steps.meta.outputs.channel == 'dev' && format('ghcr.io/{0}:dev-{1}', github.repository, steps.meta.outputs.branch_slug) || '' }}
+            ${{ steps.meta.outputs.channel == 'dev' && steps.meta.outputs.user_prefix != '' && format('ghcr.io/{0}:dev-{1}-latest', github.repository, steps.meta.outputs.user_prefix) || '' }}
 
   smoke-test:
     needs: build-and-push
