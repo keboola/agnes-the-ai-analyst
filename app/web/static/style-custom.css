@@ -2158,6 +2158,44 @@ a.app-header-logo:focus-visible {
     background: var(--border-light, #f3f4f6);
 }
 
+/* ── User menu (dropdown) ── */
+.app-user-menu { position: relative; display: inline-flex; align-items: center; }
+.app-user-menu-trigger {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: none; border: 1px solid transparent;
+    border-radius: 999px; padding: 4px 10px 4px 4px;
+    cursor: pointer; transition: all 0.15s ease;
+}
+.app-user-menu-trigger:hover { background: var(--border-light, #f3f4f6); border-color: var(--border, #e5e7eb); }
+.app-user-menu-trigger[aria-expanded="true"] { background: var(--border-light, #f3f4f6); border-color: var(--border, #e5e7eb); }
+.app-user-menu-chevron { color: var(--text-secondary, #6b7280); transition: transform 0.15s ease; }
+.app-user-menu-trigger[aria-expanded="true"] .app-user-menu-chevron { transform: rotate(180deg); }
+.app-user-menu-panel {
+    position: absolute; top: calc(100% + 8px); right: 0;
+    min-width: 220px;
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+    padding: 6px;
+    z-index: 50;
+}
+.app-user-menu-panel[hidden] { display: none; }
+.app-user-menu-header {
+    padding: 10px 12px 8px;
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+    margin-bottom: 4px;
+}
+.app-user-menu-email { font-size: 13px; font-weight: 500; color: var(--text-primary, #111827); word-break: break-all; }
+.app-user-menu-role { font-size: 11px; color: var(--text-secondary, #6b7280); margin-top: 2px; text-transform: uppercase; letter-spacing: 0.3px; }
+.app-user-menu-item {
+    display: block; padding: 8px 12px;
+    font-size: 13px; color: var(--text-primary, #111827);
+    text-decoration: none; border-radius: 6px;
+}
+.app-user-menu-item:hover { background: var(--border-light, #f3f4f6); }
+.app-user-menu-item.is-active { background: rgba(0, 115, 209, 0.08); color: var(--primary, #0073D1); font-weight: 500; }
+
 @media (max-width: 720px) {
     .app-header { padding: 0 16px; gap: 8px; }
     .app-header-email { display: none; }

@@ -204,8 +204,12 @@ def test_admin_can_render_admin_tokens_page(fresh_db):
     assert 'id="new-token-btn"' not in body
     assert 'id="create-modal"' not in body
     assert 'id="reveal-banner"' not in body
-    # Admin page must NOT show "My tokens" title
-    assert "My tokens" not in body
+    # Admin page must NOT use the "My tokens" title in its main content.
+    # (The shared user-menu in the header shows a "My tokens" link for
+    # every signed-in user — scope the check to the page body only.)
+    page_start = body.find('class="tokens-page"')
+    assert page_start != -1, "admin tokens page body marker not found"
+    assert "My tokens" not in body[page_start:]
 
 
 def test_non_admin_cannot_access_admin_tokens_page(fresh_db):
