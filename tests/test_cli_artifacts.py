@@ -102,6 +102,26 @@ def test_safe_url_re_accepts_reverse_proxy_path_prefix():
     assert not _SAFE_URL_RE.match("https://agnes.example.com/?x=$(id)")
 
 
+def test_safe_url_re_rejects_trailing_newline_bypass():
+    """Python's `$` matches immediately before a trailing `\\n`, so a naïve
+    allowlist with `^...$` would accept "good.example.com\\n$(rm -rf /)"
+    and allow shell-injection in the generated install.sh. Anchoring with
+    `\\Z` closes that bypass. Covers both allowlists."""
+    from app.api.cli_artifacts import _SAFE_URL_RE, _SAFE_VERSION_RE
+
+    # Trailing newline after an otherwise-valid URL must be rejected.
+    assert not _SAFE_URL_RE.match("https://good.example.com\n")
+    assert not _SAFE_URL_RE.match("https://good.example.com\n$(rm -rf /)")
+    assert not _SAFE_URL_RE.match("http://host:8000\nevil")
+    # Sanity: the clean form still matches.
+    assert _SAFE_URL_RE.match("https://good.example.com")
+
+    # Version allowlist — same class of bypass.
+    assert not _SAFE_VERSION_RE.match("1.2.3\n")
+    assert not _SAFE_VERSION_RE.match("1.2.3\nrm")
+    assert _SAFE_VERSION_RE.match("1.2.3")
+
+
 def test_cli_install_sh_accepts_base_url_with_path_prefix(monkeypatch):
     """Reverse-proxy deployments (Caddy/Nginx routing /agnes/* to Agnes)
     surface a request.base_url like 'https://host/agnes/'. The handler

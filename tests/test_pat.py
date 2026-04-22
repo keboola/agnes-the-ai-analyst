@@ -615,3 +615,96 @@ def test_pat_first_ever_use_does_not_audit(fresh_db):
     finally:
         conn.close()
         close_system_db()
+
+
+def test_pat_null_expiry_jwt_has_no_exp_claim(fresh_db):
+    """PAT with `expires_in_days=null` (user-requested "never") must not
+    carry an `exp` claim at all — the DB `expires_at=NULL` is the source
+    of truth. The previous ~100y `exp` claim was a misleading silent expiry."""
+    from fastapi.testclient import TestClient
+    import uuid
+    import jwt as pyjwt
+    from src.db import get_system_db, close_system_db
+    from src.repositories.users import UserRepository
+    from app.auth.jwt import create_access_token
+    from app.main import app
+
+    conn = get_system_db()
+    try:
+        uid = str(uuid.uuid4())
+        UserRepository(conn).create(id=uid, email="u@t", name="U", role="admin")
+        sess_token = create_access_token(user_id=uid, email="u@t", role="admin")
+    finally:
+        conn.close()
+        close_system_db()
+
+    client = TestClient(app)
+    resp = client.post(
+        "/auth/tokens",
+        headers={"Authorization": f"Bearer {sess_token}"},
+        json={"name": "forever", "expires_in_days": None},
+    )
+    assert resp.status_code == 201, resp.text
+    raw_pat = resp.json()["token"]
+    # Decode without signature verification — we're inspecting claims only.
+    claims = pyjwt.decode(raw_pat, options={"verify_signature": False})
+    assert "exp" not in claims, f"expected no exp claim, got: {claims.get('exp')}"
+    # But the other PAT claims are still present.
+    assert claims.get("typ") == "pat"
+    assert claims.get("sub") == uid
+    assert "jti" in claims
+
+    # DB row mirrors this: expires_at is NULL.
+    assert resp.json()["expires_at"] is None
+
+
+def test_pat_with_null_expiry_is_accepted_by_verify_token(fresh_db):
+    """A claim-less JWT (no `exp`) must round-trip through verify_token without
+    raising ExpiredSignatureError and without falling back to a wall-clock
+    cap. The DB-level expiry check in dependencies.py remains authoritative."""
+    from app.auth.jwt import create_access_token, verify_token
+
+    raw = create_access_token(
+        user_id="u-1", email="u@t", role="admin",
+        token_id="tid-1", typ="pat", omit_exp=True,
+    )
+    payload = verify_token(raw)
+    assert payload is not None
+    assert "exp" not in payload
+    assert payload["typ"] == "pat"
+    assert payload["jti"] == "tid-1"
+
+
+def test_pat_null_expiry_end_to_end_allows_authenticated_request(fresh_db):
+    """Create a PAT with `expires_in_days=null`, then use it to call an
+    authenticated endpoint. Previously relied on the 36500-day `exp`;
+    now relies on the DB row. Regression guard for the switch."""
+    from fastapi.testclient import TestClient
+    import uuid
+    from src.db import get_system_db, close_system_db
+    from src.repositories.users import UserRepository
+    from app.auth.jwt import create_access_token
+    from app.main import app
+
+    conn = get_system_db()
+    try:
+        uid = str(uuid.uuid4())
+        UserRepository(conn).create(id=uid, email="u@t", name="U", role="admin")
+        sess_token = create_access_token(user_id=uid, email="u@t", role="admin")
+    finally:
+        conn.close()
+        close_system_db()
+
+    client = TestClient(app)
+    created = client.post(
+        "/auth/tokens",
+        headers={"Authorization": f"Bearer {sess_token}"},
+        json={"name": "forever", "expires_in_days": None},
+    )
+    assert created.status_code == 201, created.text
+    pat = created.json()["token"]
+
+    # Use the PAT to list tokens (any authenticated endpoint).
+    listed = client.get("/auth/tokens", headers={"Authorization": f"Bearer {pat}"})
+    assert listed.status_code == 200, listed.text
+    assert any(row["name"] == "forever" for row in listed.json())
