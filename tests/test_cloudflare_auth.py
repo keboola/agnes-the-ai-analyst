@@ -504,3 +504,17 @@ class TestMiddlewareAutoLogin:
             assert carol is None
         finally:
             conn2.close()
+
+
+class TestLoginPageCfHint:
+    def test_login_page_shows_cf_hint_when_available(self, cf_client):
+        """When CF provider is available, login page shows an informational hint."""
+        resp = cf_client.get("/login")
+        assert resp.status_code == 200
+        assert "Cloudflare Access" in resp.text
+
+    def test_login_page_no_cf_hint_when_unavailable(self, no_cf_client):
+        """Without CF env, no hint on login page."""
+        resp = no_cf_client.get("/login")
+        assert resp.status_code == 200
+        assert "Cloudflare Access" not in resp.text

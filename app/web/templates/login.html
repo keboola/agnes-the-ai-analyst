@@ -114,6 +114,13 @@
                 {% endif %}
                 {% endfor %}
 
+                {% if cf_available %}
+                <p class="login-note" style="margin-top: 16px; font-size: 12px; opacity: 0.8;">
+                    This deployment is protected by Cloudflare Access. If you expected to be
+                    signed in automatically, please access via your configured Cloudflare URL.
+                </p>
+                {% endif %}
+
                 {% if not login_buttons %}
                 <p class="login-note">
                     No authentication providers are configured. Please set up at least one provider.
