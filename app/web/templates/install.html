@@ -334,7 +334,7 @@
         .manual-summary::-webkit-details-marker { display: none; }
         .manual-summary:focus-visible {
             outline: 2px solid var(--primary);
-            outline-offset: -2px;
+            outline-offset: 2px;
         }
         .manual-summary-text {
             display: flex;
@@ -490,7 +490,7 @@
 
         <!-- ═══════════════ HERO ═══════════════ -->
         <section class="hero">
-            <div class="hero-eyebrow">{{ config.INSTANCE_NAME }}</div>
+            <div class="hero-eyebrow">Getting started</div>
             <h1>Install the Agnes CLI on this machine</h1>
             <p class="hero-sub">
                 Connect your terminal and Claude Code to this server. Copy the
@@ -499,7 +499,9 @@
             </p>
             <div class="hero-meta">
                 <span class="hero-pill">{{ server_url }}</span>
+                {% if agnes_version and agnes_version != "dev" %}
                 <span class="hero-pill">v{{ agnes_version }}</span>
+                {% endif %}
             </div>
         </section>
 
@@ -519,7 +521,7 @@
                     <span class="prompt">$</span>
                     <span class="cmd" id="cmd-oneliner">curl -fsSL {{ server_url }}/cli/install.sh | bash</span>
                     <button type="button"
-                            class="btn-copy"
+                            class="btn-copy" aria-live="polite"
                             data-copy-target="cmd-oneliner"
                             aria-label="Copy install command to clipboard">Copy</button>
                 </div>
@@ -531,7 +533,7 @@
                     <span class="prompt">$</span>
                     <span class="cmd" id="cmd-path">export PATH="$HOME/.local/bin:$PATH"</span>
                     <button type="button"
-                            class="btn-copy"
+                            class="btn-copy" aria-live="polite"
                             data-copy-target="cmd-path"
                             aria-label="Copy PATH export command to clipboard">Copy</button>
                 </div>
@@ -575,7 +577,7 @@
                     <span class="prompt">$</span>
                     <span class="cmd" id="cmd-export">export DA_TOKEN=&lt;your-token&gt;</span>
                     <button type="button"
-                            class="btn-copy"
+                            class="btn-copy" aria-live="polite"
                             data-copy-target="cmd-export"
                             aria-label="Copy export command to clipboard">Copy</button>
                 </div>
@@ -583,7 +585,7 @@
                     <span class="prompt">$</span>
                     <span class="cmd" id="cmd-whoami">da auth whoami</span>
                     <button type="button"
-                            class="btn-copy"
+                            class="btn-copy" aria-live="polite"
                             data-copy-target="cmd-whoami"
                             aria-label="Copy whoami command to clipboard">Copy</button>
                 </div>
@@ -607,7 +609,7 @@
                     <span class="prompt">$</span>
                     <span class="cmd" id="cmd-token-json">echo '{"token":"&lt;your-token&gt;"}' &gt; ~/.config/da/token.json &amp;&amp; chmod 600 ~/.config/da/token.json</span>
                     <button type="button"
-                            class="btn-copy"
+                            class="btn-copy" aria-live="polite"
                             data-copy-target="cmd-token-json"
                             aria-label="Copy token.json command to clipboard">Copy</button>
                 </div>
@@ -629,7 +631,7 @@
                         Windows — download the wheel yourself.
                     </span>
                 </span>
-                <svg class="manual-chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <svg class="manual-chev" aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <polyline points="6 9 12 15 18 9"/>
                 </svg>
             </summary>
@@ -645,7 +647,7 @@
                             <span class="prompt">$</span>
                             <span class="cmd" id="cmd-uv-install">uv tool install ./agnes_the_ai_analyst-*.whl</span>
                             <button type="button"
-                                    class="btn-copy"
+                                    class="btn-copy" aria-live="polite"
                                     data-copy-target="cmd-uv-install"
                                     aria-label="Copy uv install command to clipboard">Copy</button>
                         </div>
@@ -654,7 +656,7 @@
                             <span class="prompt">$</span>
                             <span class="cmd" id="cmd-pip-install">python3 -m pip install --user ./agnes_the_ai_analyst-*.whl</span>
                             <button type="button"
-                                    class="btn-copy"
+                                    class="btn-copy" aria-live="polite"
                                     data-copy-target="cmd-pip-install"
                                     aria-label="Copy pip install command to clipboard">Copy</button>
                         </div>
@@ -674,7 +676,7 @@
                             <span class="prompt">$</span>
                             <span class="cmd" id="cmd-path-manual">export PATH="$HOME/.local/bin:$PATH"</span>
                             <button type="button"
-                                    class="btn-copy"
+                                    class="btn-copy" aria-live="polite"
                                     data-copy-target="cmd-path-manual"
                                     aria-label="Copy PATH export command to clipboard">Copy</button>
                         </div>
@@ -689,7 +691,7 @@
                             <span class="prompt">$</span>
                             <span class="cmd" id="cmd-seed-config">mkdir -p ~/.config/da &amp;&amp; echo "server: {{ server_url }}" &gt; ~/.config/da/config.yaml</span>
                             <button type="button"
-                                    class="btn-copy"
+                                    class="btn-copy" aria-live="polite"
                                     data-copy-target="cmd-seed-config"
                                     aria-label="Copy seed config command to clipboard">Copy</button>
                         </div>
