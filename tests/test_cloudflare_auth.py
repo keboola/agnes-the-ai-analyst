@@ -355,3 +355,21 @@ class TestGetOrCreateUserFromCf:
             assert user["email"] == "ok@partner.com"
         finally:
             conn.close()
+
+    def test_empty_or_none_email_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv("CF_ACCESS_TEAM", "testteam")
+        monkeypatch.setenv("CF_ACCESS_AUD", "test-aud-123")
+        import importlib
+        from app.auth.providers import cloudflare as cf_mod
+        importlib.reload(cf_mod)
+
+        from src.db import get_system_db
+        conn = get_system_db()
+        try:
+            assert cf_mod.get_or_create_user_from_cf(email="", name="x", conn=conn) is None
+            assert cf_mod.get_or_create_user_from_cf(email=None, name="x", conn=conn) is None
+            assert cf_mod.get_or_create_user_from_cf(email=123, name="x", conn=conn) is None
+        finally:
+            conn.close()

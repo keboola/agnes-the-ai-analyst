@@ -12,10 +12,14 @@ This module exposes pure functions; the request-interception logic lives in
 
 import logging
 import os
-from typing import Optional
+import uuid
+from typing import Any, Optional
 
+import duckdb
 import jwt as pyjwt
 from jwt import PyJWKClient
+
+from src.repositories.users import UserRepository
 
 logger = logging.getLogger(__name__)
 
@@ -85,14 +89,6 @@ def verify_cf_jwt(token: str) -> Optional[dict]:
         # JWKS fetch failure, network error, etc. — never propagate
         logger.warning("CF Access JWT verification error: %s", e)
         return None
-
-
-import uuid
-from typing import Any
-
-import duckdb
-
-from src.repositories.users import UserRepository
 
 
 def _allowed_domains() -> list[str]:
