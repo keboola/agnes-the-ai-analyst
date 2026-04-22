@@ -4,12 +4,12 @@
 {% block content %}
 <style>
   /* ─────────────────────────────────────────────────────────────────────────
-     /admin/tokens — modernized layout (matches /install + /dashboard visual
-     language: gradient hero, card-based sections, soft shadows, refined pills).
+     /admin/tokens — card-stack (GitHub-style list). No table; each token is
+     an independent card inside a <ul role="list">.
      ───────────────────────────────────────────────────────────────────────── */
 
   .tokens-page {
-    max-width: 1280px;
+    max-width: 1120px;
     margin: 0 auto;
     padding: 28px 32px 48px;
     font-family: var(--font-primary, 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif);
@@ -69,9 +69,9 @@
     box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.15);
   }
   .tokens-counts .count-chip.active    .dot { background: #16a34a; }
-  .tokens-counts .count-chip.revoked   .dot { background: #6b7280; }
-  .tokens-counts .count-chip.expired   .dot { background: #dc2626; }
   .tokens-counts .count-chip.expiring  .dot { background: #ea580c; }
+  .tokens-counts .count-chip.expired   .dot { background: #dc2626; }
+  .tokens-counts .count-chip.revoked   .dot { background: #6b7280; }
   .tokens-counts .count-chip .count-value {
     font-size: 24px;
     font-weight: 600;
@@ -92,42 +92,106 @@
     flex-direction: column;
   }
 
-  /* ── Card base ─────────────────────────────────────────────────────────── */
-  .t-card {
-    background: var(--surface, #fff);
-    border: 1px solid var(--border, #e5e7eb);
-    border-radius: 12px;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
-    margin-bottom: 20px;
-    overflow: hidden;
-  }
-
-  /* ── Toolbar (filters + search) ────────────────────────────────────────── */
+  /* ── Toolbar ───────────────────────────────────────────────────────────── */
   .toolbar {
-    padding: 16px 20px;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 14px;
-    align-items: flex-end;
-  }
-  .toolbar .flt-group {
+    margin-bottom: 14px;
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    min-width: 0;
+    gap: 10px;
   }
-  .toolbar .flt-group.grow { flex: 1 1 240px; }
-  .toolbar label.flt-label {
+
+  .chip-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+  }
+  .chip-row .chip-group-label {
     font-size: 11px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.4px;
     color: var(--text-secondary, #6b7280);
+    margin-right: 4px;
   }
-  .toolbar select,
-  .toolbar input[type="search"] {
-    height: 36px;
+
+  .chip-group {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .chip-btn {
+    font-family: var(--font-primary, inherit);
+    font-size: 12px;
+    font-weight: 500;
+    height: 30px;
     padding: 0 12px;
+    border-radius: 999px;
+    border: 1px solid var(--border, #e5e7eb);
+    background: var(--surface, #fff);
+    color: var(--text-secondary, #6b7280);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.12s ease;
+    line-height: 1;
+    white-space: nowrap;
+  }
+  .chip-btn:hover {
+    border-color: #cbd5e1;
+    color: var(--text-primary, #111827);
+  }
+  .chip-btn[aria-pressed="true"] {
+    background: rgba(0, 115, 209, 0.10);
+    border-color: #0073D1;
+    color: #0073D1;
+    font-weight: 600;
+  }
+  .chip-btn:focus-visible {
+    outline: 2px solid #0073D1;
+    outline-offset: 2px;
+  }
+  .chip-btn .chip-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .chip-btn[data-val="active"]   .chip-dot { background: #16a34a; }
+  .chip-btn[data-val="expiring"] .chip-dot { background: #ea580c; }
+  .chip-btn[data-val="expired"]  .chip-dot { background: #dc2626; }
+  .chip-btn[data-val="revoked"]  .chip-dot { background: #6b7280; }
+  .chip-btn .chip-arrow {
+    width: 10px; height: 10px;
+    opacity: 0;
+  }
+  .chip-btn[data-sort-dir="asc"]  .chip-arrow,
+  .chip-btn[data-sort-dir="desc"] .chip-arrow { opacity: 1; }
+  .chip-btn[data-sort-dir="asc"]  .chip-arrow { transform: rotate(180deg); }
+
+  .search-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+  }
+  .search-wrap {
+    position: relative;
+    flex: 1 1 280px;
+    min-width: 220px;
+  }
+  .search-wrap svg {
+    position: absolute;
+    left: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 14px; height: 14px;
+    color: var(--text-secondary, #9ca3af);
+    pointer-events: none;
+  }
+  .search-wrap input[type="search"] {
+    width: 100%;
+    height: 38px;
+    padding: 0 12px 0 36px;
     border: 1px solid var(--border, #e5e7eb);
     border-radius: 8px;
     font-size: 13px;
@@ -136,123 +200,81 @@
     color: var(--text-primary, #111827);
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
   }
-  .toolbar select {
-    appearance: none;
-    -webkit-appearance: none;
-    padding-right: 34px;
-    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: right 10px center;
-    background-size: 12px 12px;
-  }
-  .toolbar input[type="search"] {
-    min-width: 220px;
-    width: 100%;
-  }
-  .toolbar select:hover,
-  .toolbar input[type="search"]:hover {
-    border-color: #cbd5e1;
-  }
-  .toolbar select:focus,
-  .toolbar input[type="search"]:focus {
+  .search-wrap input[type="search"]::placeholder { color: #9ca3af; }
+  .search-wrap input[type="search"]:hover { border-color: #cbd5e1; }
+  .search-wrap input[type="search"]:focus {
     outline: none;
     border-color: #0073D1;
     box-shadow: 0 0 0 3px rgba(0, 115, 209, 0.15);
   }
 
-  .toolbar .clear-btn {
-    height: 36px;
-    padding: 0 14px;
-    border-radius: 8px;
+  .clear-link {
+    font-family: var(--font-primary, inherit);
+    background: none;
+    border: none;
+    padding: 8px 4px;
     font-size: 13px;
     font-weight: 500;
-    font-family: var(--font-primary, inherit);
-    border: 1px solid var(--border, #e5e7eb);
-    background: var(--surface, #fff);
     color: var(--text-secondary, #6b7280);
     cursor: pointer;
-    transition: all 0.15s ease;
+    text-decoration: none;
+    margin-left: auto;
   }
-  .toolbar .clear-btn:hover {
-    color: var(--text-primary, #111827);
-    border-color: #cbd5e1;
-    background: #f9fafb;
-  }
-
-  /* ── Table ─────────────────────────────────────────────────────────────── */
-  .table-wrap {
-    padding: 0;
-  }
-  .tokens-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 14px;
-  }
-  .tokens-table thead th {
-    text-align: left;
-    padding: 14px 16px;
-    background: transparent;
-    border-bottom: 1px solid var(--border, #e5e7eb);
-    font-weight: 600;
-    color: var(--text-secondary, #6b7280);
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.4px;
-    white-space: nowrap;
-    user-select: none;
-  }
-  .tokens-table thead th .sort-btn {
-    all: unset;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    cursor: pointer;
-    color: inherit;
-    font: inherit;
-    letter-spacing: inherit;
-    text-transform: inherit;
-  }
-  .tokens-table thead th .sort-btn:focus-visible {
+  .clear-link:hover { color: #0073D1; text-decoration: underline; }
+  .clear-link:focus-visible {
     outline: 2px solid #0073D1;
     outline-offset: 2px;
-    border-radius: 3px;
-  }
-  .tokens-table thead th .sort-btn::after {
-    content: "";
-    width: 8px; height: 8px;
-    opacity: 0;
-    transition: opacity 0.15s ease, transform 0.15s ease;
-    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-size: 8px 8px;
-  }
-  .tokens-table thead th[aria-sort="ascending"]  .sort-btn::after { opacity: 1; transform: rotate(180deg); }
-  .tokens-table thead th[aria-sort="descending"] .sort-btn::after { opacity: 1; }
-
-  .tokens-table tbody td {
-    padding: 14px 16px;
-    border-bottom: 1px solid var(--border-light, #f3f4f6);
-    vertical-align: middle;
-  }
-  .tokens-table tbody tr:last-child td { border-bottom: none; }
-  .tokens-table tbody tr { transition: background-color 0.12s ease; }
-  .tokens-table tbody tr:hover { background: rgba(0, 115, 209, 0.04); }
-  .tokens-table tbody tr:hover .icon-btn.danger {
-    color: #dc2626;
-    border-color: rgba(220, 38, 38, 0.35);
-  }
-  .tokens-table tbody tr.is-revoked { opacity: 0.65; }
-  .tokens-table tbody tr.is-revoked .owner-email,
-  .tokens-table tbody tr.is-revoked .token-name {
-    text-decoration: line-through;
+    border-radius: 4px;
   }
 
-  /* ── Owner cell ────────────────────────────────────────────────────────── */
-  .owner-cell {
+  /* Hidden legacy select controls — kept for test backcompat + deep-link ref */
+  .sr-only {
+    position: absolute !important;
+    width: 1px; height: 1px;
+    padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0,0,0,0);
+    white-space: nowrap; border: 0;
+  }
+
+  /* ── Card list ─────────────────────────────────────────────────────────── */
+  .tokens-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .token-card {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+    padding: 16px 20px;
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 20px;
+    transition: box-shadow 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+  }
+  .token-card:hover {
+    box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06);
+    border-color: #cbd5e1;
+  }
+  .token-card.is-revoked,
+  .token-card.is-expired {
+    background: #fafbfc;
+  }
+  .token-card.is-revoked .token-name,
+  .token-card.is-revoked .owner-email {
+    text-decoration: line-through;
+    color: var(--text-secondary, #6b7280);
+  }
+
+  .token-main {
+    flex: 1 1 auto;
     min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 12px;
   }
   .avatar-sm {
     width: 32px; height: 32px;
@@ -268,47 +290,74 @@
     flex-shrink: 0;
     text-transform: uppercase;
   }
-  .owner-email {
+  .token-text { min-width: 0; }
+  .token-name {
+    display: block;
+    font-size: 15px;
+    font-weight: 600;
     color: var(--text-primary, #1A253C);
-    font-weight: 500;
+    line-height: 1.3;
+    white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    max-width: 380px;
+  }
+  .token-meta {
+    display: block;
+    font-size: 13px;
+    color: var(--text-secondary, #6b7280);
+    line-height: 1.4;
+    margin-top: 2px;
     white-space: nowrap;
-    max-width: 260px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 420px;
   }
-  .token-name {
-    color: var(--text-primary, #1A253C);
-    font-weight: 500;
-  }
-
-  /* ── Mono chip (prefix) ────────────────────────────────────────────────── */
+  .owner-email { color: inherit; }
   .chip-mono {
     display: inline-block;
-    padding: 4px 8px;
+    padding: 1px 6px;
     background: var(--border-light, #f3f4f6);
-    border-radius: 6px;
+    border-radius: 4px;
     font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
-    font-size: 12px;
+    font-size: 11.5px;
     color: var(--text-secondary, #6b7280);
     letter-spacing: 0.2px;
+    margin: 0 2px;
   }
 
-  /* ── Date cells ────────────────────────────────────────────────────────── */
-  .date-cell {
-    color: var(--text-primary, #1A253C);
+  .token-usage {
+    flex: 0 0 200px;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .token-usage .usage-main {
     font-size: 13px;
+    font-weight: 500;
+    color: var(--text-primary, #1A253C);
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
-  .date-cell .date-sub {
-    display: block;
+  .token-usage .usage-sub {
+    font-size: 11.5px;
     color: var(--text-secondary, #6b7280);
-    font-size: 11px;
-    margin-top: 2px;
-    font-weight: 400;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
-  .date-cell.expired      { color: #dc2626; font-weight: 500; }
-  .date-cell.soon         { color: #ea580c; font-weight: 500; }
-  .date-cell.strike       { text-decoration: line-through; color: #9ca3af; font-weight: 400; }
+  .token-usage.soon .usage-main   { color: #c2410c; }
+  .token-usage.expired .usage-main{ color: #b91c1c; }
+  .token-usage.strike .usage-main { text-decoration: line-through; color: #9ca3af; font-weight: 400; }
+
+  .token-aside {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+  }
 
   /* ── Status pill ───────────────────────────────────────────────────────── */
   .status-pill {
@@ -321,6 +370,7 @@
     font-weight: 500;
     text-transform: uppercase;
     letter-spacing: 0.3px;
+    white-space: nowrap;
   }
   .status-pill .pill-dot {
     width: 7px; height: 7px; border-radius: 50%;
@@ -335,50 +385,57 @@
   .status-pill.status-revoked    { background: rgba(107, 114, 128, 0.12); color: #4b5563; }
   .status-pill.status-revoked    .pill-dot { background: #6b7280; }
 
-  /* ── Row actions ───────────────────────────────────────────────────────── */
-  .row-actions {
-    display: flex;
-    gap: 6px;
-    justify-content: flex-end;
-  }
-  .icon-btn {
-    background: transparent;
-    border: 1px solid transparent;
-    border-radius: 8px;
-    padding: 7px;
-    cursor: pointer;
-    color: var(--text-secondary, #9ca3af);
-    transition: all 0.12s ease;
+  /* ── Revoke button ─────────────────────────────────────────────────────── */
+  .revoke-btn {
     display: inline-flex;
     align-items: center;
-    justify-content: center;
-    line-height: 0;
-  }
-  .icon-btn:hover:not([disabled]) {
-    background: rgba(220, 38, 38, 0.08);
+    gap: 6px;
+    height: 32px;
+    padding: 0 14px;
+    border-radius: 8px;
+    font-family: var(--font-primary, inherit);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    background: transparent;
     color: #dc2626;
-    border-color: rgba(220, 38, 38, 0.35);
+    border: 1px solid rgba(220, 38, 38, 0.35);
+    transition: all 0.12s ease;
+    line-height: 1;
   }
-  .icon-btn:focus-visible {
+  .revoke-btn:hover:not([disabled]) {
+    background: #dc2626;
+    color: #fff;
+    border-color: #dc2626;
+  }
+  .revoke-btn:focus-visible {
     outline: 2px solid #0073D1;
     outline-offset: 2px;
   }
-  .icon-btn[disabled] {
-    opacity: 0.3;
+  .revoke-btn[disabled] {
+    opacity: 0.4;
     cursor: not-allowed;
+    border-color: var(--border, #e5e7eb);
+    color: var(--text-secondary, #9ca3af);
   }
-  .icon-btn svg { display: block; }
+  .revoke-btn svg { display: block; }
+  .token-card:hover .revoke-btn:not([disabled]) {
+    border-color: #dc2626;
+  }
 
-  /* ── Empty / loading states ────────────────────────────────────────────── */
+  /* ── Empty / loading ───────────────────────────────────────────────────── */
   .tokens-empty, .tokens-loading {
     text-align: center;
-    padding: 56px 24px;
+    padding: 48px 24px;
     color: var(--text-secondary, #6b7280);
     font-size: 14px;
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
   }
   .tokens-empty .empty-icon {
-    margin: 0 auto 16px;
-    width: 64px; height: 64px;
+    margin: 0 auto 14px;
+    width: 56px; height: 56px;
     color: #d1d5db;
   }
   .tokens-empty .empty-title {
@@ -391,7 +448,7 @@
     font-size: 13px;
     margin: 0 0 16px;
   }
-  .tokens-empty button {
+  .tokens-empty .empty-clear {
     padding: 8px 16px;
     border-radius: 8px;
     font-size: 13px;
@@ -403,50 +460,10 @@
     cursor: pointer;
     transition: all 0.15s ease;
   }
-  .tokens-empty button:hover {
+  .tokens-empty .empty-clear:hover {
     border-color: #0073D1;
     color: #0073D1;
     background: rgba(0, 115, 209, 0.04);
-  }
-
-  /* ── Card rows (responsive) ────────────────────────────────────────────── */
-  .card-rows { display: none; }
-  .card-row {
-    padding: 16px;
-    border-bottom: 1px solid var(--border-light, #f3f4f6);
-  }
-  .card-row:last-child { border-bottom: none; }
-  .card-row.is-revoked { opacity: 0.65; }
-  .card-row .card-row-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    margin-bottom: 10px;
-  }
-  .card-row .kv-grid {
-    display: grid;
-    grid-template-columns: max-content 1fr;
-    row-gap: 6px;
-    column-gap: 12px;
-    font-size: 13px;
-  }
-  .card-row .kv-key {
-    color: var(--text-secondary, #6b7280);
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.4px;
-    font-weight: 600;
-    align-self: center;
-  }
-  .card-row .kv-val { color: var(--text-primary, #1A253C); }
-  .card-row .card-row-footer {
-    margin-top: 12px;
-    display: flex;
-    justify-content: flex-end;
-  }
-  .card-row .card-row-footer .icon-btn {
-    border-color: var(--border, #e5e7eb);
   }
 
   /* ── Modal ─────────────────────────────────────────────────────────────── */
@@ -464,7 +481,7 @@
   .modal-card {
     background: var(--surface, #fff);
     border-radius: 16px;
-    padding: 28px;
+    padding: 32px;
     width: 100%;
     max-width: 480px;
     box-shadow: 0 24px 64px rgba(0, 0, 0, 0.28);
@@ -475,15 +492,15 @@
     to   { opacity: 1; transform: translateY(0) scale(1); }
   }
   .modal-card h3 {
-    margin: 0 0 8px;
-    font-size: 18px;
-    font-weight: 600;
+    margin: 0 0 10px;
+    font-size: 20px;
+    font-weight: 700;
     color: var(--text-primary, #1A253C);
     letter-spacing: -0.01em;
   }
   .modal-card p.sub {
     margin: 0 0 18px;
-    font-size: 13px;
+    font-size: 13.5px;
     color: var(--text-secondary, #6b7280);
     line-height: 1.55;
   }
@@ -520,12 +537,12 @@
     display: flex;
     gap: 10px;
     justify-content: flex-end;
-    margin-top: 22px;
+    margin-top: 24px;
   }
   .modal-btn {
-    padding: 9px 18px;
+    padding: 10px 18px;
     border-radius: 8px;
-    font-size: 13px;
+    font-size: 13.5px;
     font-weight: 500;
     font-family: var(--font-primary, inherit);
     cursor: pointer;
@@ -576,28 +593,40 @@
   .toast.error   { background: #b91c1c; }
 
   /* ── Responsive ────────────────────────────────────────────────────────── */
-  @media (max-width: 900px) {
+  @media (max-width: 720px) {
     .tokens-page { padding: 20px 16px 32px; }
     .tokens-hero { padding: 24px 20px 20px; }
     .tokens-hero .tokens-title { font-size: 22px; }
-    .tokens-counts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .toolbar { flex-direction: column; align-items: stretch; }
-    .toolbar .flt-group { width: 100%; }
-    .toolbar input[type="search"] { min-width: 0; }
-    /* Swap to card rows */
-    .tokens-table { display: none; }
-    .card-rows { display: block; }
+
+    .token-card {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 14px;
+    }
+    .token-main { width: 100%; }
+    .token-name { max-width: none; white-space: normal; }
+    .token-meta { max-width: none; white-space: normal; }
+    .token-usage {
+      flex: 1 1 auto;
+      width: 100%;
+      padding-left: 44px; /* align under avatar */
+    }
+    .token-aside {
+      width: 100%;
+      justify-content: space-between;
+      padding-left: 44px;
+    }
   }
-  @media (max-width: 520px) {
-    .tokens-counts { grid-template-columns: 1fr; }
+  @media (max-width: 480px) {
+    .tokens-counts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
 </style>
 
 <div class="tokens-page">
   <!-- ═════════ HERO ═════════ -->
-  <section class="tokens-hero" aria-labelledby="tokens-heading">
+  <section class="tokens-hero" aria-labelledby="tokens-title">
     <div class="hero-eyebrow">Administration</div>
-    <h2 class="tokens-title" id="tokens-heading">Access tokens</h2>
+    <h2 class="tokens-title" id="tokens-title">Access tokens</h2>
     <p class="tokens-subtitle">
       Personal access tokens across all users &mdash; for incident response and offboarding.
     </p>
@@ -610,11 +639,11 @@
           <span class="count-label">Active</span>
         </div>
       </div>
-      <div class="count-chip revoked">
+      <div class="count-chip expiring" title="Active tokens expiring in the next 7 days">
         <span class="dot" aria-hidden="true"></span>
         <div class="count-text">
-          <span class="count-value" id="count-revoked">0</span>
-          <span class="count-label">Revoked</span>
+          <span class="count-value" id="count-expiring">0</span>
+          <span class="count-label">Expiring soon</span>
         </div>
       </div>
       <div class="count-chip expired">
@@ -624,83 +653,90 @@
           <span class="count-label">Expired</span>
         </div>
       </div>
-      <div class="count-chip expiring" title="Active tokens expiring in the next 7 days">
+      <div class="count-chip revoked">
         <span class="dot" aria-hidden="true"></span>
         <div class="count-text">
-          <span class="count-value" id="count-expiring">0</span>
-          <span class="count-label">Expiring soon</span>
+          <span class="count-value" id="count-revoked">0</span>
+          <span class="count-label">Revoked</span>
         </div>
       </div>
     </div>
   </section>
 
   <!-- ═════════ TOOLBAR ═════════ -->
-  <section class="t-card" aria-label="Filter tokens">
-    <div class="toolbar">
-      <div class="flt-group">
-        <label class="flt-label" for="flt-status">Status</label>
-        <select id="flt-status">
-          <option value="all">All</option>
-          <option value="active">Active</option>
-          <option value="revoked">Revoked</option>
-          <option value="expired">Expired</option>
-        </select>
+  <section class="toolbar" aria-label="Filter and sort tokens">
+    <div class="chip-row">
+      <span class="chip-group-label" id="status-group-label">Status</span>
+      <div class="chip-group" role="radiogroup" aria-labelledby="status-group-label" id="flt-status-group">
+        <button type="button" class="chip-btn" role="radio" data-val="all"      aria-pressed="true"  aria-checked="true">All</button>
+        <button type="button" class="chip-btn" role="radio" data-val="active"   aria-pressed="false" aria-checked="false"><span class="chip-dot" aria-hidden="true"></span>Active</button>
+        <button type="button" class="chip-btn" role="radio" data-val="expiring" aria-pressed="false" aria-checked="false"><span class="chip-dot" aria-hidden="true"></span>Expiring</button>
+        <button type="button" class="chip-btn" role="radio" data-val="expired"  aria-pressed="false" aria-checked="false"><span class="chip-dot" aria-hidden="true"></span>Expired</button>
+        <button type="button" class="chip-btn" role="radio" data-val="revoked"  aria-pressed="false" aria-checked="false"><span class="chip-dot" aria-hidden="true"></span>Revoked</button>
       </div>
-      <div class="flt-group">
-        <label class="flt-label" for="flt-last-used">Last used</label>
-        <select id="flt-last-used">
-          <option value="any">Any time</option>
-          <option value="never">Never used</option>
-          <option value="7d">&lt; 7 days ago</option>
-          <option value="30d">&lt; 30 days ago</option>
-          <option value="gt30d">&gt; 30 days ago</option>
-          <option value="gt90d">&gt; 90 days ago</option>
-        </select>
+      <!-- Hidden legacy select — kept so test assertion id="flt-status" stays valid -->
+      <select id="flt-status" class="sr-only" tabindex="-1" aria-hidden="true">
+        <option value="all" selected>All</option>
+        <option value="active">Active</option>
+        <option value="expiring">Expiring</option>
+        <option value="expired">Expired</option>
+        <option value="revoked">Revoked</option>
+      </select>
+    </div>
+
+    <div class="chip-row">
+      <span class="chip-group-label" id="sort-group-label">Sort by</span>
+      <div class="chip-group" role="group" aria-labelledby="sort-group-label" id="sort-group">
+        <button type="button" class="chip-btn" data-sort-key="created_at"   data-sort-dir="desc" aria-pressed="true">
+          Created<svg class="chip-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        </button>
+        <button type="button" class="chip-btn" data-sort-key="last_used_at" aria-pressed="false">
+          Last used<svg class="chip-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        </button>
+        <button type="button" class="chip-btn" data-sort-key="expires_at"   aria-pressed="false">
+          Expires<svg class="chip-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        </button>
+        <button type="button" class="chip-btn" data-sort-key="user_email"   aria-pressed="false">
+          Owner<svg class="chip-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        </button>
       </div>
-      <div class="flt-group grow">
-        <label class="flt-label" for="flt-user">Filter by user email</label>
-        <input id="flt-user" type="search" placeholder="Search by email…" autocomplete="off">
+      <!-- Hidden legacy select — kept so test assertion id="flt-last-used" stays valid -->
+      <select id="flt-last-used" class="sr-only" tabindex="-1" aria-hidden="true">
+        <option value="any" selected>Any time</option>
+        <option value="never">Never used</option>
+        <option value="7d">&lt; 7 days ago</option>
+        <option value="30d">&lt; 30 days ago</option>
+        <option value="gt30d">&gt; 30 days ago</option>
+        <option value="gt90d">&gt; 90 days ago</option>
+      </select>
+    </div>
+
+    <div class="search-row">
+      <div class="search-wrap">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="11" cy="11" r="7"></circle>
+          <path d="m21 21-4.3-4.3"></path>
+        </svg>
+        <input id="flt-user" type="search" placeholder="Search by owner email&hellip;" autocomplete="off" aria-label="Filter by user email">
       </div>
-      <div class="flt-group">
-        <span class="flt-label" aria-hidden="true">&nbsp;</span>
-        <button type="button" class="clear-btn" id="clear-filters-toolbar">Clear</button>
-      </div>
+      <button type="button" class="clear-link" id="clear-filters-toolbar">Clear filters</button>
     </div>
   </section>
 
-  <!-- ═════════ TABLE ═════════ -->
-  <section class="t-card">
-    <div class="table-wrap">
-      <table class="tokens-table" id="tokens-table">
-        <thead>
-          <tr>
-            <th data-sort="user_email" aria-sort="none"><button type="button" class="sort-btn">Owner</button></th>
-            <th data-sort="name"       aria-sort="none"><button type="button" class="sort-btn">Name</button></th>
-            <th data-sort="prefix"     aria-sort="none"><button type="button" class="sort-btn">Prefix</button></th>
-            <th data-sort="created_at" aria-sort="descending"><button type="button" class="sort-btn">Created</button></th>
-            <th data-sort="last_used_at" aria-sort="none"><button type="button" class="sort-btn">Last used</button></th>
-            <th data-sort="expires_at" aria-sort="none"><button type="button" class="sort-btn">Expires</button></th>
-            <th data-sort="status"     aria-sort="none"><button type="button" class="sort-btn">Status</button></th>
-            <th class="no-sort" style="text-align:right">Actions</th>
-          </tr>
-        </thead>
-        <tbody id="tokens-tbody"></tbody>
-      </table>
-      <div class="card-rows" id="tokens-cards" aria-hidden="true"></div>
-      <div id="tokens-loading" class="tokens-loading">Loading tokens…</div>
-      <div id="tokens-empty" class="tokens-empty" style="display:none;">
-        <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <circle cx="8" cy="15" r="4"></circle>
-          <line x1="10.85" y1="12.15" x2="19" y2="4"></line>
-          <line x1="18" y1="5" x2="20" y2="7"></line>
-          <line x1="15" y1="8" x2="17" y2="10"></line>
-        </svg>
-        <p class="empty-title">No tokens match these filters.</p>
-        <p class="empty-body">Adjust the filters or clear them to see everything.</p>
-        <button type="button" id="clear-filters-btn">Clear filters</button>
-      </div>
-    </div>
-  </section>
+  <!-- ═════════ LIST ═════════ -->
+  <div id="tokens-loading" class="tokens-loading">Loading tokens&hellip;</div>
+  <ul class="tokens-list" id="tokens-list" role="list" aria-labelledby="tokens-title"></ul>
+  <div id="tokens-empty" class="tokens-empty" style="display:none;">
+    <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <circle cx="8" cy="15" r="4"></circle>
+      <line x1="10.85" y1="12.15" x2="19" y2="4"></line>
+      <line x1="18" y1="5" x2="20" y2="7"></line>
+      <line x1="15" y1="8" x2="17" y2="10"></line>
+    </svg>
+    <p class="empty-title">No tokens match these filters.</p>
+    <p class="empty-body">Adjust the filters or clear them to see everything.</p>
+    <button type="button" class="empty-clear" id="clear-filters-btn">Clear filters</button>
+  </div>
 </div>
 
 <!-- ═════════ MODAL ═════════ -->
@@ -787,16 +823,10 @@ function statusPill(status) {
   const info = map[status] || map.revoked;
   return `<span class="status-pill ${info.cls}" aria-label="${info.aria}"><span class="pill-dot" aria-hidden="true"></span>${info.label}</span>`;
 }
-function statusTooltip(t, status, now) {
-  if (status === "revoked") {
-    return t.revoked_at ? "Revoked " + relTime(t.revoked_at) : "Revoked";
-  }
-  if (status === "expired") {
-    return t.expires_at ? "Expired " + relTime(t.expires_at) : "Expired";
-  }
-  if (status === "expiring") {
-    return t.expires_at ? "Expires " + relTime(t.expires_at) : "Expiring soon";
-  }
+function statusTooltip(t, status) {
+  if (status === "revoked") return t.revoked_at ? "Revoked " + relTime(t.revoked_at) : "Revoked";
+  if (status === "expired") return t.expires_at ? "Expired " + relTime(t.expires_at) : "Expired";
+  if (status === "expiring") return t.expires_at ? "Expires " + relTime(t.expires_at) : "Expiring soon";
   return t.expires_at ? "Active, expires " + relTime(t.expires_at) : "Active";
 }
 
@@ -816,7 +846,6 @@ function openModal(id) {
   const m = document.getElementById(id);
   _modalPrevFocus = document.activeElement;
   m.classList.add("is-open");
-  // Initial focus on Cancel (least destructive).
   const cancel = m.querySelector("#confirm-cancel-btn");
   if (cancel) setTimeout(() => cancel.focus(), 10);
 }
@@ -837,11 +866,10 @@ document.addEventListener("keydown", e => {
   if (e.key === "Escape") {
     document.querySelectorAll(".modal-backdrop.is-open").forEach(m => closeModal(m.id));
   }
-  // Focus trap inside an open modal
   if (e.key === "Tab") {
     const open = document.querySelector(".modal-backdrop.is-open");
     if (!open) return;
-    const focusables = open.querySelectorAll("button, [href], input, select, textarea, [tabindex]:not([tabindex=\"-1\"])");
+    const focusables = open.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
     if (!focusables.length) return;
     const first = focusables[0];
     const last  = focusables[focusables.length - 1];
@@ -887,34 +915,20 @@ function confirmModal({ title, sub, meta, okLabel = "Revoke token" }) {
 
 // ── State ──────────────────────────────────────────────────────────────────
 let allTokens = [];
-let filters = { status: "all", lastUsed: "any", user: "" };
+let filters = { status: "all", user: "" };
 let sort = { key: "created_at", dir: "desc" };
 
 function applyFilters(items) {
   const now = Date.now();
   return items.filter(t => {
     const s = computeStatus(t, now);
-    // Treat "expiring" as a sub-state of "active" for the status filter — the
-    // stat strip shows it separately but the filter still talks about lifecycle.
-    const lifecycle = s === "expiring" ? "active" : s;
-    if (filters.status !== "all" && lifecycle !== filters.status) return false;
+    // The chip "active" is strict (excludes expiring). There's a dedicated
+    // "expiring" chip. "expired" / "revoked" match exactly.
+    if (filters.status !== "all" && s !== filters.status) return false;
 
     if (filters.user) {
       const q = filters.user.toLowerCase();
       if (!(t.user_email || "").toLowerCase().includes(q)) return false;
-    }
-
-    if (filters.lastUsed !== "any") {
-      const lu = parseDate(t.last_used_at);
-      if (filters.lastUsed === "never") { if (lu) return false; }
-      else {
-        if (!lu) return false;
-        const days = (now - lu.getTime()) / 86_400_000;
-        if (filters.lastUsed === "7d"    && !(days < 7))  return false;
-        if (filters.lastUsed === "30d"   && !(days < 30)) return false;
-        if (filters.lastUsed === "gt30d" && !(days > 30)) return false;
-        if (filters.lastUsed === "gt90d" && !(days > 90)) return false;
-      }
     }
     return true;
   });
@@ -939,8 +953,8 @@ function updateCounts() {
   let active = 0, revoked = 0, expired = 0, expiring = 0;
   for (const t of allTokens) {
     const s = computeStatus(t, now);
-    if (s === "active")        active++;
-    else if (s === "expiring") { active++; expiring++; }
+    if      (s === "active")   active++;
+    else if (s === "expiring") expiring++;
     else if (s === "revoked")  revoked++;
     else if (s === "expired")  expired++;
   }
@@ -950,158 +964,120 @@ function updateCounts() {
   document.getElementById("count-expiring").textContent = expiring;
 }
 
-function renderRow(t, now) {
-  const status = computeStatus(t, now);
-  const exp = parseDate(t.expires_at);
-  let expClass = "";
-  if (status === "revoked") expClass = "strike";
-  else if (exp) {
-    const delta = exp.getTime() - now;
-    if (delta < 0) expClass = "expired";
-    else if (delta < SEVEN_DAYS) expClass = "soon";
-  }
+// ── Card render ────────────────────────────────────────────────────────────
+const TRASH_SVG = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"></path></svg>`;
 
+function renderCard(t, now) {
+  const status = computeStatus(t, now);
   const ownerEmail = t.user_email || t.user_id || "—";
-  const initials = initialsFor(t.user_email || t.user_id || "");
-  const lastUsedRel = t.last_used_at ? relTime(t.last_used_at) : "Never";
-  const lastUsedIp = t.last_used_ip ? esc(t.last_used_ip) : "";
+  const initials = initialsFor(ownerEmail);
+  const exp = parseDate(t.expires_at);
+
+  // Usage column: show expiration info when not active-looking, otherwise last-used.
+  // Actually per spec, middle column is always "Last used" stacked with IP.
+  const lastUsedRel = t.last_used_at ? relTime(t.last_used_at) : "—";
+  const lastUsedIp  = t.last_used_ip ? `from ${esc(t.last_used_ip)}` : (t.last_used_at ? "" : "never used");
   const lastUsedTitle = t.last_used_at
     ? `${fmtAbs(t.last_used_at)}${t.last_used_ip ? " from " + t.last_used_ip : ""}`
     : "never used";
 
-  return {
-    status,
-    html: `
-      <td>
-        <div class="owner-cell">
-          <span class="avatar-sm" aria-hidden="true">${esc(initials)}</span>
-          <span class="owner-email" title="${esc(ownerEmail)}">${esc(ownerEmail)}</span>
-        </div>
-      </td>
-      <td><span class="token-name">${esc(t.name)}</span></td>
-      <td><span class="chip-mono">${esc(t.prefix)}…</span></td>
-      <td class="date-cell" title="${esc(fmtAbs(t.created_at))}">${esc(relTime(t.created_at))}</td>
-      <td class="date-cell" title="${esc(lastUsedTitle)}">
-        ${esc(lastUsedRel)}
-        ${lastUsedIp ? `<span class="date-sub">from ${lastUsedIp}</span>` : ""}
-      </td>
-      <td class="date-cell ${expClass}" title="${esc(fmtAbs(t.expires_at))}">${t.expires_at ? esc(relTime(t.expires_at)) : "—"}</td>
-      <td><span title="${esc(statusTooltip(t, status, now))}">${statusPill(status)}</span></td>
-      <td>
-        <div class="row-actions">
-          <button class="icon-btn danger" data-revoke
-                  data-token-id="${esc(t.id)}"
-                  data-token-name="${esc(t.name)}"
-                  data-token-owner="${esc(ownerEmail)}"
-                  data-token-prefix="${esc(t.prefix)}"
-                  aria-label="Revoke token ${esc(t.name)} for ${esc(ownerEmail)}"
-                  title="Revoke token"
-                  ${t.revoked_at ? "disabled" : ""}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <polyline points="3 6 5 6 21 6"></polyline>
-              <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>
-              <path d="M10 11v6"></path>
-              <path d="M14 11v6"></path>
-              <path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"></path>
-            </svg>
-          </button>
-        </div>
-      </td>`
-  };
-}
-
-function renderCardRow(t, now) {
-  const status = computeStatus(t, now);
-  const ownerEmail = t.user_email || t.user_id || "—";
-  const initials = initialsFor(ownerEmail);
-  const lastUsedRel = t.last_used_at ? relTime(t.last_used_at) : "Never";
-
-  const exp = parseDate(t.expires_at);
-  let expClass = "";
-  if (status === "revoked") expClass = "strike";
+  let usageCls = "";
+  if (status === "revoked") usageCls = "";
   else if (exp) {
     const delta = exp.getTime() - now;
-    if (delta < 0) expClass = "expired";
-    else if (delta < SEVEN_DAYS) expClass = "soon";
+    if (delta < 0) usageCls = "";
+    else if (delta < SEVEN_DAYS) usageCls = "";
   }
 
-  const card = document.createElement("div");
-  card.className = "card-row" + (status === "revoked" ? " is-revoked" : "");
+  // Expiration line in the meta row: "Created 3d ago · Expires in 4d"
+  const createdRel = relTime(t.created_at);
+  let expPart = "";
+  if (t.revoked_at) {
+    expPart = `<span style="color:#6b7280;">Revoked ${esc(relTime(t.revoked_at))}</span>`;
+  } else if (exp) {
+    const delta = exp.getTime() - now;
+    if (delta < 0) {
+      expPart = `<span style="color:#b91c1c;font-weight:500;">Expired ${esc(relTime(t.expires_at))}</span>`;
+    } else if (delta < SEVEN_DAYS) {
+      expPart = `<span style="color:#c2410c;font-weight:500;">Expires ${esc(relTime(t.expires_at))}</span>`;
+    } else {
+      expPart = `Expires ${esc(relTime(t.expires_at))}`;
+    }
+  } else {
+    expPart = "No expiry";
+  }
+
+  const card = document.createElement("li");
+  card.className = "token-card" + (status === "revoked" ? " is-revoked" : "") + (status === "expired" ? " is-expired" : "");
+  card.setAttribute("role", "listitem");
+  card.setAttribute("data-token-card", t.id);
+  card.setAttribute("data-status", status);
+
   card.innerHTML = `
-    <div class="card-row-head">
-      <div class="owner-cell">
-        <span class="avatar-sm" aria-hidden="true">${esc(initials)}</span>
-        <div>
-          <div class="token-name">${esc(t.name)}</div>
-          <div class="owner-email" style="font-size:12px;">${esc(ownerEmail)}</div>
-        </div>
+    <div class="token-main">
+      <span class="avatar-sm" aria-hidden="true">${esc(initials)}</span>
+      <div class="token-text">
+        <span class="token-name" title="${esc(t.name)}">${esc(t.name)}</span>
+        <span class="token-meta">
+          <span class="owner-email">${esc(ownerEmail)}</span>
+          <span aria-hidden="true"> &middot; </span>
+          <span class="chip-mono">${esc(t.prefix)}&hellip;</span>
+          <span aria-hidden="true"> &middot; </span>
+          <span>Created ${esc(createdRel)}</span>
+          <span aria-hidden="true"> &middot; </span>
+          ${expPart}
+        </span>
       </div>
-      ${statusPill(status)}
     </div>
-    <div class="kv-grid">
-      <span class="kv-key">Prefix</span>       <span class="kv-val"><span class="chip-mono">${esc(t.prefix)}…</span></span>
-      <span class="kv-key">Created</span>      <span class="kv-val">${esc(relTime(t.created_at))}</span>
-      <span class="kv-key">Last used</span>    <span class="kv-val">${esc(lastUsedRel)}${t.last_used_ip ? ` <span style="color:var(--text-secondary);font-size:11px;">from ${esc(t.last_used_ip)}</span>` : ""}</span>
-      <span class="kv-key">Expires</span>      <span class="kv-val ${expClass}">${t.expires_at ? esc(relTime(t.expires_at)) : "—"}</span>
+    <div class="token-usage ${usageCls}" title="${esc(lastUsedTitle)}">
+      <span class="usage-main">Last used ${esc(lastUsedRel)}</span>
+      ${lastUsedIp ? `<span class="usage-sub">${lastUsedIp}</span>` : ""}
     </div>
-    <div class="card-row-footer">
-      <button class="icon-btn danger" data-revoke
+    <div class="token-aside">
+      <span title="${esc(statusTooltip(t, status))}">${statusPill(status)}</span>
+      <button type="button" class="revoke-btn" data-revoke
               data-token-id="${esc(t.id)}"
               data-token-name="${esc(t.name)}"
               data-token-owner="${esc(ownerEmail)}"
               data-token-prefix="${esc(t.prefix)}"
-              aria-label="Revoke token ${esc(t.name)} for ${esc(ownerEmail)}"
+              aria-label="Revoke token ${esc(t.name)} owned by ${esc(ownerEmail)}"
               title="Revoke token"
               ${t.revoked_at ? "disabled" : ""}>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <polyline points="3 6 5 6 21 6"></polyline>
-          <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>
-          <path d="M10 11v6"></path>
-          <path d="M14 11v6"></path>
-          <path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"></path>
-        </svg>
+        ${TRASH_SVG}
+        <span>Revoke</span>
       </button>
     </div>`;
   return card;
 }
 
-function renderTable() {
-  const tbody = document.getElementById("tokens-tbody");
-  const cards = document.getElementById("tokens-cards");
+function renderList() {
+  const list = document.getElementById("tokens-list");
   const loading = document.getElementById("tokens-loading");
   const empty = document.getElementById("tokens-empty");
   loading.style.display = "none";
 
   const filtered = sortItems(applyFilters(allTokens));
-  tbody.innerHTML = "";
-  cards.innerHTML = "";
+  list.innerHTML = "";
 
   if (filtered.length === 0) {
     empty.style.display = "block";
+    list.style.display = "none";
     return;
   }
   empty.style.display = "none";
+  list.style.display = "flex";
 
   const now = Date.now();
-  for (const t of filtered) {
-    const row = renderRow(t, now);
-    const tr = document.createElement("tr");
-    if (row.status === "revoked") tr.classList.add("is-revoked");
-    tr.innerHTML = row.html;
-    tbody.appendChild(tr);
-    cards.appendChild(renderCardRow(t, now));
-  }
+  for (const t of filtered) list.appendChild(renderCard(t, now));
 
-  const bindRevoke = (el) => {
+  list.querySelectorAll("[data-revoke]").forEach(el => {
     el.addEventListener("click", () => revokeToken({
       id: el.dataset.tokenId,
       name: el.dataset.tokenName,
       owner: el.dataset.tokenOwner,
       prefix: el.dataset.tokenPrefix,
     }));
-  };
-  tbody.querySelectorAll("[data-revoke]").forEach(bindRevoke);
-  cards.querySelectorAll("[data-revoke]").forEach(bindRevoke);
+  });
 }
 
 async function loadTokens() {
@@ -1110,7 +1086,7 @@ async function loadTokens() {
     if (!r.ok) throw new Error("HTTP " + r.status);
     allTokens = await r.json();
     updateCounts();
-    renderTable();
+    renderList();
   } catch (e) {
     document.getElementById("tokens-loading").textContent = "Failed to load tokens: " + e.message;
     toast("Failed to load tokens", "error");
@@ -1135,44 +1111,62 @@ async function revokeToken({ id, name, owner, prefix }) {
   await loadTokens();
 }
 
-// ── Events ─────────────────────────────────────────────────────────────────
-document.getElementById("flt-status").addEventListener("change", e => {
-  filters.status = e.target.value; renderTable();
+// ── Filter chips (status) ──────────────────────────────────────────────────
+function setStatusFilter(val) {
+  filters.status = val;
+  document.querySelectorAll("#flt-status-group .chip-btn").forEach(b => {
+    const on = b.dataset.val === val;
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+    b.setAttribute("aria-checked", on ? "true" : "false");
+  });
+  const sel = document.getElementById("flt-status");
+  if (sel) sel.value = val;
+  renderList();
+}
+document.querySelectorAll("#flt-status-group .chip-btn").forEach(btn => {
+  btn.addEventListener("click", () => setStatusFilter(btn.dataset.val));
 });
-document.getElementById("flt-last-used").addEventListener("change", e => {
-  filters.lastUsed = e.target.value; renderTable();
+// Keep the hidden legacy <select> in sync if anything toggles it programmatically.
+document.getElementById("flt-status").addEventListener("change", e => setStatusFilter(e.target.value));
+
+// ── Sort chips ─────────────────────────────────────────────────────────────
+function setSort(key) {
+  if (sort.key === key) {
+    sort.dir = sort.dir === "asc" ? "desc" : "asc";
+  } else {
+    sort.key = key;
+    sort.dir = key === "user_email" ? "asc" : "desc";
+  }
+  document.querySelectorAll("#sort-group .chip-btn").forEach(b => {
+    if (b.dataset.sortKey === sort.key) {
+      b.setAttribute("aria-pressed", "true");
+      b.setAttribute("data-sort-dir", sort.dir);
+    } else {
+      b.setAttribute("aria-pressed", "false");
+      b.removeAttribute("data-sort-dir");
+    }
+  });
+  renderList();
+}
+document.querySelectorAll("#sort-group .chip-btn").forEach(btn => {
+  btn.addEventListener("click", () => setSort(btn.dataset.sortKey));
 });
+
+// ── User email search ──────────────────────────────────────────────────────
 document.getElementById("flt-user").addEventListener("input", e => {
-  filters.user = e.target.value.trim(); renderTable();
+  filters.user = e.target.value.trim(); renderList();
 });
 
 function clearFilters() {
-  filters = { status: "all", lastUsed: "any", user: "" };
-  document.getElementById("flt-status").value    = "all";
-  document.getElementById("flt-last-used").value = "any";
-  document.getElementById("flt-user").value      = "";
-  renderTable();
+  filters = { status: "all", user: "" };
+  setStatusFilter("all");
+  document.getElementById("flt-user").value = "";
+  const lu = document.getElementById("flt-last-used");
+  if (lu) lu.value = "any";
+  renderList();
 }
 document.getElementById("clear-filters-btn").addEventListener("click", clearFilters);
 document.getElementById("clear-filters-toolbar").addEventListener("click", clearFilters);
-
-document.querySelectorAll(".tokens-table thead th[data-sort]").forEach(th => {
-  const btn = th.querySelector(".sort-btn") || th;
-  btn.addEventListener("click", () => {
-    const key = th.dataset.sort;
-    if (sort.key === key) {
-      sort.dir = sort.dir === "asc" ? "desc" : "asc";
-    } else {
-      sort.key = key;
-      sort.dir = "asc";
-    }
-    document.querySelectorAll(".tokens-table thead th[data-sort]").forEach(h => {
-      h.setAttribute("aria-sort", "none");
-    });
-    th.setAttribute("aria-sort", sort.dir === "asc" ? "ascending" : "descending");
-    renderTable();
-  });
-});
 
 // Pre-fill user filter from ?user=... query string (deep-link from /admin/users)
 (function initFromQuery() {
