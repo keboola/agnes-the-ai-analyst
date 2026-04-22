@@ -292,6 +292,128 @@
             margin: 18px 0 10px;
         }
 
+        /* ── One-click "Setup a new Claude Code" button ── */
+        .btn-oneclick {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-family: var(--font-primary);
+            font-size: 14px;
+            font-weight: 600;
+            color: #FFFFFF;
+            background: var(--primary);
+            border: none;
+            border-radius: 8px;
+            padding: 12px 22px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            margin-top: 4px;
+        }
+        .btn-oneclick:hover {
+            background: var(--primary-dark, #0056A3);
+            transform: translateY(-1px);
+            box-shadow: 0 4px 14px rgba(0, 115, 209, 0.25);
+        }
+        .btn-oneclick[disabled] {
+            opacity: 0.7;
+            cursor: wait;
+            transform: none;
+        }
+        .btn-oneclick.copied {
+            background: var(--success, #10B77F);
+        }
+        .btn-oneclick:focus-visible {
+            outline: 2px solid var(--primary);
+            outline-offset: 2px;
+        }
+        .oneclick-error {
+            margin-top: 10px;
+            padding: 10px 12px;
+            background: rgba(234, 88, 12, 0.08);
+            border-left: 3px solid var(--error, #EA580C);
+            border-radius: 6px;
+            color: var(--error, #EA580C);
+            font-size: 13px;
+        }
+        .manual-aside > summary {
+            cursor: pointer;
+            font-size: 13px;
+            color: var(--text-secondary);
+            padding: 8px 0;
+            user-select: none;
+        }
+        .manual-aside > summary:focus-visible {
+            outline: 2px solid var(--primary);
+            outline-offset: 2px;
+            border-radius: 4px;
+        }
+
+        /* Fallback modal (clipboard blocked) */
+        .setup-fallback-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.45);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+        .setup-fallback-modal {
+            background: var(--surface);
+            border-radius: 12px;
+            padding: 20px;
+            max-width: 720px;
+            width: calc(100% - 32px);
+            max-height: calc(100vh - 64px);
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            box-shadow: 0 20px 48px rgba(0, 0, 0, 0.3);
+        }
+        .setup-fallback-modal h4 {
+            margin: 0;
+            font-size: 15px;
+            color: var(--text-primary);
+        }
+        .setup-fallback-modal p {
+            margin: 0;
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+        .setup-fallback-modal textarea {
+            flex: 1;
+            min-height: 260px;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            padding: 10px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--background);
+            color: var(--text-primary);
+            resize: vertical;
+        }
+        .setup-fallback-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+        }
+        .setup-fallback-actions button {
+            font-family: var(--font-primary);
+            font-size: 13px;
+            font-weight: 500;
+            padding: 8px 16px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: var(--surface);
+            color: var(--text-primary);
+            cursor: pointer;
+        }
+        .setup-fallback-actions button.primary {
+            background: var(--primary);
+            color: #FFF;
+            border-color: var(--primary);
+        }
+
         /* ── Inline CTA link (Open /profile etc.) ── */
         .btn-cta {
             display: inline-flex;
@@ -514,10 +636,64 @@
                 <span class="card-title">Quick install</span>
             </div>
             <div class="card-body">
+                {% if session.user %}
+                <p class="card-sub">
+                    One click generates a personal access token, assembles a
+                    complete setup script (install CLI, save token, verify),
+                    and copies it to your clipboard. Paste the result into
+                    Claude Code to finish.
+                </p>
+                <button type="button"
+                        id="setupClaudeBtn"
+                        class="btn-oneclick"
+                        onclick="setupNewClaude(this)">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                    </svg>
+                    Setup a new Claude Code
+                </button>
+                <p class="card-sub" style="margin-top: 6px; margin-bottom: 0;">
+                    Valid 90 days · token stays in your clipboard only.
+                </p>
+                <div id="setupClaudeError" class="oneclick-error" role="alert" style="display:none;"></div>
+
+                <details class="manual-aside" style="margin-top: 18px;">
+                    <summary>Or run manually on a restricted environment</summary>
+                    <div class="code-block primary" style="margin-top: 10px;">
+                        <span class="prompt">$</span>
+                        <span class="cmd" id="cmd-oneliner">curl -fsSL {{ server_url }}/cli/install.sh | bash</span>
+                        <button type="button"
+                                class="btn-copy" aria-live="polite"
+                                data-copy-target="cmd-oneliner"
+                                aria-label="Copy install command to clipboard">Copy</button>
+                    </div>
+                    <p class="card-sub" style="margin-top: 10px; margin-bottom: 0;">
+                        If <code>da</code> is not found in a new shell, add
+                        <code>~/.local/bin</code> to your <code>PATH</code>:
+                    </p>
+                    <div class="code-block" style="margin-top: 6px;">
+                        <span class="prompt">$</span>
+                        <span class="cmd" id="cmd-path">export PATH="$HOME/.local/bin:$PATH"</span>
+                        <button type="button"
+                                class="btn-copy" aria-live="polite"
+                                data-copy-target="cmd-path"
+                                aria-label="Copy PATH export command to clipboard">Copy</button>
+                    </div>
+                    <p class="card-sub" style="margin-top: 6px; margin-bottom: 0;">
+                        Add that line to your <code>~/.bashrc</code> or
+                        <code>~/.zshrc</code> for persistence.
+                    </p>
+                </details>
+                {% else %}
                 <p class="card-sub">
                     Run this in your terminal (Linux / macOS). The installer
                     downloads the wheel and seeds <code>~/.config/da/config.yaml</code>
                     with this server URL.
+                </p>
+                <p class="card-sub" style="font-weight: 500;">
+                    Sign in to skip the manual steps — you'll get a one-click
+                    setup with a pre-configured token.
                 </p>
                 <div class="code-block primary">
                     <span class="prompt">$</span>
@@ -543,6 +719,7 @@
                     Add that line to your <code>~/.bashrc</code> or
                     <code>~/.zshrc</code> for persistence.
                 </p>
+                {% endif %}
             </div>
         </section>
 
@@ -768,6 +945,144 @@
                 });
             });
         });
+
+        // ══════════════════════════════════════════════════════════════════
+        // "Setup a new Claude Code" one-click flow
+        // ══════════════════════════════════════════════════════════════════
+        // Single source of truth for the clipboard payload — matches
+        // dashboard.html. Keep in sync if either side changes.
+        var SETUP_INSTRUCTIONS_TEMPLATE = [
+            "Set up the Agnes data analyst CLI on this machine.",
+            "",
+            "Server: {server_url}",
+            "Personal access token: {token}",
+            "(The token was generated for this setup; it is single-use to paste. Treat it as a secret.)",
+            "",
+            "Please do the following, in order, and tell me any errors verbatim if a step fails:",
+            "",
+            "1. Install the CLI:",
+            "   curl -fsSL {server_url}/cli/install.sh | bash",
+            "",
+            "2. Save the token so the CLI can authenticate non-interactively:",
+            "   mkdir -p ~/.config/da",
+            "   cat > ~/.config/da/token.json <<'EOF'",
+            "   {\"server\":\"{server_url}\",\"token\":\"{token}\"}",
+            "   EOF",
+            "   chmod 600 ~/.config/da/token.json",
+            "",
+            "3. Ensure ~/.local/bin is on PATH (add to ~/.zshrc or ~/.bashrc if not already):",
+            "   export PATH=\"$HOME/.local/bin:$PATH\"",
+            "",
+            "4. Verify the setup:",
+            "   da auth whoami",
+            "   da --help",
+            "",
+            "5. If you manage MCP configs, register the Agnes MCP with the same token. Otherwise stop here and confirm the above worked.",
+            "",
+            "If any step fails, paste the exact error back to me and I'll help."
+        ].join("\n");
+
+        function renderSetupInstructions(serverUrl, token) {
+            return SETUP_INSTRUCTIONS_TEMPLATE
+                .split("{server_url}").join(serverUrl)
+                .split("{token}").join(token);
+        }
+
+        function defaultTokenName() {
+            var stamp = new Date().toISOString().slice(0, 16).replace("T", " ");
+            return "Claude Code — " + stamp;
+        }
+
+        function showSetupFallback(instructions) {
+            var overlay = document.createElement('div');
+            overlay.className = 'setup-fallback-overlay';
+            overlay.innerHTML =
+                '<div class="setup-fallback-modal" role="dialog" aria-modal="true" aria-labelledby="setupFallbackTitle">' +
+                    '<h4 id="setupFallbackTitle">Copy these setup instructions</h4>' +
+                    '<p>Your browser blocked automatic clipboard access. Select all, copy, then paste into Claude Code.</p>' +
+                    '<textarea readonly></textarea>' +
+                    '<div class="setup-fallback-actions">' +
+                        '<button type="button" data-action="close">Close</button>' +
+                        '<button type="button" class="primary" data-action="select">Select all</button>' +
+                    '</div>' +
+                '</div>';
+            document.body.appendChild(overlay);
+            var ta = overlay.querySelector('textarea');
+            ta.value = instructions;
+            ta.focus();
+            ta.select();
+            overlay.addEventListener('click', function(ev) {
+                if (ev.target === overlay) { document.body.removeChild(overlay); }
+            });
+            overlay.querySelector('[data-action="close"]').addEventListener('click', function() {
+                document.body.removeChild(overlay);
+            });
+            overlay.querySelector('[data-action="select"]').addEventListener('click', function() {
+                ta.focus();
+                ta.select();
+            });
+        }
+
+        window.setupNewClaude = async function setupNewClaude(btn) {
+            var errEl = document.getElementById('setupClaudeError');
+            if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
+            var origHTML = btn.innerHTML;
+            btn.disabled = true;
+            btn.textContent = 'Generating token…';
+            try {
+                var resp = await fetch('/auth/tokens', {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        name: defaultTokenName(),
+                        expires_in_days: 90,
+                    }),
+                });
+                if (resp.status === 401) {
+                    window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname);
+                    return;
+                }
+                if (!resp.ok) {
+                    var detail = 'HTTP ' + resp.status;
+                    try {
+                        var body = await resp.json();
+                        if (body && body.detail) { detail = body.detail; }
+                    } catch (_) { /* non-JSON */ }
+                    throw new Error(detail);
+                }
+                var data = await resp.json();
+                if (!data || !data.token) {
+                    throw new Error('Server did not return a token.');
+                }
+                var serverUrl = window.location.origin;
+                var instructions = renderSetupInstructions(serverUrl, data.token);
+
+                try {
+                    await copyToClipboard(instructions);
+                    btn.textContent = 'Copied! Paste into Claude Code';
+                    btn.classList.add('copied');
+                    setTimeout(function() {
+                        btn.innerHTML = origHTML;
+                        btn.classList.remove('copied');
+                        btn.disabled = false;
+                    }, 3000);
+                } catch (clipErr) {
+                    btn.innerHTML = origHTML;
+                    btn.disabled = false;
+                    showSetupFallback(instructions);
+                }
+            } catch (err) {
+                btn.innerHTML = origHTML;
+                btn.disabled = false;
+                if (errEl) {
+                    errEl.textContent = 'Setup failed: ' + (err && err.message ? err.message : err);
+                    errEl.style.display = 'block';
+                } else {
+                    alert('Setup failed: ' + (err && err.message ? err.message : err));
+                }
+            }
+        };
     })();
     </script>
     {% include "_version_badge.html" %}
