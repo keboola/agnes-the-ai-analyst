@@ -43,6 +43,8 @@ async def password_login(
     user = repo.get_by_email(request.email)
     if not user or not user.get("password_hash"):
         raise HTTPException(status_code=401, detail="Invalid email or password")
+    if not bool(user.get("active", True)):
+        raise HTTPException(status_code=401, detail="Account deactivated")
 
     # Verify password
     try:
@@ -62,25 +64,37 @@ async def password_login(
 async def password_login_web(
     email: str = Form(...),
     password: str = Form(""),
+    next: str = Form(""),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Web form login — sets cookie and redirects to dashboard."""
+    """Web form login — sets cookie and redirects to `next` (or /dashboard)."""
     repo = UserRepository(conn)
     user = repo.get_by_email(email)
     if not user or not user.get("password_hash"):
         return RedirectResponse(url="/login/password?error=invalid", status_code=302)
+    if not bool(user.get("active", True)):
+        return RedirectResponse(url="/login/password?error=deactivated", status_code=302)
 
     try:
         ph = PasswordHasher()
         ph.verify(user["password_hash"], password)
-    except (VerifyMismatchError, Exception):
+    except VerifyMismatchError:
+        # Genuinely wrong password → usual UX.
         return RedirectResponse(url="/login/password?error=invalid", status_code=302)
+    except Exception:
+        # Corrupted hash / library error → surface a distinct error code so ops
+        # can tell broken-hash cases apart from bad-password cases. Log loudly.
+        logger.exception("Unexpected error during web password verification for %s", email)
+        return RedirectResponse(url="/login/password?err=auth_internal", status_code=302)
 
     token = create_access_token(user["id"], user["email"], user["role"])
     # Secure cookie only over HTTPS (detect via X-Forwarded-Proto or request scheme)
     # For dev/staging on plain HTTP, secure=False so the cookie is actually sent
     use_secure = os.environ.get("DOMAIN", "") != ""  # DOMAIN set = production with TLS
-    response = RedirectResponse(url="/dashboard", status_code=302)
+
+    # Sanitize `next`: must start with `/` and must not start with `//` (open-redirect guard)
+    target = next if (next.startswith("/") and not next.startswith("//")) else "/dashboard"
+    response = RedirectResponse(url=target, status_code=302)
     response.set_cookie(
         key="access_token", value=token,
         httponly=True, max_age=86400, samesite="lax",

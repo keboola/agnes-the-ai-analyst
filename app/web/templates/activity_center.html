@@ -1745,27 +1745,7 @@
 </head>
 <body>
     <!-- Top Header Bar (matches Data Catalog pattern) -->
-    <header class="top-header">
-        <div class="top-header-left">
-            <a href="{{ url_for('dashboard') }}" class="header-back" title="Back to Dashboard">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M19 12H5M12 19l-7-7 7-7"/>
-                </svg>
-            </a>
-            <div class="header-logo-group">
-                <div class="header-logo">
-                    {{ config.LOGO_SVG | safe }}
-                </div>
-                <span class="header-subtitle">Activity Center <span class="demo-badge">DEMO</span></span>
-            </div>
-        </div>
-        <div class="top-header-right">
-            {% if session.user.picture %}
-            <img src="{{ session.user.picture }}" alt="Profile" class="avatar-v2">
-            {% endif %}
-            {{ session.user.email }}
-        </div>
-    </header>
+    {% include '_app_header.html' %}
 
     <div class="container-activity">
         <!-- Executive Pulse - always visible -->

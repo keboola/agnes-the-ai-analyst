@@ -1,0 +1,553 @@
+{% extends "base.html" %}
+{% block title %}Users — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block content %}
+<style>
+  .users-page { max-width: 1200px; margin: 24px auto; padding: 0 16px; }
+  .users-toolbar {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 16px; margin-bottom: 20px; flex-wrap: wrap;
+  }
+  .users-title { margin: 0; font-size: 22px; font-weight: 600; }
+  .users-search {
+    flex: 1; max-width: 360px;
+    padding: 8px 12px 8px 36px;
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px;
+    font-size: 13px;
+    background: var(--surface, #fff) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2'><circle cx='11' cy='11' r='8'/><path d='m21 21-4.35-4.35'/></svg>") no-repeat 12px center;
+  }
+  .users-search:focus { outline: 2px solid var(--primary, #6366f1); outline-offset: -1px; }
+
+  .users-table-wrap {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .users-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .users-table thead th {
+    text-align: left; padding: 12px 16px;
+    background: var(--border-light, #f9fafb);
+    border-bottom: 1px solid var(--border, #e5e7eb);
+    font-weight: 600; color: var(--text-secondary, #6b7280);
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .users-table tbody td {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+    vertical-align: middle;
+  }
+  .users-table tbody tr:last-child td { border-bottom: none; }
+  .users-table tbody tr.is-deactivated { opacity: 0.55; }
+  .users-table tbody tr:hover { background: var(--border-light, #fafafa); }
+
+  .user-cell { display: flex; align-items: center; gap: 10px; }
+  .user-avatar {
+    width: 32px; height: 32px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 600; color: #fff;
+    flex-shrink: 0;
+  }
+  .user-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .user-meta .name { font-weight: 500; color: var(--text-primary, #111827); }
+  .user-meta .email { font-size: 11px; color: var(--text-secondary, #6b7280); }
+  .user-cell.no-name .name { display: none; }
+  .user-cell.no-name .email { font-size: 13px; color: var(--text-primary, #111827); font-weight: 500; }
+
+  .role-pill {
+    display: inline-block;
+    padding: 3px 10px; border-radius: 999px;
+    font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.4px;
+    cursor: pointer; border: 1px solid transparent;
+  }
+  .role-pill.role-admin    { background: #fee2e2; color: #b91c1c; }
+  .role-pill.role-analyst  { background: #dbeafe; color: #1e40af; }
+  .role-pill.role-km_admin { background: #ede9fe; color: #6d28d9; }
+  .role-pill.role-viewer   { background: #f3f4f6; color: #4b5563; }
+
+  /* Toggle switch */
+  .toggle { position: relative; display: inline-block; width: 36px; height: 20px; }
+  .toggle input { opacity: 0; width: 0; height: 0; }
+  .toggle-slider {
+    position: absolute; cursor: pointer; inset: 0;
+    background: #cbd5e1; border-radius: 999px; transition: 0.2s;
+  }
+  .toggle-slider::before {
+    content: ""; position: absolute; left: 2px; top: 2px;
+    width: 16px; height: 16px; background: #fff; border-radius: 50%;
+    transition: 0.2s;
+  }
+  .toggle input:checked + .toggle-slider { background: #10b981; }
+  .toggle input:checked + .toggle-slider::before { transform: translateX(16px); }
+  .toggle input:focus-visible + .toggle-slider { outline: 2px solid var(--primary, #6366f1); outline-offset: 2px; }
+
+  .date-cell { color: var(--text-secondary, #6b7280); font-size: 12px; white-space: nowrap; }
+
+  .row-actions { display: flex; gap: 6px; justify-content: flex-end; }
+  .icon-btn {
+    background: transparent; border: 1px solid var(--border, #e5e7eb); border-radius: 6px;
+    padding: 5px 10px; font-size: 12px; cursor: pointer;
+    color: var(--text-secondary, #6b7280); transition: all 0.15s;
+  }
+  .icon-btn:hover { color: var(--text-primary, #111827); border-color: #cbd5e1; background: #f9fafb; }
+  .icon-btn.danger:hover { color: #b91c1c; border-color: #fecaca; background: #fef2f2; }
+
+  .users-empty, .users-loading {
+    text-align: center; padding: 48px 16px;
+    color: var(--text-secondary, #6b7280); font-size: 13px;
+  }
+  .users-empty .big { font-size: 15px; color: var(--text-primary, #111827); margin-bottom: 6px; font-weight: 500; }
+
+  .skeleton-row td { padding: 12px 16px; }
+  .skeleton-row .bar {
+    background: linear-gradient(90deg, #eef2f7 25%, #e2e8f0 37%, #eef2f7 63%);
+    background-size: 400% 100%; animation: skeleton 1.4s ease infinite;
+    height: 10px; border-radius: 4px;
+  }
+  @keyframes skeleton { 0% { background-position: 100% 50% } 100% { background-position: 0 50% } }
+
+  /* Modal */
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55);
+    display: none; align-items: center; justify-content: center; z-index: 1000;
+    padding: 16px;
+  }
+  .modal-backdrop.is-open { display: flex; }
+  .modal-card {
+    background: var(--surface, #fff); border-radius: 12px;
+    padding: 24px; width: 100%; max-width: 440px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+  }
+  .modal-card h3 { margin: 0 0 6px; font-size: 17px; font-weight: 600; }
+  .modal-card p.sub { margin: 0 0 18px; font-size: 13px; color: var(--text-secondary, #6b7280); }
+  .modal-card label { display: block; font-size: 12px; font-weight: 500; color: var(--text-secondary, #6b7280); margin: 12px 0 6px; }
+  .modal-card input[type="text"], .modal-card input[type="email"], .modal-card input[type="password"], .modal-card select {
+    width: 100%; padding: 9px 12px; border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px; font-size: 13px; box-sizing: border-box;
+    background: var(--surface, #fff); color: var(--text-primary, #111827);
+  }
+  .modal-card input:focus, .modal-card select:focus { outline: 2px solid var(--primary, #6366f1); outline-offset: -1px; }
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
+  .modal-btn {
+    padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 500;
+    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
+    cursor: pointer; transition: all 0.15s;
+  }
+  .modal-btn:hover { background: var(--border-light, #f9fafb); }
+  .modal-btn.primary { background: var(--primary, #6366f1); color: #fff; border-color: var(--primary, #6366f1); }
+  .modal-btn.primary:hover { filter: brightness(1.05); }
+  .modal-btn.danger { background: #dc2626; color: #fff; border-color: #dc2626; }
+  .modal-btn.danger:hover { filter: brightness(1.05); }
+
+  .token-reveal {
+    margin: 12px 0;
+    padding: 12px; border-radius: 8px;
+    background: #fffbeb; border: 1px solid #fcd34d;
+    font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
+    font-size: 12px; word-break: break-all;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .token-reveal code { flex: 1; }
+  .copy-btn {
+    background: var(--primary, #6366f1); color: #fff; border: none;
+    padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 500;
+    cursor: pointer; flex-shrink: 0;
+  }
+  .copy-btn.copied { background: #10b981; }
+
+  /* Toast */
+  .toast-stack {
+    position: fixed; bottom: 24px; right: 24px; z-index: 2000;
+    display: flex; flex-direction: column; gap: 8px;
+    pointer-events: none;
+  }
+  .toast {
+    background: #111827; color: #fff; padding: 10px 16px;
+    border-radius: 8px; font-size: 13px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+    opacity: 0; transform: translateY(8px);
+    transition: opacity 0.2s, transform 0.2s;
+    pointer-events: auto; max-width: 380px;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast.success { background: #047857; }
+  .toast.error { background: #b91c1c; }
+</style>
+
+<div class="users-page">
+  <div class="users-toolbar">
+    <h2 class="users-title">Users</h2>
+    <input id="user-search" type="search" class="users-search" placeholder="Filter by email or name…" autocomplete="off">
+    <button class="modal-btn primary" id="open-create-btn">+ Add user</button>
+  </div>
+
+  <div class="users-table-wrap">
+    <table class="users-table" id="users-table">
+      <thead>
+        <tr>
+          <th>User</th>
+          <th>Role</th>
+          <th>Active</th>
+          <th>Created</th>
+          <th>Deactivated</th>
+          <th style="text-align:right">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="users-tbody"></tbody>
+    </table>
+    <div id="users-loading" class="users-loading">Loading users…</div>
+    <div id="users-empty" class="users-empty" style="display:none;">
+      <div class="big">No users yet</div>
+      <div>Click <strong>Add user</strong> to invite the first one.</div>
+    </div>
+  </div>
+</div>
+
+<!-- Create user modal -->
+<div class="modal-backdrop" id="create-modal" role="dialog" aria-modal="true" aria-labelledby="create-modal-title">
+  <div class="modal-card">
+    <h3 id="create-modal-title">Add user</h3>
+    <p class="sub">Invites a new account. The user will need a password (set via the Reset link below) or a configured SSO provider to sign in.</p>
+    <label for="new-email">Email</label>
+    <input id="new-email" type="email" required autocomplete="off">
+    <label for="new-name">Name (optional)</label>
+    <input id="new-name" type="text" autocomplete="off">
+    <label for="new-role">Role</label>
+    <select id="new-role">
+      <option value="viewer">viewer</option>
+      <option value="analyst" selected>analyst</option>
+      <option value="km_admin">km_admin</option>
+      <option value="admin">admin</option>
+    </select>
+    <div class="modal-actions">
+      <button class="modal-btn" data-close-modal="create-modal">Cancel</button>
+      <button class="modal-btn primary" id="confirm-create-btn">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- Set password modal -->
+<div class="modal-backdrop" id="setpwd-modal" role="dialog" aria-modal="true" aria-labelledby="setpwd-title">
+  <div class="modal-card">
+    <h3 id="setpwd-title">Set password</h3>
+    <p class="sub" id="setpwd-target"></p>
+    <label for="setpwd-input">New password (min 8 chars)</label>
+    <input id="setpwd-input" type="password" autocomplete="new-password">
+    <div class="modal-actions">
+      <button class="modal-btn" data-close-modal="setpwd-modal">Cancel</button>
+      <button class="modal-btn primary" id="confirm-setpwd-btn">Set password</button>
+    </div>
+  </div>
+</div>
+
+<!-- Reset token reveal modal
+     NOTE: The reset_token endpoint still exists for API-level future use,
+     but no matching "consume this token to set a new password" endpoint
+     ships today — the magic-link sender would log the user in without
+     prompting for a password, defeating the reset. Admins should use the
+     "Set pwd" action (/{id}/set-password) instead. This modal is retained
+     for API inspection only; the Reset button in the row actions is gone. -->
+<div class="modal-backdrop" id="reset-modal" role="dialog" aria-modal="true" aria-labelledby="reset-title">
+  <div class="modal-card">
+    <h3 id="reset-title">Password reset token</h3>
+    <p class="sub" id="reset-target"></p>
+    <p class="sub">Admins should use <strong>Set password</strong> directly to assign a new password. The magic-link flow is not available for password-reset tokens in this build — this token currently has no matching consumer endpoint.</p>
+    <div class="token-reveal">
+      <code id="reset-token-text"></code>
+      <button class="copy-btn" id="reset-copy-btn">Copy</button>
+    </div>
+    <div class="modal-actions">
+      <button class="modal-btn primary" data-close-modal="reset-modal">Done</button>
+    </div>
+  </div>
+</div>
+
+<!-- Confirm dialog -->
+<div class="modal-backdrop" id="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+  <div class="modal-card">
+    <h3 id="confirm-title">Are you sure?</h3>
+    <p class="sub" id="confirm-text"></p>
+    <div class="modal-actions">
+      <button class="modal-btn" data-close-modal="confirm-modal">Cancel</button>
+      <button class="modal-btn danger" id="confirm-ok-btn">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+
+<script>
+const API = "/api/users";
+const ROLES = ["viewer", "analyst", "km_admin", "admin"];
+
+function esc(s) {
+  const d = document.createElement("div");
+  d.textContent = s == null ? "" : String(s);
+  return d.innerHTML;
+}
+function fmtDate(s) { return s ? s.slice(0, 16).replace("T", " ") : "—"; }
+function initials(u) {
+  const src = (u.name || u.email || "?").trim();
+  const parts = src.split(/[\s@.]+/).filter(Boolean);
+  return ((parts[0]?.[0] || "?") + (parts[1]?.[0] || "")).toUpperCase();
+}
+function avatarColor(s) {
+  // Stable hash → hue
+  let h = 0;
+  for (const c of s || "") h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return `hsl(${h % 360}, 55%, 50%)`;
+}
+
+// ── Toast ──
+function toast(msg, kind = "") {
+  const el = document.createElement("div");
+  el.className = "toast " + kind;
+  el.textContent = msg;
+  document.getElementById("toast-stack").appendChild(el);
+  requestAnimationFrame(() => el.classList.add("show"));
+  setTimeout(() => {
+    el.classList.remove("show");
+    setTimeout(() => el.remove(), 250);
+  }, 3500);
+}
+
+// ── Modal helpers ──
+function openModal(id) {
+  document.getElementById(id).classList.add("is-open");
+  const focusable = document.querySelector(`#${id} input, #${id} select, #${id} button.primary`);
+  focusable && focusable.focus();
+}
+function closeModal(id) {
+  document.getElementById(id).classList.remove("is-open");
+}
+document.querySelectorAll("[data-close-modal]").forEach(el =>
+  el.addEventListener("click", () => closeModal(el.dataset.closeModal)));
+document.querySelectorAll(".modal-backdrop").forEach(el => {
+  el.addEventListener("click", e => { if (e.target === el) el.classList.remove("is-open"); });
+});
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") document.querySelectorAll(".modal-backdrop.is-open").forEach(m => m.classList.remove("is-open"));
+});
+
+// Generic confirm using the modal — returns a Promise<boolean>
+function confirmModal(text) {
+  const modal = document.getElementById("confirm-modal");
+  document.getElementById("confirm-text").textContent = text;
+  return new Promise(resolve => {
+    const okBtn = document.getElementById("confirm-ok-btn");
+    const cancel = () => { closeModal("confirm-modal"); cleanup(); resolve(false); };
+    const ok = () => { closeModal("confirm-modal"); cleanup(); resolve(true); };
+    function cleanup() {
+      okBtn.removeEventListener("click", ok);
+      modal.removeEventListener("click", backdropCancel);
+    }
+    function backdropCancel(e) { if (e.target === modal) cancel(); }
+    okBtn.addEventListener("click", ok, { once: true });
+    modal.addEventListener("click", backdropCancel);
+    openModal("confirm-modal");
+  });
+}
+
+// ── State ──
+let allUsers = [];
+let filterText = "";
+
+function renderUsers() {
+  const tbody = document.getElementById("users-tbody");
+  const loading = document.getElementById("users-loading");
+  const empty = document.getElementById("users-empty");
+  loading.style.display = "none";
+
+  const ft = filterText.trim().toLowerCase();
+  const filtered = ft
+    ? allUsers.filter(u => (u.email || "").toLowerCase().includes(ft) || (u.name || "").toLowerCase().includes(ft))
+    : allUsers;
+
+  if (allUsers.length === 0) {
+    empty.style.display = "block";
+    tbody.innerHTML = "";
+    return;
+  }
+  empty.style.display = "none";
+
+  if (filtered.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="6" class="users-loading">No matches for "${esc(filterText)}"</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = "";
+  for (const u of filtered) {
+    const tr = document.createElement("tr");
+    if (!u.active) tr.classList.add("is-deactivated");
+    const role = u.role || "viewer";
+    const hasName = !!(u.name && u.name !== u.email);
+    tr.innerHTML = `
+      <td>
+        <div class="user-cell ${hasName ? "" : "no-name"}">
+          <div class="user-avatar" style="background:${avatarColor(u.email || u.id)}">${esc(initials(u))}</div>
+          <div class="user-meta">
+            <span class="name">${esc(u.name || "")}</span>
+            <span class="email">${esc(u.email)}</span>
+          </div>
+        </div>
+      </td>
+      <td>
+        <span class="role-pill role-${esc(role)}" data-action="edit-role" data-user-id="${esc(u.id)}" title="Click to change role">${esc(role)}</span>
+      </td>
+      <td>
+        <label class="toggle">
+          <input type="checkbox" ${u.active ? "checked" : ""} data-action="toggle-active" data-user-id="${esc(u.id)}">
+          <span class="toggle-slider"></span>
+        </label>
+      </td>
+      <td class="date-cell">${fmtDate(u.created_at)}</td>
+      <td class="date-cell">${u.deactivated_at ? fmtDate(u.deactivated_at) : "—"}</td>
+      <td>
+        <div class="row-actions">
+          <a class="icon-btn" href="/admin/tokens?user=${encodeURIComponent(u.email || "")}" title="View this user's personal access tokens">Tokens</a>
+          <button class="icon-btn" data-action="set-password" data-user-id="${esc(u.id)}" data-user-email="${esc(u.email)}" title="Assign a new password (the 'reset token' flow is not wired end-to-end in this build)">Set pwd</button>
+          <button class="icon-btn danger" data-action="delete-user" data-user-id="${esc(u.id)}" data-user-email="${esc(u.email)}">Delete</button>
+        </div>
+      </td>`;
+    tbody.appendChild(tr);
+  }
+
+  // Wire up actions via delegation-like loop
+  tbody.querySelectorAll('[data-action="edit-role"]').forEach(el =>
+    el.addEventListener("click", () => editRole(el.dataset.userId)));
+  tbody.querySelectorAll('[data-action="toggle-active"]').forEach(el =>
+    el.addEventListener("change", () => toggleActive(el.dataset.userId, el.checked)));
+  // Note: the "Reset" row action has been removed (the reset_token endpoint
+  // has no matching consumer in this build); admins use Set pwd instead.
+  // resetPassword() below is kept for API-level inspection / future use.
+  tbody.querySelectorAll('[data-action="set-password"]').forEach(el =>
+    el.addEventListener("click", () => openSetPassword(el.dataset.userId, el.dataset.userEmail)));
+  tbody.querySelectorAll('[data-action="delete-user"]').forEach(el =>
+    el.addEventListener("click", () => delUser(el.dataset.userId, el.dataset.userEmail)));
+}
+
+async function loadUsers() {
+  try {
+    const r = await fetch(API, { credentials: "include" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    allUsers = await r.json();
+    renderUsers();
+  } catch (e) {
+    document.getElementById("users-loading").textContent = "Failed to load users: " + e.message;
+    toast("Failed to load users", "error");
+  }
+}
+
+document.getElementById("user-search").addEventListener("input", e => {
+  filterText = e.target.value;
+  renderUsers();
+});
+
+// ── Role editing via cycling pill click ──
+async function editRole(id) {
+  const u = allUsers.find(x => x.id === id);
+  if (!u) return;
+  const next = ROLES[(ROLES.indexOf(u.role || "viewer") + 1) % ROLES.length];
+  if (!await confirmModal(`Change role for ${u.email} from "${u.role}" to "${next}"?`)) return;
+  await patch(id, { role: next }, `Role changed to ${next}`);
+}
+
+async function toggleActive(id, active) {
+  const path = active ? "activate" : "deactivate";
+  const r = await fetch(`${API}/${id}/${path}`, { method: "POST", credentials: "include" });
+  if (!r.ok) {
+    toast("Failed: " + (await r.text()), "error");
+    loadUsers();
+    return;
+  }
+  toast(active ? "User activated" : "User deactivated", "success");
+  loadUsers();
+}
+
+async function patch(id, body, successMsg) {
+  const r = await fetch(`${API}/${id}`, {
+    method: "PATCH", credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) { toast("Failed: " + (await r.text()), "error"); return; }
+  toast(successMsg, "success");
+  loadUsers();
+}
+
+// ── Reset password ──
+async function resetPassword(id, email) {
+  if (!await confirmModal(`Generate a reset token for ${email}?`)) return;
+  const r = await fetch(`${API}/${id}/reset-password`, { method: "POST", credentials: "include" });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) { toast("Failed: " + (data.detail || r.status), "error"); return; }
+  document.getElementById("reset-target").textContent = `For ${email}`;
+  document.getElementById("reset-token-text").textContent = data.reset_token;
+  const copyBtn = document.getElementById("reset-copy-btn");
+  copyBtn.textContent = "Copy"; copyBtn.classList.remove("copied");
+  copyBtn.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(data.reset_token);
+      copyBtn.textContent = "Copied!"; copyBtn.classList.add("copied");
+      setTimeout(() => { copyBtn.textContent = "Copy"; copyBtn.classList.remove("copied"); }, 1500);
+    } catch { toast("Copy failed — select the text manually", "error"); }
+  };
+  openModal("reset-modal");
+}
+
+// ── Set password ──
+function openSetPassword(id, email) {
+  document.getElementById("setpwd-target").textContent = `For ${email}`;
+  const input = document.getElementById("setpwd-input");
+  input.value = "";
+  openModal("setpwd-modal");
+  document.getElementById("confirm-setpwd-btn").onclick = async () => {
+    const pwd = input.value;
+    if (!pwd || pwd.length < 8) { toast("Password must be at least 8 characters", "error"); return; }
+    const r = await fetch(`${API}/${id}/set-password`, {
+      method: "POST", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: pwd }),
+    });
+    if (!r.ok) { toast("Failed: " + (await r.text()), "error"); return; }
+    closeModal("setpwd-modal");
+    toast("Password updated", "success");
+  };
+}
+
+// ── Delete ──
+async function delUser(id, email) {
+  if (!await confirmModal(`Delete ${email}? This cannot be undone.`)) return;
+  const r = await fetch(`${API}/${id}`, { method: "DELETE", credentials: "include" });
+  if (!r.ok) { toast("Failed: " + (await r.text()), "error"); return; }
+  toast("User deleted", "success");
+  loadUsers();
+}
+
+// ── Create ──
+document.getElementById("open-create-btn").addEventListener("click", () => {
+  document.getElementById("new-email").value = "";
+  document.getElementById("new-name").value = "";
+  document.getElementById("new-role").value = "analyst";
+  openModal("create-modal");
+});
+document.getElementById("confirm-create-btn").addEventListener("click", async () => {
+  const email = document.getElementById("new-email").value.trim();
+  const name = document.getElementById("new-name").value.trim();
+  const role = document.getElementById("new-role").value;
+  if (!email) { toast("Email is required", "error"); return; }
+  const r = await fetch(API, {
+    method: "POST", credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, name: name || email.split("@")[0], role }),
+  });
+  if (!r.ok) { toast("Failed: " + (await r.text()), "error"); return; }
+  closeModal("create-modal");
+  toast("User created", "success");
+  loadUsers();
+});
+
+loadUsers();
+</script>
+{% endblock %}

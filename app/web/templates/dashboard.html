@@ -32,8 +32,19 @@
             gap: 2px;
         }
 
+        .header-logo {
+            display: inline-flex;
+            align-items: center;
+            text-decoration: none;
+            color: inherit;
+        }
         .header-logo svg {
             display: block;
+        }
+        a.header-logo:focus-visible {
+            outline: 2px solid var(--primary);
+            outline-offset: 2px;
+            border-radius: 4px;
         }
 
         .header-subtitle {
@@ -1221,6 +1232,147 @@
             margin-left: auto;
         }
 
+        /* Error banner for setup flow */
+        .setup-error {
+            margin-top: 12px;
+            padding: 10px 14px;
+            background: rgba(234, 88, 12, 0.12);
+            border-left: 3px solid #EA580C;
+            border-radius: 6px;
+            color: #FFF;
+            font-size: 13px;
+        }
+        .env-setup-cta .btn-setup[disabled] {
+            opacity: 0.7;
+            cursor: wait;
+        }
+
+        /* ── Setup instructions preview (read-only card inside env-setup-cta) ── */
+        .setup-preview-card {
+            margin-top: 18px;
+            background: rgba(0, 0, 0, 0.25);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 8px;
+            padding: 14px 16px;
+        }
+        .setup-preview-summary {
+            list-style: none;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            user-select: none;
+        }
+        .setup-preview-summary::-webkit-details-marker { display: none; }
+        .setup-preview-chevron {
+            display: inline-block;
+            font-size: 11px;
+            color: rgba(255, 255, 255, 0.7);
+            transition: transform 0.15s ease;
+        }
+        details[open] > .setup-preview-summary .setup-preview-chevron { transform: rotate(90deg); }
+        .setup-preview-title {
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+            color: rgba(255, 255, 255, 0.85);
+            margin: 0;
+        }
+        .setup-preview-sub {
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.65);
+            margin: 0 0 10px 0;
+        }
+        .setup-preview-pre {
+            background: #1e1e2e;
+            border-radius: 6px;
+            padding: 14px 16px;
+            margin: 0;
+            max-height: 400px;
+            overflow-y: auto;
+            font-family: var(--font-mono);
+            font-size: 12.5px;
+            line-height: 1.55;
+            color: #cdd6f4;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .setup-preview-code { font-family: inherit; font-size: inherit; }
+        .setup-preview-pre .placeholder-token {
+            background: rgba(249, 226, 175, 0.12);
+            color: #f9e2af;
+            padding: 0 4px;
+            border-radius: 3px;
+            font-style: italic;
+        }
+
+        /* Fallback modal (when clipboard is blocked) */
+        .setup-fallback-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.45);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+        .setup-fallback-modal {
+            background: var(--surface);
+            border-radius: 12px;
+            padding: 20px;
+            max-width: 720px;
+            width: calc(100% - 32px);
+            max-height: calc(100vh - 64px);
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            box-shadow: 0 20px 48px rgba(0, 0, 0, 0.3);
+        }
+        .setup-fallback-modal h4 {
+            margin: 0;
+            font-size: 15px;
+            color: var(--text-primary);
+        }
+        .setup-fallback-modal p {
+            margin: 0;
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+        .setup-fallback-modal textarea {
+            flex: 1;
+            min-height: 260px;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            padding: 10px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--background);
+            color: var(--text-primary);
+            resize: vertical;
+        }
+        .setup-fallback-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+        }
+        .setup-fallback-actions button {
+            font-family: var(--font-primary);
+            font-size: 13px;
+            font-weight: 500;
+            padding: 8px 16px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: var(--surface);
+            color: var(--text-primary);
+            cursor: pointer;
+        }
+        .setup-fallback-actions button.primary {
+            background: var(--primary);
+            color: #FFF;
+            border-color: var(--primary);
+        }
+
         /* ── Setup Banner (bottom, for returning users) ── */
         .setup-banner {
             background: var(--background);
@@ -1834,26 +1986,8 @@
 </head>
 <body>
 
-    <!-- ═══════════════ HEADER ═══════════════ -->
-    <header class="header">
-        <div class="header-left">
-            <div class="header-logo">
-                {{ config.LOGO_SVG | safe }}
-            </div>
-            <span class="header-subtitle">Data Analyst Portal</span>
-        </div>
-        {% if session.user %}
-        <div class="header-right">
-            <span class="header-email">{{ session.user.email }}</span>
-            {% if session.user.picture %}
-            <img src="{{ session.user.picture }}" alt="Profile" class="avatar-img">
-            {% else %}
-            <div class="avatar">{{ (user.name or user.email)[:2] | upper }}</div>
-            {% endif %}
-            <a href="{{ url_for('auth.logout') }}" class="btn-logout">Logout</a>
-        </div>
-        {% endif %}
-    </header>
+    <!-- ═══════════════ HEADER (shared partial) ═══════════════ -->
+    {% include '_app_header.html' %}
 
     {% with messages = get_flashed_messages(with_categories=true) %}
     {% if messages %}
@@ -1875,19 +2009,33 @@
         {% if not account_details or not account_details.last_sync_display %}
         <!-- ═══════════════ ENVIRONMENT SETUP CTA ═══════════════ -->
         <div class="env-setup-cta">
-            <h3>Set up your local environment</h3>
-            <p class="env-subtitle">Run Claude Code in your project folder and paste the setup instructions to configure SSH, sync data, and initialize DuckDB.</p>
+            <h3>Set up a new Claude Code</h3>
+            <p class="env-subtitle">Generates a personal access token and copies a ready-to-paste setup script to your clipboard. Paste into Claude Code to finish.</p>
             <div class="env-setup-row">
-                <span class="code-pill">cd {{ project_dir }} && claude</span>
-                <button onclick="copyBootstrapInstructions(this)" class="btn-setup" id="bootstrapCopyBtn">
+                <button type="button" onclick="setupNewClaude(this)" class="btn-setup" id="setupClaudeBtn">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
                         <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
                     </svg>
-                    Copy Setup Instructions
+                    Setup a new Claude Code
                 </button>
-                <span class="env-hint">Paste into Claude Code to complete setup</span>
+                <span class="env-hint">Valid 90 days · token stays in clipboard only</span>
             </div>
+            <div id="setupClaudeError" class="setup-error" role="alert" style="display:none;"></div>
+            <details class="setup-preview-card" aria-label="Preview of the clipboard payload">
+                <summary class="setup-preview-summary">
+                    <span class="setup-preview-chevron" aria-hidden="true">▸</span>
+                    <span class="setup-preview-title">What Claude Code will receive</span>
+                </summary>
+                <p class="setup-preview-sub">
+                    Read-only preview. The real token is generated the moment
+                    you click the button above and is placed directly in your
+                    clipboard — never shown on this page.
+                </p>
+                {% with preview_mode=True %}
+                    {% include "_claude_setup_instructions.jinja" %}
+                {% endwith %}
+            </details>
         </div>
         {% endif %}
 
@@ -2266,17 +2414,6 @@
             </div><!-- /right-column -->
         </div><!-- /dashboard-grid -->
 
-        <!-- ═══════════════ SETUP BANNER ═══════════════ -->
-        <div class="setup-banner">
-            <div class="setup-banner-text">
-                <div class="setup-banner-title">Set up a new machine</div>
-                <div class="setup-banner-desc">Copy instructions and paste into Claude Code to configure another local environment.</div>
-            </div>
-            <button onclick="copyBootstrapInstructions(this)" class="btn-setup-secondary" id="bootstrapCopyBtnBottom">
-                Copy Setup Instructions
-            </button>
-        </div>
-
     </main>
 
     {% else %}
@@ -2421,19 +2558,112 @@
         });
     }
 
-    function copyBootstrapInstructions(btn) {
-        var instructions = {{ setup_instructions | tojson }};
+    // ══════════════════════════════════════════════════════════════════
+    // "Setup a new Claude Code" one-click flow
+    // ══════════════════════════════════════════════════════════════════
+    // Template + renderer included from _claude_setup_instructions.jinja
+    // so dashboard.html and install.html always render the same payload.
+    {% include "_claude_setup_instructions.jinja" %}
 
-        var button = btn || document.getElementById('bootstrapCopyBtn');
-        var origText = button.textContent;
-        copyToClipboard(instructions).then(function() {
-            button.textContent = 'Copied!';
-            button.classList.add('copied');
-            setTimeout(function() {
-                button.textContent = origText;
-                button.classList.remove('copied');
-            }, 2000);
+    function defaultTokenName() {
+        var stamp = new Date().toISOString().slice(0, 16).replace("T", " ");
+        return "Claude Code — " + stamp;
+    }
+
+    function showSetupFallback(instructions) {
+        // Clipboard blocked (non-secure context, permission denied, etc.).
+        // Show a modal with the instructions preselected so the user can Ctrl+C.
+        var overlay = document.createElement('div');
+        overlay.className = 'setup-fallback-overlay';
+        overlay.innerHTML =
+            '<div class="setup-fallback-modal" role="dialog" aria-modal="true" aria-labelledby="setupFallbackTitle">' +
+                '<h4 id="setupFallbackTitle">Copy these setup instructions</h4>' +
+                '<p>Your browser blocked automatic clipboard access. Select all, copy, then paste into Claude Code.</p>' +
+                '<textarea readonly></textarea>' +
+                '<div class="setup-fallback-actions">' +
+                    '<button type="button" data-action="close">Close</button>' +
+                    '<button type="button" class="primary" data-action="select">Select all</button>' +
+                '</div>' +
+            '</div>';
+        document.body.appendChild(overlay);
+        var ta = overlay.querySelector('textarea');
+        ta.value = instructions;
+        ta.focus();
+        ta.select();
+        overlay.addEventListener('click', function(ev) {
+            if (ev.target === overlay) { document.body.removeChild(overlay); }
         });
+        overlay.querySelector('[data-action="close"]').addEventListener('click', function() {
+            document.body.removeChild(overlay);
+        });
+        overlay.querySelector('[data-action="select"]').addEventListener('click', function() {
+            ta.focus();
+            ta.select();
+        });
+    }
+
+    async function setupNewClaude(btn) {
+        var errEl = document.getElementById('setupClaudeError');
+        if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
+        var origText = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = 'Generating token…';
+        try {
+            var resp = await fetch('/auth/tokens', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    name: defaultTokenName(),
+                    expires_in_days: 90,
+                }),
+            });
+            if (resp.status === 401) {
+                // Session expired mid-flight — bounce to login and come back.
+                window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname);
+                return;
+            }
+            if (!resp.ok) {
+                var detail = 'HTTP ' + resp.status;
+                try {
+                    var body = await resp.json();
+                    if (body && body.detail) { detail = body.detail; }
+                } catch (_) { /* non-JSON */ }
+                throw new Error(detail);
+            }
+            var data = await resp.json();
+            if (!data || !data.token) {
+                throw new Error('Server did not return a token.');
+            }
+            var serverUrl = window.location.origin;
+            var instructions = renderSetupInstructions(serverUrl, data.token);
+
+            try {
+                await copyToClipboard(instructions);
+                btn.textContent = 'Copied! Paste into Claude Code';
+                btn.classList.add('copied');
+                setTimeout(function() {
+                    btn.textContent = origText;
+                    btn.classList.remove('copied');
+                    btn.disabled = false;
+                }, 3000);
+            } catch (clipErr) {
+                // Clipboard denied — fall back to modal. Re-enable the button immediately.
+                btn.textContent = origText;
+                btn.disabled = false;
+                showSetupFallback(instructions);
+            }
+            // Token is NOT stored in DOM after the modal closes / flash disappears.
+        } catch (err) {
+            btn.textContent = origText;
+            btn.disabled = false;
+            if (errEl) {
+                errEl.textContent = 'Setup failed: ' + (err && err.message ? err.message : err);
+                errEl.style.display = 'block';
+            } else {
+                alert('Setup failed: ' + (err && err.message ? err.message : err));
+            }
+        }
     }
 
     async function updateSyncSettings() {

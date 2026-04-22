@@ -32,6 +32,9 @@ User scripts run in isolated subprocess with:
 - Stdout/stderr size cap (64KB)
 
 ## JWT Tokens
-- Issued on login, valid 30 days
+- Session tokens: issued on interactive login (`da login`), valid 24 hours.
+- For long-lived CLI / CI use, create a Personal Access Token via the UI
+  (`/tokens` → New token) or CLI (`da auth token create`).
+- PATs are revocable and auditable; session tokens are not.
 - Contains: user_id, email, role
 - Set JWT_SECRET_KEY in .env (min 32 chars)

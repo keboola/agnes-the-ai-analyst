@@ -48,18 +48,30 @@ def create_access_token(
     email: str,
     role: str = "analyst",
     expires_delta: Optional[timedelta] = None,
+    token_id: Optional[str] = None,
+    typ: str = "session",
+    omit_exp: bool = False,
 ) -> str:
-    expire = datetime.now(timezone.utc) + (
-        expires_delta or timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS)
-    )
+    """Create a JWT. `typ` is "session" (interactive login) or "pat" (long-lived).
+
+    If `omit_exp=True`, no `exp` claim is embedded. This is used by PATs with
+    "no expiry" — the authoritative expiry check is the DB row in
+    `personal_access_tokens.expires_at`, and a claim-less JWT avoids the
+    misleading ~100y horizon that previously pretended to be "never".
+    """
     payload = {
         "sub": user_id,
         "email": email,
         "role": role,
-        "exp": expire,
+        "typ": typ,
         "iat": datetime.now(timezone.utc),
-        "jti": uuid.uuid4().hex,
+        "jti": token_id or uuid.uuid4().hex,
     }
+    if not omit_exp:
+        expire = datetime.now(timezone.utc) + (
+            expires_delta or timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS)
+        )
+        payload["exp"] = expire
     return jwt.encode(payload, _get_cached_secret_key(), algorithm=ALGORITHM)
 
 

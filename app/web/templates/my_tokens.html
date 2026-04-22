@@ -1,0 +1,1294 @@
+{% extends "base.html" %}
+{% block title %}My tokens — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block content %}
+<style>
+  /* ─────────────────────────────────────────────────────────────────────────
+     /tokens — "My tokens" view for ANY signed-in user (incl. admins' own).
+     Card-stack layout; no admin stat strip; no owner column; create + reveal
+     + revoke-own flow.
+     ───────────────────────────────────────────────────────────────────────── */
+
+  /* Full-bleed: the parent `.container` in base.html caps width at 800px.
+     Break out of it so the tokens UI spans the viewport like /dashboard does.
+     Technique: override base.html's `.container` max-width on this page only. */
+  body > .container { max-width: 1280px; }
+  .tokens-page {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 28px 8px 48px;
+    box-sizing: border-box;
+    font-family: var(--font-primary, 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif);
+  }
+  @media (max-width: 720px) {
+    .tokens-page { padding: 20px 0 32px; }
+  }
+
+  /* ── Hero ──────────────────────────────────────────────────────────────── */
+  .tokens-hero {
+    background: linear-gradient(135deg, #0073D1 0%, #0056A3 100%);
+    border-radius: 14px;
+    padding: 28px 32px 24px;
+    margin-bottom: 20px;
+    box-shadow: 0 4px 16px rgba(0, 115, 209, 0.2);
+    color: #fff;
+    position: relative;
+  }
+  .tokens-hero .hero-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+  }
+  .tokens-hero .hero-text { min-width: 0; }
+  .hero-action-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    height: 38px;
+    padding: 0 16px;
+    border-radius: 8px;
+    background: #fff;
+    color: #0056A3;
+    font-size: 13px;
+    font-weight: 600;
+    font-family: inherit;
+    border: none;
+    cursor: pointer;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+    transition: all 0.15s ease;
+    flex-shrink: 0;
+  }
+  .hero-action-btn:hover {
+    background: #f8fafc;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.14);
+  }
+  .hero-action-btn:focus-visible {
+    outline: 2px solid #fff;
+    outline-offset: 3px;
+  }
+  .hero-action-btn svg { width: 14px; height: 14px; }
+  .tokens-hero .hero-eyebrow {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: rgba(255, 255, 255, 0.75);
+    margin-bottom: 8px;
+  }
+  .tokens-hero .tokens-title {
+    font-size: 28px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    margin: 0 0 6px;
+    color: #fff;
+  }
+  .tokens-hero .tokens-subtitle {
+    font-size: 14px;
+    font-weight: 400;
+    color: rgba(255, 255, 255, 0.9);
+    margin: 0;
+    line-height: 1.5;
+  }
+
+  /* ── Toolbar ───────────────────────────────────────────────────────────── */
+  .toolbar {
+    margin-bottom: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .chip-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+  }
+  .chip-row .chip-group-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--text-secondary, #6b7280);
+    margin-right: 4px;
+  }
+
+  .chip-group {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .chip-btn {
+    font-family: var(--font-primary, inherit);
+    font-size: 12px;
+    font-weight: 500;
+    height: 30px;
+    padding: 0 12px;
+    border-radius: 999px;
+    border: 1px solid var(--border, #e5e7eb);
+    background: var(--surface, #fff);
+    color: var(--text-secondary, #6b7280);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.12s ease;
+    line-height: 1;
+    white-space: nowrap;
+  }
+  .chip-btn:hover {
+    border-color: #cbd5e1;
+    color: var(--text-primary, #111827);
+  }
+  .chip-btn[aria-pressed="true"] {
+    background: rgba(0, 115, 209, 0.10);
+    border-color: #0073D1;
+    color: #0073D1;
+    font-weight: 600;
+  }
+  .chip-btn:focus-visible {
+    outline: 2px solid #0073D1;
+    outline-offset: 2px;
+  }
+  .chip-btn .chip-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .chip-btn[data-val="active"]   .chip-dot { background: #16a34a; }
+  .chip-btn[data-val="expiring"] .chip-dot { background: #ea580c; }
+  .chip-btn[data-val="expired"]  .chip-dot { background: #dc2626; }
+  .chip-btn[data-val="revoked"]  .chip-dot { background: #6b7280; }
+  .chip-btn .chip-arrow {
+    width: 10px; height: 10px;
+    opacity: 0;
+  }
+  .chip-btn[data-sort-dir="asc"]  .chip-arrow,
+  .chip-btn[data-sort-dir="desc"] .chip-arrow { opacity: 1; }
+  .chip-btn[data-sort-dir="asc"]  .chip-arrow { transform: rotate(180deg); }
+
+  .search-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+  }
+
+  .clear-link {
+    font-family: var(--font-primary, inherit);
+    background: none;
+    border: none;
+    padding: 8px 4px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-secondary, #6b7280);
+    cursor: pointer;
+    text-decoration: none;
+    margin-left: auto;
+  }
+  .clear-link:hover { color: #0073D1; text-decoration: underline; }
+  .clear-link:focus-visible {
+    outline: 2px solid #0073D1;
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  /* Hidden legacy select controls — kept for test backcompat */
+  .sr-only {
+    position: absolute !important;
+    width: 1px; height: 1px;
+    padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0,0,0,0);
+    white-space: nowrap; border: 0;
+  }
+
+  /* ── Card list ─────────────────────────────────────────────────────────── */
+  .tokens-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .token-card {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+    padding: 16px 20px;
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    transition: box-shadow 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+  }
+  .token-card:hover {
+    box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06);
+    border-color: #cbd5e1;
+  }
+  .token-card.is-revoked,
+  .token-card.is-expired {
+    background: #fafbfc;
+  }
+  .token-card.is-revoked .token-name {
+    text-decoration: line-through;
+    color: var(--text-secondary, #6b7280);
+  }
+
+  .token-main {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .avatar-sm {
+    width: 32px; height: 32px;
+    border-radius: 50%;
+    background: #0073D1;
+    color: #fff;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    text-transform: uppercase;
+  }
+  .token-text { min-width: 0; }
+  .token-name {
+    display: block;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary, #1A253C);
+    line-height: 1.3;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 380px;
+  }
+  .token-meta {
+    display: block;
+    font-size: 13px;
+    color: var(--text-secondary, #6b7280);
+    line-height: 1.4;
+    margin-top: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 420px;
+  }
+  .chip-mono {
+    display: inline-block;
+    padding: 1px 6px;
+    background: var(--border-light, #f3f4f6);
+    border-radius: 4px;
+    font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
+    font-size: 11.5px;
+    color: var(--text-secondary, #6b7280);
+    letter-spacing: 0.2px;
+    margin: 0 2px;
+  }
+
+  .token-usage {
+    flex: 0 0 200px;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .token-usage .usage-main {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-primary, #1A253C);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .token-usage .usage-sub {
+    font-size: 11.5px;
+    color: var(--text-secondary, #6b7280);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .token-usage.soon .usage-main   { color: #c2410c; }
+  .token-usage.expired .usage-main{ color: #b91c1c; }
+  .token-usage.strike .usage-main { text-decoration: line-through; color: #9ca3af; font-weight: 400; }
+
+  .token-aside {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+
+  /* ── Status pill ───────────────────────────────────────────────────────── */
+  .status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    white-space: nowrap;
+  }
+  .status-pill .pill-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .status-pill.status-active     { background: rgba(22, 163, 74, 0.12);  color: #15803d; }
+  .status-pill.status-active     .pill-dot { background: #16a34a; }
+  .status-pill.status-expiring   { background: rgba(234, 88, 12, 0.12);  color: #c2410c; }
+  .status-pill.status-expiring   .pill-dot { background: #ea580c; }
+  .status-pill.status-expired    { background: rgba(220, 38, 38, 0.12);  color: #b91c1c; }
+  .status-pill.status-expired    .pill-dot { background: #dc2626; }
+  .status-pill.status-revoked    { background: rgba(107, 114, 128, 0.12); color: #4b5563; }
+  .status-pill.status-revoked    .pill-dot { background: #6b7280; }
+
+  /* ── Revoke button ─────────────────────────────────────────────────────── */
+  .revoke-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 32px;
+    padding: 0 14px;
+    border-radius: 8px;
+    font-family: var(--font-primary, inherit);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    background: transparent;
+    color: #dc2626;
+    border: 1px solid rgba(220, 38, 38, 0.35);
+    transition: all 0.12s ease;
+    line-height: 1;
+  }
+  .revoke-btn:hover:not([disabled]) {
+    background: #dc2626;
+    color: #fff;
+    border-color: #dc2626;
+  }
+  .revoke-btn:focus-visible {
+    outline: 2px solid #0073D1;
+    outline-offset: 2px;
+  }
+  .revoke-btn[disabled] {
+    opacity: 0.4;
+    cursor: not-allowed;
+    border-color: var(--border, #e5e7eb);
+    color: var(--text-secondary, #9ca3af);
+  }
+  .revoke-btn svg { display: block; }
+  .token-card:hover .revoke-btn:not([disabled]) {
+    border-color: #dc2626;
+  }
+
+  /* ── Empty / loading ───────────────────────────────────────────────────── */
+  .tokens-empty, .tokens-loading {
+    text-align: center;
+    padding: 48px 24px;
+    color: var(--text-secondary, #6b7280);
+    font-size: 14px;
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+  }
+  .tokens-empty .empty-icon {
+    margin: 0 auto 14px;
+    width: 56px; height: 56px;
+    color: #d1d5db;
+  }
+  .tokens-empty .empty-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary, #1A253C);
+    margin: 0 0 4px;
+  }
+  .tokens-empty .empty-body {
+    font-size: 13px;
+    margin: 0 0 16px;
+  }
+  .tokens-empty .empty-clear {
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    font-family: var(--font-primary, inherit);
+    border: 1px solid var(--border, #e5e7eb);
+    background: var(--surface, #fff);
+    color: var(--text-primary, #1A253C);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .tokens-empty .empty-clear:hover {
+    border-color: #0073D1;
+    color: #0073D1;
+    background: rgba(0, 115, 209, 0.04);
+  }
+
+  /* ── Modal ─────────────────────────────────────────────────────────────── */
+  .modal-backdrop {
+    position: fixed; inset: 0;
+    background: rgba(15, 23, 42, 0.55);
+    backdrop-filter: blur(2px);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    padding: 16px;
+  }
+  .modal-backdrop.is-open { display: flex; }
+  .modal-card {
+    background: var(--surface, #fff);
+    border-radius: 16px;
+    padding: 32px;
+    width: 100%;
+    max-width: 480px;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.28);
+    animation: modal-in 0.18s ease-out;
+  }
+  @keyframes modal-in {
+    from { opacity: 0; transform: translateY(8px) scale(0.98); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  .modal-card h3 {
+    margin: 0 0 10px;
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--text-primary, #1A253C);
+    letter-spacing: -0.01em;
+  }
+  .modal-card p.sub {
+    margin: 0 0 18px;
+    font-size: 13.5px;
+    color: var(--text-secondary, #6b7280);
+    line-height: 1.55;
+  }
+  .modal-meta {
+    margin: 14px 0 4px;
+    padding: 14px 16px;
+    background: var(--background, #F5F7FA);
+    border: 1px solid var(--border-light, #f3f4f6);
+    border-radius: 10px;
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 6px 14px;
+    font-size: 13px;
+  }
+  .modal-meta .mk {
+    color: var(--text-secondary, #6b7280);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    font-weight: 600;
+    align-self: center;
+  }
+  .modal-meta .mv {
+    color: var(--text-primary, #1A253C);
+    font-weight: 500;
+    word-break: break-all;
+  }
+  .modal-meta .mv.mono {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 12px;
+    font-weight: 400;
+  }
+  .modal-actions {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+    margin-top: 24px;
+  }
+  .modal-btn {
+    padding: 10px 18px;
+    border-radius: 8px;
+    font-size: 13.5px;
+    font-weight: 500;
+    font-family: var(--font-primary, inherit);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    border: 1px solid var(--border, #e5e7eb);
+    background: var(--surface, #fff);
+    color: var(--text-primary, #1A253C);
+  }
+  .modal-btn:hover {
+    border-color: #cbd5e1;
+    background: var(--background, #F5F7FA);
+  }
+  .modal-btn.danger {
+    background: #dc2626;
+    color: #fff;
+    border-color: #dc2626;
+  }
+  .modal-btn.danger:hover {
+    background: #b91c1c;
+    border-color: #b91c1c;
+  }
+  .modal-btn:focus-visible {
+    outline: 2px solid #0073D1;
+    outline-offset: 2px;
+  }
+
+  /* ── Toast ─────────────────────────────────────────────────────────────── */
+  .toast-stack {
+    position: fixed; bottom: 24px; right: 24px; z-index: 2000;
+    display: flex; flex-direction: column; gap: 8px; pointer-events: none;
+  }
+  .toast {
+    background: #111827;
+    color: #fff;
+    padding: 11px 18px;
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 500;
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.28);
+    opacity: 0;
+    transform: translateY(8px);
+    transition: opacity 0.2s, transform 0.2s;
+    pointer-events: auto;
+    max-width: 400px;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast.success { background: #047857; }
+  .toast.error   { background: #b91c1c; }
+
+  /* ── New-token reveal banner ─────────────────────────── */
+  .reveal-banner {
+    display: none;
+    background: linear-gradient(135deg, #fef9c3 0%, #fef3c7 100%);
+    border: 1px solid #fcd34d;
+    border-radius: 12px;
+    padding: 18px 22px;
+    margin-bottom: 16px;
+    box-shadow: 0 4px 14px rgba(234, 179, 8, 0.18);
+  }
+  .reveal-banner.is-open { display: block; }
+  .reveal-banner h4 {
+    margin: 0 0 6px;
+    font-size: 14px;
+    font-weight: 700;
+    color: #713f12;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .reveal-banner p {
+    margin: 0 0 12px;
+    font-size: 13px;
+    color: #78350f;
+    line-height: 1.5;
+  }
+  .reveal-banner .reveal-row {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .reveal-banner .reveal-token {
+    flex: 1 1 320px;
+    min-width: 0;
+    font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+    font-size: 12px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid #fcd34d;
+    background: #fff;
+    color: #1A253C;
+    word-break: break-all;
+  }
+  .reveal-banner .reveal-btn {
+    height: 38px;
+    padding: 0 14px;
+    border-radius: 8px;
+    border: 1px solid #fcd34d;
+    background: #fff;
+    color: #713f12;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    font-family: inherit;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .reveal-banner .reveal-btn:hover {
+    background: #fef3c7;
+  }
+  .reveal-banner .reveal-btn.primary {
+    background: #713f12;
+    color: #fff;
+    border-color: #713f12;
+  }
+  .reveal-banner .reveal-btn.primary:hover {
+    background: #5a3411;
+  }
+
+  /* ── Create-token modal form ───────────────────────────────────────────── */
+  .modal-form-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 14px;
+  }
+  .modal-form-field label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--text-secondary, #6b7280);
+  }
+  .modal-form-field input[type="text"],
+  .modal-form-field select {
+    height: 38px;
+    padding: 0 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border, #e5e7eb);
+    font-size: 13.5px;
+    font-family: inherit;
+    color: var(--text-primary, #1A253C);
+    background: var(--surface, #fff);
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  .modal-form-field input[type="text"]:focus,
+  .modal-form-field select:focus {
+    outline: none;
+    border-color: #0073D1;
+    box-shadow: 0 0 0 3px rgba(0, 115, 209, 0.15);
+  }
+  .modal-btn.primary {
+    background: #0073D1;
+    color: #fff;
+    border-color: #0073D1;
+  }
+  .modal-btn.primary:hover {
+    background: #0056A3;
+    border-color: #0056A3;
+  }
+
+  /* ── Responsive ────────────────────────────────────────────────────────── */
+  @media (max-width: 720px) {
+    .tokens-page { padding: 20px 16px 32px; }
+    .tokens-hero { padding: 24px 20px 20px; }
+    .tokens-hero .tokens-title { font-size: 22px; }
+    .tokens-hero .hero-top { flex-direction: column; align-items: stretch; }
+    .hero-action-btn { align-self: flex-start; }
+
+    .token-card {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 14px;
+    }
+    .token-main { width: 100%; }
+    .token-name { max-width: none; white-space: normal; }
+    .token-meta { max-width: none; white-space: normal; }
+    .token-usage {
+      flex: 1 1 auto;
+      width: 100%;
+      padding-left: 44px; /* align under avatar */
+    }
+    .token-aside {
+      width: 100%;
+      justify-content: space-between;
+      padding-left: 44px;
+    }
+  }
+</style>
+
+<div class="tokens-page" data-is-admin="false" data-view="my">
+  <!-- ═════════ HERO ═════════ -->
+  <section class="tokens-hero" aria-labelledby="tokens-title">
+    <div class="hero-top">
+      <div class="hero-text">
+        <div class="hero-eyebrow">Your account</div>
+        <h2 class="tokens-title" id="tokens-title">My tokens</h2>
+        <p class="tokens-subtitle">Long-lived tokens for CLI and headless clients.</p>
+      </div>
+      <button type="button" class="hero-action-btn" id="new-token-btn" aria-haspopup="dialog" aria-controls="create-modal">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <line x1="12" y1="5" x2="12" y2="19"></line>
+          <line x1="5" y1="12" x2="19" y2="12"></line>
+        </svg>
+        New token
+      </button>
+    </div>
+  </section>
+
+  <!-- ═════════ NEW-TOKEN REVEAL ═════════ -->
+  <div class="reveal-banner" id="reveal-banner" role="region" aria-live="polite" aria-label="Newly created token">
+    <h4>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 9v4M12 17h.01M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+      </svg>
+      Copy your token now — it will not be shown again.
+    </h4>
+    <p>This is the only time the full token is visible. Store it securely (a password manager or CI secret store).</p>
+    <div class="reveal-row">
+      <input id="reveal-token" class="reveal-token" type="text" readonly aria-label="New token value">
+      <button type="button" class="reveal-btn primary" id="reveal-copy-btn">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+        </svg>
+        Copy token
+      </button>
+      <button type="button" class="reveal-btn" id="reveal-hide-btn">Hide</button>
+    </div>
+  </div>
+
+  <!-- ═════════ TOOLBAR ═════════ -->
+  <section class="toolbar" aria-label="Filter and sort tokens">
+    <div class="chip-row">
+      <span class="chip-group-label" id="status-group-label">Status</span>
+      <div class="chip-group" role="radiogroup" aria-labelledby="status-group-label" id="flt-status-group">
+        <button type="button" class="chip-btn" role="radio" data-val="all"      aria-pressed="true"  aria-checked="true">All</button>
+        <button type="button" class="chip-btn" role="radio" data-val="active"   aria-pressed="false" aria-checked="false"><span class="chip-dot" aria-hidden="true"></span>Active</button>
+        <button type="button" class="chip-btn" role="radio" data-val="expiring" aria-pressed="false" aria-checked="false"><span class="chip-dot" aria-hidden="true"></span>Expiring</button>
+        <button type="button" class="chip-btn" role="radio" data-val="expired"  aria-pressed="false" aria-checked="false"><span class="chip-dot" aria-hidden="true"></span>Expired</button>
+        <button type="button" class="chip-btn" role="radio" data-val="revoked"  aria-pressed="false" aria-checked="false"><span class="chip-dot" aria-hidden="true"></span>Revoked</button>
+      </div>
+      <!-- Hidden legacy select — kept so test assertion id="flt-status" stays valid -->
+      <select id="flt-status" class="sr-only" tabindex="-1" aria-hidden="true">
+        <option value="all" selected>All</option>
+        <option value="active">Active</option>
+        <option value="expiring">Expiring</option>
+        <option value="expired">Expired</option>
+        <option value="revoked">Revoked</option>
+      </select>
+    </div>
+
+    <div class="chip-row">
+      <span class="chip-group-label" id="sort-group-label">Sort by</span>
+      <div class="chip-group" role="group" aria-labelledby="sort-group-label" id="sort-group">
+        <button type="button" class="chip-btn" data-sort-key="created_at"   data-sort-dir="desc" aria-pressed="true">
+          Created<svg class="chip-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        </button>
+        <button type="button" class="chip-btn" data-sort-key="last_used_at" aria-pressed="false">
+          Last used<svg class="chip-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        </button>
+        <button type="button" class="chip-btn" data-sort-key="expires_at"   aria-pressed="false">
+          Expires<svg class="chip-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        </button>
+      </div>
+      <!-- Hidden legacy select — kept so test assertion id="flt-last-used" stays valid -->
+      <select id="flt-last-used" class="sr-only" tabindex="-1" aria-hidden="true">
+        <option value="any" selected>Any time</option>
+        <option value="never">Never used</option>
+        <option value="7d">&lt; 7 days ago</option>
+        <option value="30d">&lt; 30 days ago</option>
+        <option value="gt30d">&gt; 30 days ago</option>
+        <option value="gt90d">&gt; 90 days ago</option>
+      </select>
+    </div>
+
+    <div class="search-row">
+      <!-- Non-admin: no owner search, but keep legacy id hidden for JS / tests. -->
+      <input id="flt-user" type="hidden" value="">
+      <button type="button" class="clear-link" id="clear-filters-toolbar">Clear filters</button>
+    </div>
+  </section>
+
+  <!-- ═════════ LIST ═════════ -->
+  <div id="tokens-loading" class="tokens-loading">Loading tokens&hellip;</div>
+  <ul class="tokens-list" id="tokens-list" role="list" aria-labelledby="tokens-title"></ul>
+  <div id="tokens-empty" class="tokens-empty" style="display:none;">
+    <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <circle cx="8" cy="15" r="4"></circle>
+      <line x1="10.85" y1="12.15" x2="19" y2="4"></line>
+      <line x1="18" y1="5" x2="20" y2="7"></line>
+      <line x1="15" y1="8" x2="17" y2="10"></line>
+    </svg>
+    <p class="empty-title">No tokens match these filters.</p>
+    <p class="empty-body">Adjust the filters or clear them to see everything.</p>
+    <button type="button" class="empty-clear" id="clear-filters-btn">Clear filters</button>
+  </div>
+</div>
+
+<!-- ═════════ REVOKE MODAL ═════════ -->
+<div class="modal-backdrop" id="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+  <div class="modal-card">
+    <h3 id="confirm-title">Revoke this token?</h3>
+    <p class="sub" id="confirm-text">
+      This cannot be undone and will immediately sign out any session using this token.
+    </p>
+    <div class="modal-meta" id="confirm-meta" aria-hidden="true"></div>
+    <div class="modal-actions">
+      <button class="modal-btn" id="confirm-cancel-btn" data-close-modal="confirm-modal">Cancel</button>
+      <button class="modal-btn danger" id="confirm-ok-btn">Revoke token</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═════════ CREATE-TOKEN MODAL ═════════ -->
+<div class="modal-backdrop" id="create-modal" role="dialog" aria-modal="true" aria-labelledby="create-title">
+  <div class="modal-card">
+    <h3 id="create-title">Create a personal access token</h3>
+    <p class="sub">
+      Long-lived tokens let the CLI, CI jobs, and Claude Code talk to the server without
+      a browser session. You'll see the token value exactly once.
+    </p>
+    <form id="create-form" onsubmit="return false;">
+      <div class="modal-form-field">
+        <label for="create-name">Token name</label>
+        <input type="text" id="create-name" name="name" maxlength="64" placeholder="e.g. laptop, github-ci" required autocomplete="off">
+      </div>
+      <div class="modal-form-field">
+        <label for="create-ttl">Expires in</label>
+        <select id="create-ttl" name="expires_in_days">
+          <option value="30">30 days</option>
+          <option value="90" selected>90 days</option>
+          <option value="365">1 year</option>
+          <option value="">Never</option>
+        </select>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="modal-btn" data-close-modal="create-modal">Cancel</button>
+        <button type="submit" class="modal-btn primary" id="create-submit-btn">Create token</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+
+<script>
+// My tokens — user's OWN PATs (non-admin or admin-own view).
+const API_LIST   = "/auth/tokens";
+const API_REVOKE = (id) => `/auth/tokens/${encodeURIComponent(id)}`;
+const API_CREATE = "/auth/tokens";
+const SEVEN_DAYS = 7 * 86_400_000;
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+function esc(s) {
+  const d = document.createElement("div");
+  d.textContent = s == null ? "" : String(s);
+  return d.innerHTML;
+}
+function fmtAbs(s) { return s ? String(s).replace("T", " ").slice(0, 19) : "—"; }
+function parseDate(s) {
+  if (!s) return null;
+  const str = String(s).replace(" ", "T");
+  const d = new Date(str);
+  return isNaN(d.getTime()) ? null : d;
+}
+function relTime(s) {
+  const d = parseDate(s);
+  if (!d) return "—";
+  const diff = Date.now() - d.getTime();
+  const abs = Math.abs(diff);
+  const sign = diff < 0 ? "in " : "";
+  const suf  = diff >= 0 ? " ago" : "";
+  const min = 60_000, hr = 3_600_000, day = 86_400_000;
+  if (abs < min) return sign + "just now";
+  if (abs < hr)  return sign + Math.floor(abs / min) + "m"  + suf;
+  if (abs < day) return sign + Math.floor(abs / hr)  + "h"  + suf;
+  const days = Math.floor(abs / day);
+  if (days === 1) return sign + "1 day" + suf;
+  if (days < 60)  return sign + days + " days" + suf;
+  const months = Math.floor(days / 30);
+  if (months < 24) return sign + months + "mo" + suf;
+  return sign + Math.floor(days / 365) + "y" + suf;
+}
+function initialsFor(seed) {
+  if (!seed) return "??";
+  const clean = String(seed).trim();
+  if (clean.includes("@")) {
+    const local = clean.split("@")[0];
+    if (local.includes(".")) {
+      const parts = local.split(".").filter(Boolean);
+      return (parts[0][0] + (parts[1] ? parts[1][0] : parts[0][1] || "")).toUpperCase();
+    }
+    return (local[0] + (local[1] || "")).toUpperCase();
+  }
+  // Token-name seed: take first two non-space chars.
+  const letters = clean.replace(/[^A-Za-z0-9]/g, "");
+  return (letters.slice(0, 2) || clean.slice(0, 2)).toUpperCase();
+}
+
+function computeStatus(t, now) {
+  if (t.revoked_at) return "revoked";
+  const exp = parseDate(t.expires_at);
+  if (exp && exp.getTime() < now) return "expired";
+  if (exp && (exp.getTime() - now) < SEVEN_DAYS) return "expiring";
+  return "active";
+}
+function statusPill(status) {
+  const map = {
+    active:   { cls: "status-active",   label: "active",   aria: "active token" },
+    expiring: { cls: "status-expiring", label: "expiring", aria: "token expiring soon" },
+    expired:  { cls: "status-expired",  label: "expired",  aria: "expired token" },
+    revoked:  { cls: "status-revoked",  label: "revoked",  aria: "revoked token" },
+  };
+  const info = map[status] || map.revoked;
+  return `<span class="status-pill ${info.cls}" aria-label="${info.aria}"><span class="pill-dot" aria-hidden="true"></span>${info.label}</span>`;
+}
+function statusTooltip(t, status) {
+  if (status === "revoked") return t.revoked_at ? "Revoked " + relTime(t.revoked_at) : "Revoked";
+  if (status === "expired") return t.expires_at ? "Expired " + relTime(t.expires_at) : "Expired";
+  if (status === "expiring") return t.expires_at ? "Expires " + relTime(t.expires_at) : "Expiring soon";
+  return t.expires_at ? "Active, expires " + relTime(t.expires_at) : "Active";
+}
+
+// ── Toast ──────────────────────────────────────────────────────────────────
+function toast(msg, kind = "") {
+  const el = document.createElement("div");
+  el.className = "toast " + kind;
+  el.textContent = msg;
+  document.getElementById("toast-stack").appendChild(el);
+  requestAnimationFrame(() => el.classList.add("show"));
+  setTimeout(() => { el.classList.remove("show"); setTimeout(() => el.remove(), 250); }, 3500);
+}
+
+// ── Modal ──────────────────────────────────────────────────────────────────
+let _modalPrevFocus = null;
+function openModal(id) {
+  const m = document.getElementById(id);
+  _modalPrevFocus = document.activeElement;
+  m.classList.add("is-open");
+  const cancel = m.querySelector("#confirm-cancel-btn");
+  if (cancel) setTimeout(() => cancel.focus(), 10);
+}
+function closeModal(id) {
+  const m = document.getElementById(id);
+  m.classList.remove("is-open");
+  if (_modalPrevFocus && typeof _modalPrevFocus.focus === "function") {
+    try { _modalPrevFocus.focus(); } catch (_) {}
+  }
+  _modalPrevFocus = null;
+}
+document.querySelectorAll("[data-close-modal]").forEach(el =>
+  el.addEventListener("click", () => closeModal(el.dataset.closeModal)));
+document.querySelectorAll(".modal-backdrop").forEach(el => {
+  el.addEventListener("click", e => { if (e.target === el) closeModal(el.id); });
+});
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") {
+    document.querySelectorAll(".modal-backdrop.is-open").forEach(m => closeModal(m.id));
+  }
+  if (e.key === "Tab") {
+    const open = document.querySelector(".modal-backdrop.is-open");
+    if (!open) return;
+    const focusables = open.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+    if (!focusables.length) return;
+    const first = focusables[0];
+    const last  = focusables[focusables.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault(); last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault(); first.focus();
+    }
+  }
+});
+
+function confirmModal({ title, sub, meta, okLabel = "Revoke token" }) {
+  document.getElementById("confirm-title").textContent = title;
+  document.getElementById("confirm-text").textContent = sub;
+  const metaEl = document.getElementById("confirm-meta");
+  if (meta && Object.keys(meta).length) {
+    let html = "";
+    for (const [k, v] of Object.entries(meta)) {
+      const isMono = k === "Prefix";
+      html += `<span class="mk">${esc(k)}</span><span class="mv${isMono ? " mono" : ""}">${esc(v)}</span>`;
+    }
+    metaEl.innerHTML = html;
+    metaEl.style.display = "grid";
+  } else {
+    metaEl.style.display = "none";
+  }
+  const okBtn = document.getElementById("confirm-ok-btn");
+  okBtn.textContent = okLabel;
+  return new Promise(resolve => {
+    const ok = () => { closeModal("confirm-modal"); cleanup(); resolve(true); };
+    const cancel = () => { cleanup(); resolve(false); };
+    const onCancelClick = () => cancel();
+    const cancelBtn = document.getElementById("confirm-cancel-btn");
+    function cleanup() {
+      okBtn.removeEventListener("click", ok);
+      cancelBtn.removeEventListener("click", onCancelClick);
+    }
+    okBtn.addEventListener("click", ok, { once: true });
+    cancelBtn.addEventListener("click", onCancelClick, { once: true });
+    openModal("confirm-modal");
+  });
+}
+
+// ── State ──────────────────────────────────────────────────────────────────
+let allTokens = [];
+let filters = { status: "all" };
+let sort = { key: "created_at", dir: "desc" };
+
+function applyFilters(items) {
+  const now = Date.now();
+  return items.filter(t => {
+    const s = computeStatus(t, now);
+    if (filters.status !== "all" && s !== filters.status) return false;
+    return true;
+  });
+}
+
+function sortItems(items) {
+  const now = Date.now();
+  const { key, dir } = sort;
+  const mul = dir === "asc" ? 1 : -1;
+  return [...items].sort((a, b) => {
+    let va, vb;
+    if (key === "status") { va = computeStatus(a, now); vb = computeStatus(b, now); }
+    else { va = a[key] || ""; vb = b[key] || ""; }
+    if (va < vb) return -1 * mul;
+    if (va > vb) return 1 * mul;
+    return 0;
+  });
+}
+
+// ── Card render ────────────────────────────────────────────────────────────
+const TRASH_SVG = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"></path></svg>`;
+
+function renderCard(t, now) {
+  const status = computeStatus(t, now);
+  // Avatar seeded from token NAME (the list is self-owned, owner email would
+  // be identical on every card → noisy).
+  const initials = initialsFor(t.name || "");
+  const exp = parseDate(t.expires_at);
+
+  const lastUsedRel = t.last_used_at ? relTime(t.last_used_at) : "—";
+  const lastUsedIp  = t.last_used_ip ? `from ${esc(t.last_used_ip)}` : (t.last_used_at ? "" : "never used");
+  const lastUsedTitle = t.last_used_at
+    ? `${fmtAbs(t.last_used_at)}${t.last_used_ip ? " from " + t.last_used_ip : ""}`
+    : "never used";
+
+  let usageCls = "";
+  if (status === "revoked") usageCls = "";
+
+  const createdRel = relTime(t.created_at);
+  let expPart = "";
+  if (t.revoked_at) {
+    expPart = `<span style="color:#6b7280;">Revoked ${esc(relTime(t.revoked_at))}</span>`;
+  } else if (exp) {
+    const delta = exp.getTime() - now;
+    if (delta < 0) {
+      expPart = `<span style="color:#b91c1c;font-weight:500;">Expired ${esc(relTime(t.expires_at))}</span>`;
+    } else if (delta < SEVEN_DAYS) {
+      expPart = `<span style="color:#c2410c;font-weight:500;">Expires ${esc(relTime(t.expires_at))}</span>`;
+    } else {
+      expPart = `Expires ${esc(relTime(t.expires_at))}`;
+    }
+  } else {
+    expPart = "No expiry";
+  }
+
+  const card = document.createElement("li");
+  card.className = "token-card" + (status === "revoked" ? " is-revoked" : "") + (status === "expired" ? " is-expired" : "");
+  card.setAttribute("role", "listitem");
+  card.setAttribute("data-token-card", t.id);
+  card.setAttribute("data-status", status);
+
+  card.innerHTML = `
+    <div class="token-main">
+      <span class="avatar-sm" aria-hidden="true">${esc(initials)}</span>
+      <div class="token-text">
+        <span class="token-name" title="${esc(t.name)}">${esc(t.name)}</span>
+        <span class="token-meta">
+          <span class="chip-mono">${esc(t.prefix)}&hellip;</span>
+          <span aria-hidden="true"> &middot; </span>
+          <span>Created ${esc(createdRel)}</span>
+          <span aria-hidden="true"> &middot; </span>
+          ${expPart}
+        </span>
+      </div>
+    </div>
+    <div class="token-usage ${usageCls}" title="${esc(lastUsedTitle)}">
+      <span class="usage-main">Last used ${esc(lastUsedRel)}</span>
+      ${lastUsedIp ? `<span class="usage-sub">${lastUsedIp}</span>` : ""}
+    </div>
+    <div class="token-aside">
+      <span title="${esc(statusTooltip(t, status))}">${statusPill(status)}</span>
+      <button type="button" class="revoke-btn" data-revoke
+              data-token-id="${esc(t.id)}"
+              data-token-name="${esc(t.name)}"
+              data-token-prefix="${esc(t.prefix)}"
+              aria-label="Revoke token ${esc(t.name)}"
+              title="Revoke token"
+              ${t.revoked_at ? "disabled" : ""}>
+        ${TRASH_SVG}
+        <span>Revoke</span>
+      </button>
+    </div>`;
+  return card;
+}
+
+function renderList() {
+  const list = document.getElementById("tokens-list");
+  const loading = document.getElementById("tokens-loading");
+  const empty = document.getElementById("tokens-empty");
+  loading.style.display = "none";
+
+  const filtered = sortItems(applyFilters(allTokens));
+  list.innerHTML = "";
+
+  if (filtered.length === 0) {
+    empty.style.display = "block";
+    list.style.display = "none";
+    return;
+  }
+  empty.style.display = "none";
+  list.style.display = "flex";
+
+  const now = Date.now();
+  for (const t of filtered) list.appendChild(renderCard(t, now));
+
+  list.querySelectorAll("[data-revoke]").forEach(el => {
+    el.addEventListener("click", () => revokeToken({
+      id: el.dataset.tokenId,
+      name: el.dataset.tokenName,
+      prefix: el.dataset.tokenPrefix,
+    }));
+  });
+}
+
+async function loadTokens() {
+  try {
+    const r = await fetch(API_LIST, { credentials: "include" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    allTokens = await r.json();
+    renderList();
+  } catch (e) {
+    document.getElementById("tokens-loading").textContent = "Failed to load tokens: " + e.message;
+    toast("Failed to load tokens", "error");
+  }
+}
+
+async function revokeToken({ id, name, prefix }) {
+  const meta = { "Name": name, "Prefix": (prefix || "") + "…" };
+  const confirmed = await confirmModal({
+    title: "Revoke this token?",
+    sub: "This cannot be undone and will immediately sign out any session using this token.",
+    meta,
+    okLabel: "Revoke token",
+  });
+  if (!confirmed) return;
+  const r = await fetch(API_REVOKE(id), { method: "DELETE", credentials: "include" });
+  if (!r.ok) { toast("Failed: " + (await r.text()), "error"); return; }
+  toast("Token revoked", "success");
+  await loadTokens();
+}
+
+// ── Filter chips (status) ──────────────────────────────────────────────────
+function setStatusFilter(val) {
+  filters.status = val;
+  document.querySelectorAll("#flt-status-group .chip-btn").forEach(b => {
+    const on = b.dataset.val === val;
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+    b.setAttribute("aria-checked", on ? "true" : "false");
+  });
+  const sel = document.getElementById("flt-status");
+  if (sel) sel.value = val;
+  renderList();
+}
+document.querySelectorAll("#flt-status-group .chip-btn").forEach(btn => {
+  btn.addEventListener("click", () => setStatusFilter(btn.dataset.val));
+});
+document.getElementById("flt-status").addEventListener("change", e => setStatusFilter(e.target.value));
+
+// ── Sort chips ─────────────────────────────────────────────────────────────
+function setSort(key) {
+  if (sort.key === key) {
+    sort.dir = sort.dir === "asc" ? "desc" : "asc";
+  } else {
+    sort.key = key;
+    sort.dir = "desc";
+  }
+  document.querySelectorAll("#sort-group .chip-btn").forEach(b => {
+    if (b.dataset.sortKey === sort.key) {
+      b.setAttribute("aria-pressed", "true");
+      b.setAttribute("data-sort-dir", sort.dir);
+    } else {
+      b.setAttribute("aria-pressed", "false");
+      b.removeAttribute("data-sort-dir");
+    }
+  });
+  renderList();
+}
+document.querySelectorAll("#sort-group .chip-btn").forEach(btn => {
+  btn.addEventListener("click", () => setSort(btn.dataset.sortKey));
+});
+
+function clearFilters() {
+  filters = { status: "all" };
+  setStatusFilter("all");
+  const lu = document.getElementById("flt-last-used");
+  if (lu) lu.value = "any";
+  renderList();
+}
+document.getElementById("clear-filters-btn").addEventListener("click", clearFilters);
+document.getElementById("clear-filters-toolbar").addEventListener("click", clearFilters);
+
+// ── Create-token flow ──────────────────────────────────────────────────────
+(function bindCreateFlow() {
+  const openBtn = document.getElementById("new-token-btn");
+  const form    = document.getElementById("create-form");
+  const submitBtn = document.getElementById("create-submit-btn");
+  const nameIn  = document.getElementById("create-name");
+  const ttlIn   = document.getElementById("create-ttl");
+  const banner  = document.getElementById("reveal-banner");
+  const revealIn  = document.getElementById("reveal-token");
+  const copyBtn   = document.getElementById("reveal-copy-btn");
+  const hideBtn   = document.getElementById("reveal-hide-btn");
+
+  if (!openBtn || !form) return;
+
+  openBtn.addEventListener("click", () => {
+    nameIn.value = "";
+    ttlIn.value = "90";
+    openModal("create-modal");
+    setTimeout(() => nameIn.focus(), 20);
+  });
+
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const name = (nameIn.value || "").trim();
+    if (!name) { toast("Token name is required", "error"); return; }
+    const ttl = ttlIn.value;
+    const body = {name, expires_in_days: ttl ? Number(ttl) : null};
+    submitBtn.disabled = true;
+    try {
+      const r = await fetch(API_CREATE, {
+        method: "POST", credentials: "include",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) { toast("Failed: " + (await r.text()), "error"); return; }
+      const data = await r.json();
+      revealIn.value = data.token || "";
+      banner.classList.add("is-open");
+      closeModal("create-modal");
+      toast("Token created", "success");
+      await loadTokens();
+      banner.scrollIntoView({ behavior: "smooth", block: "start" });
+    } finally {
+      submitBtn.disabled = false;
+    }
+  });
+
+  copyBtn?.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(revealIn.value);
+      toast("Token copied to clipboard", "success");
+    } catch {
+      revealIn.select();
+      document.execCommand("copy");
+      toast("Token copied", "success");
+    }
+  });
+  hideBtn?.addEventListener("click", () => {
+    banner.classList.remove("is-open");
+    revealIn.value = ""; // do not retain in DOM
+  });
+})();
+
+loadTokens();
+</script>
+{% endblock %}

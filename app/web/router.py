@@ -8,6 +8,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -152,6 +153,11 @@ def _build_context(request: Request, user: Optional[dict] = None, **extra) -> di
                 return {k: v for k, v in theme.items() if v}
             return {}
 
+    # Lines + server_url for the "Setup a new Claude Code" preview/clipboard
+    # partial; single source of truth lives in app/web/setup_instructions.py.
+    from app.web.setup_instructions import SETUP_INSTRUCTIONS_LINES
+    ctx_server_url = str(request.base_url).rstrip("/")
+
     ctx = {
         "request": request,
         "config": ConfigProxy,
@@ -162,8 +168,11 @@ def _build_context(request: Request, user: Optional[dict] = None, **extra) -> di
         "get_flashed_messages": lambda **kwargs: [],
         "url_for": lambda endpoint, **kw: _url_for_shim(endpoint, **kw),
         "session": _FlexDict({"user": user}) if user else _FlexDict(),
+        "setup_instructions_lines": SETUP_INSTRUCTIONS_LINES,
+        "server_url": ctx_server_url,
     }
     # Flex all extra context values for template compatibility
+    # (but skip ones we just populated — extras with the same key win)
     for k, v in extra.items():
         ctx[k] = _flex(v) if isinstance(v, (dict, list)) else v
     return ctx
@@ -192,6 +201,10 @@ async def setup_wizard(request: Request, conn: duckdb.DuckDBPyConnection = Depen
 
 @router.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
+    next_path = request.query_params.get("next", "")
+    if not next_path.startswith("/") or next_path.startswith("//"):
+        next_path = ""
+
     providers = []
     try:
         from app.auth.providers.google import is_available as google_available
@@ -211,39 +224,54 @@ async def login_page(request: Request):
     login_buttons = []
     for p in providers:
         if p["name"] == "google":
-            login_buttons.append({"url": "/auth/google/login", "text": "Sign in with Google", "css_class": "btn-primary", "icon_html": ""})
+            _url = "/auth/google/login"
+            if next_path:
+                _url += f"?next={quote(next_path, safe='')}"
+            login_buttons.append({"url": _url, "text": "Sign in with Google", "css_class": "btn-primary", "icon_html": ""})
         elif p["name"] == "password":
-            login_buttons.append({"url": "/login/password", "text": "Sign in with Email & Password", "css_class": "btn-secondary", "icon_html": ""})
+            _url = "/login/password"
+            if next_path:
+                _url += f"?next={quote(next_path, safe='')}"
+            login_buttons.append({"url": _url, "text": "Sign in with Email & Password", "css_class": "btn-secondary", "icon_html": ""})
         elif p["name"] == "email":
-            login_buttons.append({"url": "/login/email", "text": "Sign in with Email Link", "css_class": "btn-secondary", "icon_html": ""})
+            _url = "/login/email"
+            if next_path:
+                _url += f"?next={quote(next_path, safe='')}"
+            login_buttons.append({"url": _url, "text": "Sign in with Email Link", "css_class": "btn-secondary", "icon_html": ""})
 
-    ctx = _build_context(request, providers=providers, login_buttons=login_buttons)
+    ctx = _build_context(request, providers=providers, login_buttons=login_buttons, next_path=next_path)
     return templates.TemplateResponse(request, "login.html", ctx)
 
 
 @router.get("/login/password", response_class=HTMLResponse)
 async def login_password_page(request: Request):
     """Password login form (email + password)."""
+    next_path = request.query_params.get("next", "")
+    if not next_path.startswith("/") or next_path.startswith("//"):
+        next_path = ""
     google_ok = False
     try:
         from app.auth.providers.google import is_available as google_available
         google_ok = google_available()
     except Exception:
         pass
-    ctx = _build_context(request, google_available=google_ok)
+    ctx = _build_context(request, google_available=google_ok, next_path=next_path)
     return templates.TemplateResponse(request, "login_email.html", ctx)
 
 
 @router.get("/login/email", response_class=HTMLResponse)
 async def login_email_page(request: Request):
     """Email magic link login form."""
+    next_path = request.query_params.get("next", "")
+    if not next_path.startswith("/") or next_path.startswith("//"):
+        next_path = ""
     google_ok = False
     try:
         from app.auth.providers.google import is_available as google_available
         google_ok = google_available()
     except Exception:
         pass
-    ctx = _build_context(request, google_available=google_ok)
+    ctx = _build_context(request, google_available=google_ok, next_path=next_path)
     return templates.TemplateResponse(request, "login_email.html", ctx)
 
 
@@ -288,7 +316,6 @@ async def dashboard(
         account_status="active",
         account_details=None,
         telegram_status={"linked": False},
-        setup_instructions="Use 'da login' to connect your CLI tool.",
         data_stats={
             "tables": total_tables,
             "total_tables": total_tables,
@@ -495,6 +522,22 @@ async def activity_center(
     return templates.TemplateResponse(request, "activity_center.html", ctx)
 
 
+@router.get("/install", response_class=HTMLResponse)
+async def install_page(
+    request: Request,
+    user: Optional[dict] = Depends(get_optional_user),
+):
+    """Public install instructions for the CLI."""
+    base_url = str(request.base_url).rstrip("/")
+    ctx = _build_context(
+        request,
+        user=user,
+        server_url=base_url,
+        agnes_version=os.environ.get("AGNES_VERSION", "dev"),
+    )
+    return templates.TemplateResponse(request, "install.html", ctx)
+
+
 @router.get("/admin/tables", response_class=HTMLResponse)
 async def admin_tables(
     request: Request,
@@ -517,3 +560,48 @@ async def admin_permissions_page(
     """Admin page for managing permissions and access requests."""
     ctx = _build_context(request, user=user)
     return templates.TemplateResponse(request, "admin_permissions.html", ctx)
+
+
+@router.get("/admin/users", response_class=HTMLResponse)
+async def admin_users_page(
+    request: Request,
+    user: dict = Depends(require_role(Role.ADMIN)),
+):
+    """Admin page for user management."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_users.html", ctx)
+
+
+@router.get("/tokens", response_class=HTMLResponse)
+async def my_tokens_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """My tokens — ANY signed-in user (incl. admins' own).
+
+    Always shows the user's own PATs. Create + reveal + revoke-own flow.
+    Admins who need the org-wide view go to /admin/tokens.
+    """
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "my_tokens.html", ctx)
+
+
+@router.get("/admin/tokens", response_class=HTMLResponse)
+async def admin_tokens_page(
+    request: Request,
+    user: dict = Depends(require_role(Role.ADMIN)),
+):
+    """Admin — list of ALL tokens for incident response + offboarding.
+
+    Admin-only. No create form here (admins mint their own PATs via /tokens).
+    URL param ?user=<email> pre-fills the owner filter (deep-link from
+    /admin/users "Tokens" action).
+    """
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_tokens.html", ctx)
+
+
+@router.get("/profile")
+async def profile_redirect(request: Request):
+    """Back-compat: /profile (PAT CRUD) has been unified under /tokens."""
+    return RedirectResponse(url="/tokens", status_code=302)

@@ -1,0 +1,67 @@
+{# Shared modern header — used by base.html and dashboard.html.
+   Styles live in app/web/static/style-custom.css under the .app-* prefix. #}
+{% if session.user %}
+<header class="app-header">
+    <div class="app-header-left">
+        <a class="app-header-logo" href="/" aria-label="Home">
+            {% if config.LOGO_SVG %}{{ config.LOGO_SVG | safe }}{% else %}{{ config.INSTANCE_NAME or 'Data Analyst Portal' }}{% endif %}
+        </a>
+        <span class="app-header-subtitle">{{ config.INSTANCE_SUBTITLE or 'Data Analyst Portal' }}</span>
+    </div>
+    <div class="app-header-right">
+        {% set _path = request.url.path %}
+        <a class="app-nav-link {% if _path == '/dashboard' or _path == '/' %}is-active{% endif %}" href="/dashboard">Dashboard</a>
+        <a class="app-nav-link {% if _path.startswith('/install') %}is-active{% endif %}" href="/install">Install CLI</a>
+        {% if session.user.role == 'admin' %}
+        <a class="app-nav-link {% if _path.startswith('/admin/users') %}is-active{% endif %}" href="/admin/users">Users</a>
+        <a class="app-nav-link {% if _path.startswith('/admin/tokens') %}is-active{% endif %}" href="/admin/tokens">All tokens</a>
+        {% endif %}
+
+        <div class="app-user-menu" id="userMenu">
+            <button type="button" class="app-user-menu-trigger" id="userMenuTrigger"
+                    aria-haspopup="menu" aria-expanded="false" aria-controls="userMenuPanel">
+                {% if session.user.picture %}
+                <img src="{{ session.user.picture }}" alt="" class="app-avatar-img">
+                {% else %}
+                <span class="app-avatar">{{ (session.user.name or session.user.email)[:2] | upper }}</span>
+                {% endif %}
+                <svg class="app-user-menu-chevron" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+                    <path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+            </button>
+            <div class="app-user-menu-panel" id="userMenuPanel" role="menu" hidden>
+                <div class="app-user-menu-header">
+                    <div class="app-user-menu-email">{{ session.user.email }}</div>
+                    {% if session.user.role %}
+                    <div class="app-user-menu-role">{{ session.user.role | capitalize }}</div>
+                    {% endif %}
+                </div>
+                <a class="app-user-menu-item {% if _path == '/tokens' or _path.startswith('/profile') %}is-active{% endif %}" role="menuitem" href="/tokens">My tokens</a>
+                <a class="app-user-menu-item" role="menuitem" href="{{ url_for('auth.logout') }}">Logout</a>
+            </div>
+        </div>
+    </div>
+</header>
+<script>
+(function() {
+    var trigger = document.getElementById('userMenuTrigger');
+    var panel = document.getElementById('userMenuPanel');
+    if (!trigger || !panel) return;
+    function setOpen(open) {
+        trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+        if (open) { panel.removeAttribute('hidden'); }
+        else { panel.setAttribute('hidden', ''); }
+    }
+    trigger.addEventListener('click', function(e) {
+        e.stopPropagation();
+        setOpen(trigger.getAttribute('aria-expanded') !== 'true');
+    });
+    document.addEventListener('click', function(e) {
+        if (!panel.contains(e.target) && e.target !== trigger) setOpen(false);
+    });
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') { setOpen(false); trigger.focus(); }
+    });
+})();
+</script>
+{% endif %}

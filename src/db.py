@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 7
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -34,6 +34,9 @@ CREATE TABLE IF NOT EXISTS users (
     setup_token_created TIMESTAMP,
     reset_token VARCHAR,
     reset_token_created TIMESTAMP,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    deactivated_at TIMESTAMP,
+    deactivated_by VARCHAR,
     created_at TIMESTAMP DEFAULT current_timestamp,
     updated_at TIMESTAMP
 );
@@ -203,6 +206,20 @@ CREATE TABLE IF NOT EXISTS column_metadata (
     source          VARCHAR DEFAULT 'manual',
     updated_at      TIMESTAMP DEFAULT current_timestamp,
     PRIMARY KEY (table_id, column_name)
+);
+
+CREATE TABLE IF NOT EXISTS personal_access_tokens (
+    id           VARCHAR PRIMARY KEY,
+    user_id      VARCHAR NOT NULL,
+    name         VARCHAR NOT NULL,
+    token_hash   VARCHAR NOT NULL,
+    prefix       VARCHAR NOT NULL,
+    scopes       VARCHAR,
+    created_at   TIMESTAMP NOT NULL DEFAULT current_timestamp,
+    expires_at   TIMESTAMP,
+    last_used_at TIMESTAMP,
+    last_used_ip VARCHAR,
+    revoked_at   TIMESTAMP
 );
 """
 
@@ -384,6 +401,37 @@ _V2_TO_V3_MIGRATIONS = [
     "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS is_public BOOLEAN DEFAULT true",
 ]
 
+_V4_TO_V5_MIGRATIONS = [
+    # DuckDB doesn't allow ALTER TABLE ADD COLUMN with NOT NULL constraint,
+    # so we add the column with a DEFAULT, backfill, then the app-level
+    # code enforces non-null semantics (never inserts NULL for `active`).
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE",
+    "UPDATE users SET active = TRUE WHERE active IS NULL",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMP",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS deactivated_by VARCHAR",
+]
+
+_V5_TO_V6_MIGRATIONS = [
+    """
+    CREATE TABLE IF NOT EXISTS personal_access_tokens (
+        id           VARCHAR PRIMARY KEY,
+        user_id      VARCHAR NOT NULL,
+        name         VARCHAR NOT NULL,
+        token_hash   VARCHAR NOT NULL,
+        prefix       VARCHAR NOT NULL,
+        scopes       VARCHAR,
+        created_at   TIMESTAMP NOT NULL DEFAULT current_timestamp,
+        expires_at   TIMESTAMP,
+        last_used_at TIMESTAMP,
+        revoked_at   TIMESTAMP
+    )
+    """,
+]
+
+_V6_TO_V7_MIGRATIONS = [
+    "ALTER TABLE personal_access_tokens ADD COLUMN IF NOT EXISTS last_used_ip VARCHAR",
+]
+
 _V3_TO_V4_MIGRATIONS = [
     """
     CREATE TABLE IF NOT EXISTS metric_definitions (
@@ -464,6 +512,15 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                     conn.execute(sql)
             if current < 4:
                 for sql in _V3_TO_V4_MIGRATIONS:
+                    conn.execute(sql)
+            if current < 5:
+                for sql in _V4_TO_V5_MIGRATIONS:
+                    conn.execute(sql)
+            if current < 6:
+                for sql in _V5_TO_V6_MIGRATIONS:
+                    conn.execute(sql)
+            if current < 7:
+                for sql in _V6_TO_V7_MIGRATIONS:
                     conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",

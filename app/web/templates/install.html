@@ -1,0 +1,1077 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Install CLI — {{ config.INSTANCE_NAME }}</title>
+    {% if not config.THEME_FONT_URL %}
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    {% endif %}
+    <link rel="stylesheet" href="{{ url_for('static', filename='style-custom.css') }}">
+    <style>
+        /* ── Header (shared visual style with dashboard.html) ── */
+        .header {
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            padding: 0 32px;
+            height: 72px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        .header-left {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 2px;
+        }
+        .header-logo { display: inline-flex; align-items: center; text-decoration: none; color: inherit; }
+        .header-logo svg { display: block; }
+        a.header-logo:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 4px; }
+        .header-subtitle {
+            font-size: 11px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            letter-spacing: 0.4px;
+            text-transform: uppercase;
+            margin-top: 2px;
+        }
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+        .header-email {
+            font-size: 13px;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+        .avatar {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: var(--primary-light);
+            color: var(--primary);
+            font-size: 13px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            letter-spacing: 0.3px;
+        }
+        .avatar-img {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            border: 2px solid var(--border);
+        }
+        .nav-link {
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            text-decoration: none;
+            transition: color 0.15s ease;
+        }
+        .nav-link:hover { color: var(--text-primary); }
+        .btn-logout {
+            font-family: var(--font-primary);
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            background: none;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 6px 14px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            text-decoration: none;
+        }
+        .btn-logout:hover {
+            color: var(--text-primary);
+            border-color: #D1D5DB;
+            background: var(--border-light);
+        }
+
+        /* ── Main Container ── */
+        .main {
+            max-width: 880px;
+            margin: 0 auto;
+            padding: 28px 32px 48px;
+        }
+
+        /* ── Hero ── */
+        .hero {
+            background: linear-gradient(135deg, #0073D1 0%, #0056A3 100%);
+            border-radius: 12px;
+            padding: 32px 36px;
+            margin-bottom: 24px;
+            box-shadow: 0 4px 16px rgba(0, 115, 209, 0.2);
+            color: white;
+        }
+        .hero-eyebrow {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            color: rgba(255, 255, 255, 0.75);
+            margin-bottom: 10px;
+        }
+        .hero h1 {
+            font-size: 30px;
+            font-weight: 700;
+            margin: 0 0 8px 0;
+            color: white;
+            letter-spacing: -0.4px;
+        }
+        .hero-sub {
+            font-size: 14px;
+            color: rgba(255, 255, 255, 0.85);
+            line-height: 1.6;
+        }
+        .hero-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 16px;
+        }
+        .hero-pill {
+            background: rgba(255, 255, 255, 0.15);
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            color: white;
+        }
+
+        /* ── Card Base ── */
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+            overflow: hidden;
+            margin-bottom: 20px;
+        }
+        .card-header {
+            padding: 22px 24px 0;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .card-body {
+            padding: 16px 24px 24px;
+        }
+        .step-num {
+            width: 26px;
+            height: 26px;
+            background: var(--primary);
+            color: white;
+            border-radius: 50%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            font-weight: 700;
+            flex-shrink: 0;
+        }
+        .card-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+        .card-sub {
+            font-size: 13px;
+            color: var(--text-secondary);
+            line-height: 1.6;
+            margin: 0 0 14px;
+        }
+        .card-sub code {
+            background: var(--border-light);
+            padding: 1px 6px;
+            border-radius: 4px;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            color: var(--text-primary);
+        }
+
+        /* ── Code blocks / terminal ── */
+        .code-block {
+            background: #1e1e2e;
+            border-radius: 8px;
+            padding: 14px 16px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-family: var(--font-mono);
+            font-size: 13px;
+            color: #cdd6f4;
+            line-height: 1.5;
+            margin-bottom: 10px;
+        }
+        .code-block.primary {
+            padding: 18px 20px;
+            font-size: 14px;
+        }
+        .code-block .prompt {
+            color: #a6e3a1;
+            user-select: none;
+            flex-shrink: 0;
+        }
+        .code-block .cmd {
+            flex: 1;
+            overflow-x: auto;
+            white-space: nowrap;
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+        .code-block .cmd::-webkit-scrollbar { display: none; }
+        .btn-copy {
+            padding: 6px 14px;
+            background: transparent;
+            border: 1px solid #45475a;
+            color: #cdd6f4;
+            cursor: pointer;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 500;
+            font-family: var(--font-primary);
+            transition: all 0.15s ease;
+            flex-shrink: 0;
+        }
+        .btn-copy:hover {
+            border-color: #89b4fa;
+            color: #89b4fa;
+            background: rgba(137, 180, 250, 0.08);
+        }
+        .btn-copy:focus-visible {
+            outline: 2px solid #89b4fa;
+            outline-offset: 2px;
+        }
+        .btn-copy.copied {
+            border-color: #a6e3a1;
+            color: #a6e3a1;
+            background: rgba(166, 227, 161, 0.08);
+        }
+
+        /* ── Anon sign-in banner (shown only when logged out) ── */
+        .auth-banner {
+            background: var(--background);
+            border: 1px solid var(--border);
+            border-left: 3px solid var(--primary);
+            border-radius: 8px;
+            padding: 12px 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 16px;
+            font-size: 13px;
+            color: var(--text-primary);
+        }
+        .auth-banner-text { line-height: 1.5; }
+        .auth-banner a {
+            color: var(--primary);
+            text-decoration: none;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+        .auth-banner a:hover { text-decoration: underline; }
+
+        /* ── Section label inside a card (separates subsections) ── */
+        .card-section-label {
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            color: var(--text-secondary);
+            margin: 18px 0 10px;
+        }
+
+        /* ── One-click "Setup a new Claude Code" button ── */
+        .btn-oneclick {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-family: var(--font-primary);
+            font-size: 14px;
+            font-weight: 600;
+            color: #FFFFFF;
+            background: var(--primary);
+            border: none;
+            border-radius: 8px;
+            padding: 12px 22px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            margin-top: 4px;
+        }
+        .btn-oneclick:hover {
+            background: var(--primary-dark, #0056A3);
+            transform: translateY(-1px);
+            box-shadow: 0 4px 14px rgba(0, 115, 209, 0.25);
+        }
+        .btn-oneclick[disabled] {
+            opacity: 0.7;
+            cursor: wait;
+            transform: none;
+        }
+        .btn-oneclick.copied {
+            background: var(--success, #10B77F);
+        }
+        .btn-oneclick:focus-visible {
+            outline: 2px solid var(--primary);
+            outline-offset: 2px;
+        }
+        .oneclick-error {
+            margin-top: 10px;
+            padding: 10px 12px;
+            background: rgba(234, 88, 12, 0.08);
+            border-left: 3px solid var(--error, #EA580C);
+            border-radius: 6px;
+            color: var(--error, #EA580C);
+            font-size: 13px;
+        }
+
+        /* ── Setup instructions preview (read-only) ── */
+        .setup-preview-card {
+            margin-top: 18px;
+            background: var(--background, #f6f7f9);
+            border: 1px solid var(--border, #e1e4e8);
+            border-radius: 8px;
+            padding: 14px 16px;
+        }
+        .setup-preview-summary {
+            list-style: none;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            user-select: none;
+        }
+        .setup-preview-summary::-webkit-details-marker { display: none; }
+        .setup-preview-chevron {
+            display: inline-block;
+            font-size: 11px;
+            color: var(--text-secondary);
+            transition: transform 0.15s ease;
+        }
+        details[open] > .setup-preview-summary .setup-preview-chevron { transform: rotate(90deg); }
+        .setup-preview-title {
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+            color: var(--text-primary);
+            margin: 0;
+        }
+        .setup-preview-sub {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin: 0 0 10px 0;
+        }
+        .setup-preview-pre {
+            background: #1e1e2e;
+            border-radius: 6px;
+            padding: 14px 16px;
+            margin: 0;
+            max-height: 400px;
+            overflow-y: auto;
+            font-family: var(--font-mono);
+            font-size: 12.5px;
+            line-height: 1.55;
+            color: #cdd6f4;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .setup-preview-code { font-family: inherit; font-size: inherit; }
+        .setup-preview-pre .placeholder-token {
+            background: rgba(249, 226, 175, 0.12);
+            color: #f9e2af;
+            padding: 0 4px;
+            border-radius: 3px;
+            font-style: italic;
+        }
+        .manual-aside > summary {
+            cursor: pointer;
+            font-size: 13px;
+            color: var(--text-secondary);
+            padding: 8px 0;
+            user-select: none;
+        }
+        .manual-aside > summary:focus-visible {
+            outline: 2px solid var(--primary);
+            outline-offset: 2px;
+            border-radius: 4px;
+        }
+
+        /* Fallback modal (clipboard blocked) */
+        .setup-fallback-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.45);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+        .setup-fallback-modal {
+            background: var(--surface);
+            border-radius: 12px;
+            padding: 20px;
+            max-width: 720px;
+            width: calc(100% - 32px);
+            max-height: calc(100vh - 64px);
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            box-shadow: 0 20px 48px rgba(0, 0, 0, 0.3);
+        }
+        .setup-fallback-modal h4 {
+            margin: 0;
+            font-size: 15px;
+            color: var(--text-primary);
+        }
+        .setup-fallback-modal p {
+            margin: 0;
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+        .setup-fallback-modal textarea {
+            flex: 1;
+            min-height: 260px;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            padding: 10px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--background);
+            color: var(--text-primary);
+            resize: vertical;
+        }
+        .setup-fallback-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+        }
+        .setup-fallback-actions button {
+            font-family: var(--font-primary);
+            font-size: 13px;
+            font-weight: 500;
+            padding: 8px 16px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: var(--surface);
+            color: var(--text-primary);
+            cursor: pointer;
+        }
+        .setup-fallback-actions button.primary {
+            background: var(--primary);
+            color: #FFF;
+            border-color: var(--primary);
+        }
+
+        /* ── Inline CTA link (Open /tokens etc.) ── */
+        .btn-cta {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-family: var(--font-primary);
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--primary);
+            background: var(--primary-light);
+            border: none;
+            border-radius: 8px;
+            padding: 8px 14px;
+            cursor: pointer;
+            transition: background 0.15s ease;
+            text-decoration: none;
+            margin-bottom: 14px;
+        }
+        .btn-cta:hover {
+            background: rgba(0, 115, 209, 0.18);
+        }
+
+        /* ── Collapsible manual install ── */
+        .manual-details {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+            overflow: hidden;
+            margin-bottom: 20px;
+        }
+        .manual-summary {
+            padding: 18px 24px;
+            cursor: pointer;
+            list-style: none;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            user-select: none;
+        }
+        .manual-summary::-webkit-details-marker { display: none; }
+        .manual-summary:focus-visible {
+            outline: 2px solid var(--primary);
+            outline-offset: 2px;
+        }
+        .manual-summary-text {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .manual-summary-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+        .manual-summary-desc {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+        .manual-chev {
+            color: var(--text-secondary);
+            transition: transform 0.2s ease;
+            flex-shrink: 0;
+        }
+        .manual-details[open] .manual-chev {
+            transform: rotate(180deg);
+        }
+        .manual-body {
+            padding: 0 24px 24px;
+            border-top: 1px solid var(--border-light);
+            padding-top: 20px;
+        }
+        .manual-body ol {
+            margin: 0;
+            padding-left: 22px;
+        }
+        .manual-body li {
+            margin-bottom: 18px;
+            font-size: 13px;
+            color: var(--text-primary);
+            line-height: 1.6;
+        }
+        .manual-body li:last-child { margin-bottom: 0; }
+        .manual-body a {
+            color: var(--primary);
+            text-decoration: none;
+            font-family: var(--font-mono);
+            font-size: 12px;
+        }
+        .manual-body a:hover { text-decoration: underline; }
+
+        /* ── Footer link ── */
+        .footer-link {
+            text-align: center;
+            padding: 24px 0 8px;
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+        .footer-link a {
+            color: var(--primary);
+            text-decoration: none;
+            font-weight: 500;
+        }
+        .footer-link a:hover { text-decoration: underline; }
+
+        .footer {
+            text-align: center;
+            padding: 32px;
+            font-size: 12px;
+            color: #9CA3AF;
+        }
+
+        /* ── Flash Messages ── */
+        .flash-messages {
+            max-width: 880px;
+            margin: 0 auto;
+            padding: 16px 32px 0;
+        }
+        .flash {
+            padding: 12px 16px;
+            border-radius: 8px;
+            margin-bottom: 12px;
+            font-size: 13px;
+        }
+        .flash-success {
+            background: rgba(16, 183, 127, 0.1);
+            color: var(--success, #10B77F);
+            border-left: 3px solid var(--success, #10B77F);
+        }
+        .flash-error {
+            background: rgba(234, 88, 12, 0.1);
+            color: var(--error, #EA580C);
+            border-left: 3px solid var(--error, #EA580C);
+        }
+
+        /* ── Mobile ── */
+        @media (max-width: 720px) {
+            .header { padding: 0 16px; }
+            .main { padding: 20px 16px 32px; }
+            .hero { padding: 24px 20px; }
+            .hero h1 { font-size: 22px; }
+            .card-header { padding: 18px 18px 0; }
+            .card-body { padding: 14px 18px 20px; }
+            .code-block {
+                flex-wrap: wrap;
+                align-items: stretch;
+                gap: 8px;
+            }
+            .code-block .cmd { width: 100%; white-space: pre-wrap; }
+            .btn-copy { align-self: flex-end; }
+            .manual-summary { padding: 14px 18px; }
+            .manual-body { padding: 16px 18px 18px; }
+        }
+    </style>
+    {% include '_theme.html' %}
+</head>
+<body>
+
+    <!-- ═══════════════ HEADER ═══════════════ -->
+    {% include '_app_header.html' %}
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+    <div class="flash-messages">
+        {% for category, message in messages %}
+        <div class="flash flash-{{ category }}">{{ message }}</div>
+        {% endfor %}
+    </div>
+    {% endif %}
+    {% endwith %}
+
+    <main class="main">
+
+        <!-- ═══════════════ HERO ═══════════════ -->
+        <section class="hero">
+            <div class="hero-eyebrow">Getting started</div>
+            <h1>Install the Agnes CLI on this machine</h1>
+            <p class="hero-sub">
+                Connect your terminal and Claude Code to this server. Copy the
+                one-liner below — it downloads and installs the CLI wheel,
+                then seeds your local config.
+            </p>
+            <div class="hero-meta">
+                <span class="hero-pill">{{ server_url }}</span>
+                {% if agnes_version and agnes_version != "dev" %}
+                <span class="hero-pill">v{{ agnes_version }}</span>
+                {% endif %}
+            </div>
+        </section>
+
+        <!-- ═══════════════ STEP 1 — ONE-LINER ═══════════════ -->
+        <section class="card">
+            <div class="card-header">
+                <span class="step-num">1</span>
+                <span class="card-title">Quick install</span>
+            </div>
+            <div class="card-body">
+                {% if session.user %}
+                <p class="card-sub">
+                    One click generates a personal access token, assembles a
+                    complete setup script (install CLI, save token, verify),
+                    and copies it to your clipboard. Paste the result into
+                    Claude Code to finish.
+                </p>
+                <button type="button"
+                        id="setupClaudeBtn"
+                        class="btn-oneclick"
+                        onclick="setupNewClaude(this)">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                    </svg>
+                    Setup a new Claude Code
+                </button>
+                <p class="card-sub" style="margin-top: 6px; margin-bottom: 0;">
+                    Valid 90 days · token stays in your clipboard only.
+                </p>
+                <div id="setupClaudeError" class="oneclick-error" role="alert" style="display:none;"></div>
+
+                <details class="setup-preview-card" aria-label="Preview of the clipboard payload">
+                    <summary class="setup-preview-summary">
+                        <span class="setup-preview-chevron" aria-hidden="true">▸</span>
+                        <span class="setup-preview-title">What Claude Code will receive</span>
+                    </summary>
+                    <p class="setup-preview-sub">
+                        Read-only preview. The real token is generated when you
+                        click the button above and is placed directly in your
+                        clipboard — it is never rendered on this page.
+                    </p>
+                    {% with preview_mode=True %}
+                        {% include "_claude_setup_instructions.jinja" %}
+                    {% endwith %}
+                </details>
+
+                <details class="manual-aside" style="margin-top: 18px;">
+                    <summary>Or run manually on a restricted environment</summary>
+                    <div class="code-block primary" style="margin-top: 10px;">
+                        <span class="prompt">$</span>
+                        <span class="cmd" id="cmd-oneliner">curl -fsSL {{ server_url }}/cli/install.sh | bash</span>
+                        <button type="button"
+                                class="btn-copy" aria-live="polite"
+                                data-copy-target="cmd-oneliner"
+                                aria-label="Copy install command to clipboard">Copy</button>
+                    </div>
+                    <p class="card-sub" style="margin-top: 10px; margin-bottom: 0;">
+                        If <code>da</code> is not found in a new shell, add
+                        <code>~/.local/bin</code> to your <code>PATH</code>:
+                    </p>
+                    <div class="code-block" style="margin-top: 6px;">
+                        <span class="prompt">$</span>
+                        <span class="cmd" id="cmd-path">export PATH="$HOME/.local/bin:$PATH"</span>
+                        <button type="button"
+                                class="btn-copy" aria-live="polite"
+                                data-copy-target="cmd-path"
+                                aria-label="Copy PATH export command to clipboard">Copy</button>
+                    </div>
+                    <p class="card-sub" style="margin-top: 6px; margin-bottom: 0;">
+                        Add that line to your <code>~/.bashrc</code> or
+                        <code>~/.zshrc</code> for persistence.
+                    </p>
+                </details>
+                {% else %}
+                <p class="card-sub">
+                    Run this in your terminal (Linux / macOS). The installer
+                    downloads the wheel and seeds <code>~/.config/da/config.yaml</code>
+                    with this server URL.
+                </p>
+                <p class="card-sub" style="font-weight: 500;">
+                    Sign in to skip the manual steps — you'll get a one-click
+                    setup with a pre-configured token.
+                </p>
+                <div class="code-block primary">
+                    <span class="prompt">$</span>
+                    <span class="cmd" id="cmd-oneliner">curl -fsSL {{ server_url }}/cli/install.sh | bash</span>
+                    <button type="button"
+                            class="btn-copy" aria-live="polite"
+                            data-copy-target="cmd-oneliner"
+                            aria-label="Copy install command to clipboard">Copy</button>
+                </div>
+                <p class="card-sub" style="margin-top: 14px; margin-bottom: 0;">
+                    If <code>da</code> is not found in a new shell, add
+                    <code>~/.local/bin</code> to your <code>PATH</code>:
+                </p>
+                <div class="code-block" style="margin-top: 6px;">
+                    <span class="prompt">$</span>
+                    <span class="cmd" id="cmd-path">export PATH="$HOME/.local/bin:$PATH"</span>
+                    <button type="button"
+                            class="btn-copy" aria-live="polite"
+                            data-copy-target="cmd-path"
+                            aria-label="Copy PATH export command to clipboard">Copy</button>
+                </div>
+                <p class="card-sub" style="margin-top: 6px; margin-bottom: 0;">
+                    Add that line to your <code>~/.bashrc</code> or
+                    <code>~/.zshrc</code> for persistence.
+                </p>
+                {% endif %}
+            </div>
+        </section>
+
+        <!-- ═══════════════ STEP 2 — TOKEN ═══════════════ -->
+        {% if not session.user %}
+        <div class="auth-banner">
+            <span class="auth-banner-text">
+                You'll need to sign in first to create a personal access token.
+            </span>
+            <a href="/login">Sign in →</a>
+        </div>
+        {% endif %}
+        <section class="card">
+            <div class="card-header">
+                <span class="step-num">2</span>
+                <span class="card-title">Create a personal access token</span>
+            </div>
+            <div class="card-body">
+                <p class="card-sub">
+                    Tokens let the CLI, CI jobs, and Claude Code talk to the
+                    server without a browser session.
+                </p>
+                <a href="/tokens" class="btn-cta">
+                    Open /tokens
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M5 12h14M13 5l7 7-7 7"/>
+                    </svg>
+                </a>
+                <div class="card-section-label">After generating your token</div>
+                <p class="card-sub">
+                    Export it for the current shell and verify the connection:
+                </p>
+                <div class="code-block">
+                    <span class="prompt">$</span>
+                    <span class="cmd" id="cmd-export">export DA_TOKEN=&lt;your-token&gt;</span>
+                    <button type="button"
+                            class="btn-copy" aria-live="polite"
+                            data-copy-target="cmd-export"
+                            aria-label="Copy export command to clipboard">Copy</button>
+                </div>
+                <div class="code-block">
+                    <span class="prompt">$</span>
+                    <span class="cmd" id="cmd-whoami">da auth whoami</span>
+                    <button type="button"
+                            class="btn-copy" aria-live="polite"
+                            data-copy-target="cmd-whoami"
+                            aria-label="Copy whoami command to clipboard">Copy</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- ═══════════════ MANUAL INSTALL (collapsed) ═══════════════ -->
+        <details class="manual-details">
+            <summary class="manual-summary">
+                <span class="manual-summary-text">
+                    <span class="manual-summary-title">Manual install</span>
+                    <span class="manual-summary-desc">
+                        For restricted environments, offline machines, or
+                        Windows — download the wheel yourself.
+                    </span>
+                </span>
+                <svg class="manual-chev" aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="6 9 12 15 18 9"/>
+                </svg>
+            </summary>
+            <div class="manual-body">
+                <ol>
+                    <li>
+                        Download the wheel from
+                        <a href="/cli/download">{{ server_url }}/cli/download</a>.
+                    </li>
+                    <li>
+                        Install it:
+                        <div class="code-block" style="margin-top: 8px;">
+                            <span class="prompt">$</span>
+                            <span class="cmd" id="cmd-uv-install">uv tool install ./agnes_the_ai_analyst-*.whl</span>
+                            <button type="button"
+                                    class="btn-copy" aria-live="polite"
+                                    data-copy-target="cmd-uv-install"
+                                    aria-label="Copy uv install command to clipboard">Copy</button>
+                        </div>
+                        <span class="card-sub" style="display:block; text-align:center; margin: 4px 0 8px;">— or —</span>
+                        <div class="code-block">
+                            <span class="prompt">$</span>
+                            <span class="cmd" id="cmd-pip-install">python3 -m pip install --user ./agnes_the_ai_analyst-*.whl</span>
+                            <button type="button"
+                                    class="btn-copy" aria-live="polite"
+                                    data-copy-target="cmd-pip-install"
+                                    aria-label="Copy pip install command to clipboard">Copy</button>
+                        </div>
+                        <p class="card-sub" style="margin-top: 8px; margin-bottom: 0;">
+                            On macOS (Homebrew) or recent Debian/Ubuntu,
+                            <code>pip install --user</code> is blocked by
+                            <a href="https://peps.python.org/pep-0668/" target="_blank" rel="noopener">PEP 668</a> —
+                            prefer <code>uv tool install</code> above. The
+                            <code>pip</code> command is for users with an
+                            activated virtualenv.
+                        </p>
+                        <p class="card-sub" style="margin-top: 10px; margin-bottom: 0;">
+                            If <code>da</code> is not found after install, ensure
+                            <code>~/.local/bin</code> is on your <code>PATH</code>:
+                        </p>
+                        <div class="code-block" style="margin-top: 6px;">
+                            <span class="prompt">$</span>
+                            <span class="cmd" id="cmd-path-manual">export PATH="$HOME/.local/bin:$PATH"</span>
+                            <button type="button"
+                                    class="btn-copy" aria-live="polite"
+                                    data-copy-target="cmd-path-manual"
+                                    aria-label="Copy PATH export command to clipboard">Copy</button>
+                        </div>
+                        <p class="card-sub" style="margin-top: 6px; margin-bottom: 0;">
+                            Add that line to your <code>~/.bashrc</code> or
+                            <code>~/.zshrc</code> to make it persistent.
+                        </p>
+                    </li>
+                    <li>
+                        Seed the server URL:
+                        <div class="code-block" style="margin-top: 8px;">
+                            <span class="prompt">$</span>
+                            <span class="cmd" id="cmd-seed-config">mkdir -p ~/.config/da &amp;&amp; echo "server: {{ server_url }}" &gt; ~/.config/da/config.yaml</span>
+                            <button type="button"
+                                    class="btn-copy" aria-live="polite"
+                                    data-copy-target="cmd-seed-config"
+                                    aria-label="Copy seed config command to clipboard">Copy</button>
+                        </div>
+                    </li>
+                    <li>
+                        Continue with <strong>Step 2 — Create a personal
+                        access token</strong> above.
+                    </li>
+                </ol>
+            </div>
+        </details>
+
+        <!-- ═══════════════ FOOTER LINK ═══════════════ -->
+        <div class="footer-link">
+            Running in CI or a headless environment?
+            <a href="https://github.com/keboola/agnes-the-ai-analyst/blob/main/docs/HEADLESS_USAGE.md" target="_blank" rel="noopener">Read the headless usage guide →</a>
+        </div>
+
+    </main>
+
+    <footer class="footer">
+        <p>&copy; {{ now().year if now is defined else 2024 }} {{ config.INSTANCE_COPYRIGHT or 'AI Data Analyst' }}</p>
+    </footer>
+
+    <script>
+    (function() {
+        function copyToClipboard(text) {
+            if (navigator.clipboard && window.isSecureContext) {
+                return navigator.clipboard.writeText(text);
+            }
+            var ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.left = '-9999px';
+            ta.style.top = '-9999px';
+            document.body.appendChild(ta);
+            ta.focus();
+            ta.select();
+            return new Promise(function(resolve, reject) {
+                try {
+                    document.execCommand('copy') ? resolve() : reject();
+                } finally {
+                    document.body.removeChild(ta);
+                }
+            });
+        }
+
+        function flashCopied(button) {
+            var original = button.textContent;
+            button.textContent = 'Copied!';
+            button.classList.add('copied');
+            setTimeout(function() {
+                button.textContent = original;
+                button.classList.remove('copied');
+            }, 1500);
+        }
+
+        document.querySelectorAll('.btn-copy[data-copy-target]').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var target = document.getElementById(btn.getAttribute('data-copy-target'));
+                if (!target) return;
+                var text = target.textContent.trim();
+                copyToClipboard(text).then(function() {
+                    flashCopied(btn);
+                }).catch(function() {
+                    // Fallback: select the text so the user can copy manually.
+                    var range = document.createRange();
+                    range.selectNodeContents(target);
+                    var sel = window.getSelection();
+                    sel.removeAllRanges();
+                    sel.addRange(range);
+                });
+            });
+        });
+
+        // ══════════════════════════════════════════════════════════════════
+        // "Setup a new Claude Code" one-click flow
+        // ══════════════════════════════════════════════════════════════════
+        // Template + renderer included from _claude_setup_instructions.jinja
+        // so dashboard.html and install.html always render the same payload.
+        {% include "_claude_setup_instructions.jinja" %}
+
+        function defaultTokenName() {
+            var stamp = new Date().toISOString().slice(0, 16).replace("T", " ");
+            return "Claude Code — " + stamp;
+        }
+
+        function showSetupFallback(instructions) {
+            var overlay = document.createElement('div');
+            overlay.className = 'setup-fallback-overlay';
+            overlay.innerHTML =
+                '<div class="setup-fallback-modal" role="dialog" aria-modal="true" aria-labelledby="setupFallbackTitle">' +
+                    '<h4 id="setupFallbackTitle">Copy these setup instructions</h4>' +
+                    '<p>Your browser blocked automatic clipboard access. Select all, copy, then paste into Claude Code.</p>' +
+                    '<textarea readonly></textarea>' +
+                    '<div class="setup-fallback-actions">' +
+                        '<button type="button" data-action="close">Close</button>' +
+                        '<button type="button" class="primary" data-action="select">Select all</button>' +
+                    '</div>' +
+                '</div>';
+            document.body.appendChild(overlay);
+            var ta = overlay.querySelector('textarea');
+            ta.value = instructions;
+            ta.focus();
+            ta.select();
+            overlay.addEventListener('click', function(ev) {
+                if (ev.target === overlay) { document.body.removeChild(overlay); }
+            });
+            overlay.querySelector('[data-action="close"]').addEventListener('click', function() {
+                document.body.removeChild(overlay);
+            });
+            overlay.querySelector('[data-action="select"]').addEventListener('click', function() {
+                ta.focus();
+                ta.select();
+            });
+        }
+
+        window.setupNewClaude = async function setupNewClaude(btn) {
+            var errEl = document.getElementById('setupClaudeError');
+            if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
+            var origHTML = btn.innerHTML;
+            btn.disabled = true;
+            btn.textContent = 'Generating token…';
+            try {
+                var resp = await fetch('/auth/tokens', {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        name: defaultTokenName(),
+                        expires_in_days: 90,
+                    }),
+                });
+                if (resp.status === 401) {
+                    window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname);
+                    return;
+                }
+                if (!resp.ok) {
+                    var detail = 'HTTP ' + resp.status;
+                    try {
+                        var body = await resp.json();
+                        if (body && body.detail) { detail = body.detail; }
+                    } catch (_) { /* non-JSON */ }
+                    throw new Error(detail);
+                }
+                var data = await resp.json();
+                if (!data || !data.token) {
+                    throw new Error('Server did not return a token.');
+                }
+                var serverUrl = window.location.origin;
+                var instructions = renderSetupInstructions(serverUrl, data.token);
+
+                try {
+                    await copyToClipboard(instructions);
+                    btn.textContent = 'Copied! Paste into Claude Code';
+                    btn.classList.add('copied');
+                    setTimeout(function() {
+                        btn.innerHTML = origHTML;
+                        btn.classList.remove('copied');
+                        btn.disabled = false;
+                    }, 3000);
+                } catch (clipErr) {
+                    btn.innerHTML = origHTML;
+                    btn.disabled = false;
+                    showSetupFallback(instructions);
+                }
+            } catch (err) {
+                btn.innerHTML = origHTML;
+                btn.disabled = false;
+                if (errEl) {
+                    errEl.textContent = 'Setup failed: ' + (err && err.message ? err.message : err);
+                    errEl.style.display = 'block';
+                } else {
+                    alert('Setup failed: ' + (err && err.message ? err.message : err));
+                }
+            }
+        };
+    })();
+    </script>
+    {% include "_version_badge.html" %}
+</body>
+</html>

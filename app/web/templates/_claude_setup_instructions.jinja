@@ -1,0 +1,44 @@
+{# Single source of truth for the "Setup a new Claude Code" clipboard payload.
+
+   Two modes:
+
+   * preview_mode=True  →  emits a read-only HTML <pre><code> block rendered
+                           with the real server_url and a visible placeholder
+                           for the token. Used inline on /dashboard and
+                           /install so the reader can see exactly what will
+                           land in their clipboard.
+   * preview_mode=False →  emits the JS `SETUP_INSTRUCTIONS_TEMPLATE` array +
+                           `renderSetupInstructions(server, token)` function.
+                           Placed inside a <script> block; at click time the
+                           server-issued token is substituted for "{token}".
+
+   The lines themselves come from `app/web/setup_instructions.py` via the
+   context variable `setup_instructions_lines`, so both modes stay in lockstep.
+
+   The .jinja extension is NOT in Jinja2's default autoescape list, so we
+   explicitly run every piece of user-visible text through the `e` filter
+   in preview mode (lines contain literal `<` and `>` e.g. `<name>`).
+#}
+{% if preview_mode %}
+<pre class="setup-preview-pre"><code class="setup-preview-code">{% for line in setup_instructions_lines -%}
+{% set rendered = line.replace("{server_url}", server_url) -%}
+{% if "{token}" in rendered -%}
+{% set parts = rendered.split("{token}") -%}
+{{ parts[0] | e }}<span class="placeholder-token" aria-label="placeholder — real token is generated when you click the button">&lt;will be generated on click&gt;</span>{{ parts[1] | e }}
+{% else -%}
+{{ rendered | e }}
+{% endif -%}
+{% endfor %}</code></pre>
+{% else %}
+var SETUP_INSTRUCTIONS_TEMPLATE = [
+{%- for line in setup_instructions_lines %}
+    {{ line | tojson }}{% if not loop.last %},{% endif %}
+{%- endfor %}
+].join("\n");
+
+function renderSetupInstructions(serverUrl, token) {
+    return SETUP_INSTRUCTIONS_TEMPLATE
+        .split("{server_url}").join(serverUrl)
+        .split("{token}").join(token);
+}
+{% endif %}

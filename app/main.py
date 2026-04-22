@@ -3,12 +3,15 @@
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import quote
 
 import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.auth.router import router as auth_router
@@ -30,6 +33,8 @@ from app.api.jira_webhooks import router as jira_webhooks_router
 from app.api.metrics import router as metrics_router
 from app.api.metadata import router as metadata_router
 from app.api.query_hybrid import router as query_hybrid_router
+from app.api.cli_artifacts import router as cli_artifacts_router
+from app.api.tokens import router as tokens_router, admin_router as tokens_admin_router
 from app.web.router import router as web_router
 
 logger = logging.getLogger(__name__)
@@ -157,9 +162,32 @@ def create_app() -> FastAPI:
     app.include_router(metrics_router)
     app.include_router(metadata_router)
     app.include_router(query_hybrid_router)
+    app.include_router(cli_artifacts_router)
+    app.include_router(tokens_router)
+    app.include_router(tokens_admin_router)
 
     # Web UI router (must be last — has catch-all routes)
     app.include_router(web_router)
+
+    @app.exception_handler(StarletteHTTPException)
+    async def _html_auth_redirect_handler(request, exc: StarletteHTTPException):
+        """Redirect unauthenticated HTML page loads (GET) to /login.
+
+        Only GET requests outside `/api/` and `/auth/` are redirected — that
+        targets browser navigations to HTML pages. POSTs, API prefixes, and
+        non-401 errors fall through to Starlette's default JSON response so
+        JSON clients (including `/auth/tokens` for PAT CRUD) keep their
+        existing contract.
+        """
+        if (
+            exc.status_code == 401
+            and request.method == "GET"
+            and not request.url.path.startswith(("/api/", "/auth/"))
+        ):
+            next_param = quote(request.url.path, safe="")
+            return RedirectResponse(url=f"/login?next={next_param}", status_code=302)
+        from fastapi.exception_handlers import http_exception_handler
+        return await http_exception_handler(request, exc)
 
     return app
 

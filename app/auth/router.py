@@ -65,6 +65,9 @@ async def create_token(
     user = repo.get_by_email(request.email)
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+    if not bool(user.get("active", True)):
+        _audit(user["id"], "login_failed", result="deactivated")
+        raise HTTPException(status_code=401, detail="Account deactivated")
 
     # If user has password_hash, require and verify it
     if user.get("password_hash"):

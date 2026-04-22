@@ -35,6 +35,11 @@ def api_delete(path: str, **kwargs) -> httpx.Response:
         return client.delete(path, **kwargs)
 
 
+def api_patch(path: str, **kwargs) -> httpx.Response:
+    with get_client() as client:
+        return client.patch(path, **kwargs)
+
+
 def stream_download(path: str, target_path: str, progress_callback=None) -> int:
     """Stream download a file from the API. Returns bytes written."""
     with get_client(timeout=300.0) as client:
