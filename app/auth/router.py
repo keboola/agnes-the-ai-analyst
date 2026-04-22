@@ -110,27 +110,43 @@ async def bootstrap(
 ):
     """Bootstrap the first admin account.
 
-    Allowed when no user has a password_hash yet. This covers:
-    (a) No users exist at all.
-    (b) Only seed users (created by SEED_ADMIN_EMAIL at startup) exist, which
-        have no password and cannot log in — bootstrap lets the operator
-        activate them with a password.
+    Allowed paths:
+    (a) No users exist at all — fresh deploy, open the endpoint.
+    (b) A user with the same email as the request exists but has no
+        password (typical SEED_ADMIN_EMAIL / LOCAL_DEV_MODE shape) — let
+        the operator activate *that* account by setting its password.
 
-    If a user with the given email already exists (e.g. as a seed), this
-    endpoint sets its password_hash (or clears it, if no password was supplied —
-    useful for OAuth-only flows) and promotes it to admin.
-
-    Deactivates as soon as any user has a password_hash.
+    What's explicitly closed:
+    (c) A user with a different email already exists without a password —
+        previously this left /auth/bootstrap open for anyone to register a
+        fresh admin account. Now rejected: operator must activate the
+        existing seed instead of minting a new admin.
+    (d) Any user has a password already — normal disable path.
     """
     repo = UserRepository(conn)
     existing = repo.list_all()
 
-    # Bootstrap is locked once anyone has a password set.
+    # (d) Anyone has a password → bootstrap is clearly done.
     users_with_password = [u for u in existing if u.get("password_hash")]
     if users_with_password:
         raise HTTPException(
             status_code=403,
             detail=f"Bootstrap disabled — {len(users_with_password)} user(s) already have passwords set. Use /auth/password/login.",
+        )
+
+    # (c) Users exist without passwords (e.g. leftover seed) but the request
+    # is for a *different* email — this is how a passive seed could become a
+    # bootstrap backdoor. Require the caller to activate the existing account
+    # under its own email instead of registering a brand-new admin.
+    if existing and not any(u.get("email") == request.email for u in existing):
+        seed_emails = ", ".join(sorted({u.get("email", "?") for u in existing}))
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Bootstrap disabled — account(s) already exist without a password "
+                f"({seed_emails}). Activate one of those by bootstrapping with the "
+                "matching email, or remove the stale seed before registering a new admin."
+            ),
         )
 
     password_hash = PasswordHasher().hash(request.password) if request.password else None

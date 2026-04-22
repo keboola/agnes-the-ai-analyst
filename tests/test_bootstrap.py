@@ -101,6 +101,34 @@ class TestBootstrap:
         assert resp.status_code == 403
         assert "already have passwords" in resp.json()["detail"]
 
+    def test_bootstrap_rejects_new_email_when_seed_exists(self, seeded_client):
+        """Seed admin (passwordless) exists → attacker must not be able to
+        register a brand-new admin account for a different email. They have
+        to activate the existing seed instead, which requires knowing its
+        email (typically only the operator does)."""
+        resp = seeded_client.post("/auth/bootstrap", json={
+            "email": "hacker@evil.com",
+            "password": "takeover",
+        })
+        assert resp.status_code == 403
+        detail = resp.json()["detail"].lower()
+        assert "without a password" in detail
+        # The existing seed's email is surfaced so the operator knows which
+        # account to activate — not a secret leak, it's the same info `da
+        # admin users list` would print.
+        assert "existing@test.com" in resp.json()["detail"]
+
+    def test_bootstrap_still_activates_matching_seed_when_seed_exists(self, seeded_client):
+        """The legitimate path — bootstrap with the same email as the seed —
+        keeps working. Covered by test_bootstrap_activates_seed_user; this
+        is the adversarial sibling (above) confirming the allow-list stance."""
+        resp = seeded_client.post("/auth/bootstrap", json={
+            "email": "existing@test.com",
+            "password": "legitimate-operator-pw",
+        })
+        assert resp.status_code == 200
+        assert resp.json()["role"] == "admin"
+
     def test_bootstrap_then_login(self, fresh_client):
         """After bootstrap with password, /auth/token login works; without password it requires OAuth."""
         # Bootstrap with a password
