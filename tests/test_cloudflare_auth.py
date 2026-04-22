@@ -241,3 +241,117 @@ class TestVerifyCfJwt:
         importlib.reload(cf_mod)
 
         assert cf_mod.verify_cf_jwt("anything") is None
+
+
+class TestGetOrCreateUserFromCf:
+    def test_creates_new_user(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv("CF_ACCESS_TEAM", "testteam")
+        monkeypatch.setenv("CF_ACCESS_AUD", "test-aud-123")
+        import importlib
+        from app.auth.providers import cloudflare as cf_mod
+        importlib.reload(cf_mod)
+
+        from src.db import get_system_db
+        conn = get_system_db()
+        try:
+            user = cf_mod.get_or_create_user_from_cf(
+                email="new@example.com", name="New User", conn=conn,
+            )
+            assert user is not None
+            assert user["email"] == "new@example.com"
+            assert user["role"] == "analyst"
+        finally:
+            conn.close()
+
+    def test_returns_existing_user(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv("CF_ACCESS_TEAM", "testteam")
+        monkeypatch.setenv("CF_ACCESS_AUD", "test-aud-123")
+        import importlib
+        from app.auth.providers import cloudflare as cf_mod
+        importlib.reload(cf_mod)
+
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        conn = get_system_db()
+        try:
+            UserRepository(conn).create(
+                id="existing-id", email="existing@example.com",
+                name="Existing", role="admin",
+            )
+            user = cf_mod.get_or_create_user_from_cf(
+                email="existing@example.com", name="Existing", conn=conn,
+            )
+            assert user["id"] == "existing-id"
+            assert user["role"] == "admin"  # role preserved
+        finally:
+            conn.close()
+
+    def test_deactivated_user_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv("CF_ACCESS_TEAM", "testteam")
+        monkeypatch.setenv("CF_ACCESS_AUD", "test-aud-123")
+        import importlib
+        from app.auth.providers import cloudflare as cf_mod
+        importlib.reload(cf_mod)
+
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        conn = get_system_db()
+        try:
+            UserRepository(conn).create(
+                id="deact-id", email="deact@example.com",
+                name="Deact", role="analyst",
+            )
+            UserRepository(conn).update(id="deact-id", active=False)
+            user = cf_mod.get_or_create_user_from_cf(
+                email="deact@example.com", name="Deact", conn=conn,
+            )
+            assert user is None
+        finally:
+            conn.close()
+
+    def test_domain_allowlist_rejects_outsider(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv("CF_ACCESS_TEAM", "testteam")
+        monkeypatch.setenv("CF_ACCESS_AUD", "test-aud-123")
+        monkeypatch.setenv("CF_ACCESS_DOMAIN_ALLOW", "example.com")
+        import importlib
+        from app.auth.providers import cloudflare as cf_mod
+        importlib.reload(cf_mod)
+
+        from src.db import get_system_db
+        conn = get_system_db()
+        try:
+            user = cf_mod.get_or_create_user_from_cf(
+                email="outsider@evil.com", name="Outsider", conn=conn,
+            )
+            assert user is None
+        finally:
+            conn.close()
+
+    def test_domain_allowlist_accepts_insider(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv("CF_ACCESS_TEAM", "testteam")
+        monkeypatch.setenv("CF_ACCESS_AUD", "test-aud-123")
+        monkeypatch.setenv("CF_ACCESS_DOMAIN_ALLOW", "example.com,partner.com")
+        import importlib
+        from app.auth.providers import cloudflare as cf_mod
+        importlib.reload(cf_mod)
+
+        from src.db import get_system_db
+        conn = get_system_db()
+        try:
+            user = cf_mod.get_or_create_user_from_cf(
+                email="ok@partner.com", name="Partner", conn=conn,
+            )
+            assert user is not None
+            assert user["email"] == "ok@partner.com"
+        finally:
+            conn.close()
