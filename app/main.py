@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.auth.router import router as auth_router
@@ -54,6 +55,12 @@ def create_app() -> FastAPI:
         version="2.0.0",
         lifespan=lifespan,
     )
+
+    # Compress JSON / HTML responses on the wire. Parquet FileResponse bodies
+    # are already columnar-compressed so gzip gives little there, but manifest
+    # endpoints, /install HTML, and other JSON routes benefit noticeably.
+    # minimum_size=1024 avoids CPU cost on tiny responses.
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
 
     # Session middleware (required for OAuth state)
     from app.secrets import get_session_secret
