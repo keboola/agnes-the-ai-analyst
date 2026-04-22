@@ -16,8 +16,13 @@ from fastapi.responses import FileResponse, PlainTextResponse
 # Host charset allows underscores (Docker Compose hostnames) and `[` `]` `:`
 # so IPv6 literals like http://[::1]:8000 pass. Optional trailing path lets
 # reverse-proxy deployments (request.base_url = "https://host/agnes/") work.
-_SAFE_URL_RE = re.compile(r"^https?://[A-Za-z0-9._\-\[\]:]+(:\d+)?(/[A-Za-z0-9._\-/]*)?$")
-_SAFE_VERSION_RE = re.compile(r"^[A-Za-z0-9._\-]+$")
+#
+# `\Z` (not `$`) anchors strictly to end-of-string. Python's `$` also matches
+# immediately before a trailing `\n`, which would let a crafted Host header
+# like "good.example.com\n$(rm -rf /)" slip past the allowlist. `\Z` closes
+# that bypass — shlex.quote downstream is still defense-in-depth.
+_SAFE_URL_RE = re.compile(r"^https?://[A-Za-z0-9._\-\[\]:]+(:\d+)?(/[A-Za-z0-9._\-/]*)?\Z")
+_SAFE_VERSION_RE = re.compile(r"^[A-Za-z0-9._\-]+\Z")
 
 router = APIRouter(tags=["cli"])
 
