@@ -32,8 +32,19 @@
             gap: 2px;
         }
 
+        .header-logo {
+            display: inline-flex;
+            align-items: center;
+            text-decoration: none;
+            color: inherit;
+        }
         .header-logo svg {
             display: block;
+        }
+        a.header-logo:focus-visible {
+            outline: 2px solid var(--primary);
+            outline-offset: 2px;
+            border-radius: 4px;
         }
 
         .header-subtitle {
@@ -1837,9 +1848,9 @@
     <!-- ═══════════════ HEADER ═══════════════ -->
     <header class="header">
         <div class="header-left">
-            <div class="header-logo">
+            <a class="header-logo" href="/" aria-label="Home">
                 {{ config.LOGO_SVG | safe }}
-            </div>
+            </a>
             <span class="header-subtitle">Data Analyst Portal</span>
         </div>
         {% if session.user %}

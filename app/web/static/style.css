@@ -54,6 +54,9 @@ header {
     gap: 16px;
 }
 
+a.logo { text-decoration: none; color: inherit; display: block; }
+a.logo:hover h1 { color: var(--primary); }
+
 .logo h1 {
     font-size: 1.375rem;
     font-weight: 600;
