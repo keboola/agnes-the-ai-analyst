@@ -98,9 +98,10 @@ class TestWebUISmoke:
         body = resp.text
         # New shared header chrome
         assert "app-header" in body
-        # Nav was unified in feat/unify-tokens-fullwidth: single "Tokens" link
-        # replaces the old "Profile" + admin-only "Tokens" pair.
+        # Nav after split: "Tokens" (own) for every signed-in user +
+        # admin-only "All tokens" link pointing at /admin/tokens.
         assert 'href="/tokens"' in body
+        assert 'href="/admin/tokens"' in body
         assert 'href="/profile"' not in body
         assert 'href="/admin/users"' in body
         # New modern UI markers
@@ -110,7 +111,7 @@ class TestWebUISmoke:
         assert 'id="confirm-modal"' in body
 
     def test_nav_shows_tokens_link_for_non_admin(self, web_client, analyst_cookie):
-        """Every signed-in user sees a single 'Tokens' nav link; 'Profile' is gone."""
+        """Non-admins see "Tokens" only — no "All tokens" link, no /profile."""
         resp = web_client.get("/dashboard", cookies=analyst_cookie)
         assert resp.status_code in (200, 302)
         if resp.status_code == 302:
@@ -121,6 +122,21 @@ class TestWebUISmoke:
         assert 'href="/profile"' not in body
         assert ">Tokens<" in body
         assert ">Profile<" not in body
+        # Non-admins must NOT see the admin "All tokens" link.
+        assert 'href="/admin/tokens"' not in body
+        assert ">All tokens<" not in body
+
+    def test_nav_shows_all_tokens_link_for_admin(self, web_client, admin_cookie):
+        """Admins see both 'Tokens' and 'All tokens' in the nav."""
+        resp = web_client.get("/dashboard", cookies=admin_cookie)
+        assert resp.status_code in (200, 302)
+        if resp.status_code == 302:
+            resp = web_client.get(resp.headers["location"], cookies=admin_cookie)
+        body = resp.text
+        assert 'href="/tokens"' in body
+        assert 'href="/admin/tokens"' in body
+        assert ">Tokens<" in body
+        assert ">All tokens<" in body
 
     def test_profile_redirects_to_tokens(self, web_client, admin_cookie):
         """Back-compat: /profile 302-redirects to /tokens."""

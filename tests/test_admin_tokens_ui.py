@@ -1,10 +1,12 @@
-"""Tests for the unified /tokens UI (role-aware) + expanded admin list response.
+"""Tests for the split /tokens (own) and /admin/tokens (all) UI.
 
-The UI was unified in feat/unify-tokens-fullwidth: a single /tokens page
-renders a different body depending on the viewer's role. /admin/tokens
-now 302-redirects to /tokens for back-compat. Tests exercise /tokens
-directly (cookies don't survive TestClient's redirect chain in some
-Starlette versions) and add a dedicated assertion for the redirect."""
+The two routes render distinct templates:
+- /tokens       → my_tokens.html (any signed-in user, own PATs, create modal)
+- /admin/tokens → admin_tokens.html (admin-only, all users, stat strip,
+                                     owner search, sort-by-owner)
+
+/profile 302-redirects to /tokens for back-compat.
+"""
 
 import hashlib
 import tempfile
@@ -50,8 +52,6 @@ def _make_pat_row(conn, user_id: str, name: str = "ci",
         expires_at=exp,
     )
     if last_used_ago_days is not None:
-        # Write a fixed timestamp in the past + ip; go around mark_used so the
-        # timestamp is controllable.
         ts = datetime.now(timezone.utc) - timedelta(days=last_used_ago_days)
         conn.execute(
             "UPDATE personal_access_tokens SET last_used_at = ?, last_used_ip = ? WHERE id = ?",
@@ -62,55 +62,10 @@ def _make_pat_row(conn, user_id: str, name: str = "ci",
     return tid
 
 
-# ── Page rendering ─────────────────────────────────────────────────────────
+# ── /tokens — "My tokens" (own PATs) — every signed-in user ────────────────
 
-def test_admin_can_render_tokens_page(fresh_db):
-    """Admin GET /tokens: full admin body with owner search, stat strip, filters."""
-    from fastapi.testclient import TestClient
-    from src.db import get_system_db, close_system_db
-    from app.main import app
-
-    conn = get_system_db()
-    try:
-        _, admin_token = _make_user_and_session(conn, "admin@t", "admin")
-    finally:
-        conn.close()
-        close_system_db()
-
-    client = TestClient(app)
-    resp = client.get(
-        "/tokens",
-        headers={"Accept": "text/html"},
-        cookies={"access_token": admin_token},
-    )
-    assert resp.status_code == 200, resp.text
-    body = resp.text
-    # Admin-specific title + eyebrow
-    assert "Access tokens" in body
-    assert "Administration" in body
-    assert "tokens-title" in body
-    # Role-awareness marker on the page root
-    assert 'data-is-admin="true"' in body
-    # Client-side filter controls are in the rendered HTML
-    assert 'id="flt-status"' in body
-    assert 'id="flt-user"' in body
-    assert 'id="flt-last-used"' in body
-    # Admin-only stat strip is rendered
-    assert 'id="tokens-counts"' in body
-    assert 'id="count-active"' in body
-    # Revoke hook attribute is present in the page JS template
-    assert "data-revoke" in body
-    # Admin must NOT see the non-admin New-token CTA / create-modal
-    assert 'id="create-modal"' not in body
-    assert 'id="reveal-banner"' not in body
-
-
-def test_non_admin_can_render_tokens_page(fresh_db):
-    """Non-admin GET /tokens: personal body with New-token CTA + create modal.
-
-    Previous behavior on /admin/tokens denied non-admins with 403; the
-    unified /tokens page serves every signed-in user, with role-gated
-    rendering on the template + API side."""
+def test_non_admin_sees_my_tokens_page(fresh_db):
+    """Non-admin GET /tokens: personal body, New-token CTA, create modal."""
     from fastapi.testclient import TestClient
     from src.db import get_system_db, close_system_db
     from app.main import app
@@ -130,20 +85,61 @@ def test_non_admin_can_render_tokens_page(fresh_db):
     )
     assert resp.status_code == 200, resp.text
     body = resp.text
-    # Non-admin-specific title
+    # Non-admin title + eyebrow
     assert "My tokens" in body
+    assert "Your account" in body
     assert "Long-lived tokens for CLI" in body
-    # Role-awareness marker on the page root
+    # Role-awareness marker stays on the page root
     assert 'data-is-admin="false"' in body
-    # New-token CTA + create modal are rendered only for non-admins
+    assert 'data-view="my"' in body
+    # New-token CTA + create modal are rendered
     assert 'id="new-token-btn"' in body
     assert 'id="create-modal"' in body
     assert 'id="reveal-banner"' in body
-    # Admin-only stat strip is hidden
+    # Admin-only stat strip is NOT rendered
     assert 'id="tokens-counts"' not in body
     assert 'id="count-active"' not in body
-    # Owner search (admin-only) is hidden; the id remains as type=hidden for JS compat
+    # Owner search (admin-only) is NOT rendered
     assert 'placeholder="Search by owner email' not in body
+    # Admin title must not bleed in
+    assert "Access tokens" not in body
+    assert "Administration" not in body
+
+
+def test_admin_sees_my_tokens_on_tokens_path(fresh_db):
+    """Admin GET /tokens renders the SAME "My tokens" page as non-admins.
+
+    /tokens is always the personal view — admins use /admin/tokens for the
+    org-wide list."""
+    from fastapi.testclient import TestClient
+    from src.db import get_system_db, close_system_db
+    from app.main import app
+
+    conn = get_system_db()
+    try:
+        _, admin_sess = _make_user_and_session(conn, "admin@t", "admin")
+    finally:
+        conn.close()
+        close_system_db()
+
+    client = TestClient(app)
+    resp = client.get(
+        "/tokens",
+        headers={"Accept": "text/html"},
+        cookies={"access_token": admin_sess},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+    # Personal view markers (same as non-admin)
+    assert "My tokens" in body
+    assert "Your account" in body
+    assert 'id="new-token-btn"' in body
+    assert 'id="create-modal"' in body
+    assert 'data-is-admin="false"' in body
+    # Admin-only UI must NOT show on /tokens, even for an admin
+    assert 'id="tokens-counts"' not in body
+    assert "Access tokens" not in body  # admin hero title
+    assert "Administration" not in body
 
 
 def test_unauthenticated_redirects_from_tokens_page(fresh_db):
@@ -156,27 +152,112 @@ def test_unauthenticated_redirects_from_tokens_page(fresh_db):
         headers={"Accept": "text/html"},
         follow_redirects=False,
     )
-    # No session → HTML flow redirects to /login
     assert resp.status_code in (302, 303, 401), resp.text
 
 
-# ── Back-compat redirects ─────────────────────────────────────────────────
+# ── /admin/tokens — admin-only list of ALL tokens ──────────────────────────
 
-def test_admin_tokens_redirects_to_tokens(fresh_db):
-    """/admin/tokens is kept as a 302 redirect to /tokens, preserving query string."""
+def test_admin_can_render_admin_tokens_page(fresh_db):
+    """Admin GET /admin/tokens: the org-wide list with stat strip + owner
+    search + sort-by-owner chip."""
     from fastapi.testclient import TestClient
+    from src.db import get_system_db, close_system_db
     from app.main import app
 
+    conn = get_system_db()
+    try:
+        _, admin_sess = _make_user_and_session(conn, "admin@t", "admin")
+    finally:
+        conn.close()
+        close_system_db()
+
     client = TestClient(app)
-    resp = client.get("/admin/tokens", follow_redirects=False)
-    assert resp.status_code == 302
-    assert resp.headers["location"] == "/tokens"
+    resp = client.get(
+        "/admin/tokens",
+        headers={"Accept": "text/html"},
+        cookies={"access_token": admin_sess},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+    # Admin-specific title + eyebrow + subtitle
+    assert "Access tokens" in body
+    assert "Administration" in body
+    assert "incident response and offboarding" in body
+    # Role-awareness marker
+    assert 'data-is-admin="true"' in body
+    assert 'data-view="admin"' in body
+    # Filter controls
+    assert 'id="flt-status"' in body
+    assert 'id="flt-user"' in body
+    assert 'id="flt-last-used"' in body
+    # Stat strip (admin-only)
+    assert 'id="tokens-counts"' in body
+    assert 'id="count-active"' in body
+    assert 'id="count-expiring"' in body
+    # Sort-by-owner chip is only on admin page
+    assert 'data-sort-key="user_email"' in body
+    # Owner search input
+    assert 'placeholder="Search by owner email' in body
+    # Revoke hook is in JS template
+    assert "data-revoke" in body
+    # Admin page must NOT have the "New token" CTA or create modal
+    assert 'id="new-token-btn"' not in body
+    assert 'id="create-modal"' not in body
+    assert 'id="reveal-banner"' not in body
+    # Admin page must NOT show "My tokens" title
+    assert "My tokens" not in body
 
-    # Deep-link from /admin/users must preserve ?user=foo
-    resp = client.get("/admin/tokens?user=alice%40example.com", follow_redirects=False)
-    assert resp.status_code == 302
-    assert resp.headers["location"].startswith("/tokens?user=alice")
 
+def test_non_admin_cannot_access_admin_tokens_page(fresh_db):
+    """Non-admin GET /admin/tokens: 403 (or redirect) — admin-only route."""
+    from fastapi.testclient import TestClient
+    from src.db import get_system_db, close_system_db
+    from app.main import app
+
+    conn = get_system_db()
+    try:
+        _, sess = _make_user_and_session(conn, "user@t", "analyst")
+    finally:
+        conn.close()
+        close_system_db()
+
+    client = TestClient(app)
+    resp = client.get(
+        "/admin/tokens",
+        headers={"Accept": "text/html"},
+        cookies={"access_token": sess},
+        follow_redirects=False,
+    )
+    # require_role(Role.ADMIN) denies with 403 for non-admin
+    assert resp.status_code in (302, 401, 403), resp.text
+
+
+def test_admin_tokens_deeplink_preserves_user_query(fresh_db):
+    """/admin/users deep-links with ?user=<email>; page should still render
+    and contain the owner search input (JS pre-fills it)."""
+    from fastapi.testclient import TestClient
+    from src.db import get_system_db, close_system_db
+    from app.main import app
+
+    conn = get_system_db()
+    try:
+        _, admin_sess = _make_user_and_session(conn, "admin@t", "admin")
+    finally:
+        conn.close()
+        close_system_db()
+
+    client = TestClient(app)
+    resp = client.get(
+        "/admin/tokens?user=alice%40example.com",
+        headers={"Accept": "text/html"},
+        cookies={"access_token": admin_sess},
+    )
+    assert resp.status_code == 200, resp.text
+    # Owner search input is present; JS reads ?user from window.location.
+    assert 'id="flt-user"' in resp.text
+
+
+# ── Back-compat redirects ─────────────────────────────────────────────────
 
 def test_profile_redirects_to_tokens(fresh_db):
     """/profile no longer renders — it 302-redirects to /tokens."""
@@ -276,9 +357,7 @@ def test_admin_can_revoke_another_users_token(fresh_db):
 
 
 def test_non_admin_can_create_pat_via_tokens_page_api(fresh_db):
-    """The non-admin /tokens flow calls POST /auth/tokens with name + expires.
-
-    This mirrors exactly what the create-modal in tokens.html submits."""
+    """The /tokens create-modal submits POST /auth/tokens (name + expires)."""
     from fastapi.testclient import TestClient
     from src.db import get_system_db, close_system_db
     from src.repositories.access_tokens import AccessTokenRepository
