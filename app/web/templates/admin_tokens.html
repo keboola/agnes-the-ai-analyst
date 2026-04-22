@@ -1,0 +1,487 @@
+{% extends "base.html" %}
+{% block title %}Tokens — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block content %}
+<style>
+  .tokens-page { max-width: 1300px; margin: 24px auto; padding: 0 16px; }
+  .tokens-header { margin-bottom: 20px; }
+  .tokens-title { margin: 0 0 4px; font-size: 22px; font-weight: 600; }
+  .tokens-subtitle { margin: 0; font-size: 13px; color: var(--text-secondary, #6b7280); }
+
+  .tokens-counts {
+    display: flex; gap: 16px; margin: 16px 0;
+    font-size: 13px; color: var(--text-secondary, #6b7280);
+  }
+  .tokens-counts .count-chip {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 999px;
+    padding: 4px 12px;
+  }
+  .tokens-counts .count-chip strong { color: var(--text-primary, #111827); font-weight: 600; }
+  .count-chip.active strong { color: #047857; }
+  .count-chip.revoked strong { color: #6b7280; }
+  .count-chip.expired strong { color: #c2410c; }
+
+  .tokens-filters {
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+    margin-bottom: 16px;
+  }
+  .tokens-filters select,
+  .tokens-filters input {
+    padding: 7px 10px;
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px;
+    font-size: 13px;
+    background: var(--surface, #fff);
+    color: var(--text-primary, #111827);
+  }
+  .tokens-filters input[type="search"] { min-width: 220px; }
+  .tokens-filters select:focus,
+  .tokens-filters input:focus { outline: 2px solid var(--primary, #6366f1); outline-offset: -1px; }
+  .tokens-filters label {
+    font-size: 12px; color: var(--text-secondary, #6b7280);
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+
+  .tokens-table-wrap {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .tokens-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .tokens-table thead th {
+    text-align: left; padding: 10px 14px;
+    background: var(--border-light, #f9fafb);
+    border-bottom: 1px solid var(--border, #e5e7eb);
+    font-weight: 600; color: var(--text-secondary, #6b7280);
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
+    user-select: none; cursor: pointer;
+    white-space: nowrap;
+  }
+  .tokens-table thead th.sort-asc::after { content: " \25B2"; font-size: 9px; }
+  .tokens-table thead th.sort-desc::after { content: " \25BC"; font-size: 9px; }
+  .tokens-table thead th.no-sort { cursor: default; }
+  .tokens-table tbody td {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+    vertical-align: middle;
+  }
+  .tokens-table tbody tr.is-revoked { opacity: 0.55; }
+  .tokens-table tbody tr:hover { background: var(--border-light, #fafafa); }
+
+  .prefix-cell {
+    font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
+    font-size: 12px; color: var(--text-secondary, #6b7280);
+  }
+  .date-cell { color: var(--text-secondary, #6b7280); font-size: 12px; white-space: nowrap; }
+  .date-cell.expired { color: #b91c1c; font-weight: 500; }
+  .date-cell.soon    { color: #c2410c; font-weight: 500; }
+
+  .status-pill {
+    display: inline-block;
+    padding: 3px 10px; border-radius: 999px;
+    font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .status-pill.status-active     { background: #d1fae5; color: #047857; }
+  .status-pill.status-revoked    { background: #f3f4f6; color: #4b5563; }
+  .status-pill.status-expired    { background: #ffedd5; color: #c2410c; }
+  .status-pill.status-expired-unrevoked { background: #fee2e2; color: #b91c1c; }
+
+  .row-actions { display: flex; gap: 6px; justify-content: flex-end; }
+  .icon-btn {
+    background: transparent; border: 1px solid var(--border, #e5e7eb); border-radius: 6px;
+    padding: 5px 10px; font-size: 12px; cursor: pointer;
+    color: var(--text-secondary, #6b7280); transition: all 0.15s;
+  }
+  .icon-btn:hover:not([disabled]) { color: var(--text-primary, #111827); border-color: #cbd5e1; background: #f9fafb; }
+  .icon-btn.danger:hover:not([disabled]) { color: #b91c1c; border-color: #fecaca; background: #fef2f2; }
+  .icon-btn[disabled] { opacity: 0.4; cursor: not-allowed; }
+
+  .tokens-empty, .tokens-loading {
+    text-align: center; padding: 48px 16px;
+    color: var(--text-secondary, #6b7280); font-size: 13px;
+  }
+  .tokens-empty .big { font-size: 15px; color: var(--text-primary, #111827); margin-bottom: 6px; font-weight: 500; }
+  .tokens-empty button {
+    margin-top: 12px;
+    padding: 6px 14px; border-radius: 8px; font-size: 13px;
+    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
+    cursor: pointer;
+  }
+
+  /* Modal (same style as admin_users) */
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55);
+    display: none; align-items: center; justify-content: center; z-index: 1000;
+    padding: 16px;
+  }
+  .modal-backdrop.is-open { display: flex; }
+  .modal-card {
+    background: var(--surface, #fff); border-radius: 12px;
+    padding: 24px; width: 100%; max-width: 440px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+  }
+  .modal-card h3 { margin: 0 0 6px; font-size: 17px; font-weight: 600; }
+  .modal-card p.sub { margin: 0 0 18px; font-size: 13px; color: var(--text-secondary, #6b7280); }
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
+  .modal-btn {
+    padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 500;
+    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
+    cursor: pointer;
+  }
+  .modal-btn.danger { background: #dc2626; color: #fff; border-color: #dc2626; }
+
+  .toast-stack { position: fixed; bottom: 24px; right: 24px; z-index: 2000;
+    display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
+  .toast {
+    background: #111827; color: #fff; padding: 10px 16px;
+    border-radius: 8px; font-size: 13px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+    opacity: 0; transform: translateY(8px);
+    transition: opacity 0.2s, transform 0.2s;
+    pointer-events: auto; max-width: 380px;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast.success { background: #047857; }
+  .toast.error { background: #b91c1c; }
+</style>
+
+<div class="tokens-page">
+  <div class="tokens-header">
+    <h2 class="tokens-title">Tokens</h2>
+    <p class="tokens-subtitle">Personal access tokens across all users &mdash; for incident response and offboarding.</p>
+  </div>
+
+  <div class="tokens-counts" id="tokens-counts">
+    <span class="count-chip active"><strong id="count-active">0</strong> active</span>
+    <span class="count-chip revoked"><strong id="count-revoked">0</strong> revoked</span>
+    <span class="count-chip expired"><strong id="count-expired">0</strong> expired</span>
+  </div>
+
+  <div class="tokens-filters">
+    <label>Status
+      <select id="flt-status">
+        <option value="all">All</option>
+        <option value="active">Active</option>
+        <option value="revoked">Revoked</option>
+        <option value="expired">Expired</option>
+      </select>
+    </label>
+    <label>Last used
+      <select id="flt-last-used">
+        <option value="any">Any</option>
+        <option value="never">Never</option>
+        <option value="7d">&lt; 7 days</option>
+        <option value="30d">&lt; 30 days</option>
+        <option value="gt30d">&gt; 30 days</option>
+        <option value="gt90d">&gt; 90 days</option>
+      </select>
+    </label>
+    <input id="flt-user" type="search" placeholder="Filter by user email…" autocomplete="off">
+  </div>
+
+  <div class="tokens-table-wrap">
+    <table class="tokens-table" id="tokens-table">
+      <thead>
+        <tr>
+          <th data-sort="user_email">Owner</th>
+          <th data-sort="name">Name</th>
+          <th data-sort="prefix">Prefix</th>
+          <th data-sort="created_at" class="sort-desc">Created</th>
+          <th data-sort="last_used_at">Last used</th>
+          <th data-sort="expires_at">Expires</th>
+          <th data-sort="status">Status</th>
+          <th class="no-sort" style="text-align:right">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="tokens-tbody"></tbody>
+    </table>
+    <div id="tokens-loading" class="tokens-loading">Loading tokens…</div>
+    <div id="tokens-empty" class="tokens-empty" style="display:none;">
+      <div class="big">No tokens match the current filter.</div>
+      <button type="button" id="clear-filters-btn">Clear filters</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+  <div class="modal-card">
+    <h3 id="confirm-title">Revoke token?</h3>
+    <p class="sub" id="confirm-text"></p>
+    <div class="modal-actions">
+      <button class="modal-btn" data-close-modal="confirm-modal">Cancel</button>
+      <button class="modal-btn danger" id="confirm-ok-btn">Revoke</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+
+<script>
+const API_LIST   = "/auth/admin/tokens";
+const API_REVOKE = (id) => `/auth/admin/tokens/${encodeURIComponent(id)}`;
+
+// ── Helpers ──
+function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+function fmtAbs(s) { return s ? String(s).replace("T", " ").slice(0, 19) : "—"; }
+function parseDate(s) {
+  if (!s) return null;
+  const str = String(s).replace(" ", "T");
+  const d = new Date(str);
+  return isNaN(d.getTime()) ? null : d;
+}
+function relTime(s) {
+  const d = parseDate(s);
+  if (!d) return "—";
+  const diff = Date.now() - d.getTime();
+  const abs = Math.abs(diff);
+  const sign = diff < 0 ? "in " : "";
+  const suf = diff >= 0 ? " ago" : "";
+  const min = 60_000, hr = 3_600_000, day = 86_400_000;
+  if (abs < min) return sign + "just now";
+  if (abs < hr)  return sign + Math.floor(abs / min) + "m" + suf;
+  if (abs < day) return sign + Math.floor(abs / hr)  + "h" + suf;
+  const days = Math.floor(abs / day);
+  if (days < 60) return sign + days + " days" + suf;
+  const months = Math.floor(days / 30);
+  if (months < 24) return sign + months + "mo" + suf;
+  return sign + Math.floor(days / 365) + "y" + suf;
+}
+
+function computeStatus(t, now) {
+  if (t.revoked_at) return "revoked";
+  const exp = parseDate(t.expires_at);
+  if (exp && exp.getTime() < now) return "expired";
+  return "active";
+}
+function statusPill(status) {
+  const map = {
+    active:  ["status-active", "active"],
+    revoked: ["status-revoked", "revoked"],
+    expired: ["status-expired", "expired"],
+  };
+  const [cls, label] = map[status] || ["status-revoked", status];
+  return `<span class="status-pill ${cls}">${label}</span>`;
+}
+
+// ── Toast ──
+function toast(msg, kind = "") {
+  const el = document.createElement("div");
+  el.className = "toast " + kind;
+  el.textContent = msg;
+  document.getElementById("toast-stack").appendChild(el);
+  requestAnimationFrame(() => el.classList.add("show"));
+  setTimeout(() => { el.classList.remove("show"); setTimeout(() => el.remove(), 250); }, 3500);
+}
+
+// ── Modal ──
+function openModal(id) { document.getElementById(id).classList.add("is-open"); }
+function closeModal(id) { document.getElementById(id).classList.remove("is-open"); }
+document.querySelectorAll("[data-close-modal]").forEach(el =>
+  el.addEventListener("click", () => closeModal(el.dataset.closeModal)));
+document.querySelectorAll(".modal-backdrop").forEach(el => {
+  el.addEventListener("click", e => { if (e.target === el) el.classList.remove("is-open"); });
+});
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") document.querySelectorAll(".modal-backdrop.is-open").forEach(m => m.classList.remove("is-open"));
+});
+function confirmModal(title, text, okLabel = "Revoke") {
+  document.getElementById("confirm-title").textContent = title;
+  document.getElementById("confirm-text").textContent = text;
+  const okBtn = document.getElementById("confirm-ok-btn");
+  okBtn.textContent = okLabel;
+  return new Promise(resolve => {
+    const ok = () => { closeModal("confirm-modal"); okBtn.removeEventListener("click", ok); resolve(true); };
+    okBtn.addEventListener("click", ok, { once: true });
+    openModal("confirm-modal");
+  });
+}
+
+// ── State ──
+let allTokens = [];
+let filters = { status: "all", lastUsed: "any", user: "" };
+let sort = { key: "created_at", dir: "desc" };
+
+function applyFilters(items) {
+  const now = Date.now();
+  return items.filter(t => {
+    const s = computeStatus(t, now);
+    if (filters.status !== "all" && s !== filters.status) return false;
+
+    if (filters.user) {
+      const q = filters.user.toLowerCase();
+      if (!(t.user_email || "").toLowerCase().includes(q)) return false;
+    }
+
+    if (filters.lastUsed !== "any") {
+      const lu = parseDate(t.last_used_at);
+      if (filters.lastUsed === "never") { if (lu) return false; }
+      else {
+        if (!lu) return false;
+        const days = (now - lu.getTime()) / 86_400_000;
+        if (filters.lastUsed === "7d"    && !(days < 7))  return false;
+        if (filters.lastUsed === "30d"   && !(days < 30)) return false;
+        if (filters.lastUsed === "gt30d" && !(days > 30)) return false;
+        if (filters.lastUsed === "gt90d" && !(days > 90)) return false;
+      }
+    }
+    return true;
+  });
+}
+
+function sortItems(items) {
+  const now = Date.now();
+  const { key, dir } = sort;
+  const mul = dir === "asc" ? 1 : -1;
+  return [...items].sort((a, b) => {
+    let va, vb;
+    if (key === "status") { va = computeStatus(a, now); vb = computeStatus(b, now); }
+    else { va = a[key] || ""; vb = b[key] || ""; }
+    if (va < vb) return -1 * mul;
+    if (va > vb) return 1 * mul;
+    return 0;
+  });
+}
+
+function updateCounts() {
+  const now = Date.now();
+  let active = 0, revoked = 0, expired = 0;
+  for (const t of allTokens) {
+    const s = computeStatus(t, now);
+    if (s === "active") active++;
+    else if (s === "revoked") revoked++;
+    else if (s === "expired") expired++;
+  }
+  document.getElementById("count-active").textContent = active;
+  document.getElementById("count-revoked").textContent = revoked;
+  document.getElementById("count-expired").textContent = expired;
+}
+
+function renderTable() {
+  const tbody = document.getElementById("tokens-tbody");
+  const loading = document.getElementById("tokens-loading");
+  const empty = document.getElementById("tokens-empty");
+  loading.style.display = "none";
+
+  const filtered = sortItems(applyFilters(allTokens));
+  if (filtered.length === 0) {
+    empty.style.display = "block";
+    tbody.innerHTML = "";
+    return;
+  }
+  empty.style.display = "none";
+
+  const now = Date.now();
+  const SEVEN_DAYS = 7 * 86_400_000;
+  tbody.innerHTML = "";
+  for (const t of filtered) {
+    const tr = document.createElement("tr");
+    const status = computeStatus(t, now);
+    if (status === "revoked") tr.classList.add("is-revoked");
+
+    const exp = parseDate(t.expires_at);
+    let expClass = "";
+    if (exp) {
+      const delta = exp.getTime() - now;
+      if (delta < 0) expClass = "expired";
+      else if (delta < SEVEN_DAYS) expClass = "soon";
+    }
+
+    const lastUsedTooltip = t.last_used_at
+      ? `${fmtAbs(t.last_used_at)}${t.last_used_ip ? " from " + t.last_used_ip : ""}`
+      : "never used";
+
+    tr.innerHTML = `
+      <td>${esc(t.user_email || t.user_id || "—")}</td>
+      <td>${esc(t.name)}</td>
+      <td class="prefix-cell">${esc(t.prefix)}…</td>
+      <td class="date-cell" title="${esc(fmtAbs(t.created_at))}">${esc(relTime(t.created_at))}</td>
+      <td class="date-cell" title="${esc(lastUsedTooltip)}">${t.last_used_at ? esc(relTime(t.last_used_at)) : "—"}</td>
+      <td class="date-cell ${expClass}" title="${esc(fmtAbs(t.expires_at))}">${t.expires_at ? esc(relTime(t.expires_at)) : "—"}</td>
+      <td>${statusPill(status)}</td>
+      <td>
+        <div class="row-actions">
+          <button class="icon-btn danger" data-revoke data-token-id="${esc(t.id)}"
+            data-token-name="${esc(t.name)}" data-token-owner="${esc(t.user_email || t.user_id || "")}"
+            ${t.revoked_at ? "disabled" : ""}>Revoke</button>
+        </div>
+      </td>`;
+    tbody.appendChild(tr);
+  }
+
+  tbody.querySelectorAll("[data-revoke]").forEach(el =>
+    el.addEventListener("click", () => revokeToken(
+      el.dataset.tokenId, el.dataset.tokenName, el.dataset.tokenOwner)));
+}
+
+async function loadTokens() {
+  try {
+    const r = await fetch(API_LIST, { credentials: "include" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    allTokens = await r.json();
+    updateCounts();
+    renderTable();
+  } catch (e) {
+    document.getElementById("tokens-loading").textContent = "Failed to load tokens: " + e.message;
+    toast("Failed to load tokens", "error");
+  }
+}
+
+async function revokeToken(id, name, owner) {
+  if (!await confirmModal(
+    "Revoke token?",
+    `Revoke "${name}" for ${owner}? This cannot be undone and will immediately sign out any session using this token.`,
+    "Revoke"
+  )) return;
+  const r = await fetch(API_REVOKE(id), { method: "DELETE", credentials: "include" });
+  if (!r.ok) { toast("Failed: " + (await r.text()), "error"); return; }
+  toast("Token revoked", "success");
+  await loadTokens();
+}
+
+// ── Events ──
+document.getElementById("flt-status").addEventListener("change", e => { filters.status = e.target.value; renderTable(); });
+document.getElementById("flt-last-used").addEventListener("change", e => { filters.lastUsed = e.target.value; renderTable(); });
+document.getElementById("flt-user").addEventListener("input", e => { filters.user = e.target.value.trim(); renderTable(); });
+document.getElementById("clear-filters-btn").addEventListener("click", () => {
+  filters = { status: "all", lastUsed: "any", user: "" };
+  document.getElementById("flt-status").value = "all";
+  document.getElementById("flt-last-used").value = "any";
+  document.getElementById("flt-user").value = "";
+  renderTable();
+});
+
+document.querySelectorAll(".tokens-table thead th[data-sort]").forEach(th => {
+  th.addEventListener("click", () => {
+    const key = th.dataset.sort;
+    if (sort.key === key) {
+      sort.dir = sort.dir === "asc" ? "desc" : "asc";
+    } else {
+      sort.key = key;
+      sort.dir = "asc";
+    }
+    document.querySelectorAll(".tokens-table thead th").forEach(h => {
+      h.classList.remove("sort-asc", "sort-desc");
+    });
+    th.classList.add(sort.dir === "asc" ? "sort-asc" : "sort-desc");
+    renderTable();
+  });
+});
+
+// Pre-fill user filter from ?user=... query string (deep-link from admin/users)
+(function initFromQuery() {
+  try {
+    const q = new URLSearchParams(window.location.search);
+    const u = q.get("user");
+    if (u) {
+      filters.user = u;
+      document.getElementById("flt-user").value = u;
+    }
+  } catch (_) {}
+})();
+
+loadTokens();
+</script>
+{% endblock %}

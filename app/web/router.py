@@ -566,6 +566,16 @@ async def admin_users_page(
     return templates.TemplateResponse(request, "admin_users.html", ctx)
 
 
+@router.get("/admin/tokens", response_class=HTMLResponse)
+async def admin_tokens_page(
+    request: Request,
+    user: dict = Depends(require_role(Role.ADMIN)),
+):
+    """Admin page for personal access token management across all users."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_tokens.html", ctx)
+
+
 @router.get("/profile", response_class=HTMLResponse)
 async def profile_page(
     request: Request,
