@@ -2510,44 +2510,9 @@
     // ══════════════════════════════════════════════════════════════════
     // "Setup a new Claude Code" one-click flow
     // ══════════════════════════════════════════════════════════════════
-    // Template rendered into the clipboard. Token/server substituted at runtime.
-    // Kept as a single source of truth so dashboard.html and install.html match.
-    var SETUP_INSTRUCTIONS_TEMPLATE = [
-        "Set up the Agnes data analyst CLI on this machine.",
-        "",
-        "Server: {server_url}",
-        "Personal access token: {token}",
-        "(The token was generated for this setup; it is single-use to paste. Treat it as a secret.)",
-        "",
-        "Please do the following, in order, and tell me any errors verbatim if a step fails:",
-        "",
-        "1. Install the CLI:",
-        "   curl -fsSL {server_url}/cli/install.sh | bash",
-        "",
-        "2. Save the token so the CLI can authenticate non-interactively:",
-        "   mkdir -p ~/.config/da",
-        "   cat > ~/.config/da/token.json <<'EOF'",
-        "   {\"server\":\"{server_url}\",\"token\":\"{token}\"}",
-        "   EOF",
-        "   chmod 600 ~/.config/da/token.json",
-        "",
-        "3. Ensure ~/.local/bin is on PATH (add to ~/.zshrc or ~/.bashrc if not already):",
-        "   export PATH=\"$HOME/.local/bin:$PATH\"",
-        "",
-        "4. Verify the setup:",
-        "   da auth whoami",
-        "   da --help",
-        "",
-        "5. If you manage MCP configs, register the Agnes MCP with the same token. Otherwise stop here and confirm the above worked.",
-        "",
-        "If any step fails, paste the exact error back to me and I'll help."
-    ].join("\n");
-
-    function renderSetupInstructions(serverUrl, token) {
-        return SETUP_INSTRUCTIONS_TEMPLATE
-            .split("{server_url}").join(serverUrl)
-            .split("{token}").join(token);
-    }
+    // Template + renderer included from _claude_setup_instructions.jinja
+    // so dashboard.html and install.html always render the same payload.
+    {% include "_claude_setup_instructions.jinja" %}
 
     function defaultTokenName() {
         var stamp = new Date().toISOString().slice(0, 16).replace("T", " ");

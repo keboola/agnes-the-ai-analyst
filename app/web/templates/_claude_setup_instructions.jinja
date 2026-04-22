@@ -1,0 +1,92 @@
+{# Single source of truth for the "Setup a new Claude Code" clipboard payload.
+   Included verbatim inside a <script> block in both dashboard.html and install.html
+   so the two pages never drift. Tokens/server URL are substituted at runtime by
+   renderSetupInstructions() below, not by Jinja — keep braces that Jinja might
+   interpret out of the body.
+
+   Any literal `${...}` shell expansion or `$(...)` command substitution uses a
+   single `$` with no braces-conflict; the only runtime placeholders are the
+   literal strings "{server_url}" and "{token}", which renderSetupInstructions
+   replaces with String.prototype.split/join (see below). #}
+var SETUP_INSTRUCTIONS_TEMPLATE = [
+    "Set up the Agnes data analyst CLI on this machine.",
+    "",
+    "Server: {server_url}",
+    "Personal access token: {token}",
+    "(The token was just generated for this setup; treat it as a secret.)",
+    "",
+    "Please do the following, in order, and tell me any errors verbatim if a step fails.",
+    "",
+    "STEP 1 — Install the CLI wheel with uv",
+    "",
+    "   # Download the versioned wheel from this server:",
+    "   curl -fsSL {server_url}/cli/download -o /tmp/agnes-cli.whl",
+    "",
+    "   # Install (uv is preferred; if it is not installed, install it first:",
+    "   #   curl -LsSf https://astral.sh/uv/install.sh | sh)",
+    "   uv tool install --force /tmp/agnes-cli.whl",
+    "   rm /tmp/agnes-cli.whl",
+    "",
+    "   # Ensure ~/.local/bin is on PATH for this and future shells:",
+    "   if ! echo \"$PATH\" | tr ':' '\\n' | grep -qx \"$HOME/.local/bin\"; then",
+    "     export PATH=\"$HOME/.local/bin:$PATH\"",
+    "     # Persist (choose the right file for the user's shell):",
+    "     if [ -n \"${ZSH_VERSION:-}\" ] || [ \"$SHELL\" = \"/bin/zsh\" ]; then",
+    "       printf '\\nexport PATH=\"$HOME/.local/bin:$PATH\"\\n' >> ~/.zshrc",
+    "     else",
+    "       printf '\\nexport PATH=\"$HOME/.local/bin:$PATH\"\\n' >> ~/.bashrc",
+    "     fi",
+    "   fi",
+    "",
+    "STEP 2 — Seed the server URL and import the token",
+    "",
+    "   mkdir -p ~/.config/da",
+    "   printf 'server: %s\\n' \"{server_url}\" > ~/.config/da/config.yaml",
+    "   da auth import-token --token \"{token}\"",
+    "",
+    "STEP 3 — Verify the setup",
+    "",
+    "   da auth whoami",
+    "",
+    "   Expected output: the email and role of the signed-in user. If you see",
+    "   \"Not logged in\" or a 401, stop and paste the error back.",
+    "",
+    "STEP 4 — Skills (ASK THE USER FIRST)",
+    "",
+    "   The CLI ships with reusable markdown skills (setup, connectors, corporate-memory,",
+    "   deploy, notifications, security, troubleshoot). They are available via:",
+    "       da skills list",
+    "       da skills show <name>",
+    "",
+    "   ASK THE USER THIS EXACT QUESTION, then wait for their answer:",
+    "",
+    "       \"Do you want me to copy the Agnes skills into ~/.claude/skills/agnes/ so they",
+    "        are always loaded in Claude Code? Or should I pull them on-demand via",
+    "        `da skills show <name>` when needed?\"",
+    "",
+    "   - If the user answers \"copy\" / \"install\" / \"yes\":",
+    "       mkdir -p ~/.claude/skills/agnes",
+    "       for name in $(da skills list | awk '{print $1}'); do",
+    "         da skills show \"$name\" > ~/.claude/skills/agnes/\"$name\".md",
+    "       done",
+    "       echo \"Copied skills to ~/.claude/skills/agnes/\"",
+    "",
+    "   - If the user prefers on-demand: do nothing further; just remember that",
+    "     `da skills list` and `da skills show <name>` are available.",
+    "",
+    "STEP 5 — Confirm",
+    "",
+    "   Tell me \"Agnes CLI is ready\" and summarize:",
+    "   - Installed CLI version (output of `da --version`)",
+    "   - Whether skills were copied or left on-demand",
+    "   - The whoami output",
+    "",
+    "If any step fails, paste the exact command, stdout, and stderr verbatim, and I'll help",
+    "diagnose."
+].join("\n");
+
+function renderSetupInstructions(serverUrl, token) {
+    return SETUP_INSTRUCTIONS_TEMPLATE
+        .split("{server_url}").join(serverUrl)
+        .split("{token}").join(token);
+}
