@@ -201,6 +201,10 @@ async def setup_wizard(request: Request, conn: duckdb.DuckDBPyConnection = Depen
 
 @router.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
+    from app.auth.dependencies import is_local_dev_mode
+    if is_local_dev_mode():
+        return RedirectResponse(url="/dashboard", status_code=302)
+
     next_path = request.query_params.get("next", "")
     if not next_path.startswith("/") or next_path.startswith("//"):
         next_path = ""
