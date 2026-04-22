@@ -60,6 +60,26 @@ class AccessTokenRepository:
         columns = [desc[0] for desc in self.conn.description]
         return [dict(zip(columns, r)) for r in rows]
 
+    def list_all_with_user(self) -> List[Dict[str, Any]]:
+        """Admin view: all tokens joined with the owning user's email.
+
+        Returns dict rows including every column of `personal_access_tokens`
+        plus a denormalized `user_email` key (may be NULL if the user row was
+        deleted — the token itself survives until an admin revokes it).
+        """
+        rows = self.conn.execute(
+            """
+            SELECT t.*, u.email AS user_email
+            FROM personal_access_tokens t
+            LEFT JOIN users u ON u.id = t.user_id
+            ORDER BY t.created_at DESC
+            """
+        ).fetchall()
+        if not rows:
+            return []
+        columns = [desc[0] for desc in self.conn.description]
+        return [dict(zip(columns, r)) for r in rows]
+
     def revoke(self, token_id: str) -> None:
         self.conn.execute(
             "UPDATE personal_access_tokens SET revoked_at = ? WHERE id = ?",

@@ -44,6 +44,13 @@ class TokenListItem(BaseModel):
     revoked_at: Optional[str]
 
 
+class AdminTokenItem(TokenListItem):
+    """Admin list row: adds owner identity + last IP for incident response."""
+    user_id: str
+    user_email: Optional[str] = None
+    last_used_ip: Optional[str] = None
+
+
 def _audit(conn, actor: str, action: str, target: str, params=None):
     try:
         AuditRepository(conn).log(user_id=actor, action=action,
@@ -59,6 +66,19 @@ def _row_to_item(row: dict) -> TokenListItem:
         expires_at=str(row["expires_at"]) if row.get("expires_at") else None,
         last_used_at=str(row["last_used_at"]) if row.get("last_used_at") else None,
         revoked_at=str(row["revoked_at"]) if row.get("revoked_at") else None,
+    )
+
+
+def _row_to_admin_item(row: dict) -> AdminTokenItem:
+    return AdminTokenItem(
+        id=row["id"], name=row["name"], prefix=row["prefix"],
+        created_at=str(row.get("created_at") or ""),
+        expires_at=str(row["expires_at"]) if row.get("expires_at") else None,
+        last_used_at=str(row["last_used_at"]) if row.get("last_used_at") else None,
+        revoked_at=str(row["revoked_at"]) if row.get("revoked_at") else None,
+        user_id=row.get("user_id") or "",
+        user_email=row.get("user_email"),
+        last_used_ip=row.get("last_used_ip"),
     )
 
 
@@ -145,12 +165,12 @@ async def revoke_token(
 
 # Admin — list & revoke tokens across users (for incident response)
 
-@admin_router.get("", response_model=List[TokenListItem])
+@admin_router.get("", response_model=List[AdminTokenItem])
 async def admin_list_tokens(
     user: dict = Depends(require_role(Role.ADMIN)),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    return [_row_to_item(r) for r in AccessTokenRepository(conn).list_all()]
+    return [_row_to_admin_item(r) for r in AccessTokenRepository(conn).list_all_with_user()]
 
 
 @admin_router.delete("/{token_id}", status_code=204)
