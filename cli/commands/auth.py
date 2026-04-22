@@ -54,7 +54,7 @@ def login(
         if resp.status_code == 401 and "external authentication" in str(detail).lower():
             typer.echo(
                 "This account uses a magic link / OAuth provider. "
-                "Sign in via the web UI, open /profile, and create a personal "
+                "Sign in via the web UI, open /tokens, and create a personal "
                 "access token — then export it as DA_TOKEN.",
                 err=True,
             )

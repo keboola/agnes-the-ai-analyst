@@ -133,7 +133,7 @@ EOF
 
 echo "Installed."
 echo "Next steps:"
-echo "  1. Sign in to $SERVER and create a personal access token at $SERVER/profile"
+echo "  1. Sign in to $SERVER and create a personal access token at $SERVER/tokens"
 echo "  2. Export it:   export DA_TOKEN=<your-token>"
 echo "  3. Verify:      da auth whoami"
 """

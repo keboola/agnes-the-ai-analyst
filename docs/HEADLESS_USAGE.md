@@ -4,7 +4,7 @@ For unattended clients (CI, cron, Claude Code), authenticate with a Personal Acc
 
 ## Create a PAT
 
-**Via UI:** sign in, open `/profile`, create a token. Copy the raw value — it is shown exactly once.
+**Via UI:** sign in, open `/tokens`, create a token. Copy the raw value — it is shown exactly once.
 
 **Via CLI (requires an interactive session):**
 
@@ -42,4 +42,4 @@ da auth token list
 da auth token revoke <id|prefix|name>
 ```
 
-Or from `/profile` → Revoke.
+Or from `/tokens` → Revoke.
