@@ -75,10 +75,15 @@ async def create_token(
     repo = AccessTokenRepository(conn)
     token_id = str(uuid.uuid4())
     expires_at = None
-    expires_delta = None
     if payload.expires_in_days is not None:
         expires_delta = timedelta(days=payload.expires_in_days)
         expires_at = datetime.now(timezone.utc) + expires_delta
+    else:
+        # "No expiry" at the DB level, but the JWT still needs a bounded `exp`
+        # claim — otherwise `create_access_token` falls back to the 24h session
+        # default and the PAT silently dies. Use ~100 years; the DB-level
+        # revocation/expiry check in verify_token is the real enforcement.
+        expires_delta = timedelta(days=36500)
     # Build the JWT that embeds jti=token_id and typ=pat
     jwt_token = create_access_token(
         user_id=user["id"], email=user["email"], role=user["role"],

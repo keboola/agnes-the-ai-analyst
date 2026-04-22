@@ -39,6 +39,12 @@
 </div>
 
 <script>
+function esc(s) {
+  const d = document.createElement("div");
+  d.textContent = s == null ? "" : String(s);
+  return d.innerHTML;
+}
+
 async function loadTokens() {
   const r = await fetch("/auth/tokens", {credentials: "include"});
   if (!r.ok) { alert("Failed: " + r.status); return; }
@@ -49,16 +55,18 @@ async function loadTokens() {
     const status = t.revoked_at ? "revoked" : "active";
     const tr = document.createElement("tr");
     tr.innerHTML = `
-      <td>${t.name}</td>
-      <td><code>${t.prefix}…</code></td>
-      <td>${t.created_at.slice(0,19).replace("T"," ")}</td>
-      <td>${t.expires_at ? t.expires_at.slice(0,19).replace("T"," ") : "never"}</td>
-      <td>${t.last_used_at ? t.last_used_at.slice(0,19).replace("T"," ") : "-"}</td>
-      <td>${status}</td>
+      <td>${esc(t.name)}</td>
+      <td><code>${esc(t.prefix)}…</code></td>
+      <td>${esc(t.created_at.slice(0,19).replace("T"," "))}</td>
+      <td>${t.expires_at ? esc(t.expires_at.slice(0,19).replace("T"," ")) : "never"}</td>
+      <td>${t.last_used_at ? esc(t.last_used_at.slice(0,19).replace("T"," ")) : "-"}</td>
+      <td>${esc(status)}</td>
       <td>${t.revoked_at ? "" :
-        `<button class="btn btn-sm btn-danger" onclick="revokeToken('${t.id}')">Revoke</button>`}</td>`;
+        `<button class="btn btn-sm btn-danger" data-action="revoke" data-token-id="${esc(t.id)}">Revoke</button>`}</td>`;
     tbody.appendChild(tr);
   }
+  tbody.querySelectorAll('[data-action="revoke"]').forEach(el =>
+    el.addEventListener("click", () => revokeToken(el.dataset.tokenId)));
 }
 
 async function createToken(ev) {
