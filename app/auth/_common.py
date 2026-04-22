@@ -10,15 +10,18 @@ from typing import Optional
 def safe_next_path(candidate: Optional[str], default: str = "/dashboard") -> str:
     """Return `candidate` if it's a same-origin absolute path, else `default`.
 
-    Open-redirect guard: must start with a single `/` and must NOT start with
-    `//` (which browsers treat as protocol-relative, i.e. cross-origin).
-    Accepts plain paths like `/catalog` or `/foo?bar=baz`. Rejects
-    `javascript:...`, `http://...`, `//evil/`, bare `dashboard`, empty/None, etc.
+    Open-redirect guard: must start with a single ``/``, followed by something
+    that is neither ``/`` nor ``\\``. Browsers normalise ``\\`` to ``/`` in URL
+    paths, so ``Location: /\\evil.com`` resolves as ``//evil.com`` — a cross-
+    origin redirect — even though Python's ``startswith("//")`` check sees
+    ``/\\`` and lets it through. Also rejects ``javascript:...``, ``http://...``,
+    bare ``dashboard``, empty/None, etc.
     """
     if not candidate or not isinstance(candidate, str):
         return default
     if not candidate.startswith("/"):
         return default
-    if candidate.startswith("//"):
+    # Second-char guard covers //evil/, /\evil.com, and similar.
+    if len(candidate) > 1 and candidate[1] in ("/", "\\"):
         return default
     return candidate
