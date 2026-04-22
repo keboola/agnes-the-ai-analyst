@@ -143,3 +143,38 @@ def no_cf_client(tmp_path, monkeypatch):
 
     app = create_app()
     return TestClient(app)
+
+
+class TestCloudflareProviderAvailability:
+    def test_unavailable_without_env(self, monkeypatch):
+        monkeypatch.delenv("CF_ACCESS_TEAM", raising=False)
+        monkeypatch.delenv("CF_ACCESS_AUD", raising=False)
+        # Force re-import so module-level env reads are fresh
+        import importlib
+        from app.auth.providers import cloudflare as cf_mod
+        importlib.reload(cf_mod)
+        assert cf_mod.is_available() is False
+
+    def test_unavailable_with_only_team(self, monkeypatch):
+        monkeypatch.setenv("CF_ACCESS_TEAM", "testteam")
+        monkeypatch.delenv("CF_ACCESS_AUD", raising=False)
+        import importlib
+        from app.auth.providers import cloudflare as cf_mod
+        importlib.reload(cf_mod)
+        assert cf_mod.is_available() is False
+
+    def test_unavailable_with_only_aud(self, monkeypatch):
+        monkeypatch.delenv("CF_ACCESS_TEAM", raising=False)
+        monkeypatch.setenv("CF_ACCESS_AUD", "test-aud-123")
+        import importlib
+        from app.auth.providers import cloudflare as cf_mod
+        importlib.reload(cf_mod)
+        assert cf_mod.is_available() is False
+
+    def test_available_with_both_env(self, monkeypatch):
+        monkeypatch.setenv("CF_ACCESS_TEAM", "testteam")
+        monkeypatch.setenv("CF_ACCESS_AUD", "test-aud-123")
+        import importlib
+        from app.auth.providers import cloudflare as cf_mod
+        importlib.reload(cf_mod)
+        assert cf_mod.is_available() is True
