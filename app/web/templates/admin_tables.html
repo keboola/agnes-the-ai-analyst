@@ -735,25 +735,7 @@
 <body>
 
     <!-- ═══════════════ HEADER ═══════════════ -->
-    <header class="header">
-        <div class="header-left">
-            <a href="{{ url_for('dashboard') }}" class="header-back" title="Back to Dashboard">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M19 12H5M12 19l-7-7 7-7"/>
-                </svg>
-            </a>
-            <div class="header-logo-group">
-                <div class="header-logo">
-                    {{ config.LOGO_SVG | safe }}
-                </div>
-                <span class="header-subtitle">Table Management</span>
-            </div>
-        </div>
-        <div class="header-right">
-            <a href="/admin/permissions" style="font-size: 12px; font-weight: 500; color: var(--primary); text-decoration: none; padding: 6px 12px; border-radius: 6px; transition: all 0.15s ease;">Permissions</a>
-            <span>Admin</span>
-        </div>
-    </header>
+    {% include '_app_header.html' %}
 
     <!-- ═══════════════ PAGE TITLE ═══════════════ -->
     <div class="page-title">

@@ -574,31 +574,7 @@
 <body>
 
     <!-- ═══════════════ HEADER ═══════════════ -->
-    <header class="header">
-        <div class="header-left">
-            <a class="header-logo" href="/" aria-label="Home">
-                {{ config.LOGO_SVG | safe }}
-            </a>
-            <span class="header-subtitle">Install CLI</span>
-        </div>
-        {% if session.user %}
-        <div class="header-right">
-            <span class="header-email">{{ session.user.email }}</span>
-            {% if session.user.picture %}
-            <img src="{{ session.user.picture }}" alt="Profile" class="avatar-img">
-            {% else %}
-            <div class="avatar">{{ (session.user.name or session.user.email)[:2] | upper }}</div>
-            {% endif %}
-            <a class="nav-link" href="/dashboard">Dashboard</a>
-            <a class="nav-link" href="/profile">Profile</a>
-            <a href="{{ url_for('auth.logout') }}" class="btn-logout">Logout</a>
-        </div>
-        {% else %}
-        <div class="header-right">
-            <a class="nav-link" href="/login">Sign in</a>
-        </div>
-        {% endif %}
-    </header>
+    {% include '_app_header.html' %}
 
     {% with messages = get_flashed_messages(with_categories=true) %}
     {% if messages %}
