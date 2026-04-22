@@ -4,6 +4,7 @@ import logging
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
@@ -42,8 +43,11 @@ def _has_email_transport() -> bool:
 
 
 def _build_magic_link(email: str, token: str) -> str:
+    # URL-encode email: a literal '+' in a query string decodes to space per
+    # application/x-www-form-urlencoded, which would break addresses like
+    # "user+tag@gmail.com" on the GET /verify side.
     server_url = os.environ.get("SERVER_URL", "http://localhost:8000")
-    return f"{server_url}/auth/email/verify?email={email}&token={token}"
+    return f"{server_url}/auth/email/verify?email={quote(email, safe='')}&token={token}"
 
 
 @router.post("/send-link")
