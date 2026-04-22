@@ -60,12 +60,27 @@ def _root(
         help="Show the CLI version and exit.",
     ),
 ) -> None:
-    """Root callback — carries the --version option.
+    """Root callback — carries the --version option and fires the auto-update check.
 
-    Typer requires a callback for top-level options. The body is intentionally
-    empty; the heavy lifting happens in `_version_callback` (eager, so it
-    runs before any subcommand resolution).
+    Update check runs before subcommand dispatch but after the --version flag
+    (which exits early). It's best-effort: any failure is swallowed so a bad
+    network never blocks a working `da` command. Disable with
+    `DA_NO_UPDATE_CHECK=1`.
     """
+    _maybe_warn_outdated()
+
+
+def _maybe_warn_outdated() -> None:
+    """Hit /cli/latest on the configured server (cached 24h) and emit a
+    one-line stderr warning if the installed CLI is older. Never raises."""
+    try:
+        from cli.config import get_server_url
+        from cli.update_check import check, format_outdated_notice
+        info = check(get_server_url())
+        if info and info.is_outdated():
+            typer.echo(format_outdated_notice(info), err=True)
+    except Exception:
+        pass  # best-effort: never fail a command on the probe
 
 # Register subcommands
 app.add_typer(auth_app, name="auth")
