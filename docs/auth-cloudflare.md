@@ -66,6 +66,10 @@ and issue a session cookie.
   `Authorization: Bearer <token>` header bypass the middleware entirely —
   no cookie is set. This preserves the clean stateless contract for
   CLI tools, CI, and scripts.
+- **Use a distinct AUD per deployment**: two Agnes deployments sharing the
+  same `CF_ACCESS_AUD` would accept each other's tokens. Always create a
+  separate Cloudflare Access Application (and therefore a separate AUD tag)
+  for each environment — `agnes-dev`, `agnes-prod`, per-customer deployments.
 
 ## Logout Semantics
 
