@@ -803,35 +803,6 @@
             </div>
         </section>
 
-        <!-- ═══════════════ STEP 3 — MCP / CLAUDE CODE ═══════════════ -->
-        <section class="card">
-            <div class="card-header">
-                <span class="step-num">3</span>
-                <span class="card-title">Use with Claude Code / MCP</span>
-            </div>
-            <div class="card-body">
-                <p class="card-sub">
-                    For long-lived setups (Claude Code, MCP clients, cron
-                    jobs), save the token to <code>~/.config/da/token.json</code>.
-                    The <code>da</code> entrypoint reads it automatically — no
-                    need to export <code>DA_TOKEN</code> every shell.
-                </p>
-                <div class="code-block">
-                    <span class="prompt">$</span>
-                    <span class="cmd" id="cmd-token-json">echo '{"token":"&lt;your-token&gt;"}' &gt; ~/.config/da/token.json &amp;&amp; chmod 600 ~/.config/da/token.json</span>
-                    <button type="button"
-                            class="btn-copy" aria-live="polite"
-                            data-copy-target="cmd-token-json"
-                            aria-label="Copy token.json command to clipboard">Copy</button>
-                </div>
-                <p class="card-sub" style="margin-top: 14px; margin-bottom: 0;">
-                    Any process running as your user can now call the server
-                    via <code>da</code> — including Claude Code's MCP
-                    integration.
-                </p>
-            </div>
-        </section>
-
         <!-- ═══════════════ MANUAL INSTALL (collapsed) ═══════════════ -->
         <details class="manual-details">
             <summary class="manual-summary">
