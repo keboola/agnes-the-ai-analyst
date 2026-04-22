@@ -114,3 +114,56 @@ class TestSyncErrors:
         # Nothing to download — both hashes match
         assert mock_dl.call_count == 0
         assert "Downloaded: 0" in result.output
+
+
+class TestSyncDryRun:
+    def test_dry_run_skips_download_and_state_writes(self, tmp_config):
+        """--dry-run must not call stream_download, save_sync_state, or _rebuild_duckdb_views."""
+        with patch("cli.commands.sync.api_get", return_value=_resp(200, MANIFEST)):
+            with patch("cli.commands.sync.stream_download") as mock_dl:
+                with patch("cli.commands.sync.save_sync_state") as mock_save:
+                    with patch("cli.commands.sync._rebuild_duckdb_views") as mock_rebuild:
+                        result = runner.invoke(app, ["sync", "--dry-run"])
+        assert result.exit_code == 0
+        assert mock_dl.call_count == 0
+        assert mock_save.call_count == 0
+        assert mock_rebuild.call_count == 0
+        assert "Dry run" in result.output
+        # Table ids from the MANIFEST fixture must show up in the plan.
+        assert "orders" in result.output
+        assert "customers" in result.output
+
+    def test_dry_run_json_output_shape(self, tmp_config):
+        """--dry-run --json emits a parseable plan with dry_run=True and a summary."""
+        with patch("cli.commands.sync.api_get", return_value=_resp(200, MANIFEST)):
+            with patch("cli.commands.sync.stream_download"):
+                result = runner.invoke(app, ["sync", "--dry-run", "--json"])
+        assert result.exit_code == 0
+        json_start = result.output.find("{")
+        assert json_start >= 0
+        # Rich Progress may emit additional lines after the JSON block, so use
+        # raw_decode to stop at the object boundary.
+        data, _ = json.JSONDecoder().raw_decode(result.output[json_start:])
+        assert data["dry_run"] is True
+        assert data["summary"]["tables_to_download"] == 2
+        assert data["summary"]["bytes_total"] == 2048 + 1024
+        tables = [row["table"] for row in data["would_download"]]
+        assert set(tables) == {"orders", "customers"}
+
+    def test_dry_run_respects_table_filter(self, tmp_config):
+        """--dry-run --table X only lists that one table in the plan."""
+        with patch("cli.commands.sync.api_get", return_value=_resp(200, MANIFEST)):
+            with patch("cli.commands.sync.stream_download") as mock_dl:
+                result = runner.invoke(app, ["sync", "--dry-run", "--table", "orders"])
+        assert result.exit_code == 0
+        assert mock_dl.call_count == 0
+        assert "orders" in result.output
+        assert "customers" not in result.output
+
+    def test_dry_run_upload_only_does_not_hit_api(self, tmp_config):
+        """--upload-only --dry-run must not call api_post."""
+        with patch("cli.commands.sync.api_post") as mock_post:
+            result = runner.invoke(app, ["sync", "--upload-only", "--dry-run"])
+        assert result.exit_code == 0
+        assert mock_post.call_count == 0
+        assert "Dry run" in result.output or "would upload" in result.output.lower()
