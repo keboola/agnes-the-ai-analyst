@@ -34,13 +34,42 @@
         <option value="admin">admin</option>
       </select>
     </label>
+    <label style="display:flex; align-items:center; gap:.5em; margin-top:.5em;">
+      <input id="new-send-invite" type="checkbox" checked>
+      Send invitation link (generate setup token and email it)
+    </label>
     <button class="btn btn-primary" onclick="createUser()">Create</button>
     <button class="btn btn-secondary" onclick="closeCreateModal()">Cancel</button>
   </div>
 </div>
 
+<div class="modal" id="link-modal" style="display:none;">
+  <div class="modal-content">
+    <h3 id="link-title">Invite link</h3>
+    <p id="link-subtitle" class="text-muted"></p>
+    <input id="link-url" type="text" readonly style="width:100%; font-family:monospace; padding:.5em;">
+    <div style="margin-top:.75em; display:flex; gap:.5em;">
+      <button class="btn btn-primary btn-sm" onclick="copyLinkUrl()">Copy link</button>
+      <button class="btn btn-secondary btn-sm" onclick="closeLinkModal()">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="setpwd-modal" style="display:none;">
+  <div class="modal-content">
+    <h3>Set password</h3>
+    <p id="setpwd-email" class="text-muted"></p>
+    <label>New password <input id="setpwd-input" type="password" minlength="8" autocomplete="new-password" required></label>
+    <div style="margin-top:.75em; display:flex; gap:.5em;">
+      <button class="btn btn-primary btn-sm" onclick="confirmSetPassword()">Set password</button>
+      <button class="btn btn-secondary btn-sm" onclick="closeSetPwdModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const API = "/api/users";
+let _setPwdTargetId = null;
 
 function fmtDate(s) { return s ? s.slice(0, 19).replace("T", " ") : ""; }
 
@@ -69,7 +98,7 @@ async function loadUsers() {
       <td>${fmtDate(u.deactivated_at)}</td>
       <td>
         <button class="btn btn-sm" onclick="resetPassword('${u.id}')">Reset</button>
-        <button class="btn btn-sm" onclick="setPassword('${u.id}')">Set pwd</button>
+        <button class="btn btn-sm" onclick="openSetPwdModal('${u.id}','${u.email}')">Set pwd</button>
         <button class="btn btn-sm btn-danger" onclick="delUser('${u.id}','${u.email}')">Delete</button>
       </td>`;
     tbody.appendChild(tr);
@@ -94,22 +123,37 @@ async function toggleActive(id, active) {
 }
 
 async function resetPassword(id) {
-  if (!confirm("Generate a password reset token?")) return;
+  if (!confirm("Generate a password reset link?")) return;
   const r = await fetch(`${API}/${id}/reset-password`, {method: "POST", credentials: "include"});
   const data = await r.json();
   if (!r.ok) { alert("Failed: " + data.detail); return; }
-  alert(`Reset token: ${data.reset_token}\nEmail sent: ${data.email_sent}`);
+  const note = data.email_sent
+    ? "Email sent. Copy the link below only if you need to deliver it manually."
+    : "Email transport unavailable — send this link to the user directly.";
+  showLink("Password reset link", note, data.reset_url);
 }
 
-async function setPassword(id) {
-  const pwd = prompt("New password (min 8 chars):");
-  if (!pwd) return;
-  const r = await fetch(`${API}/${id}/set-password`, {
+function openSetPwdModal(id, email) {
+  _setPwdTargetId = id;
+  document.getElementById("setpwd-email").textContent = email;
+  document.getElementById("setpwd-input").value = "";
+  document.getElementById("setpwd-modal").style.display = "block";
+  setTimeout(() => document.getElementById("setpwd-input").focus(), 50);
+}
+function closeSetPwdModal() {
+  document.getElementById("setpwd-modal").style.display = "none";
+  _setPwdTargetId = null;
+}
+async function confirmSetPassword() {
+  const pwd = document.getElementById("setpwd-input").value;
+  if (!pwd || pwd.length < 8) { alert("Password must be at least 8 characters."); return; }
+  const r = await fetch(`${API}/${_setPwdTargetId}/set-password`, {
     method: "POST", credentials: "include",
     headers: {"Content-Type":"application/json"},
     body: JSON.stringify({password: pwd}),
   });
   if (!r.ok) { alert("Failed: " + (await r.text())); return; }
+  closeSetPwdModal();
   alert("Password set.");
 }
 
@@ -127,14 +171,36 @@ async function createUser() {
   const email = document.getElementById("new-email").value;
   const name = document.getElementById("new-name").value;
   const role = document.getElementById("new-role").value;
+  const sendInvite = document.getElementById("new-send-invite").checked;
   const r = await fetch(API, {
     method: "POST", credentials: "include",
     headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({email, name: name || email.split("@")[0], role}),
+    body: JSON.stringify({email, name: name || email.split("@")[0], role, send_invite: sendInvite}),
   });
   if (!r.ok) { alert("Failed: " + (await r.text())); return; }
+  const data = await r.json();
   closeCreateModal();
   loadUsers();
+  if (data.invite_url) {
+    const note = data.invite_email_sent
+      ? "Email sent. Copy the link below only if you need to deliver it manually."
+      : "Email transport unavailable — send this link to the user directly.";
+    showLink("Invitation link", note, data.invite_url);
+  }
+}
+
+function showLink(title, subtitle, url) {
+  document.getElementById("link-title").textContent = title;
+  document.getElementById("link-subtitle").textContent = subtitle;
+  document.getElementById("link-url").value = url;
+  document.getElementById("link-modal").style.display = "block";
+  setTimeout(() => document.getElementById("link-url").select(), 50);
+}
+function closeLinkModal() { document.getElementById("link-modal").style.display = "none"; }
+function copyLinkUrl() {
+  const el = document.getElementById("link-url");
+  el.select();
+  navigator.clipboard.writeText(el.value);
 }
 
 loadUsers();

@@ -41,6 +41,7 @@ class CreateUserRequest(BaseModel):
     email: str
     name: str
     role: str = "analyst"
+    send_invite: bool = False
 
 
 class UpdateUserRequest(BaseModel):
@@ -61,9 +62,11 @@ class UserResponse(BaseModel):
     active: bool = True
     created_at: Optional[str]
     deactivated_at: Optional[str] = None
+    invite_url: Optional[str] = None
+    invite_email_sent: Optional[bool] = None
 
 
-def _to_response(u: dict) -> UserResponse:
+def _to_response(u: dict, invite_url: Optional[str] = None, invite_email_sent: Optional[bool] = None) -> UserResponse:
     return UserResponse(
         id=u["id"],
         email=u["email"],
@@ -72,6 +75,8 @@ def _to_response(u: dict) -> UserResponse:
         active=bool(u.get("active", True)),
         created_at=str(u.get("created_at", "")),
         deactivated_at=str(u["deactivated_at"]) if u.get("deactivated_at") else None,
+        invite_url=invite_url,
+        invite_email_sent=invite_email_sent,
     )
 
 
@@ -90,14 +95,30 @@ async def create_user(
     user: dict = Depends(require_role(Role.ADMIN)),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
+    import secrets
     repo = UserRepository(conn)
     if repo.get_by_email(payload.email):
         raise HTTPException(status_code=409, detail="User with this email already exists")
     user_id = str(uuid.uuid4())
     repo.create(id=user_id, email=payload.email, name=payload.name, role=payload.role)
     _audit(conn, user["id"], "user.create", user_id, {"email": payload.email, "role": payload.role})
+
+    invite_url: Optional[str] = None
+    invite_email_sent: Optional[bool] = None
+    if payload.send_invite:
+        token = secrets.token_urlsafe(32)
+        repo.update(
+            id=user_id,
+            setup_token=token,
+            setup_token_created=datetime.now(timezone.utc),
+        )
+        from app.auth.providers.password import build_setup_url, _send_setup_email
+        invite_url = build_setup_url(request, payload.email, token)
+        invite_email_sent = _send_setup_email(request, payload.email, token)
+        _audit(conn, user["id"], "user.invite", user_id, {"email": payload.email, "email_sent": invite_email_sent})
+
     created = repo.get_by_id(user_id)
-    return _to_response(created)
+    return _to_response(created, invite_url=invite_url, invite_email_sent=invite_email_sent)
 
 
 @router.patch("/{user_id}", response_model=UserResponse)
@@ -195,16 +216,15 @@ async def reset_password(
         reset_token_created=datetime.now(timezone.utc),
     )
     _audit(conn, user["id"], "user.reset_password", user_id, {"email": target["email"]})
-    # Best-effort email
-    email_sent = False
-    try:
-        from app.auth.providers.email import _send_email, is_available
-        if is_available():
-            _send_email(target["email"], token)
-            email_sent = True
-    except Exception:
-        pass
-    return {"reset_token": token, "email_sent": email_sent}
+    # Build the reset URL (always available, even when email transport is not).
+    from app.auth.providers.password import build_reset_url, _send_reset_email
+    reset_url = build_reset_url(request, target["email"], token)
+    email_sent = _send_reset_email(request, target["email"], token)
+    return {
+        "reset_token": token,
+        "reset_url": reset_url,
+        "email_sent": email_sent,
+    }
 
 
 @router.post("/{user_id}/set-password", status_code=204)
