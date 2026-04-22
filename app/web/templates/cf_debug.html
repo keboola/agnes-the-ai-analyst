@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+
+{% block title %}Cloudflare Access Debug - Data Analyst Portal{% endblock %}
+
+{% block content %}
+<div style="max-width: 980px; margin: 0 auto; padding: 24px;">
+    <h2>Cloudflare Access Debug</h2>
+    <p style="opacity: 0.75;">
+        Inspects what Cloudflare Access is delivering on the current request.
+        This page is intentionally unstyled — it is a developer debugging tool.
+    </p>
+
+    {% if not cf_available %}
+    <div style="padding: 16px; border: 1px solid #aaa; border-radius: 6px; margin-top: 16px;">
+        <strong>CF Access is not configured.</strong>
+        <p>Set <code>CF_ACCESS_TEAM</code> and <code>CF_ACCESS_AUD</code> env vars to enable.</p>
+    </div>
+    {% else %}
+
+    <h3 style="margin-top: 24px;">Request</h3>
+    <ul>
+        <li><code>Cf-Access-Jwt-Assertion</code> header present: <strong>{{ 'yes' if header_present else 'no' }}</strong></li>
+        <li>CF team: <code>{{ cf_team }}</code></li>
+    </ul>
+
+    {% if not header_present %}
+    <div style="padding: 16px; border: 1px solid #d97706; border-radius: 6px; margin-top: 16px;">
+        <strong>No <code>Cf-Access-Jwt-Assertion</code> header on this request.</strong>
+        <p>You are probably viewing this outside the Cloudflare edge gate
+        (e.g. hitting the origin directly, or accessing via localhost). To see
+        real JWT + identity data, route through your CF Access hostname.</p>
+    </div>
+    {% else %}
+
+    <h3 style="margin-top: 24px;">Verified JWT claims</h3>
+    {% if claims %}
+    <pre style="background: #111; color: #e5e7eb; padding: 12px; border-radius: 6px; overflow-x: auto;">{{ claims | tojson(indent=2) }}</pre>
+    {% else %}
+    <div style="padding: 12px; border: 1px solid #dc2626; border-radius: 6px;">
+        <strong>JWT verification failed.</strong>
+        <p>Header was present but <code>verify_cf_jwt()</code> returned None.
+        Likely causes: wrong <code>CF_ACCESS_AUD</code>, expired token, or
+        JWKS fetch failure. Check server logs.</p>
+    </div>
+    {% endif %}
+
+    <h3 style="margin-top: 24px;">get-identity response</h3>
+    <p style="opacity: 0.75; font-size: 13px;">
+        GET <code>https://{{ cf_team }}.cloudflareaccess.com/cdn-cgi/access/get-identity</code>
+        with <code>CF_Authorization</code> cookie set from the JWT.
+    </p>
+    {% if identity %}
+    <pre style="background: #111; color: #e5e7eb; padding: 12px; border-radius: 6px; overflow-x: auto;">{{ identity | tojson(indent=2) }}</pre>
+
+    <h3 style="margin-top: 24px;">Parsed</h3>
+    <ul>
+        <li><strong>email:</strong> <code>{{ parsed.email or '(none)' }}</code></li>
+        <li><strong>name:</strong> <code>{{ parsed.name or '(none)' }}</code></li>
+        <li><strong>user_uuid:</strong> <code>{{ parsed.user_uuid or '(none)' }}</code></li>
+        <li><strong>idp.type:</strong> <code>{{ parsed.idp_type or '(none)' }}</code></li>
+        <li><strong>groups ({{ parsed.groups | length }}):</strong>
+            {% if parsed.groups %}
+            <ul>
+                {% for g in parsed.groups %}<li><code>{{ g }}</code></li>{% endfor %}
+            </ul>
+            {% else %}
+            <em>(no groups)</em>
+            {% endif %}
+        </li>
+    </ul>
+    {% else %}
+    <div style="padding: 12px; border: 1px solid #dc2626; border-radius: 6px;">
+        <strong>get-identity call failed.</strong>
+        <p>{{ identity_error or 'Returned None. See server logs for details (network error, non-200 response, or JSON parse error).' }}</p>
+    </div>
+    {% endif %}
+
+    {% endif %}{# header_present #}
+    {% endif %}{# cf_available #}
+
+    <p style="margin-top: 32px;">
+        <a href="/dashboard">&larr; Back to dashboard</a>
+    </p>
+</div>
+{% endblock %}

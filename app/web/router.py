@@ -594,3 +594,65 @@ async def profile_page(
     """User profile page with personal access token management."""
     ctx = _build_context(request, user=user)
     return templates.TemplateResponse(request, "profile.html", ctx)
+
+
+@router.get("/auth/cf-debug", response_class=HTMLResponse)
+async def cf_debug_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """Developer tool: show raw CF Access JWT claims + get-identity response.
+
+    Reads the `Cf-Access-Jwt-Assertion` header directly — does NOT mutate the
+    auth flow. Renders gracefully when CF is unconfigured or the header is
+    absent (e.g., accessing via localhost / origin bypass).
+    """
+    from app.auth.providers.cloudflare import (
+        is_available as cf_is_available,
+        verify_cf_jwt,
+        fetch_identity,
+        _team as cf_team_fn,
+    )
+
+    cf_available = cf_is_available()
+    header_val = request.headers.get("cf-access-jwt-assertion") or ""
+    header_present = bool(header_val)
+
+    claims: Optional[dict] = None
+    identity: Optional[dict] = None
+    identity_error: Optional[str] = None
+    parsed: dict = {"email": "", "name": "", "user_uuid": "", "idp_type": "", "groups": []}
+
+    if cf_available and header_present:
+        claims = verify_cf_jwt(header_val)
+        identity = fetch_identity(header_val)
+        if identity is None:
+            identity_error = "Returned None — see server logs."
+        else:
+            groups_raw = identity.get("groups") or []
+            group_names = []
+            for g in groups_raw:
+                if isinstance(g, dict):
+                    group_names.append(g.get("name") or g.get("email") or g.get("id") or "")
+                else:
+                    group_names.append(str(g))
+            idp = identity.get("idp") or {}
+            parsed = {
+                "email": identity.get("email", ""),
+                "name": identity.get("name", ""),
+                "user_uuid": identity.get("user_uuid", ""),
+                "idp_type": idp.get("type", "") if isinstance(idp, dict) else "",
+                "groups": [g for g in group_names if g],
+            }
+
+    ctx = _build_context(
+        request, user=user,
+        cf_available=cf_available,
+        cf_team=cf_team_fn(),
+        header_present=header_present,
+        claims=claims,
+        identity=identity,
+        identity_error=identity_error,
+        parsed=parsed,
+    )
+    return templates.TemplateResponse(request, "cf_debug.html", ctx)
