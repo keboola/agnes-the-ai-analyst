@@ -12,7 +12,11 @@ from fastapi.responses import FileResponse, PlainTextResponse
 # The endpoint is unauthenticated and users `curl | bash` it, so any shell
 # metacharacter leaking through the Host header or AGNES_VERSION env var
 # would become RCE. `shlex.quote` is applied on top for defense in depth.
-_SAFE_URL_RE = re.compile(r"^https?://[A-Za-z0-9.\-]+(:\d+)?/?$")
+#
+# Host charset allows underscores (Docker Compose hostnames) and `[` `]` `:`
+# so IPv6 literals like http://[::1]:8000 pass. Optional trailing path lets
+# reverse-proxy deployments (request.base_url = "https://host/agnes/") work.
+_SAFE_URL_RE = re.compile(r"^https?://[A-Za-z0-9._\-\[\]:]+(:\d+)?(/[A-Za-z0-9._\-/]*)?$")
 _SAFE_VERSION_RE = re.compile(r"^[A-Za-z0-9._\-]+$")
 
 router = APIRouter(tags=["cli"])
