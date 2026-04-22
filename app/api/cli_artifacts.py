@@ -6,7 +6,7 @@ import shlex
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 
 # Strict allowlists for values interpolated into the generated install.sh.
 # The endpoint is unauthenticated and users `curl | bash` it, so any shell
@@ -62,11 +62,12 @@ async def cli_download():
 async def cli_wheel_stable():
     """Stable `.whl` URL alias so `uv tool install <server>/cli/agnes.whl` works.
 
-    `uv tool install` inspects the URL path to decide how to treat the resource
-    and only accepts it as a wheel when the path ends in `.whl`. The existing
-    `/cli/download` path does not, which forces users through a multi-step
-    curl + tmpfile + install + rm dance. This alias collapses that into a
-    single `uv tool install` invocation.
+    `uv tool install` inspects the *URL path* to decide whether the resource is
+    a wheel — Content-Disposition is ignored at that stage — and also requires
+    the filename in the URL to be PEP 427-compliant (name + version, e.g.
+    `agnes-1.0-py3-none-any.whl`). A path that ends in `agnes.whl` fails with
+    "Must have a version". Redirect to the real versioned filename so `uv`
+    sees the PEP 427 form after following the redirect.
     """
     wheel = _find_wheel()
     if not wheel:
@@ -77,6 +78,20 @@ async def cli_wheel_stable():
                 "or run the official docker image (which builds on image-build)."
             ),
         )
+    return RedirectResponse(url=f"/cli/wheel/{wheel.name}", status_code=302)
+
+
+@router.get("/cli/wheel/{wheel_name}")
+async def cli_wheel_versioned(wheel_name: str):
+    """Serve the currently-present wheel at a PEP 427-compliant URL.
+
+    Only the exact filename of the current wheel is honoured; any other
+    `wheel_name` returns 404. No filesystem lookup is done from user input —
+    the path param is only compared against `_find_wheel().name`.
+    """
+    wheel = _find_wheel()
+    if not wheel or wheel.name != wheel_name:
+        raise HTTPException(status_code=404, detail="Wheel not found")
     return FileResponse(
         path=str(wheel),
         filename=wheel.name,
