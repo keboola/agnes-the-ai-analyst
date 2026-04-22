@@ -90,11 +90,21 @@ def create_app() -> FastAPI:
         SCHEMA_VERSION,
     )
 
-    # Seed admin user for testing/CI (when SEED_ADMIN_EMAIL is set).
+    # LOCAL_DEV_MODE: bypass authentication for local development. DO NOT enable in prod.
+    # When on, every protected route auto-logs in as a seeded admin user (default dev@localhost).
+    from app.auth.dependencies import is_local_dev_mode, get_local_dev_email
+    if is_local_dev_mode():
+        logger.warning("=" * 60)
+        logger.warning("LOCAL_DEV_MODE is ON — authentication is bypassed.")
+        logger.warning("All requests auto-authenticate as: %s", get_local_dev_email())
+        logger.warning("NEVER enable this in a deployment reachable from the internet.")
+        logger.warning("=" * 60)
+
+    # Seed admin user for testing/CI (when SEED_ADMIN_EMAIL is set) OR for local dev.
     # Optional: SEED_ADMIN_PASSWORD sets password_hash on first seed so the user
     # can log in immediately without bootstrap. Only applied if the user has no
     # password_hash yet — never overwrites an existing password.
-    seed_email = os.environ.get("SEED_ADMIN_EMAIL")
+    seed_email = os.environ.get("SEED_ADMIN_EMAIL") or (get_local_dev_email() if is_local_dev_mode() else None)
     if seed_email:
         try:
             from src.db import get_system_db

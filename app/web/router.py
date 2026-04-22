@@ -192,6 +192,9 @@ async def setup_wizard(request: Request, conn: duckdb.DuckDBPyConnection = Depen
 
 @router.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
+    from app.auth.dependencies import is_local_dev_mode
+    if is_local_dev_mode():
+        return RedirectResponse(url="/dashboard", status_code=302)
     providers = []
     try:
         from app.auth.providers.google import is_available as google_available

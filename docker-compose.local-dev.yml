@@ -1,0 +1,32 @@
+# Local-dev overlay — auth bypass + no real email delivery required.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.local-dev.yml up
+# or:
+#   scripts/run-local-dev.sh
+#
+# Effect:
+# - LOCAL_DEV_MODE=1 makes every protected route auto-login as dev@localhost (role=admin).
+# - Magic-link emails are logged to stderr and returned in the response (no SMTP needed).
+# - Secrets (JWT, session) auto-generate into /data/state on first boot.
+# - No .env file required; nothing else is mandatory.
+#
+# NEVER deploy this overlay to an environment reachable from the internet.
+services:
+  app:
+    env_file: []  # Drop the project .env requirement — everything dev-relevant is inline below.
+    environment:
+      - DATA_DIR=/data
+      - LOCAL_DEV_MODE=1
+      - LOCAL_DEV_USER_EMAIL=dev@localhost
+      - SERVER_URL=http://localhost:8000
+      - LOG_LEVEL=info
+
+  # Scheduler also reads LOCAL_DEV flag so its auto-auth uses the same seed user.
+  scheduler:
+    env_file: []
+    environment:
+      - DATA_DIR=/data
+      - API_URL=http://app:8000
+      - LOCAL_DEV_MODE=1
+      - SEED_ADMIN_EMAIL=dev@localhost
