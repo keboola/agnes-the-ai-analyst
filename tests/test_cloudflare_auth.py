@@ -518,3 +518,180 @@ class TestLoginPageCfHint:
         resp = no_cf_client.get("/login")
         assert resp.status_code == 200
         assert "Cloudflare Access" not in resp.text
+
+
+class TestFetchIdentity:
+    def test_returns_none_when_unavailable(self, monkeypatch):
+        monkeypatch.delenv("CF_ACCESS_TEAM", raising=False)
+        monkeypatch.delenv("CF_ACCESS_AUD", raising=False)
+        import importlib
+        from app.auth.providers import cloudflare as cf_mod
+        importlib.reload(cf_mod)
+        assert cf_mod.fetch_identity("any-token") is None
+
+    def test_returns_none_on_empty_token(self, monkeypatch):
+        monkeypatch.setenv("CF_ACCESS_TEAM", "testteam")
+        monkeypatch.setenv("CF_ACCESS_AUD", "test-aud-123")
+        import importlib
+        from app.auth.providers import cloudflare as cf_mod
+        importlib.reload(cf_mod)
+        assert cf_mod.fetch_identity("") is None
+
+    def test_parses_identity_response(self, monkeypatch):
+        monkeypatch.setenv("CF_ACCESS_TEAM", "testteam")
+        monkeypatch.setenv("CF_ACCESS_AUD", "test-aud-123")
+        import importlib
+        from app.auth.providers import cloudflare as cf_mod
+        importlib.reload(cf_mod)
+
+        fake_identity = {
+            "email": "alice@example.com",
+            "name": "Alice",
+            "groups": [{"id": "g1", "name": "engineers", "email": ""}],
+            "idp": {"id": "i1", "type": "google"},
+            "user_uuid": "uuid-1",
+        }
+
+        class _Resp:
+            status_code = 200
+            def json(self):
+                return fake_identity
+
+        def _fake_get(url, cookies=None, timeout=None):
+            assert "get-identity" in url
+            assert cookies == {"CF_Authorization": "tok"}
+            return _Resp()
+
+        monkeypatch.setattr("httpx.get", _fake_get)
+        result = cf_mod.fetch_identity("tok")
+        assert result == fake_identity
+
+    def test_non_200_returns_none(self, monkeypatch):
+        monkeypatch.setenv("CF_ACCESS_TEAM", "testteam")
+        monkeypatch.setenv("CF_ACCESS_AUD", "test-aud-123")
+        import importlib
+        from app.auth.providers import cloudflare as cf_mod
+        importlib.reload(cf_mod)
+
+        class _Resp:
+            status_code = 401
+            text = "unauthorized"
+
+        monkeypatch.setattr("httpx.get", lambda *a, **kw: _Resp())
+        assert cf_mod.fetch_identity("tok") is None
+
+    def test_network_error_returns_none(self, monkeypatch):
+        monkeypatch.setenv("CF_ACCESS_TEAM", "testteam")
+        monkeypatch.setenv("CF_ACCESS_AUD", "test-aud-123")
+        import importlib
+        from app.auth.providers import cloudflare as cf_mod
+        importlib.reload(cf_mod)
+
+        def _raise(*a, **kw):
+            raise RuntimeError("connection refused")
+
+        monkeypatch.setattr("httpx.get", _raise)
+        assert cf_mod.fetch_identity("tok") is None
+
+
+class TestCfDebugRoute:
+    def test_route_requires_auth(self, cf_client):
+        """Without cookie/bearer, the debug page redirects to login."""
+        resp = cf_client.get("/auth/cf-debug", follow_redirects=False)
+        # Unauth'd web route: middleware → 302 to /login, or 401 if header-based
+        assert resp.status_code in (302, 401)
+
+    def test_route_renders_not_configured_when_env_missing(self, no_cf_client):
+        """When CF env vars are unset, the route still works and shows a clear message."""
+        # Seed an authenticated user via the JWT helper
+        from app.auth.jwt import create_access_token
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        import uuid as _uuid
+
+        conn = get_system_db()
+        try:
+            uid = str(_uuid.uuid4())
+            UserRepository(conn).create(
+                id=uid, email="zoe@example.com", name="Zoe", role="analyst",
+            )
+            token = create_access_token(uid, "zoe@example.com", "analyst")
+        finally:
+            conn.close()
+
+        no_cf_client.cookies.set("access_token", token)
+        resp = no_cf_client.get("/auth/cf-debug")
+        assert resp.status_code == 200
+        assert "CF Access is not configured" in resp.text
+
+    def test_route_handles_missing_header(self, cf_client):
+        """CF configured but no CF header on request → renders the "no header" notice."""
+        from app.auth.jwt import create_access_token
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        import uuid as _uuid
+
+        conn = get_system_db()
+        try:
+            uid = str(_uuid.uuid4())
+            UserRepository(conn).create(
+                id=uid, email="noheader@example.com", name="NH", role="analyst",
+            )
+            token = create_access_token(uid, "noheader@example.com", "analyst")
+        finally:
+            conn.close()
+
+        cf_client.cookies.set("access_token", token)
+        resp = cf_client.get("/auth/cf-debug")
+        assert resp.status_code == 200
+        assert "No " in resp.text and "Cf-Access-Jwt-Assertion" in resp.text
+
+    def test_route_renders_claims_and_identity(self, cf_client, make_cf_jwt, monkeypatch):
+        """Valid CF header + mocked get-identity → page shows claims + identity + parsed groups."""
+        from app.auth.jwt import create_access_token
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        import uuid as _uuid
+
+        conn = get_system_db()
+        try:
+            uid = str(_uuid.uuid4())
+            UserRepository(conn).create(
+                id=uid, email="dbg@example.com", name="Dbg", role="analyst",
+            )
+            token = create_access_token(uid, "dbg@example.com", "analyst")
+        finally:
+            conn.close()
+
+        fake_identity = {
+            "email": "dbg@example.com",
+            "name": "Dbg",
+            "groups": [
+                {"id": "g1", "name": "engineers", "email": ""},
+                {"id": "g2", "name": "admins", "email": ""},
+            ],
+            "idp": {"id": "i1", "type": "google"},
+            "user_uuid": "uuid-dbg",
+        }
+
+        class _Resp:
+            status_code = 200
+            def json(self):
+                return fake_identity
+
+        monkeypatch.setattr("httpx.get", lambda *a, **kw: _Resp())
+
+        cf_client.cookies.set("access_token", token)
+        cf_jwt = make_cf_jwt(email="dbg@example.com", name="Dbg")
+        resp = cf_client.get(
+            "/auth/cf-debug",
+            headers={"Cf-Access-Jwt-Assertion": cf_jwt},
+        )
+        assert resp.status_code == 200
+        # Claims section is populated (email appears in JWT claim dump)
+        assert "dbg@example.com" in resp.text
+        # Parsed groups are rendered
+        assert "engineers" in resp.text
+        assert "admins" in resp.text
+        # IdP type rendered
+        assert "google" in resp.text

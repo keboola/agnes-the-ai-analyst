@@ -16,6 +16,7 @@ import uuid
 from typing import Any, Optional
 
 import duckdb
+import httpx
 import jwt as pyjwt
 from jwt import PyJWKClient
 
@@ -88,6 +89,38 @@ def verify_cf_jwt(token: str) -> Optional[dict]:
     except Exception as e:
         # JWKS fetch failure, network error, etc. — never propagate
         logger.warning("CF Access JWT verification error: %s", e)
+        return None
+
+
+def _identity_url() -> str:
+    return f"https://{_team()}.cloudflareaccess.com/cdn-cgi/access/get-identity"
+
+
+def fetch_identity(token: str) -> Optional[dict]:
+    """Fetch the full CF Access identity (groups, IdP, etc.) for a verified JWT.
+
+    Calls CF's `/cdn-cgi/access/get-identity` with the JWT as the `CF_Authorization`
+    cookie — this is the only surface that exposes IdP group memberships. Returns
+    parsed JSON on success, None on any failure (network, non-2xx, parse error).
+    Never raises; the debug page depends on graceful degradation.
+    """
+    if not is_available() or not token:
+        return None
+    try:
+        resp = httpx.get(
+            _identity_url(),
+            cookies={"CF_Authorization": token},
+            timeout=5.0,
+        )
+        if resp.status_code != 200:
+            logger.warning(
+                "CF Access get-identity returned %s: %s",
+                resp.status_code, resp.text[:200],
+            )
+            return None
+        return resp.json()
+    except Exception as e:
+        logger.warning("CF Access get-identity fetch failed: %s", e)
         return None
 
 
