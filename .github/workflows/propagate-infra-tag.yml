@@ -23,18 +23,34 @@ permissions:
 jobs:
   propagate:
     runs-on: ubuntu-latest
-    if: ${{ secrets.TEMPLATE_REPO_TOKEN != '' }}
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     steps:
-      - name: Extract tag name
-        id: tag
+      - name: Guard — tag ref + secret presence
+        id: guard
+        env:
+          SECRET_VALUE: ${{ secrets.TEMPLATE_REPO_TOKEN }}
         run: |
+          # Belt-and-braces tag-only check (workflow-level filter should handle it,
+          # but GitHub occasionally schedules this workflow on adjacent events with
+          # 0 jobs — explicit guard keeps the report clean).
+          if [[ ! "$GITHUB_REF" =~ ^refs/tags/infra-v ]]; then
+            echo "Not an infra-v* tag push (ref=$GITHUB_REF) — nothing to do."
+            echo "proceed=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          if [ -z "$SECRET_VALUE" ]; then
+            echo "::warning::TEMPLATE_REPO_TOKEN secret not set — skipping propagation. Renovate on the template repo will pick up the new tag on its next poll as a fallback."
+            echo "proceed=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
           TAG="${GITHUB_REF#refs/tags/}"
           echo "name=$TAG" >> $GITHUB_OUTPUT
+          echo "proceed=true" >> $GITHUB_OUTPUT
           echo "Propagating tag: $TAG"
 
       - name: Checkout template repo
+        if: steps.guard.outputs.proceed == 'true'
         uses: actions/checkout@v5
         with:
           repository: keboola/agnes-infra-template
@@ -42,29 +58,30 @@ jobs:
           path: template
 
       - name: Bump module ref in template
+        if: steps.guard.outputs.proceed == 'true'
         working-directory: template
         env:
-          NEW_TAG: ${{ steps.tag.outputs.name }}
+          NEW_TAG: ${{ steps.guard.outputs.name }}
         run: |
           file=terraform/main.tf
-          # Replace any existing ref=infra-vX.Y.Z with the new tag
           sed -i "s|ref=infra-v[0-9]\+\.[0-9]\+\.[0-9]\+\"|ref=$NEW_TAG\"|g" "$file"
           echo "--- diff ---"
           git diff "$file" || true
 
       - name: Create PR
+        if: steps.guard.outputs.proceed == 'true'
         uses: peter-evans/create-pull-request@v7
         with:
           path: template
           token: ${{ secrets.TEMPLATE_REPO_TOKEN }}
-          branch: bump-module-${{ steps.tag.outputs.name }}
-          title: "infra: bump module ref to ${{ steps.tag.outputs.name }}"
+          branch: bump-module-${{ steps.guard.outputs.name }}
+          title: "infra: bump module ref to ${{ steps.guard.outputs.name }}"
           body: |
-            Automated bump triggered by release of [`${{ steps.tag.outputs.name }}`](https://github.com/keboola/agnes-the-ai-analyst/releases/tag/${{ steps.tag.outputs.name }}) in the upstream `keboola/agnes-the-ai-analyst` repo.
+            Automated bump triggered by release of [`${{ steps.guard.outputs.name }}`](https://github.com/keboola/agnes-the-ai-analyst/releases/tag/${{ steps.guard.outputs.name }}) in the upstream `keboola/agnes-the-ai-analyst` repo.
 
             Auto-merge is enabled for patch/minor bumps (via Renovate config + this repo's `allow_auto_merge`). A `breaking` label on major bumps blocks auto-merge for human review.
 
             If CI validate fails, fix the module upstream before retrying.
-          commit-message: "infra: bump module ref to ${{ steps.tag.outputs.name }}"
+          commit-message: "infra: bump module ref to ${{ steps.guard.outputs.name }}"
           labels: renovate
           delete-branch: true
