@@ -107,6 +107,21 @@ class TestSetupGet:
         assert 'value="new@test.com"' in resp.text
         assert 'value="xyz"' in resp.text
 
+    def test_does_not_leak_user_existence_via_name_prefill(self, app_client, fresh_db):
+        """GET /setup must render the same form whether the email exists or not,
+        so an attacker can't enumerate users by watching the name field."""
+        _seed_user("alice@test.com")  # seeded with name="alice" (derived from email)
+        r_known = app_client.get("/auth/password/setup",
+                                 params={"email": "alice@test.com", "token": "anything"})
+        r_unknown = app_client.get("/auth/password/setup",
+                                   params={"email": "ghost@test.com", "token": "anything"})
+        assert r_known.status_code == 200 and r_unknown.status_code == 200
+        # Seeded user's display name must NOT be pre-filled in the name input.
+        assert 'value="alice"' not in r_known.text
+        # The two responses should differ only by URL-reflected values (email).
+        for body in (r_known.text, r_unknown.text):
+            assert 'name="name"' in body  # the blank name input is always there
+
     def test_redirects_without_params(self, app_client, fresh_db):
         resp = app_client.get("/auth/password/setup")
         assert resp.status_code == 302
@@ -320,3 +335,74 @@ class TestAdminInviteFlow:
         data = resp.json()
         assert data.get("invite_url") is None
         assert data.get("invite_email_sent") is None
+
+
+class TestJsonSetupHardening:
+    """The JSON POST /auth/password/setup endpoint must enforce the same token
+    TTL and active-account gate as the web flow."""
+
+    def test_expired_token_rejected(self, app_client, fresh_db):
+        _seed_user(
+            "j1@test.com",
+            setup_token="tok",
+            setup_token_created=datetime.now(timezone.utc) - timedelta(days=10),
+        )
+        resp = app_client.post("/auth/password/setup",
+                               json={"email": "j1@test.com", "token": "tok",
+                                     "password": "long-enough-1"})
+        assert resp.status_code == 400
+        assert "expired" in resp.json()["detail"].lower()
+
+    def test_missing_created_timestamp_rejected(self, app_client, fresh_db):
+        """A token row without setup_token_created is treated as invalid — we
+        cannot verify its age, so it must fail closed."""
+        _seed_user("j2@test.com", setup_token="tok")
+        resp = app_client.post("/auth/password/setup",
+                               json={"email": "j2@test.com", "token": "tok",
+                                     "password": "long-enough-1"})
+        assert resp.status_code == 400
+
+    def test_deactivated_user_rejected(self, app_client, fresh_db):
+        uid = _seed_user(
+            "j3@test.com",
+            setup_token="tok",
+            setup_token_created=datetime.now(timezone.utc),
+        )
+        # Flip user to inactive
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        conn = get_system_db()
+        try:
+            UserRepository(conn).update(id=uid, active=False)
+        finally:
+            conn.close()
+
+        resp = app_client.post("/auth/password/setup",
+                               json={"email": "j3@test.com", "token": "tok",
+                                     "password": "long-enough-1"})
+        assert resp.status_code == 403
+
+
+class TestCaseSensitiveEmailLookup:
+    """Reset/setup requests must match the codebase's case-sensitive email
+    lookup — lowercasing here would silently fail for mixed-case accounts."""
+
+    def test_reset_request_preserves_email_case(self, app_client, fresh_db):
+        # User stored as-is with mixed-case local-part
+        _seed_user("User.Mixed@Example.com", password_hash="x")
+        # Caller submits the same exact case → token must be issued
+        resp = app_client.post("/auth/password/reset",
+                               data={"email": "User.Mixed@Example.com"})
+        assert resp.status_code == 200
+        u = _get_user("User.Mixed@Example.com")
+        assert u["reset_token"]
+
+    def test_reset_request_case_mismatch_still_anti_enumerates(self, app_client, fresh_db):
+        _seed_user("User.Mixed@Example.com", password_hash="x")
+        # Wrong case: response is the same (anti-enumeration) and no token is issued
+        resp = app_client.post("/auth/password/reset",
+                               data={"email": "user.mixed@example.com"})
+        assert resp.status_code == 200
+        assert "Check your email" in resp.text
+        u = _get_user("User.Mixed@Example.com")
+        assert u["reset_token"] is None

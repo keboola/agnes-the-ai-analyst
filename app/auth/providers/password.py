@@ -241,6 +241,10 @@ async def password_setup(
 
     if user.get("setup_token") != request_body.token:
         raise HTTPException(status_code=400, detail="Invalid setup token")
+    if not _token_is_fresh(user.get("setup_token_created"), SETUP_TOKEN_TTL):
+        raise HTTPException(status_code=400, detail="Setup token has expired")
+    if not bool(user.get("active", True)):
+        raise HTTPException(status_code=403, detail="Account deactivated")
 
     if len(request_body.password) < MIN_PASSWORD_LEN:
         raise HTTPException(status_code=400, detail=f"Password must be at least {MIN_PASSWORD_LEN} characters")
@@ -274,7 +278,10 @@ async def reset_request(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Request a password-reset link. Anti-enumeration: same response regardless."""
-    email = (email or "").strip().lower()
+    # Match the rest of the codebase's case-sensitive lookup (password_login,
+    # email magic-link, admin create). Lowercasing here would silently fail
+    # for mixed-case emails the admin stored as-is.
+    email = (email or "").strip()
     if email:
         repo = UserRepository(conn)
         user = repo.get_by_email(email)
@@ -341,15 +348,15 @@ async def setup_page(
     request: Request,
     email: str = "",
     token: str = "",
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Render the initial 'set password + name' form when arriving via invite link."""
+    """Render the initial 'set password + name' form when arriving via invite link.
+
+    Note: we render the form based on URL params only, without a DB lookup, so
+    the response is identical for valid and invalid email/token combinations
+    (anti-enumeration). Token validity is checked at POST /setup/confirm."""
     if not email or not token:
         return RedirectResponse(url="/login/password", status_code=302)
-    repo = UserRepository(conn)
-    user = repo.get_by_email(email)
-    name = user.get("name", "") if user else ""
-    return _render_setup_form(request, email=email, token=token, name=name)
+    return _render_setup_form(request, email=email, token=token)
 
 
 @router.post("/setup/request")
@@ -359,7 +366,10 @@ async def setup_request(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Self-service 'Request Access' — emails a setup link if user is pre-approved and unset."""
-    email = (email or "").strip().lower()
+    # Match the rest of the codebase's case-sensitive lookup (password_login,
+    # email magic-link, admin create). Lowercasing here would silently fail
+    # for mixed-case emails the admin stored as-is.
+    email = (email or "").strip()
     if email:
         repo = UserRepository(conn)
         user = repo.get_by_email(email)

@@ -26,9 +26,12 @@ def client(tmp_path, monkeypatch):
         pw_hash = hashlib.sha256(b"testpass123").hexdigest()
 
     ur.create(id="pw1", email="pw@test.com", name="PW User", role="analyst", password_hash=pw_hash)
-    # User with setup token
+    # User with setup token (and fresh created timestamp so the JSON /setup
+    # endpoint's TTL check accepts it)
+    from datetime import datetime, timezone
     ur.create(id="setup1", email="setup@test.com", name="Setup User", role="analyst")
-    ur.update(id="setup1", setup_token="setup-token-123")
+    ur.update(id="setup1", setup_token="setup-token-123",
+              setup_token_created=datetime.now(timezone.utc))
     # User for magic link
     ur.create(id="ml1", email="ml@test.com", name="ML User", role="analyst")
     conn.close()
