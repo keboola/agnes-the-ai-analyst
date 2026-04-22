@@ -15,37 +15,19 @@
      does, with a 1440px max for readability on very wide screens and a
      24px gutter on each side.
 
-     Technique: the container's inner width is 760px (800 − 40px padding).
-     We expand to the viewport using negative horizontal margins equal to
-     half the delta: (100vw − 760px) / 2. The `max-width` cap and inner
-     padding do the rest. `overflow-x: hidden` on <body> protects against
-     the rare horizontal scrollbar. */
-  body { overflow-x: hidden; }
-  .container > main { max-width: 100%; }
+     Technique: override base.html's `.container` max-width on this page
+     only. Cleaner than negative-margin gymnastics, works regardless of
+     base padding, and matches /dashboard's 1280px center-column layout. */
+  body > .container { max-width: 1280px; }
   .tokens-page {
-    width: calc(100vw - 48px);
-    max-width: 1440px;
-    margin-left: calc((760px - 100vw + 48px) / 2);
-    margin-right: calc((760px - 100vw + 48px) / 2);
-    padding: 28px 24px 48px;
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 28px 8px 48px;
     box-sizing: border-box;
     font-family: var(--font-primary, 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif);
   }
-  /* Under 808px the container is already narrower than viewport — reset. */
-  @media (max-width: 808px) {
-    .tokens-page {
-      width: 100%;
-      margin-left: 0;
-      margin-right: 0;
-    }
-  }
-  /* Above 1488px (1440 + 2×24) the page reaches its cap — re-center. */
-  @media (min-width: 1488px) {
-    .tokens-page {
-      width: 1440px;
-      margin-left: auto;
-      margin-right: auto;
-    }
+  @media (max-width: 720px) {
+    .tokens-page { padding: 20px 0 32px; }
   }
 
   /* ── Hero ──────────────────────────────────────────────────────────────── */
