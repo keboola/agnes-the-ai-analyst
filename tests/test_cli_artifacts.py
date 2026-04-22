@@ -43,6 +43,37 @@ def test_cli_download_serves_wheel_when_present(monkeypatch, tmp_path):
     assert resp.content.startswith(b"PK")
 
 
+def test_cli_agnes_whl_alias_serves_same_bytes_as_download(monkeypatch, tmp_path):
+    """`/cli/agnes.whl` is a stable alias over `/cli/download` whose URL path
+    ends in `.whl`, which `uv tool install` requires to treat the resource as
+    a wheel. Both endpoints must serve identical bytes."""
+    wheel = tmp_path / "agnes_fake-1.0-py3-none-any.whl"
+    wheel.write_bytes(b"PK\x03\x04fake-wheel-bytes-agnes")
+    monkeypatch.setenv("AGNES_CLI_DIST_DIR", str(tmp_path))
+    from fastapi.testclient import TestClient
+    from app.main import app
+    client = TestClient(app)
+
+    resp_alias = client.get("/cli/agnes.whl")
+    assert resp_alias.status_code == 200
+    assert resp_alias.headers["content-type"] == "application/octet-stream"
+    assert resp_alias.content == wheel.read_bytes()
+
+    resp_download = client.get("/cli/download")
+    assert resp_download.status_code == 200
+    assert resp_alias.content == resp_download.content
+
+
+def test_cli_agnes_whl_alias_404_when_no_wheel(monkeypatch, tmp_path):
+    """Alias returns 404 with a helpful message when no wheel is present."""
+    monkeypatch.setenv("AGNES_CLI_DIST_DIR", str(tmp_path))
+    from fastapi.testclient import TestClient
+    from app.main import app
+    client = TestClient(app)
+    resp = client.get("/cli/agnes.whl")
+    assert resp.status_code == 404
+
+
 def test_install_page_renders_with_server_url():
     from fastapi.testclient import TestClient
     from app.main import app

@@ -49,6 +49,33 @@ async def cli_download():
     )
 
 
+@router.get("/cli/agnes.whl")
+async def cli_wheel_stable():
+    """Stable `.whl` URL alias so `uv tool install <server>/cli/agnes.whl` works.
+
+    `uv tool install` inspects the URL path to decide how to treat the resource
+    and only accepts it as a wheel when the path ends in `.whl`. The existing
+    `/cli/download` path does not, which forces users through a multi-step
+    curl + tmpfile + install + rm dance. This alias collapses that into a
+    single `uv tool install` invocation.
+    """
+    wheel = _find_wheel()
+    if not wheel:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "CLI wheel not found in dist dir. Build it with `uv build --wheel` "
+                "or run the official docker image (which builds on image-build)."
+            ),
+        )
+    return FileResponse(
+        path=str(wheel),
+        filename=wheel.name,
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{wheel.name}"'},
+    )
+
+
 @router.get("/cli/install.sh", response_class=PlainTextResponse)
 async def cli_install_script(request: Request):
     """Shell installer — bakes this server's URL into the generated config."""
