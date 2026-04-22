@@ -23,7 +23,7 @@
     background: var(--surface, #fff);
     border: 1px solid var(--border, #e5e7eb);
     border-radius: 12px;
-    overflow: hidden;
+    overflow-x: auto;
   }
   .users-table { width: 100%; border-collapse: collapse; font-size: 13px; }
   .users-table thead th {
@@ -85,11 +85,13 @@
 
   .date-cell { color: var(--text-secondary, #6b7280); font-size: 12px; white-space: nowrap; }
 
-  .row-actions { display: flex; gap: 6px; justify-content: flex-end; }
+  .row-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: nowrap; white-space: nowrap; }
   .icon-btn {
     background: transparent; border: 1px solid var(--border, #e5e7eb); border-radius: 6px;
     padding: 5px 10px; font-size: 12px; cursor: pointer;
     color: var(--text-secondary, #6b7280); transition: all 0.15s;
+    text-decoration: none; line-height: 1.4;
+    white-space: nowrap;
   }
   .icon-btn:hover { color: var(--text-primary, #111827); border-color: #cbd5e1; background: #f9fafb; }
   .icon-btn.danger:hover { color: #b91c1c; border-color: #fecaca; background: #fef2f2; }
