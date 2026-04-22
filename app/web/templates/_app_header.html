@@ -12,9 +12,14 @@
         {% set _path = request.url.path %}
         <a class="app-nav-link {% if _path == '/dashboard' or _path == '/' %}is-active{% endif %}" href="/dashboard">Dashboard</a>
         <a class="app-nav-link {% if _path.startswith('/install') %}is-active{% endif %}" href="/install">Install CLI</a>
-        <a class="app-nav-link {% if _path.startswith('/tokens') or _path.startswith('/admin/tokens') or _path.startswith('/profile') %}is-active{% endif %}" href="/tokens">Tokens</a>
+        {# /tokens = own tokens for any signed-in user. /profile is a
+           back-compat redirect to /tokens, so treat it as active too.
+           We intentionally do NOT match /admin/tokens here — admins get
+           a separate "All tokens" link below. #}
+        <a class="app-nav-link {% if _path == '/tokens' or _path.startswith('/profile') %}is-active{% endif %}" href="/tokens">Tokens</a>
         {% if session.user.role == 'admin' %}
         <a class="app-nav-link {% if _path.startswith('/admin/users') %}is-active{% endif %}" href="/admin/users">Users</a>
+        <a class="app-nav-link {% if _path.startswith('/admin/tokens') %}is-active{% endif %}" href="/admin/tokens">All tokens</a>
         {% endif %}
         <span class="app-header-email">{{ session.user.email }}</span>
         {% if session.user.picture %}
