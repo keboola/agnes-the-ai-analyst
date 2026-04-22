@@ -121,6 +121,32 @@ class TestAuthImportToken:
         # Existing file must be intact.
         assert json.loads(token_file.read_text()) == existing
 
+    def test_import_token_with_server_flag_persists_server_to_config_yaml(
+        self, tmp_path, monkeypatch
+    ):
+        """Passing --server should write `server: URL` to ~/.config/da/config.yaml
+        so the user never has to configure the server in a separate step."""
+        # No DA_SERVER env var — rely entirely on the --server flag for persistence.
+        monkeypatch.delenv("DA_SERVER", raising=False)
+        token = self._make_jwt(email="dave@example.com", role="analyst")
+
+        with self._mock_verify(200):
+            result = runner.invoke(
+                app,
+                [
+                    "auth", "import-token",
+                    "--token", token,
+                    "--server", "https://agnes.example.com",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+
+        config_file = tmp_path / "config" / "config.yaml"
+        assert config_file.exists(), "config.yaml must be written when --server is passed"
+        import yaml
+        cfg = yaml.safe_load(config_file.read_text())
+        assert cfg.get("server") == "https://agnes.example.com"
+
     def test_import_token_claim_fallback_via_cli_overrides(self, tmp_path, monkeypatch):
         """Missing email/role claims -> refuse without overrides, accept with them."""
         import jwt as pyjwt
