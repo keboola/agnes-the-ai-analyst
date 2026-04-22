@@ -124,8 +124,10 @@ class TestClaudeSetupPreview:
         assert 'class="placeholder-token"' in body
         # Setup payload text substituted with real server URL
         assert "/cli/agnes.whl" in body
-        # `da diagnose` — added in the setup-preview-and-doctor feature
-        # (the updated text lands in commit 2; keep this assertion loose)
+        # New numbered headers + da diagnose step
+        assert "1) Install the CLI" in body
+        assert "4) Run diagnostics" in body
+        assert "da diagnose" in body
         assert "da auth whoami" in body
 
     def test_dashboard_preview_visible(self, web_client, admin_cookie):
