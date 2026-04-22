@@ -136,7 +136,7 @@ def _url_for_shim(endpoint: str, **kw) -> str:
 def _build_context(request: Request, user: Optional[dict] = None, **extra) -> dict:
     """Build template context with config, user, and theme."""
     class ConfigProxy:
-        INSTANCE_NAME = get_instance_name()
+        INSTANCE_NAME = "AI Data Analyst - RYS"
         INSTANCE_SUBTITLE = get_instance_subtitle()
         INSTANCE_COPYRIGHT = "AI Data Analyst - RYS"
         LOGO_SVG = ""
