@@ -26,10 +26,16 @@ docker:
 local-dev:
 	./scripts/run-local-dev.sh
 
-local-dev-down:
+# docker-compose.yml declares `env_file: .env` on several services; compose
+# validates those paths even for profiled services that never start. Create
+# the file on demand so down/logs work even if the user never ran local-dev.
+.env:
+	@touch $@
+
+local-dev-down: .env
 	docker compose $(LOCAL_DEV_COMPOSE) down
 
-local-dev-logs:
+local-dev-logs: .env
 	docker compose $(LOCAL_DEV_COMPOSE) logs -f
 
 lint:
