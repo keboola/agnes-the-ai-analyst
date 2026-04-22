@@ -136,6 +136,65 @@ class TestEmailAuth:
         assert resp.status_code == 401
 
 
+class TestMagicLinkTokenAtomicConsume:
+    """The compare-and-clear must be atomic: two concurrent clicks on the
+    same link cannot both succeed. Exactly one wins, the other gets 401."""
+
+    def test_consume_reset_token_is_single_use(self, client):
+        """Unit-level race proxy: call the atomic consume twice for the same
+        token — the first returns rowcount=1, the second 0. End-to-end
+        concurrency with real threads would need a dedicated DuckDB pool
+        and Python GIL-aware orchestration; this pins the SQL-level
+        behavior that powers it."""
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        conn = get_system_db()
+        repo = UserRepository(conn)
+        user = repo.get_by_email("ml@test.com")
+        assert user is not None
+        # Seed a token (simulates what POST /send-link did).
+        from datetime import datetime, timezone
+        repo.update(
+            id=user["id"],
+            reset_token="race-token-123",
+            reset_token_created=datetime.now(timezone.utc),
+        )
+
+        # First consume wins.
+        assert repo.consume_reset_token(user["id"], "race-token-123") == 1
+        # Second consume — token is already cleared — loses.
+        assert repo.consume_reset_token(user["id"], "race-token-123") == 0
+        # Non-matching token also loses.
+        assert repo.consume_reset_token(user["id"], "something-else") == 0
+        conn.close()
+
+    def test_verify_returns_401_on_second_use_of_same_link(self, client):
+        """Full-stack: hit POST /verify twice with the same (email,token) —
+        second call is 401 even though the first succeeded."""
+        import secrets
+        from datetime import datetime, timezone
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        conn = get_system_db()
+        repo = UserRepository(conn)
+        user = repo.get_by_email("ml@test.com")
+        assert user is not None
+        token = secrets.token_urlsafe(32)
+        repo.update(
+            id=user["id"],
+            reset_token=token,
+            reset_token_created=datetime.now(timezone.utc),
+        )
+        conn.close()
+
+        first = client.post("/auth/email/verify", json={"email": "ml@test.com", "token": token})
+        assert first.status_code == 200
+        assert "access_token" in first.json()
+
+        second = client.post("/auth/email/verify", json={"email": "ml@test.com", "token": token})
+        assert second.status_code == 401
+
+
 class TestGoogleOAuth:
     def test_google_login_not_configured(self, client):
         """Without GOOGLE_CLIENT_ID, should redirect to login with error."""

@@ -368,5 +368,12 @@ class TestUnauthenticatedHtmlRedirects:
         assert safe_next_path("javascript:alert(1)") == "/dashboard"
         assert safe_next_path("") == "/dashboard"
         assert safe_next_path(None) == "/dashboard"
+        # Backslash bypass: Python sees `/\` (not `//`) but browsers
+        # normalise `\` to `/`, so `Location: /\evil.com` lands on
+        # `//evil.com` — a cross-origin redirect. Must be blocked.
+        assert safe_next_path("/\\evil.com") == "/dashboard"
+        assert safe_next_path("/\\\\evil.com/path") == "/dashboard"
+        # Single `/` alone is allowed (it's just /) — not blocked by the guard.
+        assert safe_next_path("/") == "/"
         # Empty-default variant (used when computing query string).
         assert safe_next_path(None, default="") == ""

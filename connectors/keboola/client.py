@@ -16,7 +16,7 @@ import os
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pyarrow as pa
 import requests
@@ -176,11 +176,17 @@ class KeboolaClient:
         Raises:
             Exception: If unable to get metadata from API
         """
-        # Check cache
+        # Check cache. `_cached_at` may be stored with or without tzinfo
+        # (legacy entries were written by naive `datetime.now()` — we keep
+        # reading them). Normalise to UTC before subtracting so the
+        # comparison doesn't crash with "can't subtract offset-naive and
+        # offset-aware datetimes" once the writer-side switches to aware.
         if use_cache and table_id in self.metadata_cache:
             cached = self.metadata_cache[table_id]
             cached_time = datetime.fromisoformat(cached.get("_cached_at", "2000-01-01"))
-            cache_age = datetime.now() - cached_time
+            if cached_time.tzinfo is None:
+                cached_time = cached_time.replace(tzinfo=timezone.utc)
+            cache_age = datetime.now(timezone.utc) - cached_time
 
             if cache_age < timedelta(hours=cache_ttl_hours):
                 logger.debug(f"Using metadata cache for {table_id}")
@@ -213,7 +219,7 @@ class KeboolaClient:
                 "last_import_date": table_detail.get("lastImportDate"),
                 "last_change_date": table_detail.get("lastChangeDate"),
                 "is_alias": table_detail.get("isAlias", False),
-                "_cached_at": datetime.now().isoformat()
+                "_cached_at": datetime.now(timezone.utc).isoformat()
             }
 
             # Save to cache

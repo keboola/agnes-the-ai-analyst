@@ -17,6 +17,7 @@ import duckdb
 
 import jinja2
 
+from app.auth._common import safe_next_path
 from app.auth.dependencies import get_current_user, get_optional_user, require_role, _get_db
 from src.rbac import Role
 from app.instance_config import (
@@ -221,7 +222,7 @@ async def login_page(request: Request):
         # Fall through to the normal login form so the missing-seed error is visible.
 
     next_path = request.query_params.get("next", "")
-    if not next_path.startswith("/") or next_path.startswith("//"):
+    if safe_next_path(next_path, "") == "":
         next_path = ""
 
     providers = []
@@ -266,7 +267,7 @@ async def login_page(request: Request):
 async def login_password_page(request: Request):
     """Password login form (email + password)."""
     next_path = request.query_params.get("next", "")
-    if not next_path.startswith("/") or next_path.startswith("//"):
+    if safe_next_path(next_path, "") == "":
         next_path = ""
     google_ok = False
     try:
@@ -282,7 +283,7 @@ async def login_password_page(request: Request):
 async def login_email_page(request: Request):
     """Email magic link login form."""
     next_path = request.query_params.get("next", "")
-    if not next_path.startswith("/") or next_path.startswith("//"):
+    if safe_next_path(next_path, "") == "":
         next_path = ""
     google_ok = False
     try:

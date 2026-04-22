@@ -106,10 +106,20 @@ def create_app() -> FastAPI:
         skip_prefixes=("/api/data/", "/cli/wheel/", "/cli/download"),
     )
 
-    # Session middleware (required for OAuth state)
+    # Session middleware (required for OAuth state). Explicit max_age so the
+    # cookie doesn't linger for the browser's entire lifetime (Starlette
+    # default = until browser close = practically forever). https_only is
+    # enabled in production — we key off DOMAIN the same way password/email
+    # providers decide `secure=` on the access_token cookie, so plain-HTTP
+    # dev deployments still work without manual tweaking.
     from app.secrets import get_session_secret
     session_secret = get_session_secret()
-    app.add_middleware(SessionMiddleware, secret_key=session_secret)
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=session_secret,
+        max_age=3600,  # 1h — enough for OAuth round-trip; short enough to limit leak blast radius
+        https_only=bool(os.environ.get("DOMAIN")),
+    )
 
     # CORS for CLI and external clients
     cors_origins = os.environ.get("CORS_ORIGINS", "http://localhost:3000,http://localhost:8000").split(",")
