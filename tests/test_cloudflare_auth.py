@@ -404,3 +404,103 @@ class TestMiddlewarePassthrough:
         # No cookie set, normal redirect to login
         assert resp.status_code == 302
         assert "access_token" not in resp.cookies
+
+
+class TestMiddlewareAutoLogin:
+    def test_valid_cf_header_auto_logs_in(self, cf_client, make_cf_jwt):
+        """Valid CF JWT on /dashboard request → middleware sets cookie → 200 (not 302)."""
+        token = make_cf_jwt(email="alice@example.com", name="Alice")
+        resp = cf_client.get(
+            "/dashboard",
+            headers={"Cf-Access-Jwt-Assertion": token},
+            follow_redirects=False,
+        )
+        # Middleware provisioned Alice + set cookie → dashboard renders
+        assert resp.status_code == 200, (
+            f"Expected 200, got {resp.status_code}: {resp.text[:300]}"
+        )
+        # Cookie was set on the response
+        assert "access_token" in resp.cookies
+        # User now exists
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        conn = get_system_db()
+        try:
+            user = UserRepository(conn).get_by_email("alice@example.com")
+            assert user is not None
+            assert user["role"] == "analyst"
+        finally:
+            conn.close()
+
+    def test_bearer_pat_passes_through_without_cookie(self, cf_client, make_cf_jwt):
+        """A Bearer-authenticated client (PAT/API) must NOT get a cookie set,
+        even if a CF header is also present."""
+        from app.auth.jwt import create_access_token
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        import uuid as _uuid
+
+        conn = get_system_db()
+        try:
+            uid = str(_uuid.uuid4())
+            UserRepository(conn).create(
+                id=uid, email="pat@example.com", name="PAT User", role="analyst",
+            )
+            bearer = create_access_token(uid, "pat@example.com", "analyst")
+        finally:
+            conn.close()
+
+        cf_token = make_cf_jwt(email="spoofed@example.com")
+        resp = cf_client.get(
+            "/dashboard",
+            headers={
+                "Authorization": f"Bearer {bearer}",
+                "Cf-Access-Jwt-Assertion": cf_token,
+            },
+            follow_redirects=False,
+        )
+        # Bearer auth succeeds, middleware skipped → no cookie leaked
+        assert resp.status_code == 200
+        assert "access_token" not in resp.cookies
+        # Spoofed email must not have been provisioned
+        from src.db import get_system_db as _gdb
+        conn2 = _gdb()
+        try:
+            spoofed = UserRepository(conn2).get_by_email("spoofed@example.com")
+            assert spoofed is None
+        finally:
+            conn2.close()
+
+    def test_existing_cookie_wins_over_cf_header(self, cf_client, make_cf_jwt):
+        """If the user already has an access_token cookie, middleware must not overwrite it."""
+        from app.auth.jwt import create_access_token
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        import uuid as _uuid
+
+        conn = get_system_db()
+        try:
+            uid = str(_uuid.uuid4())
+            UserRepository(conn).create(
+                id=uid, email="bob@example.com", name="Bob", role="admin",
+            )
+            existing_token = create_access_token(uid, "bob@example.com", "admin")
+        finally:
+            conn.close()
+
+        cf_client.cookies.set("access_token", existing_token)
+        cf_token = make_cf_jwt(email="carol@example.com", name="Carol")
+        resp = cf_client.get(
+            "/dashboard",
+            headers={"Cf-Access-Jwt-Assertion": cf_token},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 200
+        # Carol must NOT have been provisioned — existing cookie session wins
+        from src.db import get_system_db as _gdb
+        conn2 = _gdb()
+        try:
+            carol = UserRepository(conn2).get_by_email("carol@example.com")
+            assert carol is None
+        finally:
+            conn2.close()
