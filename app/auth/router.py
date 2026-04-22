@@ -138,14 +138,19 @@ async def bootstrap(
     # is for a *different* email — this is how a passive seed could become a
     # bootstrap backdoor. Require the caller to activate the existing account
     # under its own email instead of registering a brand-new admin.
+    #
+    # The rejection body MUST NOT include the existing emails — this endpoint
+    # is unauthenticated. Leaking the seed email lets an attacker probe
+    # once (get the email), bootstrap again with it + their own password,
+    # and take the account over. Operators who need to know which seed
+    # exists have `da admin users list` (authenticated) or the audit log.
     if existing and not any(u.get("email") == request.email for u in existing):
-        seed_emails = ", ".join(sorted({u.get("email", "?") for u in existing}))
         raise HTTPException(
             status_code=403,
             detail=(
-                "Bootstrap disabled — account(s) already exist without a password "
-                f"({seed_emails}). Activate one of those by bootstrapping with the "
-                "matching email, or remove the stale seed before registering a new admin."
+                "Bootstrap disabled — account(s) already exist without a password. "
+                "Activate one of those by bootstrapping with the matching email, "
+                "or remove the stale seed before registering a new admin."
             ),
         )
 
