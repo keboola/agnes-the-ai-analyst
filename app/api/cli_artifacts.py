@@ -39,6 +39,29 @@ def _find_wheel() -> Path | None:
     return wheels[-1] if wheels else None
 
 
+@router.get("/cli/latest")
+async def cli_latest():
+    """Metadata for the currently-shipped CLI wheel.
+
+    Consumed by `da` CLI's auto-update check so it can warn when a newer
+    version is on the server. Public + cacheable — no secrets here.
+    Returns `version=None` when the server has no wheel yet (dev image that
+    didn't run `uv build`).
+    """
+    wheel = _find_wheel()
+    if not wheel:
+        return {"version": None, "wheel_filename": None, "download_url_path": None}
+    # PEP 427 wheel filename: {name}-{version}(-{build})?-{py}-{abi}-{plat}.whl
+    # The version is the second `-`-separated token.
+    parts = wheel.stem.split("-")
+    version = parts[1] if len(parts) >= 2 else None
+    return {
+        "version": version,
+        "wheel_filename": wheel.name,
+        "download_url_path": f"/cli/wheel/{wheel.name}",
+    }
+
+
 @router.get("/cli/download")
 async def cli_download():
     wheel = _find_wheel()
