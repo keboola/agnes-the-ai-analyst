@@ -427,6 +427,142 @@ def test_pat_same_ip_does_not_audit(fresh_db):
         close_system_db()
 
 
+def test_pat_can_list_own_tokens(fresh_db):
+    """A PAT must be allowed to list its owner's tokens — `da auth token list`
+    CLI flow. Previously this returned 403 because require_session_token
+    blocked all PATs uniformly."""
+    from fastapi.testclient import TestClient
+    import hashlib, uuid
+    from datetime import datetime, timezone, timedelta
+    from src.db import get_system_db, close_system_db
+    from src.repositories.users import UserRepository
+    from src.repositories.access_tokens import AccessTokenRepository
+    from app.auth.jwt import create_access_token
+    from app.main import app
+
+    conn = get_system_db()
+    try:
+        uid = str(uuid.uuid4())
+        UserRepository(conn).create(id=uid, email="u@t", name="U", role="analyst")
+        tid = str(uuid.uuid4())
+        pat = create_access_token(
+            user_id=uid, email="u@t", role="analyst", token_id=tid, typ="pat",
+            expires_delta=timedelta(days=90),
+        )
+        AccessTokenRepository(conn).create(
+            id=tid, user_id=uid, name="laptop",
+            token_hash=hashlib.sha256(pat.encode()).hexdigest(),
+            prefix=tid.replace("-", "")[:8],
+            expires_at=datetime.now(timezone.utc) + timedelta(days=90),
+        )
+    finally:
+        conn.close()
+        close_system_db()
+
+    client = TestClient(app)
+    resp = client.get(
+        "/auth/tokens",
+        headers={"Authorization": f"Bearer {pat}"},
+    )
+    assert resp.status_code == 200, resp.text
+    rows = resp.json()
+    assert any(r["id"] == tid for r in rows)
+
+
+def test_pat_can_revoke_own_token(fresh_db):
+    """A PAT must be allowed to revoke its owner's own tokens —
+    `da auth token revoke` CLI flow."""
+    from fastapi.testclient import TestClient
+    import hashlib, uuid
+    from datetime import datetime, timezone, timedelta
+    from src.db import get_system_db, close_system_db
+    from src.repositories.users import UserRepository
+    from src.repositories.access_tokens import AccessTokenRepository
+    from app.auth.jwt import create_access_token
+    from app.main import app
+
+    conn = get_system_db()
+    try:
+        uid = str(uuid.uuid4())
+        UserRepository(conn).create(id=uid, email="u@t", name="U", role="analyst")
+        # Token A — the PAT used to authenticate this call.
+        tid_a = str(uuid.uuid4())
+        pat_a = create_access_token(
+            user_id=uid, email="u@t", role="analyst", token_id=tid_a, typ="pat",
+            expires_delta=timedelta(days=90),
+        )
+        AccessTokenRepository(conn).create(
+            id=tid_a, user_id=uid, name="primary",
+            token_hash=hashlib.sha256(pat_a.encode()).hexdigest(),
+            prefix=tid_a.replace("-", "")[:8],
+            expires_at=datetime.now(timezone.utc) + timedelta(days=90),
+        )
+        # Token B — the one we'll revoke with A.
+        tid_b = str(uuid.uuid4())
+        AccessTokenRepository(conn).create(
+            id=tid_b, user_id=uid, name="old-ci",
+            token_hash=hashlib.sha256(b"whatever").hexdigest(),
+            prefix=tid_b.replace("-", "")[:8],
+            expires_at=datetime.now(timezone.utc) + timedelta(days=90),
+        )
+    finally:
+        conn.close()
+        close_system_db()
+
+    client = TestClient(app)
+    resp = client.delete(
+        f"/auth/tokens/{tid_b}",
+        headers={"Authorization": f"Bearer {pat_a}"},
+    )
+    assert resp.status_code == 204, resp.text
+
+    # Confirm B is now revoked.
+    conn = get_system_db()
+    try:
+        row = AccessTokenRepository(conn).get_by_id(tid_b)
+        assert row["revoked_at"] is not None
+    finally:
+        conn.close()
+        close_system_db()
+
+
+def test_create_token_rejects_expires_in_days_above_cap(fresh_db):
+    """expires_in_days > 3650 must return 400 (not 500 via datetime overflow)."""
+    from fastapi.testclient import TestClient
+    import uuid
+    from src.db import get_system_db, close_system_db
+    from src.repositories.users import UserRepository
+    from app.auth.jwt import create_access_token
+    from app.main import app
+
+    conn = get_system_db()
+    try:
+        uid = str(uuid.uuid4())
+        UserRepository(conn).create(id=uid, email="u@t", name="U", role="admin")
+        sess_token = create_access_token(user_id=uid, email="u@t", role="admin")
+    finally:
+        conn.close()
+        close_system_db()
+
+    client = TestClient(app)
+    # Just above the cap — must be 400, not 500.
+    resp = client.post(
+        "/auth/tokens",
+        headers={"Authorization": f"Bearer {sess_token}"},
+        json={"name": "laptop", "expires_in_days": 3651},
+    )
+    assert resp.status_code == 400, resp.text
+    assert "3650" in resp.text
+
+    # Huge value that would previously overflow datetime.max — still 400.
+    resp = client.post(
+        "/auth/tokens",
+        headers={"Authorization": f"Bearer {sess_token}"},
+        json={"name": "laptop", "expires_in_days": 10_000_000_000},
+    )
+    assert resp.status_code == 400, resp.text
+
+
 def test_pat_first_ever_use_does_not_audit(fresh_db):
     """The first-ever use of a PAT (no prior last_used_at) does NOT emit an audit entry."""
     from fastapi.testclient import TestClient

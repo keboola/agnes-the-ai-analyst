@@ -316,3 +316,54 @@ class TestUnauthenticatedHtmlRedirects:
         # Password button URL should carry next.
         assert "/login/password?next=%2Fcatalog" in body, \
             f"Expected /login/password?next=%2Fcatalog in login page HTML; got snippet: {body[:500]}"
+
+    def test_login_page_propagates_next_to_google_button(self, web_client, monkeypatch):
+        """The Google OAuth button URL must also carry the ?next param so the
+        post-login redirect honors the requested destination."""
+        # Force Google provider to appear available so the button is rendered.
+        monkeypatch.setattr(
+            "app.auth.providers.google.is_available", lambda: True,
+        )
+        resp = web_client.get("/login?next=/catalog")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "/auth/google/login?next=%2Fcatalog" in body, \
+            f"Expected google login URL with ?next in login page; snippet: {body[:800]}"
+
+    def test_login_email_page_extracts_and_renders_next(self, web_client):
+        """/login/email (magic link) must extract ?next from the URL and
+        emit it into the hidden form field so it round-trips to the POST."""
+        resp = web_client.get("/login/email?next=/catalog")
+        assert resp.status_code == 200
+        body = resp.text
+        # The template renders <input type="hidden" name="next" value="/catalog">
+        assert 'name="next" value="/catalog"' in body, \
+            f"Expected /catalog in next hidden field; snippet: {body[:800]}"
+
+    def test_login_email_page_rejects_open_redirect_in_next(self, web_client):
+        """Hostile ?next values (e.g. //evil) must be sanitized away before
+        the hidden field is rendered."""
+        resp = web_client.get("/login/email?next=//evil.example/")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "evil.example" not in body
+        # Empty string is the sanitized default.
+        assert 'name="next" value=""' in body
+
+    def test_google_login_stashes_safe_next_in_session(self, web_client, monkeypatch):
+        """google_login() must stash the sanitized next_path in the session.
+
+        We can't exercise the full OAuth flow without a Google mock, but we
+        can verify the helper applies the sanitizer correctly."""
+        from app.auth._common import safe_next_path
+        # Valid same-origin paths pass through.
+        assert safe_next_path("/catalog") == "/catalog"
+        assert safe_next_path("/foo?bar=baz") == "/foo?bar=baz"
+        # Open-redirect shapes get defaulted.
+        assert safe_next_path("//evil.example/") == "/dashboard"
+        assert safe_next_path("http://evil.example/") == "/dashboard"
+        assert safe_next_path("javascript:alert(1)") == "/dashboard"
+        assert safe_next_path("") == "/dashboard"
+        assert safe_next_path(None) == "/dashboard"
+        # Empty-default variant (used when computing query string).
+        assert safe_next_path(None, default="") == ""

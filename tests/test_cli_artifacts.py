@@ -82,3 +82,38 @@ def test_install_page_renders_with_server_url():
     assert resp.status_code == 200
     assert "agnes.test" in resp.text
     assert "da auth whoami" in resp.text
+
+
+def test_safe_url_re_accepts_reverse_proxy_path_prefix():
+    """Reverse-proxy deployments have request.base_url with a path segment
+    (e.g. https://host/agnes/). The regex must accept that; the install.sh
+    endpoint previously rejected it with 400."""
+    from app.api.cli_artifacts import _SAFE_URL_RE
+    # Path prefix (Agnes behind a reverse proxy with location /agnes/)
+    assert _SAFE_URL_RE.match("https://agnes.example.com/agnes")
+    assert _SAFE_URL_RE.match("https://agnes.example.com/agnes/")
+    # Underscores in Docker Compose hostnames
+    assert _SAFE_URL_RE.match("http://agnes_web:8000")
+    # IPv6 literal
+    assert _SAFE_URL_RE.match("http://[::1]:8000")
+    # Still rejects obvious bad shapes
+    assert not _SAFE_URL_RE.match("https://agnes.example.com/agnes;rm -rf /")
+    assert not _SAFE_URL_RE.match("ftp://agnes.example.com/")
+    assert not _SAFE_URL_RE.match("https://agnes.example.com/?x=$(id)")
+
+
+def test_cli_install_sh_accepts_base_url_with_path_prefix(monkeypatch):
+    """Reverse-proxy deployments (Caddy/Nginx routing /agnes/* to Agnes)
+    surface a request.base_url like 'https://host/agnes/'. The handler
+    previously 400'd on that. We call the handler directly with a stub
+    request so we don't need a mounted ASGI proxy in tests."""
+    import asyncio
+    from types import SimpleNamespace
+    from starlette.datastructures import URL
+    from app.api.cli_artifacts import cli_install_script
+
+    # Minimal Request stub — cli_install_script only needs .base_url.
+    stub = SimpleNamespace(base_url=URL("https://agnes.example.com/agnes/"))
+    result = asyncio.run(cli_install_script(stub))  # returns the script body
+    assert isinstance(result, str)
+    assert "https://agnes.example.com/agnes" in result
