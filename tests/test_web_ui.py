@@ -207,6 +207,13 @@ class TestUnauthenticatedHtmlRedirects:
         assert resp.status_code == 401
         assert resp.headers["content-type"].startswith("application/json")
 
+    def test_auth_json_get_still_returns_json_401(self, web_client):
+        # GET to a JSON endpoint under /auth/* (e.g. PAT CRUD) — must NOT be redirected,
+        # so CLI clients calling api_get("/auth/tokens") get JSON they can parse.
+        resp = web_client.get("/auth/tokens", follow_redirects=False)
+        assert resp.status_code == 401
+        assert resp.headers["content-type"].startswith("application/json")
+
     def test_login_page_propagates_next_to_password_button(self, web_client):
         resp = web_client.get("/login?next=/catalog")
         assert resp.status_code == 200

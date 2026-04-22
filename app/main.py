@@ -173,15 +173,16 @@ def create_app() -> FastAPI:
     async def _html_auth_redirect_handler(request, exc: StarletteHTTPException):
         """Redirect unauthenticated HTML page loads (GET) to /login.
 
-        Only GET requests outside `/api/` are redirected — that targets browser
-        navigations to HTML pages. POSTs, `/api/*`, and non-401 errors fall
-        through to Starlette's default JSON response so API clients keep their
+        Only GET requests outside `/api/` and `/auth/` are redirected — that
+        targets browser navigations to HTML pages. POSTs, API prefixes, and
+        non-401 errors fall through to Starlette's default JSON response so
+        JSON clients (including `/auth/tokens` for PAT CRUD) keep their
         existing contract.
         """
         if (
             exc.status_code == 401
             and request.method == "GET"
-            and not request.url.path.startswith("/api/")
+            and not request.url.path.startswith(("/api/", "/auth/"))
         ):
             next_param = quote(request.url.path, safe="")
             return RedirectResponse(url=f"/login?next={next_param}", status_code=302)

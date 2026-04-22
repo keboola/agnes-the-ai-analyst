@@ -84,6 +84,8 @@ async def google_callback(request: Request):
                 user_id = str(uuid.uuid4())
                 repo.create(id=user_id, email=email, name=name, role="analyst")
                 user = repo.get_by_email(email)
+            if not bool(user.get("active", True)):
+                return RedirectResponse(url="/login?error=deactivated")
         finally:
             conn.close()
 

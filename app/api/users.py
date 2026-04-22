@@ -93,6 +93,10 @@ async def create_user(
     repo = UserRepository(conn)
     if repo.get_by_email(payload.email):
         raise HTTPException(status_code=409, detail="User with this email already exists")
+    try:
+        Role(payload.role)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Unknown role: {payload.role}")
     user_id = str(uuid.uuid4())
     repo.create(id=user_id, email=payload.email, name=payload.name, role=payload.role)
     _audit(conn, user["id"], "user.create", user_id, {"email": payload.email, "role": payload.role})

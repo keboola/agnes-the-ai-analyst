@@ -43,6 +43,8 @@ async def password_login(
     user = repo.get_by_email(request.email)
     if not user or not user.get("password_hash"):
         raise HTTPException(status_code=401, detail="Invalid email or password")
+    if not bool(user.get("active", True)):
+        raise HTTPException(status_code=401, detail="Account deactivated")
 
     # Verify password
     try:
@@ -70,6 +72,8 @@ async def password_login_web(
     user = repo.get_by_email(email)
     if not user or not user.get("password_hash"):
         return RedirectResponse(url="/login/password?error=invalid", status_code=302)
+    if not bool(user.get("active", True)):
+        return RedirectResponse(url="/login/password?error=deactivated", status_code=302)
 
     try:
         ph = PasswordHasher()

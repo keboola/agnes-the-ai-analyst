@@ -44,6 +44,12 @@ const API = "/api/users";
 
 function fmtDate(s) { return s ? s.slice(0, 19).replace("T", " ") : ""; }
 
+function esc(s) {
+  const d = document.createElement("div");
+  d.textContent = s == null ? "" : String(s);
+  return d.innerHTML;
+}
+
 async function loadUsers() {
   const r = await fetch(API, {credentials: "include"});
   if (!r.ok) { alert("Failed to load users: " + r.status); return; }
@@ -53,27 +59,38 @@ async function loadUsers() {
   for (const u of users) {
     const tr = document.createElement("tr");
     tr.innerHTML = `
-      <td>${u.email}</td>
-      <td>${u.name || ""}</td>
+      <td>${esc(u.email)}</td>
+      <td>${esc(u.name || "")}</td>
       <td>
-        <select onchange="setRole('${u.id}', this.value)">
+        <select data-action="set-role" data-user-id="${esc(u.id)}">
           ${["viewer","analyst","km_admin","admin"].map(r =>
             `<option value="${r}" ${r===u.role?"selected":""}>${r}</option>`).join("")}
         </select>
       </td>
       <td>
         <input type="checkbox" ${u.active?"checked":""}
-          onchange="toggleActive('${u.id}', this.checked)">
+          data-action="toggle-active" data-user-id="${esc(u.id)}">
       </td>
       <td>${fmtDate(u.created_at)}</td>
       <td>${fmtDate(u.deactivated_at)}</td>
       <td>
-        <button class="btn btn-sm" onclick="resetPassword('${u.id}')">Reset</button>
-        <button class="btn btn-sm" onclick="setPassword('${u.id}')">Set pwd</button>
-        <button class="btn btn-sm btn-danger" onclick="delUser('${u.id}','${u.email}')">Delete</button>
+        <button class="btn btn-sm" data-action="reset-password" data-user-id="${esc(u.id)}">Reset</button>
+        <button class="btn btn-sm" data-action="set-password" data-user-id="${esc(u.id)}">Set pwd</button>
+        <button class="btn btn-sm btn-danger" data-action="delete-user" data-user-id="${esc(u.id)}" data-user-email="${esc(u.email)}">Delete</button>
       </td>`;
     tbody.appendChild(tr);
   }
+  // Wire up handlers via delegation to avoid inline onclick with interpolated strings.
+  tbody.querySelectorAll('[data-action="set-role"]').forEach(el =>
+    el.addEventListener("change", e => setRole(el.dataset.userId, e.target.value)));
+  tbody.querySelectorAll('[data-action="toggle-active"]').forEach(el =>
+    el.addEventListener("change", e => toggleActive(el.dataset.userId, e.target.checked)));
+  tbody.querySelectorAll('[data-action="reset-password"]').forEach(el =>
+    el.addEventListener("click", () => resetPassword(el.dataset.userId)));
+  tbody.querySelectorAll('[data-action="set-password"]').forEach(el =>
+    el.addEventListener("click", () => setPassword(el.dataset.userId)));
+  tbody.querySelectorAll('[data-action="delete-user"]').forEach(el =>
+    el.addEventListener("click", () => delUser(el.dataset.userId, el.dataset.userEmail)));
 }
 
 async function setRole(id, role) {

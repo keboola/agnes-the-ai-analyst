@@ -70,11 +70,13 @@ async def create_token(
 ):
     if not payload.name.strip():
         raise HTTPException(status_code=400, detail="name is required")
+    if payload.expires_in_days is not None and payload.expires_in_days <= 0:
+        raise HTTPException(status_code=400, detail="expires_in_days must be a positive integer")
     repo = AccessTokenRepository(conn)
     token_id = str(uuid.uuid4())
     expires_at = None
     expires_delta = None
-    if payload.expires_in_days:
+    if payload.expires_in_days is not None:
         expires_delta = timedelta(days=payload.expires_in_days)
         expires_at = datetime.now(timezone.utc) + expires_delta
     # Build the JWT that embeds jti=token_id and typ=pat

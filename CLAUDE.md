@@ -186,7 +186,7 @@ Auth providers in `app/auth/` (FastAPI-based):
 ## Key Implementation Details
 
 ### DuckDB Schema (src/db.py)
-- Schema v4 with auto-migration from v1→v2→v3→v4
+- Schema v7 with auto-migration from v1→v2→v3→v4→v5→v6→v7 (v5 adds `users.active`, v6 adds `personal_access_tokens`, v7 adds `access_tokens.last_used_ip`)
 - `table_registry`: id, name, source_type, bucket, source_table, query_mode, sync_schedule, etc.
 - `sync_state`, `sync_history`: track extraction progress
 - `users`, `dataset_permissions`, `audit_log`: auth + RBAC
