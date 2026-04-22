@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-22
 **Branch audited:** `main` at commit `cbb7733`
-**Method:** four parallel agents covering (1) secrets/SQLi/authz/SSRF, (2) auth flows & route wiring, (3) templates & UI wiring/XSS, (4) data layer & config & dead code. Findings deduped, severities adjusted to real-world exploitability.
+**Method:** parallel review passes over four scope areas — (1) secrets/SQLi/authz/SSRF, (2) auth flows & route wiring, (3) templates & UI wiring/XSS, (4) data layer & config & dead code. Findings deduped across the passes, severities adjusted to real-world exploitability.
 
 Known issues already in flight are marked with their tracking links so we do not re-open them.
 
