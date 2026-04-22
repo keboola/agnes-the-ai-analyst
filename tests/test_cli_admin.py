@@ -156,6 +156,36 @@ class TestMetadataShow:
         assert result.exit_code == 1
 
 
+def test_admin_set_role_invokes_patch(monkeypatch):
+    """`da admin set-role` sends PATCH to /api/users/{id} with role."""
+    import httpx
+    from cli.commands.admin import admin_app
+    from typer.testing import CliRunner
+
+    captured = {}
+
+    def fake_patch(path, json=None, **kwargs):
+        captured["path"] = path
+        captured["json"] = json
+        return httpx.Response(200, json={
+            "id": "abc", "email": "x@y.z", "name": "X",
+            "role": json.get("role") if json else "viewer",
+            "active": True, "created_at": "", "deactivated_at": None,
+        })
+
+    from cli import client as cli_client
+    monkeypatch.setattr(cli_client, "api_patch", fake_patch, raising=False)
+    # patch admin.api_patch too since admin.py imports names
+    from cli.commands import admin as admin_mod
+    monkeypatch.setattr(admin_mod, "api_patch", fake_patch, raising=False)
+
+    runner = CliRunner()
+    result = runner.invoke(admin_app, ["set-role", "abc", "analyst"])
+    assert result.exit_code == 0
+    assert captured["path"] == "/api/users/abc"
+    assert captured["json"] == {"role": "analyst"}
+
+
 class TestMetadataApply:
     def test_metadata_apply_dry_run(self, tmp_path):
         proposal = {

@@ -37,7 +37,8 @@ class TestAuthLogin:
         })
         with patch("cli.commands.auth.api_post", return_value=mock_resp):
             with patch("cli.commands.auth.save_token") as mock_save:
-                result = runner.invoke(app, ["auth", "login", "--email", "alice@example.com"])
+                # Empty password (simulates magic-link / OAuth account) — still 200 from server
+                result = runner.invoke(app, ["auth", "login", "--email", "alice@example.com"], input="\n")
         assert result.exit_code == 0
         assert "alice@example.com" in result.output
         mock_save.assert_called_once_with("tok123", "alice@example.com", "analyst")
@@ -46,14 +47,14 @@ class TestAuthLogin:
         """Login with bad credentials exits with error."""
         mock_resp = _make_response(401, {"detail": "Invalid credentials"})
         with patch("cli.commands.auth.api_post", return_value=mock_resp):
-            result = runner.invoke(app, ["auth", "login", "--email", "bad@example.com"])
+            result = runner.invoke(app, ["auth", "login", "--email", "bad@example.com"], input="\n")
         assert result.exit_code == 1
         assert "Login failed" in result.output
 
     def test_login_connection_error(self):
         """Login propagates connection errors cleanly."""
         with patch("cli.commands.auth.api_post", side_effect=Exception("Connection refused")):
-            result = runner.invoke(app, ["auth", "login", "--email", "alice@example.com"])
+            result = runner.invoke(app, ["auth", "login", "--email", "alice@example.com"], input="\n")
         assert result.exit_code == 1
         assert "Connection error" in result.output
 
@@ -97,3 +98,55 @@ class TestAuthWhoami:
             result = runner.invoke(app, ["auth", "whoami"])
         # May succeed or fail depending on jwt decode — either way no traceback
         assert result.exit_code in (0, 1)
+
+
+def test_da_login_sends_password(monkeypatch):
+    import httpx
+    from typer.testing import CliRunner
+    from cli.commands import auth as auth_mod
+
+    captured = {}
+
+    def fake_post(path, json=None, **kwargs):
+        captured["path"] = path
+        captured["json"] = json
+        return httpx.Response(200, json={
+            "access_token": "tok", "email": "u@t", "role": "analyst",
+            "user_id": "u1", "token_type": "bearer",
+        })
+
+    monkeypatch.setattr(auth_mod, "api_post", fake_post, raising=False)
+
+    runner = CliRunner()
+    # Provide email and password via stdin (typer prompts)
+    result = runner.invoke(auth_mod.auth_app, ["login"], input="u@t\nhunter2\n")
+    assert result.exit_code == 0, result.output
+    assert captured["path"] == "/auth/token"
+    assert captured["json"] == {"email": "u@t", "password": "hunter2"}
+
+
+def test_da_auth_token_create_calls_api(monkeypatch):
+    import httpx
+    from typer.testing import CliRunner
+    from cli.commands.auth import auth_app
+    from cli.commands import tokens as tok_mod
+
+    captured = {}
+
+    def fake_post(path, json=None, **kwargs):
+        captured["path"] = path
+        captured["json"] = json
+        return httpx.Response(201, json={
+            "id": "abc", "name": json["name"], "prefix": "XXXXXXXX",
+            "token": "raw-token-once",
+            "expires_at": None, "created_at": "2026-04-21T00:00:00+00:00",
+        })
+
+    monkeypatch.setattr(tok_mod, "api_post", fake_post, raising=False)
+
+    runner = CliRunner()
+    result = runner.invoke(auth_app, ["token", "create", "--name", "laptop", "--ttl", "30d"])
+    assert result.exit_code == 0, result.output
+    assert captured["path"] == "/auth/tokens"
+    assert captured["json"] == {"name": "laptop", "expires_in_days": 30}
+    assert "raw-token-once" in result.output

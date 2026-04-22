@@ -4,7 +4,7 @@ import json
 
 import typer
 
-from cli.client import api_get, api_post, api_delete
+from cli.client import api_get, api_post, api_delete, api_patch
 
 admin_app = typer.Typer(help="Admin operations (requires admin role)")
 
@@ -38,7 +38,10 @@ def list_users(as_json: bool = typer.Option(False, "--json")):
         typer.echo(json.dumps(users, indent=2))
     else:
         for u in users:
-            typer.echo(f"  {u['email']:30s} role={u['role']:10s} id={u['id'][:8]}")
+            status_str = "active" if u.get("active", True) else "DEACTIVATED"
+            typer.echo(
+                f"  {u['email']:30s} role={u['role']:10s} {status_str:12s} id={u['id'][:8]}"
+            )
 
 
 @admin_app.command("remove-user")
@@ -240,3 +243,92 @@ def metadata_apply(
                 typer.echo(f"Pushed metadata for {table_id} to source.")
             else:
                 typer.echo(f"Failed to push {table_id}: {resp.json().get('detail', resp.text)}", err=True)
+
+
+# ---- User management (#11) ----
+
+
+def _resolve_user_id(ref: str) -> str:
+    """Accept either a UUID or an email; look up email → id via list."""
+    if "@" not in ref:
+        return ref
+    resp = api_get("/api/users")
+    if resp.status_code != 200:
+        typer.echo(f"Could not list users: {resp.text}", err=True)
+        raise typer.Exit(1)
+    for u in resp.json():
+        if u.get("email") == ref:
+            return u["id"]
+    typer.echo(f"User not found: {ref}", err=True)
+    raise typer.Exit(1)
+
+
+def _print_user_result(resp, ok_msg: str) -> None:
+    if resp.status_code in (200, 204):
+        typer.echo(ok_msg)
+    else:
+        try:
+            detail = resp.json().get("detail", resp.text)
+        except Exception:
+            detail = resp.text
+        typer.echo(f"Failed: {detail}", err=True)
+        raise typer.Exit(1)
+
+
+@admin_app.command("set-role")
+def set_role(
+    user_ref: str = typer.Argument(..., help="User id or email"),
+    role: str = typer.Argument(..., help="viewer | analyst | km_admin | admin"),
+):
+    """Set a user's role."""
+    uid = _resolve_user_id(user_ref)
+    resp = api_patch(f"/api/users/{uid}", json={"role": role})
+    _print_user_result(resp, f"Updated role for {user_ref} → {role}")
+
+
+@admin_app.command("deactivate")
+def deactivate(user_ref: str = typer.Argument(..., help="User id or email")):
+    """Deactivate a user (blocks login, existing tokens also rejected)."""
+    uid = _resolve_user_id(user_ref)
+    resp = api_post(f"/api/users/{uid}/deactivate")
+    _print_user_result(resp, f"Deactivated {user_ref}")
+
+
+@admin_app.command("activate")
+def activate(user_ref: str = typer.Argument(..., help="User id or email")):
+    """Re-activate a deactivated user."""
+    uid = _resolve_user_id(user_ref)
+    resp = api_post(f"/api/users/{uid}/activate")
+    _print_user_result(resp, f"Activated {user_ref}")
+
+
+@admin_app.command("reset-password")
+def reset_password(user_ref: str = typer.Argument(..., help="User id or email")):
+    """Generate a reset token (emailed if SMTP/SendGrid configured)."""
+    uid = _resolve_user_id(user_ref)
+    resp = api_post(f"/api/users/{uid}/reset-password")
+    if resp.status_code == 200:
+        data = resp.json()
+        typer.echo(f"Reset token: {data['reset_token']}")
+        typer.echo(f"Email sent: {data['email_sent']}")
+    else:
+        typer.echo(f"Failed: {resp.json().get('detail', resp.text)}", err=True)
+        raise typer.Exit(1)
+
+
+@admin_app.command("set-password")
+def set_password(
+    user_ref: str = typer.Argument(..., help="User id or email"),
+    password: str = typer.Option(
+        ..., prompt=True, hide_input=True, confirmation_prompt=True,
+        help="New password (hidden input)",
+    ),
+):
+    """Set a user's password directly (force-reset flow)."""
+    uid = _resolve_user_id(user_ref)
+    resp = api_post(f"/api/users/{uid}/set-password", json={"password": password})
+    if resp.status_code == 204:
+        typer.echo(f"Password set for {user_ref}")
+    else:
+        typer.echo(f"Failed: {resp.json().get('detail', resp.text)}", err=True)
+        raise typer.Exit(1)

@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Install CLI — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block content %}
+<div class="container">
+  <h2>Install the Agnes CLI</h2>
+  <p>This server: <code>{{ server_url }}</code> (version <code>{{ agnes_version }}</code>)</p>
+
+  <h3>One-liner (Linux / macOS)</h3>
+  <pre><code>curl -fsSL {{ server_url }}/cli/install.sh | bash</code></pre>
+
+  <h3>Manual</h3>
+  <ol>
+    <li>Download: <a href="/cli/download">{{ server_url }}/cli/download</a></li>
+    <li>Install:
+      <pre><code>uv tool install ./agnes-*.whl
+# or
+python3 -m pip install --user ./agnes-*.whl</code></pre>
+    </li>
+    <li>Seed server URL:
+      <pre><code>mkdir -p ~/.config/da
+echo "server: {{ server_url }}" > ~/.config/da/config.yaml</code></pre>
+    </li>
+  </ol>
+
+  <h3>Connect</h3>
+  <p>Create a personal access token (see <a href="/profile">/profile</a>) and export it:</p>
+  <pre><code>export DA_TOKEN=&lt;your-token&gt;
+da auth whoami</code></pre>
+
+  <h3>Claude Code / MCP</h3>
+  <p>
+    Store your token in <code>~/.config/da/token.json</code> (Claude Code
+    reads this automatically via the <code>da</code> entrypoint) or export
+    <code>DA_TOKEN</code> in your shell.
+  </p>
+
+  <h3>CI / headless</h3>
+  <p>See <a href="/docs/HEADLESS_USAGE.md" target="_blank">Headless usage guide</a>.</p>
+</div>
+{% endblock %}

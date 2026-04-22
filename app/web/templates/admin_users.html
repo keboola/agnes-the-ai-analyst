@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+{% block title %}User management — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block content %}
+<div class="container">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h2>User management</h2>
+    <button class="btn btn-primary" onclick="openCreateModal()">+ Add user</button>
+  </div>
+
+  <table class="table table-striped" id="users-table">
+    <thead>
+      <tr>
+        <th>Email</th><th>Name</th><th>Role</th><th>Active</th>
+        <th>Created</th><th>Deactivated</th><th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      <!-- rows rendered by JS -->
+    </tbody>
+  </table>
+</div>
+
+<div class="modal" id="create-modal" style="display:none;">
+  <div class="modal-content">
+    <h3>Add user</h3>
+    <label>Email <input id="new-email" type="email" required></label>
+    <label>Name <input id="new-name" type="text"></label>
+    <label>Role
+      <select id="new-role">
+        <option value="viewer">viewer</option>
+        <option value="analyst" selected>analyst</option>
+        <option value="km_admin">km_admin</option>
+        <option value="admin">admin</option>
+      </select>
+    </label>
+    <button class="btn btn-primary" onclick="createUser()">Create</button>
+    <button class="btn btn-secondary" onclick="closeCreateModal()">Cancel</button>
+  </div>
+</div>
+
+<script>
+const API = "/api/users";
+
+function fmtDate(s) { return s ? s.slice(0, 19).replace("T", " ") : ""; }
+
+async function loadUsers() {
+  const r = await fetch(API, {credentials: "include"});
+  if (!r.ok) { alert("Failed to load users: " + r.status); return; }
+  const users = await r.json();
+  const tbody = document.querySelector("#users-table tbody");
+  tbody.innerHTML = "";
+  for (const u of users) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${u.email}</td>
+      <td>${u.name || ""}</td>
+      <td>
+        <select onchange="setRole('${u.id}', this.value)">
+          ${["viewer","analyst","km_admin","admin"].map(r =>
+            `<option value="${r}" ${r===u.role?"selected":""}>${r}</option>`).join("")}
+        </select>
+      </td>
+      <td>
+        <input type="checkbox" ${u.active?"checked":""}
+          onchange="toggleActive('${u.id}', this.checked)">
+      </td>
+      <td>${fmtDate(u.created_at)}</td>
+      <td>${fmtDate(u.deactivated_at)}</td>
+      <td>
+        <button class="btn btn-sm" onclick="resetPassword('${u.id}')">Reset</button>
+        <button class="btn btn-sm" onclick="setPassword('${u.id}')">Set pwd</button>
+        <button class="btn btn-sm btn-danger" onclick="delUser('${u.id}','${u.email}')">Delete</button>
+      </td>`;
+    tbody.appendChild(tr);
+  }
+}
+
+async function setRole(id, role) {
+  const r = await fetch(`${API}/${id}`, {
+    method: "PATCH", credentials: "include",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({role}),
+  });
+  if (!r.ok) { alert("Failed: " + (await r.text())); }
+  loadUsers();
+}
+
+async function toggleActive(id, active) {
+  const path = active ? "activate" : "deactivate";
+  const r = await fetch(`${API}/${id}/${path}`, {method: "POST", credentials: "include"});
+  if (!r.ok) { alert("Failed: " + (await r.text())); }
+  loadUsers();
+}
+
+async function resetPassword(id) {
+  if (!confirm("Generate a password reset token?")) return;
+  const r = await fetch(`${API}/${id}/reset-password`, {method: "POST", credentials: "include"});
+  const data = await r.json();
+  if (!r.ok) { alert("Failed: " + data.detail); return; }
+  alert(`Reset token: ${data.reset_token}\nEmail sent: ${data.email_sent}`);
+}
+
+async function setPassword(id) {
+  const pwd = prompt("New password (min 8 chars):");
+  if (!pwd) return;
+  const r = await fetch(`${API}/${id}/set-password`, {
+    method: "POST", credentials: "include",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({password: pwd}),
+  });
+  if (!r.ok) { alert("Failed: " + (await r.text())); return; }
+  alert("Password set.");
+}
+
+async function delUser(id, email) {
+  if (!confirm(`Delete ${email}? This cannot be undone.`)) return;
+  const r = await fetch(`${API}/${id}`, {method: "DELETE", credentials: "include"});
+  if (!r.ok) { alert("Failed: " + (await r.text())); return; }
+  loadUsers();
+}
+
+function openCreateModal() { document.getElementById("create-modal").style.display = "block"; }
+function closeCreateModal() { document.getElementById("create-modal").style.display = "none"; }
+
+async function createUser() {
+  const email = document.getElementById("new-email").value;
+  const name = document.getElementById("new-name").value;
+  const role = document.getElementById("new-role").value;
+  const r = await fetch(API, {
+    method: "POST", credentials: "include",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({email, name: name || email.split("@")[0], role}),
+  });
+  if (!r.ok) { alert("Failed: " + (await r.text())); return; }
+  closeCreateModal();
+  loadUsers();
+}
+
+loadUsers();
+</script>
+{% endblock %}

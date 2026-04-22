@@ -8,6 +8,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -192,6 +193,10 @@ async def setup_wizard(request: Request, conn: duckdb.DuckDBPyConnection = Depen
 
 @router.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
+    next_path = request.query_params.get("next", "")
+    if not next_path.startswith("/") or next_path.startswith("//"):
+        next_path = ""
+
     providers = []
     try:
         from app.auth.providers.google import is_available as google_available
@@ -213,24 +218,33 @@ async def login_page(request: Request):
         if p["name"] == "google":
             login_buttons.append({"url": "/auth/google/login", "text": "Sign in with Google", "css_class": "btn-primary", "icon_html": ""})
         elif p["name"] == "password":
-            login_buttons.append({"url": "/login/password", "text": "Sign in with Email & Password", "css_class": "btn-secondary", "icon_html": ""})
+            _url = "/login/password"
+            if next_path:
+                _url += f"?next={quote(next_path, safe='')}"
+            login_buttons.append({"url": _url, "text": "Sign in with Email & Password", "css_class": "btn-secondary", "icon_html": ""})
         elif p["name"] == "email":
-            login_buttons.append({"url": "/login/email", "text": "Sign in with Email Link", "css_class": "btn-secondary", "icon_html": ""})
+            _url = "/login/email"
+            if next_path:
+                _url += f"?next={quote(next_path, safe='')}"
+            login_buttons.append({"url": _url, "text": "Sign in with Email Link", "css_class": "btn-secondary", "icon_html": ""})
 
-    ctx = _build_context(request, providers=providers, login_buttons=login_buttons)
+    ctx = _build_context(request, providers=providers, login_buttons=login_buttons, next_path=next_path)
     return templates.TemplateResponse(request, "login.html", ctx)
 
 
 @router.get("/login/password", response_class=HTMLResponse)
 async def login_password_page(request: Request):
     """Password login form (email + password)."""
+    next_path = request.query_params.get("next", "")
+    if not next_path.startswith("/") or next_path.startswith("//"):
+        next_path = ""
     google_ok = False
     try:
         from app.auth.providers.google import is_available as google_available
         google_ok = google_available()
     except Exception:
         pass
-    ctx = _build_context(request, google_available=google_ok)
+    ctx = _build_context(request, google_available=google_ok, next_path=next_path)
     return templates.TemplateResponse(request, "login_email.html", ctx)
 
 
@@ -495,6 +509,18 @@ async def activity_center(
     return templates.TemplateResponse(request, "activity_center.html", ctx)
 
 
+@router.get("/install", response_class=HTMLResponse)
+async def install_page(request: Request):
+    """Public install instructions for the CLI."""
+    base_url = str(request.base_url).rstrip("/")
+    ctx = _build_context(
+        request,
+        server_url=base_url,
+        agnes_version=os.environ.get("AGNES_VERSION", "dev"),
+    )
+    return templates.TemplateResponse(request, "install.html", ctx)
+
+
 @router.get("/admin/tables", response_class=HTMLResponse)
 async def admin_tables(
     request: Request,
@@ -517,3 +543,23 @@ async def admin_permissions_page(
     """Admin page for managing permissions and access requests."""
     ctx = _build_context(request, user=user)
     return templates.TemplateResponse(request, "admin_permissions.html", ctx)
+
+
+@router.get("/admin/users", response_class=HTMLResponse)
+async def admin_users_page(
+    request: Request,
+    user: dict = Depends(require_role(Role.ADMIN)),
+):
+    """Admin page for user management."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_users.html", ctx)
+
+
+@router.get("/profile", response_class=HTMLResponse)
+async def profile_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """User profile page with personal access token management."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "profile.html", ctx)
