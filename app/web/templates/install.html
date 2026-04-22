@@ -489,6 +489,22 @@
                             data-copy-target="cmd-oneliner"
                             aria-label="Copy install command to clipboard">Copy</button>
                 </div>
+                <p class="card-sub" style="margin-top: 14px; margin-bottom: 0;">
+                    If <code>da</code> is not found in a new shell, add
+                    <code>~/.local/bin</code> to your <code>PATH</code>:
+                </p>
+                <div class="code-block" style="margin-top: 6px;">
+                    <span class="prompt">$</span>
+                    <span class="cmd" id="cmd-path">export PATH="$HOME/.local/bin:$PATH"</span>
+                    <button type="button"
+                            class="btn-copy"
+                            data-copy-target="cmd-path"
+                            aria-label="Copy PATH export command to clipboard">Copy</button>
+                </div>
+                <p class="card-sub" style="margin-top: 6px; margin-bottom: 0;">
+                    Add that line to your <code>~/.bashrc</code> or
+                    <code>~/.zshrc</code> for persistence.
+                </p>
             </div>
         </section>
 
@@ -585,20 +601,45 @@
                         Install it:
                         <div class="code-block" style="margin-top: 8px;">
                             <span class="prompt">$</span>
-                            <span class="cmd" id="cmd-uv-install">uv tool install ./agnes-*.whl</span>
+                            <span class="cmd" id="cmd-uv-install">uv tool install ./agnes_the_ai_analyst-*.whl</span>
                             <button type="button"
                                     class="btn-copy"
                                     data-copy-target="cmd-uv-install"
                                     aria-label="Copy uv install command to clipboard">Copy</button>
                         </div>
+                        <span class="card-sub" style="display:block; text-align:center; margin: 4px 0 8px;">— or —</span>
                         <div class="code-block">
                             <span class="prompt">$</span>
-                            <span class="cmd" id="cmd-pip-install">python3 -m pip install --user ./agnes-*.whl</span>
+                            <span class="cmd" id="cmd-pip-install">python3 -m pip install --user ./agnes_the_ai_analyst-*.whl</span>
                             <button type="button"
                                     class="btn-copy"
                                     data-copy-target="cmd-pip-install"
                                     aria-label="Copy pip install command to clipboard">Copy</button>
                         </div>
+                        <p class="card-sub" style="margin-top: 8px; margin-bottom: 0;">
+                            On macOS (Homebrew) or recent Debian/Ubuntu,
+                            <code>pip install --user</code> is blocked by
+                            <a href="https://peps.python.org/pep-0668/" target="_blank" rel="noopener">PEP 668</a> —
+                            prefer <code>uv tool install</code> above. The
+                            <code>pip</code> command is for users with an
+                            activated virtualenv.
+                        </p>
+                        <p class="card-sub" style="margin-top: 10px; margin-bottom: 0;">
+                            If <code>da</code> is not found after install, ensure
+                            <code>~/.local/bin</code> is on your <code>PATH</code>:
+                        </p>
+                        <div class="code-block" style="margin-top: 6px;">
+                            <span class="prompt">$</span>
+                            <span class="cmd" id="cmd-path-manual">export PATH="$HOME/.local/bin:$PATH"</span>
+                            <button type="button"
+                                    class="btn-copy"
+                                    data-copy-target="cmd-path-manual"
+                                    aria-label="Copy PATH export command to clipboard">Copy</button>
+                        </div>
+                        <p class="card-sub" style="margin-top: 6px; margin-bottom: 0;">
+                            Add that line to your <code>~/.bashrc</code> or
+                            <code>~/.zshrc</code> to make it persistent.
+                        </p>
                     </li>
                     <li>
                         Seed the server URL:
