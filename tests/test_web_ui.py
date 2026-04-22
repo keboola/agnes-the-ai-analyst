@@ -107,6 +107,47 @@ class TestWebUISmoke:
         assert 'id="confirm-modal"' in body
 
 
+class TestClaudeSetupPreview:
+    """/install and /dashboard render a visible, read-only preview of the
+    'Setup a new Claude Code' clipboard payload. The real token is never
+    rendered into the HTML — only a styled placeholder is.
+    """
+
+    def test_install_preview_visible_for_signed_in_user(self, web_client, admin_cookie):
+        resp = web_client.get("/install", cookies=admin_cookie)
+        assert resp.status_code == 200
+        body = resp.text
+        # Preview card + placeholder token render
+        assert "setup-preview-pre" in body
+        assert "What Claude Code will receive" in body
+        assert "&lt;will be generated on click&gt;" in body
+        assert 'class="placeholder-token"' in body
+        # Setup payload text substituted with real server URL
+        assert "/cli/agnes.whl" in body
+        # `da diagnose` — added in the setup-preview-and-doctor feature
+        # (the updated text lands in commit 2; keep this assertion loose)
+        assert "da auth whoami" in body
+
+    def test_dashboard_preview_visible(self, web_client, admin_cookie):
+        resp = web_client.get("/dashboard", cookies=admin_cookie)
+        assert resp.status_code == 200
+        body = resp.text
+        assert "env-setup-cta" in body
+        assert "setup-preview-pre" in body
+        assert "What Claude Code will receive" in body
+        assert "&lt;will be generated on click&gt;" in body
+
+    def test_install_mcp_card_removed(self, web_client):
+        """The stale 'Use with Claude Code / MCP' card on /install has been
+        removed — there is no Agnes MCP server today.
+        """
+        resp = web_client.get("/install")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "Use with Claude Code / MCP" not in body
+        assert "MCP" not in body
+
+
 class TestAdminRoleGuards:
     def test_analyst_cannot_access_admin_tables(self, web_client, admin_cookie, analyst_cookie):
         resp = web_client.get("/admin/tables", cookies=analyst_cookie)

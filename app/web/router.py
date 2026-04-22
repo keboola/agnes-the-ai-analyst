@@ -153,6 +153,11 @@ def _build_context(request: Request, user: Optional[dict] = None, **extra) -> di
                 return {k: v for k, v in theme.items() if v}
             return {}
 
+    # Lines + server_url for the "Setup a new Claude Code" preview/clipboard
+    # partial; single source of truth lives in app/web/setup_instructions.py.
+    from app.web.setup_instructions import SETUP_INSTRUCTIONS_LINES
+    ctx_server_url = str(request.base_url).rstrip("/")
+
     ctx = {
         "request": request,
         "config": ConfigProxy,
@@ -163,8 +168,11 @@ def _build_context(request: Request, user: Optional[dict] = None, **extra) -> di
         "get_flashed_messages": lambda **kwargs: [],
         "url_for": lambda endpoint, **kw: _url_for_shim(endpoint, **kw),
         "session": _FlexDict({"user": user}) if user else _FlexDict(),
+        "setup_instructions_lines": SETUP_INSTRUCTIONS_LINES,
+        "server_url": ctx_server_url,
     }
     # Flex all extra context values for template compatibility
+    # (but skip ones we just populated — extras with the same key win)
     for k, v in extra.items():
         ctx[k] = _flex(v) if isinstance(v, (dict, list)) else v
     return ctx

@@ -1,54 +1,39 @@
 {# Single source of truth for the "Setup a new Claude Code" clipboard payload.
-   Included verbatim inside a <script> block in both dashboard.html and install.html
-   so the two pages never drift. Tokens/server URL are substituted at runtime by
-   renderSetupInstructions() below, not by Jinja — keep braces that Jinja might
-   interpret out of the body.
 
-   Any literal `${...}` shell expansion or `$(...)` command substitution uses a
-   single `$` with no braces-conflict; the only runtime placeholders are the
-   literal strings "{server_url}" and "{token}", which renderSetupInstructions
-   replaces with String.prototype.split/join (see below). #}
+   Two modes:
+
+   * preview_mode=True  →  emits a read-only HTML <pre><code> block rendered
+                           with the real server_url and a visible placeholder
+                           for the token. Used inline on /dashboard and
+                           /install so the reader can see exactly what will
+                           land in their clipboard.
+   * preview_mode=False →  emits the JS `SETUP_INSTRUCTIONS_TEMPLATE` array +
+                           `renderSetupInstructions(server, token)` function.
+                           Placed inside a <script> block; at click time the
+                           server-issued token is substituted for "{token}".
+
+   The lines themselves come from `app/web/setup_instructions.py` via the
+   context variable `setup_instructions_lines`, so both modes stay in lockstep.
+
+   The .jinja extension is NOT in Jinja2's default autoescape list, so we
+   explicitly run every piece of user-visible text through the `e` filter
+   in preview mode (lines contain literal `<` and `>` e.g. `<name>`).
+#}
+{% if preview_mode %}
+<pre class="setup-preview-pre"><code class="setup-preview-code">{% for line in setup_instructions_lines -%}
+{% set rendered = line.replace("{server_url}", server_url) -%}
+{% if "{token}" in rendered -%}
+{% set parts = rendered.split("{token}") -%}
+{{ parts[0] | e }}<span class="placeholder-token" aria-label="placeholder — real token is generated when you click the button">&lt;will be generated on click&gt;</span>{{ parts[1] | e }}
+{% else -%}
+{{ rendered | e }}
+{% endif -%}
+{% endfor %}</code></pre>
+{% else %}
 var SETUP_INSTRUCTIONS_TEMPLATE = [
-    "Set up the Agnes CLI on this machine.",
-    "",
-    "Server: {server_url}",
-    "Personal access token: {token}",
-    "(Just generated; treat as a secret.)",
-    "",
-    "Run these, in order. If anything fails, paste the exact error back and stop.",
-    "",
-    "1) Install the CLI (uv fetches the wheel directly from the server URL):",
-    "   uv tool install --force {server_url}/cli/agnes.whl",
-    "",
-    "   If uv is not installed:",
-    "     curl -LsSf https://astral.sh/uv/install.sh | sh",
-    "",
-    "   If `da --version` fails after install because ~/.local/bin is not on PATH:",
-    "     export PATH=\"$HOME/.local/bin:$PATH\"",
-    "     # persist: append the same export to your ~/.zshrc or ~/.bashrc",
-    "",
-    "2) Log in (this also saves the server URL):",
-    "   da auth import-token --token \"{token}\" --server \"{server_url}\"",
-    "",
-    "3) Verify:",
-    "   da auth whoami",
-    "",
-    "4) Skills — ask the user first:",
-    "   The CLI ships with markdown skills (setup, connectors, corporate-memory,",
-    "   deploy, notifications, security, troubleshoot), listable via",
-    "   `da skills list` and readable via `da skills show <name>`.",
-    "",
-    "   Ask the user: \"Copy the skills into ~/.claude/skills/agnes/ so they're",
-    "   always loaded, or pull them on-demand via `da skills show`?\"",
-    "",
-    "   If they say copy:",
-    "     mkdir -p ~/.claude/skills/agnes",
-    "     for s in $(da skills list | awk '{print $1}'); do",
-    "       da skills show \"$s\" > ~/.claude/skills/agnes/\"$s\".md",
-    "     done",
-    "",
-    "5) Confirm \"Agnes CLI is ready\" and tell me the `da auth whoami` output",
-    "   plus whether skills were copied."
+{%- for line in setup_instructions_lines %}
+    {{ line | tojson }}{% if not loop.last %},{% endif %}
+{%- endfor %}
 ].join("\n");
 
 function renderSetupInstructions(serverUrl, token) {
@@ -56,3 +41,4 @@ function renderSetupInstructions(serverUrl, token) {
         .split("{server_url}").join(serverUrl)
         .split("{token}").join(token);
 }
+{% endif %}
