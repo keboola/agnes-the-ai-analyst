@@ -15,6 +15,7 @@
         <a class="app-nav-link {% if _path.startswith('/profile') %}is-active{% endif %}" href="/profile">Profile</a>
         {% if session.user.role == 'admin' %}
         <a class="app-nav-link {% if _path.startswith('/admin/users') %}is-active{% endif %}" href="/admin/users">Users</a>
+        <a class="app-nav-link {% if _path.startswith('/admin/tokens') %}is-active{% endif %}" href="/admin/tokens">Tokens</a>
         {% endif %}
         <span class="app-header-email">{{ session.user.email }}</span>
         {% if session.user.picture %}

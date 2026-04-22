@@ -399,6 +399,7 @@ function renderUsers() {
       <td class="date-cell">${u.deactivated_at ? fmtDate(u.deactivated_at) : "—"}</td>
       <td>
         <div class="row-actions">
+          <a class="icon-btn" href="/admin/tokens?user=${encodeURIComponent(u.email || "")}" title="View this user's personal access tokens">Tokens</a>
           <button class="icon-btn" data-action="reset-password" data-user-id="${esc(u.id)}" data-user-email="${esc(u.email)}">Reset</button>
           <button class="icon-btn" data-action="set-password" data-user-id="${esc(u.id)}" data-user-email="${esc(u.email)}">Set pwd</button>
           <button class="icon-btn danger" data-action="delete-user" data-user-id="${esc(u.id)}" data-user-email="${esc(u.email)}">Delete</button>
