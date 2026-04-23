@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -220,6 +220,20 @@ CREATE TABLE IF NOT EXISTS personal_access_tokens (
     last_used_at TIMESTAMP,
     last_used_ip VARCHAR,
     revoked_at   TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS marketplace_registry (
+    id              VARCHAR PRIMARY KEY,
+    name            VARCHAR NOT NULL,
+    url             VARCHAR NOT NULL,
+    branch          VARCHAR,
+    token_env       VARCHAR,
+    description     TEXT,
+    registered_by   VARCHAR,
+    registered_at   TIMESTAMP DEFAULT current_timestamp,
+    last_synced_at  TIMESTAMP,
+    last_commit_sha VARCHAR,
+    last_error      TEXT
 );
 """
 
@@ -432,6 +446,24 @@ _V6_TO_V7_MIGRATIONS = [
     "ALTER TABLE personal_access_tokens ADD COLUMN IF NOT EXISTS last_used_ip VARCHAR",
 ]
 
+_V7_TO_V8_MIGRATIONS = [
+    """
+    CREATE TABLE IF NOT EXISTS marketplace_registry (
+        id              VARCHAR PRIMARY KEY,
+        name            VARCHAR NOT NULL,
+        url             VARCHAR NOT NULL,
+        branch          VARCHAR,
+        token_env       VARCHAR,
+        description     TEXT,
+        registered_by   VARCHAR,
+        registered_at   TIMESTAMP DEFAULT current_timestamp,
+        last_synced_at  TIMESTAMP,
+        last_commit_sha VARCHAR,
+        last_error      TEXT
+    )
+    """,
+]
+
 _V3_TO_V4_MIGRATIONS = [
     """
     CREATE TABLE IF NOT EXISTS metric_definitions (
@@ -521,6 +553,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                     conn.execute(sql)
             if current < 7:
                 for sql in _V6_TO_V7_MIGRATIONS:
+                    conn.execute(sql)
+            if current < 8:
+                for sql in _V7_TO_V8_MIGRATIONS:
                     conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
