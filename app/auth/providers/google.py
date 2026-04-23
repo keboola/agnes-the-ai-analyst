@@ -111,13 +111,15 @@ async def google_callback(request: Request):
             request.session.pop("login_next", None), default="/dashboard"
         )
 
-        # Redirect to target with token in cookie
-        is_production = os.environ.get("TESTING", "").lower() not in ("1", "true")
+        # Redirect to target with token in cookie. Match password/email providers:
+        # Secure only when DOMAIN is set (production with TLS), so the cookie is
+        # actually sent over plain HTTP in dev.
+        use_secure = os.environ.get("DOMAIN", "") != ""
         response = RedirectResponse(url=target, status_code=302)
         response.set_cookie(
             key="access_token", value=jwt_token,
             httponly=True, max_age=86400, samesite="lax",
-            secure=is_production,
+            secure=use_secure,
         )
         return response
 
