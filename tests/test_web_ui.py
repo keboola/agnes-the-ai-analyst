@@ -138,11 +138,23 @@ class TestWebUISmoke:
         assert ">My tokens<" in body
         assert ">All tokens<" in body
 
-    def test_profile_redirects_to_tokens(self, web_client, admin_cookie):
-        """Back-compat: /profile 302-redirects to /tokens."""
-        resp = web_client.get("/profile", cookies=admin_cookie, follow_redirects=False)
-        assert resp.status_code == 302
-        assert resp.headers["location"] == "/tokens"
+    def test_profile_renders_account_details(self, web_client, admin_cookie):
+        """/profile renders a real profile page with email, name, role."""
+        resp = web_client.get("/profile", cookies=admin_cookie)
+        assert resp.status_code == 200
+        body = resp.text
+        assert "admin@test.com" in body
+        # Role pill + link to /tokens for PAT management
+        assert 'class="role-pill"' in body
+        assert 'href="/tokens"' in body
+        # Empty-state copy when no Google groups in session
+        assert "No Google groups available" in body
+
+    def test_profile_requires_auth(self, web_client):
+        """/profile requires auth (was a 302 back-compat redirect before)."""
+        resp = web_client.get("/profile", follow_redirects=False)
+        # Auth dep raises 401; some configs may redirect to /login — accept either.
+        assert resp.status_code in (401, 302)
 
 
 class TestClaudeSetupPreview:
