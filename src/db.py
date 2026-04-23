@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -234,6 +234,38 @@ CREATE TABLE IF NOT EXISTS marketplace_registry (
     last_synced_at  TIMESTAMP,
     last_commit_sha VARCHAR,
     last_error      TEXT
+);
+
+CREATE TABLE IF NOT EXISTS marketplace_plugins (
+    marketplace_id  VARCHAR NOT NULL,
+    name            VARCHAR NOT NULL,
+    description     TEXT,
+    version         VARCHAR,
+    author_name     VARCHAR,
+    homepage        VARCHAR,
+    category        VARCHAR,
+    source_type     VARCHAR,
+    source_spec     JSON,
+    raw             JSON,
+    updated_at      TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (marketplace_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS user_groups (
+    id          VARCHAR PRIMARY KEY,
+    name        VARCHAR NOT NULL UNIQUE,
+    description TEXT,
+    created_at  TIMESTAMP DEFAULT current_timestamp,
+    created_by  VARCHAR
+);
+
+CREATE TABLE IF NOT EXISTS plugin_access (
+    group_id       VARCHAR NOT NULL,
+    marketplace_id VARCHAR NOT NULL,
+    plugin_name    VARCHAR NOT NULL,
+    granted_at     TIMESTAMP DEFAULT current_timestamp,
+    granted_by     VARCHAR,
+    PRIMARY KEY (group_id, marketplace_id, plugin_name)
 );
 """
 
@@ -464,6 +496,44 @@ _V7_TO_V8_MIGRATIONS = [
     """,
 ]
 
+_V8_TO_V9_MIGRATIONS = [
+    """
+    CREATE TABLE IF NOT EXISTS marketplace_plugins (
+        marketplace_id  VARCHAR NOT NULL,
+        name            VARCHAR NOT NULL,
+        description     TEXT,
+        version         VARCHAR,
+        author_name     VARCHAR,
+        homepage        VARCHAR,
+        category        VARCHAR,
+        source_type     VARCHAR,
+        source_spec     JSON,
+        raw             JSON,
+        updated_at      TIMESTAMP DEFAULT current_timestamp,
+        PRIMARY KEY (marketplace_id, name)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS user_groups (
+        id          VARCHAR PRIMARY KEY,
+        name        VARCHAR NOT NULL UNIQUE,
+        description TEXT,
+        created_at  TIMESTAMP DEFAULT current_timestamp,
+        created_by  VARCHAR
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS plugin_access (
+        group_id       VARCHAR NOT NULL,
+        marketplace_id VARCHAR NOT NULL,
+        plugin_name    VARCHAR NOT NULL,
+        granted_at     TIMESTAMP DEFAULT current_timestamp,
+        granted_by     VARCHAR,
+        PRIMARY KEY (group_id, marketplace_id, plugin_name)
+    )
+    """,
+]
+
 _V3_TO_V4_MIGRATIONS = [
     """
     CREATE TABLE IF NOT EXISTS metric_definitions (
@@ -556,6 +626,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                     conn.execute(sql)
             if current < 8:
                 for sql in _V7_TO_V8_MIGRATIONS:
+                    conn.execute(sql)
+            if current < 9:
+                for sql in _V8_TO_V9_MIGRATIONS:
                     conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",

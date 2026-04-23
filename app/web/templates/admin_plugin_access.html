@@ -1,0 +1,686 @@
+{% extends "base.html" %}
+{% block title %}Plugin access — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block content %}
+<style>
+  /* Match admin_marketplaces — wider than default container */
+  .container:has(.pa-page) { max-width: none; padding: 24px 16px; }
+  .pa-page { max-width: 1400px; margin: 0 auto; padding: 0; }
+  .pa-toolbar {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 16px; margin-bottom: 20px; flex-wrap: wrap;
+  }
+  .pa-title { margin: 0; font-size: 22px; font-weight: 600; }
+  .pa-sub { margin: 0; font-size: 13px; color: var(--text-secondary, #6b7280); }
+
+  .pa-layout {
+    display: grid; grid-template-columns: 320px 1fr; gap: 20px;
+    align-items: start;
+  }
+  @media (max-width: 900px) { .pa-layout { grid-template-columns: 1fr; } }
+
+  .pa-card {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .pa-card-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 16px; border-bottom: 1px solid var(--border, #e5e7eb);
+    background: var(--border-light, #f9fafb);
+  }
+  .pa-card-head h3 { margin: 0; font-size: 14px; font-weight: 600; }
+  .pa-card-body { padding: 0; }
+
+  /* Groups list */
+  .group-list { list-style: none; margin: 0; padding: 0; }
+  .group-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 14px; border-bottom: 1px solid var(--border-light, #f3f4f6);
+    cursor: pointer; transition: background 0.12s;
+  }
+  .group-item:last-child { border-bottom: none; }
+  .group-item:hover { background: var(--border-light, #fafafa); }
+  .group-item.is-active { background: #eef2ff; }
+  .group-item.is-active .group-name { color: var(--primary, #4338ca); }
+  .group-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #cbd5e1; flex-shrink: 0;
+  }
+  .group-item.is-active .group-dot { background: var(--primary, #6366f1); }
+  .group-meta { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+  .group-name { font-size: 13px; font-weight: 500; color: var(--text-primary, #111827); }
+  .group-desc {
+    font-size: 11px; color: var(--text-secondary, #6b7280);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .group-count {
+    font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 999px;
+    background: #e0e7ff; color: #3730a3;
+  }
+  .group-row-actions {
+    display: flex; gap: 4px;
+    opacity: 0; transition: opacity 0.15s;
+  }
+  .group-item:hover .group-row-actions { opacity: 1; }
+  .group-item.is-active .group-row-actions { opacity: 1; }
+  .group-act-btn {
+    background: transparent; border: 1px solid var(--border, #e5e7eb);
+    color: var(--text-secondary, #6b7280);
+    font-size: 10px; padding: 2px 6px; border-radius: 4px; cursor: pointer;
+  }
+  .group-act-btn:hover { color: var(--text-primary, #111827); border-color: #cbd5e1; background: #fff; }
+  .group-act-btn.danger:hover { color: #b91c1c; border-color: #fecaca; background: #fef2f2; }
+
+  .pa-empty { padding: 28px 16px; text-align: center; font-size: 13px; color: var(--text-secondary, #6b7280); }
+
+  /* Right side */
+  .mp-block {
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+  }
+  .mp-block:last-child { border-bottom: none; }
+  .mp-block-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px; background: var(--border-light, #fafafa);
+    cursor: pointer; user-select: none;
+  }
+  .mp-block-head h4 { margin: 0; font-size: 13px; font-weight: 600; color: var(--text-primary, #111827); }
+  .mp-block-head .count {
+    font-size: 11px; padding: 2px 7px; border-radius: 999px;
+    background: #e0e7ff; color: #3730a3; font-weight: 600;
+  }
+  .mp-block-head .spacer { flex: 1; }
+  .mp-block-head .chev {
+    transition: transform 0.15s; color: var(--text-secondary, #9ca3af);
+  }
+  .mp-block.is-collapsed .plugin-grid { display: none; }
+  .mp-block.is-collapsed .mp-block-head .chev { transform: rotate(-90deg); }
+  .mp-block .bulk-btn {
+    font-size: 11px; padding: 4px 8px; border: 1px solid var(--border, #e5e7eb);
+    background: var(--surface, #fff); color: var(--text-secondary, #6b7280);
+    border-radius: 6px; cursor: pointer;
+  }
+  .mp-block .bulk-btn:hover { color: var(--text-primary, #111827); border-color: #cbd5e1; }
+
+  .plugin-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 0; padding: 0;
+  }
+  .plugin-cell {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 10px 16px;
+    border-right: 1px solid var(--border-light, #f3f4f6);
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+    cursor: pointer; transition: background 0.1s;
+  }
+  .plugin-cell:hover { background: var(--border-light, #fafafa); }
+  .plugin-cell input[type="checkbox"] {
+    margin-top: 2px; width: 15px; height: 15px; cursor: pointer;
+    accent-color: var(--primary, #6366f1);
+  }
+  .plugin-cell.is-granted { background: #f5f3ff; }
+  .plugin-cell.is-granted:hover { background: #ede9fe; }
+  .pc-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .pc-name {
+    font-size: 13px; font-weight: 500; color: var(--text-primary, #111827);
+    word-break: break-word;
+  }
+  .pc-meta { font-size: 11px; color: var(--text-secondary, #6b7280); }
+  .pc-src {
+    display: inline-block; padding: 1px 6px; border-radius: 4px;
+    background: #f3f4f6; color: #374151; font-size: 10px; font-weight: 500;
+    text-transform: uppercase; letter-spacing: 0.3px; margin-left: 4px;
+  }
+  .pc-desc {
+    font-size: 11px; color: var(--text-secondary, #6b7280);
+    margin-top: 2px; line-height: 1.35;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .pa-hint {
+    padding: 14px 16px; font-size: 12px; color: var(--text-secondary, #6b7280);
+    background: #fffbeb; border-bottom: 1px solid #fde68a;
+  }
+  .pa-hint a { color: var(--primary, #6366f1); }
+
+  .pa-filter {
+    padding: 10px 16px; border-bottom: 1px solid var(--border, #e5e7eb);
+    background: var(--surface, #fff);
+  }
+  .pa-filter input {
+    width: 100%; padding: 7px 10px 7px 30px;
+    border: 1px solid var(--border, #e5e7eb); border-radius: 6px;
+    font-size: 12px;
+    background: #fff url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2'><circle cx='11' cy='11' r='8'/><path d='m21 21-4.35-4.35'/></svg>") no-repeat 9px center;
+  }
+
+  /* Button primary — match modal-btn.primary from admin_marketplaces.html */
+  .pa-btn {
+    padding: 6px 12px; border-radius: 6px; font-size: 12px; font-weight: 500;
+    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
+    cursor: pointer; transition: all 0.15s;
+  }
+  .pa-btn:hover { background: var(--border-light, #f9fafb); }
+  .pa-btn.primary { background: var(--primary, #6366f1); color: #fff; border-color: var(--primary, #6366f1); }
+  .pa-btn.primary:hover { filter: brightness(1.05); }
+
+  /* Reuse the modal styling from admin_marketplaces (kept local for isolation). */
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55);
+    display: none; align-items: center; justify-content: center; z-index: 1000;
+    padding: 16px;
+  }
+  .modal-backdrop.is-open { display: flex; }
+  .modal-card {
+    background: var(--surface, #fff); border-radius: 12px;
+    padding: 24px; width: 100%; max-width: 480px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+    max-height: 90vh; overflow-y: auto;
+  }
+  .modal-card h3 { margin: 0 0 6px; font-size: 17px; font-weight: 600; }
+  .modal-card p.sub { margin: 0 0 18px; font-size: 13px; color: var(--text-secondary, #6b7280); }
+  .modal-card label { display: block; font-size: 12px; font-weight: 500; color: var(--text-secondary, #6b7280); margin: 12px 0 6px; }
+  .modal-card input[type="text"], .modal-card textarea {
+    width: 100%; padding: 9px 12px; border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px; font-size: 13px; box-sizing: border-box;
+    background: var(--surface, #fff); color: var(--text-primary, #111827);
+    font-family: inherit;
+  }
+  .modal-card textarea { min-height: 60px; resize: vertical; }
+  .modal-card input:focus, .modal-card textarea:focus { outline: 2px solid var(--primary, #6366f1); outline-offset: -1px; }
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
+  .modal-btn {
+    padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 500;
+    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
+    cursor: pointer;
+  }
+  .modal-btn.primary { background: var(--primary, #6366f1); color: #fff; border-color: var(--primary, #6366f1); }
+  .modal-btn.danger { background: #dc2626; color: #fff; border-color: #dc2626; }
+
+  .toast-stack {
+    position: fixed; bottom: 24px; right: 24px; z-index: 2000;
+    display: flex; flex-direction: column; gap: 8px; pointer-events: none;
+  }
+  .toast {
+    background: #111827; color: #fff; padding: 10px 16px;
+    border-radius: 8px; font-size: 13px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+    opacity: 0; transform: translateY(8px); transition: opacity 0.2s, transform 0.2s;
+    pointer-events: auto; max-width: 380px;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast.success { background: #047857; }
+  .toast.error { background: #b91c1c; }
+</style>
+
+<div class="pa-page">
+  <div class="pa-toolbar">
+    <div>
+      <h2 class="pa-title">Plugin access</h2>
+      <p class="pa-sub">Map user groups to marketplace plugins they are allowed to install.</p>
+    </div>
+  </div>
+
+  <div class="pa-layout">
+    <!-- LEFT: Groups -->
+    <div class="pa-card" id="groups-card">
+      <div class="pa-card-head">
+        <h3>User groups</h3>
+        <button class="pa-btn primary" id="open-create-group-btn">+ New</button>
+      </div>
+      <ul class="group-list" id="group-list"></ul>
+      <div class="pa-empty" id="group-empty" style="display:none;">
+        No groups yet.<br>
+        Click <strong>+ New</strong> to create one.
+      </div>
+    </div>
+
+    <!-- RIGHT: Plugins -->
+    <div class="pa-card" id="plugins-card">
+      <div class="pa-card-head">
+        <h3 id="plugins-card-title">Select a group</h3>
+        <span id="plugins-card-sub" style="font-size:11px; color: var(--text-secondary, #6b7280);"></span>
+      </div>
+      <div class="pa-hint" id="pa-hint" style="display:none;">
+        No plugins have been synced yet. Register marketplaces on the
+        <a href="/admin/marketplaces">Marketplaces</a> page and run a sync.
+      </div>
+      <div class="pa-filter" id="plugins-filter-wrap" style="display:none;">
+        <input id="plugins-filter" type="search" placeholder="Filter plugins by name, marketplace, or category…" autocomplete="off">
+      </div>
+      <div id="plugins-body" class="pa-card-body"></div>
+      <div class="pa-empty" id="plugins-empty" style="display:none;">
+        Select a group on the left to start assigning plugins.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Group create/edit modal -->
+<div class="modal-backdrop" id="group-modal" role="dialog" aria-modal="true" aria-labelledby="group-modal-title">
+  <div class="modal-card">
+    <h3 id="group-modal-title">New group</h3>
+    <p class="sub" id="group-modal-sub">Pick a name that identifies a logical audience (e.g. <code>data-team</code>, <code>engineers</code>).</p>
+
+    <label for="group-name">Name</label>
+    <input id="group-name" type="text" autocomplete="off" placeholder="data-team">
+
+    <label for="group-desc">Description (optional)</label>
+    <textarea id="group-desc" autocomplete="off"></textarea>
+
+    <div class="modal-actions">
+      <button class="modal-btn" data-close-modal="group-modal">Cancel</button>
+      <button class="modal-btn primary" id="group-save-btn">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Confirm delete modal -->
+<div class="modal-backdrop" id="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+  <div class="modal-card">
+    <h3 id="confirm-title">Delete group?</h3>
+    <p class="sub" id="confirm-text"></p>
+    <div class="modal-actions">
+      <button class="modal-btn" data-close-modal="confirm-modal">Cancel</button>
+      <button class="modal-btn danger" id="confirm-ok-btn">Delete</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+
+<script>
+const OVERVIEW = "/api/plugin-access/overview";
+const GROUPS_API = "/api/user-groups";
+const ACCESS_API = "/api/plugin-access";
+
+function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+
+function toast(msg, kind = "") {
+  const el = document.createElement("div");
+  el.className = "toast " + kind;
+  el.textContent = msg;
+  document.getElementById("toast-stack").appendChild(el);
+  requestAnimationFrame(() => el.classList.add("show"));
+  setTimeout(() => { el.classList.remove("show"); setTimeout(() => el.remove(), 250); }, 3500);
+}
+
+function openModal(id) { document.getElementById(id).classList.add("is-open"); }
+function closeModal(id) { document.getElementById(id).classList.remove("is-open"); }
+document.querySelectorAll("[data-close-modal]").forEach(el =>
+  el.addEventListener("click", () => closeModal(el.dataset.closeModal)));
+document.querySelectorAll(".modal-backdrop").forEach(el => {
+  el.addEventListener("click", e => { if (e.target === el) el.classList.remove("is-open"); });
+});
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") document.querySelectorAll(".modal-backdrop.is-open").forEach(m => m.classList.remove("is-open"));
+});
+
+// State
+let state = {
+  groups: [],            // [{id, name, description, member_count}, ...]
+  marketplaces: [],      // [{id, name, plugin_count, plugins: [{name, ...}, ...]}]
+  grants: [],            // [{group_id, marketplace_id, plugin_name}, ...]
+  activeGroupId: null,
+  filter: "",
+  editingGroupId: null,
+};
+
+// ── Load ──
+async function loadOverview() {
+  try {
+    const r = await fetch(OVERVIEW, { credentials: "include" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const data = await r.json();
+    state.groups = data.groups;
+    state.marketplaces = data.marketplaces;
+    state.grants = data.grants;
+    if (state.activeGroupId && !state.groups.find(g => g.id === state.activeGroupId)) {
+      state.activeGroupId = null;
+    }
+    renderGroups();
+    renderPlugins();
+  } catch (e) {
+    toast("Failed to load: " + e.message, "error");
+  }
+}
+
+function renderGroups() {
+  const list = document.getElementById("group-list");
+  const empty = document.getElementById("group-empty");
+  if (state.groups.length === 0) {
+    list.innerHTML = "";
+    empty.style.display = "block";
+    return;
+  }
+  empty.style.display = "none";
+  list.innerHTML = "";
+  for (const g of state.groups) {
+    const grantsForGroup = state.grants.filter(x => x.group_id === g.id).length;
+    const li = document.createElement("li");
+    li.className = "group-item" + (state.activeGroupId === g.id ? " is-active" : "");
+    li.dataset.id = g.id;
+    li.innerHTML = `
+      <span class="group-dot"></span>
+      <div class="group-meta">
+        <span class="group-name">${esc(g.name)}</span>
+        ${g.description ? `<span class="group-desc">${esc(g.description)}</span>` : ""}
+      </div>
+      <span class="group-count" title="Plugins granted to this group">${grantsForGroup}</span>
+      <div class="group-row-actions">
+        <button class="group-act-btn" data-action="edit-group">Edit</button>
+        <button class="group-act-btn danger" data-action="delete-group">Del</button>
+      </div>
+    `;
+    li.addEventListener("click", e => {
+      if (e.target.closest("[data-action]")) return;
+      state.activeGroupId = g.id;
+      renderGroups();
+      renderPlugins();
+    });
+    li.querySelector('[data-action="edit-group"]').addEventListener("click", ev => {
+      ev.stopPropagation();
+      openEditGroup(g);
+    });
+    li.querySelector('[data-action="delete-group"]').addEventListener("click", ev => {
+      ev.stopPropagation();
+      deleteGroup(g);
+    });
+    list.appendChild(li);
+  }
+}
+
+function renderPlugins() {
+  const body = document.getElementById("plugins-body");
+  const title = document.getElementById("plugins-card-title");
+  const sub = document.getElementById("plugins-card-sub");
+  const hint = document.getElementById("pa-hint");
+  const filterWrap = document.getElementById("plugins-filter-wrap");
+  const empty = document.getElementById("plugins-empty");
+
+  if (!state.activeGroupId) {
+    title.textContent = "Select a group";
+    sub.textContent = "";
+    body.innerHTML = "";
+    hint.style.display = "none";
+    filterWrap.style.display = "none";
+    empty.style.display = "block";
+    return;
+  }
+  empty.style.display = "none";
+
+  const group = state.groups.find(g => g.id === state.activeGroupId);
+  title.textContent = group ? group.name : "Group";
+  const granted = new Set(state.grants
+    .filter(x => x.group_id === state.activeGroupId)
+    .map(x => `${x.marketplace_id}::${x.plugin_name}`));
+  sub.textContent = `${granted.size} plugin${granted.size === 1 ? "" : "s"} granted`;
+
+  const totalPlugins = state.marketplaces.reduce((acc, m) => acc + (m.plugins || []).length, 0);
+  if (totalPlugins === 0) {
+    hint.style.display = "block";
+    filterWrap.style.display = "none";
+    body.innerHTML = "";
+    return;
+  }
+  hint.style.display = "none";
+  filterWrap.style.display = "block";
+
+  const ft = state.filter.trim().toLowerCase();
+  body.innerHTML = "";
+  for (const mp of state.marketplaces) {
+    const plugins = (mp.plugins || []).filter(p => {
+      if (!ft) return true;
+      return (p.name || "").toLowerCase().includes(ft)
+          || (mp.name || "").toLowerCase().includes(ft)
+          || (mp.id || "").toLowerCase().includes(ft)
+          || (p.category || "").toLowerCase().includes(ft)
+          || (p.description || "").toLowerCase().includes(ft);
+    });
+    if (ft && plugins.length === 0) continue;
+
+    const block = document.createElement("div");
+    block.className = "mp-block";
+    const grantedHere = plugins.filter(p => granted.has(`${mp.id}::${p.name}`)).length;
+
+    block.innerHTML = `
+      <div class="mp-block-head" data-toggle="collapse">
+        <svg class="chev" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+          <path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <h4>${esc(mp.name)}</h4>
+        <span class="count">${grantedHere}/${plugins.length}</span>
+        <span class="spacer"></span>
+        <button class="bulk-btn" data-bulk="all">Grant all</button>
+        <button class="bulk-btn" data-bulk="none">Revoke all</button>
+      </div>
+      <div class="plugin-grid"></div>
+    `;
+    const grid = block.querySelector(".plugin-grid");
+    if (plugins.length === 0) {
+      grid.innerHTML = `<div class="pa-empty" style="grid-column: 1/-1;">No plugins in this marketplace yet.</div>`;
+    } else {
+      for (const p of plugins) {
+        const isGranted = granted.has(`${mp.id}::${p.name}`);
+        const cell = document.createElement("label");
+        cell.className = "plugin-cell" + (isGranted ? " is-granted" : "");
+        cell.innerHTML = `
+          <input type="checkbox" ${isGranted ? "checked" : ""}>
+          <div class="pc-text">
+            <div>
+              <span class="pc-name">${esc(p.name)}</span>
+              ${p.source_type ? `<span class="pc-src">${esc(p.source_type)}</span>` : ""}
+            </div>
+            <div class="pc-meta">
+              ${p.version ? `v${esc(p.version)}` : ""}${p.version && p.category ? " · " : ""}${p.category ? esc(p.category) : ""}
+            </div>
+            ${p.description ? `<div class="pc-desc">${esc(p.description)}</div>` : ""}
+          </div>
+        `;
+        const checkbox = cell.querySelector("input");
+        checkbox.addEventListener("change", async () => {
+          const grant = checkbox.checked;
+          checkbox.disabled = true;
+          try {
+            const r = await fetch(ACCESS_API, {
+              method: grant ? "POST" : "DELETE",
+              credentials: "include",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                group_id: state.activeGroupId,
+                marketplace_id: mp.id,
+                plugin_name: p.name,
+              }),
+            });
+            if (!r.ok) {
+              const err = await r.json().catch(() => ({}));
+              toast(`Failed: ${err.detail || r.status}`, "error");
+              checkbox.checked = !grant;
+            } else {
+              if (grant) {
+                state.grants.push({
+                  group_id: state.activeGroupId,
+                  marketplace_id: mp.id,
+                  plugin_name: p.name,
+                });
+                cell.classList.add("is-granted");
+              } else {
+                state.grants = state.grants.filter(x =>
+                  !(x.group_id === state.activeGroupId && x.marketplace_id === mp.id && x.plugin_name === p.name));
+                cell.classList.remove("is-granted");
+              }
+              // refresh sub-header count and group list badges
+              renderGroupBadges();
+              refreshPluginHeader();
+            }
+          } catch (e) {
+            toast("Network error: " + e.message, "error");
+            checkbox.checked = !grant;
+          } finally {
+            checkbox.disabled = false;
+          }
+        });
+        grid.appendChild(cell);
+      }
+    }
+    block.querySelector('[data-toggle="collapse"]').addEventListener("click", e => {
+      if (e.target.closest("[data-bulk]")) return;
+      block.classList.toggle("is-collapsed");
+    });
+    block.querySelector('[data-bulk="all"]').addEventListener("click", async () => {
+      await bulkSet(mp.id, plugins, true);
+    });
+    block.querySelector('[data-bulk="none"]').addEventListener("click", async () => {
+      await bulkSet(mp.id, plugins, false);
+    });
+    body.appendChild(block);
+  }
+}
+
+function refreshPluginHeader() {
+  const sub = document.getElementById("plugins-card-sub");
+  const granted = state.grants.filter(x => x.group_id === state.activeGroupId).length;
+  sub.textContent = `${granted} plugin${granted === 1 ? "" : "s"} granted`;
+  // Also refresh per-marketplace header counts
+  document.querySelectorAll(".mp-block").forEach(block => {
+    const head = block.querySelector(".mp-block-head .count");
+    const mpName = block.querySelector(".mp-block-head h4").textContent;
+    const mp = state.marketplaces.find(m => m.name === mpName);
+    if (!mp || !head) return;
+    const plugins = mp.plugins || [];
+    const grantedHere = plugins.filter(p =>
+      state.grants.some(x => x.group_id === state.activeGroupId
+                          && x.marketplace_id === mp.id
+                          && x.plugin_name === p.name)
+    ).length;
+    head.textContent = `${grantedHere}/${plugins.length}`;
+  });
+}
+
+function renderGroupBadges() {
+  document.querySelectorAll(".group-item").forEach(li => {
+    const gid = li.dataset.id;
+    const badge = li.querySelector(".group-count");
+    if (badge) {
+      badge.textContent = state.grants.filter(x => x.group_id === gid).length;
+    }
+  });
+}
+
+async function bulkSet(marketplaceId, plugins, grant) {
+  if (!state.activeGroupId) return;
+  const email = grant ? "Grant all" : "Revoke all";
+  for (const p of plugins) {
+    const key = `${marketplaceId}::${p.name}`;
+    const has = state.grants.some(x => x.group_id === state.activeGroupId
+                                     && x.marketplace_id === marketplaceId
+                                     && x.plugin_name === p.name);
+    if (grant === has) continue;
+    try {
+      const r = await fetch(ACCESS_API, {
+        method: grant ? "POST" : "DELETE",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          group_id: state.activeGroupId,
+          marketplace_id: marketplaceId,
+          plugin_name: p.name,
+        }),
+      });
+      if (!r.ok) continue;
+      if (grant) {
+        state.grants.push({
+          group_id: state.activeGroupId,
+          marketplace_id: marketplaceId,
+          plugin_name: p.name,
+        });
+      } else {
+        state.grants = state.grants.filter(x =>
+          !(x.group_id === state.activeGroupId && x.marketplace_id === marketplaceId && x.plugin_name === p.name));
+      }
+    } catch (_e) { /* ignore */ }
+  }
+  toast(`${email} applied`, "success");
+  renderPlugins();
+}
+
+// ── Group CRUD ──
+document.getElementById("open-create-group-btn").addEventListener("click", () => {
+  state.editingGroupId = null;
+  document.getElementById("group-modal-title").textContent = "New group";
+  document.getElementById("group-name").value = "";
+  document.getElementById("group-desc").value = "";
+  openModal("group-modal");
+});
+
+function openEditGroup(g) {
+  state.editingGroupId = g.id;
+  document.getElementById("group-modal-title").textContent = "Edit group";
+  document.getElementById("group-name").value = g.name;
+  document.getElementById("group-desc").value = g.description || "";
+  openModal("group-modal");
+}
+
+document.getElementById("group-save-btn").addEventListener("click", async () => {
+  const name = document.getElementById("group-name").value.trim();
+  const description = document.getElementById("group-desc").value.trim();
+  if (!name) { toast("Name is required", "error"); return; }
+  try {
+    if (state.editingGroupId) {
+      const r = await fetch(`${GROUPS_API}/${encodeURIComponent(state.editingGroupId)}`, {
+        method: "PATCH", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, description: description || null }),
+      });
+      if (!r.ok) throw new Error((await r.json()).detail || r.status);
+      toast("Group updated", "success");
+    } else {
+      const r = await fetch(GROUPS_API, {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, description: description || null }),
+      });
+      if (!r.ok) throw new Error((await r.json()).detail || r.status);
+      const created = await r.json();
+      state.activeGroupId = created.id;
+      toast("Group created", "success");
+    }
+    closeModal("group-modal");
+    loadOverview();
+  } catch (e) {
+    toast("Save failed: " + e.message, "error");
+  }
+});
+
+function deleteGroup(g) {
+  document.getElementById("confirm-title").textContent = `Delete group "${g.name}"?`;
+  document.getElementById("confirm-text").textContent =
+    `Removes the group and all ${state.grants.filter(x => x.group_id === g.id).length} of its plugin grants.`;
+  const ok = document.getElementById("confirm-ok-btn");
+  ok.onclick = async () => {
+    try {
+      const r = await fetch(`${GROUPS_API}/${encodeURIComponent(g.id)}`, {
+        method: "DELETE", credentials: "include",
+      });
+      if (!r.ok) throw new Error(r.status);
+      if (state.activeGroupId === g.id) state.activeGroupId = null;
+      toast("Group deleted", "success");
+      closeModal("confirm-modal");
+      loadOverview();
+    } catch (e) {
+      toast("Delete failed: " + e.message, "error");
+    }
+  };
+  openModal("confirm-modal");
+}
+
+// ── Filter ──
+document.getElementById("plugins-filter").addEventListener("input", e => {
+  state.filter = e.target.value;
+  renderPlugins();
+});
+
+loadOverview();
+</script>
+{% endblock %}
