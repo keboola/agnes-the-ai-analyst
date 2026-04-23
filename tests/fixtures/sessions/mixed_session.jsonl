@@ -1,0 +1,7 @@
+{"role": "user", "content": "Show me the NPS scores."}
+{"role": "assistant", "content": "The NPS score for last quarter was 45."}
+{"role": "user", "content": "Not quite. We use a rolling 90-day NPS, not quarterly. The current score should be around 52."}
+{"role": "assistant", "content": "I see, let me recalculate using a rolling 90-day window."}
+{"role": "user", "content": "Also, FYI, our retention metric is defined as the percentage of users who are active in month N who were also active in month N-1. We call it MAU retention."}
+{"role": "assistant", "content": "Thank you. I'll use rolling 90-day NPS and MAU retention = active_month_N intersect active_month_N-1 / active_month_N-1."}
+{"role": "user", "content": "Perfect. Now compare NPS to retention over the last 6 months."}
