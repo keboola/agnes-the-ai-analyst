@@ -154,6 +154,18 @@ Before computing any business metric, look up the canonical definition:
 
 Never invent metric calculations — always use the canonical definitions.
 
+## Marketplace Repositories
+
+Admin-managed git repos cloned nightly to `${DATA_DIR}/marketplaces/<slug>/`
+so FastAPI can read their contents from disk.
+
+- Register via `/admin/marketplaces` (admin UI) or `POST /api/marketplaces`.
+- Scheduler calls `src.marketplace.sync_marketplaces()` in-process at `daily 03:00` UTC — no HTTP round-trip to the main app.
+- Manual re-sync from the UI ("Sync now") hits `POST /api/marketplaces/{id}/sync`.
+- PATs for private repos persist to `${DATA_DIR}/state/.env_overlay` (chmod 600) as `AGNES_MARKETPLACE_<SLUG>_TOKEN`. DuckDB stores only the env-var name (`token_env`), never the secret.
+- Registry lives in DuckDB table `marketplace_registry` (schema v8).
+- `src/marketplace.py` handles clone/fetch/reset with token redaction in any surfaced error message.
+
 ## Hybrid Queries (BigQuery + Local)
 
 For tables too large to sync locally, use hybrid queries that JOIN local data with on-demand BigQuery results:
