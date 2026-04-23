@@ -3,6 +3,7 @@
 import os
 import logging
 
+import httpx
 from authlib.integrations.starlette_client import OAuth
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse
@@ -21,6 +22,11 @@ oauth = OAuth()
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 
+# Cloud Identity Groups API — requires the cloud-identity.groups.readonly scope
+# AND an admin-enabled Cloud Identity / Google Workspace tenant. A 403 here
+# simply means the tenant isn't Workspace-enabled; we tolerate it.
+GROUPS_SEARCH_URL = "https://cloudidentity.googleapis.com/v1/groups:search"
+
 
 def is_available() -> bool:
     return bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)
@@ -34,8 +40,51 @@ def _setup_oauth():
         client_id=GOOGLE_CLIENT_ID,
         client_secret=GOOGLE_CLIENT_SECRET,
         server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
-        client_kwargs={"scope": "openid email profile"},
+        client_kwargs={
+            "scope": (
+                "openid email profile "
+                "https://www.googleapis.com/auth/cloud-identity.groups.readonly"
+            ),
+        },
     )
+
+
+async def _fetch_google_groups(access_token: str, email: str) -> list[dict]:
+    """Fetch Google Workspace groups the user belongs to.
+
+    Best-effort: returns [] on any failure (403 non-Workspace tenant, 401 expired
+    token, network error, etc.). Must never raise — callers rely on this to keep
+    the login flow working even when Cloud Identity is unavailable.
+    """
+    params = {
+        "query": f"member_key_id=='{email}'",
+        "view": "BASIC",
+    }
+    headers = {"Authorization": f"Bearer {access_token}"}
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(GROUPS_SEARCH_URL, params=params, headers=headers)
+        if resp.status_code >= 400:
+            logger.warning(
+                "Google groups fetch returned %s for %s: %s",
+                resp.status_code, email, resp.text[:200],
+            )
+            return []
+        data = resp.json()
+    except Exception as e:
+        logger.warning("Google groups fetch failed for %s: %s", email, e)
+        return []
+
+    groups = []
+    for g in data.get("groups", []) or []:
+        group_key = (g.get("groupKey") or {}).get("id", "")
+        if not group_key:
+            continue
+        groups.append({
+            "id": group_key,
+            "name": g.get("displayName") or group_key,
+        })
+    return groups
 
 
 _setup_oauth()
@@ -101,6 +150,18 @@ async def google_callback(request: Request):
                 return RedirectResponse(url="/login?error=deactivated")
         finally:
             conn.close()
+
+        # Fetch Google Workspace groups (best-effort — must not break login).
+        access_token = token.get("access_token", "")
+        if access_token:
+            try:
+                groups = await _fetch_google_groups(access_token, email)
+                request.session["google_groups"] = groups
+            except Exception as e:
+                logger.warning("Failed to store google_groups in session: %s", e)
+                request.session["google_groups"] = []
+        else:
+            request.session["google_groups"] = []
 
         # Issue JWT
         jwt_token = create_access_token(user["id"], user["email"], user["role"])

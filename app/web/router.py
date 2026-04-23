@@ -620,7 +620,17 @@ async def admin_tokens_page(
     return templates.TemplateResponse(request, "admin_tokens.html", ctx)
 
 
-@router.get("/profile")
-async def profile_redirect(request: Request):
-    """Back-compat: /profile (PAT CRUD) has been unified under /tokens."""
-    return RedirectResponse(url="/tokens", status_code=302)
+@router.get("/profile", response_class=HTMLResponse)
+async def profile_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """User profile — shows email, name, role, and Google Workspace groups.
+
+    Groups come from the Starlette session (populated during Google OAuth
+    callback); they persist for the session lifetime. Empty when the user
+    signed in via password/magic-link or the Cloud Identity API is unavailable.
+    """
+    groups = request.session.get("google_groups", []) or []
+    ctx = _build_context(request, user=user, groups=groups)
+    return templates.TemplateResponse(request, "profile.html", ctx)
