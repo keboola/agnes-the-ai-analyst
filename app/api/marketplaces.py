@@ -9,7 +9,7 @@ import logging
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -23,6 +23,7 @@ from src.marketplace import (
     sync_one,
 )
 from src.repositories.audit import AuditRepository
+from src.repositories.marketplace_plugins import MarketplacePluginsRepository
 from src.repositories.marketplace_registry import MarketplaceRegistryRepository
 
 logger = logging.getLogger(__name__)
@@ -95,9 +96,10 @@ class MarketplaceResponse(BaseModel):
     last_commit_sha: Optional[str] = None
     last_error: Optional[str] = None
     has_token: bool = False
+    plugin_count: int = 0
 
 
-def _to_response(row: dict) -> MarketplaceResponse:
+def _to_response(row: dict, plugin_count: int = 0) -> MarketplaceResponse:
     token_env = row.get("token_env") or ""
     has_token = bool(token_env) and bool(os.environ.get(token_env, ""))
     return MarketplaceResponse(
@@ -112,7 +114,19 @@ def _to_response(row: dict) -> MarketplaceResponse:
         last_commit_sha=row.get("last_commit_sha"),
         last_error=row.get("last_error"),
         has_token=has_token,
+        plugin_count=plugin_count,
     )
+
+
+class PluginResponse(BaseModel):
+    name: str
+    description: Optional[str] = None
+    version: Optional[str] = None
+    author_name: Optional[str] = None
+    homepage: Optional[str] = None
+    category: Optional[str] = None
+    source_type: Optional[str] = None
+    source_spec: Optional[Any] = None
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +182,41 @@ async def list_marketplaces(
     user: dict = Depends(require_role(Role.ADMIN)),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    return [_to_response(row) for row in MarketplaceRegistryRepository(conn).list_all()]
+    counts = MarketplacePluginsRepository(conn).count_by_marketplace()
+    return [
+        _to_response(row, counts.get(row["id"], 0))
+        for row in MarketplaceRegistryRepository(conn).list_all()
+    ]
+
+
+@router.get("/{marketplace_id}/plugins", response_model=List[PluginResponse])
+async def list_plugins(
+    marketplace_id: str,
+    user: dict = Depends(require_role(Role.ADMIN)),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Return the cached plugin list for a marketplace.
+
+    Rows come from `marketplace_plugins`, which is refreshed from
+    `.claude-plugin/marketplace.json` on every successful sync. An
+    unsynced marketplace will return an empty list.
+    """
+    if not MarketplaceRegistryRepository(conn).get(marketplace_id):
+        raise HTTPException(status_code=404, detail="marketplace not found")
+    rows = MarketplacePluginsRepository(conn).list_for_marketplace(marketplace_id)
+    return [
+        PluginResponse(
+            name=r["name"],
+            description=r.get("description"),
+            version=r.get("version"),
+            author_name=r.get("author_name"),
+            homepage=r.get("homepage"),
+            category=r.get("category"),
+            source_type=r.get("source_type"),
+            source_spec=r.get("source_spec"),
+        )
+        for r in rows
+    ]
 
 
 @router.post("", response_model=MarketplaceResponse, status_code=201)
@@ -281,7 +329,8 @@ async def update_marketplace(
         registered_by=updated["registered_by"],
     )
     _audit(conn, user["id"], "marketplace.update", marketplace_id, changed)
-    return _to_response(repo.get(marketplace_id))
+    counts = MarketplacePluginsRepository(conn).count_by_marketplace()
+    return _to_response(repo.get(marketplace_id), counts.get(marketplace_id, 0))
 
 
 @router.delete("/{marketplace_id}", status_code=204)
@@ -302,6 +351,18 @@ async def delete_marketplace(
         _persist_token(existing["token_env"], "")
 
     repo.unregister(marketplace_id)
+    # Drop cached plugin rows and any access grants that reference this marketplace.
+    try:
+        conn.execute(
+            "DELETE FROM marketplace_plugins WHERE marketplace_id = ?",
+            [marketplace_id],
+        )
+        conn.execute(
+            "DELETE FROM plugin_access WHERE marketplace_id = ?",
+            [marketplace_id],
+        )
+    except Exception as e:
+        logger.warning("cleanup for marketplace %s failed: %s", marketplace_id, e)
     purged = False
     if purge:
         try:

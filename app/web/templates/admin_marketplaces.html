@@ -148,6 +148,49 @@
   }
   .sync-result.err { background: #fef2f2; border-color: #fecaca; }
 
+  .mp-plugin-count {
+    display: inline-block; min-width: 22px; padding: 2px 8px;
+    border-radius: 999px; background: #ede9fe; color: #5b21b6;
+    font-size: 11px; font-weight: 600; text-align: center;
+  }
+
+  /* Details modal — plugin list */
+  .plugin-list {
+    margin: 12px 0 4px;
+    max-height: 60vh; overflow-y: auto;
+    border: 1px solid var(--border, #e5e7eb); border-radius: 8px;
+    background: var(--surface, #fff);
+  }
+  .plugin-list .empty { padding: 24px; text-align: center; color: var(--text-secondary, #6b7280); font-size: 13px; }
+  .plugin-item {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+  }
+  .plugin-item:last-child { border-bottom: none; }
+  .plugin-item-head {
+    display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  }
+  .plugin-name { font-weight: 600; color: var(--text-primary, #111827); font-size: 13px; }
+  .plugin-version {
+    font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px;
+    color: var(--text-secondary, #6b7280);
+  }
+  .plugin-source {
+    display: inline-block; padding: 1px 6px; border-radius: 4px;
+    background: #f3f4f6; color: #374151; font-size: 10px; font-weight: 500;
+    text-transform: uppercase; letter-spacing: 0.3px;
+  }
+  .plugin-desc {
+    margin-top: 4px; font-size: 12px; color: var(--text-secondary, #4b5563);
+    line-height: 1.45;
+  }
+  .plugin-meta {
+    margin-top: 6px; display: flex; gap: 12px; flex-wrap: wrap;
+    font-size: 11px; color: var(--text-secondary, #6b7280);
+  }
+  .plugin-meta a { color: var(--primary, #6366f1); text-decoration: none; }
+  .plugin-meta a:hover { text-decoration: underline; }
+
   /* Toast */
   .toast-stack {
     position: fixed; bottom: 24px; right: 24px; z-index: 2000;
@@ -180,6 +223,7 @@
           <th>Marketplace</th>
           <th>URL</th>
           <th>Branch</th>
+          <th title="Plugins discovered in .claude-plugin/marketplace.json on last sync">Plugins</th>
           <th>Last sync</th>
           <th>Commit</th>
           <th title="Auth token persisted to .env_overlay (not the DB)">Token</th>
@@ -275,6 +319,18 @@
   </div>
 </div>
 
+<!-- Marketplace details modal -->
+<div class="modal-backdrop" id="details-modal" role="dialog" aria-modal="true" aria-labelledby="details-title">
+  <div class="modal-card" style="max-width:720px;">
+    <h3 id="details-title">Marketplace details</h3>
+    <p class="sub" id="details-sub"></p>
+    <div id="details-body" class="plugin-list"></div>
+    <div class="modal-actions">
+      <button class="modal-btn primary" data-close-modal="details-modal">Close</button>
+    </div>
+  </div>
+</div>
+
 <!-- Confirm dialog -->
 <div class="modal-backdrop" id="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
   <div class="modal-card">
@@ -359,7 +415,7 @@ function renderMarketplaces() {
   empty.style.display = "none";
 
   if (filtered.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="7" class="mp-loading">No matches for "${esc(filterText)}"</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="mp-loading">No matches for "${esc(filterText)}"</td></tr>`;
     return;
   }
 
@@ -383,12 +439,16 @@ function renderMarketplaces() {
       </td>
       <td><span class="mp-url" title="${esc(m.url)}">${esc(m.url)}</span></td>
       <td>${m.branch ? `<span class="mp-branch-pill">${esc(m.branch)}</span>` : `<span class="mp-muted">HEAD</span>`}</td>
+      <td>${m.plugin_count > 0
+            ? `<span class="mp-plugin-count">${m.plugin_count}</span>`
+            : `<span class="mp-muted">0</span>`}</td>
       <td class="date-cell">${lastSync}</td>
       <td class="mp-sha">${m.last_commit_sha ? esc(shortSha(m.last_commit_sha)) : `<span class="mp-muted">—</span>`}</td>
       <td><span class="mp-token-dot ${m.has_token ? "has-token" : ""}" title="${m.has_token ? "Authenticated (PAT present in environment)" : "Public / no token"}"></span></td>
       <td>
         <div class="row-actions">
           <button class="icon-btn primary" data-action="sync" data-id="${esc(m.id)}">Sync now</button>
+          <button class="icon-btn" data-action="details" data-id="${esc(m.id)}" data-name="${esc(m.name || m.id)}">Details</button>
           <button class="icon-btn" data-action="edit" data-id="${esc(m.id)}">Edit</button>
           <button class="icon-btn danger" data-action="delete" data-id="${esc(m.id)}" data-name="${esc(m.name || m.id)}">Delete</button>
         </div>
@@ -398,6 +458,8 @@ function renderMarketplaces() {
 
   tbody.querySelectorAll('[data-action="sync"]').forEach(el =>
     el.addEventListener("click", () => syncNow(el.dataset.id, el)));
+  tbody.querySelectorAll('[data-action="details"]').forEach(el =>
+    el.addEventListener("click", () => openDetails(el.dataset.id, el.dataset.name)));
   tbody.querySelectorAll('[data-action="edit"]').forEach(el =>
     el.addEventListener("click", () => openEdit(el.dataset.id)));
   tbody.querySelectorAll('[data-action="delete"]').forEach(el =>
@@ -438,7 +500,8 @@ async function syncNow(id, btn) {
   const rb = document.getElementById("sync-result-body");
   rb.classList.toggle("err", !ok);
   if (ok) {
-    rb.textContent = `action: ${body.action}\ncommit: ${body.commit}\npath:   ${body.path}`;
+    const plugLine = body.plugin_count != null ? `\nplugins: ${body.plugin_count}` : "";
+    rb.textContent = `action: ${body.action}\ncommit: ${body.commit}\npath:   ${body.path}${plugLine}`;
     toast("Sync OK", "success");
   } else {
     rb.textContent = body.detail || body.error || "Sync failed";
@@ -446,6 +509,45 @@ async function syncNow(id, btn) {
   }
   openModal("sync-modal");
   loadMarketplaces();
+}
+
+// ── Details ──
+async function openDetails(id, name) {
+  const m = allMarketplaces.find(x => x.id === id);
+  document.getElementById("details-title").textContent = `${name || id}`;
+  const sub = document.getElementById("details-sub");
+  sub.innerHTML = `<code>${esc(id)}</code>${m && m.url ? ` · <span class="mp-url" title="${esc(m.url)}">${esc(m.url)}</span>` : ""}`;
+  const body = document.getElementById("details-body");
+  body.innerHTML = `<div class="empty">Loading plugins…</div>`;
+  openModal("details-modal");
+  try {
+    const r = await fetch(`${API}/${encodeURIComponent(id)}/plugins`, { credentials: "include" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const plugins = await r.json();
+    if (!plugins.length) {
+      body.innerHTML = `<div class="empty">No plugins found.<br>
+        Either the marketplace has never been synced, or its
+        <code>.claude-plugin/marketplace.json</code> does not list any plugins.</div>`;
+      return;
+    }
+    body.innerHTML = plugins.map(p => {
+      const src = p.source_type ? `<span class="plugin-source">${esc(p.source_type)}</span>` : "";
+      const ver = p.version ? `<span class="plugin-version">v${esc(p.version)}</span>` : "";
+      const desc = p.description ? `<div class="plugin-desc">${esc(p.description)}</div>` : "";
+      const meta = [];
+      if (p.author_name) meta.push(`by ${esc(p.author_name)}`);
+      if (p.category) meta.push(`category: ${esc(p.category)}`);
+      if (p.homepage) meta.push(`<a href="${esc(p.homepage)}" target="_blank" rel="noopener">homepage ↗</a>`);
+      const metaHtml = meta.length ? `<div class="plugin-meta">${meta.join(" · ")}</div>` : "";
+      return `<div class="plugin-item">
+        <div class="plugin-item-head">
+          <span class="plugin-name">${esc(p.name)}</span>${ver}${src}
+        </div>${desc}${metaHtml}
+      </div>`;
+    }).join("");
+  } catch (e) {
+    body.innerHTML = `<div class="empty" style="color:#b91c1c;">Failed to load plugins: ${esc(e.message)}</div>`;
+  }
 }
 
 // ── Edit ──

@@ -12,6 +12,7 @@ Callable from:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -30,6 +31,8 @@ logger = logging.getLogger(__name__)
 GIT_TIMEOUT_SEC = 300
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _lock = threading.Lock()
+
+PLUGIN_MANIFEST_REL = Path(".claude-plugin") / "marketplace.json"
 
 
 class MarketplaceNotFound(Exception):
@@ -129,6 +132,56 @@ def _sync_spec(spec: Dict[str, Any]) -> Dict[str, Any]:
     return {"id": slug, "name": name, "action": action, "commit": sha, "path": str(target)}
 
 
+def read_plugins(slug: str) -> List[Dict[str, Any]]:
+    """Read the plugin list from a cloned marketplace's manifest.
+
+    Returns the `plugins` array from `.claude-plugin/marketplace.json` at
+    the root of the working copy. Returns an empty list if the manifest
+    is missing, unreadable, or has no plugins. Malformed JSON is logged
+    and treated as empty — a broken manifest must not take the sync
+    operation down.
+    """
+    if not is_valid_slug(slug):
+        raise ValueError(f"invalid slug: {slug!r}")
+    manifest = get_marketplaces_dir() / slug / PLUGIN_MANIFEST_REL
+    if not manifest.is_file():
+        return []
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        logger.warning("marketplace %s: unreadable manifest %s: %s", slug, manifest, e)
+        return []
+    plugins = data.get("plugins") if isinstance(data, dict) else None
+    if not isinstance(plugins, list):
+        return []
+    return [p for p in plugins if isinstance(p, dict) and p.get("name")]
+
+
+def _refresh_plugin_cache(slug: str) -> int:
+    """Reload plugins from disk into marketplace_plugins. Returns plugin count.
+
+    Failures here are logged but never re-raised: the primary sync result
+    (git commit) has already succeeded at this point and must still be
+    reported.
+    """
+    from src.repositories.marketplace_plugins import MarketplacePluginsRepository
+
+    try:
+        plugins = read_plugins(slug)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("marketplace %s: plugin read failed: %s", slug, e)
+        return 0
+
+    conn = _get_conn()
+    try:
+        return MarketplacePluginsRepository(conn).replace_for_marketplace(slug, plugins)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("marketplace %s: plugin cache write failed: %s", slug, e)
+        return 0
+    finally:
+        conn.close()
+
+
 def _get_conn():
     """Lazy import to avoid circular deps with src.db at module load."""
     from src.db import get_system_db
@@ -160,6 +213,7 @@ def sync_one(marketplace_id: str) -> Dict[str, Any]:
                     commit_sha=result["commit"],
                     synced_at=datetime.now(timezone.utc),
                 )
+                result["plugin_count"] = _refresh_plugin_cache(marketplace_id)
                 return result
             except (RuntimeError, ValueError) as e:
                 repo.update_sync_status(
@@ -198,7 +252,6 @@ def sync_marketplaces() -> Dict[str, Any]:
             slug = spec.get("id", "")
             try:
                 result = _sync_spec(spec)
-                synced.append(result)
                 # Persist success per entry on its own connection (short-lived).
                 conn = _get_conn()
                 try:
@@ -209,6 +262,8 @@ def sync_marketplaces() -> Dict[str, Any]:
                     )
                 finally:
                     conn.close()
+                result["plugin_count"] = _refresh_plugin_cache(slug)
+                synced.append(result)
             except (RuntimeError, ValueError) as e:
                 err = {"id": slug, "error": str(e)}
                 errors.append(err)

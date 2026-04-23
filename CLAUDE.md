@@ -163,8 +163,21 @@ so FastAPI can read their contents from disk.
 - Scheduler calls `src.marketplace.sync_marketplaces()` in-process at `daily 03:00` UTC — no HTTP round-trip to the main app.
 - Manual re-sync from the UI ("Sync now") hits `POST /api/marketplaces/{id}/sync`.
 - PATs for private repos persist to `${DATA_DIR}/state/.env_overlay` (chmod 600) as `AGNES_MARKETPLACE_<SLUG>_TOKEN`. DuckDB stores only the env-var name (`token_env`), never the secret.
-- Registry lives in DuckDB table `marketplace_registry` (schema v8).
+- Registry lives in DuckDB table `marketplace_registry` (schema v9).
+- After each successful sync, `src/marketplace.py` parses `.claude-plugin/marketplace.json`
+  from the cloned repo and caches the plugin list in `marketplace_plugins`
+  (keyed by `(marketplace_id, plugin_name)`).
 - `src/marketplace.py` handles clone/fetch/reset with token redaction in any surfaced error message.
+
+## Plugin Access (Groups)
+
+Admins map which user group has access to which plugin from a marketplace:
+
+- `user_groups`  — named groups (no user membership table yet; this is the
+  registry of group labels that the future dynamic per-group marketplace
+  endpoint will consume).
+- `plugin_access` — `(group_id, marketplace_id, plugin_name)` mapping, one
+  row per grant. Managed from `/admin/plugin-access`.
 
 ## Hybrid Queries (BigQuery + Local)
 
@@ -198,7 +211,7 @@ Auth providers in `app/auth/` (FastAPI-based):
 ## Key Implementation Details
 
 ### DuckDB Schema (src/db.py)
-- Schema v8 with auto-migration from v1→v2→v3→v4→v5→v6→v7→v8 (v5 adds `users.active`, v6 adds `personal_access_tokens`, v7 adds `personal_access_tokens.last_used_ip`, v8 adds `marketplace_registry`)
+- Schema v9 with auto-migration from v1→…→v9 (v5 adds `users.active`, v6 adds `personal_access_tokens`, v7 adds `personal_access_tokens.last_used_ip`, v8 adds `marketplace_registry`, v9 adds `marketplace_plugins`, `user_groups`, `plugin_access`)
 - `table_registry`: id, name, source_type, bucket, source_table, query_mode, sync_schedule, etc.
 - `sync_state`, `sync_history`: track extraction progress
 - `users`, `dataset_permissions`, `audit_log`: auth + RBAC
