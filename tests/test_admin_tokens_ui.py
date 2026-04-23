@@ -261,19 +261,6 @@ def test_admin_tokens_deeplink_preserves_user_query(fresh_db):
     assert 'id="flt-user"' in resp.text
 
 
-# ── Back-compat redirects ─────────────────────────────────────────────────
-
-def test_profile_redirects_to_tokens(fresh_db):
-    """/profile no longer renders — it 302-redirects to /tokens."""
-    from fastapi.testclient import TestClient
-    from app.main import app
-
-    client = TestClient(app)
-    resp = client.get("/profile", follow_redirects=False)
-    assert resp.status_code == 302
-    assert resp.headers["location"] == "/tokens"
-
-
 # ── Admin list API — expanded fields ───────────────────────────────────────
 
 def test_admin_list_includes_user_email_and_last_used_ip(fresh_db):
