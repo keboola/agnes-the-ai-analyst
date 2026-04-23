@@ -1,0 +1,13 @@
+{
+  "verifications": [
+    {
+      "detection_type": "correction",
+      "title": "Churn metric is MRR-based, not customer-count",
+      "content": "Churn rate = MRR lost from churned accounts / total MRR at period start. Revenue-based, calculated monthly.",
+      "user_quote": "No, that's wrong. Our churn metric is MRR lost from churned accounts divided by total MRR at the start of the period. It's revenue-based, not customer-count based.",
+      "domain": "finance",
+      "entities": ["churn", "MRR"],
+      "base_confidence": 0.90
+    }
+  ]
+}

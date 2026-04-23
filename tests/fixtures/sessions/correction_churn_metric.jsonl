@@ -1,0 +1,4 @@
+{"role": "assistant", "content": "Based on the data, the churn rate is calculated as the number of customers lost divided by the total number of customers at the end of the period."}
+{"role": "user", "content": "No, that's wrong. Our churn metric is MRR lost from churned accounts divided by total MRR at the start of the period. It's revenue-based, not customer-count based."}
+{"role": "assistant", "content": "You're right, I apologize for the error. Your churn rate is revenue-based: MRR lost from churned accounts / total MRR at period start."}
+{"role": "user", "content": "Exactly. And we calculate it monthly, not quarterly."}

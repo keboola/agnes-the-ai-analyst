@@ -1,4 +1,4 @@
-"""Corporate memory endpoints — knowledge items, voting, governance admin."""
+"""Corporate memory endpoints — knowledge items, voting, governance admin, contradictions."""
 
 import uuid
 from typing import Optional, List
@@ -14,6 +14,7 @@ from src.repositories.audit import AuditRepository
 router = APIRouter(prefix="/api/memory", tags=["memory"])
 
 VALID_STATUSES = ["pending", "approved", "mandatory", "rejected", "revoked", "expired"]
+VALID_DOMAINS = ["finance", "engineering", "product", "data", "operations", "infrastructure"]
 
 
 class CreateKnowledgeRequest(BaseModel):
@@ -21,10 +22,16 @@ class CreateKnowledgeRequest(BaseModel):
     content: str
     category: str
     tags: Optional[List[str]] = None
+    domain: Optional[str] = None
+    entities: Optional[List[str]] = None
 
 
 class VoteRequest(BaseModel):
     vote: int
+
+
+class PersonalFlagRequest(BaseModel):
+    is_personal: bool
 
 
 class AdminActionRequest(BaseModel):
@@ -44,13 +51,20 @@ class BatchActionRequest(BaseModel):
     audience: Optional[str] = None
 
 
+class ResolveContradictionRequest(BaseModel):
+    resolution: str  # kept_a, kept_b, merged, both_valid
+
+
 # ---- User endpoints ----
 
 @router.get("")
 async def list_knowledge(
     status_filter: Optional[str] = None,
     category: Optional[str] = None,
+    domain: Optional[str] = None,
+    source_type: Optional[str] = None,
     search: Optional[str] = None,
+    exclude_personal: bool = True,
     page: int = 1,
     per_page: int = 50,
     sort: str = "updated_at",
@@ -59,12 +73,21 @@ async def list_knowledge(
 ):
     """List knowledge items with filtering, pagination, search."""
     repo = KnowledgeRepository(conn)
+    page = max(page, 1)
     offset = (page - 1) * per_page
     if search:
         items = repo.search(search)
     else:
         statuses = [status_filter] if status_filter else None
-        items = repo.list_items(statuses=statuses, category=category, limit=per_page, offset=offset)
+        items = repo.list_items(
+            statuses=statuses,
+            category=category,
+            domain=domain,
+            source_type=source_type,
+            exclude_personal=exclude_personal,
+            limit=per_page,
+            offset=offset,
+        )
 
     # Enrich with votes
     for item in items:
@@ -84,17 +107,25 @@ async def get_stats(
     """Get corporate memory statistics."""
     repo = KnowledgeRepository(conn)
     all_items = repo.list_items(limit=10000)
-    status_counts = {}
-    categories = set()
+    status_counts: dict = {}
+    categories: set = set()
+    domains: dict = {}
+    source_types: dict = {}
     for item in all_items:
         s = item.get("status", "unknown")
         status_counts[s] = status_counts.get(s, 0) + 1
         if item.get("category"):
             categories.add(item["category"])
+        d = item.get("domain") or "unset"
+        domains[d] = domains.get(d, 0) + 1
+        st = item.get("source_type") or "unknown"
+        source_types[st] = source_types.get(st, 0) + 1
     return {
         "total": len(all_items),
         "by_status": status_counts,
         "categories": sorted(categories),
+        "by_domain": domains,
+        "by_source_type": source_types,
     }
 
 
@@ -113,6 +144,9 @@ async def create_knowledge(
         category=request.category,
         source_user=user.get("email"),
         tags=request.tags,
+        domain=request.domain,
+        entities=request.entities,
+        confidence=0.50,
     )
     return {"id": item_id, "status": "pending"}
 
@@ -143,6 +177,67 @@ async def get_my_votes(
         "SELECT item_id, vote FROM knowledge_votes WHERE user_id = ?", [user["id"]]
     ).fetchall()
     return {row[0]: row[1] for row in results}
+
+
+@router.get("/my-contributions")
+async def get_my_contributions(
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Get knowledge items contributed by the current user."""
+    repo = KnowledgeRepository(conn)
+    email = user.get("email", "")
+    items = repo.get_user_contributions(email)
+    for item in items:
+        votes = repo.get_votes(item["id"])
+        item["upvotes"] = votes["upvotes"]
+        item["downvotes"] = votes["downvotes"]
+        item["score"] = votes["upvotes"] - votes["downvotes"]
+    return {"items": items, "count": len(items)}
+
+
+@router.post("/{item_id}/personal")
+async def toggle_personal_flag(
+    item_id: str,
+    request: PersonalFlagRequest,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Toggle personal/excluded flag on a knowledge item (only by the contributor)."""
+    repo = KnowledgeRepository(conn)
+    item = repo.get_by_id(item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Knowledge item not found")
+    if item.get("source_user") != user.get("email"):
+        raise HTTPException(status_code=403, detail="Only the contributor can flag personal items")
+    repo.set_personal(item_id, request.is_personal)
+    return {"id": item_id, "is_personal": request.is_personal}
+
+
+@router.get("/{item_id}/provenance")
+async def get_provenance(
+    item_id: str,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Get source provenance for a knowledge item."""
+    repo = KnowledgeRepository(conn)
+    item = repo.get_by_id(item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Knowledge item not found")
+    return {
+        "id": item_id,
+        "source_type": item.get("source_type"),
+        "source_ref": item.get("source_ref"),
+        "source_user": item.get("source_user"),
+        "confidence": item.get("confidence"),
+        "domain": item.get("domain"),
+        "entities": item.get("entities"),
+        "valid_from": item.get("valid_from"),
+        "valid_until": item.get("valid_until"),
+        "supersedes": item.get("supersedes"),
+        "created_at": item.get("created_at"),
+    }
 
 
 # ---- Admin governance endpoints ----
@@ -309,3 +404,52 @@ async def admin_audit(
         else:
             entries = []
     return {"entries": entries, "count": len(entries)}
+
+
+# ---- Admin contradiction endpoints ----
+
+@router.get("/admin/contradictions")
+async def admin_contradictions(
+    resolved: Optional[bool] = None,
+    user: dict = Depends(require_role(Role.KM_ADMIN)),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """List knowledge contradictions for admin review."""
+    repo = KnowledgeRepository(conn)
+    contradictions = repo.list_contradictions(resolved=resolved)
+    # Enrich with item details
+    for c in contradictions:
+        c["item_a"] = repo.get_by_id(c["item_a_id"])
+        c["item_b"] = repo.get_by_id(c["item_b_id"])
+    return {"contradictions": contradictions, "count": len(contradictions)}
+
+
+@router.post("/admin/contradictions/{contradiction_id}/resolve")
+async def admin_resolve_contradiction(
+    contradiction_id: str,
+    request: ResolveContradictionRequest,
+    user: dict = Depends(require_role(Role.KM_ADMIN)),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Resolve a knowledge contradiction."""
+    repo = KnowledgeRepository(conn)
+    contradiction = repo.get_contradiction(contradiction_id)
+    if not contradiction:
+        raise HTTPException(status_code=404, detail="Contradiction not found")
+    if contradiction.get("resolved"):
+        raise HTTPException(status_code=400, detail="Contradiction already resolved")
+
+    valid_resolutions = ["kept_a", "kept_b", "merged", "both_valid"]
+    if request.resolution not in valid_resolutions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Resolution must be one of: {valid_resolutions}",
+        )
+
+    repo.resolve_contradiction(contradiction_id, user["email"], request.resolution)
+    _audit_action(conn, user["email"], "resolve_contradiction", contradiction_id, {
+        "resolution": request.resolution,
+        "item_a_id": contradiction["item_a_id"],
+        "item_b_id": contradiction["item_b_id"],
+    })
+    return {"id": contradiction_id, "resolved": True, "resolution": request.resolution}
