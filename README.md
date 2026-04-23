@@ -65,9 +65,13 @@ docker compose up
 
 # Start with all optional services (Telegram bot, etc.)
 docker compose --profile full up
+
+# Start with TLS (Caddy on :443 with corporate-CA certs from /data/state/certs)
+docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.tls.yml \
+    --profile tls up -d
 ```
 
-Once running, the FastAPI app is available at `http://localhost:8000`. Trigger a manual sync:
+Once running, the FastAPI app is available at `http://localhost:8000` (or `https://$DOMAIN` in TLS mode). See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for cert provisioning + auto-rotation via `scripts/grpn/agnes-tls-rotate.sh`. Trigger a manual sync:
 
 ```bash
 curl -X POST http://localhost:8000/api/sync/trigger
