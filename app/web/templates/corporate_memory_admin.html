@@ -836,6 +836,10 @@
             <button class="tab-btn" data-tab="all" onclick="switchTab('all')">
                 All Items
             </button>
+            <button class="tab-btn" data-tab="contradictions" onclick="switchTab('contradictions')">
+                Contradictions
+                <span class="tab-badge" id="contradictionsBadge" style="{% if not stats.contradictions %}display:none{% endif %}">{{ stats.contradictions|default(0) }}</span>
+            </button>
             <button class="tab-btn" data-tab="audit" onclick="switchTab('audit')">
                 Audit Log
             </button>
@@ -888,6 +892,65 @@
                 <div class="loading">Loading items...</div>
             </div>
             <div id="allPagination" class="pagination"></div>
+        </div>
+
+        <!-- Contradictions Tab -->
+        <div id="tab-contradictions" class="tab-content">
+            <div id="contradictionsList" class="knowledge-list">
+                {% if contradictions %}
+                {% for c in contradictions %}
+                <div class="contradiction-card" style="border: 1px solid var(--border); border-radius: var(--radius-xl); padding: var(--space-5); margin-bottom: var(--space-4); background: var(--surface);">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-3);">
+                        <div>
+                            <span style="font-weight: var(--font-semibold); color: #dc2626;">Contradiction Detected</span>
+                            {% if c.severity == 'hard' %}
+                            <span style="display: inline-block; padding: 2px 8px; background: #fee2e2; color: #991b1b; border-radius: 999px; font-size: 11px; margin-left: 8px;">Hard</span>
+                            {% elif c.severity == 'soft' %}
+                            <span style="display: inline-block; padding: 2px 8px; background: #fef9c3; color: #854d0e; border-radius: 999px; font-size: 11px; margin-left: 8px;">Soft</span>
+                            {% endif %}
+                        </div>
+                        <span style="font-size: var(--text-xs); color: var(--text-secondary);">{{ c.detected_at[:10] if c.detected_at else '' }}</span>
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4); margin-bottom: var(--space-4);">
+                        <div style="padding: var(--space-4); background: #fef2f2; border-radius: var(--radius-lg); border: 1px solid #fecaca;">
+                            <div style="font-weight: var(--font-semibold); margin-bottom: var(--space-2);">Item A</div>
+                            <div style="font-weight: var(--font-medium);">{{ c.item_a.title if c.item_a else 'Unknown' }}</div>
+                            <div style="font-size: var(--text-sm); color: var(--text-secondary); margin-top: var(--space-1);">{{ c.item_a.content[:200] if c.item_a else '' }}</div>
+                            {% if c.item_a and c.item_a.domain %}<div style="margin-top: var(--space-2);"><span style="display: inline-block; padding: 2px 8px; background: #e8f0fe; color: #1a73e8; border-radius: 999px; font-size: 11px;">{{ c.item_a.domain|title }}</span></div>{% endif %}
+                        </div>
+                        <div style="padding: var(--space-4); background: #eff6ff; border-radius: var(--radius-lg); border: 1px solid #bfdbfe;">
+                            <div style="font-weight: var(--font-semibold); margin-bottom: var(--space-2);">Item B</div>
+                            <div style="font-weight: var(--font-medium);">{{ c.item_b.title if c.item_b else 'Unknown' }}</div>
+                            <div style="font-size: var(--text-sm); color: var(--text-secondary); margin-top: var(--space-1);">{{ c.item_b.content[:200] if c.item_b else '' }}</div>
+                            {% if c.item_b and c.item_b.domain %}<div style="margin-top: var(--space-2);"><span style="display: inline-block; padding: 2px 8px; background: #e8f0fe; color: #1a73e8; border-radius: 999px; font-size: 11px;">{{ c.item_b.domain|title }}</span></div>{% endif %}
+                        </div>
+                    </div>
+                    <div style="padding: var(--space-3); background: var(--bg-secondary, #f9fafb); border-radius: var(--radius-md); margin-bottom: var(--space-3); font-size: var(--text-sm);">
+                        <strong>Analysis:</strong> {{ c.explanation }}
+                    </div>
+                    {% if c.suggested_resolution %}
+                    <div style="padding: var(--space-3); background: #f0fdf4; border-radius: var(--radius-md); margin-bottom: var(--space-3); font-size: var(--text-sm);">
+                        <strong>Suggested:</strong> {{ c.suggested_resolution }}
+                    </div>
+                    {% endif %}
+                    <div style="display: flex; gap: var(--space-2);">
+                        <button class="btn btn-approve" onclick="resolveContradiction('{{ c.id }}', 'kept_a')" style="font-size: var(--text-xs);">Keep Item A</button>
+                        <button class="btn btn-approve" onclick="resolveContradiction('{{ c.id }}', 'kept_b')" style="font-size: var(--text-xs);">Keep Item B</button>
+                        <button class="btn" onclick="resolveContradiction('{{ c.id }}', 'merged')" style="font-size: var(--text-xs); background: var(--border-light); color: var(--text-primary);">Merge</button>
+                        <button class="btn" onclick="resolveContradiction('{{ c.id }}', 'both_valid')" style="font-size: var(--text-xs); background: var(--border-light); color: var(--text-primary);">Both Valid</button>
+                    </div>
+                </div>
+                {% endfor %}
+                {% else %}
+                <div class="empty-state">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width: 48px; height: 48px; margin-bottom: 12px;">
+                        <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    </svg>
+                    <p>No contradictions detected.</p>
+                    <p style="font-size: var(--text-sm);">Contradictions are flagged when new items conflict with existing knowledge.</p>
+                </div>
+                {% endif %}
+            </div>
         </div>
 
         <!-- Audit Log Tab -->
@@ -1133,6 +1196,9 @@
                                 <div class="knowledge-title">${escapeHtml(item.title || 'Untitled')}</div>
                                 <div class="knowledge-meta">
                                     <span class="category-badge ${esc(item.category || 'general')}">${escapeHtml(categoryDisplay)}</span>
+                                    ${item.domain ? `<span style="display:inline-block;padding:2px 8px;background:#e8f0fe;color:#1a73e8;border-radius:999px;font-size:11px;">${escapeHtml(item.domain)}</span>` : ''}
+                                    ${item.confidence ? `<span style="display:inline-block;padding:2px 8px;background:#f0fdf4;color:#16a34a;border-radius:999px;font-size:11px;">${Math.round(item.confidence*100)}%</span>` : ''}
+                                    ${item.source_type === 'user_verification' ? '<span style="display:inline-block;padding:2px 8px;background:#dbeafe;color:#1d4ed8;border-radius:999px;font-size:11px;">Verified</span>' : ''}
                                     ${!isReview ? `<span class="status-badge ${esc(status)}">${escapeHtml(status)}</span>` : ''}
                                     <span>Added ${escapeHtml(dateStr)}</span>
                                 </div>
@@ -1421,6 +1487,29 @@
     }
 
     // ─────────────────────────────────────────────────────────────
+    // Contradiction Resolution
+    // ─────────────────────────────────────────────────────────────
+
+    async function resolveContradiction(contradictionId, resolution) {
+        try {
+            const resp = await fetch(`/api/memory/admin/contradictions/${contradictionId}/resolve`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({resolution: resolution})
+            });
+            if (resp.ok) {
+                showToast(`Contradiction resolved: ${resolution.replace('_', ' ')}`, 'success');
+                setTimeout(() => location.reload(), 1000);
+            } else {
+                const data = await resp.json();
+                showToast(data.detail || 'Failed to resolve', 'error');
+            }
+        } catch(e) {
+            showToast('Error resolving contradiction', 'error');
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────
     // Tab Refresh
     // ─────────────────────────────────────────────────────────────
 
@@ -1428,6 +1517,7 @@
         if (currentTab === 'review') loadReviewQueue(reviewPage);
         else if (currentTab === 'all') loadAllItems(allPage);
         else if (currentTab === 'audit') loadAuditLog(auditPage);
+        else if (currentTab === 'contradictions') location.reload();
     }
 
     // ─────────────────────────────────────────────────────────────

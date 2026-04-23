@@ -1,0 +1,4 @@
+{"role": "user", "content": "Show me total revenue for last month."}
+{"role": "assistant", "content": "Here's the total revenue for last month: $1,234,567."}
+{"role": "user", "content": "Thanks. Can you break it down by region?"}
+{"role": "assistant", "content": "Here's the regional breakdown: North America $500K, Europe $400K, Asia $334K."}
