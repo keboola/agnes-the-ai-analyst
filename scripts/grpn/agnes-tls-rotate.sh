@@ -38,7 +38,18 @@ TMP=$(mktemp); trap 'rm -f "$TMP"' EXIT
 
 refetch() {
   local url="$1" dest="$2" mode="$3"
-  /usr/local/bin/tls-fetch.sh "$url" "$TMP" "$mode"
+  # IMPORTANT: tls-fetch.sh may fail (404, empty body, auth error). When
+  # the caller sits behind `if ! refetch`, bash disables `set -e` for
+  # everything inside the condition — so without an explicit exit-code
+  # check we would fall through to `install` and overwrite $dest with
+  # whatever stale bytes the PREVIOUS refetch call left in $TMP. That
+  # turned the "fullchain unavailable → fall back to self-signed" branch
+  # into a "fullchain file filled with privkey bytes" bug. Check
+  # explicitly and return 1 on any fetch failure so the caller's
+  # fallback branch fires cleanly.
+  if ! /usr/local/bin/tls-fetch.sh "$url" "$TMP" "$mode"; then
+    return 1
+  fi
   if [ ! -f "$dest" ] || ! cmp -s "$TMP" "$dest"; then
     install -m "$mode" "$TMP" "$dest"
     echo "$(date -Is) rotated $(basename "$dest")"
