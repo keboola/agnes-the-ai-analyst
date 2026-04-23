@@ -591,6 +591,16 @@ async def admin_users_page(
     return templates.TemplateResponse(request, "admin_users.html", ctx)
 
 
+@router.get("/admin/marketplaces", response_class=HTMLResponse)
+async def admin_marketplaces_page(
+    request: Request,
+    user: dict = Depends(require_role(Role.ADMIN)),
+):
+    """Admin page for marketplace git repositories (register / sync / delete)."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_marketplaces.html", ctx)
+
+
 @router.get("/tokens", response_class=HTMLResponse)
 async def my_tokens_page(
     request: Request,

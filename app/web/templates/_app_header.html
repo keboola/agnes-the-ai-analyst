@@ -15,6 +15,7 @@
         {% if session.user.role == 'admin' %}
         <a class="app-nav-link {% if _path.startswith('/admin/users') %}is-active{% endif %}" href="/admin/users">Users</a>
         <a class="app-nav-link {% if _path.startswith('/admin/tokens') %}is-active{% endif %}" href="/admin/tokens">All tokens</a>
+        <a class="app-nav-link {% if _path.startswith('/admin/marketplaces') %}is-active{% endif %}" href="/admin/marketplaces">Marketplaces</a>
         {% endif %}
 
         <div class="app-user-menu" id="userMenu">
