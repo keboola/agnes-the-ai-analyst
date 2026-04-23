@@ -16,7 +16,7 @@ Highlights:
 - Secret Manager for tokens (no plaintext in VM metadata)
 - OS Login for SSH, dedicated VM service account with scoped `secretAccessor`
 - Cron-based auto-upgrade (pulls `:stable` image digest every 5 min)
-- Caddy + Let's Encrypt TLS (opt-in with domain)
+- Caddy TLS with corporate-CA or self-managed certs mounted from `/data/state/certs`; daily auto-rotation from a URL (`TLS_FULLCHAIN_URL`) with zero-downtime `SIGUSR1` reload
 - Uptime check + alert policy per VM (wire a notification channel to be paged)
 - CI/CD in the private repo: PR → `terraform plan`, merge to main → `apply-dev` auto, `apply-prod` gated by reviewer
 - First-boot bootstrap via `POST /auth/bootstrap`
@@ -88,12 +88,39 @@ For running Agnes on your own VM / bare metal without Terraform. You're responsi
 
 ### TLS (optional)
 
-Set `DOMAIN` in `.env` + point your DNS A-record at the host, then start with the `tls` profile:
+Caddy runs as the TLS terminator. It reads certs from `/data/state/certs/{fullchain,privkey}.pem` bind-mounted into the container. Two provisioning modes:
 
-```bash
-AGNES_DOMAIN=agnes.example.com ACME_EMAIL=admin@example.com \
-    docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile tls up -d
-```
+**A. Public internet (Let's Encrypt)** — for this path, override the `Caddyfile` to drop the `tls` directive (so Caddy auto-issues) and skip steps below. Not covered here anymore; see git history prior to the `feat(tls)` change if you need the ACME flow.
+
+**B. Corporate CA / self-managed certs** (recommended, and what the infra repo ships):
+
+1. Generate a CSR + private key, submit CSR to your corporate PKI, receive a signed cert chain.
+2. Drop the files on the host:
+   ```
+   /data/state/certs/fullchain.pem   (0644, chain = leaf + intermediates)
+   /data/state/certs/privkey.pem     (0600)
+   ```
+3. Set `DOMAIN` in `.env`, then start with the `tls` profile + overlay:
+   ```bash
+   DOMAIN=agnes.example.com \
+       docker compose \
+           -f docker-compose.yml \
+           -f docker-compose.prod.yml \
+           -f docker-compose.tls.yml \
+           --profile tls up -d
+   ```
+   The `docker-compose.tls.yml` overlay closes direct `:8000` on the host; all traffic enters via `:443`.
+
+#### Automatic rotation
+
+`scripts/grpn/agnes-tls-rotate.sh` refetches the cert daily from a stable URL and reloads Caddy via `SIGUSR1` only when the bytes changed — no downtime, no reload when the URL content hasn't moved. Invoke with these env vars in `.env`:
+
+| Var | Required | Schemes | Notes |
+|---|---|---|---|
+| `TLS_FULLCHAIN_URL` | yes | `https://`, `sm://<secret>`, `gs://<obj>`, `file://` | URL corp security team refreshes in place |
+| `TLS_PRIVKEY_URL` | optional | same | Leave empty to reuse the on-disk key across cert rotations |
+
+The rotate script expects `scripts/tls-fetch.sh` at `/usr/local/bin/tls-fetch.sh` (a generic URL fetcher). On the infra repo's Terraform-managed VMs, both scripts are installed automatically by `startup.sh` and run via a daily systemd timer; for manual compose deployments, copy them under `/usr/local/bin/` and wire the timer yourself.
 
 ### Upgrades (manual)
 
@@ -116,7 +143,7 @@ Or set up a cron job — see `infra/modules/customer-instance/startup-script.sh.
 | Upgrades | Auto via cron, gated prod apply | Manual `docker compose pull` |
 | Backups | Daily GCP snapshots, 30-day retention | You set up yourself |
 | Monitoring / alerts | GCP Uptime Checks + alert policy | You set up yourself |
-| TLS | Auto Caddy + LE | Auto Caddy + LE (same) |
+| TLS | Caddy + corp cert, auto-rotated from URL | Caddy + corp cert, manual or user-scripted rotation |
 | Best for | Multi-tenant SaaS, production | Single-instance self-host, learning |
 
 ## Related documentation
