@@ -60,3 +60,38 @@ Tags: {tags}
 ---
 
 Set safe=true if the item is safe to share, or safe=false with a reason if it contains sensitive data."""
+
+CONTRADICTION_CHECK_PROMPT = """You are a knowledge consistency checker. Compare these two knowledge items and determine if they contradict each other.
+
+## Item A (new)
+Title: {title_a}
+Content: {content_a}
+Domain: {domain_a}
+
+## Item B (existing)
+Title: {title_b}
+Content: {content_b}
+Domain: {domain_b}
+
+## Rules
+- A contradiction means the two items make incompatible factual claims
+- Different perspectives on the same topic are NOT contradictions
+- One item being more specific than another is NOT a contradiction
+- Outdated information that has been superseded IS a contradiction
+
+Determine:
+- contradicts: true/false
+- explanation: why they contradict (or why they don't)
+- severity: "hard" (mutually exclusive facts) or "soft" (possibly outdated)
+- suggested_resolution: which item is likely more accurate and why"""
+
+CONTRADICTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "contradicts": {"type": "boolean"},
+        "explanation": {"type": "string"},
+        "severity": {"type": "string", "enum": ["hard", "soft"]},
+        "suggested_resolution": {"type": "string"},
+    },
+    "required": ["contradicts", "explanation"],
+}
