@@ -97,12 +97,18 @@ fi
 
 if [ "$CHANGED" -eq 1 ]; then
   COMPOSE_FILES="-f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.host-mount.yml -f docker-compose.tls.yml"
-  # SIGUSR1 = graceful Caddy config reload, no connection drop.
-  if docker compose $COMPOSE_FILES --profile tls kill -s SIGUSR1 caddy 2>/dev/null; then
-    echo "$(date -Is) caddy reloaded"
+  if docker compose $COMPOSE_FILES --profile tls ps --status=running --format '{{.Service}}' 2>/dev/null | grep -q '^caddy$'; then
+    # Caddy running — graceful reload via SIGUSR1 picks up the new
+    # cert without dropping connections.
+    docker compose $COMPOSE_FILES --profile tls kill -s SIGUSR1 caddy >/dev/null 2>&1 \
+      && echo "$(date -Is) caddy reloaded" \
+      || echo "$(date -Is) caddy reload signal failed"
   else
-    # Caddy not running yet (first boot before initial compose up). Safe to skip —
-    # startup flow will bring it up with the new files.
-    echo "$(date -Is) caddy not running — skipping reload"
+    # Caddy not running yet — first time certs land on this VM, or
+    # operator hasn't brought up the tls profile yet. Flip the stack
+    # in place so this script is self-sufficient: no separate manual
+    # `docker compose up` step after seeding certs.
+    echo "$(date -Is) caddy not running — bringing tls profile up"
+    docker compose $COMPOSE_FILES --profile tls up -d 2>&1 | tail -5
   fi
 fi
