@@ -1,0 +1,16 @@
+# TLS overlay — closes direct :8000 on host when Caddy fronts the app.
+#
+# Use alongside docker-compose.yml (+ docker-compose.prod.yml +
+# docker-compose.host-mount.yml on VMs). Requires --profile tls to
+# actually start the caddy service.
+#
+# Usage (VM):
+#   docker compose \
+#     -f docker-compose.yml \
+#     -f docker-compose.prod.yml \
+#     -f docker-compose.host-mount.yml \
+#     -f docker-compose.tls.yml \
+#     --profile tls up -d
+services:
+  app:
+    ports: !reset []

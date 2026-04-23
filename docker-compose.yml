@@ -105,6 +105,10 @@ services:
       - full
     restart: unless-stopped
 
+  # TLS reverse proxy. Corporate-CA certs mounted from /data/state/certs
+  # (managed by scripts/grpn/agnes-tls-rotate.sh on the VM). For local
+  # development without certs, run without --profile tls and hit :8000
+  # directly.
   caddy:
     image: caddy:2-alpine
     ports:
@@ -112,6 +116,7 @@ services:
       - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - /data/state/certs:/certs:ro
       - caddy_data:/data
       - caddy_config:/config
     environment:
@@ -121,7 +126,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     profiles:
-      - production
+      - tls
 
 volumes:
   data:
