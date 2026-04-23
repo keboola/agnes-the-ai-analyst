@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -83,8 +83,40 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     contributors JSON,
     source_user VARCHAR,
     audience VARCHAR,
+    confidence DOUBLE,
+    domain VARCHAR,
+    entities JSON,
+    source_type VARCHAR DEFAULT 'claude_local_md',
+    source_ref VARCHAR,
+    valid_from TIMESTAMP,
+    valid_until TIMESTAMP,
+    supersedes VARCHAR,
+    sensitivity VARCHAR DEFAULT 'internal',
+    is_personal BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT current_timestamp,
     updated_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_contradictions (
+    id VARCHAR PRIMARY KEY,
+    item_a_id VARCHAR NOT NULL,
+    item_b_id VARCHAR NOT NULL,
+    explanation TEXT,
+    severity VARCHAR,
+    suggested_resolution TEXT,
+    resolved BOOLEAN DEFAULT FALSE,
+    resolved_by VARCHAR,
+    resolved_at TIMESTAMP,
+    resolution VARCHAR,
+    detected_at TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS session_extraction_state (
+    session_file VARCHAR PRIMARY KEY,
+    username VARCHAR NOT NULL,
+    processed_at TIMESTAMP DEFAULT current_timestamp,
+    items_extracted INTEGER DEFAULT 0,
+    file_hash VARCHAR
 );
 
 CREATE TABLE IF NOT EXISTS knowledge_votes (
@@ -432,6 +464,48 @@ _V6_TO_V7_MIGRATIONS = [
     "ALTER TABLE personal_access_tokens ADD COLUMN IF NOT EXISTS last_used_ip VARCHAR",
 ]
 
+_V7_TO_V8_MIGRATIONS = [
+    # New columns on knowledge_items for context engineering
+    "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS confidence DOUBLE",
+    "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS domain VARCHAR",
+    "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS entities JSON",
+    "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS source_type VARCHAR DEFAULT 'claude_local_md'",
+    "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS source_ref VARCHAR",
+    "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS valid_from TIMESTAMP",
+    "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS valid_until TIMESTAMP",
+    "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS supersedes VARCHAR",
+    "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS sensitivity VARCHAR DEFAULT 'internal'",
+    "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS is_personal BOOLEAN DEFAULT FALSE",
+    # Backfill existing items
+    "UPDATE knowledge_items SET source_type = 'claude_local_md' WHERE source_type IS NULL",
+    # Contradiction tracking
+    """
+    CREATE TABLE IF NOT EXISTS knowledge_contradictions (
+        id VARCHAR PRIMARY KEY,
+        item_a_id VARCHAR NOT NULL,
+        item_b_id VARCHAR NOT NULL,
+        explanation TEXT,
+        severity VARCHAR,
+        suggested_resolution TEXT,
+        resolved BOOLEAN DEFAULT FALSE,
+        resolved_by VARCHAR,
+        resolved_at TIMESTAMP,
+        resolution VARCHAR,
+        detected_at TIMESTAMP DEFAULT current_timestamp
+    )
+    """,
+    # Track processed session files for verification detector
+    """
+    CREATE TABLE IF NOT EXISTS session_extraction_state (
+        session_file VARCHAR PRIMARY KEY,
+        username VARCHAR NOT NULL,
+        processed_at TIMESTAMP DEFAULT current_timestamp,
+        items_extracted INTEGER DEFAULT 0,
+        file_hash VARCHAR
+    )
+    """,
+]
+
 _V3_TO_V4_MIGRATIONS = [
     """
     CREATE TABLE IF NOT EXISTS metric_definitions (
@@ -521,6 +595,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                     conn.execute(sql)
             if current < 7:
                 for sql in _V6_TO_V7_MIGRATIONS:
+                    conn.execute(sql)
+            if current < 8:
+                for sql in _V7_TO_V8_MIGRATIONS:
                     conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",

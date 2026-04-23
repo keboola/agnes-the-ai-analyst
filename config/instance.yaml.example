@@ -227,6 +227,55 @@ ai:
 #
 #   # Notify km_admins about new pending items
 #   notify_on_new_items: true
+#
+#   # --- V1 Context Engineering ---
+#
+#   sources:
+#     claude_local_md:
+#       enabled: true
+#       confidence_base: 0.50
+#     session_transcripts:
+#       enabled: true
+#       confidence_base: 0.60
+#       max_turns_per_session: 100
+#       detection_types:
+#         - correction
+#         - confirmation
+#         - unprompted_definition
+#
+#   extraction:
+#     model: "claude-haiku-4-5-20251001"
+#     sensitivity_check: true
+#     contradiction_check: true
+#
+#   confidence:
+#     decay_rate_monthly: 0.02
+#     multi_user_boost: 0.05
+#     max_confidence: 1.00
+#     auto_publish_threshold: 0.85
+#
+#   contradiction_detection:
+#     enabled: true
+#     max_candidates: 10
+#
+#   entity_resolution:
+#     enabled: true
+#     entities:
+#       metrics: ["churn", "MRR", "ARR", "NPS", "CAC", "LTV"]
+#       products: ["Platform", "API", "Dashboard"]
+#
+#   domain_owners:
+#     finance: ["cfo@company.com"]
+#     engineering: ["cto@company.com"]
+#     product: ["pm@company.com"]
+#
+#   domains:
+#     - finance
+#     - engineering
+#     - product
+#     - data
+#     - operations
+#     - infrastructure
 
 # --- User groups for audience targeting (optional) ---
 # Used with Corporate Memory governance to target mandatory knowledge to specific groups.

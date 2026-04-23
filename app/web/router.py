@@ -3,6 +3,7 @@
 Replicates all Flask webapp routes with DuckDB-backed data.
 """
 
+import json
 import logging
 import os
 from datetime import datetime
@@ -131,6 +132,19 @@ def _url_for_shim(endpoint: str, **kw) -> str:
         filename = kw.get("filename", "")
         return f"/static/{filename}"
     return _URL_MAP.get(endpoint, f"/{endpoint}")
+
+
+def _parse_json_fields(item: dict) -> None:
+    """Parse JSON string fields (tags, entities) into Python lists for templates."""
+    for field in ("tags", "entities"):
+        val = item.get(field)
+        if isinstance(val, str):
+            try:
+                item[field] = json.loads(val)
+            except (json.JSONDecodeError, TypeError):
+                item[field] = []
+        elif val is None:
+            item[field] = []
 
 
 def _build_context(request: Request, user: Optional[dict] = None, **extra) -> dict:
@@ -463,13 +477,26 @@ async def corporate_memory(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     repo = KnowledgeRepository(conn)
-    items = repo.list_items(statuses=["approved", "mandatory"], limit=100)
+    items = repo.list_items(statuses=["approved", "mandatory"], exclude_personal=True, limit=100)
 
-    # Enrich with votes
+    # Enrich items for template rendering
     for item in items:
         votes = repo.get_votes(item["id"])
         item["upvotes"] = votes["upvotes"]
         item["downvotes"] = votes["downvotes"]
+        # Parse JSON string fields into lists
+        _parse_json_fields(item)
+        # Default confidence for items missing it
+        if item.get("confidence") is None:
+            item["confidence"] = 0.50
+        # Build source_users_display from source_user field
+        su = item.get("source_user") or ""
+        if su:
+            name = su.split("@")[0].replace(".", " ").title()
+            initials = "".join(w[0].upper() for w in name.split()[:2])
+            item["source_users_display"] = [{"name": name, "initials": initials}]
+        else:
+            item["source_users_display"] = []
 
     cm_config = get_corporate_memory_config()
     governance_mode = cm_config.get("distribution_mode")
@@ -477,6 +504,11 @@ async def corporate_memory(
     # Build stats
     all_items = repo.list_items(limit=10000)
     categories = sorted(set(i.get("category", "") for i in all_items if i.get("category")))
+    domains = sorted(set(i.get("domain", "") for i in all_items if i.get("domain")))
+
+    # User contributions
+    user_email = user.get("email", "")
+    user_contributions = repo.get_user_contributions(user_email)
 
     ctx = _build_context(
         request, user=user,
@@ -484,11 +516,12 @@ async def corporate_memory(
         governance_mode=governance_mode,
         governance={"mode": governance_mode, "groups": cm_config.get("groups", {})},
         categories=categories,
+        domains=domains,
         stats={"total": len(all_items), "approved": len([i for i in all_items if i.get("status") == "approved"])},
         user_votes={},
         is_km_admin=user.get("role") in ("km_admin", "admin"),
-        user_stats={"authored": 0, "votes_given": 0},
-        # Template expects knowledge as object with .items and .total_pages
+        user_stats={"authored": len(user_contributions), "votes_given": 0},
+        user_contributions=user_contributions,
         knowledge={"items": items, "total_pages": 1, "page": 1, "per_page": 100, "total": len(items)},
         total_pages=1,
         current_page=1,
@@ -507,16 +540,37 @@ async def corporate_memory_admin(
     repo = KnowledgeRepository(conn)
     pending = repo.list_items(statuses=["pending"], limit=100)
     all_items = repo.list_items(limit=10000)
-    status_counts = {}
+    status_counts: dict = {}
+    domain_counts: dict = {}
+    source_type_counts: dict = {}
     for item in all_items:
         s = item.get("status", "unknown")
         status_counts[s] = status_counts.get(s, 0) + 1
+        d = item.get("domain") or "unset"
+        domain_counts[d] = domain_counts.get(d, 0) + 1
+        st = item.get("source_type") or "unknown"
+        source_type_counts[st] = source_type_counts.get(st, 0) + 1
+
+    # Contradictions
+    contradictions = repo.list_contradictions(resolved=False)
+    for c in contradictions:
+        c["item_a"] = repo.get_by_id(c["item_a_id"])
+        c["item_b"] = repo.get_by_id(c["item_b_id"])
+
     ctx = _build_context(
         request, user=user,
         pending_items=pending,
-        stats={"total": len(all_items), "by_status": status_counts, "pending": len(pending)},
+        stats={
+            "total": len(all_items),
+            "by_status": status_counts,
+            "by_domain": domain_counts,
+            "by_source_type": source_type_counts,
+            "pending": len(pending),
+            "contradictions": len(contradictions),
+        },
         governance=get_corporate_memory_config(),
         groups=get_corporate_memory_config().get("groups", {}),
+        contradictions=contradictions,
         audit_entries=[],
     )
     return templates.TemplateResponse(request, "corporate_memory_admin.html", ctx)
