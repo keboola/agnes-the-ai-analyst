@@ -277,7 +277,20 @@ Auth providers in `app/auth/` (FastAPI-based):
 - `connectors/jira/transform.py` - Core Jira transform logic
 - `services/ws_gateway/` - WebSocket notification gateway
 
+## Vendor-agnostic OSS — no customer-specific content
+
+This repo is the public OSS distribution. **Nothing customer-specific belongs in code, configuration defaults, comments, docs, commit messages, PR titles, or PR bodies.** That includes:
+
+- Specific deployments or brands (private VM names, internal product brands, organization names that aren't already public sponsors).
+- Cloud project IDs, internal hostnames, runbook paths from a particular install (`/opt/<deployment>`, `<host>.<internal-domain>`, `prj-<org>-…`, internal SA emails).
+- Cross-references to private repos (`<private-org>/<private-repo>#NN`). Describe the integration in generic terms or link to public examples instead.
+
+When you motivate a change, frame it abstractly ("behind a TLS-terminating reverse proxy", "in containerized deploys") rather than naming a specific operator. When you show examples, use placeholders (`example.com`, `<your-host>`, `<install-dir>`). When config has reasonable defaults pulled from one deployment's habits, generalize them or surface them as documented examples — not hard-coded assumptions.
+
+Customer-specific automation, hostnames, and identities live in private infra repos that *consume* this OSS. The OSS describes capabilities, defaults, and configuration knobs — not how a specific operator wired them up.
+
 ## Git Commits & Pull Requests
 
 - Keep commit messages clean and concise
 - Do not include AI attribution in commits or PRs
+- Before opening a PR, scan the diff and the PR body for the customer-specific tokens listed above (`grep -niE '<token1>|<token2>|...'`). If anything matches, generalize or remove it.
