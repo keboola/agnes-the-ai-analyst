@@ -88,7 +88,14 @@ if [ -n "${TLS_PRIVKEY_URL:-}" ]; then
   fi
 elif [ ! -s "$CERT_DIR/privkey.pem" ]; then
   CN="${DOMAIN:-localhost}"
-  echo "$(date -Is) no privkey — generating RSA-2048 key + CSR for CN=$CN"
+  # Site-specific CSR subject (C/ST/L/O fields) comes from
+  # TLS_CSR_SUBJECT in /opt/agnes/.env — the deployer's infra layer
+  # writes it with its PKI conventions. This script stays generic;
+  # default to a minimal /CN=<hostname> when the var is unset so the
+  # CSR is still syntactically valid but carries no org metadata the
+  # deployer didn't choose.
+  SUBJECT="${TLS_CSR_SUBJECT:-/CN=$CN}"
+  echo "$(date -Is) no privkey — generating RSA-2048 key + CSR (subject: $SUBJECT)"
   CSR_CONF=$(mktemp)
   cat > "$CSR_CONF" <<CFG
 [ req ]
@@ -97,10 +104,6 @@ distinguished_name = req_distinguished_name
 req_extensions     = ext
 
 [ req_distinguished_name ]
-C  = US
-ST = Illinois
-L  = Chicago
-O  = Groupon, Inc.
 CN = $CN
 
 [ ext ]
@@ -115,12 +118,13 @@ CFG
   openssl req -newkey rsa:2048 \
     -keyout "$CERT_DIR/privkey.pem" \
     -out "$CERT_DIR/cert.csr" \
+    -subj "$SUBJECT" \
     -config "$CSR_CONF" -extensions ext -nodes 2>/dev/null
   chmod 600 "$CERT_DIR/privkey.pem"
   chmod 644 "$CERT_DIR/cert.csr"
   rm -f "$CSR_CONF"
   echo "$(date -Is) privkey.pem + cert.csr written to $CERT_DIR"
-  echo "$(date -Is) ACTION: email $CERT_DIR/cert.csr to Groupon Security for signing — the CSR is public and safe to transit; the key never leaves this VM."
+  echo "$(date -Is) ACTION: send $CERT_DIR/cert.csr to your certificate authority for signing — the CSR is public and safe to transit; the key never leaves this VM."
 fi
 
 # Real cert fetch. On failure, fall back to self-signed IFF no
