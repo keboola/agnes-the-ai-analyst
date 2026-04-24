@@ -17,6 +17,21 @@ logger = logging.getLogger(__name__)
 # Default dev user used when LOCAL_DEV_MODE=1. Seeded at startup by app/main.py.
 LOCAL_DEV_DEFAULT_EMAIL = "dev@localhost"
 
+# Map pat_resolver.ResolutionReason → HTTP 401 `detail` string. Preserves the
+# specific user-facing messages that existed before the pat_resolver refactor
+# (Account deactivated, Token revoked, ...) so tests and admin UX that grep
+# for these phrases keep working.
+_AUTH_DETAIL_BY_REASON = {
+    "deactivated": "Account deactivated",
+    "user_not_found": "User not found",
+    "pat_unknown": "Token unknown",
+    "pat_revoked": "Token revoked",
+    "pat_expired": "Token expired",
+    "pat_mismatch": "Token mismatch",
+    "invalid_token": "Invalid or expired token",
+    "no_token": "Invalid or expired token",
+}
+
 
 def is_local_dev_mode() -> bool:
     """True when LOCAL_DEV_MODE=1 — unsafe for production, bypasses auth."""
@@ -97,13 +112,13 @@ async def get_current_user(
         )
 
     from app.auth.pat_resolver import resolve_token_to_user
-    user = resolve_token_to_user(conn, token, request)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
-        )
-    return user
+    user, reason = resolve_token_to_user(conn, token, request)
+    if user:
+        return user
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail=_AUTH_DETAIL_BY_REASON.get(reason, "Invalid or expired token"),
+    )
 
 
 async def get_optional_user(

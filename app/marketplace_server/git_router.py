@@ -88,7 +88,11 @@ def make_git_wsgi_app() -> Callable:
             return _server_error(start_response)
 
         try:
-            user = resolve_token_to_user(conn, token) if token else None
+            # Git channel doesn't need the reason — just auth yes/no.
+            if token:
+                user, _reason = resolve_token_to_user(conn, token)
+            else:
+                user = None
             if not user:
                 return _unauthorized(start_response)
 
