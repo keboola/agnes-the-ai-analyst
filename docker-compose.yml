@@ -1,7 +1,13 @@
 services:
   app:
     build: .
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    # --proxy-headers + --forwarded-allow-ips make uvicorn honor the
+    # X-Forwarded-Proto / X-Forwarded-Host headers any reverse proxy (Caddy,
+    # nginx, Cloudflare Tunnel) sets. Without it, request.url_for() emits
+    # http://localhost:8000/... even when the user is on https://, which
+    # breaks OAuth callbacks (redirect_uri_mismatch). Belt-and-suspenders —
+    # FORWARDED_ALLOW_IPS=* in .env does the same via env var.
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips='*'
     ports:
       - "8000:8000"
     volumes:

@@ -35,9 +35,14 @@ dependencies = [
     # Data source connectors
     "google-cloud-bigquery>=3.0.0",
     "google-cloud-bigquery-storage>=2.0.0",
+    # Google Workspace Cloud Identity / Admin SDK (Workspace group membership sync)
+    "google-api-python-client>=2.0.0",
     # Profiler visualizations
     "matplotlib>=3.8.0",
     "numpy>=1.24.0",
+    # Claude Code marketplace endpoint — pure-Python git server mounted in FastAPI
+    "dulwich>=0.22.0",
+    "a2wsgi>=1.10.0",
 ]
 
 [project.optional-dependencies]

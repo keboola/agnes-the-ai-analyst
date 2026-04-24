@@ -173,11 +173,49 @@ so FastAPI can read their contents from disk.
 
 Admins map which user group has access to which plugin from a marketplace:
 
-- `user_groups`  — named groups (no user membership table yet; this is the
-  registry of group labels that the future dynamic per-group marketplace
-  endpoint will consume).
+- `user_groups`  — named groups. Two are seeded as `is_system=TRUE` at startup
+  and cannot be renamed or deleted: `Admin` (implicit access to everything)
+  and `Everyone` (fallback for users with no explicit groups).
 - `plugin_access` — `(group_id, marketplace_id, plugin_name)` mapping, one
   row per grant. Managed from `/admin/plugin-access`.
+- `users.groups` — JSON array of group names the user belongs to. Populated
+  from external auth claims at login (sync to be wired later); admin can set
+  this manually via SQL for testing. Empty/missing → treated as `Everyone`.
+
+## Claude Code marketplace endpoint
+
+Agnes serves a single aggregated Claude Code marketplace over two channels,
+both gated by PAT auth and filtered per caller:
+
+- `GET /marketplace.zip` — deterministic ZIP download with `ETag` /
+  `If-None-Match` (304 when content unchanged). Consumed by a client-side
+  SessionStart hook.
+- `GET /marketplace.git/*` — git smart-HTTP (dulwich via a2wsgi). Registered
+  in Claude Code once, then Claude Code owns the clone/fetch cycle.
+
+Auth: ZIP uses `Authorization: Bearer <PAT>`. Git uses HTTP Basic where the
+password field carries the PAT (`https://x:<PAT>@host/marketplace.git/`) —
+git CLI does not speak Bearer.
+
+Content: filtered via `src.marketplace_filter.resolve_allowed_plugins` which
+joins `plugin_access ↔ user_groups ↔ marketplace_plugins` scoped to
+`users.groups`. Admin role bypasses to "everything". Plugin names are
+prefixed with marketplace slug (`<slug>-<plugin>`) so two marketplaces with
+the same plugin name don't collide in the aggregated view.
+
+Cache: content-addressed bare repos at `${DATA_DIR}/marketplaces/git-cache/`
+keyed by sha256(filtered content). Two users with the same RBAC view share
+one repo; content change → new repo next to the old one. No TTL / prune yet.
+
+User registration inside Claude Code:
+
+```
+# ZIP channel (typically via a SessionStart hook that unpacks into ./marketplace/)
+curl -H "Authorization: Bearer $AGNES_PAT" https://agnes.example.com/marketplace.zip
+
+# Git channel — one-time registration
+/plugin marketplace add https://x:$AGNES_PAT@agnes.example.com/marketplace.git/
+```
 
 ## Hybrid Queries (BigQuery + Local)
 
@@ -239,7 +277,20 @@ Auth providers in `app/auth/` (FastAPI-based):
 - `connectors/jira/transform.py` - Core Jira transform logic
 - `services/ws_gateway/` - WebSocket notification gateway
 
+## Vendor-agnostic OSS — no customer-specific content
+
+This repo is the public OSS distribution. **Nothing customer-specific belongs in code, configuration defaults, comments, docs, commit messages, PR titles, or PR bodies.** That includes:
+
+- Specific deployments or brands (private VM names, internal product brands, organization names that aren't already public sponsors).
+- Cloud project IDs, internal hostnames, runbook paths from a particular install (`/opt/<deployment>`, `<host>.<internal-domain>`, `prj-<org>-…`, internal SA emails).
+- Cross-references to private repos (`<private-org>/<private-repo>#NN`). Describe the integration in generic terms or link to public examples instead.
+
+When you motivate a change, frame it abstractly ("behind a TLS-terminating reverse proxy", "in containerized deploys") rather than naming a specific operator. When you show examples, use placeholders (`example.com`, `<your-host>`, `<install-dir>`). When config has reasonable defaults pulled from one deployment's habits, generalize them or surface them as documented examples — not hard-coded assumptions.
+
+Customer-specific automation, hostnames, and identities live in private infra repos that *consume* this OSS. The OSS describes capabilities, defaults, and configuration knobs — not how a specific operator wired them up.
+
 ## Git Commits & Pull Requests
 
 - Keep commit messages clean and concise
 - Do not include AI attribution in commits or PRs
+- Before opening a PR, scan the diff and the PR body for the customer-specific tokens listed above (`grep -niE '<token1>|<token2>|...'`). If anything matches, generalize or remove it.

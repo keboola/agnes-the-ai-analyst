@@ -87,6 +87,8 @@ async def google_callback(request: Request):
         # Find or create user
         from src.db import get_system_db
         from src.repositories.users import UserRepository
+        from src.repositories.plugin_access import UserGroupsRepository
+        from app.auth.group_sync import fetch_user_groups
         import uuid
 
         conn = get_system_db()
@@ -99,6 +101,20 @@ async def google_callback(request: Request):
                 user = repo.get_by_email(email)
             if not bool(user.get("active", True)):
                 return RedirectResponse(url="/login?error=deactivated")
+
+            # Sync Workspace groups — fail-soft: any error leaves users.groups
+            # as-is (stale from previous login) and the login still proceeds.
+            try:
+                groups = fetch_user_groups(email)
+                if groups:
+                    ug_repo = UserGroupsRepository(conn)
+                    for group_name in groups:
+                        ug_repo.ensure(group_name)
+                    repo.set_groups(user["id"], groups)
+            except Exception as sync_err:  # noqa: BLE001 - fail-soft by design
+                logger.warning(
+                    "Google group sync failed for %s: %s", email, sync_err
+                )
         finally:
             conn.close()
 
@@ -111,13 +127,15 @@ async def google_callback(request: Request):
             request.session.pop("login_next", None), default="/dashboard"
         )
 
-        # Redirect to target with token in cookie
-        is_production = os.environ.get("TESTING", "").lower() not in ("1", "true")
+        # Redirect to target with token in cookie. Match password/email providers:
+        # Secure only when DOMAIN is set (production with TLS), so the cookie is
+        # actually sent over plain HTTP in dev.
+        use_secure = os.environ.get("DOMAIN", "") != ""
         response = RedirectResponse(url=target, status_code=302)
         response.set_cookie(
             key="access_token", value=jwt_token,
             httponly=True, max_age=86400, samesite="lax",
-            secure=is_production,
+            secure=use_secure,
         )
         return response
 

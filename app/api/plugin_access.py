@@ -24,6 +24,7 @@ from src.repositories.marketplace_plugins import MarketplacePluginsRepository
 from src.repositories.marketplace_registry import MarketplaceRegistryRepository
 from src.repositories.plugin_access import (
     PluginAccessRepository,
+    SystemGroupProtected,
     UserGroupsRepository,
 )
 
@@ -63,6 +64,7 @@ class GroupResponse(BaseModel):
     id: str
     name: str
     description: Optional[str] = None
+    is_system: bool = False
     created_at: Optional[str] = None
     created_by: Optional[str] = None
     member_count: int = 0  # number of plugin grants for this group
@@ -83,6 +85,7 @@ def _group_to_response(row: dict, grant_count: int = 0) -> GroupResponse:
         id=row["id"],
         name=row["name"],
         description=row.get("description"),
+        is_system=bool(row.get("is_system")),
         created_at=str(row["created_at"]) if row.get("created_at") else None,
         created_by=row.get("created_by"),
         member_count=grant_count,
@@ -152,11 +155,14 @@ async def update_group(
                 status_code=409, detail=f"group '{new_name}' already exists"
             )
 
-    repo.update(
-        group_id,
-        name=new_name,
-        description=payload.description if payload.description is not None else None,
-    )
+    try:
+        repo.update(
+            group_id,
+            name=new_name,
+            description=payload.description if payload.description is not None else None,
+        )
+    except SystemGroupProtected as e:
+        raise HTTPException(status_code=403, detail=str(e)) from None
     _audit(
         conn,
         user["id"],
@@ -177,7 +183,10 @@ async def delete_group(
     repo = UserGroupsRepository(conn)
     if not repo.get(group_id):
         raise HTTPException(status_code=404, detail="group not found")
-    repo.delete(group_id)
+    try:
+        repo.delete(group_id)
+    except SystemGroupProtected as e:
+        raise HTTPException(status_code=403, detail=str(e)) from None
     _audit(conn, user["id"], "user_group.delete", f"group:{group_id}")
 
 
