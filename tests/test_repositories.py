@@ -364,3 +364,56 @@ class TestProfileRepository:
         repo.save("t2", {"row_count": 200})
         all_profiles = repo.get_all()
         assert len(all_profiles) == 2
+
+
+# ---- UserGroups (with system-group protection) ----
+
+class TestUserGroupsRepository:
+    def test_create_non_system_by_default(self, db_conn):
+        from src.repositories.plugin_access import UserGroupsRepository
+        repo = UserGroupsRepository(db_conn)
+        row = repo.create(name="Analysts", description="data folks")
+        assert row["is_system"] is False
+
+    def test_create_system_flag(self, db_conn):
+        from src.repositories.plugin_access import UserGroupsRepository
+        repo = UserGroupsRepository(db_conn)
+        row = repo.create(name="SysGroup", description="seeded", is_system=True)
+        assert row["is_system"] is True
+
+    def test_update_system_group_blocked(self, db_conn):
+        from src.repositories.plugin_access import (
+            UserGroupsRepository, SystemGroupProtected,
+        )
+        repo = UserGroupsRepository(db_conn)
+        row = repo.create(name="Admin2", description="sys", is_system=True)
+        with pytest.raises(SystemGroupProtected):
+            repo.update(row["id"], name="Renamed")
+
+    def test_delete_system_group_blocked(self, db_conn):
+        from src.repositories.plugin_access import (
+            UserGroupsRepository, SystemGroupProtected,
+        )
+        repo = UserGroupsRepository(db_conn)
+        row = repo.create(name="Everyone2", description="sys", is_system=True)
+        with pytest.raises(SystemGroupProtected):
+            repo.delete(row["id"])
+        assert repo.get(row["id"]) is not None
+
+    def test_update_delete_non_system_ok(self, db_conn):
+        from src.repositories.plugin_access import UserGroupsRepository
+        repo = UserGroupsRepository(db_conn)
+        row = repo.create(name="Analysts2", description="normal")
+        repo.update(row["id"], description="updated")
+        assert repo.get(row["id"])["description"] == "updated"
+        repo.delete(row["id"])
+        assert repo.get(row["id"]) is None
+
+    def test_ensure_system_promotes_existing(self, db_conn):
+        from src.repositories.plugin_access import UserGroupsRepository
+        repo = UserGroupsRepository(db_conn)
+        row = repo.create(name="LaterPromoted", description="manual")
+        assert row["is_system"] is False
+        promoted = repo.ensure_system("LaterPromoted", "now system")
+        assert promoted["id"] == row["id"]
+        assert promoted["is_system"] is True

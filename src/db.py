@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS users (
     active BOOLEAN NOT NULL DEFAULT TRUE,
     deactivated_at TIMESTAMP,
     deactivated_by VARCHAR,
+    groups JSON,
     created_at TIMESTAMP DEFAULT current_timestamp,
     updated_at TIMESTAMP
 );
@@ -255,6 +256,7 @@ CREATE TABLE IF NOT EXISTS user_groups (
     id          VARCHAR PRIMARY KEY,
     name        VARCHAR NOT NULL UNIQUE,
     description TEXT,
+    is_system   BOOLEAN DEFAULT FALSE,
     created_at  TIMESTAMP DEFAULT current_timestamp,
     created_by  VARCHAR
 );
@@ -496,6 +498,11 @@ _V7_TO_V8_MIGRATIONS = [
     """,
 ]
 
+_V9_TO_V10_MIGRATIONS = [
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS groups JSON",
+    "ALTER TABLE user_groups ADD COLUMN IF NOT EXISTS is_system BOOLEAN DEFAULT FALSE",
+]
+
 _V8_TO_V9_MIGRATIONS = [
     """
     CREATE TABLE IF NOT EXISTS marketplace_plugins (
@@ -629,6 +636,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                     conn.execute(sql)
             if current < 9:
                 for sql in _V8_TO_V9_MIGRATIONS:
+                    conn.execute(sql)
+            if current < 10:
+                for sql in _V9_TO_V10_MIGRATIONS:
                     conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",

@@ -81,6 +81,8 @@ from app.api.plugin_access import (
     access_router as plugin_access_router,
     groups_router as user_groups_router,
 )
+from app.marketplace_server.router import router as marketplace_server_router
+from app.marketplace_server.git_router import make_git_wsgi_app
 from app.web.router import router as web_router
 
 logger = logging.getLogger(__name__)
@@ -108,7 +110,12 @@ def create_app() -> FastAPI:
     app.add_middleware(
         _SelectiveGZipMiddleware,
         minimum_size=1024,
-        skip_prefixes=("/api/data/", "/cli/wheel/", "/cli/download"),
+        skip_prefixes=(
+            "/api/data/",
+            "/cli/wheel/",
+            "/cli/download",
+            "/marketplace.git",  # git smart-HTTP is self-chunked; double-gzip bloats
+        ),
     )
 
     # Session middleware (required for OAuth state)
@@ -195,6 +202,27 @@ def create_app() -> FastAPI:
         except Exception as e:
             logger.warning(f"Could not seed admin: {e}")
 
+    # Seed system user groups (Admin, Everyone) used by the marketplace endpoint.
+    # Idempotent: promotes manually-created same-named groups to is_system=TRUE.
+    try:
+        from src.db import get_system_db
+        from src.repositories.plugin_access import UserGroupsRepository
+        conn = get_system_db()
+        try:
+            groups_repo = UserGroupsRepository(conn)
+            groups_repo.ensure_system(
+                "Admin",
+                "System: full access across all registered marketplaces",
+            )
+            groups_repo.ensure_system(
+                "Everyone",
+                "System: default group for users with no explicit group memberships",
+            )
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning(f"Could not seed system groups: {e}")
+
     # Static files
     static_dir = Path(__file__).parent / "web" / "static"
     if static_dir.exists():
@@ -234,24 +262,41 @@ def create_app() -> FastAPI:
     app.include_router(marketplaces_router)
     app.include_router(user_groups_router)
     app.include_router(plugin_access_router)
+    app.include_router(marketplace_server_router)
+
+    # Git smart-HTTP endpoint for Claude Code: /marketplace.git/*
+    # WSGI → ASGI bridge (dulwich is WSGI-native; FastAPI is ASGI).
+    from a2wsgi import WSGIMiddleware
+    app.mount("/marketplace.git", WSGIMiddleware(make_git_wsgi_app()))
 
     # Web UI router (must be last — has catch-all routes)
     app.include_router(web_router)
+
+    # Paths served as API responses (JSON / ZIP / git smart-HTTP) — never
+    # redirect a 401 here to the HTML login page; clients expect the raw 401.
+    _API_PATH_PREFIXES: tuple[str, ...] = (
+        "/api/",
+        "/auth/",
+        "/marketplace.zip",
+        "/marketplace.git",
+        "/marketplace/",
+    )
 
     @app.exception_handler(StarletteHTTPException)
     async def _html_auth_redirect_handler(request, exc: StarletteHTTPException):
         """Redirect unauthenticated HTML page loads (GET) to /login.
 
-        Only GET requests outside `/api/` and `/auth/` are redirected — that
+        Only GET requests outside the API prefixes are redirected — that
         targets browser navigations to HTML pages. POSTs, API prefixes, and
         non-401 errors fall through to Starlette's default JSON response so
-        JSON clients (including `/auth/tokens` for PAT CRUD) keep their
-        existing contract.
+        JSON clients (including `/auth/tokens` for PAT CRUD and
+        `/marketplace.zip` consumed by Claude Code) keep their existing
+        contract.
         """
         if (
             exc.status_code == 401
             and request.method == "GET"
-            and not request.url.path.startswith(("/api/", "/auth/"))
+            and not request.url.path.startswith(_API_PATH_PREFIXES)
         ):
             next_param = quote(request.url.path, safe="")
             return RedirectResponse(url=f"/login?next={next_param}", status_code=302)

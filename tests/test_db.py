@@ -602,3 +602,135 @@ class TestGetAnalyticsDbReadonly:
             assert malicious_name not in attached
         finally:
             conn.close()
+
+
+class TestSchemaV10:
+    """Tests for v10: users.groups JSON column + user_groups.is_system BOOLEAN."""
+
+    def test_users_has_groups_column(self, tmp_path, monkeypatch):
+        _setup_data_dir(tmp_path, monkeypatch)
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        try:
+            cols = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT column_name FROM information_schema.columns WHERE table_name='users'"
+                ).fetchall()
+            }
+            assert "groups" in cols
+        finally:
+            conn.close()
+
+    def test_user_groups_has_is_system_column(self, tmp_path, monkeypatch):
+        _setup_data_dir(tmp_path, monkeypatch)
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        try:
+            cols = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT column_name FROM information_schema.columns WHERE table_name='user_groups'"
+                ).fetchall()
+            }
+            assert "is_system" in cols
+        finally:
+            conn.close()
+
+    def test_v9_to_v10_migration(self, tmp_path, monkeypatch):
+        """A v9 DB gets both new columns after running _ensure_schema."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        import duckdb as _duckdb
+        from src.db import _ensure_schema, get_schema_version, SCHEMA_VERSION
+
+        db_path = tmp_path / "state" / "system.duckdb"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = _duckdb.connect(str(db_path))
+        try:
+            # Minimal v9 schema: just schema_version + the two tables we mutate
+            conn.execute(
+                "CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP DEFAULT current_timestamp);"
+                "INSERT INTO schema_version (version) VALUES (9);"
+            )
+            # v9-shaped tables (no groups, no is_system)
+            conn.execute("""
+                CREATE TABLE users (
+                    id VARCHAR PRIMARY KEY,
+                    email VARCHAR UNIQUE NOT NULL,
+                    name VARCHAR,
+                    role VARCHAR DEFAULT 'analyst',
+                    active BOOLEAN NOT NULL DEFAULT TRUE
+                );
+                INSERT INTO users (id, email, name, role) VALUES ('u1', 'x@y', 'X', 'analyst');
+                CREATE TABLE user_groups (
+                    id          VARCHAR PRIMARY KEY,
+                    name        VARCHAR NOT NULL UNIQUE,
+                    description TEXT,
+                    created_at  TIMESTAMP DEFAULT current_timestamp,
+                    created_by  VARCHAR
+                );
+                INSERT INTO user_groups (id, name, description) VALUES ('g1', 'preexisting', 'desc');
+            """)
+
+            _ensure_schema(conn)
+            assert get_schema_version(conn) == SCHEMA_VERSION
+
+            users_cols = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT column_name FROM information_schema.columns WHERE table_name='users'"
+                ).fetchall()
+            }
+            assert "groups" in users_cols
+
+            ug_cols = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT column_name FROM information_schema.columns WHERE table_name='user_groups'"
+                ).fetchall()
+            }
+            assert "is_system" in ug_cols
+
+            # Pre-existing row preserved; is_system defaulted to FALSE
+            row = conn.execute(
+                "SELECT name, is_system FROM user_groups WHERE id = 'g1'"
+            ).fetchone()
+            assert row == ("preexisting", False)
+        finally:
+            conn.close()
+
+    def test_ensure_system_idempotent(self, tmp_path, monkeypatch):
+        """UserGroupsRepository.ensure_system creates once, then returns existing."""
+        _setup_data_dir(tmp_path, monkeypatch)
+        from src.db import get_system_db
+        from src.repositories.plugin_access import UserGroupsRepository
+
+        conn = get_system_db()
+        try:
+            repo = UserGroupsRepository(conn)
+            first = repo.ensure_system("SysGroup", "first")
+            assert first["is_system"] is True
+            second = repo.ensure_system("SysGroup", "ignored-on-second-call")
+            assert first["id"] == second["id"]
+            assert second["is_system"] is True
+        finally:
+            conn.close()
+
+    def test_ensure_system_promotes_existing(self, tmp_path, monkeypatch):
+        """ensure_system upgrades a pre-existing non-system group to is_system=TRUE."""
+        _setup_data_dir(tmp_path, monkeypatch)
+        from src.db import get_system_db
+        from src.repositories.plugin_access import UserGroupsRepository
+
+        conn = get_system_db()
+        try:
+            repo = UserGroupsRepository(conn)
+            manual = repo.create(name="Admin", description="manually created before seed")
+            assert manual["is_system"] is False
+            promoted = repo.ensure_system("Admin", "system seed")
+            assert promoted["id"] == manual["id"]
+            assert promoted["is_system"] is True
+        finally:
+            conn.close()
