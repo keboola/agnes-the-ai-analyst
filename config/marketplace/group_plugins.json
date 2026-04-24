@@ -1,0 +1,6 @@
+{
+  "grp_foundryai_admin":    { "plugins": "*" },
+  "grp_foundryai_everyone": { "plugins": ["grpn-eng"] },
+  "grp_foundryai_finance":  { "plugins": ["grpn-fin"] },
+  "grp_foundryai_legal":  { "plugins": ["grpn-leg"] }
+}

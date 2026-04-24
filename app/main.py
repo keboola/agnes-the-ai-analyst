@@ -76,6 +76,7 @@ from app.api.metadata import router as metadata_router
 from app.api.query_hybrid import router as query_hybrid_router
 from app.api.cli_artifacts import router as cli_artifacts_router
 from app.api.tokens import router as tokens_router, admin_router as tokens_admin_router
+from app.api import marketplace as _marketplace
 from app.web.router import router as web_router
 
 logger = logging.getLogger(__name__)
@@ -226,6 +227,14 @@ def create_app() -> FastAPI:
     app.include_router(cli_artifacts_router)
     app.include_router(tokens_router)
     app.include_router(tokens_admin_router)
+
+    # Marketplace: per-user plugin distribution (info/zip as FastAPI, git as WSGI).
+    app.include_router(_marketplace.router)
+    from a2wsgi import WSGIMiddleware
+    app.mount(
+        "/api/marketplace/git",
+        WSGIMiddleware(_marketplace.make_git_wsgi_app()),
+    )
 
     # Web UI router (must be last — has catch-all routes)
     app.include_router(web_router)

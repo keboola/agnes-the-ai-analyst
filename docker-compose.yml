@@ -17,6 +17,11 @@ services:
     env_file: .env
     environment:
       - DATA_DIR=/data
+      - MARKETPLACE_SOURCE_PATH=/data/marketplace/source
+      - MARKETPLACE_CACHE_DIR=/data/marketplace/cache
+      # Temporary: set to 1 during migration to accept legacy email credentials.
+      # Remove once all marketplace clients have migrated to PATs.
+      - MARKETPLACE_ALLOW_EMAIL_AUTH=${MARKETPLACE_ALLOW_EMAIL_AUTH:-0}
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8000/api/health"]
       interval: 30s
