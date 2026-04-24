@@ -71,6 +71,24 @@ class UserGroupsRepository:
         )
         return self.get(group_id)  # type: ignore[return-value]
 
+    def ensure(
+        self, name: str, description: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Idempotent get-or-create for claim-driven groups.
+
+        Existing row is returned unchanged (preserves `is_system` and
+        description — a later Google-sync call must not override an admin's
+        manual description edit).
+        """
+        existing = self.get_by_name(name)
+        if existing:
+            return existing
+        return self.create(
+            name=name,
+            description=description or "Auto-created from Google Workspace claim",
+            created_by="system:google-sync",
+        )
+
     def ensure_system(self, name: str, description: str) -> Dict[str, Any]:
         """Idempotentně zajistí existenci systémové skupiny.
 
