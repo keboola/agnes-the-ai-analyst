@@ -55,6 +55,14 @@ class ResolveContradictionRequest(BaseModel):
     resolution: str  # kept_a, kept_b, merged, both_valid
 
 
+class CreateContradictionRequest(BaseModel):
+    item_a_id: str
+    item_b_id: str
+    explanation: str
+    severity: Optional[str] = None
+    suggested_resolution: Optional[str] = None
+
+
 # ---- User endpoints ----
 
 @router.get("")
@@ -374,6 +382,7 @@ async def admin_pending(
 ):
     """Get pending items queue for admin review."""
     repo = KnowledgeRepository(conn)
+    page = max(page, 1)
     offset = (page - 1) * per_page
     items = repo.list_items(statuses=["pending"], category=category, limit=per_page, offset=offset)
     return {"items": items, "count": len(items)}
@@ -422,6 +431,29 @@ async def admin_contradictions(
         c["item_a"] = repo.get_by_id(c["item_a_id"])
         c["item_b"] = repo.get_by_id(c["item_b_id"])
     return {"contradictions": contradictions, "count": len(contradictions)}
+
+
+@router.post("/admin/contradictions")
+async def admin_create_contradiction(
+    request: CreateContradictionRequest,
+    user: dict = Depends(require_role(Role.KM_ADMIN)),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Create a knowledge contradiction (for testing/seeding)."""
+    repo = KnowledgeRepository(conn)
+    if not repo.get_by_id(request.item_a_id):
+        raise HTTPException(status_code=404, detail=f"Item A not found: {request.item_a_id}")
+    if not repo.get_by_id(request.item_b_id):
+        raise HTTPException(status_code=404, detail=f"Item B not found: {request.item_b_id}")
+
+    cid = repo.create_contradiction(
+        item_a_id=request.item_a_id,
+        item_b_id=request.item_b_id,
+        explanation=request.explanation,
+        severity=request.severity,
+        suggested_resolution=request.suggested_resolution,
+    )
+    return {"id": cid}
 
 
 @router.post("/admin/contradictions/{contradiction_id}/resolve")

@@ -332,6 +332,269 @@ class TestCorporateMemoryAdminPage:
         stats = page.locator(".stats-bar .stat-item .value")
         assert stats.count() >= 3
 
+    def test_admin_stats_bar_shows_nonzero_counts(self, server, api, page):
+        """Stats bar must show actual counts, not zeros -- catches API URL mismatches."""
+        _seed_items(api)
+        page.goto(f"{server['url']}/corporate-memory/admin")
+        page.wait_for_timeout(1500)
+
+        pending = page.locator("#statPending")
+        approved = page.locator("#statApproved")
+        total = page.locator("#statTotal")
+
+        # Pending should be >= 1 (4th item is pending)
+        pending_text = pending.inner_text().strip()
+        assert pending_text.isdigit() and int(pending_text) >= 1, (
+            f"Pending count should be >= 1, got '{pending_text}'"
+        )
+
+        # Approved should be >= 3
+        approved_text = approved.inner_text().strip()
+        assert approved_text.isdigit() and int(approved_text) >= 3, (
+            f"Approved count should be >= 3, got '{approved_text}'"
+        )
+
+        # Total should be >= 4
+        total_text = total.inner_text().strip()
+        assert total_text.isdigit() and int(total_text) >= 4, (
+            f"Total count should be >= 4, got '{total_text}'"
+        )
+
+    def test_review_queue_renders_pending_items(self, server, api, page):
+        """Review queue must actually render pending items, not just show empty state."""
+        _seed_items(api)
+        page.goto(f"{server['url']}/corporate-memory/admin")
+        page.wait_for_timeout(1500)
+
+        # Review queue should contain the pending item title
+        review_list = page.locator("#reviewList")
+        review_text = review_list.inner_text()
+        assert "Orders PK is order_id" in review_text, (
+            f"Pending item not found in review queue. Content: {review_text[:500]}"
+        )
+
+    def test_all_items_tab_renders_actual_items(self, server, api, page):
+        """All Items tab must render knowledge items after JS fetch."""
+        _seed_items(api)
+        page.goto(f"{server['url']}/corporate-memory/admin")
+
+        # Click "All Items" tab
+        page.locator(".tab-btn:has-text('All Items')").click()
+        page.wait_for_timeout(1500)
+
+        # Should render actual item content
+        all_list = page.locator("#allList")
+        all_text = all_list.inner_text()
+        assert "Churn is MRR-based" in all_text or "NPS" in all_text, (
+            f"No knowledge items rendered in All Items tab. Content: {all_text[:500]}"
+        )
+
+    def test_admin_js_fetches_use_correct_api_prefix(self, server, api, page):
+        """Verify JS fetch calls hit /api/memory/ not a wrong prefix."""
+        _seed_items(api)
+        console_errors = []
+        page.on("console", lambda msg: console_errors.append(msg.text) if msg.type == "error" else None)
+
+        page.goto(f"{server['url']}/corporate-memory/admin")
+        page.wait_for_timeout(2000)
+
+        # No fetch errors in console
+        fetch_errors = [e for e in console_errors if "Failed to" in e or "fetch" in e.lower()]
+        assert len(fetch_errors) == 0, f"JS console had fetch errors: {fetch_errors}"
+
+
+class TestCorporateMemoryUserPageStats:
+    """Verify the user page stats bar shows real data, not zeros."""
+
+    def test_user_page_stats_show_nonzero(self, server, api, page):
+        """Contributors and Knowledge Items stats must reflect seeded data."""
+        _seed_items(api)
+        page.goto(f"{server['url']}/corporate-memory")
+        page.wait_for_timeout(1000)
+
+        stats_bar = page.locator(".stats-bar")
+        stats_text = stats_bar.inner_text()
+
+        # Should show at least 1 contributor
+        assert "0\nCONTRIBUTORS" not in stats_text.replace(" ", ""), (
+            f"Contributors shows 0. Stats bar content: {stats_text}"
+        )
+
+    def test_user_page_my_contributions_count(self, server, api, page):
+        """MY CONTRIBUTIONS count must be nonzero after seeding items."""
+        _seed_items(api)
+        page.goto(f"{server['url']}/corporate-memory")
+        page.wait_for_timeout(1000)
+
+        stats_text = page.locator(".stats-bar").inner_text()
+        # "0\nMY CONTRIBUTIONS" should not appear -- we seeded 4 items as dev@localhost
+        assert "0\nMY CONTRIBUTIONS" not in stats_text.replace(" ", ""), (
+            f"My Contributions shows 0. Stats bar content: {stats_text}"
+        )
+
+
+class TestCorporateMemoryFilters:
+    """Verify client-side filters actually return results when data exists."""
+
+    def test_category_buttons_match_actual_data(self, server, api, page):
+        """Category filter buttons must reflect real categories, not hardcoded placeholders."""
+        _seed_items(api)
+        page.goto(f"{server['url']}/corporate-memory")
+
+        # Get the filter buttons (excluding "All" and "My Rules")
+        buttons = page.locator(".filter-btn")
+        button_categories = []
+        for i in range(buttons.count()):
+            cat = buttons.nth(i).get_attribute("data-category")
+            if cat and cat != "my_rules":
+                button_categories.append(cat)
+
+        # At least one category from our seeded data should be a button
+        seeded_categories = {"business_logic", "data_analysis"}
+        assert len(button_categories) >= 1, "No category filter buttons rendered"
+        assert any(cat in seeded_categories for cat in button_categories), (
+            f"Category buttons {button_categories} don't include any seeded categories"
+        )
+
+    def test_category_filter_returns_results(self, server, api, page):
+        """Clicking a category filter button must show matching items, not empty state."""
+        _seed_items(api)
+        page.goto(f"{server['url']}/corporate-memory")
+        page.wait_for_timeout(1000)
+
+        # Find the first non-All, non-my_rules filter button and click it
+        buttons = page.locator(".filter-btn")
+        clicked = False
+        for i in range(buttons.count()):
+            cat = buttons.nth(i).get_attribute("data-category")
+            if cat and cat not in ("", "my_rules"):
+                buttons.nth(i).click()
+                clicked = True
+                break
+        assert clicked, "No category buttons to click"
+
+        page.wait_for_timeout(1500)
+        list_el = page.locator("#knowledgeList")
+        list_text = list_el.inner_text()
+        assert "No matching knowledge items found" not in list_text, (
+            f"Category filter returned empty results. Content: {list_text[:300]}"
+        )
+
+    def test_domain_filter_returns_results(self, server, api, page):
+        """Domain dropdown filter must show matching items when a domain with items is selected."""
+        _seed_items(api)
+        page.goto(f"{server['url']}/corporate-memory")
+
+        # Select "finance" domain
+        page.select_option("#domainFilter", "finance")
+        page.wait_for_timeout(1500)
+
+        list_el = page.locator("#knowledgeList")
+        items = list_el.locator(".knowledge-item")
+        assert items.count() >= 1, "Domain filter 'finance' returned no items"
+
+    def test_domain_filter_combined_with_all_category(self, server, api, page):
+        """Domain filter with 'All' category should show all items in that domain."""
+        _seed_items(api)
+        page.goto(f"{server['url']}/corporate-memory")
+
+        # Make sure "All" category is active (default)
+        all_btn = page.locator('.filter-btn[data-category=""]')
+        assert all_btn.get_attribute("class") and "active" in all_btn.get_attribute("class")
+
+        # Select finance domain
+        page.select_option("#domainFilter", "finance")
+        page.wait_for_timeout(1500)
+
+        items = page.locator("#knowledgeList .knowledge-item")
+        assert items.count() >= 2, (
+            f"Finance domain with 'All' category should show 2+ items, got {items.count()}"
+        )
+
+
+    def test_domain_change_resets_category_filter(self, server, api, page):
+        """Changing domain dropdown must reset category to All so items always show."""
+        _seed_items(api)
+        page.goto(f"{server['url']}/corporate-memory")
+        page.wait_for_timeout(1000)
+
+        # Click a category button first (e.g., the first non-All one)
+        buttons = page.locator(".filter-btn")
+        for i in range(buttons.count()):
+            cat = buttons.nth(i).get_attribute("data-category")
+            if cat and cat not in ("", "my_rules"):
+                buttons.nth(i).click()
+                break
+        page.wait_for_timeout(500)
+
+        # Now change domain to finance
+        page.select_option("#domainFilter", "finance")
+        page.wait_for_timeout(1500)
+
+        # "All" category button should be active again
+        all_btn = page.locator('.filter-btn[data-category=""]')
+        assert "active" in (all_btn.get_attribute("class") or ""), (
+            "Category filter did not reset to 'All' when domain changed"
+        )
+
+        # Should show finance items (not empty)
+        items = page.locator("#knowledgeList .knowledge-item")
+        assert items.count() >= 1, (
+            f"Domain 'finance' returned no items after domain change (category should have reset)"
+        )
+
+    def test_category_change_resets_domain_filter(self, server, api, page):
+        """Clicking a category button must reset domain to All Domains."""
+        _seed_items(api)
+        page.goto(f"{server['url']}/corporate-memory")
+        page.wait_for_timeout(1000)
+
+        # Set domain filter first
+        page.select_option("#domainFilter", "finance")
+        page.wait_for_timeout(500)
+
+        # Now click a category button that has items
+        buttons = page.locator(".filter-btn")
+        for i in range(buttons.count()):
+            cat = buttons.nth(i).get_attribute("data-category")
+            if cat and cat not in ("", "my_rules"):
+                buttons.nth(i).click()
+                break
+        page.wait_for_timeout(1500)
+
+        # Domain dropdown should be reset to "" (All Domains)
+        domain_val = page.locator("#domainFilter").input_value()
+        assert domain_val == "", (
+            f"Domain filter did not reset to 'All Domains' when category changed, got '{domain_val}'"
+        )
+
+
+class TestCorporateMemoryAuditLog:
+    """Verify audit log renders entries after admin actions."""
+
+    def test_audit_log_shows_entries_after_approve(self, server, api, page):
+        """After approving an item, audit log must show the action."""
+        ids = _seed_items(api)
+        # 4th item is pending -- approve it to create audit entry
+        resp = api.post(f"/api/memory/admin/approve?item_id={ids[3]}")
+        assert resp.status_code == 200
+
+        page.goto(f"{server['url']}/corporate-memory/admin")
+
+        # Switch to Audit Log tab
+        page.locator(".tab-btn:has-text('Audit Log')").click()
+        page.wait_for_timeout(1500)
+
+        audit_content = page.locator("#auditContent")
+        audit_text = audit_content.inner_text()
+        assert "No audit log entries" not in audit_text, (
+            f"Audit log shows empty after approve action. Content: {audit_text[:500]}"
+        )
+        # Should show the approve action
+        assert "approve" in audit_text.lower(), (
+            f"Audit log doesn't contain 'approve' entry. Content: {audit_text[:500]}"
+        )
+
 
 class TestCorporateMemoryAPI:
     """API endpoint tests via browser-hosted server (complements unit tests)."""
