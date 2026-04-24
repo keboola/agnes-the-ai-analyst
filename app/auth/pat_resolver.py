@@ -7,8 +7,14 @@ Both the JSON API (Bearer header / cookie) and the git smart-HTTP endpoint
     best-effort audit & last-used bookkeeping → return user dict.
 
 Extracted from `app.auth.dependencies.get_current_user` so both paths run
-identical checks. Behaviour-equivalent — the dependencies layer still raises
-HTTP 401 on None, this function just returns None instead.
+identical checks. Returns `(user, reason)`:
+
+  - on success: `(user_dict, None)`
+  - on failure: `(None, reason)` where reason is one of the strings below
+
+The reason lets `get_current_user` map to a specific HTTP 401 detail
+(`"Account deactivated"`, `"Token revoked"`, ...) while the WSGI git router
+can discard it and just treat any non-None reason as unauthenticated.
 """
 
 from __future__ import annotations
@@ -16,7 +22,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Literal, Optional, Tuple
 
 import duckdb
 from fastapi import Request
@@ -26,6 +32,17 @@ from src.repositories.access_tokens import AccessTokenRepository
 from src.repositories.users import UserRepository
 
 logger = logging.getLogger(__name__)
+
+ResolutionReason = Literal[
+    "no_token",
+    "invalid_token",
+    "user_not_found",
+    "deactivated",
+    "pat_unknown",
+    "pat_revoked",
+    "pat_expired",
+    "pat_mismatch",
+]
 
 
 def _client_ip(request: Optional[Request]) -> Optional[str]:
@@ -43,37 +60,37 @@ def resolve_token_to_user(
     conn: duckdb.DuckDBPyConnection,
     token: str,
     request: Optional[Request] = None,
-) -> Optional[dict]:
-    """Validate a bearer token and return the authenticated user dict.
+) -> Tuple[Optional[dict], Optional[ResolutionReason]]:
+    """Validate a bearer token and return (user_dict, None) on success.
 
-    Returns None for any validation failure (invalid JWT, unknown user,
-    deactivated account, revoked/expired/unknown PAT row, token_hash
-    mismatch). Side effects (last_used_at update, first-use-from-new-ip
-    audit) are best-effort and never block authentication.
+    On failure returns `(None, reason)` — the reason identifies which check
+    failed so callers can map to a specific HTTP 401 detail. Side effects
+    (last_used_at update, first-use-from-new-ip audit) are best-effort and
+    never block authentication.
     """
     if not token:
-        return None
+        return None, "no_token"
 
     payload = verify_token(token)
     if not payload:
-        return None
+        return None, "invalid_token"
 
     user = UserRepository(conn).get_by_id(payload.get("sub", ""))
     if not user:
-        return None
+        return None, "user_not_found"
     if not bool(user.get("active", True)):
-        return None
+        return None, "deactivated"
 
     if payload.get("typ") != "pat":
-        return user
+        return user, None
 
     # PAT: extra DB-backed validation (revoked/expired/unknown/hash).
     tokens_repo = AccessTokenRepository(conn)
     record = tokens_repo.get_by_id(payload.get("jti", ""))
     if not record:
-        return None
+        return None, "pat_unknown"
     if record.get("revoked_at") is not None:
-        return None
+        return None, "pat_revoked"
 
     exp_at = record.get("expires_at")
     if exp_at is not None:
@@ -82,7 +99,7 @@ def resolve_token_to_user(
         if exp_at.tzinfo is None:
             exp_at = exp_at.replace(tzinfo=timezone.utc)
         if datetime.now(timezone.utc) > exp_at:
-            return None
+            return None, "pat_expired"
 
     # Defense-in-depth: stored token_hash must match sha256(bearer JWT).
     # Protects against a forged-but-unrevoked JWT using a stolen signing key.
@@ -90,7 +107,7 @@ def resolve_token_to_user(
     if stored_hash:
         actual = hashlib.sha256(token.encode()).hexdigest()
         if actual != stored_hash:
-            return None
+            return None, "pat_mismatch"
 
     # First-use-from-new-IP audit entry (#12 acceptance criterion).
     # Only emit when the IP changes on a *subsequent* use — the very
@@ -115,4 +132,4 @@ def resolve_token_to_user(
     except Exception:
         pass
 
-    return user
+    return user, None
