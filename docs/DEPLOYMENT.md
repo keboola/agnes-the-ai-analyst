@@ -94,33 +94,46 @@ Caddy runs as the TLS terminator. It reads certs from `/data/state/certs/{fullch
 
 **B. Corporate CA / self-managed certs** (recommended, and what the infra repo ships):
 
-1. Generate a CSR + private key, submit CSR to your corporate PKI, receive a signed cert chain.
-2. Drop the files on the host:
+Two bring-up flows, picked by whether `TLS_PRIVKEY_URL` is set in `.env`:
+
+- **On-VM gen** (preferred for new deployments): leave `TLS_PRIVKEY_URL` empty. On first run, `agnes-tls-rotate.sh` generates an RSA-2048 key + CSR directly into `/data/state/certs/` using the subject string from `TLS_CSR_SUBJECT`. The key never leaves the host; the CSR (`/data/state/certs/cert.csr`) is what you submit to your corporate PKI. Until the CA signs and publishes, rotate falls back to a 30-day self-signed cert against the same key so Caddy can serve :443.
+- **Pre-provisioned key** (legacy / VM-replace-resilient): set `TLS_PRIVKEY_URL=sm://<secret>` (or any supported scheme). Seed the key out-of-band before first rotate. Same real-cert fetch + self-signed fallback applies.
+
+Both modes converge: once the CA publishes the signed chain at `TLS_FULLCHAIN_URL`, the daily rotate tick atomically swaps the fullchain in place and `SIGUSR1`-reloads Caddy. Zero key churn, zero downtime, no reload when the URL content hasn't moved.
+
+1. Set the required env vars in `.env`:
    ```
-   /data/state/certs/fullchain.pem   (0644, chain = leaf + intermediates)
-   /data/state/certs/privkey.pem     (0600)
+   DOMAIN=agnes.example.com
+   TLS_FULLCHAIN_URL=https://your-ca.example.com/agnes/fullchain.pem
+   TLS_PRIVKEY_URL=            # empty → on-VM gen; or sm://<secret>
+   TLS_CSR_SUBJECT=/C=…/ST=…/L=…/O=…/CN=agnes.example.com
    ```
-3. Set `DOMAIN` in `.env`, then start with the `tls` profile + overlay:
+2. Start with the `tls` profile + overlay (`docker-compose.tls.yml` closes host `:8000` so all traffic enters via `:443`):
    ```bash
-   DOMAIN=agnes.example.com \
-       docker compose \
-           -f docker-compose.yml \
-           -f docker-compose.prod.yml \
-           -f docker-compose.tls.yml \
-           --profile tls up -d
+   docker compose \
+       -f docker-compose.yml \
+       -f docker-compose.prod.yml \
+       -f docker-compose.tls.yml \
+       --profile tls up -d
    ```
-   The `docker-compose.tls.yml` overlay closes direct `:8000` on the host; all traffic enters via `:443`.
+3. Grab the CSR if you used on-VM gen:
+   ```bash
+   sudo cat /data/state/certs/cert.csr
+   ```
+   Submit to your corporate PKI. While waiting, Caddy is already up on :443 with the self-signed fallback.
 
 #### Automatic rotation
 
-`scripts/grpn/agnes-tls-rotate.sh` refetches the cert daily from a stable URL and reloads Caddy via `SIGUSR1` only when the bytes changed — no downtime, no reload when the URL content hasn't moved. Invoke with these env vars in `.env`:
+`scripts/grpn/agnes-tls-rotate.sh` is the single entry point — it handles fetch, self-signed fallback, auto-generation on missing key, atomic cert swap, and Caddy reload. Env vars it reads:
 
 | Var | Required | Schemes | Notes |
 |---|---|---|---|
-| `TLS_FULLCHAIN_URL` | yes | `https://`, `sm://<secret>`, `gs://<obj>`, `file://` | URL corp security team refreshes in place |
-| `TLS_PRIVKEY_URL` | optional | same | Leave empty to reuse the on-disk key across cert rotations |
+| `DOMAIN` | yes | — | The hostname Caddy serves + the CN in auto-generated CSRs. |
+| `TLS_FULLCHAIN_URL` | yes | `https://`, `sm://<secret>`, `gs://<obj>`, `file://` | Polled daily; rotate only reloads Caddy when the bytes change. |
+| `TLS_PRIVKEY_URL` | optional | same | Empty activates on-VM gen. Set to pre-provisioned scheme (e.g. `sm://`) for VM-replace resilience. |
+| `TLS_CSR_SUBJECT` | optional | — | Stamped on auto-generated CSRs. Defaults to `/CN=<DOMAIN>` if unset. Example: `/C=US/ST=Illinois/L=Chicago/O=Your Org/CN=agnes.example.com`. |
 
-The rotate script expects `scripts/tls-fetch.sh` at `/usr/local/bin/tls-fetch.sh` (a generic URL fetcher). On the infra repo's Terraform-managed VMs, both scripts are installed automatically by `startup.sh` and run via a daily systemd timer; for manual compose deployments, copy them under `/usr/local/bin/` and wire the timer yourself.
+`scripts/tls-fetch.sh` at `/usr/local/bin/tls-fetch.sh` is required (generic URL fetcher used by rotate). On infra-repo-managed VMs, both scripts are installed by `startup.sh` and fired via a daily systemd timer; for manual compose deployments, copy them under `/usr/local/bin/` and wire a systemd timer (`OnBootSec=10min`, `OnUnitActiveSec=24h`, `Persistent=true`).
 
 ### Upgrades (manual)
 
