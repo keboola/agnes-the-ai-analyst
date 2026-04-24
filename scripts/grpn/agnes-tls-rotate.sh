@@ -57,9 +57,27 @@ refetch() {
   fi
 }
 
-# Private key first — needed by self-signed fallback if fullchain is
-# unavailable. When TLS_PRIVKEY_URL is empty, operators must pre-seed
-# /data/state/certs/privkey.pem out-of-band (e.g. from a snapshot).
+# Private key handling.
+#
+# Three modes (decided per-VM in the infra repo's local.vm_tls):
+#
+#   1. TLS_PRIVKEY_URL set (sm://, gs://, https://, file://) — fetch it
+#      every rotate tick. Used by VMs that keep the key in Secret
+#      Manager or similar for VM-replace resilience (legacy pattern,
+#      foundryai-poc today).
+#
+#   2. TLS_PRIVKEY_URL empty AND $CERT_DIR/privkey.pem already on disk
+#      — reuse the on-disk key, never fetch. The file survives the VM
+#      for the lifetime of /data's persistence.
+#
+#   3. TLS_PRIVKEY_URL empty AND no on-disk key — generate an RSA-2048
+#      key + a CSR against $DOMAIN in place. This is the "fresh VM"
+#      bring-up path: the key never leaves the VM, and the CSR is
+#      written to $CERT_DIR/cert.csr for the operator to grab via
+#      `gcloud compute ssh … sudo cat /data/state/certs/cert.csr` and
+#      attach to the SECURITY Jira that requests public-cert signing.
+#      Until Security publishes the real fullchain, the self-signed
+#      fallback below keeps Caddy serving HTTPS against this same key.
 if [ -n "${TLS_PRIVKEY_URL:-}" ]; then
   if ! refetch "$TLS_PRIVKEY_URL" "$CERT_DIR/privkey.pem" 600; then
     if [ ! -s "$CERT_DIR/privkey.pem" ]; then
@@ -68,6 +86,41 @@ if [ -n "${TLS_PRIVKEY_URL:-}" ]; then
     fi
     echo "$(date -Is) privkey fetch failed; keeping cached $CERT_DIR/privkey.pem"
   fi
+elif [ ! -s "$CERT_DIR/privkey.pem" ]; then
+  CN="${DOMAIN:-localhost}"
+  echo "$(date -Is) no privkey — generating RSA-2048 key + CSR for CN=$CN"
+  CSR_CONF=$(mktemp)
+  cat > "$CSR_CONF" <<CFG
+[ req ]
+prompt             = no
+distinguished_name = req_distinguished_name
+req_extensions     = ext
+
+[ req_distinguished_name ]
+C  = US
+ST = Illinois
+L  = Chicago
+O  = Groupon, Inc.
+CN = $CN
+
+[ ext ]
+keyUsage         = digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName   = @subject_alt_names
+
+[ subject_alt_names ]
+DNS.1 = $CN
+CFG
+  umask 077
+  openssl req -newkey rsa:2048 \
+    -keyout "$CERT_DIR/privkey.pem" \
+    -out "$CERT_DIR/cert.csr" \
+    -config "$CSR_CONF" -extensions ext -nodes 2>/dev/null
+  chmod 600 "$CERT_DIR/privkey.pem"
+  chmod 644 "$CERT_DIR/cert.csr"
+  rm -f "$CSR_CONF"
+  echo "$(date -Is) privkey.pem + cert.csr written to $CERT_DIR"
+  echo "$(date -Is) ACTION: email $CERT_DIR/cert.csr to Groupon Security for signing — the CSR is public and safe to transit; the key never leaves this VM."
 fi
 
 # Real cert fetch. On failure, fall back to self-signed IFF no
