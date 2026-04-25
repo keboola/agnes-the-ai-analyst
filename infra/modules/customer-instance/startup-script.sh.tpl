@@ -92,10 +92,15 @@ GOOGLE_CLIENT_SECRET=$(gcloud secrets versions access latest --secret=google-oau
 # instance — leave it "none" and let the corp-PKI rotate scripts handle certs.
 CADDY_TLS_LINE=""
 if [ "$TLS_MODE" = "caddy" ] && [ -n "$DOMAIN" ]; then
+    # Value MUST be quoted in the .env file: agnes-auto-upgrade.sh sources
+    # /opt/agnes/.env via `set -a; . .env; set +a`, and bash interprets an
+    # unquoted `KEY=value with spaces` as `KEY=value` followed by trying to
+    # exec `with`/`spaces` as commands → boot succeeds but every cron tick
+    # logs "<email>: command not found".
     if [ -n "$ACME_EMAIL" ]; then
-        CADDY_TLS_LINE="CADDY_TLS=tls $ACME_EMAIL"
+        CADDY_TLS_LINE="CADDY_TLS=\"tls $ACME_EMAIL\""
     else
-        CADDY_TLS_LINE="CADDY_TLS=tls internal"
+        CADDY_TLS_LINE="CADDY_TLS=\"tls internal\""
     fi
 fi
 

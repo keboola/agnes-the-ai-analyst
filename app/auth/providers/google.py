@@ -3,6 +3,7 @@
 import os
 import logging
 
+import httpx
 from authlib.integrations.starlette_client import OAuth
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse
@@ -21,6 +22,19 @@ oauth = OAuth()
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 
+# Cloud Identity Groups API — requires the cloud-identity.groups.readonly scope
+# AND an admin-enabled Cloud Identity / Google Workspace tenant.
+#
+# We use `groups/-/memberships:searchTransitiveGroups` (the "what groups does
+# THIS USER belong to" endpoint), NOT `groups:search` (admin "find groups in
+# org" endpoint, which requires Groups Reader admin role + 400s otherwise).
+# The `-` in the path is a wildcard meaning "search across all groups in the
+# caller's organization". Returns transitive memberships (incl. nested groups).
+# Reference: https://cloud.google.com/identity/docs/reference/rest/v1/groups.memberships/searchTransitiveGroups
+GROUPS_SEARCH_URL = (
+    "https://cloudidentity.googleapis.com/v1/groups/-/memberships:searchTransitiveGroups"
+)
+
 
 def is_available() -> bool:
     return bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)
@@ -34,8 +48,73 @@ def _setup_oauth():
         client_id=GOOGLE_CLIENT_ID,
         client_secret=GOOGLE_CLIENT_SECRET,
         server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
-        client_kwargs={"scope": "openid email profile"},
+        client_kwargs={
+            "scope": (
+                "openid email profile "
+                "https://www.googleapis.com/auth/cloud-identity.groups.readonly"
+            ),
+        },
     )
+
+
+async def _fetch_google_groups(access_token: str, email: str) -> list[dict]:
+    """Fetch Google Workspace groups the user belongs to.
+
+    Best-effort: returns [] on any failure (403 non-Workspace tenant, 401 expired
+    token, network error, etc.). Must never raise — callers rely on this to keep
+    the login flow working even when Cloud Identity is unavailable.
+
+    searchTransitiveGroups query syntax (CEL) requires:
+      - a `labels` membership predicate scoping the group type
+      - `member_key_id == '<email>'` for the user
+    Without `labels` Google returns 400 INVALID_ARGUMENT (silently — error
+    body just says "invalid argument").
+    Reference: https://cloud.google.com/identity/docs/reference/rest/v1/groups.memberships/searchTransitiveGroups
+
+    Why `security` label and not `discussion_forum`:
+        Empirically Keboola's Workspace lets a non-admin user read their own
+        group memberships ONLY for groups labelled as security groups
+        (`cloudidentity.googleapis.com/groups.security`). The same query with
+        `groups.discussion_forum` returns 403 "Insufficient permissions to
+        retrieve memberships" — the discussion_forum API needs admin scope.
+        In practice every Workspace group at Keboola carries BOTH labels, so
+        filtering on `security` returns the full membership list anyway.
+        Confirmed via scripts/debug/probe_google_groups.py.
+    """
+    query = (
+        f"member_key_id == '{email}' "
+        f"&& 'cloudidentity.googleapis.com/groups.security' in labels"
+    )
+    params = {"query": query}
+    headers = {"Authorization": f"Bearer {access_token}"}
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(GROUPS_SEARCH_URL, params=params, headers=headers)
+        if resp.status_code >= 400:
+            # Log full body (not truncated) so future query-syntax / scope /
+            # tenant issues are diagnosable from one log line.
+            logger.warning(
+                "Google groups fetch returned %s for %s — query=%r — body=%s",
+                resp.status_code, email, query, resp.text,
+            )
+            return []
+        data = resp.json()
+    except Exception as e:
+        logger.warning("Google groups fetch failed for %s: %s", email, e)
+        return []
+
+    # searchTransitiveGroups returns `memberships`, not `groups`. Each membership
+    # carries the group identity in groupKey.id (email-shaped) + displayName.
+    groups = []
+    for m in data.get("memberships", []) or []:
+        group_key = (m.get("groupKey") or {}).get("id", "")
+        if not group_key:
+            continue
+        groups.append({
+            "id": group_key,
+            "name": m.get("displayName") or group_key,
+        })
+    return groups
 
 
 _setup_oauth()
@@ -101,6 +180,18 @@ async def google_callback(request: Request):
                 return RedirectResponse(url="/login?error=deactivated")
         finally:
             conn.close()
+
+        # Fetch Google Workspace groups (best-effort — must not break login).
+        access_token = token.get("access_token", "")
+        if access_token:
+            try:
+                groups = await _fetch_google_groups(access_token, email)
+                request.session["google_groups"] = groups
+            except Exception as e:
+                logger.warning("Failed to store google_groups in session: %s", e)
+                request.session["google_groups"] = []
+        else:
+            request.session["google_groups"] = []
 
         # Issue JWT
         jwt_token = create_access_token(user["id"], user["email"], user["role"])

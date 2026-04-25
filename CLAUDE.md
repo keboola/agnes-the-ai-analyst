@@ -185,9 +185,49 @@ Orchestrator ATTACHes it automatically.
 
 ### Authentication
 Auth providers in `app/auth/` (FastAPI-based):
-- **Google**: OAuth via Google
+- **Google**: OAuth via Google (Workspace group memberships pulled at sign-in — see `docs/auth-groups.md` for the GCP setup checklist + the `security` label gotcha)
 - **Email**: Email magic link (itsdangerous token)
 - **Desktop**: JWT for API
+
+## Release & deploy workflows
+
+Two separate release.yml-style workflows produce GHCR images. Pick the one that matches what you're shipping.
+
+### `release.yml` — auto-build on every push
+Runs on **every** push to **every** branch.
+- Push to `main` → `:stable`, `:stable-YYYY.MM.N` (CalVer).
+- Push to non-main `<prefix>/<branch>` → `:dev`, `:dev-YYYY.MM.N`, `:dev-<branch-slug>`, and (when prefix isn't a Git Flow convention) `:dev-<prefix>-latest` alias.
+
+VMs that pin to a floating tag (`:dev`, `:dev-<prefix>-latest`) auto-upgrade within ~5 min via the cron in `agnes-auto-upgrade.sh`. Convenient for per-developer dev VMs; **footgun for shared dev VMs** (last pusher wins, regardless of who).
+
+### `keboola-deploy.yml` — tag-triggered, explicit deploy only
+Runs **only** on git tags matching `keboola-deploy-*`. Publishes:
+- `:keboola-deploy-<git-tag-suffix>` — immutable, tied to the exact commit
+- `:keboola-deploy-latest` — floating alias the consumer pins to
+
+**Operator workflow:**
+```bash
+git checkout <commit-or-branch>
+git tag keboola-deploy-<descriptive-name>
+git push origin keboola-deploy-<descriptive-name>
+# → workflow builds + publishes both tags
+# → VM cron picks up :keboola-deploy-latest within ~5 min
+# → manual cron trigger (skip the wait): sudo /usr/local/bin/agnes-auto-upgrade.sh on the VM
+```
+
+Use this when the consumer (e.g. a customer dev VM) needs **deploy-when-I-decide** semantics — no surprise rollouts from upstream branch pushes by other contributors. The infra repo pins `image_tag = "keboola-deploy-latest"` on the relevant VM.
+
+### Module versioning
+The customer-instance Terraform module under `infra/modules/customer-instance/` is published as `infra-vMAJOR.MINOR.PATCH` git tags (separate from app CalVer tags). Bump on any module-API change; downstream infra repos pin to the tag in their `source = "github.com/keboola/agnes-the-ai-analyst//infra/modules/customer-instance?ref=infra-v1.X.Y"`.
+
+After merging a module change to `main`:
+```bash
+git tag infra-vX.Y.Z origin/main
+git push origin infra-vX.Y.Z
+```
+
+### Replacing a VM after a startup-script change
+Module sets `lifecycle { ignore_changes = [metadata_startup_script] }` on `google_compute_instance.vm` so normal `terraform apply` doesn't churn running VMs. To propagate a startup-script update, trigger the consumer's apply workflow manually with the VM resource address — typical workflow_dispatch input is `recreate_targets='module.agnes.google_compute_instance.vm["<vm-name>"]'`.
 
 ## Key Implementation Details
 

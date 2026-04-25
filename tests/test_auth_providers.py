@@ -144,6 +144,97 @@ class TestGoogleOAuth:
         assert "error" in resp.headers.get("location", "")
 
 
+class TestGoogleGroupsFetch:
+    """Unit tests for _fetch_google_groups — the helper must be tolerant of
+    every realistic failure mode (non-Workspace tenants return 403, expired
+    tokens return 401, network errors bubble from httpx) and never raise."""
+
+    def test_parses_groups_from_success_response(self, monkeypatch):
+        import asyncio
+        from app.auth.providers import google as gp
+
+
+        # searchTransitiveGroups returns {"memberships": [...]}, not {"groups": [...]}.
+        # Each item carries the group identity in groupKey.id + displayName,
+        # matching the actual API response shape.
+        fake_payload = {
+            "memberships": [
+                {
+                    "group": "groups/abc123",
+                    "groupKey": {"id": "team-eng@example.com"},
+                    "displayName": "Engineering",
+                },
+                {
+                    "group": "groups/def456",
+                    "groupKey": {"id": "everyone@example.com"},
+                    # No displayName — falls back to id
+                },
+            ],
+        }
+
+        class _Resp:
+            status_code = 200
+            text = ""
+            def json(self):
+                return fake_payload
+
+        class _FakeClient:
+            def __init__(self, *a, **kw):
+                pass
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *a):
+                return False
+            async def get(self, url, params=None, headers=None):
+                return _Resp()
+
+        monkeypatch.setattr(gp.httpx, "AsyncClient", _FakeClient)
+
+        groups = asyncio.run(gp._fetch_google_groups("fake-token", "user@example.com"))
+        assert groups == [
+            {"id": "team-eng@example.com", "name": "Engineering"},
+            {"id": "everyone@example.com", "name": "everyone@example.com"},
+        ]
+
+    def test_returns_empty_on_403(self, monkeypatch):
+        """Cloud Identity not enabled (non-Workspace tenant) → 403 → [] + warning."""
+        import asyncio
+        from app.auth.providers import google as gp
+
+        class _Resp:
+            status_code = 403
+            text = "Cloud Identity API has not been enabled"
+
+        class _FakeClient:
+            def __init__(self, *a, **kw): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def get(self, url, params=None, headers=None):
+                return _Resp()
+
+        monkeypatch.setattr(gp.httpx, "AsyncClient", _FakeClient)
+
+        groups = asyncio.run(gp._fetch_google_groups("fake-token", "user@example.com"))
+        assert groups == []
+
+    def test_returns_empty_on_exception(self, monkeypatch):
+        """Network error inside httpx must be swallowed, not propagated."""
+        import asyncio
+        from app.auth.providers import google as gp
+
+        class _FakeClient:
+            def __init__(self, *a, **kw): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def get(self, *a, **kw):
+                raise RuntimeError("boom")
+
+        monkeypatch.setattr(gp.httpx, "AsyncClient", _FakeClient)
+
+        groups = asyncio.run(gp._fetch_google_groups("fake-token", "user@example.com"))
+        assert groups == []
+
+
 class TestCookieAuth:
     def test_web_ui_with_cookie(self, client):
         """Test that web UI routes accept JWT from cookie."""
