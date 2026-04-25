@@ -1,5 +1,7 @@
 # Deployment & Multi-Instance Readiness Plan
 
+> **Historical note (2026-04-24):** This plan is a snapshot from 2026-04-09. Some details have evolved — most notably, the Caddy `production` profile referenced throughout this document was renamed to `tls` (see PR #51). For the current deployment guide, follow `docs/DEPLOYMENT.md`. This file is preserved as design history.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the platform deployable to N customer instances with minimal manual effort.
