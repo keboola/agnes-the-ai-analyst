@@ -121,6 +121,12 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # Cloudflare Access middleware — runs before route handlers to exchange
+    # a verified CF edge JWT for our session cookie. Inert unless
+    # CF_ACCESS_TEAM + CF_ACCESS_AUD are both set.
+    from app.auth.middleware import CloudflareAccessMiddleware
+    app.add_middleware(CloudflareAccessMiddleware)
+
     # Load .env_overlay (persisted by /api/admin/configure)
     _overlay = Path(os.environ.get("DATA_DIR", "./data")) / "state" / ".env_overlay"
     if _overlay.exists():
