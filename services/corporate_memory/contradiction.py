@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 # domain accumulates a very large corpus. Above this, callers should shard.
 DEFAULT_CANDIDATE_LIMIT = 100
 
+# "merge" is the LLM-proposed action; the API resolution field uses "merged" — intentionally different terms
 _VALID_ACTIONS = {"kept_a", "kept_b", "merge", "both_valid"}
 _VALID_SEVERITIES = {"hard", "soft"}
 
@@ -122,6 +123,13 @@ def find_and_judge(
     candidates = find_candidates(repo, new_item, max_candidates)
     if not candidates:
         return []
+
+    if len(candidates) > 50:
+        logger.warning(
+            "Contradiction candidate batch is large (%d items); prompt may exceed model context window. "
+            "Consider domain sharding (V2 TODO).",
+            len(candidates),
+        )
 
     prompt = BATCH_CONTRADICTION_PROMPT.format(
         new_id=new_item.get("id", ""),

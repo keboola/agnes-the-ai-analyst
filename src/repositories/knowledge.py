@@ -28,6 +28,18 @@ class KnowledgeRepository:
         result = self.conn.execute("SELECT * FROM knowledge_items WHERE id = ?", [item_id]).fetchone()
         return self._row_to_dict(result)
 
+    def get_by_ids(self, item_ids: List[str]) -> Dict[str, Any]:
+        """Fetch multiple items by ID in one query. Returns dict keyed by id."""
+        if not item_ids:
+            return {}
+        placeholders = ", ".join("?" for _ in item_ids)
+        rows = self.conn.execute(
+            f"SELECT * FROM knowledge_items WHERE id IN ({placeholders})",
+            item_ids,
+        ).fetchall()
+        items = self._rows_to_dicts(rows)
+        return {item["id"]: item for item in items}
+
     def create(
         self,
         id: str,
@@ -92,6 +104,7 @@ class KnowledgeRepository:
         domain: Optional[str] = None,
         source_type: Optional[str] = None,
         exclude_personal: bool = False,
+        user_groups: Optional[List[str]] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
@@ -112,18 +125,39 @@ class KnowledgeRepository:
             params.append(source_type)
         if exclude_personal:
             query += " AND (is_personal = FALSE OR is_personal IS NULL)"
+        if user_groups is not None:
+            # Audience filter: null/all → visible to everyone; group:X → only that group.
+            if user_groups:
+                audience_placeholders = ", ".join("?" for _ in user_groups)
+                query += f" AND (audience IS NULL OR audience = 'all' OR audience IN ({audience_placeholders}))"
+                params.extend(user_groups)
+            else:
+                query += " AND (audience IS NULL OR audience = 'all')"
         query += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         return self._rows_to_dicts(self.conn.execute(query, params).fetchall())
 
-    def search(self, query: str, exclude_personal: bool = False) -> List[Dict[str, Any]]:
+    def search(
+        self,
+        query: str,
+        exclude_personal: bool = False,
+        user_groups: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
         pattern = f"%{query}%"
         sql = """SELECT * FROM knowledge_items
             WHERE (title ILIKE ? OR content ILIKE ?)"""
+        params: List[Any] = [pattern, pattern]
         if exclude_personal:
             sql += " AND (is_personal = FALSE OR is_personal IS NULL)"
+        if user_groups is not None:
+            if user_groups:
+                audience_placeholders = ", ".join("?" for _ in user_groups)
+                sql += f" AND (audience IS NULL OR audience = 'all' OR audience IN ({audience_placeholders}))"
+                params.extend(user_groups)
+            else:
+                sql += " AND (audience IS NULL OR audience = 'all')"
         sql += " ORDER BY updated_at DESC"
-        results = self.conn.execute(sql, [pattern, pattern]).fetchall()
+        results = self.conn.execute(sql, params).fetchall()
         return self._rows_to_dicts(results)
 
     def list_by_domain(

@@ -3,7 +3,8 @@
 Usage:
     python -m services.verification_detector [--dry-run] [--verbose] [--reset]
 
-TODO(scheduler-v2): Trigger is manual-only today (CLI). Wire into
+TODO(scheduler-v2): Trigger is manual-only today (CLI) but detect_and_record is
+also called inline per new knowledge item submission. Wire into
 services/scheduler/__main__.py JOBS list (e.g. hourly) and expose an admin
 endpoint /api/admin/run-verification that calls detector.run() so the
 scheduler stays the single source of truth for cadence.

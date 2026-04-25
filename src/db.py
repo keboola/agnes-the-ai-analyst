@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS users (
     active BOOLEAN NOT NULL DEFAULT TRUE,
     deactivated_at TIMESTAMP,
     deactivated_by VARCHAR,
+    groups JSON,
     created_at TIMESTAMP DEFAULT current_timestamp,
     updated_at TIMESTAMP
 );
@@ -538,6 +539,10 @@ _V8_TO_V9_MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS idx_verification_evidence_item ON verification_evidence(item_id)",
 ]
 
+_V9_TO_V10_MIGRATIONS = [
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS groups JSON",
+]
+
 _V3_TO_V4_MIGRATIONS = [
     """
     CREATE TABLE IF NOT EXISTS metric_definitions (
@@ -633,6 +638,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                     conn.execute(sql)
             if current < 9:
                 for sql in _V8_TO_V9_MIGRATIONS:
+                    conn.execute(sql)
+            if current < 10:
+                for sql in _V9_TO_V10_MIGRATIONS:
                     conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
