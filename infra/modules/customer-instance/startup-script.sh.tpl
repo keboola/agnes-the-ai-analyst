@@ -69,11 +69,35 @@ if [ "$DATA_SOURCE" = "keboola" ]; then
 fi
 JWT_KEY=$(gcloud secrets versions access latest --secret=agnes-$${CUSTOMER_NAME}-jwt-secret)
 
+# Optional Google OAuth credentials. If the operator has created
+# google-oauth-client-{id,secret} secrets in the project's Secret Manager
+# AND wired them via runtime_secrets in the calling Terraform, the VM SA can
+# read them — write into .env so the Google sign-in flow works. Missing /
+# 403 / empty → silent fallback to "" so password + email auth keep working.
+GOOGLE_CLIENT_ID=$(gcloud secrets versions access latest --secret=google-oauth-client-id 2>/dev/null || echo "")
+GOOGLE_CLIENT_SECRET=$(gcloud secrets versions access latest --secret=google-oauth-client-secret 2>/dev/null || echo "")
+
 # AGNES_VERSION, RELEASE_CHANNEL, AGNES_COMMIT_SHA are baked into the image
 # itself as ENV (see Dockerfile ARG/ENV + release.yml build-args). We do NOT
 # set them here — doing so would override the image-level values with the
 # floating tag name ("stable"/"dev"), hiding the real CalVer / git SHA.
 # The app picks them up from the image's runtime environment.
+
+# CADDY_TLS controls Caddyfile cert provisioning (see Caddyfile inline docs).
+# - tls_mode=caddy + ACME_EMAIL set → Let's Encrypt auto-issue (public domain)
+# - tls_mode=caddy + no ACME_EMAIL  → Caddy-managed self-signed (lab use)
+# - any other tls_mode             → leave CADDY_TLS unset, Caddyfile default
+#                                     (cert-file mode for corporate PKI) applies.
+# Operators wanting cert-file mode shouldn't set tls_mode at all on the dev
+# instance — leave it "none" and let the corp-PKI rotate scripts handle certs.
+CADDY_TLS_LINE=""
+if [ "$TLS_MODE" = "caddy" ] && [ -n "$DOMAIN" ]; then
+    if [ -n "$ACME_EMAIL" ]; then
+        CADDY_TLS_LINE="CADDY_TLS=tls $ACME_EMAIL"
+    else
+        CADDY_TLS_LINE="CADDY_TLS=tls internal"
+    fi
+fi
 
 cat > "$APP_DIR/.env" <<ENVEOF
 JWT_SECRET_KEY=$JWT_KEY
@@ -87,6 +111,9 @@ LOG_LEVEL=info
 DOMAIN=$DOMAIN
 AGNES_TAG=$IMAGE_TAG
 ACME_EMAIL=$ACME_EMAIL
+GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID
+GOOGLE_CLIENT_SECRET=$GOOGLE_CLIENT_SECRET
+$CADDY_TLS_LINE
 ENVEOF
 chmod 600 "$APP_DIR/.env"
 
