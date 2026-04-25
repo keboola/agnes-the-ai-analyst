@@ -277,40 +277,11 @@ def test_pat_cannot_create_pat(fresh_db):
     assert resp.status_code == 403
 
 
-def test_profile_page_redirects_to_tokens(fresh_db):
-    """/profile was unified under /tokens in feat/unify-tokens-fullwidth;
-    the route now 302-redirects to /tokens."""
-    from fastapi.testclient import TestClient
-    import uuid
-    from src.db import get_system_db, close_system_db
-    from src.repositories.users import UserRepository
-    from app.auth.jwt import create_access_token
-    from app.main import app
-
-    conn = get_system_db()
-    try:
-        uid = str(uuid.uuid4())
-        UserRepository(conn).create(id=uid, email="u@t", name="U", role="analyst")
-        token = create_access_token(user_id=uid, email="u@t", role="analyst")
-    finally:
-        conn.close()
-        close_system_db()
-
-    client = TestClient(app)
-    # Redirect is unauthenticated (no auth guard on the redirect itself)
-    resp = client.get("/profile", follow_redirects=False)
-    assert resp.status_code == 302
-    assert resp.headers["location"] == "/tokens"
-
-    # Following the redirect with a valid session lands on the unified page.
-    resp = client.get(
-        "/tokens",
-        headers={"Accept": "text/html"},
-        cookies={"access_token": token},
-    )
-    assert resp.status_code == 200
-    assert "My tokens" in resp.text  # non-admin title
-    assert 'id="new-token-btn"' in resp.text  # non-admin CTA
+# NOTE: test_profile_page_redirects_to_tokens removed — /profile no longer
+# redirects to /tokens; it renders a real profile page including Google
+# Workspace groups (cherry-pick of Zdeněk's 4f7e4cd). The /tokens render
+# checks (My tokens title, new-token-btn) survive in the test_admin_tokens_ui
+# suite.
 
 
 def test_pat_first_use_from_new_ip_audits(fresh_db):
