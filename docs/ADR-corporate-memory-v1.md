@@ -3,8 +3,6 @@
 **Status:** Accepted
 **Date:** 2026-04-25
 **Branch:** `pabu/local-dev`
-**Origin:** `docs/pd-ps-comments.md` (pd × Padak walkthrough, second-opinion
-review by Codex `gpt-5.5`).
 
 This ADR records the architectural decisions made to address the three
 high-severity findings raised before V1 of the corporate-memory feature
@@ -20,8 +18,7 @@ ships. V1.5 follow-ups are tracked separately in `docs/TODO.md`.
 | 2. Wire contradiction detection + fix candidate SQL | `services/verification_detector/detector.py`, `src/repositories/knowledge.py`, `tests/test_corporate_memory_v1.py` | The feature shipped inert; the SQL pre-filter was structurally broken. |
 | 3. Stop trusting LLM-supplied confidence + persist evidence | `services/verification_detector/{schemas,prompts,detector}.py`, `src/db.py`, `src/repositories/knowledge.py`, `tests/test_corporate_memory_v1.py` | The LLM should not set its own credibility, and the most valuable signal (the user quote) was being discarded. |
 
-Schema bumped from v8 to v9 (`SCHEMA_VERSION = 9` in `src/db.py`) — adds the
-`verification_evidence` table.
+Schema bumped from v8 to v10 (v9: audience column; v10: users.groups column) (`SCHEMA_VERSION = 10` in `src/db.py`) — v9 adds the `verification_evidence` table and `knowledge_items.audience` column; v10 adds the `users.groups` JSON column.
 
 ---
 
@@ -228,6 +225,20 @@ must-fix bundle. Each is tracked in `docs/TODO.md`.
 - **Typed entity registry** with canonical IDs, word-boundary regex,
   hierarchical `parent_id`.
 - **Multi-evidence boost re-computation** on `verification_evidence` insert.
+
+---
+
+## Schema v9 → v10: Audience Distribution (`users.groups`)
+
+**Change:** Added `groups JSON` column to the `users` table.
+
+**Purpose:** Enables audience-based knowledge distribution. `knowledge_items.audience` (added in v9) restricts item visibility to specific groups. `users.groups` stores the list of Agnes groups a user belongs to (e.g. `["finance", "engineering"]`), resolved at login from the identity provider.
+
+**Migration:** `ALTER TABLE users ADD COLUMN IF NOT EXISTS groups JSON` — runs automatically at startup via `_ensure_schema()`.
+
+**Privacy note:** The `user_groups` filter in `KnowledgeRepository.list_items()` and `search()` applies an `audience IN (...)` predicate at the SQL layer. Items with `audience IS NULL` or `audience = 'all'` are visible to everyone; items with a group audience require the caller to be a member of that group. Admin callers bypass this filter entirely.
+
+**Follow-up:** The current implementation stores raw group strings in `users.groups`. A future Agnes Groups Mapping UI (tracked in GitHub Issues) will replace this with a first-class Agnes roles registry, where admins map identity-provider groups to Agnes roles.
 
 ---
 

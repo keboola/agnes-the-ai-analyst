@@ -274,6 +274,7 @@ ai:
 #       decay_rate_monthly: 0.02        # used when mode=linear
 #       floor:
 #         admin_mandate: 0.50           # admin policies don't silently decay to zero
+#         user_verification: 0.40       # user-verified facts never fall below 0.40
 #         default: 0.0
 #
 #   contradiction_detection:
