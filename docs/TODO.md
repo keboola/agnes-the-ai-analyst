@@ -56,20 +56,21 @@ The V1 must-fix items from that review are implemented on
   guards against silent fail-open from Decision 4.
 
 ### Q3 — Externalize confidence + smarter decay
-- Severity: medium.
-- Move the constants currently in `services/corporate_memory/confidence.py`
-  (`_BASE_CONFIDENCE`, `_MODIFIER_EFFECTS`, decay rate) to
-  `instance.yaml`. Per CLAUDE.md (zero hardcoded values), this is mandatory
-  before V1.5.
-- Switch `apply_decay()` to exponential decay (half-life parameter) with a
-  per-source-type floor — admin policies should not decay to zero, they
-  should be explicitly revoked.
-- V2: per-domain decay policy (finance churns quarterly, engineering
-  conventions persist for years).
-- V2: Bayesian metric surface in the admin UI — compute
-  `P(approve | source_type, detection_type)` over recent items, surface as
-  a read-only signal first. Auto-update behind a feature flag with a 10 %
-  random-sample holdout to mitigate selection bias.
+
+**IMPLEMENTED in V1.5** (`feat(memory): V1.5`).
+
+- `_BASE_CONFIDENCE`, `_MODIFIER_EFFECTS`, and decay config moved from hardcoded dicts to
+  `instance.yaml` under `corporate_memory.confidence.*`. `configure(config)` in `confidence.py`
+  reads the section and overrides the module globals; defaults are still present for backward compat.
+- `apply_decay()` now uses exponential decay by default (`0.5^(age/half_life)`, default half_life=12m).
+  Per-source-type floor: `admin_mandate` defaults to 0.50 (never silently decays to zero).
+- `instance.yaml.example` documents all fields with their default values.
+
+Remaining V2 items:
+- Per-domain decay policy (finance churns quarterly, engineering conventions persist for years).
+- Bayesian metric surface in the admin UI — compute `P(approve | source_type, detection_type)`.
+- Call `confidence.configure(instance_config["corporate_memory"]["confidence"])` at app startup
+  (so production instances using `instance.yaml` actually use the configured values).
 
 ### Q3 — Multi-evidence boost computation
 - The V1 fix persists `verification_evidence` rows but does not yet
@@ -111,57 +112,34 @@ The V1 must-fix items from that review are implemented on
 
 ---
 
-## `admin_contradictions` enrichment vs. opt-in pattern (open question)
+## `admin_contradictions` enrichment vs. opt-in pattern
 
-`GET /api/memory/admin/contradictions` (`app/api/memory.py`) is `KM_ADMIN`-only,
-so it is not a strict privacy leak. But the enrichment loop unconditionally
-inlines the full `item_a` and `item_b` dicts (`title`, `content`, `source_user`)
-even when those items are flagged `is_personal=true`. ADR Decision 1 says
-admins see personal items only when they explicitly opt in via
-`exclude_personal=false`; this endpoint bypasses the opt-in.
+**RESOLVED — Option A implemented in V1.5** (`feat(memory): V1.5`).
 
-Two ways forward — needs an alignment call before code lands:
-
-- **Option A** — add `exclude_personal: bool = True` query param to the
-  endpoint. When omitted, replace personal item dicts with
-  `{"id": ..., "hidden": True}` so the contradiction record is still
-  visible (governance still works) but the personal content is not.
-- **Option B** — keep current behavior, document it explicitly: "the
-  contradiction queue always shows full item content because contradictions
-  need governance the same as public items."
-
-Decision pending pd × Padak alignment.
+`GET /api/memory/admin/contradictions` now accepts `exclude_personal: bool = True`.
+When omitted (default), personal items are replaced with `{id, hidden: true}` so
+the contradiction record is visible for governance but private content is not
+exposed. Pass `exclude_personal=false` to opt in to full content (KM_ADMIN only).
 
 ---
 
-## Audience-based knowledge distribution (half-built, never finished)
+## Audience-based knowledge distribution
 
-Status: **not in scope for V1 must-fix** — flagged here so it stops getting
-silently lost.
+**IMPLEMENTED in V1.5** (`feat(memory): V1.5`).
 
-What exists today:
-- `knowledge_items.audience VARCHAR` column (`src/db.py`, original state-layer commit).
-- Admin UI "Target Audience" selector with dynamic groups
-  (`app/web/templates/corporate_memory_admin.html` ~line 1274).
-- `POST /api/memory/admin/mandate` and `/admin/batch` accept an `audience`
-  parameter (`app/api/memory.py`).
+- `/admin/mandate` and `/admin/batch` now persist `audience` onto `knowledge_items.audience`.
+- `KnowledgeRepository.list_items()` and `search()` accept `user_groups: list[str] | None`.
+  `None` = no filter (admins); `[]` = only null/all; `["group:finance"]` = also includes that group.
+- `GET /api/memory` derives groups from `users.groups` (JSON column added in schema v10),
+  prefixes with `"group:"`, and passes to the repo. Admins bypass the filter.
+- Items with `audience IS NULL` or `audience = 'all'` are visible to everyone.
+- `users.groups` column added via schema v10 migration; `UserRepository.update()` allows it.
 
-What is missing (must land for the feature to actually distribute):
-1. `POST /admin/mandate` and `/admin/batch` must persist `audience` onto
-   `knowledge_items.audience`, not only into the audit log.
-2. `KnowledgeRepository.list_items` / `search` must accept a `for_user`
-   (or `groups`) parameter and filter rows where `audience IN ('all',
-   'group:<one-of-user-groups>')`.
-3. `GET /api/memory` must derive the caller's group memberships
-   (already in `users.groups`) and pass them to the repo.
-4. Tests: a user in group A sees `audience='group:A'` items but not
-   `audience='group:B'`; admins see everything regardless.
-5. Decide policy for `pending`/`approved` items with no audience set —
-   default `'all'` is the obvious choice.
-
-This is the "approve for certain groups so we would manage distribution
-of knowledge" feature pd was asking about (chat, 2026-04-25). It was
-never removed; it was never finished. Tracked under V1.5.
+**Remaining V2 items:**
+- Admin UI "Target Audience" selector already exists but doesn't reflect the group filter logic;
+  update to show which groups can see each item.
+- Google Workspace group sync (`users.groups` population on login) is on a separate branch
+  and needs to be merged into the main line.
 
 ---
 
