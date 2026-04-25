@@ -127,6 +127,12 @@ services:
       - caddy_config:/config
     environment:
       - DOMAIN=${DOMAIN:-localhost}
+      # Passes through whatever the operator set in .env. Caddyfile uses
+      # {$CADDY_TLS:tls /certs/fullchain.pem /certs/privkey.pem} so:
+      # - unset            → cert-file mode (corp PKI rotated by tls-rotate.sh)
+      # - "tls <email>"    → Let's Encrypt auto-issue
+      # - "tls internal"   → Caddy-managed self-signed
+      - CADDY_TLS
     depends_on:
       app:
         condition: service_healthy
