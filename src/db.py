@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS users (
     active BOOLEAN NOT NULL DEFAULT TRUE,
     deactivated_at TIMESTAMP,
     deactivated_by VARCHAR,
+    groups JSON,
     created_at TIMESTAMP DEFAULT current_timestamp,
     updated_at TIMESTAMP
 );
@@ -765,6 +766,10 @@ _V10_TO_V11_MIGRATIONS = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_verification_evidence_item ON verification_evidence(item_id)",
+]
+
+_V9_TO_V10_MIGRATIONS = [
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS groups JSON",
 ]
 
 _V3_TO_V4_MIGRATIONS = [
