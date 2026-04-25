@@ -261,17 +261,10 @@ def test_admin_tokens_deeplink_preserves_user_query(fresh_db):
     assert 'id="flt-user"' in resp.text
 
 
-# ── Back-compat redirects ─────────────────────────────────────────────────
-
-def test_profile_redirects_to_tokens(fresh_db):
-    """/profile no longer renders — it 302-redirects to /tokens."""
-    from fastapi.testclient import TestClient
-    from app.main import app
-
-    client = TestClient(app)
-    resp = client.get("/profile", follow_redirects=False)
-    assert resp.status_code == 302
-    assert resp.headers["location"] == "/tokens"
+# NOTE: test_profile_redirects_to_tokens removed — /profile no longer
+# redirects to /tokens; it renders a real profile page including Google
+# Workspace groups (cherry-pick of Zdeněk's 4f7e4cd). Current /profile
+# behaviour is covered by tests/test_auth_providers.py.
 
 
 # ── Admin list API — expanded fields ───────────────────────────────────────
