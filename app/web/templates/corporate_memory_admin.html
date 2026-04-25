@@ -647,6 +647,46 @@
             white-space: nowrap;
         }
 
+        .audit-row { cursor: pointer; }
+        .audit-row:hover { background: var(--bg-secondary, #f9fafb); }
+        .audit-row.expanded { background: #eff6ff; }
+        .audit-detail-row > td {
+            background: #f8fafc;
+            border-top: 0;
+            padding: var(--space-4) var(--space-5);
+        }
+        .audit-detail-grid {
+            display: grid;
+            grid-template-columns: 140px 1fr;
+            gap: var(--space-2) var(--space-3);
+            font-size: var(--text-sm);
+        }
+        .audit-detail-grid .k {
+            color: var(--text-secondary);
+            font-weight: var(--font-medium);
+        }
+        .audit-detail-grid .v {
+            color: var(--text-primary);
+            word-break: break-word;
+        }
+        .audit-detail-grid pre {
+            margin: 0;
+            padding: var(--space-3);
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            font-size: var(--text-xs);
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .audit-disclosure {
+            display: inline-block;
+            width: 12px;
+            color: var(--text-secondary);
+            transition: transform 0.15s;
+        }
+        .audit-row.expanded .audit-disclosure { transform: rotate(90deg); }
+
         /* Pagination */
         .pagination {
             display: flex;
@@ -887,6 +927,12 @@
                     <option value="rejected">Rejected</option>
                     <option value="revoked">Revoked</option>
                 </select>
+                <label for="sourceTypeFilter" style="margin-left: var(--space-4);">Source:</label>
+                <select class="filter-select" id="sourceTypeFilter" onchange="loadAllItems(0)">
+                    <option value="">All sources</option>
+                    <option value="user_verification">Verified facts (from sessions)</option>
+                    <option value="claude_local_md">CLAUDE.local.md</option>
+                </select>
             </div>
             <div id="allList" class="knowledge-list">
                 <div class="loading">Loading items...</div>
@@ -1047,11 +1093,15 @@
         const list = document.getElementById('allList');
         const pagination = document.getElementById('allPagination');
         const status = document.getElementById('statusFilter').value;
+        const sourceType = document.getElementById('sourceTypeFilter').value;
 
         try {
             const params = new URLSearchParams({page, _t: Date.now()});
             if (status) {
                 params.append('status_filter', status);
+            }
+            if (sourceType) {
+                params.append('source_type', sourceType);
             }
             const resp = await fetch(`/api/memory?${params}`);
             const data = await resp.json();
@@ -1062,6 +1112,30 @@
         }
     }
 
+    // Map of item_id -> {title, status, source_type, content} for the audit log.
+    // Lazily refreshed when the audit tab is opened so the table can show titles
+    // instead of bare UUIDs and resolve item context inside expanded rows.
+    let auditItemMap = {};
+
+    async function refreshAuditItemMap() {
+        try {
+            const resp = await fetch(`/api/memory?per_page=500&_t=${Date.now()}`);
+            const data = await resp.json();
+            const map = {};
+            for (const item of (data.items || [])) {
+                map[item.id] = {
+                    title: item.title || '',
+                    status: item.status || '',
+                    source_type: item.source_type || '',
+                    content: item.content || '',
+                };
+            }
+            auditItemMap = map;
+        } catch (e) {
+            console.error('Failed to refresh audit item map:', e);
+        }
+    }
+
     async function loadAuditLog(page) {
         auditPage = page;
         const content = document.getElementById('auditContent');
@@ -1069,6 +1143,7 @@
         const action = document.getElementById('auditActionFilter').value;
 
         try {
+            await refreshAuditItemMap();
             const params = new URLSearchParams({page, per_page: 20, _t: Date.now()});
             if (action) params.append('action', action);
             const resp = await fetch(`/api/memory/admin/audit?${params}`);
@@ -1078,6 +1153,14 @@
             console.error('Failed to load audit log:', e);
             content.innerHTML = '<div class="empty-state"><p>Error loading audit log.</p></div>';
         }
+    }
+
+    function toggleAuditDetail(idx) {
+        const row = document.querySelector(`tr.audit-row[data-idx="${idx}"]`);
+        const detail = document.querySelector(`tr.audit-detail-row[data-idx="${idx}"]`);
+        if (!row || !detail) return;
+        const isOpen = row.classList.toggle('expanded');
+        detail.style.display = isOpen ? '' : 'none';
     }
 
     async function updateStats() {
@@ -1285,7 +1368,7 @@
             return;
         }
 
-        let rows = data.entries.map(entry => {
+        let rows = data.entries.map((entry, idx) => {
             const ts = entry.timestamp ? new Date(entry.timestamp).toLocaleString() : 'Unknown';
             const admin = entry.user_id || entry.admin || 'Unknown';
             const action = (entry.action || 'unknown').replace(/^km_/, '');
@@ -1298,14 +1381,49 @@
             else if (details.mandatory_reason) detailStr = details.mandatory_reason;
             else if (details.audience) detailStr = `Audience: ${details.audience}`;
             else if (details.previous_status) detailStr = `From: ${details.previous_status}`;
+            else if (action === 'edit' && Object.keys(details).length) {
+                detailStr = `Edited: ${Object.keys(details).join(', ')}`;
+            }
+            if (!detailStr) detailStr = '—';
+
+            const item = auditItemMap[itemId] || null;
+            const itemLabel = item && item.title
+                ? item.title
+                : (itemId ? `${itemId.substring(0, 12)}…` : '(unknown)');
+
+            const detailRows = [];
+            detailRows.push(`<div class="k">Item ID</div><div class="v"><code>${escapeHtml(itemId || '(none)')}</code></div>`);
+            if (item) {
+                detailRows.push(`<div class="k">Title</div><div class="v">${escapeHtml(item.title)}</div>`);
+                detailRows.push(`<div class="k">Current status</div><div class="v">${escapeHtml(item.status || '(unknown)')}</div>`);
+                if (item.source_type) {
+                    detailRows.push(`<div class="k">Source</div><div class="v">${escapeHtml(item.source_type)}</div>`);
+                }
+                if (item.content) {
+                    const snippet = item.content.length > 400 ? item.content.substring(0, 400) + '…' : item.content;
+                    detailRows.push(`<div class="k">Content</div><div class="v">${escapeHtml(snippet)}</div>`);
+                }
+            } else if (itemId) {
+                detailRows.push(`<div class="k">Item</div><div class="v" style="color: var(--text-secondary); font-style: italic;">No matching item found (it may have been deleted, or this audit row references a contradiction id).</div>`);
+            }
+            detailRows.push(`<div class="k">Action</div><div class="v">${escapeHtml(action)}</div>`);
+            detailRows.push(`<div class="k">Admin</div><div class="v">${escapeHtml(admin)}</div>`);
+            detailRows.push(`<div class="k">Timestamp</div><div class="v">${escapeHtml(ts)}</div>`);
+            const paramsJson = JSON.stringify(details, null, 2);
+            detailRows.push(`<div class="k">Raw params</div><div class="v"><pre>${escapeHtml(paramsJson)}</pre></div>`);
 
             return `
-                <tr>
-                    <td>${escapeHtml(ts)}</td>
+                <tr class="audit-row" data-idx="${idx}" onclick="toggleAuditDetail(${idx})">
+                    <td><span class="audit-disclosure">▶</span> ${escapeHtml(ts)}</td>
                     <td>${escapeHtml(admin)}</td>
                     <td><span class="action-badge ${esc(action)}">${escapeHtml(action)}</span></td>
-                    <td title="${escapeHtml(itemId)}">${escapeHtml(itemId.substring(0, 12))}${itemId.length > 12 ? '...' : ''}</td>
+                    <td title="${escapeHtml(itemId)}">${escapeHtml(itemLabel)}</td>
                     <td class="audit-details" title="${escapeHtml(detailStr)}">${escapeHtml(detailStr)}</td>
+                </tr>
+                <tr class="audit-detail-row" data-idx="${idx}" style="display: none;">
+                    <td colspan="5">
+                        <div class="audit-detail-grid">${detailRows.join('')}</div>
+                    </td>
                 </tr>`;
         }).join('');
 

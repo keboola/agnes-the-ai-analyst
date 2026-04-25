@@ -24,6 +24,7 @@ class CreateKnowledgeRequest(BaseModel):
     tags: Optional[List[str]] = None
     domain: Optional[str] = None
     entities: Optional[List[str]] = None
+    source_type: Optional[str] = None
 
 
 class VoteRequest(BaseModel):
@@ -145,7 +146,7 @@ async def create_knowledge(
 ):
     repo = KnowledgeRepository(conn)
     item_id = str(uuid.uuid4())
-    repo.create(
+    create_kwargs = dict(
         id=item_id,
         title=request.title,
         content=request.content,
@@ -156,6 +157,9 @@ async def create_knowledge(
         entities=request.entities,
         confidence=0.50,
     )
+    if request.source_type:
+        create_kwargs["source_type"] = request.source_type
+    repo.create(**create_kwargs)
     return {"id": item_id, "status": "pending"}
 
 

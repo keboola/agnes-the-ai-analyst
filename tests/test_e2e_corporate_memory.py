@@ -595,6 +595,63 @@ class TestCorporateMemoryAuditLog:
             f"Audit log doesn't contain 'approve' entry. Content: {audit_text[:500]}"
         )
 
+    def test_audit_log_row_shows_item_title_not_uuid(self, server, api, page):
+        """Audit table must render the item title, not a truncated UUID."""
+        ids = _seed_items(api)
+        resp = api.post(f"/api/memory/admin/approve?item_id={ids[3]}")
+        assert resp.status_code == 200
+
+        page.goto(f"{server['url']}/corporate-memory/admin")
+        page.locator(".tab-btn:has-text('Audit Log')").click()
+        page.wait_for_timeout(1500)
+
+        audit_text = page.locator("#auditContent").inner_text()
+        assert "Orders PK is order_id" in audit_text, (
+            f"Audit log doesn't show item title. Content: {audit_text[:500]}"
+        )
+
+    def test_audit_log_row_expands_with_full_details(self, server, api, page):
+        """Clicking an audit row must reveal the detail panel with raw params."""
+        ids = _seed_items(api)
+        # Mandate creates an audit entry with non-trivial params (reason, audience)
+        resp = api.post(
+            f"/api/memory/admin/mandate?item_id={ids[3]}",
+            json={"reason": "All analysts must use canonical orders schema", "audience": "all"},
+        )
+        assert resp.status_code == 200
+
+        page.goto(f"{server['url']}/corporate-memory/admin")
+        page.locator(".tab-btn:has-text('Audit Log')").click()
+        page.wait_for_timeout(1500)
+
+        # Detail row should be hidden initially
+        detail_row = page.locator("tr.audit-detail-row").first
+        assert not detail_row.is_visible(), "Detail row should start collapsed"
+
+        # Click the first audit row (the mandate action)
+        page.locator("tr.audit-row").first.click()
+        page.wait_for_timeout(300)
+
+        # Detail row now visible with the mandate context
+        assert detail_row.is_visible(), "Detail row should expand on click"
+        detail_text = detail_row.inner_text()
+        assert "All analysts must use canonical orders schema" in detail_text, (
+            f"Mandate reason missing from expanded detail. Content: {detail_text[:500]}"
+        )
+        # Item context (resolved from id) must appear
+        assert "Orders PK is order_id" in detail_text, (
+            f"Expanded detail missing item title. Content: {detail_text[:500]}"
+        )
+        # Raw params block must include the audience field
+        assert "audience" in detail_text and "all" in detail_text, (
+            f"Raw params block missing audience. Content: {detail_text[:500]}"
+        )
+
+        # Clicking again collapses
+        page.locator("tr.audit-row").first.click()
+        page.wait_for_timeout(300)
+        assert not detail_row.is_visible(), "Detail row should collapse on second click"
+
 
 class TestCorporateMemoryAPI:
     """API endpoint tests via browser-hosted server (complements unit tests)."""
@@ -652,4 +709,239 @@ class TestCorporateMemoryAPI:
         data = resp.json()
         assert "by_domain" in data
         assert "by_source_type" in data
-        assert "finance" in data["by_domain"]
+
+
+def _seed_mixed_sources(api):
+    """Seed items with both source types so the source filter can be exercised.
+
+    Two items from CLAUDE.local.md (default), one item flagged as a verified
+    fact extracted from an analyst session. Returns dict with the seeded IDs.
+    """
+    md_items = [
+        {
+            "title": "Finance churn definition",
+            "content": "Churn = MRR lost / total MRR at start",
+            "category": "business_logic",
+            "domain": "finance",
+            "tags": ["churn", "MRR"],
+        },
+        {
+            "title": "Orders schema reference",
+            "content": "Primary key is order_id, revenue column is net_revenue_usd",
+            "category": "data_analysis",
+            "domain": "data",
+            "tags": ["schema"],
+        },
+    ]
+    md_ids = []
+    for item in md_items:
+        resp = api.post("/api/memory", json=item)
+        assert resp.status_code == 201
+        md_ids.append(resp.json()["id"])
+
+    verified_payload = {
+        "title": "Verified fact from analyst session",
+        "content": "Anna confirmed that EU revenue excludes intercompany transfers",
+        "category": "business_logic",
+        "domain": "finance",
+        "tags": ["revenue", "verified"],
+        "source_type": "user_verification",
+    }
+    resp = api.post("/api/memory", json=verified_payload)
+    assert resp.status_code == 201
+    verified_id = resp.json()["id"]
+
+    # Approve everything so they appear in the All Items tab regardless of status
+    for item_id in md_ids + [verified_id]:
+        resp = api.post(f"/api/memory/admin/approve?item_id={item_id}")
+        assert resp.status_code == 200
+
+    return {"md_ids": md_ids, "verified_id": verified_id}
+
+
+class TestVerifiedFactsSourceFilterAPI:
+    """Confirm the API contract powering the new admin Source filter.
+
+    These run before browser tests so a backend regression fails loud, fast,
+    and obvious before we suspect the UI.
+    """
+
+    def test_source_filter_returns_only_verified(self, api):
+        seeded = _seed_mixed_sources(api)
+        resp = api.get("/api/memory?source_type=user_verification")
+        assert resp.status_code == 200
+        items = resp.json()["items"]
+
+        assert len(items) >= 1, "Verified-facts filter returned no items despite seeding one"
+        for item in items:
+            assert item["source_type"] == "user_verification", (
+                f"Source filter leaked non-verified item: {item['title']} ({item['source_type']})"
+            )
+
+        verified_titles = {item["title"] for item in items}
+        assert "Verified fact from analyst session" in verified_titles
+        assert "Finance churn definition" not in verified_titles
+
+    def test_source_filter_combined_with_status(self, api):
+        """Cross-filter rule: status + source_type stack correctly."""
+        seeded = _seed_mixed_sources(api)
+        resp = api.get(
+            "/api/memory",
+            params={"status_filter": "approved", "source_type": "user_verification"},
+        )
+        assert resp.status_code == 200
+        items = resp.json()["items"]
+        assert len(items) >= 1
+        for item in items:
+            assert item["status"] == "approved"
+            assert item["source_type"] == "user_verification"
+
+    def test_source_filter_results_sorted_recent_first(self, api):
+        """Verified-facts list must surface most recently updated items first."""
+        seeded = _seed_mixed_sources(api)
+        # Touch the verified item so its updated_at is the newest
+        resp = api.post(
+            f"/api/memory/admin/edit?item_id={seeded['verified_id']}",
+            json={"content": "Anna confirmed EU revenue excludes intercompany transfers (edited)"},
+        )
+        assert resp.status_code == 200
+
+        resp = api.get("/api/memory?source_type=user_verification")
+        items = resp.json()["items"]
+        assert items, "Expected at least one verified item"
+        assert items[0]["id"] == seeded["verified_id"], (
+            f"Most recently edited verified item should be first; got {items[0]['title']}"
+        )
+
+
+class TestVerifiedFactsSourceFilterUI:
+    """Browser tests for the new Source dropdown on the admin All Items tab."""
+
+    def _open_all_tab(self, server, page):
+        page.goto(f"{server['url']}/corporate-memory/admin")
+        page.locator(".tab-btn:has-text('All Items')").click()
+        page.wait_for_timeout(1500)
+
+    def test_source_filter_dropdown_exists_with_expected_options(self, server, api, page):
+        """The dropdown must be wired with the two source types we ingest today."""
+        _seed_mixed_sources(api)
+        self._open_all_tab(server, page)
+
+        dropdown = page.locator("#sourceTypeFilter")
+        assert dropdown.count() == 1, "sourceTypeFilter dropdown not rendered on admin page"
+
+        option_values = [
+            opt.get_attribute("value")
+            for opt in dropdown.locator("option").all()
+        ]
+        assert "" in option_values, "Missing 'all sources' default option"
+        assert "user_verification" in option_values, "Missing verified-facts option"
+        assert "claude_local_md" in option_values, "Missing CLAUDE.local.md option"
+
+    def test_filter_to_verified_shows_only_verified_items(self, server, api, page):
+        """Content + known-value rule: only the seeded verified item should render."""
+        _seed_mixed_sources(api)
+        self._open_all_tab(server, page)
+
+        page.select_option("#sourceTypeFilter", "user_verification")
+        page.wait_for_timeout(1500)
+
+        all_text = page.locator("#allList").inner_text()
+        assert "Verified fact from analyst session" in all_text, (
+            f"Verified item not rendered after filtering. Content: {all_text[:500]}"
+        )
+        assert "Finance churn definition" not in all_text, (
+            "CLAUDE.local.md item leaked into verified-facts filter"
+        )
+        assert "Orders schema reference" not in all_text, (
+            "CLAUDE.local.md item leaked into verified-facts filter"
+        )
+        # Empty-state rule: list should NOT show its empty placeholder
+        assert "No matching" not in all_text
+        assert "Error loading items" not in all_text
+
+    def test_verified_badge_visible_when_filtered(self, server, api, page):
+        """The blue 'Verified' badge must render on items in the filtered list."""
+        _seed_mixed_sources(api)
+        self._open_all_tab(server, page)
+
+        page.select_option("#sourceTypeFilter", "user_verification")
+        page.wait_for_timeout(1500)
+
+        all_text = page.locator("#allList").inner_text()
+        assert "Verified" in all_text, (
+            f"Verified badge not rendered for verified items. Content: {all_text[:500]}"
+        )
+
+    def test_filter_to_claude_local_md_excludes_verified(self, server, api, page):
+        """Inverse direction: switching to CLAUDE.local.md must hide verified items."""
+        _seed_mixed_sources(api)
+        self._open_all_tab(server, page)
+
+        page.select_option("#sourceTypeFilter", "claude_local_md")
+        page.wait_for_timeout(1500)
+
+        all_text = page.locator("#allList").inner_text()
+        assert "Finance churn definition" in all_text or "Orders schema reference" in all_text, (
+            f"CLAUDE.local.md items missing after filtering. Content: {all_text[:500]}"
+        )
+        assert "Verified fact from analyst session" not in all_text, (
+            "Verified item leaked into CLAUDE.local.md filter"
+        )
+
+    def test_reset_to_all_sources_shows_everything(self, server, api, page):
+        """Cross-filter rule: resetting source filter must restore mixed list."""
+        _seed_mixed_sources(api)
+        self._open_all_tab(server, page)
+
+        # Narrow then widen
+        page.select_option("#sourceTypeFilter", "user_verification")
+        page.wait_for_timeout(1000)
+        page.select_option("#sourceTypeFilter", "")
+        page.wait_for_timeout(1500)
+
+        all_text = page.locator("#allList").inner_text()
+        assert "Verified fact from analyst session" in all_text
+        assert (
+            "Finance churn definition" in all_text
+            or "Orders schema reference" in all_text
+        ), "Resetting source filter did not restore CLAUDE.local.md items"
+
+    def test_status_and_source_filters_stack(self, server, api, page):
+        """Combining Status=Approved + Source=Verified must intersect correctly."""
+        _seed_mixed_sources(api)
+        self._open_all_tab(server, page)
+
+        page.select_option("#statusFilter", "approved")
+        page.wait_for_timeout(800)
+        page.select_option("#sourceTypeFilter", "user_verification")
+        page.wait_for_timeout(1500)
+
+        all_text = page.locator("#allList").inner_text()
+        assert "Verified fact from analyst session" in all_text
+        assert "Finance churn definition" not in all_text
+        assert "No matching" not in all_text
+
+    def test_no_console_errors_when_using_filter(self, server, api, page):
+        """Console-error rule: catches API prefix mistakes and JS exceptions."""
+        _seed_mixed_sources(api)
+
+        errors: list[str] = []
+        page.on(
+            "console",
+            lambda msg: errors.append(msg.text) if msg.type == "error" else None,
+        )
+
+        self._open_all_tab(server, page)
+        page.select_option("#sourceTypeFilter", "user_verification")
+        page.wait_for_timeout(1500)
+        page.select_option("#sourceTypeFilter", "claude_local_md")
+        page.wait_for_timeout(1500)
+        page.select_option("#sourceTypeFilter", "")
+        page.wait_for_timeout(1500)
+
+        fatal = [
+            e for e in errors
+            if "Failed to" in e or "TypeError" in e or "fetch" in e.lower()
+        ]
+        assert not fatal, f"JS console raised errors while using source filter: {fatal}"
