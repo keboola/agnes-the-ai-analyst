@@ -562,6 +562,10 @@ async def corporate_memory_admin(
         c["item_a"] = repo.get_by_id(c["item_a_id"])
         c["item_b"] = repo.get_by_id(c["item_b_id"])
 
+    _cm_cfg = get_corporate_memory_config()
+    _groups_raw = _cm_cfg.get("groups", {}) if _cm_cfg else {}
+    groups = list(_groups_raw.values()) if isinstance(_groups_raw, dict) else (_groups_raw or [])
+
     ctx = _build_context(
         request, user=user,
         pending_items=pending,
@@ -577,9 +581,9 @@ async def corporate_memory_admin(
             "pending": len(pending),
             "contradictions": len(contradictions),
         },
-        governance=get_corporate_memory_config(),
-        governance_mode=get_corporate_memory_config().get("distribution_mode", "open"),
-        groups=list(get_corporate_memory_config().get("groups", {}).values()) if isinstance(get_corporate_memory_config().get("groups"), dict) else get_corporate_memory_config().get("groups", []),
+        governance=_cm_cfg,
+        governance_mode=_cm_cfg.get("distribution_mode", "open") if _cm_cfg else "open",
+        groups=groups,
         contradictions=contradictions,
         audit_entries=[],
     )
