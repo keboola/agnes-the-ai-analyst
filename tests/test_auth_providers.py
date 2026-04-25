@@ -153,15 +153,19 @@ class TestGoogleGroupsFetch:
         import asyncio
         from app.auth.providers import google as gp
 
+
+        # searchTransitiveGroups returns {"memberships": [...]}, not {"groups": [...]}.
+        # Each item carries the group identity in groupKey.id + displayName,
+        # matching the actual API response shape.
         fake_payload = {
-            "groups": [
+            "memberships": [
                 {
-                    "name": "groups/abc123",
+                    "group": "groups/abc123",
                     "groupKey": {"id": "team-eng@example.com"},
                     "displayName": "Engineering",
                 },
                 {
-                    "name": "groups/def456",
+                    "group": "groups/def456",
                     "groupKey": {"id": "everyone@example.com"},
                     # No displayName — falls back to id
                 },
