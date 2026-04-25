@@ -8,6 +8,16 @@ Uses a "full refresh" approach with hash-based change detection:
    and send to HAIKU in ONE call for a unified catalog refresh
 4. HAIKU preserves existing item IDs (critical for vote stability),
    merges similar knowledge, and tracks source_users per item
+
+TODO(scheduler-v2): In docker-compose.yml this service is a one-shot process
+restarted by Docker (`restart: unless-stopped`), which is effectively a tight
+boot loop. Replace with proper cadence: wire into services/scheduler/__main__.py
+JOBS list and expose an admin endpoint /api/admin/run-corporate-memory that
+invokes collect_all().
+
+TODO(notifications): When new pending items appear after a collection run, no
+admin is notified. Hook into services/telegram_bot or email to ping km_admins
+with a digest so the review queue actually gets triaged.
 """
 
 import hashlib

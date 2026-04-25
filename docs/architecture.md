@@ -218,8 +218,11 @@ Current schema version: **3** (auto-migrated from v1/v2 on startup).
 | `table_profiles` | JSON data profiles (stats, nulls, cardinality) per table |
 | `dataset_permissions` | Per-user per-dataset access grants |
 | `access_requests` | Self-service access request workflow |
-| `knowledge_items` | Corporate memory knowledge entries |
+| `knowledge_items` | Corporate memory knowledge entries (V1 columns: `confidence`, `domain`, `entities`, `source_type`, `source_ref`, `valid_from`/`valid_until`, `supersedes`, `sensitivity`, `is_personal`) |
 | `knowledge_votes` | Up/down votes on knowledge items |
+| `knowledge_contradictions` | Pairs of items the LLM judge flagged as contradictory; carries `severity` and `suggested_resolution` (JSON-encoded structured action — see ADR Decision 4) |
+| `verification_evidence` | One row per detected verification — persists `user_quote`, `detection_type`, and `source_ref` so future Bayesian re-calibration has raw signal (ADR Decision 3) |
+| `session_extraction_state` | Tracks which `/data/user_sessions/*.jsonl` files have been processed by the verification detector |
 | `audit_log` | API action log: user, action, resource, duration |
 | `telegram_links` | Telegram chat_id linked to user_id |
 | `pending_codes` | Telegram link confirmation codes |
@@ -317,10 +320,21 @@ Docker Compose service.
 | `scheduler` | default | Always-on; polls every N seconds | Lightweight sidecar that triggers jobs via the app's REST API (`POST /api/sync/trigger` every 15 min, `GET /api/health` every 5 min). Auth via `SCHEDULER_API_TOKEN` or auto-fetch from `/auth/token`. |
 | `telegram_bot` | `full` | Always-on (long-poll) | Telegram bot: polling + HTTP dispatch, `/status` command, notification script execution. |
 | `ws_gateway` | `full` | Always-on | WebSocket gateway (TCP 8765) + HTTP dispatch socket. JWT auth. Per-user connection limit (5). Heartbeat ping/pong. |
-| `corporate_memory` | `full` | Periodic (every 30 min) | Scans `CLAUDE.local.md` files, extracts knowledge via LLM (Claude Haiku), writes to `knowledge_items` in system.duckdb. |
+| `corporate_memory` | `full` | Periodic (every 30 min) | Scans `CLAUDE.local.md` files, extracts knowledge via LLM (Claude Haiku), writes to `knowledge_items` in system.duckdb. Inline contradiction detection runs after each new item: one batched Haiku structured-output call returns judgments + structured resolution suggestions for every same-domain candidate (no SQL keyword pre-filter — see [ADR Decision 4](ADR-corporate-memory-v1.md)). |
+| `verification_detector` | `full` (run via `corporate_memory`) | On each `corporate_memory` tick | Scans unprocessed analyst session JSONLs, extracts corrections / confirmations / unprompted definitions via Haiku structured outputs. Confidence is computed in code from `(source_type, detection_type)` — never trusted from the LLM. Each verification persists a `verification_evidence` row carrying `user_quote` + `detection_type` ([ADR Decision 3](ADR-corporate-memory-v1.md)). |
 | `session_collector` | `full` | Periodic (every 6 h) | Copies Claude Code `.jsonl` session transcripts to central storage. |
 
 Files NOT to modify: `services/ws_gateway/` (stable WebSocket infrastructure).
+
+### Corporate-memory privacy boundary
+
+`is_personal` on `knowledge_items` is enforced as an authorization rule at every read site, not a UI hint:
+
+- `GET /api/memory` and `GET /api/memory?search=…` silently coerce `exclude_personal=True` for any caller whose role is below `km_admin`.
+- `GET /api/memory/{id}/provenance` and `POST /api/memory/{id}/vote` use the shared `_can_view_item(user, item)` helper (`not is_personal OR contributor OR km_admin/admin`) and return **404** (not 403) on denial to avoid existence-leak.
+- Contributors reach their own personal items via `/api/memory/my-contributions`.
+
+See [ADR Decision 1](ADR-corporate-memory-v1.md) for the full reasoning.
 
 ---
 

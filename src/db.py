@@ -130,6 +130,18 @@ CREATE TABLE IF NOT EXISTS session_extraction_state (
     file_hash VARCHAR
 );
 
+CREATE TABLE IF NOT EXISTS verification_evidence (
+    id VARCHAR PRIMARY KEY,
+    item_id VARCHAR NOT NULL,
+    source_user VARCHAR,
+    source_ref VARCHAR,
+    detection_type VARCHAR,
+    user_quote TEXT,
+    created_at TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE INDEX IF NOT EXISTS idx_verification_evidence_item ON verification_evidence(item_id);
+
 CREATE TABLE IF NOT EXISTS knowledge_votes (
     item_id VARCHAR NOT NULL,
     user_id VARCHAR NOT NULL,
@@ -734,6 +746,26 @@ def _backfill_users_role_to_grants(conn: duckdb.DuckDBPyConnection) -> None:
             "v9 backfill: seeded user_role_grants for %d existing user(s)",
             backfilled,
         )
+
+# Per-detection evidence rows — one knowledge_item can accumulate multiple
+# evidence rows over time (each new analyst confirmation adds one). Persisting
+# user_quote + detection_type per row is what enables future Bayesian re-
+# calibration and "additional verifiers" boost computation. See Q3 of
+# docs/pd-ps-comments.md.
+_V10_TO_V11_MIGRATIONS = [
+    """
+    CREATE TABLE IF NOT EXISTS verification_evidence (
+        id VARCHAR PRIMARY KEY,
+        item_id VARCHAR NOT NULL,
+        source_user VARCHAR,
+        source_ref VARCHAR,
+        detection_type VARCHAR,
+        user_quote TEXT,
+        created_at TIMESTAMP DEFAULT current_timestamp
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_verification_evidence_item ON verification_evidence(item_id)",
+]
 
 _V3_TO_V4_MIGRATIONS = [
     """
