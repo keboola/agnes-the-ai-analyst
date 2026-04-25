@@ -1,7 +1,16 @@
 {$DOMAIN:localhost} {
-	# Cert-file mode (corporate CA path). For Let's Encrypt, drop the
-	# `tls` directive entirely so Caddy auto-issues. See docs/DEPLOYMENT.md.
-	tls /certs/fullchain.pem /certs/privkey.pem {
+	# Cert provisioning. Driven by env var CADDY_TLS:
+	#   - unset (default) → cert-file mode for corporate PKI (rotated by
+	#     scripts/grpn/agnes-tls-rotate.sh into /data/state/certs/).
+	#   - "tls <email>"   → Let's Encrypt auto-issue, e.g. "tls ops@example.com"
+	#                       (used by public-internet deployments like Keboola dev).
+	#   - "tls internal"  → Caddy-managed self-signed cert (lab/dev only,
+	#                       browser warning on every visit).
+	#
+	# The {$VAR:default} substitution lets one Caddyfile serve all three
+	# regimes without per-deployment forks. Caddyfile parses the substituted
+	# string as a directive, so the value MUST start with `tls `.
+	{$CADDY_TLS:tls /certs/fullchain.pem /certs/privkey.pem} {
 		# Modern TLS only. Caddy default already excludes 1.0/1.1 in
 		# most builds, but pin explicitly so a future Caddy default
 		# change can't silently weaken our posture.

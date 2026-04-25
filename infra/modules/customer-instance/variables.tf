@@ -39,11 +39,19 @@ variable "prod_instance" {
 }
 
 variable "dev_instances" {
-  description = "Seznam dev VMs. Prázdné pole = žádné dev VMs."
+  description = <<-EOT
+    Seznam dev VMs. Prázdné pole = žádné dev VMs.
+
+    tls_mode + domain are optional and default to plain HTTP on :8000. Set
+    tls_mode = "caddy" + domain to enable Caddy + Let's Encrypt (or whatever
+    CADDY_TLS env var is configured to in the Caddyfile — see Caddyfile docs).
+  EOT
   type = list(object({
     name         = string
     machine_type = optional(string, "e2-small")
     image_tag    = optional(string, "dev")
+    tls_mode     = optional(string, "none")
+    domain       = optional(string, "")
   }))
   default = []
 }

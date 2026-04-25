@@ -1,0 +1,98 @@
+name: Keboola Deploy
+
+# Tag-triggered build for Keboola's internal dev instance.
+#
+# Why a separate workflow: the default release.yml builds an image for *every* push
+# to *every* branch, which means Keboola's `agnes-dev` VM (pinned to `:dev` or
+# similar floating tag) sees whoever pushed last — Vojta, Minas, anyone. That
+# convenience for Groupon-side dev VMs (per-developer `dev-<prefix>-latest` aliases)
+# is a footgun for shared instances.
+#
+# This workflow runs ONLY when an operator explicitly creates a `keboola-deploy-*`
+# git tag. The image is published with two tags:
+#   - keboola-deploy-<git-tag-suffix>  (immutable, audit trail in git)
+#   - keboola-deploy-latest             (floating alias the VM tracks)
+#
+# Operator workflow:
+#   git checkout <commit>
+#   git tag keboola-deploy-2026-04-25-groups-test
+#   git push origin keboola-deploy-2026-04-25-groups-test
+#   # → image built, alias updated, agnes-dev cron picks it up within 5 min
+on:
+  push:
+    tags:
+      - "keboola-deploy-*"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install dependencies
+        run: uv pip install --system ".[dev]"
+
+      - name: Run tests
+        run: pytest tests/ -v --tb=short
+        env:
+          TESTING: "1"
+
+  build-and-push:
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Resolve tag + version
+        id: meta
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          # Sanity: tag must start with keboola-deploy- (the `on:` filter already
+          # enforces this, but cheap belt-and-braces against future workflow edits).
+          case "$TAG" in
+            keboola-deploy-*) ;;
+            *) echo "::error::Tag $TAG does not match keboola-deploy-* — refusing to build"; exit 1 ;;
+          esac
+          # Package version: source of truth is pyproject.toml (same convention as
+          # release.yml). The git tag is the *deploy identifier*, package version
+          # is the *product identifier*.
+          PKG_VERSION=$(grep '^version' pyproject.toml | head -1 | sed -E 's/^version\s*=\s*"([^"]+)".*/\1/')
+          if [ -z "$PKG_VERSION" ]; then
+            echo "::error::Could not extract version from pyproject.toml"; exit 1
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "pkg_version=${PKG_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Building image for git tag: ${TAG} (package version ${PKG_VERSION})"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          push: true
+          build-args: |
+            AGNES_VERSION=${{ steps.meta.outputs.pkg_version }}
+            RELEASE_CHANNEL=keboola-deploy
+            AGNES_COMMIT_SHA=${{ github.sha }}
+            AGNES_TAG=${{ steps.meta.outputs.tag }}
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.tag }}
+            ghcr.io/${{ github.repository }}:keboola-deploy-latest

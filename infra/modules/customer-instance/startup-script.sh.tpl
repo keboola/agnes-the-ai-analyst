@@ -75,6 +75,22 @@ JWT_KEY=$(gcloud secrets versions access latest --secret=agnes-$${CUSTOMER_NAME}
 # floating tag name ("stable"/"dev"), hiding the real CalVer / git SHA.
 # The app picks them up from the image's runtime environment.
 
+# CADDY_TLS controls Caddyfile cert provisioning (see Caddyfile inline docs).
+# - tls_mode=caddy + ACME_EMAIL set → Let's Encrypt auto-issue (public domain)
+# - tls_mode=caddy + no ACME_EMAIL  → Caddy-managed self-signed (lab use)
+# - any other tls_mode             → leave CADDY_TLS unset, Caddyfile default
+#                                     (cert-file mode for corporate PKI) applies.
+# Operators wanting cert-file mode shouldn't set tls_mode at all on the dev
+# instance — leave it "none" and let the corp-PKI rotate scripts handle certs.
+CADDY_TLS_LINE=""
+if [ "$TLS_MODE" = "caddy" ] && [ -n "$DOMAIN" ]; then
+    if [ -n "$ACME_EMAIL" ]; then
+        CADDY_TLS_LINE="CADDY_TLS=tls $ACME_EMAIL"
+    else
+        CADDY_TLS_LINE="CADDY_TLS=tls internal"
+    fi
+fi
+
 cat > "$APP_DIR/.env" <<ENVEOF
 JWT_SECRET_KEY=$JWT_KEY
 DATA_DIR=$DATA_MNT
@@ -87,6 +103,7 @@ LOG_LEVEL=info
 DOMAIN=$DOMAIN
 AGNES_TAG=$IMAGE_TAG
 ACME_EMAIL=$ACME_EMAIL
+$CADDY_TLS_LINE
 ENVEOF
 chmod 600 "$APP_DIR/.env"
 
