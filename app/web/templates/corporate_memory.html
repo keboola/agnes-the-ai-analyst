@@ -609,16 +609,16 @@
             <div class="filter-group">
                 <button class="filter-btn active" data-category="" onclick="setFilter(this)">All</button>
                 <button class="filter-btn" data-category="my_rules" onclick="setFilter(this)">My Rules</button>
-                <button class="filter-btn" data-category="data_analysis" onclick="setFilter(this)">Data Analysis</button>
-                <button class="filter-btn" data-category="api_integration" onclick="setFilter(this)">API</button>
-                <button class="filter-btn" data-category="performance" onclick="setFilter(this)">Performance</button>
+                {% for cat in categories %}
+                <button class="filter-btn" data-category="{{ cat }}" onclick="setFilter(this)">{{ cat|replace('_', ' ')|title }}</button>
+                {% endfor %}
             </div>
             <select class="sort-select" id="sortSelect" onchange="applyFilters()">
                 <option value="score">Most Popular</option>
                 <option value="updated_at">Most Recent</option>
                 <option value="contributors">Most Contributors</option>
             </select>
-            <select class="sort-select" id="domainFilter" onchange="applyFilters()">
+            <select class="sort-select" id="domainFilter" onchange="onDomainChange()">
                 <option value="">All Domains</option>
                 {% for d in domains %}
                 <option value="{{ d }}">{{ d|title }}</option>
@@ -764,7 +764,18 @@
         document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         currentCategory = btn.dataset.category;
-        currentPage = 0;
+        currentPage = 1;
+        // Reset domain filter when switching category to avoid confusing cross-filter empty results
+        document.getElementById('domainFilter').value = '';
+        applyFilters();
+    }
+
+    function onDomainChange() {
+        // Reset category filter to "All" when changing domain
+        document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+        document.querySelector('.filter-btn[data-category=""]').classList.add('active');
+        currentCategory = '';
+        currentPage = 1;
         applyFilters();
     }
 

@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -118,6 +118,18 @@ CREATE TABLE IF NOT EXISTS session_extraction_state (
     items_extracted INTEGER DEFAULT 0,
     file_hash VARCHAR
 );
+
+CREATE TABLE IF NOT EXISTS verification_evidence (
+    id VARCHAR PRIMARY KEY,
+    item_id VARCHAR NOT NULL,
+    source_user VARCHAR,
+    source_ref VARCHAR,
+    detection_type VARCHAR,
+    user_quote TEXT,
+    created_at TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE INDEX IF NOT EXISTS idx_verification_evidence_item ON verification_evidence(item_id);
 
 CREATE TABLE IF NOT EXISTS knowledge_votes (
     item_id VARCHAR NOT NULL,
@@ -506,6 +518,26 @@ _V7_TO_V8_MIGRATIONS = [
     """,
 ]
 
+# Per-detection evidence rows — one knowledge_item can accumulate multiple
+# evidence rows over time (each new analyst confirmation adds one). Persisting
+# user_quote + detection_type per row is what enables future Bayesian re-
+# calibration and "additional verifiers" boost computation. See Q3 of
+# docs/pd-ps-comments.md.
+_V8_TO_V9_MIGRATIONS = [
+    """
+    CREATE TABLE IF NOT EXISTS verification_evidence (
+        id VARCHAR PRIMARY KEY,
+        item_id VARCHAR NOT NULL,
+        source_user VARCHAR,
+        source_ref VARCHAR,
+        detection_type VARCHAR,
+        user_quote TEXT,
+        created_at TIMESTAMP DEFAULT current_timestamp
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_verification_evidence_item ON verification_evidence(item_id)",
+]
+
 _V3_TO_V4_MIGRATIONS = [
     """
     CREATE TABLE IF NOT EXISTS metric_definitions (
@@ -598,6 +630,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                     conn.execute(sql)
             if current < 8:
                 for sql in _V7_TO_V8_MIGRATIONS:
+                    conn.execute(sql)
+            if current < 9:
+                for sql in _V8_TO_V9_MIGRATIONS:
                     conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",

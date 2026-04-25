@@ -16,6 +16,23 @@ router = APIRouter(prefix="/api/memory", tags=["memory"])
 VALID_STATUSES = ["pending", "approved", "mandatory", "rejected", "revoked", "expired"]
 VALID_DOMAINS = ["finance", "engineering", "product", "data", "operations", "infrastructure"]
 
+# Roles allowed to see is_personal=true items they did not contribute.
+_PRIVILEGED_VIEWER_ROLES = {Role.KM_ADMIN.value, Role.ADMIN.value}
+
+
+def _is_privileged_viewer(user: dict) -> bool:
+    return user.get("role") in _PRIVILEGED_VIEWER_ROLES
+
+
+def _can_view_item(user: dict, item: dict) -> bool:
+    """Personal items are visible only to the contributor and privileged viewers (km_admin/admin).
+    Non-personal items are visible to any authenticated user."""
+    if not item.get("is_personal"):
+        return True
+    if _is_privileged_viewer(user):
+        return True
+    return item.get("source_user") == user.get("email")
+
 
 class CreateKnowledgeRequest(BaseModel):
     title: str
@@ -24,6 +41,7 @@ class CreateKnowledgeRequest(BaseModel):
     tags: Optional[List[str]] = None
     domain: Optional[str] = None
     entities: Optional[List[str]] = None
+    source_type: Optional[str] = None
 
 
 class VoteRequest(BaseModel):
@@ -55,6 +73,14 @@ class ResolveContradictionRequest(BaseModel):
     resolution: str  # kept_a, kept_b, merged, both_valid
 
 
+class CreateContradictionRequest(BaseModel):
+    item_a_id: str
+    item_b_id: str
+    explanation: str
+    severity: Optional[str] = None
+    suggested_resolution: Optional[str] = None
+
+
 # ---- User endpoints ----
 
 @router.get("")
@@ -75,8 +101,11 @@ async def list_knowledge(
     repo = KnowledgeRepository(conn)
     page = max(page, 1)
     offset = (page - 1) * per_page
+    # Privacy: non-privileged viewers can never opt out of the personal filter.
+    # Their own personal contributions are visible via /my-contributions, not here.
+    effective_exclude_personal = True if not _is_privileged_viewer(user) else exclude_personal
     if search:
-        items = repo.search(search)
+        items = repo.search(search, exclude_personal=effective_exclude_personal)
     else:
         statuses = [status_filter] if status_filter else None
         items = repo.list_items(
@@ -84,7 +113,7 @@ async def list_knowledge(
             category=category,
             domain=domain,
             source_type=source_type,
-            exclude_personal=exclude_personal,
+            exclude_personal=effective_exclude_personal,
             limit=per_page,
             offset=offset,
         )
@@ -104,9 +133,18 @@ async def get_stats(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Get corporate memory statistics."""
+    """Get corporate memory statistics.
+
+    Aggregations exclude personal items for non-privileged callers — otherwise
+    `total` and the `by_*` counts would change in observable ways when a
+    colleague flags or unflags a personal item, leaking existence info per
+    ADR Decision 1.
+    """
     repo = KnowledgeRepository(conn)
-    all_items = repo.list_items(limit=10000)
+    all_items = repo.list_items(
+        limit=10000,
+        exclude_personal=not _is_privileged_viewer(user),
+    )
     status_counts: dict = {}
     categories: set = set()
     domains: dict = {}
@@ -137,7 +175,7 @@ async def create_knowledge(
 ):
     repo = KnowledgeRepository(conn)
     item_id = str(uuid.uuid4())
-    repo.create(
+    create_kwargs = dict(
         id=item_id,
         title=request.title,
         content=request.content,
@@ -148,6 +186,9 @@ async def create_knowledge(
         entities=request.entities,
         confidence=0.50,
     )
+    if request.source_type:
+        create_kwargs["source_type"] = request.source_type
+    repo.create(**create_kwargs)
     return {"id": item_id, "status": "pending"}
 
 
@@ -161,7 +202,8 @@ async def vote_knowledge(
     if request.vote not in (1, -1):
         raise HTTPException(status_code=400, detail="Vote must be 1 or -1")
     repo = KnowledgeRepository(conn)
-    if not repo.get_by_id(item_id):
+    item = repo.get_by_id(item_id)
+    if not item or not _can_view_item(user, item):
         raise HTTPException(status_code=404, detail="Knowledge item not found")
     repo.vote(item_id, user["id"], request.vote)
     return repo.get_votes(item_id)
@@ -223,7 +265,7 @@ async def get_provenance(
     """Get source provenance for a knowledge item."""
     repo = KnowledgeRepository(conn)
     item = repo.get_by_id(item_id)
-    if not item:
+    if not item or not _can_view_item(user, item):
         raise HTTPException(status_code=404, detail="Knowledge item not found")
     return {
         "id": item_id,
@@ -374,6 +416,7 @@ async def admin_pending(
 ):
     """Get pending items queue for admin review."""
     repo = KnowledgeRepository(conn)
+    page = max(page, 1)
     offset = (page - 1) * per_page
     items = repo.list_items(statuses=["pending"], category=category, limit=per_page, offset=offset)
     return {"items": items, "count": len(items)}
@@ -422,6 +465,29 @@ async def admin_contradictions(
         c["item_a"] = repo.get_by_id(c["item_a_id"])
         c["item_b"] = repo.get_by_id(c["item_b_id"])
     return {"contradictions": contradictions, "count": len(contradictions)}
+
+
+@router.post("/admin/contradictions")
+async def admin_create_contradiction(
+    request: CreateContradictionRequest,
+    user: dict = Depends(require_role(Role.KM_ADMIN)),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Create a knowledge contradiction (for testing/seeding)."""
+    repo = KnowledgeRepository(conn)
+    if not repo.get_by_id(request.item_a_id):
+        raise HTTPException(status_code=404, detail=f"Item A not found: {request.item_a_id}")
+    if not repo.get_by_id(request.item_b_id):
+        raise HTTPException(status_code=404, detail=f"Item B not found: {request.item_b_id}")
+
+    cid = repo.create_contradiction(
+        item_a_id=request.item_a_id,
+        item_b_id=request.item_b_id,
+        explanation=request.explanation,
+        severity=request.severity,
+        suggested_resolution=request.suggested_resolution,
+    )
+    return {"id": cid}
 
 
 @router.post("/admin/contradictions/{contradiction_id}/resolve")
