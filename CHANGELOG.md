@@ -13,6 +13,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 <!-- Add bullets here. Group: Added / Changed / Fixed / Removed / Internal.
      Mark breaking changes with **BREAKING** at the start of the bullet. -->
 
+## [0.11.1] — 2026-04-26
+
+Patch release — hotfix the missed Caddy env passthrough that should have shipped with 0.11.0, plus codify changelog discipline so this kind of drift gets caught at PR review time next time.
+
 ### Fixed
 
 - `docker-compose.yml` caddy service now passes `CADDY_TLS` through to the container (`- CADDY_TLS` bare-form passthrough). Without it the `Caddyfile` `{$CADDY_TLS:default}` substitution always falls back to cert-file mode regardless of what the operator wrote into `.env`, and Caddy crash-loops on Let's Encrypt / internal-CA deployments. Should have shipped with #52; first attempt was #55, accidentally closed before merging.
@@ -98,4 +102,5 @@ First tagged semver release. The `version = "2.x"` strings that appeared in earl
 
 - Test suite expanded to 1357+ tests (4 layers — unit, integration, web smoke, journey).
 
+[0.11.1]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.11.1
 [0.11.0]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.11.0
