@@ -1,6 +1,6 @@
 [project]
 name = "agnes-the-ai-analyst"
-version = "2.1.0"
+version = "0.12.0"
 description = "Agnes — AI Data Analyst platform for AI analytical systems"
 requires-python = ">=3.11,<3.14"
 license = "MIT"
@@ -50,6 +50,7 @@ dev = [
     "faker>=24.0.0",
     "anthropic>=0.30.0",
     "openai>=1.30.0",
+    "jsonschema>=4.0.0",
 ]
 
 [project.scripts]
@@ -70,4 +71,5 @@ dev-dependencies = [
     "faker>=24.0.0",
     "anthropic>=0.30.0",
     "openai>=1.30.0",
+    "jsonschema>=4.0.0",
 ]

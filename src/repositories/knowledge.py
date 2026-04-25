@@ -28,6 +28,18 @@ class KnowledgeRepository:
         result = self.conn.execute("SELECT * FROM knowledge_items WHERE id = ?", [item_id]).fetchone()
         return self._row_to_dict(result)
 
+    def get_by_ids(self, item_ids: List[str]) -> Dict[str, Any]:
+        """Fetch multiple items by ID in one query. Returns dict keyed by id."""
+        if not item_ids:
+            return {}
+        placeholders = ", ".join("?" for _ in item_ids)
+        rows = self.conn.execute(
+            f"SELECT * FROM knowledge_items WHERE id IN ({placeholders})",
+            item_ids,
+        ).fetchall()
+        items = self._rows_to_dicts(rows)
+        return {item["id"]: item for item in items}
+
     def create(
         self,
         id: str,
