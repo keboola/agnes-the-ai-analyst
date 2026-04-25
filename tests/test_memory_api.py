@@ -504,3 +504,233 @@ class TestPersonalItemPrivacy:
             headers=_auth(seeded_app["analyst_token"]),
         )
         assert vote.status_code == 200
+
+
+class TestAdminContradictionsExcludePersonal:
+    """Verify exclude_personal param on GET /api/memory/admin/contradictions."""
+
+    def _make_item(self, item_id: str, title: str, is_personal: bool = False):
+        from datetime import datetime, timezone
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        now = datetime.now(timezone.utc)
+        conn.execute(
+            """INSERT INTO knowledge_items
+               (id, title, content, category, source_user, is_personal, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [item_id, title, f"content of {title}", "test", "admin@test.com",
+             is_personal, "approved", now, now],
+        )
+        conn.close()
+
+    def _make_contradiction(self, cid: str, a_id: str, b_id: str):
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        conn.execute(
+            """INSERT INTO knowledge_contradictions
+               (id, item_a_id, item_b_id, explanation, detected_at)
+               VALUES (?, ?, ?, ?, current_timestamp)""",
+            [cid, a_id, b_id, "test contradiction"],
+        )
+        conn.close()
+
+    def test_personal_item_hidden_by_default(self, seeded_app):
+        """By default, personal items in contradictions are replaced with {id, hidden: true}."""
+        c = seeded_app["client"]
+        self._make_item("item_pub", "Public item")
+        self._make_item("item_priv", "Private item", is_personal=True)
+        self._make_contradiction("kc_test1", "item_pub", "item_priv")
+
+        r = c.get("/api/memory/admin/contradictions",
+                  headers=_auth(seeded_app["admin_token"]))
+        assert r.status_code == 200
+        data = r.json()
+        contra = next(c for c in data["contradictions"] if c["id"] == "kc_test1")
+        # item_a is public — full dict
+        assert contra["item_a"]["id"] == "item_pub"
+        assert "title" in contra["item_a"]
+        assert contra["item_a"].get("hidden") is not True
+        # item_b is personal — hidden placeholder
+        assert contra["item_b"]["id"] == "item_priv"
+        assert contra["item_b"].get("hidden") is True
+        assert "title" not in contra["item_b"]
+
+    def test_admin_can_opt_in_to_personal_content(self, seeded_app):
+        """With exclude_personal=false an admin sees full content."""
+        c = seeded_app["client"]
+        self._make_item("item_pub2", "Public item 2")
+        self._make_item("item_priv2", "Private item 2", is_personal=True)
+        self._make_contradiction("kc_test2", "item_pub2", "item_priv2")
+
+        r = c.get(
+            "/api/memory/admin/contradictions?exclude_personal=false",
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert r.status_code == 200
+        data = r.json()
+        contra = next(c for c in data["contradictions"] if c["id"] == "kc_test2")
+        assert contra["item_b"]["id"] == "item_priv2"
+        assert "title" in contra["item_b"]
+        assert contra["item_b"].get("hidden") is not True
+
+    def test_non_personal_items_always_enriched(self, seeded_app):
+        """Non-personal items on both sides are always returned in full."""
+        c = seeded_app["client"]
+        self._make_item("item_pub3", "Public A")
+        self._make_item("item_pub4", "Public B")
+        self._make_contradiction("kc_test3", "item_pub3", "item_pub4")
+
+        r = c.get("/api/memory/admin/contradictions",
+                  headers=_auth(seeded_app["admin_token"]))
+        assert r.status_code == 200
+        data = r.json()
+        contra = next(c for c in data["contradictions"] if c["id"] == "kc_test3")
+        assert "title" in contra["item_a"]
+        assert "title" in contra["item_b"]
+        assert contra["item_a"].get("hidden") is not True
+        assert contra["item_b"].get("hidden") is not True
+
+
+class TestAudienceDistribution:
+    """Verify audience-based knowledge distribution — mandate persists audience,
+    list respects user.groups, admins see all."""
+
+    def _seed_item(self, conn, item_id: str, title: str, audience: str | None = None):
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        conn.execute(
+            """INSERT INTO knowledge_items
+               (id, title, content, category, source_user, audience, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [item_id, title, f"content {title}", "test", "admin@test.com",
+             audience, "approved", now, now],
+        )
+
+    def test_mandate_persists_audience(self, seeded_app):
+        """POST /admin/mandate with audience stores it on the item."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        from src.db import get_system_db
+        conn = get_system_db()
+        self._seed_item(conn, "aud_item1", "Finance policy")
+        conn.close()
+
+        r = c.post(
+            "/api/memory/admin/mandate?item_id=aud_item1",
+            json={"reason": "important", "audience": "group:finance"},
+            headers=_auth(token),
+        )
+        assert r.status_code == 200
+
+        from src.db import get_system_db
+        conn = get_system_db()
+        row = conn.execute(
+            "SELECT audience, status FROM knowledge_items WHERE id = 'aud_item1'"
+        ).fetchone()
+        conn.close()
+        assert row[0] == "group:finance"
+        assert row[1] == "mandatory"
+
+    def test_batch_mandate_persists_audience(self, seeded_app):
+        """POST /admin/batch mandate action stores audience."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        from src.db import get_system_db
+        conn = get_system_db()
+        self._seed_item(conn, "aud_item2", "Eng item")
+        conn.close()
+
+        r = c.post(
+            "/api/memory/admin/batch",
+            json={"item_ids": ["aud_item2"], "action": "mandate", "audience": "group:engineering"},
+            headers=_auth(token),
+        )
+        assert r.status_code == 200
+
+        from src.db import get_system_db
+        conn = get_system_db()
+        row = conn.execute(
+            "SELECT audience FROM knowledge_items WHERE id = 'aud_item2'"
+        ).fetchone()
+        conn.close()
+        assert row[0] == "group:engineering"
+
+    def test_user_in_group_sees_group_items(self, seeded_app):
+        """A user whose groups include 'finance' sees audience='group:finance' items."""
+        import json
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        from app.auth.jwt import create_access_token
+
+        conn = get_system_db()
+        self._seed_item(conn, "aud_fin", "Finance fact", audience="group:finance")
+        self._seed_item(conn, "aud_all", "All-users fact", audience="all")
+        # Create a user with finance group
+        repo = UserRepository(conn)
+        repo.create(id="fin_user1", email="fin@test.com", name="Finance User", role="analyst")
+        repo.update("fin_user1", groups=json.dumps(["finance"]))
+        conn.close()
+
+        token = create_access_token("fin_user1", "fin@test.com", "analyst")
+        r = seeded_app["client"].get("/api/memory", headers=_auth(token))
+        assert r.status_code == 200
+        ids = {i["id"] for i in r.json()["items"]}
+        assert "aud_fin" in ids
+        assert "aud_all" in ids
+
+    def test_user_not_in_group_cannot_see_group_items(self, seeded_app):
+        """A user without 'finance' group does not see audience='group:finance' items."""
+        import json
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        from app.auth.jwt import create_access_token
+
+        conn = get_system_db()
+        self._seed_item(conn, "aud_fin2", "Finance fact 2", audience="group:finance")
+        self._seed_item(conn, "aud_null", "No audience fact", audience=None)
+        # Create a user with NO groups
+        repo = UserRepository(conn)
+        repo.create(id="eng_user1", email="eng@test.com", name="Eng User", role="analyst")
+        conn.close()
+
+        token = create_access_token("eng_user1", "eng@test.com", "analyst")
+        r = seeded_app["client"].get("/api/memory", headers=_auth(token))
+        assert r.status_code == 200
+        ids = {i["id"] for i in r.json()["items"]}
+        assert "aud_fin2" not in ids
+        assert "aud_null" in ids  # null audience treated as 'all'
+
+    def test_admin_sees_all_audiences(self, seeded_app):
+        """Admin sees items regardless of audience."""
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        self._seed_item(conn, "aud_fin3", "Finance exclusive", audience="group:finance")
+        self._seed_item(conn, "aud_eng3", "Eng exclusive", audience="group:engineering")
+        conn.close()
+
+        r = seeded_app["client"].get(
+            "/api/memory", headers=_auth(seeded_app["admin_token"])
+        )
+        assert r.status_code == 200
+        ids = {i["id"] for i in r.json()["items"]}
+        assert "aud_fin3" in ids
+        assert "aud_eng3" in ids
+
+    def test_null_audience_visible_to_all(self, seeded_app):
+        """Items with no audience set are visible to all authenticated users."""
+        from src.db import get_system_db
+        from app.auth.jwt import create_access_token
+
+        conn = get_system_db()
+        self._seed_item(conn, "aud_null2", "Global fact", audience=None)
+        conn.close()
+
+        r = seeded_app["client"].get(
+            "/api/memory", headers=_auth(seeded_app["analyst_token"])
+        )
+        assert r.status_code == 200
+        ids = {i["id"] for i in r.json()["items"]}
+        assert "aud_null2" in ids
