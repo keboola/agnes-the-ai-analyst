@@ -104,8 +104,25 @@ async def list_knowledge(
     # Privacy: non-privileged viewers can never opt out of the personal filter.
     # Their own personal contributions are visible via /my-contributions, not here.
     effective_exclude_personal = True if not _is_privileged_viewer(user) else exclude_personal
+    # Audience: admins see all items; other users are filtered to their group memberships.
+    # users.groups is a list like ["finance", "engineering"]; audience column stores "group:X".
+    if _is_privileged_viewer(user):
+        effective_groups = None  # no audience filter for admins
+    else:
+        raw_groups = user.get("groups") or []
+        if isinstance(raw_groups, str):
+            import json as _json
+            try:
+                raw_groups = _json.loads(raw_groups)
+            except Exception:
+                raw_groups = []
+        effective_groups = [f"group:{g}" for g in raw_groups]
     if search:
-        items = repo.search(search, exclude_personal=effective_exclude_personal)
+        items = repo.search(
+            search,
+            exclude_personal=effective_exclude_personal,
+            user_groups=effective_groups,
+        )
     else:
         statuses = [status_filter] if status_filter else None
         items = repo.list_items(
@@ -114,6 +131,7 @@ async def list_knowledge(
             domain=domain,
             source_type=source_type,
             exclude_personal=effective_exclude_personal,
+            user_groups=effective_groups,
             limit=per_page,
             offset=offset,
         )
@@ -333,6 +351,8 @@ async def admin_mandate(
     repo = KnowledgeRepository(conn)
     _get_item_or_404(repo, item_id)
     repo.update_status(item_id, "mandatory")
+    if request.audience is not None:
+        repo.update(item_id, audience=request.audience)
     _audit_action(conn, user["email"], "mandate", item_id, {
         "reason": request.reason, "audience": request.audience,
     })
@@ -398,6 +418,8 @@ async def admin_batch(
             results["not_found"].append(item_id)
             continue
         repo.update_status(item_id, new_status)
+        if request.action == "mandate" and request.audience is not None:
+            repo.update(item_id, audience=request.audience)
         _audit_action(conn, user["email"], request.action, item_id, {
             "reason": request.reason, "audience": request.audience, "batch": True,
         })
@@ -454,16 +476,28 @@ async def admin_audit(
 @router.get("/admin/contradictions")
 async def admin_contradictions(
     resolved: Optional[bool] = None,
+    exclude_personal: bool = True,
     user: dict = Depends(require_role(Role.KM_ADMIN)),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """List knowledge contradictions for admin review."""
+    """List knowledge contradictions for admin review.
+
+    By default (`exclude_personal=True`), personal items are replaced with
+    {id, hidden: true} so the contradiction record is still visible for
+    governance but personal content is not exposed. Pass exclude_personal=false
+    to opt in to full content (KM_ADMIN only — see ADR Decision 1).
+    """
     repo = KnowledgeRepository(conn)
     contradictions = repo.list_contradictions(resolved=resolved)
-    # Enrich with item details
     for c in contradictions:
-        c["item_a"] = repo.get_by_id(c["item_a_id"])
-        c["item_b"] = repo.get_by_id(c["item_b_id"])
+        item_a = repo.get_by_id(c["item_a_id"])
+        item_b = repo.get_by_id(c["item_b_id"])
+        if exclude_personal:
+            c["item_a"] = {"id": c["item_a_id"], "hidden": True} if item_a and item_a.get("is_personal") else item_a
+            c["item_b"] = {"id": c["item_b_id"], "hidden": True} if item_b and item_b.get("is_personal") else item_b
+        else:
+            c["item_a"] = item_a
+            c["item_b"] = item_b
     return {"contradictions": contradictions, "count": len(contradictions)}
 
 
