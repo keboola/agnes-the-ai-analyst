@@ -16,6 +16,23 @@ router = APIRouter(prefix="/api/memory", tags=["memory"])
 VALID_STATUSES = ["pending", "approved", "mandatory", "rejected", "revoked", "expired"]
 VALID_DOMAINS = ["finance", "engineering", "product", "data", "operations", "infrastructure"]
 
+# Roles allowed to see is_personal=true items they did not contribute.
+_PRIVILEGED_VIEWER_ROLES = {Role.KM_ADMIN.value, Role.ADMIN.value}
+
+
+def _is_privileged_viewer(user: dict) -> bool:
+    return user.get("role") in _PRIVILEGED_VIEWER_ROLES
+
+
+def _can_view_item(user: dict, item: dict) -> bool:
+    """Personal items are visible only to the contributor and privileged viewers (km_admin/admin).
+    Non-personal items are visible to any authenticated user."""
+    if not item.get("is_personal"):
+        return True
+    if _is_privileged_viewer(user):
+        return True
+    return item.get("source_user") == user.get("email")
+
 
 class CreateKnowledgeRequest(BaseModel):
     title: str
@@ -84,8 +101,11 @@ async def list_knowledge(
     repo = KnowledgeRepository(conn)
     page = max(page, 1)
     offset = (page - 1) * per_page
+    # Privacy: non-privileged viewers can never opt out of the personal filter.
+    # Their own personal contributions are visible via /my-contributions, not here.
+    effective_exclude_personal = True if not _is_privileged_viewer(user) else exclude_personal
     if search:
-        items = repo.search(search)
+        items = repo.search(search, exclude_personal=effective_exclude_personal)
     else:
         statuses = [status_filter] if status_filter else None
         items = repo.list_items(
@@ -93,7 +113,7 @@ async def list_knowledge(
             category=category,
             domain=domain,
             source_type=source_type,
-            exclude_personal=exclude_personal,
+            exclude_personal=effective_exclude_personal,
             limit=per_page,
             offset=offset,
         )
@@ -173,7 +193,8 @@ async def vote_knowledge(
     if request.vote not in (1, -1):
         raise HTTPException(status_code=400, detail="Vote must be 1 or -1")
     repo = KnowledgeRepository(conn)
-    if not repo.get_by_id(item_id):
+    item = repo.get_by_id(item_id)
+    if not item or not _can_view_item(user, item):
         raise HTTPException(status_code=404, detail="Knowledge item not found")
     repo.vote(item_id, user["id"], request.vote)
     return repo.get_votes(item_id)
@@ -235,7 +256,7 @@ async def get_provenance(
     """Get source provenance for a knowledge item."""
     repo = KnowledgeRepository(conn)
     item = repo.get_by_id(item_id)
-    if not item:
+    if not item or not _can_view_item(user, item):
         raise HTTPException(status_code=404, detail="Knowledge item not found")
     return {
         "id": item_id,

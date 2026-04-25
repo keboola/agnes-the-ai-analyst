@@ -34,6 +34,7 @@ For each verification provide:
 - user_quote: the exact user message that constitutes the verification
 - domain: one of [finance, engineering, product, data, operations, infrastructure]
 - entities: list of entity names mentioned
-- base_confidence: float based on detection type rules above
+
+(Confidence is computed in code from detection_type — do not return a confidence value.)
 
 If no verifications are found, return empty verifications array."""

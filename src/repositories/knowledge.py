@@ -116,14 +116,14 @@ class KnowledgeRepository:
         params.extend([limit, offset])
         return self._rows_to_dicts(self.conn.execute(query, params).fetchall())
 
-    def search(self, query: str) -> List[Dict[str, Any]]:
+    def search(self, query: str, exclude_personal: bool = False) -> List[Dict[str, Any]]:
         pattern = f"%{query}%"
-        results = self.conn.execute(
-            """SELECT * FROM knowledge_items
-            WHERE title ILIKE ? OR content ILIKE ?
-            ORDER BY updated_at DESC""",
-            [pattern, pattern],
-        ).fetchall()
+        sql = """SELECT * FROM knowledge_items
+            WHERE (title ILIKE ? OR content ILIKE ?)"""
+        if exclude_personal:
+            sql += " AND (is_personal = FALSE OR is_personal IS NULL)"
+        sql += " ORDER BY updated_at DESC"
+        results = self.conn.execute(sql, [pattern, pattern]).fetchall()
         return self._rows_to_dicts(results)
 
     def list_by_domain(
@@ -185,16 +185,40 @@ class KnowledgeRepository:
         item_b_id: str,
         explanation: str,
         severity: Optional[str] = None,
-        suggested_resolution: Optional[str] = None,
+        suggested_resolution: Optional[Any] = None,
     ) -> str:
+        """Persist a contradiction.
+
+        ``suggested_resolution`` may be either a free-form string (legacy
+        callers) or a dict (the structured shape produced by Haiku — see ADR
+        Decision 4). Dicts are JSON-encoded into the existing TEXT column so
+        no schema migration is needed; the read side decodes back to dict.
+        """
+        if isinstance(suggested_resolution, dict):
+            suggested_resolution_db: Optional[str] = json.dumps(suggested_resolution)
+        else:
+            suggested_resolution_db = suggested_resolution
         contradiction_id = f"kc_{uuid.uuid4().hex[:12]}"
         self.conn.execute(
             """INSERT INTO knowledge_contradictions (
                 id, item_a_id, item_b_id, explanation, severity, suggested_resolution
             ) VALUES (?, ?, ?, ?, ?, ?)""",
-            [contradiction_id, item_a_id, item_b_id, explanation, severity, suggested_resolution],
+            [contradiction_id, item_a_id, item_b_id, explanation, severity, suggested_resolution_db],
         )
         return contradiction_id
+
+    @staticmethod
+    def _decode_suggested_resolution(row: Dict[str, Any]) -> Dict[str, Any]:
+        """If the stored suggested_resolution is JSON, decode it to a dict.
+        Plain strings (legacy rows) are returned unchanged.
+        """
+        raw = row.get("suggested_resolution")
+        if isinstance(raw, str) and raw and raw.lstrip().startswith("{"):
+            try:
+                row["suggested_resolution"] = json.loads(raw)
+            except json.JSONDecodeError:
+                pass
+        return row
 
     def list_contradictions(
         self,
@@ -208,7 +232,8 @@ class KnowledgeRepository:
             params.append(resolved)
         query += " ORDER BY detected_at DESC LIMIT ?"
         params.append(limit)
-        return self._rows_to_dicts(self.conn.execute(query, params).fetchall())
+        rows = self._rows_to_dicts(self.conn.execute(query, params).fetchall())
+        return [self._decode_suggested_resolution(r) for r in rows]
 
     def resolve_contradiction(
         self,
@@ -229,7 +254,44 @@ class KnowledgeRepository:
             "SELECT * FROM knowledge_contradictions WHERE id = ?",
             [contradiction_id],
         ).fetchone()
-        return self._row_to_dict(result)
+        row = self._row_to_dict(result)
+        if row is not None:
+            self._decode_suggested_resolution(row)
+        return row
+
+    # --- Verification Evidence ---
+
+    def create_evidence(
+        self,
+        item_id: str,
+        source_user: Optional[str] = None,
+        source_ref: Optional[str] = None,
+        detection_type: Optional[str] = None,
+        user_quote: Optional[str] = None,
+    ) -> str:
+        """Persist one verification evidence row for a knowledge item.
+
+        Multiple evidence rows per item are expected — each new analyst
+        confirmation/correction adds one. user_quote and detection_type are the
+        raw signal future Bayesian re-calibration consumes.
+        """
+        evidence_id = f"ev_{uuid.uuid4().hex[:12]}"
+        self.conn.execute(
+            """INSERT INTO verification_evidence (
+                id, item_id, source_user, source_ref, detection_type, user_quote
+            ) VALUES (?, ?, ?, ?, ?, ?)""",
+            [evidence_id, item_id, source_user, source_ref, detection_type, user_quote],
+        )
+        return evidence_id
+
+    def list_evidence(self, item_id: str) -> List[Dict[str, Any]]:
+        results = self.conn.execute(
+            """SELECT * FROM verification_evidence
+            WHERE item_id = ?
+            ORDER BY created_at ASC""",
+            [item_id],
+        ).fetchall()
+        return self._rows_to_dicts(results)
 
     # --- Session Extraction State ---
 
@@ -262,36 +324,26 @@ class KnowledgeRepository:
         self,
         new_item_id: str,
         domain: Optional[str] = None,
-        title_words: Optional[List[str]] = None,
-        limit: int = 10,
+        limit: int = 100,
     ) -> List[Dict[str, Any]]:
-        """Find existing items that might contradict the new item.
+        """Same-domain candidates for LLM-based contradiction judgment.
 
-        Uses domain match and keyword match to pre-filter before LLM judge.
+        Domain is the only narrowing applied at the SQL layer. Topic / content
+        matching is delegated to the LLM judge in
+        services.corporate_memory.contradiction.find_and_judge() — see ADR
+        Decision 4. The brittle keyword-substring layer that used to live here
+        was removed; it had recall holes (synonyms, paraphrases) and the
+        domain conjunct alone is enough as a hard ACL.
         """
-        conditions = []
-        params: List[Any] = [new_item_id]
-
-        if domain:
-            conditions.append("domain = ?")
-            params.append(domain)
-        if title_words:
-            for word in title_words[:3]:
-                conditions.append("(title ILIKE ? OR content ILIKE ?)")
-                pattern = f"%{word}%"
-                params.extend([pattern, pattern])
-
-        if not conditions:
-            return []
-
-        where_clause = " OR ".join(conditions)
-        query = f"""
+        sql = """
             SELECT * FROM knowledge_items
             WHERE status IN ('approved', 'mandatory', 'pending')
-            AND id != ?
-            AND ({where_clause})
-            ORDER BY updated_at DESC
-            LIMIT ?
+              AND id != ?
         """
+        params: List[Any] = [new_item_id]
+        if domain:
+            sql += " AND domain = ?"
+            params.append(domain)
+        sql += " ORDER BY updated_at DESC LIMIT ?"
         params.append(limit)
-        return self._rows_to_dicts(self.conn.execute(query, params).fetchall())
+        return self._rows_to_dicts(self.conn.execute(sql, params).fetchall())

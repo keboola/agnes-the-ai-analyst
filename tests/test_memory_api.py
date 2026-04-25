@@ -306,3 +306,177 @@ class TestMemoryAdminEndpoints:
         c = seeded_app["client"]
         resp = c.post("/api/memory/admin/approve?item_id=some-id")
         assert resp.status_code == 401
+
+
+class TestPersonalItemPrivacy:
+    """Regression tests for the is_personal privacy leak (pd-ps review Q5).
+
+    Personal items must be visible only to the contributor and to privileged
+    viewers (km_admin/admin). Non-privileged callers must not be able to bypass
+    the filter via list, search, provenance, or vote endpoints — even by setting
+    exclude_personal=false.
+    """
+
+    def _create_and_flag_personal(self, client, contributor_token):
+        resp = client.post(
+            "/api/memory",
+            json={"title": "Confidential note", "content": "private detail", "category": "engineering"},
+            headers=_auth(contributor_token),
+        )
+        assert resp.status_code == 201
+        item_id = resp.json()["id"]
+        flag = client.post(
+            f"/api/memory/{item_id}/personal",
+            json={"is_personal": True},
+            headers=_auth(contributor_token),
+        )
+        assert flag.status_code == 200
+        return item_id
+
+    def test_list_hides_personal_from_non_contributor_non_admin(self, seeded_app):
+        c = seeded_app["client"]
+        # admin is contributor; analyst is the non-contributor non-privileged caller.
+        item_id = self._create_and_flag_personal(c, seeded_app["admin_token"])
+
+        resp = c.get("/api/memory", headers=_auth(seeded_app["analyst_token"]))
+        assert resp.status_code == 200
+        ids = {it["id"] for it in resp.json()["items"]}
+        assert item_id not in ids
+
+    def test_list_exclude_personal_false_is_coerced_for_non_admin(self, seeded_app):
+        """Caller sets exclude_personal=false; server must silently coerce to true for non-admins."""
+        c = seeded_app["client"]
+        item_id = self._create_and_flag_personal(c, seeded_app["admin_token"])
+
+        resp = c.get(
+            "/api/memory?exclude_personal=false",
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert resp.status_code == 200
+        ids = {it["id"] for it in resp.json()["items"]}
+        assert item_id not in ids
+
+    def test_search_hides_personal_from_non_admin(self, seeded_app):
+        c = seeded_app["client"]
+        item_id = self._create_and_flag_personal(c, seeded_app["admin_token"])
+
+        resp = c.get(
+            "/api/memory?search=Confidential",
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert resp.status_code == 200
+        ids = {it["id"] for it in resp.json()["items"]}
+        assert item_id not in ids
+
+    def test_provenance_returns_404_for_non_contributor_non_admin(self, seeded_app):
+        c = seeded_app["client"]
+        item_id = self._create_and_flag_personal(c, seeded_app["admin_token"])
+
+        resp = c.get(
+            f"/api/memory/{item_id}/provenance",
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        # 404 (not 403) avoids leaking item existence.
+        assert resp.status_code == 404
+
+    def test_vote_returns_404_for_non_contributor_non_admin(self, seeded_app):
+        c = seeded_app["client"]
+        item_id = self._create_and_flag_personal(c, seeded_app["admin_token"])
+
+        resp = c.post(
+            f"/api/memory/{item_id}/vote",
+            json={"vote": 1},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert resp.status_code == 404
+
+    def test_admin_can_see_personal_when_opting_in(self, seeded_app):
+        """Admin (privileged viewer) opting in via exclude_personal=false sees personal items."""
+        c = seeded_app["client"]
+        item_id = self._create_and_flag_personal(c, seeded_app["admin_token"])
+
+        resp = c.get(
+            "/api/memory?exclude_personal=false",
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert resp.status_code == 200
+        ids = {it["id"] for it in resp.json()["items"]}
+        assert item_id in ids
+
+    def test_contributor_can_access_their_own_personal_item(self, seeded_app):
+        """Contributor reaches their personal item via /my-contributions and direct provenance/vote."""
+        c = seeded_app["client"]
+        # Use analyst as the contributor (non-privileged).
+        item_id = self._create_and_flag_personal(c, seeded_app["analyst_token"])
+
+        # /my-contributions exposes contributor's own items including personal ones.
+        mine = c.get("/api/memory/my-contributions", headers=_auth(seeded_app["analyst_token"]))
+        assert mine.status_code == 200
+        assert item_id in {it["id"] for it in mine.json()["items"]}
+
+        # Direct provenance + vote work for the contributor.
+        prov = c.get(f"/api/memory/{item_id}/provenance", headers=_auth(seeded_app["analyst_token"]))
+        assert prov.status_code == 200
+
+        vote = c.post(
+            f"/api/memory/{item_id}/vote",
+            json={"vote": 1},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert vote.status_code == 200
+
+    def test_admin_search_with_opt_in_returns_personal_item(self, seeded_app):
+        """Confirms exclude_personal flows through to repo.search() for privileged callers."""
+        c = seeded_app["client"]
+        item_id = self._create_and_flag_personal(c, seeded_app["admin_token"])
+        resp = c.get(
+            "/api/memory?search=Confidential&exclude_personal=false",
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert resp.status_code == 200
+        assert item_id in {it["id"] for it in resp.json()["items"]}
+
+    def test_unflag_personal_makes_item_visible_again(self, seeded_app):
+        """Round-trip: contributor flags, then un-flags. Non-admins must regain visibility."""
+        c = seeded_app["client"]
+        item_id = self._create_and_flag_personal(c, seeded_app["admin_token"])
+
+        # Pre-condition: analyst can't see it.
+        before = c.get("/api/memory", headers=_auth(seeded_app["analyst_token"]))
+        assert item_id not in {it["id"] for it in before.json()["items"]}
+
+        # Contributor un-flags.
+        unflag = c.post(
+            f"/api/memory/{item_id}/personal",
+            json={"is_personal": False},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert unflag.status_code == 200
+
+        # Now analyst can see it.
+        after = c.get("/api/memory", headers=_auth(seeded_app["analyst_token"]))
+        assert item_id in {it["id"] for it in after.json()["items"]}
+
+    def test_non_personal_item_remains_visible_to_non_admin(self, seeded_app):
+        """Negative control: an item that is NOT personal must still be visible — confirms
+        we did not over-tighten the filter."""
+        c = seeded_app["client"]
+        resp = c.post(
+            "/api/memory",
+            json={"title": "Public note", "content": "shared", "category": "engineering"},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        item_id = resp.json()["id"]
+
+        listed = c.get("/api/memory", headers=_auth(seeded_app["analyst_token"]))
+        assert item_id in {it["id"] for it in listed.json()["items"]}
+
+        prov = c.get(f"/api/memory/{item_id}/provenance", headers=_auth(seeded_app["analyst_token"]))
+        assert prov.status_code == 200
+
+        vote = c.post(
+            f"/api/memory/{item_id}/vote",
+            json={"vote": 1},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert vote.status_code == 200
