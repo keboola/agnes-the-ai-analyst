@@ -22,6 +22,11 @@
 # the bring-up window, and the only way to get Caddy up before the
 # real cert exists without splitting into two code paths.
 set -euo pipefail
+# Disable core dumps for this script. openssl runs with the unencrypted
+# privkey in process memory; a SIGSEGV core file would leak it to whoever
+# can read /var/lib/systemd/coredump (typically root + adm group). Cheap
+# defence in depth — this script is short-lived and has no debug needs.
+ulimit -c 0
 
 cd /opt/agnes
 # shellcheck disable=SC1091
@@ -158,11 +163,16 @@ if ! refetch "$TLS_FULLCHAIN_URL" "$CERT_DIR/fullchain.pem" 644 cert; then
 fi
 
 if [ "$CHANGED" -eq 1 ]; then
-  COMPOSE_FILES="-f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.host-mount.yml -f docker-compose.tls.yml"
-  if docker compose $COMPOSE_FILES --profile tls ps --status=running --format '{{.Service}}' 2>/dev/null | grep -q '^caddy$'; then
+  # Array form (vs. word-split string) — quoted expansion is the
+  # modern bash idiom for arg lists, defensive against future filename
+  # weirdness. ps --status flag requires Compose v2.6.1+; if your VMs
+  # are older, replace with `ps --format '{{.Service}} {{.State}}'`
+  # and filter on the State column.
+  COMPOSE_FILES=( -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.host-mount.yml -f docker-compose.tls.yml )
+  if docker compose "${COMPOSE_FILES[@]}" --profile tls ps --status=running --format '{{.Service}}' 2>/dev/null | grep -q '^caddy$'; then
     # Caddy running — graceful reload via SIGUSR1 picks up the new
     # cert without dropping connections.
-    docker compose $COMPOSE_FILES --profile tls kill -s SIGUSR1 caddy >/dev/null 2>&1 \
+    docker compose "${COMPOSE_FILES[@]}" --profile tls kill -s SIGUSR1 caddy >/dev/null 2>&1 \
       && echo "$(date -Is) caddy reloaded" \
       || echo "$(date -Is) caddy reload signal failed"
   else
@@ -171,6 +181,6 @@ if [ "$CHANGED" -eq 1 ]; then
     # in place so this script is self-sufficient: no separate manual
     # `docker compose up` step after seeding certs.
     echo "$(date -Is) caddy not running — bringing tls profile up"
-    docker compose $COMPOSE_FILES --profile tls up -d 2>&1 | tail -5
+    docker compose "${COMPOSE_FILES[@]}" --profile tls up -d 2>&1 | tail -5
   fi
 fi
