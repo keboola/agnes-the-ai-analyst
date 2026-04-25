@@ -1,5 +1,7 @@
 # Multi-Instance Deployment & Versioning — Design Spec
 
+> **Historical note (2026-04-24):** This spec is a snapshot from 2026-04-09. Some operational details have evolved since — most notably, the Caddy `production` profile referenced in command examples below was renamed to `tls` (see PR #51). For the current deployment commands, follow `docs/DEPLOYMENT.md`. This file is preserved as design history.
+
 ## Goal
 
 Make Agnes deployable to 20+ independent customer instances via self-service, with safe versioning that prevents one customer's PR from breaking another's deployment.

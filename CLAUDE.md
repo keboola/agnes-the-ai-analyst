@@ -27,7 +27,13 @@ Ask the user for:
 ```bash
 docker compose up          # Start app + scheduler
 docker compose --profile full up  # Include telegram bot
+
+# HTTPS mode — Caddy + corporate-CA certs at /data/state/certs
+docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.tls.yml \
+    --profile tls up -d
 ```
+
+See `docs/DEPLOYMENT.md` → **TLS** for cert provisioning + `scripts/grpn/agnes-tls-rotate.sh` (daily refetch from `TLS_FULLCHAIN_URL`, `SIGUSR1` reload on diff, no-op when unchanged). The infra repo's `startup.sh` installs this as a systemd timer automatically.
 
 ## Project Structure
 
