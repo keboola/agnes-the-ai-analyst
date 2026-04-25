@@ -37,17 +37,17 @@ CHANGED=0
 TMP=$(mktemp); trap 'rm -f "$TMP"' EXIT
 
 refetch() {
-  local url="$1" dest="$2" mode="$3"
-  # IMPORTANT: tls-fetch.sh may fail (404, empty body, auth error). When
-  # the caller sits behind `if ! refetch`, bash disables `set -e` for
-  # everything inside the condition — so without an explicit exit-code
-  # check we would fall through to `install` and overwrite $dest with
-  # whatever stale bytes the PREVIOUS refetch call left in $TMP. That
-  # turned the "fullchain unavailable → fall back to self-signed" branch
-  # into a "fullchain file filled with privkey bytes" bug. Check
-  # explicitly and return 1 on any fetch failure so the caller's
-  # fallback branch fires cleanly.
-  if ! /usr/local/bin/tls-fetch.sh "$url" "$TMP" "$mode"; then
+  local url="$1" dest="$2" mode="$3" kind="$4"
+  # IMPORTANT: tls-fetch.sh may fail (404, empty body, auth error,
+  # invalid PEM, redirect attempt). When the caller sits behind
+  # `if ! refetch`, bash disables `set -e` for everything inside the
+  # condition — so without an explicit exit-code check we would fall
+  # through to `install` and overwrite $dest with whatever stale bytes
+  # the PREVIOUS refetch call left in $TMP. That turned the "fullchain
+  # unavailable → fall back to self-signed" branch into a "fullchain
+  # file filled with privkey bytes" bug. Check explicitly and return 1
+  # on any fetch failure so the caller's fallback branch fires cleanly.
+  if ! /usr/local/bin/tls-fetch.sh "$url" "$TMP" "$mode" "$kind"; then
     return 1
   fi
   if [ ! -f "$dest" ] || ! cmp -s "$TMP" "$dest"; then
@@ -79,7 +79,7 @@ refetch() {
 #      Until Security publishes the real fullchain, the self-signed
 #      fallback below keeps Caddy serving HTTPS against this same key.
 if [ -n "${TLS_PRIVKEY_URL:-}" ]; then
-  if ! refetch "$TLS_PRIVKEY_URL" "$CERT_DIR/privkey.pem" 600; then
+  if ! refetch "$TLS_PRIVKEY_URL" "$CERT_DIR/privkey.pem" 600 key; then
     if [ ! -s "$CERT_DIR/privkey.pem" ]; then
       echo "ERROR: privkey fetch failed and no cached copy exists — aborting" >&2
       exit 1
@@ -130,7 +130,7 @@ fi
 # Real cert fetch. On failure, fall back to self-signed IFF no
 # fullchain exists yet. If one exists (prior real OR prior self-signed)
 # keep it — a transient fetch failure should not churn certs.
-if ! refetch "$TLS_FULLCHAIN_URL" "$CERT_DIR/fullchain.pem" 644; then
+if ! refetch "$TLS_FULLCHAIN_URL" "$CERT_DIR/fullchain.pem" 644 cert; then
   if [ ! -s "$CERT_DIR/fullchain.pem" ]; then
     echo "$(date -Is) real cert unavailable at $TLS_FULLCHAIN_URL — generating 30-day self-signed"
     if [ ! -s "$CERT_DIR/privkey.pem" ]; then
