@@ -147,6 +147,17 @@ def create_app() -> FastAPI:
     except Exception as e:
         logger.warning(f"Could not load instance config: {e}")
 
+    # Configure confidence scoring from instance config (corporate_memory.confidence section)
+    try:
+        from app.instance_config import get_corporate_memory_config
+        from services.corporate_memory.confidence import configure as configure_confidence
+        cm_config = get_corporate_memory_config()
+        if cm_config and "confidence" in cm_config:
+            configure_confidence(cm_config["confidence"])
+            logger.info("Corporate memory confidence config applied")
+    except Exception as e:
+        logger.warning(f"Could not configure corporate memory confidence: {e}")
+
     # Startup banner
     from src.db import SCHEMA_VERSION
     logger.info(

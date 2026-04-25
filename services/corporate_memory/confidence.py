@@ -25,6 +25,7 @@ _DECAY_CONFIG: dict = {
     "half_life_months": 12,
     "floor": {
         "admin_mandate": 0.50,
+        "user_verification": 0.40,
         "default": 0.0,
     },
 }
@@ -54,6 +55,7 @@ def configure(config: dict) -> None:
           decay_rate_monthly: 0.02  # for linear
           floor:
             admin_mandate: 0.50
+            user_verification: 0.40
             default: 0.0
     """
     global _BASE_CONFIDENCE, _MODIFIER_EFFECTS, _DECAY_CONFIG
