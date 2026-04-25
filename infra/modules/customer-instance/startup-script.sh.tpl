@@ -69,6 +69,14 @@ if [ "$DATA_SOURCE" = "keboola" ]; then
 fi
 JWT_KEY=$(gcloud secrets versions access latest --secret=agnes-$${CUSTOMER_NAME}-jwt-secret)
 
+# Optional Google OAuth credentials. If the operator has created
+# google-oauth-client-{id,secret} secrets in the project's Secret Manager
+# AND wired them via runtime_secrets in the calling Terraform, the VM SA can
+# read them — write into .env so the Google sign-in flow works. Missing /
+# 403 / empty → silent fallback to "" so password + email auth keep working.
+GOOGLE_CLIENT_ID=$(gcloud secrets versions access latest --secret=google-oauth-client-id 2>/dev/null || echo "")
+GOOGLE_CLIENT_SECRET=$(gcloud secrets versions access latest --secret=google-oauth-client-secret 2>/dev/null || echo "")
+
 # AGNES_VERSION, RELEASE_CHANNEL, AGNES_COMMIT_SHA are baked into the image
 # itself as ENV (see Dockerfile ARG/ENV + release.yml build-args). We do NOT
 # set them here — doing so would override the image-level values with the
@@ -103,6 +111,8 @@ LOG_LEVEL=info
 DOMAIN=$DOMAIN
 AGNES_TAG=$IMAGE_TAG
 ACME_EMAIL=$ACME_EMAIL
+GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID
+GOOGLE_CLIENT_SECRET=$GOOGLE_CLIENT_SECRET
 $CADDY_TLS_LINE
 ENVEOF
 chmod 600 "$APP_DIR/.env"
