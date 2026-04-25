@@ -55,19 +55,35 @@ async def _fetch_google_groups(access_token: str, email: str) -> list[dict]:
     Best-effort: returns [] on any failure (403 non-Workspace tenant, 401 expired
     token, network error, etc.). Must never raise — callers rely on this to keep
     the login flow working even when Cloud Identity is unavailable.
+
+    Cloud Identity Groups Search query syntax (CEL) requires:
+      - `parent == 'customers/<id>'`  (use 'customers/my_customer' alias to mean
+        the OAuth-authenticated user's own org — no need to know the customer ID)
+      - a `labels` membership predicate scoping the group type
+    plus optional `member_key_id`. Without `parent` + `labels` Google returns
+    400 INVALID_ARGUMENT (silently — error body just says "invalid argument").
+    Reference: https://cloud.google.com/identity/docs/reference/rest/v1/groups/search
     """
-    params = {
-        "query": f"member_key_id=='{email}'",
-        "view": "BASIC",
-    }
+    # Workspace mailing-list-style "discussion_forum" groups (the common case).
+    # Security groups would be `cloudidentity.googleapis.com/groups.security`
+    # — handled in a follow-up if needed; one query at a time keeps the call
+    # cheap and the error surface small.
+    query = (
+        f"parent == 'customers/my_customer' "
+        f"&& member_key_id == '{email}' "
+        f"&& 'cloudidentity.googleapis.com/groups.discussion_forum' in labels"
+    )
+    params = {"query": query, "view": "BASIC"}
     headers = {"Authorization": f"Bearer {access_token}"}
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(GROUPS_SEARCH_URL, params=params, headers=headers)
         if resp.status_code >= 400:
+            # Log full body (not truncated) so future query-syntax / scope /
+            # tenant issues are diagnosable from one log line.
             logger.warning(
-                "Google groups fetch returned %s for %s: %s",
-                resp.status_code, email, resp.text[:200],
+                "Google groups fetch returned %s for %s — query=%r — body=%s",
+                resp.status_code, email, query, resp.text,
             )
             return []
         data = resp.json()
