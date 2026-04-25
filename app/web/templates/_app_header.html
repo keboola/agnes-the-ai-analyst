@@ -36,7 +36,8 @@
                     <div class="app-user-menu-role">{{ session.user.role | capitalize }}</div>
                     {% endif %}
                 </div>
-                <a class="app-user-menu-item {% if _path == '/tokens' or _path.startswith('/profile') %}is-active{% endif %}" role="menuitem" href="/tokens">My tokens</a>
+                <a class="app-user-menu-item {% if _path.startswith('/profile') %}is-active{% endif %}" role="menuitem" href="/profile">Profile</a>
+                <a class="app-user-menu-item {% if _path == '/tokens' %}is-active{% endif %}" role="menuitem" href="/tokens">My tokens</a>
                 <a class="app-user-menu-item" role="menuitem" href="{{ url_for('auth.logout') }}">Logout</a>
             </div>
         </div>
