@@ -111,6 +111,29 @@ The V1 must-fix items from that review are implemented on
 
 ---
 
+## `admin_contradictions` enrichment vs. opt-in pattern (open question)
+
+`GET /api/memory/admin/contradictions` (`app/api/memory.py`) is `KM_ADMIN`-only,
+so it is not a strict privacy leak. But the enrichment loop unconditionally
+inlines the full `item_a` and `item_b` dicts (`title`, `content`, `source_user`)
+even when those items are flagged `is_personal=true`. ADR Decision 1 says
+admins see personal items only when they explicitly opt in via
+`exclude_personal=false`; this endpoint bypasses the opt-in.
+
+Two ways forward — needs an alignment call before code lands:
+
+- **Option A** — add `exclude_personal: bool = True` query param to the
+  endpoint. When omitted, replace personal item dicts with
+  `{"id": ..., "hidden": True}` so the contradiction record is still
+  visible (governance still works) but the personal content is not.
+- **Option B** — keep current behavior, document it explicitly: "the
+  contradiction queue always shows full item content because contradictions
+  need governance the same as public items."
+
+Decision pending pd × Padak alignment.
+
+---
+
 ## Audience-based knowledge distribution (half-built, never finished)
 
 Status: **not in scope for V1 must-fix** — flagged here so it stops getting

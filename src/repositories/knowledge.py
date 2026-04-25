@@ -334,10 +334,19 @@ class KnowledgeRepository:
         Decision 4. The brittle keyword-substring layer that used to live here
         was removed; it had recall holes (synonyms, paraphrases) and the
         domain conjunct alone is enough as a hard ACL.
+
+        Personal items (`is_personal = TRUE`) are excluded unconditionally —
+        the LLM call is a read site (and exfiltrates content to the external
+        API), so ADR Decision 1 ("hard privacy boundary, not a UI hint")
+        applies. Without this filter, personal item content would be
+        serialized into every contradiction prompt and could be paraphrased
+        into `knowledge_contradictions.suggested_resolution.merged_content`
+        — bypassing the contributor-only visibility rule.
         """
         sql = """
             SELECT * FROM knowledge_items
             WHERE status IN ('approved', 'mandatory', 'pending')
+              AND (is_personal = FALSE OR is_personal IS NULL)
               AND id != ?
         """
         params: List[Any] = [new_item_id]

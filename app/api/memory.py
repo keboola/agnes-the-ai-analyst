@@ -133,9 +133,18 @@ async def get_stats(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Get corporate memory statistics."""
+    """Get corporate memory statistics.
+
+    Aggregations exclude personal items for non-privileged callers — otherwise
+    `total` and the `by_*` counts would change in observable ways when a
+    colleague flags or unflags a personal item, leaking existence info per
+    ADR Decision 1.
+    """
     repo = KnowledgeRepository(conn)
-    all_items = repo.list_items(limit=10000)
+    all_items = repo.list_items(
+        limit=10000,
+        exclude_personal=not _is_privileged_viewer(user),
+    )
     status_counts: dict = {}
     categories: set = set()
     domains: dict = {}

@@ -65,12 +65,19 @@ def parse_session(jsonl_path: Path) -> list[dict]:
 
 
 def _format_turns(turns: list[dict]) -> str:
-    """Format conversation turns as readable text for the LLM prompt."""
+    """Format conversation turns as a parseable, prompt-injection-hardened block.
+
+    Session transcripts are heavily user-influenced (anything the analyst typed
+    lands here). Each turn is wrapped in `<turn role="…">` tags with `</turn>`
+    neutralized inside the content so a crafted message cannot break out of
+    the wrapper. The trust-boundary instruction in VERIFICATION_EXTRACT_PROMPT
+    tells the LLM to treat content inside `<turn>` as data, not directives.
+    """
     lines: list[str] = []
     for turn in turns:
         role = turn.get("role", "unknown")
-        content = turn.get("content", "")
-        lines.append(f"[{role}]: {content}")
+        content = (turn.get("content") or "").replace("</turn>", "&lt;/turn&gt;")
+        lines.append(f'<turn role="{role}">{content}</turn>')
     return "\n".join(lines)
 
 
@@ -175,7 +182,26 @@ def run(
                 # Check if item already exists (deduplication)
                 existing = repo.get_by_id(item_id)
                 if existing:
-                    logger.info("Duplicate item skipped: %s", item_id)
+                    # Hash collision on (title, content) → another analyst
+                    # produced the same fact. ADR Decision 3 expects multiple
+                    # evidence rows to accumulate (one per distinct
+                    # verification event), so we still persist the new
+                    # evidence row even though we skip the create+contradiction
+                    # path. Without this, the second analyst's user_quote and
+                    # detection_type are silently dropped and the
+                    # "additional verifiers" boost cannot accumulate.
+                    logger.info(
+                        "Duplicate item — recording evidence on existing: %s",
+                        item_id,
+                    )
+                    if not dry_run:
+                        repo.create_evidence(
+                            item_id=item_id,
+                            source_user=username,
+                            source_ref=session_id,
+                            detection_type=v.get("detection_type"),
+                            user_quote=v.get("user_quote"),
+                        )
                     continue
 
                 if not dry_run:

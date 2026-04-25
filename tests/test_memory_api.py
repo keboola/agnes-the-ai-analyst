@@ -457,6 +457,30 @@ class TestPersonalItemPrivacy:
         after = c.get("/api/memory", headers=_auth(seeded_app["analyst_token"]))
         assert item_id in {it["id"] for it in after.json()["items"]}
 
+    def test_stats_excludes_personal_for_non_admin(self, seeded_app):
+        """`/stats` aggregates must not include personal items for non-admins
+        — otherwise total/by_status/by_domain change in observable ways when
+        a colleague flags or unflags a personal item, leaking existence info."""
+        c = seeded_app["client"]
+        # Admin baseline (admin sees everything by default).
+        admin_before = c.get("/api/memory/stats", headers=_auth(seeded_app["admin_token"]))
+        analyst_before = c.get("/api/memory/stats", headers=_auth(seeded_app["analyst_token"]))
+        admin_total_before = admin_before.json()["total"]
+        analyst_total_before = analyst_before.json()["total"]
+
+        # Admin creates AND flags a personal item.
+        item_id = self._create_and_flag_personal(c, seeded_app["admin_token"])
+
+        # Admin's total reflects the new item; analyst's must not.
+        admin_after = c.get("/api/memory/stats", headers=_auth(seeded_app["admin_token"]))
+        analyst_after = c.get("/api/memory/stats", headers=_auth(seeded_app["analyst_token"]))
+        assert admin_after.json()["total"] == admin_total_before + 1
+        assert analyst_after.json()["total"] == analyst_total_before, (
+            f"analyst /stats total leaked the personal item creation: "
+            f"{analyst_total_before} -> {analyst_after.json()['total']}"
+        )
+        assert item_id  # silence unused-warning
+
     def test_non_personal_item_remains_visible_to_non_admin(self, seeded_app):
         """Negative control: an item that is NOT personal must still be visible — confirms
         we did not over-tighten the filter."""

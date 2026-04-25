@@ -789,6 +789,32 @@ class TestContradictionCandidateSqlNarrowing:
         assert {c["id"] for c in candidates} == {"other"}
         conn.close()
 
+    def test_personal_items_excluded_from_contradiction_candidates(self, tmp_path, monkeypatch):
+        """Personal items must NOT enter the LLM prompt as candidates — the
+        Haiku call is a read site that exfiltrates content to the external
+        API, and the LLM can paraphrase personal content into the persisted
+        knowledge_contradictions.suggested_resolution.merged_content. ADR
+        Decision 1 ("hard privacy boundary, not a UI hint") applies here."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        from src.repositories.knowledge import KnowledgeRepository
+        repo = KnowledgeRepository(conn)
+        repo.create(id="public",  title="Public def",  content="x",
+                    category="x", domain="finance", status="approved",
+                    is_personal=False)
+        repo.create(id="private", title="Private def", content="confidential",
+                    category="x", domain="finance", status="approved",
+                    is_personal=True)
+
+        candidates = repo.find_contradiction_candidates(
+            new_item_id="k_new", domain="finance",
+        )
+        ids = {c["id"] for c in candidates}
+        assert ids == {"public"}
+        # Defense in depth: also confirm by content match — even if the SQL
+        # changed shape, no row carrying "confidential" must come back.
+        assert all("confidential" not in (c.get("content") or "") for c in candidates)
+        conn.close()
+
 
 class TestDetectorIgnoresLLMConfidence:
     """Q3: LLM-supplied base_confidence in golden must be ignored.
@@ -831,6 +857,11 @@ class TestDetectorIgnoresLLMConfidence:
         # 0.60 is the canonical (user_verification, confirmation) value, not
         # the 0.99 the LLM tried to inject.
         assert items[0]["confidence"] == 0.60
+        # Belt-and-suspenders: the LLM-supplied base_confidence must never
+        # round-trip onto the persisted item. If a future code change
+        # reintroduces a base_confidence read path (e.g. into a new metadata
+        # JSON column), this assertion will catch it.
+        assert "base_confidence" not in items[0]
         conn.close()
 
     def test_unknown_detection_type_falls_back_to_canonical_value(self, tmp_path, monkeypatch):
@@ -929,6 +960,54 @@ class TestDetectorPersistsEvidence:
         # Distinct quotes — confirms we are not stamping the same user_quote on
         # both items.
         assert len(set(all_quotes)) == 2
+        conn.close()
+
+    def test_duplicate_item_id_still_records_evidence(self, tmp_path, monkeypatch):
+        """When two analysts independently produce the same (title, content),
+        _generate_id collides and the second run hits the dedup `continue`
+        path. ADR Decision 3 requires evidence to still accumulate so the
+        second analyst's user_quote / detection_type / source_user are not
+        silently dropped — that's what enables the "additional verifiers"
+        boost mentioned in the ADR.
+        """
+        import shutil
+        conn = _fresh_db(tmp_path, monkeypatch)
+        from src.repositories.knowledge import KnowledgeRepository
+        from services.verification_detector.detector import run
+        repo = KnowledgeRepository(conn)
+        golden = _load_golden("correction_churn_metric")
+
+        # Session 1 — alice. Creates the item + evidence row #1.
+        alice_dir = tmp_path / "user_sessions" / "alice"
+        alice_dir.mkdir(parents=True)
+        shutil.copy(SESSIONS_DIR / "correction_churn_metric.jsonl", alice_dir / "s.jsonl")
+        run(conn, _mock_extractor(golden), session_data_dir=tmp_path / "user_sessions")
+
+        items = repo.list_items(source_type="user_verification")
+        assert len(items) == 1
+        item_id = items[0]["id"]
+        evidence_after_alice = repo.list_evidence(item_id)
+        assert len(evidence_after_alice) == 1
+        assert evidence_after_alice[0]["source_user"] == "alice"
+
+        # Session 2 — bob. Same golden output (same title+content → same
+        # _generate_id), different session/user. Item already exists, but a
+        # fresh evidence row must be persisted on the existing item.
+        bob_dir = tmp_path / "user_sessions" / "bob"
+        bob_dir.mkdir(parents=True)
+        shutil.copy(SESSIONS_DIR / "correction_churn_metric.jsonl", bob_dir / "s.jsonl")
+        run(conn, _mock_extractor(golden), session_data_dir=tmp_path / "user_sessions")
+
+        # Item count unchanged.
+        items = repo.list_items(source_type="user_verification")
+        assert len(items) == 1
+        assert items[0]["id"] == item_id
+
+        # Evidence count grew — bob's evidence accumulated on the existing item.
+        evidence_after_bob = repo.list_evidence(item_id)
+        assert len(evidence_after_bob) == 2
+        users = {e["source_user"] for e in evidence_after_bob}
+        assert users == {"alice", "bob"}
         conn.close()
 
 
