@@ -14,6 +14,8 @@ from typing import Any
 
 from connectors.llm import StructuredExtractor
 from connectors.llm.exceptions import LLMError
+from services.corporate_memory import contradiction as contradiction_module
+from services.corporate_memory.confidence import compute_confidence
 from src.repositories.knowledge import KnowledgeRepository
 
 from .prompts import VERIFICATION_EXTRACT_PROMPT
@@ -63,12 +65,19 @@ def parse_session(jsonl_path: Path) -> list[dict]:
 
 
 def _format_turns(turns: list[dict]) -> str:
-    """Format conversation turns as readable text for the LLM prompt."""
+    """Format conversation turns as a parseable, prompt-injection-hardened block.
+
+    Session transcripts are heavily user-influenced (anything the analyst typed
+    lands here). Each turn is wrapped in `<turn role="…">` tags with `</turn>`
+    neutralized inside the content so a crafted message cannot break out of
+    the wrapper. The trust-boundary instruction in VERIFICATION_EXTRACT_PROMPT
+    tells the LLM to treat content inside `<turn>` as data, not directives.
+    """
     lines: list[str] = []
     for turn in turns:
         role = turn.get("role", "unknown")
-        content = turn.get("content", "")
-        lines.append(f"[{role}]: {content}")
+        content = (turn.get("content") or "").replace("</turn>", "&lt;/turn&gt;")
+        lines.append(f'<turn role="{role}">{content}</turn>')
     return "\n".join(lines)
 
 
@@ -136,6 +145,7 @@ def run(
         "sessions_skipped": 0,
         "verifications_extracted": 0,
         "items_created": 0,
+        "contradictions_recorded": 0,
         "errors": [],
     }
 
@@ -172,10 +182,41 @@ def run(
                 # Check if item already exists (deduplication)
                 existing = repo.get_by_id(item_id)
                 if existing:
-                    logger.info("Duplicate item skipped: %s", item_id)
+                    # Hash collision on (title, content) → another analyst
+                    # produced the same fact. ADR Decision 3 expects multiple
+                    # evidence rows to accumulate (one per distinct
+                    # verification event), so we still persist the new
+                    # evidence row even though we skip the create+contradiction
+                    # path. Without this, the second analyst's user_quote and
+                    # detection_type are silently dropped and the
+                    # "additional verifiers" boost cannot accumulate.
+                    logger.info(
+                        "Duplicate item — recording evidence on existing: %s",
+                        item_id,
+                    )
+                    if not dry_run:
+                        repo.create_evidence(
+                            item_id=item_id,
+                            source_user=username,
+                            source_ref=session_id,
+                            detection_type=v.get("detection_type"),
+                            user_quote=v.get("user_quote"),
+                        )
                     continue
 
                 if not dry_run:
+                    # Confidence is computed in code from (source_type, detection_type).
+                    # The LLM is not trusted to set its own credibility — see Q3 in
+                    # docs/pd-ps-comments.md and the ADR.
+                    detection_type = v.get("detection_type")
+                    try:
+                        confidence_value = compute_confidence(
+                            "user_verification", detection_type
+                        )
+                    except ValueError:
+                        # Unknown detection_type from the LLM; fall back to a
+                        # lookup-keyed default rather than the LLM-supplied value.
+                        confidence_value = compute_confidence("user_verification", "confirmation")
                     repo.create(
                         id=item_id,
                         title=v["title"],
@@ -184,14 +225,42 @@ def run(
                         source_user=username,
                         tags=v.get("entities", []),
                         status="pending",
-                        confidence=v.get("base_confidence", 0.50),
+                        confidence=confidence_value,
                         domain=v.get("domain"),
                         entities=v.get("entities"),
                         source_type="user_verification",
                         source_ref=session_id,
                         sensitivity="internal",
                     )
+                    # Persist the verification evidence row — user_quote and
+                    # detection_type are the raw signal Bayesian re-calibration
+                    # will need later (Q3).
+                    repo.create_evidence(
+                        item_id=item_id,
+                        source_user=username,
+                        source_ref=session_id,
+                        detection_type=detection_type,
+                        user_quote=v.get("user_quote"),
+                    )
                     items_created += 1
+                    # Run contradiction detection inline. Failure of the LLM
+                    # judge must not abort session processing — log and move on.
+                    try:
+                        new_item = repo.get_by_id(item_id)
+                        if new_item is not None:
+                            recorded = contradiction_module.detect_and_record(
+                                extractor, new_item, repo
+                            )
+                            stats["contradictions_recorded"] += len(recorded)
+                    except LLMError as e:
+                        logger.warning(
+                            "Contradiction check failed for %s: %s", item_id, e
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Unexpected error during contradiction check for %s: %s",
+                            item_id, e,
+                        )
 
             if not dry_run:
                 repo.mark_session_processed(
