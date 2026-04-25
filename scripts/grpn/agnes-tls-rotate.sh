@@ -138,9 +138,14 @@ if ! refetch "$TLS_FULLCHAIN_URL" "$CERT_DIR/fullchain.pem" 644; then
       exit 1
     fi
     CN="${DOMAIN:-localhost}"
+    # Same parametrisation as the CSR branch above — site-specific PKI
+    # fields belong in the deployer's .env, not in this script. Keeps
+    # the self-signed bring-up cert consistent with whatever the eventual
+    # CA-signed cert will say.
+    SUBJECT="${TLS_CSR_SUBJECT:-/CN=$CN}"
     openssl req -x509 -new -key "$CERT_DIR/privkey.pem" \
       -out "$CERT_DIR/fullchain.pem" -days 30 \
-      -subj "/C=US/ST=Illinois/L=Chicago/O=Groupon, Inc./CN=$CN" \
+      -subj "$SUBJECT" \
       -addext "subjectAltName=DNS:$CN" \
       -addext "keyUsage=digitalSignature,keyEncipherment" \
       -addext "extendedKeyUsage=serverAuth" 2>/dev/null
