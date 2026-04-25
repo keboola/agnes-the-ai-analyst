@@ -1,130 +1,247 @@
 """Contradiction detection for corporate memory knowledge items.
 
-Uses domain-based pre-filtering (DuckDB query) to find candidates,
-then LLM-as-judge to determine if items actually contradict.
+Architecture (see docs/ADR-corporate-memory-v1.md, Decision 4):
+
+  - Topic / content matching is performed by a single Haiku call with strict
+    structured output. The brittle SQL keyword pre-filter that used to live
+    here was removed.
+  - Domain remains a hard SQL conjunct (cheap, scales with corpus size).
+  - The same Haiku call returns the structured resolution suggestion —
+    contradiction detection and resolution arrive in one shot.
+
+Public API:
+
+  detect_and_record(extractor, new_item, repo)
+      -> list[str] of contradiction IDs persisted to knowledge_contradictions.
+
+  find_and_judge(extractor, new_item, repo)
+      -> list[dict] of contradiction records (not yet persisted).
+
+The ``check_contradiction`` and ``check_contradictions`` helpers are retained
+for callers that want the low-level path (single Haiku call + persistence
+disabled).
 """
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from connectors.llm import StructuredExtractor
 from connectors.llm.exceptions import LLMError
 from src.repositories.knowledge import KnowledgeRepository
 
-from .prompts import CONTRADICTION_CHECK_PROMPT, CONTRADICTION_SCHEMA
+from .prompts import (
+    BATCH_CONTRADICTION_PROMPT,
+    BATCH_CONTRADICTION_SCHEMA,
+    format_candidates_block,
+)
 
 logger = logging.getLogger(__name__)
+
+# Hard cap on candidates per call — keeps prompt size bounded even if a
+# domain accumulates a very large corpus. Above this, callers should shard.
+DEFAULT_CANDIDATE_LIMIT = 100
+
+_VALID_ACTIONS = {"kept_a", "kept_b", "merge", "both_valid"}
+_VALID_SEVERITIES = {"hard", "soft"}
 
 
 def find_candidates(
     repo: KnowledgeRepository,
     new_item: dict,
-    max_candidates: int = 10,
+    max_candidates: int = DEFAULT_CANDIDATE_LIMIT,
 ) -> list[dict]:
-    """Find existing items that might contradict the new item.
+    """Load same-domain candidates for the LLM judge.
 
-    Pre-filters by domain and keyword match to avoid O(N) LLM calls.
+    Domain is the only SQL narrowing applied. If the new item has no domain,
+    candidates from all domains are returned (the LLM still judges each).
     """
-    domain = new_item.get("domain")
-    title = new_item.get("title", "")
-    title_words = [w for w in title.split() if len(w) > 3]
     item_id = new_item.get("id", "")
-
     return repo.find_contradiction_candidates(
         new_item_id=item_id,
-        domain=domain,
-        title_words=title_words,
+        domain=new_item.get("domain"),
         limit=max_candidates,
     )
 
 
-def check_contradiction(
-    extractor: StructuredExtractor,
-    item_a: dict,
-    item_b: dict,
-) -> dict:
-    """Use LLM to judge whether two items contradict each other.
+def _build_resolution(judgment: dict) -> dict | None:
+    """Project the flat resolution_* fields into a nested resolution dict.
 
-    Returns dict with: contradicts (bool), explanation, severity, suggested_resolution
+    Returns None when the judgment is not a contradiction or the LLM did not
+    populate resolution fields.
     """
-    prompt = CONTRADICTION_CHECK_PROMPT.format(
-        title_a=item_a.get("title", ""),
-        content_a=item_a.get("content", ""),
-        domain_a=item_a.get("domain", "unknown"),
-        title_b=item_b.get("title", ""),
-        content_b=item_b.get("content", ""),
-        domain_b=item_b.get("domain", "unknown"),
-    )
-
-    try:
-        result = extractor.extract_json(
-            prompt=prompt,
-            max_tokens=1024,
-            json_schema=CONTRADICTION_SCHEMA,
-            schema_name="contradiction_check",
-        )
-        return result
-    except LLMError as e:
-        logger.error("Contradiction check failed: %s", e)
-        return {"contradicts": False, "explanation": f"Check failed: {e}"}
+    action = judgment.get("resolution_action")
+    if not judgment.get("is_contradiction") or not action:
+        return None
+    if action not in _VALID_ACTIONS:
+        logger.warning("Invalid resolution_action from LLM: %r — dropping", action)
+        return None
+    resolution: dict = {
+        "action": action,
+        "justification": judgment.get("resolution_justification") or "",
+    }
+    if action == "merge":
+        merged = judgment.get("resolution_merged_content")
+        if merged:
+            resolution["merged_content"] = merged
+    return resolution
 
 
-def check_contradictions(
+def _judgment_to_record(judgment: dict, new_item_id: str) -> dict:
+    """Convert one Haiku judgment row into the contradiction record shape."""
+    severity = judgment.get("severity")
+    if severity not in _VALID_SEVERITIES:
+        severity = None
+    record: dict = {
+        "item_a_id": new_item_id,
+        "item_b_id": judgment["candidate_id"],
+        "explanation": judgment.get("explanation", ""),
+        "severity": severity,
+    }
+    resolution = _build_resolution(judgment)
+    if resolution is not None:
+        record["suggested_resolution"] = resolution
+    return record
+
+
+def find_and_judge(
     extractor: StructuredExtractor,
     new_item: dict,
     repo: KnowledgeRepository,
-    max_candidates: int = 10,
+    max_candidates: int = DEFAULT_CANDIDATE_LIMIT,
 ) -> list[dict]:
-    """Check a new item against existing items for contradictions.
+    """Topic + judgment + resolution in one Haiku call.
 
-    Returns list of contradiction records (empty if none found).
-    Each record has: item_a_id, item_b_id, explanation, severity, suggested_resolution
+    Loads same-domain candidates from SQL, then asks Haiku to judge each one
+    in a single batched structured-output call. Returns contradiction records
+    ready for persistence (item_a_id, item_b_id, explanation, severity,
+    optional suggested_resolution dict).
+
+    Empty corpus → returns immediately without an LLM call (cost guard).
+    Hallucinated candidate_ids returned by Haiku are dropped.
     """
     candidates = find_candidates(repo, new_item, max_candidates)
     if not candidates:
         return []
 
-    contradictions = []
-    for candidate in candidates:
-        result = check_contradiction(extractor, new_item, candidate)
-        if result.get("contradicts"):
-            contradiction = {
-                "item_a_id": new_item["id"],
-                "item_b_id": candidate["id"],
-                "explanation": result.get("explanation", ""),
-                "severity": result.get("severity"),
-                "suggested_resolution": result.get("suggested_resolution"),
-            }
-            contradictions.append(contradiction)
-            logger.info(
-                "Contradiction detected: %s vs %s (%s)",
-                new_item["id"], candidate["id"], result.get("severity", "unknown"),
-            )
+    prompt = BATCH_CONTRADICTION_PROMPT.format(
+        new_id=new_item.get("id", ""),
+        new_domain=new_item.get("domain") or "unspecified",
+        new_title=new_item.get("title", ""),
+        new_content=new_item.get("content", ""),
+        candidates_block=format_candidates_block(candidates),
+    )
 
-    return contradictions
+    try:
+        result = extractor.extract_json(
+            prompt=prompt,
+            max_tokens=4096,
+            json_schema=BATCH_CONTRADICTION_SCHEMA,
+            schema_name="batch_contradiction",
+        )
+    except LLMError as e:
+        logger.error("Batch contradiction judgment failed: %s", e)
+        return []
+
+    judgments = result.get("judgments", [])
+    valid_ids = {c["id"] for c in candidates}
+    new_item_id = new_item.get("id", "")
+    records: list[dict] = []
+    for j in judgments:
+        cid = j.get("candidate_id")
+        if cid not in valid_ids:
+            logger.warning(
+                "Dropping judgment for unknown candidate_id %r (not in input set)",
+                cid,
+            )
+            continue
+        if not j.get("is_contradiction"):
+            continue
+        records.append(_judgment_to_record(j, new_item_id))
+    return records
 
 
 def detect_and_record(
     extractor: StructuredExtractor,
     new_item: dict,
     repo: KnowledgeRepository,
-    max_candidates: int = 10,
+    max_candidates: int = DEFAULT_CANDIDATE_LIMIT,
 ) -> list[str]:
-    """Check for contradictions and record them in the database.
+    """Run find_and_judge and persist the resulting contradictions.
 
-    Returns list of contradiction IDs created.
+    Returns the list of newly created contradiction IDs.
     """
-    contradictions = check_contradictions(extractor, new_item, repo, max_candidates)
-    contradiction_ids = []
-
-    for c in contradictions:
+    records = find_and_judge(extractor, new_item, repo, max_candidates)
+    contradiction_ids: list[str] = []
+    for r in records:
         cid = repo.create_contradiction(
-            item_a_id=c["item_a_id"],
-            item_b_id=c["item_b_id"],
-            explanation=c["explanation"],
-            severity=c.get("severity"),
-            suggested_resolution=c.get("suggested_resolution"),
+            item_a_id=r["item_a_id"],
+            item_b_id=r["item_b_id"],
+            explanation=r["explanation"],
+            severity=r.get("severity"),
+            suggested_resolution=r.get("suggested_resolution"),
         )
         contradiction_ids.append(cid)
-
+        logger.info(
+            "Contradiction recorded: %s vs %s (severity=%s)",
+            r["item_a_id"], r["item_b_id"], r.get("severity"),
+        )
     return contradiction_ids
+
+
+# ---------------------------------------------------------------------------
+# Legacy single-pair helpers — kept so callers that want a one-off pairwise
+# judgment (e.g. tests, ad-hoc tooling) can still use them. NOT used by the
+# detector pipeline.
+# ---------------------------------------------------------------------------
+
+def check_contradiction(
+    extractor: StructuredExtractor,
+    item_a: dict,
+    item_b: dict,
+) -> dict:
+    """Single-pair judgment via the batched API. Always returns a dict with
+    ``contradicts`` (bool), ``explanation`` (str), and optionally
+    ``severity`` and ``suggested_resolution`` (dict).
+    """
+    prompt = BATCH_CONTRADICTION_PROMPT.format(
+        new_id=item_a.get("id", "new"),
+        new_domain=item_a.get("domain") or "unspecified",
+        new_title=item_a.get("title", ""),
+        new_content=item_a.get("content", ""),
+        candidates_block=format_candidates_block([item_b]),
+    )
+    try:
+        result = extractor.extract_json(
+            prompt=prompt,
+            max_tokens=1024,
+            json_schema=BATCH_CONTRADICTION_SCHEMA,
+            schema_name="batch_contradiction",
+        )
+    except LLMError as e:
+        logger.error("Pair contradiction check failed: %s", e)
+        return {"contradicts": False, "explanation": f"Check failed: {e}"}
+    judgments = result.get("judgments", [])
+    if not judgments:
+        return {"contradicts": False, "explanation": "No judgment returned"}
+    j = judgments[0]
+    out: dict = {
+        "contradicts": bool(j.get("is_contradiction")),
+        "explanation": j.get("explanation", ""),
+    }
+    severity = j.get("severity")
+    if severity in _VALID_SEVERITIES:
+        out["severity"] = severity
+    resolution = _build_resolution(j)
+    if resolution is not None:
+        out["suggested_resolution"] = resolution
+    return out
+
+
+def check_contradictions(
+    extractor: StructuredExtractor,
+    new_item: dict,
+    repo: KnowledgeRepository,
+    max_candidates: int = DEFAULT_CANDIDATE_LIMIT,
+) -> list[dict]:
+    """Backwards-compatible alias for find_and_judge."""
+    return find_and_judge(extractor, new_item, repo, max_candidates)

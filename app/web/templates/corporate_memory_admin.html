@@ -647,6 +647,46 @@
             white-space: nowrap;
         }
 
+        .audit-row { cursor: pointer; }
+        .audit-row:hover { background: var(--bg-secondary, #f9fafb); }
+        .audit-row.expanded { background: #eff6ff; }
+        .audit-detail-row > td {
+            background: #f8fafc;
+            border-top: 0;
+            padding: var(--space-4) var(--space-5);
+        }
+        .audit-detail-grid {
+            display: grid;
+            grid-template-columns: 140px 1fr;
+            gap: var(--space-2) var(--space-3);
+            font-size: var(--text-sm);
+        }
+        .audit-detail-grid .k {
+            color: var(--text-secondary);
+            font-weight: var(--font-medium);
+        }
+        .audit-detail-grid .v {
+            color: var(--text-primary);
+            word-break: break-word;
+        }
+        .audit-detail-grid pre {
+            margin: 0;
+            padding: var(--space-3);
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            font-size: var(--text-xs);
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .audit-disclosure {
+            display: inline-block;
+            width: 12px;
+            color: var(--text-secondary);
+            transition: transform 0.15s;
+        }
+        .audit-row.expanded .audit-disclosure { transform: rotate(90deg); }
+
         /* Pagination */
         .pagination {
             display: flex;
@@ -887,6 +927,12 @@
                     <option value="rejected">Rejected</option>
                     <option value="revoked">Revoked</option>
                 </select>
+                <label for="sourceTypeFilter" style="margin-left: var(--space-4);">Source:</label>
+                <select class="filter-select" id="sourceTypeFilter" onchange="loadAllItems(0)">
+                    <option value="">All sources</option>
+                    <option value="user_verification">Verified facts (from sessions)</option>
+                    <option value="claude_local_md">CLAUDE.local.md</option>
+                </select>
             </div>
             <div id="allList" class="knowledge-list">
                 <div class="loading">Loading items...</div>
@@ -909,7 +955,7 @@
                             <span style="display: inline-block; padding: 2px 8px; background: #fef9c3; color: #854d0e; border-radius: 999px; font-size: 11px; margin-left: 8px;">Soft</span>
                             {% endif %}
                         </div>
-                        <span style="font-size: var(--text-xs); color: var(--text-secondary);">{{ c.detected_at[:10] if c.detected_at else '' }}</span>
+                        <span style="font-size: var(--text-xs); color: var(--text-secondary);">{{ (c.detected_at|string)[:10] if c.detected_at else '' }}</span>
                     </div>
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4); margin-bottom: var(--space-4);">
                         <div style="padding: var(--space-4); background: #fef2f2; border-radius: var(--radius-lg); border: 1px solid #fecaca;">
@@ -957,13 +1003,13 @@
         <div id="tab-audit" class="tab-content">
             <div class="filter-bar">
                 <label for="auditActionFilter">Action:</label>
-                <select class="filter-select" id="auditActionFilter" onchange="loadAuditLog(0)">
+                <select class="filter-select" id="auditActionFilter" onchange="loadAuditLog(1)">
                     <option value="">All Actions</option>
-                    <option value="approved">Approved</option>
-                    <option value="rejected">Rejected</option>
-                    <option value="mandated">Mandated</option>
-                    <option value="revoked">Revoked</option>
-                    <option value="edited">Edited</option>
+                    <option value="approve">Approved</option>
+                    <option value="reject">Rejected</option>
+                    <option value="mandate">Mandated</option>
+                    <option value="revoke">Revoked</option>
+                    <option value="edit">Edited</option>
                 </select>
             </div>
             <div id="auditContent">
@@ -983,11 +1029,23 @@
 
     // State
     let currentTab = 'review';
-    let reviewPage = 0;
-    let allPage = 0;
-    let auditPage = 0;
+    let reviewPage = 1;
+    let allPage = 1;
+    let auditPage = 1;
     let focusedIndex = -1;
     let keyboardActive = false;
+
+    // ─────────────────────────────────────────────────────────────
+    // Helpers
+    // ─────────────────────────────────────────────────────────────
+
+    function parseJsonField(val) {
+        if (Array.isArray(val)) return val;
+        if (typeof val === 'string') {
+            try { return JSON.parse(val); } catch { return []; }
+        }
+        return [];
+    }
 
     // ─────────────────────────────────────────────────────────────
     // Tab management
@@ -1020,7 +1078,7 @@
 
         try {
             const params = new URLSearchParams({page, _t: Date.now()});
-            const resp = await fetch(`/api/corporate-memory/admin/pending?${params}`);
+            const resp = await fetch(`/api/memory/admin/pending?${params}`);
             const data = await resp.json();
             renderReviewItems(data, list, pagination);
             updateStats();
@@ -1035,20 +1093,46 @@
         const list = document.getElementById('allList');
         const pagination = document.getElementById('allPagination');
         const status = document.getElementById('statusFilter').value;
+        const sourceType = document.getElementById('sourceTypeFilter').value;
 
         try {
             const params = new URLSearchParams({page, _t: Date.now()});
             if (status) {
-                params.append('status', status);
-            } else {
-                params.append('all_statuses', 'true');
+                params.append('status_filter', status);
             }
-            const resp = await fetch(`/api/corporate-memory/knowledge?${params}`);
+            if (sourceType) {
+                params.append('source_type', sourceType);
+            }
+            const resp = await fetch(`/api/memory?${params}`);
             const data = await resp.json();
             renderAllItems(data, list, pagination);
         } catch (e) {
             console.error('Failed to load all items:', e);
             list.innerHTML = '<div class="empty-state"><p>Error loading items.</p></div>';
+        }
+    }
+
+    // Map of item_id -> {title, status, source_type, content} for the audit log.
+    // Lazily refreshed when the audit tab is opened so the table can show titles
+    // instead of bare UUIDs and resolve item context inside expanded rows.
+    let auditItemMap = {};
+
+    async function refreshAuditItemMap() {
+        try {
+            const resp = await fetch(`/api/memory?per_page=500&_t=${Date.now()}`);
+            const data = await resp.json();
+            const map = {};
+            for (const item of (data.items || [])) {
+                map[item.id] = {
+                    title: item.title || '',
+                    status: item.status || '',
+                    source_type: item.source_type || '',
+                    content: item.content || '',
+                };
+            }
+            auditItemMap = map;
+        } catch (e) {
+            console.error('Failed to refresh audit item map:', e);
         }
     }
 
@@ -1059,9 +1143,10 @@
         const action = document.getElementById('auditActionFilter').value;
 
         try {
+            await refreshAuditItemMap();
             const params = new URLSearchParams({page, per_page: 20, _t: Date.now()});
             if (action) params.append('action', action);
-            const resp = await fetch(`/api/corporate-memory/admin/audit?${params}`);
+            const resp = await fetch(`/api/memory/admin/audit?${params}`);
             const data = await resp.json();
             renderAuditLog(data, content, pagination);
         } catch (e) {
@@ -1070,17 +1155,26 @@
         }
     }
 
+    function toggleAuditDetail(idx) {
+        const row = document.querySelector(`tr.audit-row[data-idx="${idx}"]`);
+        const detail = document.querySelector(`tr.audit-detail-row[data-idx="${idx}"]`);
+        if (!row || !detail) return;
+        const isOpen = row.classList.toggle('expanded');
+        detail.style.display = isOpen ? '' : 'none';
+    }
+
     async function updateStats() {
         try {
-            const resp = await fetch(`/api/corporate-memory/stats?_t=${Date.now()}`);
+            const resp = await fetch(`/api/memory/stats?_t=${Date.now()}`);
             const data = await resp.json();
-            document.getElementById('statPending').textContent = data.pending_count || 0;
-            document.getElementById('statApproved').textContent = data.approved_count || 0;
-            document.getElementById('statMandatory').textContent = data.mandatory_count || 0;
-            document.getElementById('statTotal').textContent = data.knowledge_count || 0;
+            const byStatus = data.by_status || {};
+            document.getElementById('statPending').textContent = byStatus.pending || 0;
+            document.getElementById('statApproved').textContent = byStatus.approved || 0;
+            document.getElementById('statMandatory').textContent = byStatus.mandatory || 0;
+            document.getElementById('statTotal').textContent = data.total || 0;
 
             const badge = document.getElementById('pendingBadge');
-            const pending = data.pending_count || 0;
+            const pending = byStatus.pending || 0;
             badge.textContent = pending;
             badge.style.display = pending > 0 ? '' : 'none';
         } catch (e) {
@@ -1139,8 +1233,10 @@
     function renderItemCard(item, idx, isReview) {
         const status = item.status || 'pending';
         const categoryDisplay = (item.category || 'general').replace(/_/g, ' ');
-        const dateStr = item.extracted_at ? item.extracted_at.substring(0, 10) : 'recently';
-        const contributors = item.source_users_display || [];
+        const dateStr = (item.created_at || item.extracted_at || '').substring(0, 10) || 'recently';
+        const sourceUser = item.source_user || '';
+        const initials = sourceUser.split('@')[0].substring(0, 2).toUpperCase();
+        const contributors = [{name: sourceUser, initials: initials}];
 
         // Determine available actions based on current status
         let actionsHtml = '';
@@ -1207,7 +1303,7 @@
                         <div class="knowledge-content">${escapeHtml(item.content || '')}</div>
                         <div class="knowledge-footer">
                             <div class="knowledge-tags">
-                                ${(item.tags || []).map(tag => `<span class="tag">${escapeHtml(tag)}</span>`).join('')}
+                                ${parseJsonField(item.tags).map(tag => `<span class="tag">${escapeHtml(tag)}</span>`).join('')}
                             </div>
                             <div class="contributors">
                                 <div class="contributor-avatars">
@@ -1272,26 +1368,62 @@
             return;
         }
 
-        let rows = data.entries.map(entry => {
+        let rows = data.entries.map((entry, idx) => {
             const ts = entry.timestamp ? new Date(entry.timestamp).toLocaleString() : 'Unknown';
-            const admin = entry.admin || 'Unknown';
-            const action = entry.action || 'unknown';
-            const itemId = entry.item_id || '';
-            const details = entry.details || {};
+            const admin = entry.user_id || entry.admin || 'Unknown';
+            const action = (entry.action || 'unknown').replace(/^km_/, '');
+            const itemId = entry.resource || entry.item_id || '';
+            const rawParams = entry.params || entry.details || '{}';
+            const details = typeof rawParams === 'string' ? (() => { try { return JSON.parse(rawParams); } catch { return {}; } })() : rawParams;
 
             let detailStr = '';
             if (details.reason) detailStr = details.reason;
             else if (details.mandatory_reason) detailStr = details.mandatory_reason;
             else if (details.audience) detailStr = `Audience: ${details.audience}`;
             else if (details.previous_status) detailStr = `From: ${details.previous_status}`;
+            else if (action === 'edit' && Object.keys(details).length) {
+                detailStr = `Edited: ${Object.keys(details).join(', ')}`;
+            }
+            if (!detailStr) detailStr = '—';
+
+            const item = auditItemMap[itemId] || null;
+            const itemLabel = item && item.title
+                ? item.title
+                : (itemId ? `${itemId.substring(0, 12)}…` : '(unknown)');
+
+            const detailRows = [];
+            detailRows.push(`<div class="k">Item ID</div><div class="v"><code>${escapeHtml(itemId || '(none)')}</code></div>`);
+            if (item) {
+                detailRows.push(`<div class="k">Title</div><div class="v">${escapeHtml(item.title)}</div>`);
+                detailRows.push(`<div class="k">Current status</div><div class="v">${escapeHtml(item.status || '(unknown)')}</div>`);
+                if (item.source_type) {
+                    detailRows.push(`<div class="k">Source</div><div class="v">${escapeHtml(item.source_type)}</div>`);
+                }
+                if (item.content) {
+                    const snippet = item.content.length > 400 ? item.content.substring(0, 400) + '…' : item.content;
+                    detailRows.push(`<div class="k">Content</div><div class="v">${escapeHtml(snippet)}</div>`);
+                }
+            } else if (itemId) {
+                detailRows.push(`<div class="k">Item</div><div class="v" style="color: var(--text-secondary); font-style: italic;">No matching item found (it may have been deleted, or this audit row references a contradiction id).</div>`);
+            }
+            detailRows.push(`<div class="k">Action</div><div class="v">${escapeHtml(action)}</div>`);
+            detailRows.push(`<div class="k">Admin</div><div class="v">${escapeHtml(admin)}</div>`);
+            detailRows.push(`<div class="k">Timestamp</div><div class="v">${escapeHtml(ts)}</div>`);
+            const paramsJson = JSON.stringify(details, null, 2);
+            detailRows.push(`<div class="k">Raw params</div><div class="v"><pre>${escapeHtml(paramsJson)}</pre></div>`);
 
             return `
-                <tr>
-                    <td>${escapeHtml(ts)}</td>
+                <tr class="audit-row" data-idx="${idx}" onclick="toggleAuditDetail(${idx})">
+                    <td><span class="audit-disclosure">▶</span> ${escapeHtml(ts)}</td>
                     <td>${escapeHtml(admin)}</td>
                     <td><span class="action-badge ${esc(action)}">${escapeHtml(action)}</span></td>
-                    <td title="${escapeHtml(itemId)}">${escapeHtml(itemId.substring(0, 12))}${itemId.length > 12 ? '...' : ''}</td>
+                    <td title="${escapeHtml(itemId)}">${escapeHtml(itemLabel)}</td>
                     <td class="audit-details" title="${escapeHtml(detailStr)}">${escapeHtml(detailStr)}</td>
+                </tr>
+                <tr class="audit-detail-row" data-idx="${idx}" style="display: none;">
+                    <td colspan="5">
+                        <div class="audit-detail-grid">${detailRows.join('')}</div>
+                    </td>
                 </tr>`;
         }).join('');
 
@@ -1361,18 +1493,17 @@
     // ─────────────────────────────────────────────────────────────
 
     async function adminAction(action, itemId) {
-        const url = `/api/corporate-memory/admin/${action}`;
-        const body = {item_id: itemId};
+        const url = `/api/memory/admin/${action}?item_id=${encodeURIComponent(itemId)}`;
 
         try {
             const resp = await fetch(url, {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(body),
+                body: JSON.stringify({}),
             });
 
             const result = await resp.json();
-            if (result.ok) {
+            if (resp.ok) {
                 showToast(`Item ${action}d successfully`, 'success');
                 refreshCurrentTab();
             } else {
@@ -1406,18 +1537,17 @@
         }
 
         try {
-            const resp = await fetch('/api/corporate-memory/admin/mandate', {
+            const resp = await fetch(`/api/memory/admin/mandate?item_id=${encodeURIComponent(itemId)}`, {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({
-                    item_id: itemId,
-                    mandatory_reason: reason,
+                    reason: reason,
                     audience: audience,
                 }),
             });
 
             const result = await resp.json();
-            if (result.ok) {
+            if (resp.ok) {
                 showToast('Item mandated successfully', 'success');
                 refreshCurrentTab();
             } else {
@@ -1463,14 +1593,14 @@
         if (ids.length === 0) return;
 
         try {
-            const resp = await fetch('/api/corporate-memory/admin/batch', {
+            const resp = await fetch('/api/memory/admin/batch', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({item_ids: ids, action: action}),
             });
 
             const result = await resp.json();
-            if (result.ok) {
+            if (resp.ok) {
                 const successCount = (result.success || []).length;
                 const failCount = (result.failed || []).length;
                 let msg = `${successCount} item${successCount !== 1 ? 's' : ''} ${action}d`;
@@ -1613,7 +1743,7 @@
     // Initial load
     // ─────────────────────────────────────────────────────────────
 
-    loadReviewQueue(0);
+    loadReviewQueue(1);
     </script>
     {% include "_version_badge.html" %}
 </body>

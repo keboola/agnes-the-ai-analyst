@@ -2701,7 +2701,7 @@
     // Load Corporate Memory stats
     async function loadMemoryStats() {
         try {
-            const resp = await fetch('/api/corporate-memory/stats');
+            const resp = await fetch('/api/memory/stats');
             if (resp.ok) {
                 const data = await resp.json();
                 document.getElementById('memoryKnowledgeCount').textContent = data.knowledge_count || 0;

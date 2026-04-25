@@ -26,7 +26,7 @@ VERIFICATIONS_DIR = FIXTURES_DIR / "verifications"
 # ---------------------------------------------------------------------------
 
 def _fresh_db(tmp_path, monkeypatch):
-    """Create a fresh DuckDB with v8 schema."""
+    """Create a fresh DuckDB with the latest schema."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     # Force re-creation of shared connection
     import src.db as db_module
@@ -84,10 +84,21 @@ class TestSchemaV8Migration:
         assert new_columns.issubset(columns), f"Missing: {new_columns - columns}"
         conn.close()
 
-    def test_schema_version_is_8(self, tmp_path, monkeypatch):
+    def test_schema_version_matches_constant(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
-        from src.db import get_schema_version
-        assert get_schema_version(conn) == 8
+        from src.db import SCHEMA_VERSION, get_schema_version
+        assert get_schema_version(conn) == SCHEMA_VERSION
+        conn.close()
+
+    def test_verification_evidence_table_exists(self, tmp_path, monkeypatch):
+        conn = _fresh_db(tmp_path, monkeypatch)
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
+            ).fetchall()
+        }
+        assert "verification_evidence" in tables
         conn.close()
 
 
@@ -216,6 +227,8 @@ class TestKnowledgeRepositoryV1:
         conn.close()
 
     def test_find_contradiction_candidates(self, tmp_path, monkeypatch):
+        """Domain-only narrowing — topic matching is delegated to the LLM judge
+        in services.corporate_memory.contradiction.find_and_judge (ADR D4)."""
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.knowledge import KnowledgeRepository
         repo = KnowledgeRepository(conn)
@@ -230,12 +243,10 @@ class TestKnowledgeRepositoryV1:
         candidates = repo.find_contradiction_candidates(
             new_item_id="k_new",
             domain="finance",
-            title_words=["Churn"],
         )
-        # Should find k1 and k3 (same domain + keyword match), not k2
         ids = {c["id"] for c in candidates}
-        assert "k1" in ids
-        assert "k3" in ids
+        # Only same-domain candidates are surfaced; the LLM does the rest.
+        assert ids == {"k1", "k3"}
         conn.close()
 
 
@@ -540,7 +551,23 @@ class TestVerificationDetectorIntegration:
 
 
 class TestContradictionDetectionIntegration:
-    """Test contradiction detection with mocked LLM judge."""
+    """Batched contradiction detection (ADR Decision 4): one Haiku call returns
+    judgments for every same-domain candidate, including structured
+    suggested_resolution.
+    """
+
+    @staticmethod
+    def _judgment(candidate_id, *, contradicts=False, severity=None,
+                  explanation="", action=None, merged=None, justification=None):
+        return {
+            "candidate_id": candidate_id,
+            "is_contradiction": contradicts,
+            "severity": severity,
+            "explanation": explanation,
+            "resolution_action": action,
+            "resolution_merged_content": merged,
+            "resolution_justification": justification,
+        }
 
     def test_contradiction_detected(self, tmp_path, monkeypatch):
         conn = _fresh_db(tmp_path, monkeypatch)
@@ -548,8 +575,6 @@ class TestContradictionDetectionIntegration:
         from services.corporate_memory.contradiction import check_contradictions
 
         repo = KnowledgeRepository(conn)
-
-        # Existing item
         repo.create(
             id="k_existing", title="Churn is customer-count based",
             content="Churn = customers lost / total customers",
@@ -565,15 +590,25 @@ class TestContradictionDetectionIntegration:
 
         extractor = MagicMock()
         extractor.extract_json.return_value = {
-            "contradicts": True,
-            "explanation": "One says customer-count, other says revenue-based",
-            "severity": "hard",
-            "suggested_resolution": "k_new is more recent and verified by user",
+            "judgments": [self._judgment(
+                "k_existing",
+                contradicts=True,
+                severity="hard",
+                explanation="customer-count vs revenue-based",
+                action="kept_a",
+                justification="new item is more accurate",
+            )],
         }
 
         contradictions = check_contradictions(extractor, new_item, repo)
+        # Content rule (vibecoding): assert exact values, not just count.
         assert len(contradictions) == 1
+        assert contradictions[0]["item_a_id"] == "k_new"
+        assert contradictions[0]["item_b_id"] == "k_existing"
         assert contradictions[0]["severity"] == "hard"
+        assert contradictions[0]["suggested_resolution"]["action"] == "kept_a"
+        # Single batched call — not one per candidate.
+        assert extractor.extract_json.call_count == 1
         conn.close()
 
     def test_no_contradiction(self, tmp_path, monkeypatch):
@@ -597,22 +632,25 @@ class TestContradictionDetectionIntegration:
 
         extractor = MagicMock()
         extractor.extract_json.return_value = {
-            "contradicts": False,
-            "explanation": "Different aspects of NPS, no contradiction",
+            "judgments": [self._judgment(
+                "k_existing", contradicts=False,
+                explanation="Different aspects of NPS",
+            )],
         }
 
         contradictions = check_contradictions(extractor, new_item, repo)
-        assert len(contradictions) == 0
+        assert contradictions == []
+        # The Haiku call still happens — the *judgment* is what says no.
+        assert extractor.extract_json.call_count == 1
         conn.close()
 
     def test_no_candidates_skips_llm(self, tmp_path, monkeypatch):
-        """When no candidates match domain/keywords, LLM should not be called."""
+        """Cost guard: empty corpus → no Haiku call at all."""
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.knowledge import KnowledgeRepository
         from services.corporate_memory.contradiction import check_contradictions
 
-        repo = KnowledgeRepository(conn)
-        # No existing items
+        repo = KnowledgeRepository(conn)  # no items
 
         new_item = {
             "id": "k_new",
@@ -623,11 +661,13 @@ class TestContradictionDetectionIntegration:
 
         extractor = MagicMock()
         contradictions = check_contradictions(extractor, new_item, repo)
-        assert len(contradictions) == 0
+        assert contradictions == []
         extractor.extract_json.assert_not_called()
         conn.close()
 
-    def test_detect_and_record(self, tmp_path, monkeypatch):
+    def test_detect_and_record_persists_structured_resolution(self, tmp_path, monkeypatch):
+        """detect_and_record persists, and suggested_resolution round-trips
+        as a dict (JSON-encoded in DB, decoded on read)."""
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.repositories.knowledge import KnowledgeRepository
         from services.corporate_memory.contradiction import detect_and_record
@@ -648,10 +688,15 @@ class TestContradictionDetectionIntegration:
 
         extractor = MagicMock()
         extractor.extract_json.return_value = {
-            "contradicts": True,
-            "explanation": "Conflicting churn definitions",
-            "severity": "hard",
-            "suggested_resolution": "Use revenue-based",
+            "judgments": [self._judgment(
+                "k_existing",
+                contradicts=True,
+                severity="hard",
+                explanation="conflicting definitions",
+                action="merge",
+                merged="Churn rolls up both views; track both metrics.",
+                justification="both useful at different reporting layers",
+            )],
         }
 
         cids = detect_and_record(extractor, new_item, repo)
@@ -659,5 +704,679 @@ class TestContradictionDetectionIntegration:
 
         contradictions = repo.list_contradictions(resolved=False)
         assert len(contradictions) == 1
-        assert contradictions[0]["severity"] == "hard"
+        c = contradictions[0]
+        assert c["severity"] == "hard"
+        # suggested_resolution round-trips as a structured dict.
+        res = c["suggested_resolution"]
+        assert isinstance(res, dict)
+        assert res["action"] == "merge"
+        assert res["merged_content"].startswith("Churn rolls up")
+        assert "both useful" in res["justification"]
+        conn.close()
+
+
+# ===========================================================================
+# Regression tests — pd-ps review (V1 must-fix)
+# ===========================================================================
+
+class TestContradictionCandidateSqlNarrowing:
+    """Repository candidate narrowing (ADR Decision 4).
+
+    Domain is the only SQL narrowing applied. Topic / content matching is
+    delegated to Haiku in services.corporate_memory.contradiction.
+    """
+
+    def test_domain_excludes_other_domain(self, tmp_path, monkeypatch):
+        conn = _fresh_db(tmp_path, monkeypatch)
+        from src.repositories.knowledge import KnowledgeRepository
+        repo = KnowledgeRepository(conn)
+
+        repo.create(id="k_finance", title="Churn is MRR-based", content="finance fact",
+                    category="x", domain="finance", status="approved")
+        repo.create(id="k_data", title="Churn pipeline doc", content="data fact",
+                    category="x", domain="data", status="approved")
+
+        candidates = repo.find_contradiction_candidates(
+            new_item_id="k_new",
+            domain="finance",
+        )
+        assert {c["id"] for c in candidates} == {"k_finance"}
+        conn.close()
+
+    def test_no_domain_returns_all_approved_items(self, tmp_path, monkeypatch):
+        """When the new item has no domain, all approved/mandatory/pending
+        items are surfaced — the LLM does the narrowing."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        from src.repositories.knowledge import KnowledgeRepository
+        repo = KnowledgeRepository(conn)
+        repo.create(id="k1", title="A", content="a", category="x", status="approved")
+        repo.create(id="k2", title="B", content="b", category="x", status="pending")
+        repo.create(id="k3", title="C", content="c", category="x", status="rejected")
+
+        candidates = repo.find_contradiction_candidates(new_item_id="k_new")
+        ids = {c["id"] for c in candidates}
+        # rejected items are out; approved + pending stay in.
+        assert ids == {"k1", "k2"}
+        conn.close()
+
+    def test_domain_only_returns_all_same_domain(self, tmp_path, monkeypatch):
+        conn = _fresh_db(tmp_path, monkeypatch)
+        from src.repositories.knowledge import KnowledgeRepository
+        repo = KnowledgeRepository(conn)
+        repo.create(id="f1", title="Revenue", content="x", category="x",
+                    domain="finance", status="approved")
+        repo.create(id="f2", title="Margin",  content="y", category="x",
+                    domain="finance", status="approved")
+        repo.create(id="p1", title="Churn",   content="z", category="x",
+                    domain="product", status="approved")
+        candidates = repo.find_contradiction_candidates(new_item_id="k_new", domain="finance")
+        assert {c["id"] for c in candidates} == {"f1", "f2"}
+        conn.close()
+
+    def test_self_id_excluded_from_candidates(self, tmp_path, monkeypatch):
+        """An item never contradicts itself — id != new_item_id must be enforced."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        from src.repositories.knowledge import KnowledgeRepository
+        repo = KnowledgeRepository(conn)
+        repo.create(id="self_id", title="Churn metric", content="x",
+                    category="x", domain="finance", status="approved")
+        repo.create(id="other",   title="Churn metric", content="y",
+                    category="x", domain="finance", status="approved")
+        candidates = repo.find_contradiction_candidates(
+            new_item_id="self_id",
+            domain="finance",
+        )
+        assert {c["id"] for c in candidates} == {"other"}
+        conn.close()
+
+    def test_personal_items_excluded_from_contradiction_candidates(self, tmp_path, monkeypatch):
+        """Personal items must NOT enter the LLM prompt as candidates — the
+        Haiku call is a read site that exfiltrates content to the external
+        API, and the LLM can paraphrase personal content into the persisted
+        knowledge_contradictions.suggested_resolution.merged_content. ADR
+        Decision 1 ("hard privacy boundary, not a UI hint") applies here."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        from src.repositories.knowledge import KnowledgeRepository
+        repo = KnowledgeRepository(conn)
+        repo.create(id="public",  title="Public def",  content="x",
+                    category="x", domain="finance", status="approved",
+                    is_personal=False)
+        repo.create(id="private", title="Private def", content="confidential",
+                    category="x", domain="finance", status="approved",
+                    is_personal=True)
+
+        candidates = repo.find_contradiction_candidates(
+            new_item_id="k_new", domain="finance",
+        )
+        ids = {c["id"] for c in candidates}
+        assert ids == {"public"}
+        # Defense in depth: also confirm by content match — even if the SQL
+        # changed shape, no row carrying "confidential" must come back.
+        assert all("confidential" not in (c.get("content") or "") for c in candidates)
+        conn.close()
+
+
+class TestDetectorIgnoresLLMConfidence:
+    """Q3: LLM-supplied base_confidence in golden must be ignored.
+
+    Confidence is derived in code from (source_type, detection_type) — never
+    from the LLM output, even if a malicious or hallucinating model returns one.
+    """
+
+    def test_llm_returned_base_confidence_is_overridden(self, tmp_path, monkeypatch):
+        conn = _fresh_db(tmp_path, monkeypatch)
+        from src.repositories.knowledge import KnowledgeRepository
+        from services.verification_detector.detector import run
+
+        # Hostile golden: LLM tries to claim confidence=0.99 on a confirmation
+        # (which should be 0.60 in code).
+        hostile = {
+            "verifications": [{
+                "detection_type": "confirmation",
+                "title": "Hostile claim",
+                "content": "LLM-elevated content",
+                "user_quote": "yep",
+                "domain": "engineering",
+                "entities": [],
+                "base_confidence": 0.99,
+            }]
+        }
+        extractor = _mock_extractor(hostile)
+
+        session_dir = tmp_path / "user_sessions" / "mallory"
+        session_dir.mkdir(parents=True)
+        (session_dir / "s.jsonl").write_text(
+            json.dumps({"role": "user", "content": "yep"}) + "\n"
+        )
+
+        run(conn, extractor, session_data_dir=tmp_path / "user_sessions")
+
+        repo = KnowledgeRepository(conn)
+        items = repo.list_items(source_type="user_verification")
+        assert len(items) == 1
+        # 0.60 is the canonical (user_verification, confirmation) value, not
+        # the 0.99 the LLM tried to inject.
+        assert items[0]["confidence"] == 0.60
+        # Belt-and-suspenders: the LLM-supplied base_confidence must never
+        # round-trip onto the persisted item. If a future code change
+        # reintroduces a base_confidence read path (e.g. into a new metadata
+        # JSON column), this assertion will catch it.
+        assert "base_confidence" not in items[0]
+        conn.close()
+
+    def test_unknown_detection_type_falls_back_to_canonical_value(self, tmp_path, monkeypatch):
+        """If the LLM hallucinates a detection_type, fall back to the canonical
+        (user_verification, confirmation) baseline rather than crashing or
+        accepting an LLM-supplied number."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        from src.repositories.knowledge import KnowledgeRepository
+        from services.verification_detector.detector import run
+
+        hallucinated = {
+            "verifications": [{
+                "detection_type": "totally_made_up_type",
+                "title": "Hostile claim",
+                "content": "x",
+                "user_quote": "y",
+                "domain": "engineering",
+                "entities": [],
+            }]
+        }
+        extractor = _mock_extractor(hallucinated)
+
+        session_dir = tmp_path / "user_sessions" / "mallory"
+        session_dir.mkdir(parents=True)
+        (session_dir / "s.jsonl").write_text(
+            json.dumps({"role": "user", "content": "y"}) + "\n"
+        )
+
+        run(conn, extractor, session_data_dir=tmp_path / "user_sessions")
+
+        repo = KnowledgeRepository(conn)
+        items = repo.list_items(source_type="user_verification")
+        assert len(items) == 1
+        assert items[0]["confidence"] == 0.60  # canonical confirmation fallback
+        conn.close()
+
+
+class TestDetectorPersistsEvidence:
+    """Q3: user_quote and detection_type must land in verification_evidence."""
+
+    def test_evidence_row_created_per_verification(self, tmp_path, monkeypatch):
+        conn = _fresh_db(tmp_path, monkeypatch)
+        from src.repositories.knowledge import KnowledgeRepository
+        from services.verification_detector.detector import run
+
+        golden = _load_golden("correction_churn_metric")
+        extractor = _mock_extractor(golden)
+
+        session_dir = tmp_path / "user_sessions" / "alice"
+        session_dir.mkdir(parents=True)
+        import shutil
+        shutil.copy(SESSIONS_DIR / "correction_churn_metric.jsonl", session_dir / "s1.jsonl")
+
+        run(conn, extractor, session_data_dir=tmp_path / "user_sessions")
+
+        repo = KnowledgeRepository(conn)
+        items = repo.list_items(source_type="user_verification")
+        assert len(items) == 1
+        evidence = repo.list_evidence(items[0]["id"])
+        assert len(evidence) == 1
+        assert evidence[0]["detection_type"] == "correction"
+        assert evidence[0]["source_user"] == "alice"
+        # source_ref pins the evidence back to the originating session.
+        assert evidence[0]["source_ref"] is not None
+        assert "alice" in (evidence[0]["source_ref"] or "")
+        # The LLM extracts the exact quote — that signal must persist.
+        assert "MRR" in (evidence[0]["user_quote"] or "")
+        conn.close()
+
+    def test_mixed_session_creates_one_evidence_row_per_verification(self, tmp_path, monkeypatch):
+        """Two verifications in one session → two distinct evidence rows on
+        their respective items. Each row carries its own user_quote."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        from src.repositories.knowledge import KnowledgeRepository
+        from services.verification_detector.detector import run
+
+        golden = _load_golden("mixed_session")
+        extractor = _mock_extractor(golden)
+
+        session_dir = tmp_path / "user_sessions" / "carol"
+        session_dir.mkdir(parents=True)
+        import shutil
+        shutil.copy(SESSIONS_DIR / "mixed_session.jsonl", session_dir / "s.jsonl")
+
+        run(conn, extractor, session_data_dir=tmp_path / "user_sessions")
+
+        repo = KnowledgeRepository(conn)
+        items = repo.list_items(source_type="user_verification")
+        assert len(items) == 2
+        # Each item gets exactly one evidence row, with the matching user_quote.
+        all_quotes = []
+        for item in items:
+            evs = repo.list_evidence(item["id"])
+            assert len(evs) == 1
+            all_quotes.append(evs[0]["user_quote"])
+        # Distinct quotes — confirms we are not stamping the same user_quote on
+        # both items.
+        assert len(set(all_quotes)) == 2
+        conn.close()
+
+    def test_duplicate_item_id_still_records_evidence(self, tmp_path, monkeypatch):
+        """When two analysts independently produce the same (title, content),
+        _generate_id collides and the second run hits the dedup `continue`
+        path. ADR Decision 3 requires evidence to still accumulate so the
+        second analyst's user_quote / detection_type / source_user are not
+        silently dropped — that's what enables the "additional verifiers"
+        boost mentioned in the ADR.
+        """
+        import shutil
+        conn = _fresh_db(tmp_path, monkeypatch)
+        from src.repositories.knowledge import KnowledgeRepository
+        from services.verification_detector.detector import run
+        repo = KnowledgeRepository(conn)
+        golden = _load_golden("correction_churn_metric")
+
+        # Session 1 — alice. Creates the item + evidence row #1.
+        alice_dir = tmp_path / "user_sessions" / "alice"
+        alice_dir.mkdir(parents=True)
+        shutil.copy(SESSIONS_DIR / "correction_churn_metric.jsonl", alice_dir / "s.jsonl")
+        run(conn, _mock_extractor(golden), session_data_dir=tmp_path / "user_sessions")
+
+        items = repo.list_items(source_type="user_verification")
+        assert len(items) == 1
+        item_id = items[0]["id"]
+        evidence_after_alice = repo.list_evidence(item_id)
+        assert len(evidence_after_alice) == 1
+        assert evidence_after_alice[0]["source_user"] == "alice"
+
+        # Session 2 — bob. Same golden output (same title+content → same
+        # _generate_id), different session/user. Item already exists, but a
+        # fresh evidence row must be persisted on the existing item.
+        bob_dir = tmp_path / "user_sessions" / "bob"
+        bob_dir.mkdir(parents=True)
+        shutil.copy(SESSIONS_DIR / "correction_churn_metric.jsonl", bob_dir / "s.jsonl")
+        run(conn, _mock_extractor(golden), session_data_dir=tmp_path / "user_sessions")
+
+        # Item count unchanged.
+        items = repo.list_items(source_type="user_verification")
+        assert len(items) == 1
+        assert items[0]["id"] == item_id
+
+        # Evidence count grew — bob's evidence accumulated on the existing item.
+        evidence_after_bob = repo.list_evidence(item_id)
+        assert len(evidence_after_bob) == 2
+        users = {e["source_user"] for e in evidence_after_bob}
+        assert users == {"alice", "bob"}
+        conn.close()
+
+
+class TestDetectorWiresContradictionDetection:
+    """Q2: detect_and_record() must run after repo.create() in the pipeline."""
+
+    def test_contradiction_recorded_when_judge_says_yes(self, tmp_path, monkeypatch):
+        conn = _fresh_db(tmp_path, monkeypatch)
+        from src.repositories.knowledge import KnowledgeRepository
+        from services.verification_detector.detector import run
+        from unittest.mock import MagicMock
+
+        repo = KnowledgeRepository(conn)
+        # Pre-existing approved item that the new one will conflict with.
+        repo.create(
+            id="existing", title="Churn definition",
+            content="Customer-count based", category="business_logic",
+            domain="finance", status="approved",
+        )
+
+        # Stub extractor: first call returns a verification; subsequent calls
+        # (the contradiction judge) return contradicts=True.
+        verification_response = {
+            "verifications": [{
+                "detection_type": "correction",
+                "title": "Churn is MRR-based",
+                "content": "Revenue-based",
+                "user_quote": "MRR-based, not customer-count",
+                "domain": "finance",
+                "entities": ["churn", "MRR"],
+            }]
+        }
+        contradiction_response = {
+            "judgments": [{
+                "candidate_id": "existing",
+                "is_contradiction": True,
+                "severity": "hard",
+                "explanation": "definitions disagree",
+                "resolution_action": "kept_a",
+                "resolution_merged_content": None,
+                "resolution_justification": "new item is more accurate",
+            }]
+        }
+
+        extractor = MagicMock()
+        extractor.extract_json.side_effect = [verification_response, contradiction_response]
+
+        session_dir = tmp_path / "user_sessions" / "alice"
+        session_dir.mkdir(parents=True)
+        (session_dir / "s.jsonl").write_text(
+            json.dumps({"role": "user", "content": "MRR-based, not customer-count"}) + "\n"
+        )
+
+        stats = run(conn, extractor, session_data_dir=tmp_path / "user_sessions")
+
+        assert stats["items_created"] == 1
+        assert stats["contradictions_recorded"] == 1
+        contradictions = repo.list_contradictions(resolved=False)
+        assert len(contradictions) == 1
+        assert contradictions[0]["item_b_id"] == "existing"
+        conn.close()
+
+    def test_no_contradiction_when_judge_says_no(self, tmp_path, monkeypatch):
+        """Judge returns contradicts=false → item still created, contradictions_recorded=0."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        from src.repositories.knowledge import KnowledgeRepository
+        from services.verification_detector.detector import run
+        from unittest.mock import MagicMock
+
+        repo = KnowledgeRepository(conn)
+        repo.create(
+            id="existing", title="Churn definition",
+            content="Customer-count based", category="business_logic",
+            domain="finance", status="approved",
+        )
+
+        extractor = MagicMock()
+        extractor.extract_json.side_effect = [
+            {
+                "verifications": [{
+                    "detection_type": "correction",
+                    "title": "Churn refinement",
+                    "content": "Same as existing, more detail",
+                    "user_quote": "more detail",
+                    "domain": "finance",
+                    "entities": ["churn"],
+                }]
+            },
+            {
+                "judgments": [{
+                    "candidate_id": "existing",
+                    "is_contradiction": False,
+                    "severity": None,
+                    "explanation": "compatible — different scopes",
+                    "resolution_action": None,
+                    "resolution_merged_content": None,
+                    "resolution_justification": None,
+                }]
+            },
+        ]
+
+        session_dir = tmp_path / "user_sessions" / "alice"
+        session_dir.mkdir(parents=True)
+        (session_dir / "s.jsonl").write_text(
+            json.dumps({"role": "user", "content": "more detail"}) + "\n"
+        )
+
+        stats = run(conn, extractor, session_data_dir=tmp_path / "user_sessions")
+        assert stats["items_created"] == 1
+        assert stats["contradictions_recorded"] == 0
+        assert repo.list_contradictions(resolved=False) == []
+        conn.close()
+
+    def test_contradiction_judge_failure_does_not_abort_run(self, tmp_path, monkeypatch):
+        """If the contradiction judge raises LLMError, the item must still be
+        created and the session must still be marked processed. Failure of the
+        judge is degraded mode, not a fatal error."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        from src.repositories.knowledge import KnowledgeRepository
+        from services.verification_detector.detector import run
+        from connectors.llm.exceptions import LLMError
+        from unittest.mock import MagicMock
+
+        repo = KnowledgeRepository(conn)
+        repo.create(
+            id="existing", title="Churn definition",
+            content="x", category="business_logic",
+            domain="finance", status="approved",
+        )
+
+        verification_response = {
+            "verifications": [{
+                "detection_type": "correction",
+                "title": "Churn override",
+                "content": "y",
+                "user_quote": "z",
+                "domain": "finance",
+                "entities": ["churn"],
+            }]
+        }
+        extractor = MagicMock()
+        extractor.extract_json.side_effect = [
+            verification_response,
+            LLMError("simulated judge failure"),
+        ]
+
+        session_dir = tmp_path / "user_sessions" / "alice"
+        session_dir.mkdir(parents=True)
+        (session_dir / "s.jsonl").write_text(
+            json.dumps({"role": "user", "content": "z"}) + "\n"
+        )
+
+        stats = run(conn, extractor, session_data_dir=tmp_path / "user_sessions")
+        # Item lands; judge failure is logged and swallowed.
+        assert stats["items_created"] == 1
+        assert stats["contradictions_recorded"] == 0
+        assert stats["sessions_processed"] == 1
+        # Session is marked processed so we don't re-run on next sweep.
+        assert repo.is_session_processed("alice/s.jsonl") is True
+        conn.close()
+
+
+class TestBatchedContradictionFindAndJudge:
+    """Direct unit tests for find_and_judge — the new batched Haiku path
+    (ADR Decision 4). Covers hallucination-defense, severity normalization,
+    structured resolution shape, and the single-call cost guarantee.
+    """
+
+    @staticmethod
+    def _judgment(candidate_id, *, contradicts=False, severity=None,
+                  explanation="", action=None, merged=None, justification=None):
+        return {
+            "candidate_id": candidate_id,
+            "is_contradiction": contradicts,
+            "severity": severity,
+            "explanation": explanation,
+            "resolution_action": action,
+            "resolution_merged_content": merged,
+            "resolution_justification": justification,
+        }
+
+    def _seed(self, repo, n: int, domain: str = "finance"):
+        ids = []
+        for i in range(n):
+            cid = f"c{i}"
+            repo.create(
+                id=cid, title=f"Item {i}", content=f"content {i}",
+                category="business_logic", domain=domain, status="approved",
+            )
+            ids.append(cid)
+        return ids
+
+    def test_single_batched_call_for_many_candidates(self, tmp_path, monkeypatch):
+        """Cost-shape guarantee: one extract_json call regardless of N
+        candidates. Replaces the old N-call sequential pattern."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        from src.repositories.knowledge import KnowledgeRepository
+        from services.corporate_memory.contradiction import find_and_judge
+
+        repo = KnowledgeRepository(conn)
+        ids = self._seed(repo, 5)
+
+        new_item = {"id": "k_new", "title": "New", "content": "x", "domain": "finance"}
+        extractor = MagicMock()
+        extractor.extract_json.return_value = {
+            "judgments": [self._judgment(cid, contradicts=False) for cid in ids],
+        }
+
+        records = find_and_judge(extractor, new_item, repo)
+        assert records == []
+        # Single call regardless of corpus size — this is the whole point.
+        assert extractor.extract_json.call_count == 1
+        conn.close()
+
+    def test_hallucinated_candidate_id_dropped(self, tmp_path, monkeypatch):
+        """If Haiku returns a candidate_id that wasn't in the input list, drop
+        it. Defends against schema-conformant but fabricated IDs."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        from src.repositories.knowledge import KnowledgeRepository
+        from services.corporate_memory.contradiction import find_and_judge
+
+        repo = KnowledgeRepository(conn)
+        self._seed(repo, 1)  # only c0 exists
+
+        new_item = {"id": "k_new", "title": "New", "content": "x", "domain": "finance"}
+        extractor = MagicMock()
+        extractor.extract_json.return_value = {
+            "judgments": [
+                self._judgment("c0", contradicts=True, severity="hard",
+                               explanation="real", action="kept_a",
+                               justification="new wins"),
+                self._judgment("hallucinated_id_that_does_not_exist",
+                               contradicts=True, severity="hard",
+                               explanation="fake", action="kept_a",
+                               justification="should be dropped"),
+            ],
+        }
+
+        records = find_and_judge(extractor, new_item, repo)
+        assert len(records) == 1
+        assert records[0]["item_b_id"] == "c0"
+        conn.close()
+
+    def test_mixed_batch_only_persists_contradictions(self, tmp_path, monkeypatch):
+        """Three candidates, only one contradicts — only that one is recorded.
+        Critical to confirm we don't store every judgment, only positives."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        from src.repositories.knowledge import KnowledgeRepository
+        from services.corporate_memory.contradiction import detect_and_record
+
+        repo = KnowledgeRepository(conn)
+        ids = self._seed(repo, 3)
+
+        new_item = {"id": "k_new", "title": "New", "content": "x", "domain": "finance"}
+        extractor = MagicMock()
+        extractor.extract_json.return_value = {
+            "judgments": [
+                self._judgment(ids[0], contradicts=False, explanation="not related"),
+                self._judgment(ids[1], contradicts=True, severity="soft",
+                               explanation="possibly outdated", action="kept_a",
+                               justification="new is more recent"),
+                self._judgment(ids[2], contradicts=False, explanation="orthogonal"),
+            ],
+        }
+
+        cids = detect_and_record(extractor, new_item, repo)
+        assert len(cids) == 1
+        contradictions = repo.list_contradictions(resolved=False)
+        assert len(contradictions) == 1
+        assert contradictions[0]["item_b_id"] == ids[1]
+        assert contradictions[0]["severity"] == "soft"
+        conn.close()
+
+    def test_invalid_severity_normalized_to_none(self, tmp_path, monkeypatch):
+        """A severity value outside {'hard', 'soft'} is normalized to None.
+        Schema enum should already block this, but defense-in-depth."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        from src.repositories.knowledge import KnowledgeRepository
+        from services.corporate_memory.contradiction import find_and_judge
+
+        repo = KnowledgeRepository(conn)
+        self._seed(repo, 1)
+
+        new_item = {"id": "k_new", "title": "New", "content": "x", "domain": "finance"}
+        extractor = MagicMock()
+        extractor.extract_json.return_value = {
+            "judgments": [self._judgment(
+                "c0", contradicts=True,
+                severity="catastrophic",  # not in enum
+                explanation="severe but unparseable",
+                action="kept_a",
+                justification="new wins",
+            )],
+        }
+
+        records = find_and_judge(extractor, new_item, repo)
+        assert len(records) == 1
+        assert records[0]["severity"] is None
+
+    def test_invalid_resolution_action_dropped(self, tmp_path, monkeypatch):
+        """Unknown action is dropped from the persisted record (record stays,
+        suggested_resolution is omitted)."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        from src.repositories.knowledge import KnowledgeRepository
+        from services.corporate_memory.contradiction import find_and_judge
+
+        repo = KnowledgeRepository(conn)
+        self._seed(repo, 1)
+
+        new_item = {"id": "k_new", "title": "New", "content": "x", "domain": "finance"}
+        extractor = MagicMock()
+        extractor.extract_json.return_value = {
+            "judgments": [self._judgment(
+                "c0", contradicts=True, severity="hard",
+                explanation="x",
+                action="rewrite_from_scratch",  # not in enum
+                justification="y",
+            )],
+        }
+
+        records = find_and_judge(extractor, new_item, repo)
+        assert len(records) == 1
+        # Bad action means no resolution stored; the contradiction itself stays.
+        assert "suggested_resolution" not in records[0]
+
+    def test_merge_action_carries_merged_content(self, tmp_path, monkeypatch):
+        """When action is 'merge', merged_content must persist on the
+        suggested_resolution dict."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        from src.repositories.knowledge import KnowledgeRepository
+        from services.corporate_memory.contradiction import detect_and_record
+
+        repo = KnowledgeRepository(conn)
+        self._seed(repo, 1)
+
+        new_item = {"id": "k_new", "title": "New", "content": "x", "domain": "finance"}
+        extractor = MagicMock()
+        extractor.extract_json.return_value = {
+            "judgments": [self._judgment(
+                "c0", contradicts=True, severity="soft",
+                explanation="overlap", action="merge",
+                merged="Both definitions co-exist; track separately and reconcile quarterly.",
+                justification="non-conflicting scopes",
+            )],
+        }
+
+        detect_and_record(extractor, new_item, repo)
+        c = repo.list_contradictions(resolved=False)[0]
+        res = c["suggested_resolution"]
+        assert res["action"] == "merge"
+        assert "co-exist" in res["merged_content"]
+        conn.close()
+
+    def test_legacy_string_resolution_still_readable(self, tmp_path, monkeypatch):
+        """Backwards compat: rows persisted before ADR D4 carry plain-string
+        suggested_resolution. Must continue to be readable as a string."""
+        conn = _fresh_db(tmp_path, monkeypatch)
+        from src.repositories.knowledge import KnowledgeRepository
+
+        repo = KnowledgeRepository(conn)
+        repo.create(id="a", title="x", content="x", category="x", status="approved")
+        repo.create(id="b", title="y", content="y", category="x", status="approved")
+        repo.create_contradiction(
+            item_a_id="a", item_b_id="b",
+            explanation="legacy",
+            severity="hard",
+            suggested_resolution="kept_a — see notes",  # plain string
+        )
+        c = repo.list_contradictions(resolved=False)[0]
+        # Plain string is preserved as-is (not coerced into a dict).
+        assert c["suggested_resolution"] == "kept_a — see notes"
         conn.close()
