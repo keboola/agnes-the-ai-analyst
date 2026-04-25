@@ -8,6 +8,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ---
 
+## [Unreleased]
+
+<!-- Add bullets here. Group: Added / Changed / Fixed / Removed / Internal.
+     Mark breaking changes with **BREAKING** at the start of the bullet. -->
+
+### Internal
+
+- `CLAUDE.md` — non-negotiable changelog discipline: every PR touching user-visible behavior must update `CHANGELOG.md` under `## [Unreleased]` in the same PR.
+
 ## [0.11.0] — 2026-04-26
 
 First tagged semver release. The `version = "2.x"` strings that appeared in earlier `pyproject.toml` snapshots were arbitrary placeholders from the initial scaffold and never reflected actual API maturity — resetting to pre-1.0 to signal that things may still shift.

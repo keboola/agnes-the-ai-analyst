@@ -272,6 +272,25 @@ When you motivate a change, frame it abstractly ("behind a TLS-terminating rever
 
 Customer-specific automation, hostnames, and identities live in private infra repos that *consume* this OSS. The OSS describes capabilities, defaults, and configuration knobs — not how a specific operator wired them up.
 
+## Changelog discipline — non-negotiable
+
+**Every PR that adds, removes, or changes user-visible behavior MUST update `CHANGELOG.md` in the same PR.** No exceptions, no follow-ups, no "I'll do it after merge". User-visible = anything an operator, end-user, or downstream integrator can observe: CLI flags / output / exit codes, REST endpoints / payloads / status codes, web UI, `instance.yaml` schema, env vars, `extract.duckdb` contract, Docker / compose / Caddyfile knobs, default behaviors, breaking changes, security fixes.
+
+**How:**
+- Add a bullet under the topmost `## [Unreleased]` heading (create one if missing — it sits above the latest released version).
+- Group by `### Added` / `### Changed` / `### Fixed` / `### Removed` / `### Internal` (Keep-a-Changelog sections).
+- Mark breaking changes with `**BREAKING**` at the start of the bullet — operators grep for that string before bumping the pin.
+- Reference the relevant doc/runbook if one exists (e.g. `see docs/auth-groups.md`), don't restate it.
+- Internal-only changes (refactors, test additions, dependency bumps without behavior change) go under `### Internal` — still log them, just keep them terse.
+
+**When you cut a release:**
+- Rename `## [Unreleased]` → `## [X.Y.Z] — YYYY-MM-DD`.
+- Append a new empty `## [Unreleased]` section at the top so the next PR has somewhere to land.
+- Bump `version` in `pyproject.toml` to match `X.Y.Z`.
+- Tag the merge commit as `vX.Y.Z` and push the tag.
+
+**If you find yourself opening a PR without a CHANGELOG entry, stop and add one before requesting review.** Reviewers should bounce PRs that touch user-visible behavior without a changelog update — same way they'd bounce a PR with no test changes for new logic.
+
 ## Git Commits & Pull Requests
 
 - Keep commit messages clean and concise
