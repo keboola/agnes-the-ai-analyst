@@ -23,9 +23,17 @@ GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 
 # Cloud Identity Groups API — requires the cloud-identity.groups.readonly scope
-# AND an admin-enabled Cloud Identity / Google Workspace tenant. A 403 here
-# simply means the tenant isn't Workspace-enabled; we tolerate it.
-GROUPS_SEARCH_URL = "https://cloudidentity.googleapis.com/v1/groups:search"
+# AND an admin-enabled Cloud Identity / Google Workspace tenant.
+#
+# We use `groups/-/memberships:searchTransitiveGroups` (the "what groups does
+# THIS USER belong to" endpoint), NOT `groups:search` (admin "find groups in
+# org" endpoint, which requires Groups Reader admin role + 400s otherwise).
+# The `-` in the path is a wildcard meaning "search across all groups in the
+# caller's organization". Returns transitive memberships (incl. nested groups).
+# Reference: https://cloud.google.com/identity/docs/reference/rest/v1/groups.memberships/searchTransitiveGroups
+GROUPS_SEARCH_URL = (
+    "https://cloudidentity.googleapis.com/v1/groups/-/memberships:searchTransitiveGroups"
+)
 
 
 def is_available() -> bool:
@@ -56,24 +64,28 @@ async def _fetch_google_groups(access_token: str, email: str) -> list[dict]:
     token, network error, etc.). Must never raise — callers rely on this to keep
     the login flow working even when Cloud Identity is unavailable.
 
-    Cloud Identity Groups Search query syntax (CEL) requires:
-      - `parent == 'customers/<id>'`  (use 'customers/my_customer' alias to mean
-        the OAuth-authenticated user's own org — no need to know the customer ID)
+    searchTransitiveGroups query syntax (CEL) requires:
       - a `labels` membership predicate scoping the group type
-    plus optional `member_key_id`. Without `parent` + `labels` Google returns
-    400 INVALID_ARGUMENT (silently — error body just says "invalid argument").
-    Reference: https://cloud.google.com/identity/docs/reference/rest/v1/groups/search
+      - `member_key_id == '<email>'` for the user
+    Without `labels` Google returns 400 INVALID_ARGUMENT (silently — error
+    body just says "invalid argument").
+    Reference: https://cloud.google.com/identity/docs/reference/rest/v1/groups.memberships/searchTransitiveGroups
+
+    Why `security` label and not `discussion_forum`:
+        Empirically Keboola's Workspace lets a non-admin user read their own
+        group memberships ONLY for groups labelled as security groups
+        (`cloudidentity.googleapis.com/groups.security`). The same query with
+        `groups.discussion_forum` returns 403 "Insufficient permissions to
+        retrieve memberships" — the discussion_forum API needs admin scope.
+        In practice every Workspace group at Keboola carries BOTH labels, so
+        filtering on `security` returns the full membership list anyway.
+        Confirmed via scripts/debug/probe_google_groups.py.
     """
-    # Workspace mailing-list-style "discussion_forum" groups (the common case).
-    # Security groups would be `cloudidentity.googleapis.com/groups.security`
-    # — handled in a follow-up if needed; one query at a time keeps the call
-    # cheap and the error surface small.
     query = (
-        f"parent == 'customers/my_customer' "
-        f"&& member_key_id == '{email}' "
-        f"&& 'cloudidentity.googleapis.com/groups.discussion_forum' in labels"
+        f"member_key_id == '{email}' "
+        f"&& 'cloudidentity.googleapis.com/groups.security' in labels"
     )
-    params = {"query": query, "view": "BASIC"}
+    params = {"query": query}
     headers = {"Authorization": f"Bearer {access_token}"}
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -91,14 +103,16 @@ async def _fetch_google_groups(access_token: str, email: str) -> list[dict]:
         logger.warning("Google groups fetch failed for %s: %s", email, e)
         return []
 
+    # searchTransitiveGroups returns `memberships`, not `groups`. Each membership
+    # carries the group identity in groupKey.id (email-shaped) + displayName.
     groups = []
-    for g in data.get("groups", []) or []:
-        group_key = (g.get("groupKey") or {}).get("id", "")
+    for m in data.get("memberships", []) or []:
+        group_key = (m.get("groupKey") or {}).get("id", "")
         if not group_key:
             continue
         groups.append({
             "id": group_key,
-            "name": g.get("displayName") or group_key,
+            "name": m.get("displayName") or group_key,
         })
     return groups
 
