@@ -50,7 +50,7 @@ class UserRepository:
         allowed = {
             "email", "name", "role", "password_hash", "setup_token",
             "setup_token_created", "reset_token", "reset_token_created",
-            "active", "deactivated_at", "deactivated_by",
+            "active", "deactivated_at", "deactivated_by", "groups",
         }
         updates = {k: v for k, v in kwargs.items() if k in allowed}
         if not updates:
