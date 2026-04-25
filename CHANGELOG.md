@@ -32,6 +32,24 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - Renamed `docs/internal-roles.md` → **`docs/RBAC.md`**. Standard industry term, more discoverable for engineers grepping for "RBAC" in a new repo. Added Quickstart-by-role sections (operator / end-user / module author) and a step-by-step *Module-author workflow* with code examples for registering a key, gating endpoints, declaring implies hierarchies, and writing a contract test against the gate. Cross-references in code (`app/api/admin.py`, `tests/test_role_resolver.py`) updated. `CLAUDE.md` now points contributors at the new doc from the *Extensibility → RBAC* section. Historical CHANGELOG entries (`[0.11.3]` / `[0.11.4]` body) keep the original `internal-roles.md` filename — they describe what shipped at that version and aren't retro-edited.
 
+---
+
+## [0.12.0] - 2026-04-26
+
+### Added
+- Corporate memory V1.5: audience-based distribution — `knowledge_items.audience` column; `GET /api/memory` filters by caller's group membership; `users.groups` JSON column (schema v10)
+- `GET /api/memory/admin/contradictions` gains `exclude_personal: bool = True` (default) — personal item content is hidden from contradiction enrichment responses
+- Confidence externalization — `corporate_memory.confidence` section in `instance.yaml` now configures base scores, modifier weights, and decay parameters at startup via `confidence.configure()`
+- Exponential confidence decay (default); per-source-type floors: `admin_mandate` >= 0.50, `user_verification` >= 0.40
+
+### Fixed
+- Admin categories filter now generated dynamically from seeded data (removed hardcoded `Data Analysis / API / Performance` buttons)
+- Dashboard stats URL corrected from `/api/corporate-memory/stats` to `/api/memory/stats`
+
+### Breaking Changes
+- `apply_decay()` signature changed: `decay_rate_monthly=` keyword argument removed; use `confidence.configure()` to set decay parameters
+- Default decay model switched from linear (-0.02/month) to exponential (half-life 12 months). Existing items will score lower after upgrade — migration note: `admin_mandate` items are protected by a 0.50 floor; `user_verification` items by a 0.40 floor; other source types may see score reductions up to ~50% at 12 months
+- DuckDB schema bumped v8 -> v10: adds `knowledge_items.audience VARCHAR` (v9) and `users.groups JSON` (v10); migration runs automatically on startup
 ## [0.11.4] — 2026-04-27
 
 Role-management complete release. Sjednocuje legacy `users.role` enum (viewer/analyst/km_admin/admin) with the v8 internal-roles foundation under one model with implies hierarchy, ships admin UI + REST API + CLI for managing both group mappings and direct user grants, and wires `require_internal_role` for PAT-aware resolution so admin endpoints work uniformly across OAuth and headless callers.

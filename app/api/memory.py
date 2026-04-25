@@ -1,5 +1,7 @@
 """Corporate memory endpoints — knowledge items, voting, governance admin, contradictions."""
 
+import json
+import logging
 import uuid
 from typing import Optional, List
 
@@ -11,12 +13,15 @@ from app.auth.dependencies import get_current_user, require_role, Role, _get_db
 from src.repositories.knowledge import KnowledgeRepository
 from src.repositories.audit import AuditRepository
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/memory", tags=["memory"])
 
 VALID_STATUSES = ["pending", "approved", "mandatory", "rejected", "revoked", "expired"]
 VALID_DOMAINS = ["finance", "engineering", "product", "data", "operations", "infrastructure"]
 
 # Roles allowed to see is_personal=true items they did not contribute.
+# Role.ADMIN included: platform admins have full visibility for operational support
 _PRIVILEGED_VIEWER_ROLES = {Role.KM_ADMIN.value, Role.ADMIN.value}
 
 
@@ -111,10 +116,14 @@ async def list_knowledge(
     else:
         raw_groups = user.get("groups") or []
         if isinstance(raw_groups, str):
-            import json as _json
             try:
-                raw_groups = _json.loads(raw_groups)
-            except Exception:
+                raw_groups = json.loads(raw_groups)
+            except json.JSONDecodeError:
+                logger.warning(
+                    "Failed to parse users.groups for user %s: %s",
+                    user.get("id"),
+                    raw_groups,
+                )
                 raw_groups = []
         effective_groups = [f"group:{g}" for g in raw_groups]
     if search:
@@ -489,9 +498,16 @@ async def admin_contradictions(
     """
     repo = KnowledgeRepository(conn)
     contradictions = repo.list_contradictions(resolved=resolved)
+    # Collect all distinct item IDs and fetch in one query (M5 batch optimisation).
+    all_item_ids = list({
+        id_
+        for c in contradictions
+        for id_ in (c["item_a_id"], c["item_b_id"])
+    })
+    items_by_id = repo.get_by_ids(all_item_ids)
     for c in contradictions:
-        item_a = repo.get_by_id(c["item_a_id"])
-        item_b = repo.get_by_id(c["item_b_id"])
+        item_a = items_by_id.get(c["item_a_id"])
+        item_b = items_by_id.get(c["item_b_id"])
         if exclude_personal:
             c["item_a"] = {"id": c["item_a_id"], "hidden": True} if item_a and item_a.get("is_personal") else item_a
             c["item_b"] = {"id": c["item_b_id"], "hidden": True} if item_b and item_b.get("is_personal") else item_b
@@ -507,7 +523,7 @@ async def admin_create_contradiction(
     user: dict = Depends(require_role(Role.KM_ADMIN)),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Create a knowledge contradiction (for testing/seeding)."""
+    """Admin endpoint for manually recording a contradiction between two knowledge items."""
     repo = KnowledgeRepository(conn)
     if not repo.get_by_id(request.item_a_id):
         raise HTTPException(status_code=404, detail=f"Item A not found: {request.item_a_id}")
