@@ -68,8 +68,7 @@ refetch() {
 #
 #   1. TLS_PRIVKEY_URL set (sm://, gs://, https://, file://) — fetch it
 #      every rotate tick. Used by VMs that keep the key in Secret
-#      Manager or similar for VM-replace resilience (legacy pattern,
-#      foundryai-poc today).
+#      Manager or similar for VM-replace resilience (legacy pattern).
 #
 #   2. TLS_PRIVKEY_URL empty AND $CERT_DIR/privkey.pem already on disk
 #      — reuse the on-disk key, never fetch. The file survives the VM
