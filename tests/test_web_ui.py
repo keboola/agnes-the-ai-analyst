@@ -100,9 +100,11 @@ class TestWebUISmoke:
         assert "app-header" in body
         # Nav after split: "Tokens" (own) for every signed-in user +
         # admin-only "All tokens" link pointing at /admin/tokens.
+        # Profile link added with the Google-Workspace-groups feature
+        # (cherry-pick of zs/google-groups-display + dropdown wiring).
         assert 'href="/tokens"' in body
         assert 'href="/admin/tokens"' in body
-        assert 'href="/profile"' not in body
+        assert 'href="/profile"' in body
         assert 'href="/admin/users"' in body
         # New modern UI markers
         assert 'class="users-page"' in body
@@ -111,7 +113,7 @@ class TestWebUISmoke:
         assert 'id="confirm-modal"' in body
 
     def test_nav_shows_tokens_link_for_non_admin(self, web_client, analyst_cookie):
-        """Non-admins see the 'My tokens' user-menu link — no 'All tokens' link, no /profile."""
+        """Non-admins see 'My tokens' + 'Profile' user-menu links — no 'All tokens'."""
         resp = web_client.get("/dashboard", cookies=analyst_cookie)
         assert resp.status_code in (200, 302)
         if resp.status_code == 302:
@@ -119,9 +121,9 @@ class TestWebUISmoke:
             resp = web_client.get(resp.headers["location"], cookies=analyst_cookie)
         body = resp.text
         assert 'href="/tokens"' in body
-        assert 'href="/profile"' not in body
+        assert 'href="/profile"' in body
         assert ">My tokens<" in body
-        assert ">Profile<" not in body
+        assert ">Profile<" in body
         # Non-admins must NOT see the admin "All tokens" link.
         assert 'href="/admin/tokens"' not in body
         assert ">All tokens<" not in body
