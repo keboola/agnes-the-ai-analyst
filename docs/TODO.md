@@ -111,6 +111,37 @@ The V1 must-fix items from that review are implemented on
 
 ---
 
+## Audience-based knowledge distribution (half-built, never finished)
+
+Status: **not in scope for V1 must-fix** — flagged here so it stops getting
+silently lost.
+
+What exists today:
+- `knowledge_items.audience VARCHAR` column (`src/db.py`, original state-layer commit).
+- Admin UI "Target Audience" selector with dynamic groups
+  (`app/web/templates/corporate_memory_admin.html` ~line 1274).
+- `POST /api/memory/admin/mandate` and `/admin/batch` accept an `audience`
+  parameter (`app/api/memory.py`).
+
+What is missing (must land for the feature to actually distribute):
+1. `POST /admin/mandate` and `/admin/batch` must persist `audience` onto
+   `knowledge_items.audience`, not only into the audit log.
+2. `KnowledgeRepository.list_items` / `search` must accept a `for_user`
+   (or `groups`) parameter and filter rows where `audience IN ('all',
+   'group:<one-of-user-groups>')`.
+3. `GET /api/memory` must derive the caller's group memberships
+   (already in `users.groups`) and pass them to the repo.
+4. Tests: a user in group A sees `audience='group:A'` items but not
+   `audience='group:B'`; admins see everything regardless.
+5. Decide policy for `pending`/`approved` items with no audience set —
+   default `'all'` is the obvious choice.
+
+This is the "approve for certain groups so we would manage distribution
+of knowledge" feature pd was asking about (chat, 2026-04-25). It was
+never removed; it was never finished. Tracked under V1.5.
+
+---
+
 ## Hook configuration follow-ups
 
 - The repo (or user) Stop hook returns
