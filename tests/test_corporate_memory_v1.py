@@ -292,15 +292,47 @@ class TestConfidenceScoring:
     def test_decay_over_time(self):
         from services.corporate_memory.confidence import apply_decay
         created = datetime.now(timezone.utc) - timedelta(days=60)  # ~2 months
-        c = apply_decay(0.90, created, decay_rate_monthly=0.02)
+        # exponential: 0.90 * (0.5 ** (2/12)) ≈ 0.90 * 0.891 ≈ 0.802
+        c = apply_decay(0.90, created)
         assert c < 0.90
-        assert c == pytest.approx(0.86, abs=0.01)
+        assert c == pytest.approx(0.90 * (0.5 ** (2.0 / 12.0)), abs=0.01)
 
-    def test_decay_never_below_zero(self):
+    def test_decay_never_below_floor(self):
         from services.corporate_memory.confidence import apply_decay
         created = datetime.now(timezone.utc) - timedelta(days=3650)  # 10 years
-        c = apply_decay(0.50, created, decay_rate_monthly=0.02)
+        c = apply_decay(0.50, created)
         assert c >= 0.0
+
+    def test_admin_mandate_decay_floor(self):
+        from services.corporate_memory.confidence import apply_decay
+        created = datetime.now(timezone.utc) - timedelta(days=3650)  # 10 years
+        c = apply_decay(1.00, created, source_type="admin_mandate")
+        assert c >= 0.50  # admin_mandate floor is 0.50
+
+    def test_configure_overrides_defaults(self):
+        from services.corporate_memory import confidence as cm
+        original_base = dict(cm._BASE_CONFIDENCE)
+        try:
+            cm.configure({
+                "base": {
+                    "user_verification.correction": 0.75,
+                },
+                "decay": {
+                    "mode": "exponential",
+                    "half_life_months": 6,
+                    "floor": {"admin_mandate": 0.60, "default": 0.0},
+                },
+            })
+            c = cm.compute_confidence("user_verification", "correction")
+            assert c == pytest.approx(0.75)
+            created = datetime.now(timezone.utc) - timedelta(days=365)  # 12 months
+            # exponential with half_life=6: 1.00 * (0.5 ** (12/6)) = 0.25, but floor=0.60
+            c2 = cm.apply_decay(1.00, created, source_type="admin_mandate")
+            assert c2 >= 0.60
+        finally:
+            # Restore defaults so other tests are not affected
+            cm._BASE_CONFIDENCE = original_base
+            cm._DECAY_CONFIG["floor"]["admin_mandate"] = 0.50
 
 
 class TestEntityResolution:
@@ -1380,3 +1412,19 @@ class TestBatchedContradictionFindAndJudge:
         # Plain string is preserved as-is (not coerced into a dict).
         assert c["suggested_resolution"] == "kept_a — see notes"
         conn.close()
+
+
+class TestExponentialDecayWithLinearFallback:
+    """Verify exponential decay and linear fallback via configure()."""
+
+    def test_linear_mode_still_works(self):
+        from services.corporate_memory import confidence as cm
+        orig = dict(cm._DECAY_CONFIG)
+        try:
+            cm.configure({"decay": {"mode": "linear", "decay_rate_monthly": 0.02, "floor": {"default": 0.0}}})
+            created = datetime.now(timezone.utc) - timedelta(days=60)
+            c = cm.apply_decay(0.90, created)
+            assert c < 0.90
+            assert c == pytest.approx(0.86, abs=0.01)
+        finally:
+            cm._DECAY_CONFIG.update(orig)
