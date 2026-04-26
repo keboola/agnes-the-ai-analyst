@@ -49,9 +49,10 @@ def test_app_health():
 
 
 def test_app_returns_html_on_root():
-    """GET / returns 200 (HTML dashboard)."""
-    resp = httpx.get(f"{DOCKER_BASE_URL}/", timeout=10)
-    assert resp.status_code == 200
+    """GET / redirects unauthenticated callers — / always 302s to /login or /dashboard."""
+    resp = httpx.get(f"{DOCKER_BASE_URL}/", timeout=10, follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers.get("location") in ("/login", "/dashboard")
 
 
 def test_bootstrap_creates_admin():
