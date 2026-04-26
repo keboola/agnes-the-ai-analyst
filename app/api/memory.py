@@ -18,6 +18,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/memory", tags=["memory"])
 
 VALID_STATUSES = ["pending", "approved", "mandatory", "rejected", "revoked", "expired"]
+
+BUNDLE_TOKEN_BUDGET = 6000
+# Rough chars-per-token estimate (conservative).
+_CHARS_PER_TOKEN = 4
 VALID_DOMAINS = ["finance", "engineering", "product", "data", "operations", "infrastructure"]
 
 # Roles allowed to see is_personal=true items they did not contribute.
@@ -27,6 +31,20 @@ _PRIVILEGED_VIEWER_ROLES = {Role.KM_ADMIN.value, Role.ADMIN.value}
 
 def _is_privileged_viewer(user: dict) -> bool:
     return user.get("role") in _PRIVILEGED_VIEWER_ROLES
+
+
+def _effective_groups(user: dict) -> Optional[List[str]]:
+    """Return audience-filter group list for the caller, or None for admins (no filter)."""
+    if _is_privileged_viewer(user):
+        return None
+    raw = user.get("groups") or []
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.warning("Failed to parse users.groups for user %s: %s", user.get("id"), raw)
+            raw = []
+    return [f"group:{g}" for g in raw]
 
 
 def _can_view_item(user: dict, item: dict) -> bool:
@@ -109,23 +127,7 @@ async def list_knowledge(
     # Privacy: non-privileged viewers can never opt out of the personal filter.
     # Their own personal contributions are visible via /my-contributions, not here.
     effective_exclude_personal = True if not _is_privileged_viewer(user) else exclude_personal
-    # Audience: admins see all items; other users are filtered to their group memberships.
-    # users.groups is a list like ["finance", "engineering"]; audience column stores "group:X".
-    if _is_privileged_viewer(user):
-        effective_groups = None  # no audience filter for admins
-    else:
-        raw_groups = user.get("groups") or []
-        if isinstance(raw_groups, str):
-            try:
-                raw_groups = json.loads(raw_groups)
-            except json.JSONDecodeError:
-                logger.warning(
-                    "Failed to parse users.groups for user %s: %s",
-                    user.get("id"),
-                    raw_groups,
-                )
-                raw_groups = []
-        effective_groups = [f"group:{g}" for g in raw_groups]
+    effective_groups = _effective_groups(user)
     if search:
         items = repo.search(
             search,
@@ -569,3 +571,83 @@ async def admin_resolve_contradiction(
         "item_b_id": contradiction["item_b_id"],
     })
     return {"id": contradiction_id, "resolved": True, "resolution": request.resolution}
+
+
+# ---- Bundle endpoint ----
+
+@router.get("/bundle")
+async def get_bundle(
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Token-budgeted bundle of knowledge items for AI agent injection.
+
+    Returns all mandatory items (always included) plus confidence×recency-ranked
+    approved items that fit within the token budget. Audience-filtered by the
+    caller's group memberships (admins see everything).
+    """
+    from datetime import datetime, timezone
+
+    repo = KnowledgeRepository(conn)
+    effective_groups = _effective_groups(user)
+
+    mandatory = repo.list_items(
+        statuses=["mandatory"],
+        exclude_personal=True,
+        user_groups=effective_groups,
+        limit=1000,
+        offset=0,
+    )
+
+    approved = repo.list_items(
+        statuses=["approved"],
+        exclude_personal=True,
+        user_groups=effective_groups,
+        limit=1000,
+        offset=0,
+    )
+
+    # Rank approved by confidence × recency (days since updated, max 365).
+    now = datetime.now(timezone.utc)
+
+    def _rank(item: dict) -> float:
+        confidence = float(item.get("confidence") or 0.5)
+        updated_raw = item.get("updated_at")
+        if updated_raw:
+            try:
+                if isinstance(updated_raw, str):
+                    from datetime import datetime as dt
+                    updated = dt.fromisoformat(updated_raw.replace("Z", "+00:00"))
+                else:
+                    updated = updated_raw
+                if updated.tzinfo is None:
+                    from datetime import timezone as tz
+                    updated = updated.replace(tzinfo=tz.utc)
+                age_days = max((now - updated).days, 0)
+            except Exception:
+                age_days = 365
+        else:
+            age_days = 365
+        recency = max(0.0, 1.0 - age_days / 365.0)
+        return confidence * recency
+
+    approved_ranked = sorted(approved, key=_rank, reverse=True)
+
+    def _token_est(item: dict) -> int:
+        return len((item.get("title", "") + " " + item.get("content", ""))) // _CHARS_PER_TOKEN
+
+    budget_remaining = BUNDLE_TOKEN_BUDGET - sum(_token_est(i) for i in mandatory)
+    approved_included = []
+    for item in approved_ranked:
+        cost = _token_est(item)
+        if budget_remaining - cost < 0:
+            break
+        approved_included.append(item)
+        budget_remaining -= cost
+
+    return {
+        "mandatory": mandatory,
+        "approved": approved_included,
+        "token_estimate": BUNDLE_TOKEN_BUDGET - budget_remaining,
+        "token_budget": BUNDLE_TOKEN_BUDGET,
+    }

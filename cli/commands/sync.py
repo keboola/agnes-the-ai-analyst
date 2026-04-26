@@ -140,6 +140,10 @@ def sync(
             progress.update(task, description="Rebuilding DuckDB views...")
             _rebuild_duckdb_views(local_dir, parquet_dir)
 
+        # 7. Fetch corporate memory bundle and write .claude/rules/km_*.md
+        progress.update(task, description="Fetching corporate memory rules...")
+        _fetch_and_write_rules(local_dir)
+
         progress.update(task, description="Sync complete")
 
     # Output
@@ -153,6 +157,63 @@ def sync(
             typer.echo(f"Errors: {len(results['errors'])}")
             for err in results["errors"]:
                 typer.echo(f"  {err['table']}: {err['error']}")
+
+
+def _item_to_md(item: dict) -> str:
+    """Render a knowledge item as a Markdown rule file."""
+    lines = [f"# {item.get('title', 'Untitled')}"]
+    if item.get("domain"):
+        lines.append(f"_Domain: {item['domain']}_")
+    if item.get("category"):
+        lines.append(f"_Category: {item['category']}_")
+    lines.append("")
+    lines.append(item.get("content", ""))
+    return "\n".join(lines)
+
+
+def _fetch_and_write_rules(local_dir: Path) -> None:
+    """Fetch /api/memory/bundle and write .claude/rules/km_*.md files.
+
+    Best-effort — sync continues if the server is unreachable or the endpoint
+    returns an error. Stale files from previously-mandated items are removed.
+    """
+    rules_dir = local_dir / ".claude" / "rules"
+    try:
+        resp = api_get("/api/memory/bundle")
+        resp.raise_for_status()
+        bundle = resp.json()
+    except Exception as e:
+        typer.echo(f"Corporate memory bundle unavailable (skipping): {e}", err=True)
+        return
+
+    rules_dir.mkdir(parents=True, exist_ok=True)
+    written: set[str] = set()
+
+    # Write one file per mandatory item.
+    for item in bundle.get("mandatory", []):
+        fname = f"km_{item['id']}.md"
+        (rules_dir / fname).write_text(_item_to_md(item), encoding="utf-8")
+        written.add(fname)
+
+    # Write ranked approved items into a single file.
+    approved = bundle.get("approved", [])
+    if approved:
+        lines = ["# Approved Corporate Knowledge\n"]
+        for item in approved:
+            lines.append(f"## {item.get('title', 'Untitled')}\n")
+            lines.append(item.get("content", "") + "\n")
+        (rules_dir / "km_approved.md").write_text("\n".join(lines), encoding="utf-8")
+        written.add("km_approved.md")
+    else:
+        # Remove stale approved bundle if nothing qualifies.
+        stale = rules_dir / "km_approved.md"
+        if stale.exists():
+            stale.unlink()
+
+    # Prune stale per-item files that are no longer mandatory.
+    for existing in rules_dir.glob("km_*.md"):
+        if existing.name not in written and existing.name != "km_approved.md":
+            existing.unlink()
 
 
 def _print_dry_run_plan(
