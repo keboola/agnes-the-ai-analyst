@@ -587,6 +587,18 @@ def effective_roles(
     direct = data.get("direct") or data.get("direct_roles") or []
     group = data.get("group") or data.get("group_roles") or []
     expanded = data.get("expanded") or data.get("effective") or data.get("effective_roles") or []
-    typer.echo(f"  direct   : {', '.join(direct) if direct else '(none)'}")
-    typer.echo(f"  group    : {', '.join(group) if group else '(none)'}")
+
+    # API response shape: direct/group are List[Dict] (RoleGrantResponse-like
+    # with role_key + grant metadata), expanded is List[str]. Render uniformly
+    # by extracting role_key from dicts and falling back to str() for legacy
+    # mock shapes that yield bare strings.
+    def _names(items):
+        return ", ".join(
+            (it.get("role_key") or it.get("key") or str(it))
+            if isinstance(it, dict) else str(it)
+            for it in items
+        )
+
+    typer.echo(f"  direct   : {_names(direct) if direct else '(none)'}")
+    typer.echo(f"  group    : {_names(group) if group else '(none)'}")
     typer.echo(f"  expanded : {', '.join(expanded) if expanded else '(none)'}")

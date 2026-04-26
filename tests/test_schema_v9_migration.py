@@ -197,6 +197,91 @@ class TestV8ToV9Migration:
         assert result == ("core.viewer",)
 
 
+class TestLegacyRoleHydration:
+    """Regression coverage for the Devin-flagged scenario: a v8 DB upgraded
+    to v9 NULLs `users.role`, which would otherwise break every callsite
+    that still reads `user["role"]` (admin nav, dashboard UserInfo,
+    catalog/sync admin bypass paths). `get_current_user` rehydrates the
+    field via `_hydrate_legacy_role` so those callsites keep working
+    without a mass refactor."""
+
+    def test_hydration_recovers_role_from_user_role_grants(self, fresh_data_dir):
+        """Post-v9, an existing admin user should still see role='admin' on
+        their session-loaded user dict — even though the DB column is NULL."""
+        db_path = fresh_data_dir / "state" / "system.duckdb"
+        conn = _v8_state(db_path)
+        conn.execute(
+            "INSERT INTO users (id, email, role) VALUES (?, ?, ?)",
+            [str(uuid.uuid4()), "admin@example.com", "admin"],
+        )
+        conn.close()
+
+        # Trigger migration via get_system_db.
+        from src.db import get_system_db
+        from app.auth.dependencies import _hydrate_legacy_role
+        conn = get_system_db()
+
+        # Reload the user the way get_current_user does — column is NULL.
+        from src.repositories.users import UserRepository
+        user = UserRepository(conn).get_by_email("admin@example.com")
+        assert user["role"] is None, "v9 backfill leaves the column NULL"
+
+        # Hydrate. Admin must come back with role='admin'.
+        hydrated = _hydrate_legacy_role(user, conn)
+        assert hydrated["role"] == "admin", (
+            "post-v9 admin must hydrate back to role='admin' so existing "
+            "user.get('role') == 'admin' callsites (admin nav, catalog "
+            "bypass, etc.) continue to work after migration"
+        )
+
+    def test_hydration_returns_highest_grant(self, fresh_data_dir):
+        """User with both core.km_admin (auto-seed) and core.admin (added
+        later) should hydrate to 'admin' — the highest level wins."""
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        from src.repositories.internal_roles import InternalRolesRepository
+        from app.auth.dependencies import _hydrate_legacy_role
+        conn = get_system_db()
+
+        user_id = str(uuid.uuid4())
+        UserRepository(conn).create(
+            id=user_id, email="multi@example.com", name="Multi", role="km_admin",
+        )
+        # Add a second grant — admin — directly.
+        admin_role = InternalRolesRepository(conn).get_by_key("core.admin")
+        conn.execute(
+            "INSERT INTO user_role_grants "
+            "(id, user_id, internal_role_id, granted_by, source) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [str(uuid.uuid4()), user_id, admin_role["id"], "test", "direct"],
+        )
+
+        # Force role NULL to simulate the post-migration session reload state.
+        conn.execute("UPDATE users SET role = NULL WHERE id = ?", [user_id])
+        user = UserRepository(conn).get_by_id(user_id)
+        assert user["role"] is None
+
+        hydrated = _hydrate_legacy_role(user, conn)
+        assert hydrated["role"] == "admin"
+
+    def test_hydration_falls_back_to_viewer_when_no_grants(self, fresh_data_dir):
+        """A user with zero core.* grants (edge case: imported via raw SQL
+        without going through UserRepository.create, or grants revoked) must
+        not crash — fall back to the safest enum value."""
+        from src.db import get_system_db
+        from app.auth.dependencies import _hydrate_legacy_role
+        conn = get_system_db()
+
+        user_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO users (id, email, role, active) VALUES (?, ?, NULL, TRUE)",
+            [user_id, "lonely@example.com"],
+        )
+        user = {"id": user_id, "email": "lonely@example.com", "role": None}
+        hydrated = _hydrate_legacy_role(user, conn)
+        assert hydrated["role"] == "viewer"
+
+
 class TestImpliesEndpointsExist:
     """Sanity checks that the new schema columns are usable by other modules."""
 

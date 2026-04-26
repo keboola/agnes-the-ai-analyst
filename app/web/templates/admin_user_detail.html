@@ -419,7 +419,9 @@ function renderEffectiveRoles(data) {
   grid.style.display = "";
 
   const direct = data.direct || data.direct_grants || [];
-  const groups = data.groups || data.group_derived || data.derived || [];
+  // API returns `group` (singular, matches EffectiveRolesResponse pydantic
+  // field). The other names are tolerated for past/future shape drift.
+  const groups = data.group || data.groups || data.group_derived || data.derived || [];
   const expanded = data.expanded || data.expanded_set || data.all || [];
 
   fillList("effective-direct", direct, function (g) {

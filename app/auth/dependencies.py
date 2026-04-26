@@ -126,6 +126,45 @@ def _get_local_dev_user(conn: duckdb.DuckDBPyConnection) -> Optional[dict]:
     return user
 
 
+def _hydrate_legacy_role(user: dict, conn: duckdb.DuckDBPyConnection) -> dict:
+    """v9 compatibility: derive ``user["role"]`` from ``user_role_grants``.
+
+    The v8→v9 migration NULL-ed ``users.role`` (the column is kept as a
+    deprecated artifact because DuckDB rejects DROP COLUMN under the FK).
+    A long tail of read sites still inspects ``user["role"]`` directly —
+    Jinja2 templates (``session.user.role``), dashboard ``UserInfo.is_admin``,
+    ``app/api/catalog.py`` and ``app/api/sync.py`` admin bypass paths,
+    and so on. Mass-rewriting them to the resolver is a migration tax we
+    don't pay here; instead, ``get_current_user`` runs every authenticated
+    request through this helper, which mirrors the highest-level
+    ``core.*`` grant back into ``user["role"]`` as the legacy enum string.
+    Net effect: pre-v9 callsites keep working transparently for both
+    OAuth and PAT callers, with one extra DB round-trip per authenticated
+    request — same cost as the existing PAT-aware ``require_internal_role``
+    fallback. Skips the lookup when ``role`` is already populated (fresh
+    user creation, in-memory edits) so the helper is idempotent.
+    """
+    if user.get("role"):
+        return user
+    try:
+        from src.rbac import _get_internal_role_keys, Role
+        keys = _get_internal_role_keys(user["id"], conn=conn)
+        for level in (Role.ADMIN, Role.KM_ADMIN, Role.ANALYST, Role.VIEWER):
+            if f"core.{level.value}" in keys:
+                user["role"] = level.value
+                return user
+        user["role"] = Role.VIEWER.value
+    except Exception as e:
+        # Auth path must never fail on a hydration glitch — fall back to
+        # the safest enum value. Logged so a recurring problem surfaces.
+        logger.warning(
+            "v9 role hydration failed for user %s: %s",
+            user.get("email", "<unknown>"), e,
+        )
+        user["role"] = "viewer"
+    return user
+
+
 async def get_current_user(
     request: Request = None,
     authorization: Optional[str] = Header(None),
@@ -135,6 +174,7 @@ async def get_current_user(
     if is_local_dev_mode():
         user = _get_local_dev_user(conn)
         if user:
+            user = _hydrate_legacy_role(user, conn)
             # Mirror the Google OAuth callback (app/auth/providers/google.py:189-194)
             # which writes session.google_groups on every login — including [] on
             # failure — so group-aware code paths see authoritative state. We
@@ -213,6 +253,7 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Account deactivated",
         )
+    user = _hydrate_legacy_role(user, conn)
 
     # PAT validation: check it's not revoked / expired / unknown in DB.
     if payload.get("typ") == "pat":
