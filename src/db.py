@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -576,7 +576,7 @@ _V8_TO_V9_MIGRATIONS = [
 # user_quote + detection_type per row is what enables future Bayesian re-
 # calibration and "additional verifiers" boost computation. See Q3 of
 # docs/pd-ps-comments.md.
-_V8_TO_V9_MIGRATIONS = [
+_V9_TO_V10_MIGRATIONS = [
     """
     CREATE TABLE IF NOT EXISTS verification_evidence (
         id VARCHAR PRIMARY KEY,
@@ -591,7 +591,7 @@ _V8_TO_V9_MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS idx_verification_evidence_item ON verification_evidence(item_id)",
 ]
 
-_V9_TO_V10_MIGRATIONS = [
+_V10_TO_V11_MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS groups JSON",
 ]
 
@@ -693,6 +693,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                     conn.execute(sql)
             if current < 10:
                 for sql in _V9_TO_V10_MIGRATIONS:
+                    conn.execute(sql)
+            if current < 11:
+                for sql in _V10_TO_V11_MIGRATIONS:
                     conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
