@@ -10,6 +10,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- `GET /api/memory/bundle` — token-budgeted (6k) bundle of mandatory + confidence×recency-ranked approved items, audience-filtered by caller's groups; consumed by `da sync` step 7
+- `da sync` step 7: fetches `/api/memory/bundle` and writes `.claude/rules/km_<id>.md` (mandatory) and `km_approved.md` (ranked approved); stale files pruned on each sync; best-effort (sync continues if server unreachable)
+- `config/claude_md_template.txt` gains `## Corporate Memory` section documenting the injected rules files
+- `_effective_groups(user)` helper in `memory.py` — shared audience-filter logic used by `list_knowledge` and `/bundle`
+
+### Fixed
+- `users.groups` is now written to the DB at Google OAuth login (write-once — admin overrides are sticky); previously the column was always NULL so `GET /api/memory` returned no results for non-admin users
+
 <!-- Add bullets here. Group: Added / Changed / Fixed / Removed / Internal.
      Mark breaking changes with **BREAKING** at the start of the bullet. -->
 
