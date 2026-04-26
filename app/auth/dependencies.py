@@ -145,12 +145,30 @@ async def get_current_user(
             if request is not None and hasattr(request, "session"):
                 target_groups = get_local_dev_groups()
                 current = request.session.get("google_groups")
+                groups_changed = False
                 if target_groups and current != target_groups:
                     request.session["google_groups"] = target_groups
+                    groups_changed = True
                 elif not target_groups and current:
                     # Clear stale groups if the operator unsets LOCAL_DEV_GROUPS
                     # mid-session — matches production's "always-write" semantics.
                     request.session["google_groups"] = []
+                    groups_changed = True
+                if groups_changed:
+                    # External groups changed → recompute internal roles to
+                    # keep the session coherent (same semantics as a fresh
+                    # Google sign-in). Best-effort: if the resolver tables
+                    # don't exist yet (older DB?), don't break the dev flow.
+                    try:
+                        from app.auth.role_resolver import resolve_internal_roles
+                        request.session["internal_roles"] = resolve_internal_roles(
+                            target_groups, conn,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "dev-bypass: resolve_internal_roles failed: %s", e,
+                        )
+                        request.session["internal_roles"] = []
             return user
         # Fall through to normal auth if seed missing — surfaces the bug instead of hiding it.
 

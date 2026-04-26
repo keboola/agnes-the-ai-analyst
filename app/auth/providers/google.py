@@ -193,6 +193,25 @@ async def google_callback(request: Request):
         else:
             request.session["google_groups"] = []
 
+        # Resolve external groups into internal role keys at sign-in. Cached
+        # on the session for the lifetime of this login — refresh requires
+        # re-login, same as the google_groups list itself.
+        try:
+            from app.auth.role_resolver import resolve_internal_roles
+            from src.db import get_system_db
+            conn = get_system_db()
+            try:
+                request.session["internal_roles"] = resolve_internal_roles(
+                    request.session.get("google_groups", []) or [],
+                    conn,
+                )
+            finally:
+                conn.close()
+        except Exception as e:
+            # Resolver errors must not break login — fall back to no roles.
+            logger.warning("Failed to resolve internal_roles for %s: %s", email, e)
+            request.session["internal_roles"] = []
+
         # Issue JWT
         jwt_token = create_access_token(user["id"], user["email"], user["role"])
 

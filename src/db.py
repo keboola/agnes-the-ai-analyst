@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -220,6 +220,34 @@ CREATE TABLE IF NOT EXISTS personal_access_tokens (
     last_used_at TIMESTAMP,
     last_used_ip VARCHAR,
     revoked_at   TIMESTAMP
+);
+
+-- Internal roles: app-defined capabilities (e.g. 'context_admin', 'agent_operator').
+-- `key` is the immutable lower_snake_case identifier referenced from code; modules
+-- self-register their roles on import and the startup hook syncs the registry to
+-- this table. Admins map external Cloud Identity groups onto these roles via
+-- group_mappings — they don't create roles in the UI.
+CREATE TABLE IF NOT EXISTS internal_roles (
+    id           VARCHAR PRIMARY KEY,
+    key          VARCHAR UNIQUE NOT NULL,
+    display_name VARCHAR NOT NULL,
+    description  TEXT,
+    owner_module VARCHAR,
+    created_at   TIMESTAMP NOT NULL DEFAULT current_timestamp,
+    updated_at   TIMESTAMP NOT NULL DEFAULT current_timestamp
+);
+
+-- External-to-internal group mapping: which Cloud Identity groups grant which
+-- internal role. Many-to-many. The resolver joins this table at sign-in and
+-- writes the resulting role keys into session.internal_roles for cheap lookup
+-- on subsequent requests.
+CREATE TABLE IF NOT EXISTS group_mappings (
+    id                VARCHAR PRIMARY KEY,
+    external_group_id VARCHAR NOT NULL,
+    internal_role_id  VARCHAR NOT NULL REFERENCES internal_roles(id),
+    assigned_at       TIMESTAMP NOT NULL DEFAULT current_timestamp,
+    assigned_by       VARCHAR,
+    UNIQUE (external_group_id, internal_role_id)
 );
 """
 
@@ -432,6 +460,30 @@ _V6_TO_V7_MIGRATIONS = [
     "ALTER TABLE personal_access_tokens ADD COLUMN IF NOT EXISTS last_used_ip VARCHAR",
 ]
 
+_V7_TO_V8_MIGRATIONS = [
+    """
+    CREATE TABLE IF NOT EXISTS internal_roles (
+        id           VARCHAR PRIMARY KEY,
+        key          VARCHAR UNIQUE NOT NULL,
+        display_name VARCHAR NOT NULL,
+        description  TEXT,
+        owner_module VARCHAR,
+        created_at   TIMESTAMP NOT NULL DEFAULT current_timestamp,
+        updated_at   TIMESTAMP NOT NULL DEFAULT current_timestamp
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS group_mappings (
+        id                VARCHAR PRIMARY KEY,
+        external_group_id VARCHAR NOT NULL,
+        internal_role_id  VARCHAR NOT NULL REFERENCES internal_roles(id),
+        assigned_at       TIMESTAMP NOT NULL DEFAULT current_timestamp,
+        assigned_by       VARCHAR,
+        UNIQUE (external_group_id, internal_role_id)
+    )
+    """,
+]
+
 _V3_TO_V4_MIGRATIONS = [
     """
     CREATE TABLE IF NOT EXISTS metric_definitions (
@@ -521,6 +573,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                     conn.execute(sql)
             if current < 7:
                 for sql in _V6_TO_V7_MIGRATIONS:
+                    conn.execute(sql)
+            if current < 8:
+                for sql in _V7_TO_V8_MIGRATIONS:
                     conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
