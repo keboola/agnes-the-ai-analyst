@@ -272,7 +272,24 @@ class TestRequireInternalRole:
 
     def test_session_internal_roles_populated(self, dev_app_with_mapping):
         """Direct session inspection — the resolver wrote the resolved role
-        keys into session.internal_roles, decoupled from any HTML template."""
+        keys into session.internal_roles, decoupled from any HTML template.
+
+        The cached set must include both sources after Devin review #73:
+
+        - **Group-mapped** ``ctx_admin`` (engineers@example.com → ctx_admin
+          via group_mappings).
+        - **Direct grants** for the dev user — seeded as admin by
+          app/main.py, so user_role_grants contains core.admin which
+          implies-expands to the full ``core.*`` hierarchy.
+
+        Pre-fix the dev-bypass and OAuth callback called
+        ``resolve_internal_roles(groups, conn)`` *without* user_id, dropping
+        direct grants on the floor. Every admin-gated request then fell
+        through to the per-request DB fallback inside
+        ``require_internal_role`` — functionally correct, but defeated the
+        session cache and surfaced confusing "dev-bypass resolved 0
+        internal role(s)" log lines for an obviously-admin user. The fix
+        passes user_id so the cache is authoritative on the first hit."""
         # Hit any auth-required endpoint to trigger the resolver.
         dev_app_with_mapping.get("/_test/needs-ctx")
         from itsdangerous import TimestampSigner
@@ -282,10 +299,24 @@ class TestRequireInternalRole:
         signer = TimestampSigner(os.environ["SESSION_SECRET"])
         unsigned = signer.unsign(cookie, max_age=14 * 24 * 3600)
         payload = _json.loads(base64.b64decode(unsigned))
-        assert payload.get("internal_roles") == ["ctx_admin"]
+        roles = set(payload.get("internal_roles") or [])
+        # Group-mapping path
+        assert "ctx_admin" in roles, (
+            "ctx_admin must come from the engineers@example.com group mapping"
+        )
+        # Direct-grant path (dev user is seeded as admin)
+        assert "core.admin" in roles, (
+            "core.admin must come from user_role_grants — Devin review #73 "
+            "regression: dev-bypass was previously dropping direct grants"
+        )
+        # Implies expansion runs after union
+        assert {"core.viewer", "core.analyst", "core.km_admin"}.issubset(roles), (
+            "implies expansion must include the full core.* hierarchy "
+            "below the held core.admin grant"
+        )
 
     def test_stale_session_keeps_old_roles_after_mapping_change(self, dev_app_with_mapping):
-        """KNOWN LIMITATION (documented in docs/internal-roles.md → Resolution
+        """KNOWN LIMITATION (documented in docs/RBAC.md → Resolution
         timing): roles are resolved at sign-in only. If an admin revokes a
         mapping mid-session, the user keeps the cached role keys until they
         log out + back in. This test pins that behavior so any future cache

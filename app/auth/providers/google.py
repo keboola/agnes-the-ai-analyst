@@ -195,7 +195,10 @@ async def google_callback(request: Request):
 
         # Resolve external groups into internal role keys at sign-in. Cached
         # on the session for the lifetime of this login — refresh requires
-        # re-login, same as the google_groups list itself.
+        # re-login, same as the google_groups list itself. We pass user_id
+        # so direct user_role_grants are also folded into the session cache
+        # (otherwise the DB-fallback in require_internal_role would fire on
+        # every admin-gated request, defeating the OAuth fast path).
         try:
             from app.auth.role_resolver import resolve_internal_roles
             from src.db import get_system_db
@@ -204,6 +207,7 @@ async def google_callback(request: Request):
                 resolved = resolve_internal_roles(
                     request.session.get("google_groups", []) or [],
                     conn,
+                    user_id=user["id"],
                 )
             finally:
                 conn.close()

@@ -130,6 +130,86 @@
   .desc-cell { color: var(--text-secondary, #6b7280); font-size: 12px; max-width: 360px; }
 
   .count-cell { text-align: right; font-variant-numeric: tabular-nums; color: var(--text-secondary, #6b7280); }
+
+  /* Known-groups picker: chips above the create-mapping form. */
+  .rm-known-groups {
+    margin-top: 12px;
+    padding: 14px 16px;
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+  }
+  .rm-known-groups .rm-known-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    font-weight: 600;
+    color: var(--text-secondary, #6b7280);
+    margin: 0 0 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .rm-known-groups .rm-known-help {
+    font-size: 12px;
+    color: var(--text-secondary, #6b7280);
+    margin-left: auto;
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 400;
+  }
+  .rm-known-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .rm-known-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px 6px 12px;
+    background: var(--border-light, #f9fafb);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 999px;
+    font-size: 12.5px;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s, transform 0.05s;
+    font-family: var(--font-primary, 'Inter', system-ui, sans-serif);
+    color: var(--text-primary, #111827);
+  }
+  .rm-known-chip:hover {
+    background: rgba(0, 115, 209, 0.08);
+    border-color: rgba(0, 115, 209, 0.30);
+  }
+  .rm-known-chip:active { transform: translateY(1px); }
+  .rm-known-chip .chip-name { font-weight: 600; }
+  .rm-known-chip .chip-id {
+    font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
+    font-size: 11.5px;
+    color: var(--text-secondary, #6b7280);
+  }
+  .rm-known-chip .chip-tag {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-weight: 600;
+  }
+  .rm-known-chip .chip-tag-session { background: rgba(16, 185, 129, 0.12); color: #047857; }
+  .rm-known-chip .chip-tag-mapped  { background: rgba(99, 102, 241, 0.12); color: #4338ca; }
+  .rm-known-empty {
+    font-size: 12.5px;
+    color: var(--text-secondary, #6b7280);
+    line-height: 1.5;
+  }
+  .rm-known-empty code {
+    font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
+    background: var(--border-light, #f3f4f6);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 11.5px;
+  }
 </style>
 
 <div class="role-mapping-page" data-page="role-mapping">
@@ -185,11 +265,37 @@
       <div id="mappings-empty" class="rm-empty" style="display:none;">No group mappings yet. Create one below.</div>
     </div>
 
+    <div class="rm-known-groups" id="known-groups-panel" data-testid="known-groups">
+      <div class="rm-known-title">
+        Known groups
+        <span class="rm-known-help">Click a chip to fill the form below.</span>
+      </div>
+      {% if known_groups and known_groups | length > 0 %}
+      <div class="rm-known-chips">
+        {% for g in known_groups %}
+        <button type="button"
+                class="rm-known-chip"
+                data-group-id="{{ g.id }}"
+                title="Click to use {{ g.id }}">
+          <span class="chip-name">{{ g.name }}</span>
+          {% if g.name != g.id %}<span class="chip-id">{{ g.id }}</span>{% endif %}
+          {% if g.from_session %}<span class="chip-tag chip-tag-session">your group</span>{% endif %}
+          {% if g.in_mappings %}<span class="chip-tag chip-tag-mapped">already mapped</span>{% endif %}
+        </button>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="rm-known-empty">
+        We don't have any group IDs to suggest yet. Sign in via Google so the page can read your <code>session.google_groups</code>, or set the <code>LOCAL_DEV_GROUPS</code> env var when running locally. You can still type any Cloud Identity group ID into the form below — the input accepts any non-empty string.
+      </div>
+      {% endif %}
+    </div>
+
     <form class="rm-form" id="mapping-form" onsubmit="event.preventDefault(); createMapping();">
       <div class="rm-form-field">
         <label for="new-external-group">External group ID</label>
         <input id="new-external-group" type="text" required autocomplete="off"
-               placeholder="e.g. groups/01234567">
+               placeholder="e.g. groups/01234567 — or click a chip above">
       </div>
       <div class="rm-form-field">
         <label for="new-role-key">Internal role</label>
@@ -392,8 +498,26 @@ async function deleteMapping(id) {
   await Promise.all([loadMappings(), loadRoles()]);
 }
 
+// ── Known-groups picker: chip click fills the form ──
+function wireKnownGroupChips() {
+  const chips = document.querySelectorAll(".rm-known-chip[data-group-id]");
+  chips.forEach(function (chip) {
+    chip.addEventListener("click", function () {
+      const gid = chip.dataset.groupId || "";
+      const input = document.getElementById("new-external-group");
+      const select = document.getElementById("new-role-key");
+      input.value = gid;
+      // Move keyboard focus to the role select so the next user action
+      // is "pick a role" — saves a click.
+      if (select && !select.value) { select.focus(); }
+      else { input.focus(); input.select(); }
+    });
+  });
+}
+
 // ── Boot ──
 loadRoles();
 loadMappings();
+wireKnownGroupChips();
 </script>
 {% endblock %}

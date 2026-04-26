@@ -269,6 +269,75 @@ def test_role_mapping_page_navigation_link_visible_to_admin(fresh_db):
     assert 'href="/admin/role-mapping"' in body
 
 
+# ── Known-groups picker (group ID discovery UX) ──────────────────────────
+
+
+def test_known_groups_panel_renders_empty_state_with_helpful_copy(fresh_db):
+    """Fresh DB + JWT-auth admin (no session google_groups, no mappings):
+    the picker still renders, with copy that tells the admin where the
+    chips will come from once they sign in via Google or set
+    LOCAL_DEV_GROUPS. Avoids a confusing blank panel."""
+    from fastapi.testclient import TestClient
+    from src.db import get_system_db, close_system_db
+    from app.main import app
+
+    conn = get_system_db()
+    try:
+        _, admin_sess = _make_user_and_session(conn, "admin@t", "admin")
+    finally:
+        conn.close()
+        close_system_db()
+
+    client = TestClient(app)
+    resp = client.get(
+        "/admin/role-mapping",
+        cookies={"access_token": admin_sess},
+    )
+    assert resp.status_code == 200
+    body = resp.text
+    # Panel marker present.
+    assert 'data-testid="known-groups"' in body
+    assert "Known groups" in body
+    # Empty-state copy guides the operator.
+    assert "session.google_groups" in body or "LOCAL_DEV_GROUPS" in body
+
+
+def test_known_groups_panel_renders_chip_for_existing_mapping(fresh_db):
+    """A previously-mapped external group ID surfaces as a chip with the
+    'already mapped' tag — so the admin can pick a known-good ID without
+    typing it. ID-only because we don't re-fetch the directory per render."""
+    from fastapi.testclient import TestClient
+    from src.db import get_system_db, close_system_db
+    from src.repositories.group_mappings import GroupMappingsRepository
+    from src.repositories.internal_roles import InternalRolesRepository
+    from app.main import app
+
+    conn = get_system_db()
+    try:
+        _, admin_sess = _make_user_and_session(conn, "admin@t", "admin")
+        # Seed a mapping so its external_group_id surfaces in the picker.
+        analyst_role = InternalRolesRepository(conn).get_by_key("core.analyst")
+        GroupMappingsRepository(conn).create(
+            id=str(uuid.uuid4()),
+            external_group_id="groups/known-dev-team",
+            internal_role_id=analyst_role["id"],
+            assigned_by="admin@t",
+        )
+    finally:
+        conn.close()
+        close_system_db()
+
+    client = TestClient(app)
+    resp = client.get(
+        "/admin/role-mapping",
+        cookies={"access_token": admin_sess},
+    )
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'data-group-id="groups/known-dev-team"' in body
+    assert "already mapped" in body
+
+
 def test_role_mapping_nav_link_hidden_for_non_admin(fresh_db):
     """Non-admin (analyst) does not see the Role mapping nav link."""
     from fastapi.testclient import TestClient

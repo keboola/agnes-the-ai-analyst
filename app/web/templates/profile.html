@@ -155,6 +155,86 @@
     font-weight: 600;
   }
   .tokens-link-row a:hover { text-decoration: underline; }
+
+  /* Effective roles section: chip cloud + grouped breakdown */
+  .role-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 0 0 4px;
+  }
+  .role-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
+    font-size: 12px;
+    font-weight: 600;
+    background: rgba(0, 115, 209, 0.10);
+    color: #0073D1;
+    border: 1px solid rgba(0, 115, 209, 0.25);
+  }
+  .role-chip.is-core { background: rgba(16, 185, 129, 0.10); color: #047857; border-color: rgba(16, 185, 129, 0.25); }
+
+  .grant-list, .group-roles-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .grant-row, .group-roles-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 10px;
+    background: var(--background, #f9fafb);
+    flex-wrap: wrap;
+  }
+  .grant-row .grant-key, .group-roles-row .group-roles-name {
+    font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary, #1A253C);
+  }
+  .group-roles-row .group-roles-name {
+    font-family: var(--font-primary, 'Inter', system-ui, sans-serif);
+  }
+  .grant-row .grant-source {
+    font-size: 11.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: rgba(107, 114, 128, 0.12);
+    color: var(--text-secondary, #6b7280);
+    font-weight: 600;
+  }
+  .grant-row .grant-source.source-direct { background: rgba(0, 115, 209, 0.12); color: #0073D1; }
+  .grant-row .grant-source.source-auto { background: rgba(245, 158, 11, 0.12); color: #b45309; }
+  .grant-row .grant-meta {
+    font-size: 12px;
+    color: var(--text-secondary, #6b7280);
+    margin-left: auto;
+  }
+
+  .group-roles-row .group-roles-arrow {
+    color: var(--text-secondary, #9ca3af);
+    font-weight: 400;
+  }
+  .group-roles-row .role-chips { margin: 0; }
+
+  .effective-help {
+    margin-top: 12px;
+    font-size: 12.5px;
+    color: var(--text-secondary, #6b7280);
+    line-height: 1.55;
+  }
 </style>
 
 <div class="profile-page">
@@ -182,10 +262,56 @@
     </div>
     <div class="tokens-link-row">
       Manage personal access tokens at <a href="/tokens">/tokens</a>.
+      {% if user.role == "admin" %}
+        Edit your capabilities and role grants at
+        <a href="/admin/users/{{ user.id }}">/admin/users/{{ user.id }}</a>.
+      {% endif %}
     </div>
   </section>
 
-  <section class="section-card" aria-label="Google Workspace groups">
+  <section class="section-card" aria-label="Effective roles">
+    <h3>Effective roles</h3>
+    {% if effective_roles and effective_roles | length > 0 %}
+    <div class="role-chips" data-testid="effective-roles">
+      {% for key in effective_roles %}
+      <span class="role-chip{% if key.startswith('core.') %} is-core{% endif %}">{{ key }}</span>
+      {% endfor %}
+    </div>
+    <div class="effective-help">
+      The full set of internal-role keys you currently hold — direct grants, group-derived roles, and everything they imply via the role hierarchy. Auth gates check this list.
+    </div>
+    {% else %}
+    <div class="empty-state">
+      <div class="empty-title">No internal roles resolved</div>
+      <div>You don't currently hold any internal-role grants. Ask an admin to map your group or grant you a role at <a href="/admin/role-mapping">/admin/role-mapping</a>.</div>
+    </div>
+    {% endif %}
+  </section>
+
+  <section class="section-card" aria-label="Direct role grants">
+    <h3>Direct grants</h3>
+    {% if direct_grants and direct_grants | length > 0 %}
+    <ul class="grant-list" role="list">
+      {% for g in direct_grants %}
+      <li class="grant-row" role="listitem">
+        <span class="grant-key">{{ g.internal_role_key or g.role_key or "—" }}</span>
+        {% set src = g.source or "direct" %}
+        <span class="grant-source {% if src == 'direct' %}source-direct{% elif src == 'auto-seed' %}source-auto{% endif %}">{{ src }}</span>
+        {% if g.granted_by %}
+        <span class="grant-meta">granted by {{ g.granted_by }}</span>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <div class="empty-state">
+      <div class="empty-title">No direct grants</div>
+      <div>You have no rows in <code>user_role_grants</code>. Roles you hold come from Google Workspace group mappings instead — see below.</div>
+    </div>
+    {% endif %}
+  </section>
+
+  <section class="section-card" aria-label="Google Workspace groups and the roles they grant">
     <h3>Google Workspace groups</h3>
     {% if groups and groups | length > 0 %}
     <ul class="groups-list" role="list">
@@ -201,6 +327,21 @@
       <div class="empty-title">No Google groups available</div>
       <div>Groups are populated when you sign in with Google on a Workspace-enabled tenant. Other sign-in methods (email, password) don't expose group memberships.</div>
     </div>
+    {% endif %}
+
+    {% if group_roles and group_roles | length > 0 %}
+    <h3 style="margin-top: 22px;">Roles via groups</h3>
+    <ul class="group-roles-list" role="list">
+      {% for gr in group_roles %}
+      <li class="group-roles-row" role="listitem">
+        <span class="group-roles-name">{{ gr.group_name }}</span>
+        <span class="group-roles-arrow">grants</span>
+        <span class="role-chips">
+          {% for k in gr.role_keys %}<span class="role-chip{% if k.startswith('core.') %} is-core{% endif %}">{{ k }}</span>{% endfor %}
+        </span>
+      </li>
+      {% endfor %}
+    </ul>
     {% endif %}
   </section>
 </div>

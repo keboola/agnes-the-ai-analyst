@@ -281,6 +281,77 @@ class TestLegacyRoleHydration:
         hydrated = _hydrate_legacy_role(user, conn)
         assert hydrated["role"] == "viewer"
 
+    def test_hydration_ignores_stale_legacy_role_after_grant_revoke(
+        self, fresh_data_dir,
+    ):
+        """Devin review #73: privilege-retention regression.
+
+        Scenario: an admin downgrades a user via the new role-management
+        UI. ``changeCoreRole`` JS does ``DELETE /api/admin/users/{id}/
+        role-grants/{grant_id}`` followed by ``POST /api/admin/users/{id}/
+        role-grants {role_key: 'core.viewer'}``. Neither endpoint touches
+        the legacy ``users.role`` column, so it stays at the old value
+        ('admin'). On the next request, ``_hydrate_legacy_role`` was
+        previously short-circuiting on the truthy stale value — leaving
+        ``user["role"] = "admin"`` even though the grants table only had
+        ``core.viewer``. ``_is_admin_user_dict`` and the catalog/sync
+        admin-bypass short-circuits would then silently retain elevated
+        access. Fix: always re-resolve from grants, ignore the legacy
+        column. This test pins the contract."""
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        from src.repositories.internal_roles import InternalRolesRepository
+        from src.repositories.user_role_grants import UserRoleGrantsRepository
+        from app.auth.dependencies import _hydrate_legacy_role
+
+        conn = get_system_db()
+
+        # Step 1: create user as admin — both legacy column + grant land.
+        user_id = str(uuid.uuid4())
+        UserRepository(conn).create(
+            id=user_id, email="ex-admin@example.com", name="ExAdmin", role="admin",
+        )
+        # Sanity: legacy column AND grant both populated.
+        u = UserRepository(conn).get_by_id(user_id)
+        assert u["role"] == "admin", "fresh create must set legacy column"
+        admin_role = InternalRolesRepository(conn).get_by_key("core.admin")
+        grants = UserRoleGrantsRepository(conn).list_for_user(user_id)
+        admin_grant = next(g for g in grants if g["role_key"] == "core.admin")
+
+        # Step 2: simulate "admin downgrades user via new UI" — DELETE the
+        # core.admin grant directly (mimicking the role-management endpoint),
+        # WITHOUT touching users.role.
+        UserRoleGrantsRepository(conn).delete(admin_grant["id"])
+        viewer_role = InternalRolesRepository(conn).get_by_key("core.viewer")
+        conn.execute(
+            "INSERT INTO user_role_grants "
+            "(id, user_id, internal_role_id, granted_by, source) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [str(uuid.uuid4()), user_id, viewer_role["id"], "admin@x", "direct"],
+        )
+        # users.role is still 'admin' — exactly the stale state the bug describes.
+        stale = conn.execute(
+            "SELECT role FROM users WHERE id = ?", [user_id]
+        ).fetchone()[0]
+        assert stale == "admin", (
+            "scenario only reproduces if the legacy column is left stale by "
+            "the role-management endpoints — guards against an unrelated fix "
+            "that also nulls the column making this test trivially pass"
+        )
+
+        # Step 3: load + hydrate exactly the way get_current_user does.
+        u = UserRepository(conn).get_by_id(user_id)
+        assert u["role"] == "admin", "loader returns the stale column verbatim"
+        hydrated = _hydrate_legacy_role(u, conn)
+
+        # The contract: hydration trusts the grants, NOT the stale column.
+        assert hydrated["role"] == "viewer", (
+            "after revoking core.admin and granting core.viewer, hydration "
+            "must overwrite the stale 'admin' value — otherwise downstream "
+            "is_admin checks (catalog/sync bypass, _is_admin_user_dict) keep "
+            "elevated table access alive against require_internal_role's gate"
+        )
+
 
 class TestImpliesEndpointsExist:
     """Sanity checks that the new schema columns are usable by other modules."""
@@ -318,3 +389,146 @@ class TestImpliesEndpointsExist:
                    VALUES (?, ?, ?, 'test', 'direct')""",
                 [str(uuid.uuid4()), user_id, analyst["id"]],
             )
+
+
+class TestAPIUsersPostMigration:
+    """End-to-end regression: /api/users (and admin endpoints reading users)
+    must not 500 on legacy users.role being NULL after v8→v9 migration.
+
+    Original bug: ``UserResponse.role`` is a required ``str`` Pydantic field,
+    but the migration NULL-s the legacy column. ``_to_response`` previously
+    passed ``u["role"]`` straight through to validation, which raised
+    ``string_type`` for every migrated user → ``HTTP 500`` on ``GET /api/users``,
+    which made ``/admin/users`` unable to render the list and hid the new
+    ``Detail`` link to ``/admin/users/{id}``. The fix routes user dicts
+    through ``_hydrate_legacy_role`` before response serialization (and
+    before the ``target['role'] == 'admin'`` short-circuit in
+    ``update_user`` / ``delete_user`` so last-admin protection still
+    triggers on migrated admins)."""
+
+    def _seed_v8_admin(self, db_path):
+        """Seed a v8 DB with an admin user; trigger v9 migration; return
+        (admin_id, bearer_token) ready for API calls."""
+        conn = _v8_state(db_path)
+        admin_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO users (id, email, name, role) VALUES (?, ?, ?, ?)",
+            [admin_id, "admin@v8", "V8 Admin", "admin"],
+        )
+        conn.close()
+        # Trigger migration via get_system_db; emit token for API access.
+        from src.db import get_system_db
+        from app.auth.jwt import create_access_token
+        get_system_db()  # runs v8→v9 migration
+        token = create_access_token(user_id=admin_id, email="admin@v8", role="admin")
+        return admin_id, token
+
+    def test_list_users_returns_200_for_v8_migrated_users(
+        self, fresh_data_dir, monkeypatch,
+    ):
+        """``GET /api/users`` must hydrate every user's role from grants
+        rather than 500 on the NULL legacy column."""
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-jwt-secret-key-minimum-32-chars!!")
+        db_path = fresh_data_dir / "state" / "system.duckdb"
+        admin_id, token = self._seed_v8_admin(db_path)
+
+        # Confirm the legacy column really is NULL — otherwise this test
+        # isn't actually exercising the regression scenario.
+        from src.db import get_system_db
+        conn = get_system_db()
+        legacy = conn.execute(
+            "SELECT role FROM users WHERE id = ?", [admin_id]
+        ).fetchone()
+        assert legacy[0] is None, (
+            "v8→v9 migration must NULL legacy users.role for this test "
+            "to actually cover the original 500-on-validation regression"
+        )
+
+        from app.main import app
+        from fastapi.testclient import TestClient
+        client = TestClient(app)
+        resp = client.get(
+            "/api/users",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200, (
+            f"expected 200, got {resp.status_code}: {resp.text}"
+        )
+        users = resp.json()
+        assert len(users) == 1
+        assert users[0]["email"] == "admin@v8"
+        assert users[0]["role"] == "admin", (
+            "_to_response must hydrate role from user_role_grants when the "
+            "legacy column is NULL"
+        )
+
+    def test_last_admin_protection_still_triggers_on_v8_admin_demote(
+        self, fresh_data_dir, monkeypatch,
+    ):
+        """PATCH that demotes the sole v8-migrated admin must 409. The bug:
+        ``target['role'] == 'admin'`` short-circuit in ``update_user`` would
+        evaluate False on a NULL legacy role, silently skipping the
+        ``count_admins`` guard and letting the operator lock themselves out."""
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-jwt-secret-key-minimum-32-chars!!")
+        db_path = fresh_data_dir / "state" / "system.duckdb"
+        admin_id, token = self._seed_v8_admin(db_path)
+
+        from app.main import app
+        from fastapi.testclient import TestClient
+        client = TestClient(app)
+        resp = client.patch(
+            f"/api/users/{admin_id}",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"role": "viewer"},
+        )
+        assert resp.status_code == 409, (
+            f"expected 409 last-admin protection, got {resp.status_code}: "
+            f"{resp.text}"
+        )
+        assert "admin" in resp.json()["detail"].lower()
+
+    def test_list_users_hydrates_role_for_every_legacy_role(
+        self, fresh_data_dir, monkeypatch,
+    ):
+        """All four legacy roles (viewer/analyst/km_admin/admin) must
+        round-trip through the API after v9 migration — proves the
+        hydration covers every backfilled grant, not just admin."""
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-jwt-secret-key-minimum-32-chars!!")
+        db_path = fresh_data_dir / "state" / "system.duckdb"
+        conn = _v8_state(db_path)
+        admin_id = str(uuid.uuid4())
+        # Seed one user per legacy role; admin is the caller.
+        conn.execute(
+            "INSERT INTO users (id, email, name, role) VALUES (?, ?, ?, ?)",
+            [admin_id, "admin@v8", "Admin", "admin"],
+        )
+        for role_str in ("viewer", "analyst", "km_admin"):
+            conn.execute(
+                "INSERT INTO users (id, email, name, role) VALUES (?, ?, ?, ?)",
+                [str(uuid.uuid4()), f"{role_str}@v8", role_str.title(), role_str],
+            )
+        conn.close()
+
+        from src.db import get_system_db
+        from app.auth.jwt import create_access_token
+        get_system_db()  # trigger v8→v9
+        token = create_access_token(user_id=admin_id, email="admin@v8", role="admin")
+
+        from app.main import app
+        from fastapi.testclient import TestClient
+        client = TestClient(app)
+        resp = client.get(
+            "/api/users",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200, resp.text
+        roles = {u["email"]: u["role"] for u in resp.json()}
+        assert roles == {
+            "admin@v8": "admin",
+            "viewer@v8": "viewer",
+            "analyst@v8": "analyst",
+            "km_admin@v8": "km_admin",
+        }, "every legacy role must hydrate back via _to_response"

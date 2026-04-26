@@ -138,14 +138,24 @@ def _hydrate_legacy_role(user: dict, conn: duckdb.DuckDBPyConnection) -> dict:
     don't pay here; instead, ``get_current_user`` runs every authenticated
     request through this helper, which mirrors the highest-level
     ``core.*`` grant back into ``user["role"]`` as the legacy enum string.
-    Net effect: pre-v9 callsites keep working transparently for both
-    OAuth and PAT callers, with one extra DB round-trip per authenticated
-    request — same cost as the existing PAT-aware ``require_internal_role``
-    fallback. Skips the lookup when ``role`` is already populated (fresh
-    user creation, in-memory edits) so the helper is idempotent.
+
+    **Always re-resolves from grants** (Devin review #73): the v9 role
+    management endpoints (``POST/DELETE /api/admin/users/{id}/role-grants``,
+    plus the ``changeCoreRole`` UI flow) modify ``user_role_grants`` without
+    touching the legacy ``users.role`` column. An early-return on
+    ``user.get("role")`` truthy would happily trust the stale legacy value
+    after a revoke — leaving the user dict carrying ``role="admin"`` while
+    the grants table no longer contains the corresponding row. Downstream,
+    ``_is_admin_user_dict`` (``src/rbac.py``) and ``user.get("role") ==
+    "admin"`` short-circuits in ``catalog.py`` / ``sync.py`` would then
+    keep elevated table access alive for a downgraded user even though
+    ``require_internal_role`` correctly denies the API gates. The fix is
+    to always resolve from ``user_role_grants`` and overwrite ``role``,
+    making the grants table the single source of truth for every code
+    path on every request. Cost: one extra DB round-trip per authenticated
+    request — same as the existing PAT-aware ``require_internal_role``
+    fallback. Worth the consistency.
     """
-    if user.get("role"):
-        return user
     try:
         from src.rbac import _get_internal_role_keys, Role
         keys = _get_internal_role_keys(user["id"], conn=conn)
@@ -203,7 +213,14 @@ async def get_current_user(
                 if groups_changed or "internal_roles" not in request.session:
                     try:
                         from app.auth.role_resolver import resolve_internal_roles
-                        resolved = resolve_internal_roles(target_groups, conn)
+                        # Pass user_id so direct grants (user_role_grants)
+                        # populate the session cache too — otherwise every
+                        # admin-gated request would fall through to the DB
+                        # fallback in require_internal_role, defeating the
+                        # caching path for dev-mode admins. Devin review #73.
+                        resolved = resolve_internal_roles(
+                            target_groups, conn, user_id=user.get("id"),
+                        )
                         request.session["internal_roles"] = resolved
                         logger.info(
                             "dev-bypass resolved %d internal role(s) for %s: %s",
