@@ -135,19 +135,22 @@ async def get_current_user(
     if is_local_dev_mode():
         user = _get_local_dev_user(conn)
         if user:
-            # Mirror the Google OAuth callback: populate session.google_groups
-            # from LOCAL_DEV_GROUPS so group-aware code paths (profile page,
-            # future group-based access checks) see something realistic in
-            # dev. Two short-circuits avoid spurious Set-Cookie noise on PAT/CLI
-            # requests (where the session starts empty each call): we skip the
-            # write entirely when the mock is empty (the common LOCAL_DEV_GROUPS-
-            # unset case, where session.get→None and target→[] would otherwise
-            # always differ), and on browser sessions we compare-before-write
-            # so a stable mock doesn't re-issue the cookie on every request.
+            # Mirror the Google OAuth callback (app/auth/providers/google.py:189-194)
+            # which writes session.google_groups on every login — including [] on
+            # failure — so group-aware code paths see authoritative state. We
+            # match that semantics here while skipping the write when nothing
+            # would change: same-value updates are a no-op, and the write on
+            # PAT/CLI requests with no prior session + no target is also skipped
+            # (target → [], existing → None/[], no transition to record).
             if request is not None and hasattr(request, "session"):
                 target_groups = get_local_dev_groups()
-                if target_groups and request.session.get("google_groups") != target_groups:
+                current = request.session.get("google_groups")
+                if target_groups and current != target_groups:
                     request.session["google_groups"] = target_groups
+                elif not target_groups and current:
+                    # Clear stale groups if the operator unsets LOCAL_DEV_GROUPS
+                    # mid-session — matches production's "always-write" semantics.
+                    request.session["google_groups"] = []
             return user
         # Fall through to normal auth if seed missing — surfaces the bug instead of hiding it.
 
