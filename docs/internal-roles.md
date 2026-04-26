@@ -95,6 +95,15 @@ export LOCAL_DEV_GROUPS='[{"id":"engineering@example.com","name":"Engineering"}]
 # then hit any protected endpoint — dev user now holds context_admin.
 ```
 
+## PAT and headless requests
+
+Internal roles are **session-scoped only**. Personal Access Tokens (PAT) and other Bearer-token clients carry a JWT that proves identity but not a signed session cookie, so `session["internal_roles"]` is never populated for them. Concretely: any endpoint protected by `Depends(require_internal_role(…))` will return `403` for a PAT client even when the corresponding user's external groups would map to that role through a browser sign-in.
+
+This is intentional, not a bug — the same constraint already applies to `session.google_groups`, and PAT-issued JWTs deliberately don't snapshot that list (the user's group memberships can change after the token was issued without any way to re-sign the token). Two practical implications:
+
+- **Don't gate PAT-callable endpoints with `require_internal_role`.** Use `users.role` (`require_admin` / `require_role(Role.ANALYST)`) for the coarse check, or check the JWT claims directly. Internal roles fit OAuth-flow consumers (the web UI) and the dev bypass.
+- **If you need a CLI/script to act with elevated capability**, the current escape valves are: (a) issue the PAT to a user whose `users.role` already covers it, (b) call the endpoint through the OAuth flow from a browser session, or (c) wait for the planned `da admin grant-role` CLI helper (see *Future work*) which will store an explicit per-user grant outside the group-mapping flow.
+
 ## Resolution timing
 
 Resolver runs at sign-in only:

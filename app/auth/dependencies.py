@@ -154,11 +154,13 @@ async def get_current_user(
                     # mid-session — matches production's "always-write" semantics.
                     request.session["google_groups"] = []
                     groups_changed = True
-                if groups_changed:
-                    # External groups changed → recompute internal roles to
-                    # keep the session coherent (same semantics as a fresh
-                    # Google sign-in). Best-effort: if the resolver tables
-                    # don't exist yet (older DB?), don't break the dev flow.
+                # Populate internal_roles whenever it would otherwise be missing
+                # — first request after sign-in or any time groups changed. This
+                # mirrors the OAuth callback's unconditional write so a dev
+                # request never reaches require_internal_role with the key
+                # absent. Skipping when role list is already cached + groups
+                # didn't change keeps the per-request cost at a session lookup.
+                if groups_changed or "internal_roles" not in request.session:
                     try:
                         from app.auth.role_resolver import resolve_internal_roles
                         request.session["internal_roles"] = resolve_internal_roles(
