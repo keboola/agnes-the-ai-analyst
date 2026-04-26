@@ -148,11 +148,31 @@ def create_app() -> FastAPI:
 
     # LOCAL_DEV_MODE: bypass authentication for local development. DO NOT enable in prod.
     # When on, every protected route auto-logs in as a seeded admin user (default dev@localhost).
-    from app.auth.dependencies import is_local_dev_mode, get_local_dev_email
+    from app.auth.dependencies import (
+        is_local_dev_mode, get_local_dev_email, get_local_dev_groups,
+    )
     if is_local_dev_mode():
         logger.warning("=" * 60)
         logger.warning("LOCAL_DEV_MODE is ON — authentication is bypassed.")
         logger.warning("All requests auto-authenticate as: %s", get_local_dev_email())
+        # Validate + report LOCAL_DEV_GROUPS at startup so a malformed JSON
+        # value gets surfaced loudly here instead of silently warning on the
+        # first authenticated request. Empty when unset is fine — just say so.
+        raw_groups_env = os.environ.get("LOCAL_DEV_GROUPS", "").strip()
+        mocked_groups = get_local_dev_groups()
+        if raw_groups_env and not mocked_groups:
+            logger.warning(
+                "LOCAL_DEV_GROUPS is set but produced no valid groups — "
+                "check the WARNING above for the parse error.",
+            )
+        elif mocked_groups:
+            logger.warning(
+                "LOCAL_DEV_GROUPS: mocking %d group(s) into session: %s",
+                len(mocked_groups),
+                ", ".join(g["id"] for g in mocked_groups),
+            )
+        else:
+            logger.warning("LOCAL_DEV_GROUPS is unset — session.google_groups will be empty.")
         logger.warning("NEVER enable this in a deployment reachable from the internet.")
         logger.warning("=" * 60)
 

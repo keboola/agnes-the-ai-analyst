@@ -15,7 +15,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
-- **`LOCAL_DEV_GROUPS` env var** mocks `session.google_groups` for the auto-logged-in dev user when `LOCAL_DEV_MODE=1`. JSON array matching the production shape (`[{"id":"…","name":"…"}]`) so group-aware UI and access-control code paths can be exercised on `localhost` without a Google OAuth round-trip. Malformed input is logged at WARNING and falls back to `[]`. Honored only under `LOCAL_DEV_MODE=1`. See `docs/auth-groups.md` → *Local-dev mock*; `docker-compose.local-dev.yml` carries a commented example.
+- **`LOCAL_DEV_GROUPS` env var** mocks `session.google_groups` for the auto-logged-in dev user when `LOCAL_DEV_MODE=1`. JSON array matching the production shape (`[{"id":"…","name":"…"}]`) so group-aware UI and access-control code paths can be exercised on `localhost` without a Google OAuth round-trip. Honored only under `LOCAL_DEV_MODE=1`. The startup banner reports the parsed group IDs (or warns loudly when the value is set but malformed), so a typo gets surfaced at boot rather than silently on the first authenticated request. Parsed value is cached by raw env-string so requests don't re-parse JSON. See `docs/auth-groups.md` → *Local-dev mock*; `docker-compose.local-dev.yml` carries a commented example.
 
 ## [0.11.1] — 2026-04-26
 

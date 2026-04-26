@@ -310,6 +310,7 @@ class TestLocalDevGroupsInjection:
     def dev_client(self, tmp_path, monkeypatch):
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-32chars-minimum!!!!!")
+        monkeypatch.setenv("SESSION_SECRET", "test-session-secret-32chars-minimum!!")
         monkeypatch.setenv("LOCAL_DEV_MODE", "1")
         monkeypatch.setenv("LOCAL_DEV_USER_EMAIL", "dev@localhost")
         monkeypatch.setenv(
@@ -339,6 +340,65 @@ class TestLocalDevGroupsInjection:
         resp = client.get("/profile")
         assert resp.status_code == 200
         assert "No Google groups available" in resp.text
+
+    def test_session_holds_mocked_groups_directly(self, dev_client):
+        """Direct session inspection — not template-dependent. Catches the
+        case where the dev mock writes to session but the profile template
+        renders something different."""
+        # Hit any auth-required endpoint to trigger get_current_user, which
+        # populates session.google_groups.
+        dev_client.get("/profile")
+        # Starlette's TestClient signs the session cookie with the app's
+        # session secret; decode it via the same SessionMiddleware to assert
+        # on the actual stored value.
+        from itsdangerous import TimestampSigner
+        import base64, json as _json, os as _os
+        cookie = dev_client.cookies.get("session")
+        assert cookie, "session cookie not set after dev-bypass request"
+        signer = TimestampSigner(_os.environ["SESSION_SECRET"])
+        unsigned = signer.unsign(cookie, max_age=14 * 24 * 3600)
+        payload = _json.loads(base64.b64decode(unsigned))
+        assert payload.get("google_groups") == [
+            {"id": "local-dev-engineers@example.com", "name": "Local Dev Engineers"},
+        ]
+
+
+class TestLocalDevGroupsStartupValidation:
+    """Startup banner reports on LOCAL_DEV_GROUPS so a typo or malformed JSON
+    is loud at boot, not silent until the first authenticated request."""
+
+    def _capture_startup_logs(self, tmp_path, monkeypatch, caplog, env_value):
+        import logging
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-32chars-minimum!!!!!")
+        monkeypatch.setenv("LOCAL_DEV_MODE", "1")
+        if env_value is None:
+            monkeypatch.delenv("LOCAL_DEV_GROUPS", raising=False)
+        else:
+            monkeypatch.setenv("LOCAL_DEV_GROUPS", env_value)
+        from app.main import create_app
+        with caplog.at_level(logging.WARNING, logger="app.main"):
+            create_app()
+        return caplog.text
+
+    def test_logs_count_and_ids_on_valid_input(self, tmp_path, monkeypatch, caplog):
+        text = self._capture_startup_logs(
+            tmp_path, monkeypatch, caplog,
+            '[{"id":"a@x.com","name":"A"},{"id":"b@x.com","name":"B"}]',
+        )
+        assert "mocking 2 group(s)" in text
+        assert "a@x.com" in text
+        assert "b@x.com" in text
+
+    def test_warns_when_set_but_malformed(self, tmp_path, monkeypatch, caplog):
+        text = self._capture_startup_logs(
+            tmp_path, monkeypatch, caplog, "not-valid-json",
+        )
+        assert "produced no valid groups" in text
+
+    def test_logs_unset_explicitly(self, tmp_path, monkeypatch, caplog):
+        text = self._capture_startup_logs(tmp_path, monkeypatch, caplog, None)
+        assert "LOCAL_DEV_GROUPS is unset" in text
 
 
 class TestCookieAuth:

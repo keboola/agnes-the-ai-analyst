@@ -18,6 +18,12 @@ logger = logging.getLogger(__name__)
 # Default dev user used when LOCAL_DEV_MODE=1. Seeded at startup by app/main.py.
 LOCAL_DEV_DEFAULT_EMAIL = "dev@localhost"
 
+# Single-slot cache for the parsed LOCAL_DEV_GROUPS value, keyed by the raw env
+# string. Avoids re-parsing JSON on every authenticated request without the
+# surprise of test isolation issues — when the env changes (typical in tests),
+# the key changes and the cache transparently re-parses.
+_LOCAL_DEV_GROUPS_CACHE: tuple[str, list[dict]] | None = None
+
 
 def is_local_dev_mode() -> bool:
     """True when LOCAL_DEV_MODE=1 — unsafe for production, bypasses auth."""
@@ -40,8 +46,19 @@ def get_local_dev_groups() -> list[dict]:
 
     Returns ``[]`` on missing/empty/malformed input — dev mock must never
     break the dev flow. Malformed input is logged at WARNING.
+
+    Cached single-slot: re-parses only when the raw env-var value changes.
     """
+    global _LOCAL_DEV_GROUPS_CACHE
     raw = os.environ.get("LOCAL_DEV_GROUPS", "").strip()
+    if _LOCAL_DEV_GROUPS_CACHE is not None and _LOCAL_DEV_GROUPS_CACHE[0] == raw:
+        return _LOCAL_DEV_GROUPS_CACHE[1]
+    result = _parse_local_dev_groups(raw)
+    _LOCAL_DEV_GROUPS_CACHE = (raw, result)
+    return result
+
+
+def _parse_local_dev_groups(raw: str) -> list[dict]:
     if not raw:
         return []
     try:
@@ -63,8 +80,9 @@ def get_local_dev_groups() -> list[dict]:
                 item,
             )
             continue
-        item.setdefault("name", item["id"])
-        out.append(item)
+        # Don't mutate the parsed input — keeps the parser pure so the cache
+        # value stays a fresh list on each rebuild.
+        out.append({**item, "name": item.get("name") or item["id"]})
     return out
 
 
@@ -122,13 +140,10 @@ async def get_current_user(
             # future group-based access checks) see something realistic in
             # dev. Compare-then-write avoids spurious Set-Cookie noise on
             # PAT/CLI requests where the session starts empty each call.
-            if request is not None:
-                try:
-                    target_groups = get_local_dev_groups()
-                    if request.session.get("google_groups") != target_groups:
-                        request.session["google_groups"] = target_groups
-                except (AssertionError, AttributeError):
-                    pass  # SessionMiddleware not configured — non-fatal in dev
+            if request is not None and hasattr(request, "session"):
+                target_groups = get_local_dev_groups()
+                if request.session.get("google_groups") != target_groups:
+                    request.session["google_groups"] = target_groups
             return user
         # Fall through to normal auth if seed missing — surfaces the bug instead of hiding it.
 
