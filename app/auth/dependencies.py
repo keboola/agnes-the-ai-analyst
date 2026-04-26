@@ -138,11 +138,15 @@ async def get_current_user(
             # Mirror the Google OAuth callback: populate session.google_groups
             # from LOCAL_DEV_GROUPS so group-aware code paths (profile page,
             # future group-based access checks) see something realistic in
-            # dev. Compare-then-write avoids spurious Set-Cookie noise on
-            # PAT/CLI requests where the session starts empty each call.
+            # dev. Two short-circuits avoid spurious Set-Cookie noise on PAT/CLI
+            # requests (where the session starts empty each call): we skip the
+            # write entirely when the mock is empty (the common LOCAL_DEV_GROUPS-
+            # unset case, where session.get→None and target→[] would otherwise
+            # always differ), and on browser sessions we compare-before-write
+            # so a stable mock doesn't re-issue the cookie on every request.
             if request is not None and hasattr(request, "session"):
                 target_groups = get_local_dev_groups()
-                if request.session.get("google_groups") != target_groups:
+                if target_groups and request.session.get("google_groups") != target_groups:
                     request.session["google_groups"] = target_groups
             return user
         # Fall through to normal auth if seed missing — surfaces the bug instead of hiding it.
