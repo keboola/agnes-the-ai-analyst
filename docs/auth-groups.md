@@ -45,6 +45,20 @@ Display: `app/web/templates/profile.html` reads `session.google_groups` and rend
 
 **Refresh.** A user's stale session keeps stale groups. `Logout → sign in again` is the only refresh.
 
+## Local-dev mock (no Google round-trip)
+
+When developing on `localhost` with `LOCAL_DEV_MODE=1`, Google OAuth never runs, so `session.google_groups` would normally stay empty and group-aware UI/code paths can't be exercised. Set `LOCAL_DEV_GROUPS` to inject a mocked membership list:
+
+```bash
+export LOCAL_DEV_GROUPS='[{"id":"engineers@example.com","name":"Engineering"},{"id":"admins@example.com","name":"Admins"}]'
+```
+
+The value is a JSON array of objects matching the production shape (`{"id", "name"}`) so the mock and the real callback write the *same* structure into `session.google_groups`. Extra fields are preserved verbatim — handy for forward-compat testing of group attributes Google may return later.
+
+`get_current_user` in `app/auth/dependencies.py` writes the parsed list into the session on every dev-bypass request (compare-then-write — no spurious `Set-Cookie` when the value is unchanged). Malformed input (invalid JSON, non-list, items missing `id`) is logged at WARNING and falls back to `[]` — the dev mock must never break the dev flow.
+
+`docker-compose.local-dev.yml` carries a commented example at the right escape level for Compose YAML. **Never set this in production** — the variable is only honored when `LOCAL_DEV_MODE=1`.
+
 ## Debugging
 
 `scripts/debug/probe_google_groups.py` — stdlib, takes a Playground-issued OAuth access token + email, hits 6 candidate endpoints, prints raw response. Use this **before** changing the production query — saves a deploy cycle per attempt.

@@ -19,6 +19,12 @@ services:
       - DATA_DIR=/data
       - LOCAL_DEV_MODE=1
       - LOCAL_DEV_USER_EMAIL=dev@localhost
+      # LOCAL_DEV_GROUPS — JSON array of {id, name} mocking session.google_groups.
+      # Bare passthrough from the shell; scripts/run-local-dev.sh seeds a sensible
+      # default (engineers + admins on example.com). Set/unset in your shell to
+      # override. Same shape as Google's Cloud Identity searchTransitiveGroups
+      # response, so group-aware code paths exercised in dev match production.
+      - LOCAL_DEV_GROUPS
       - SERVER_URL=http://localhost:8000
       - LOG_LEVEL=info
 

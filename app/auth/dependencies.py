@@ -1,5 +1,6 @@
 """FastAPI auth dependencies — current user, role checking."""
 
+import json
 import logging
 import os
 from typing import Optional
@@ -17,6 +18,12 @@ logger = logging.getLogger(__name__)
 # Default dev user used when LOCAL_DEV_MODE=1. Seeded at startup by app/main.py.
 LOCAL_DEV_DEFAULT_EMAIL = "dev@localhost"
 
+# Single-slot cache for the parsed LOCAL_DEV_GROUPS value, keyed by the raw env
+# string. Avoids re-parsing JSON on every authenticated request without the
+# surprise of test isolation issues — when the env changes (typical in tests),
+# the key changes and the cache transparently re-parses.
+_LOCAL_DEV_GROUPS_CACHE: tuple[str, list[dict]] | None = None
+
 
 def is_local_dev_mode() -> bool:
     """True when LOCAL_DEV_MODE=1 — unsafe for production, bypasses auth."""
@@ -26,6 +33,57 @@ def is_local_dev_mode() -> bool:
 def get_local_dev_email() -> str:
     """Email of the auto-logged-in dev user. Configurable via LOCAL_DEV_USER_EMAIL."""
     return os.environ.get("LOCAL_DEV_USER_EMAIL", LOCAL_DEV_DEFAULT_EMAIL)
+
+
+def get_local_dev_groups() -> list[dict]:
+    """Mock Google Workspace groups for the dev user when LOCAL_DEV_MODE is on.
+
+    Reads ``LOCAL_DEV_GROUPS`` as a JSON array of objects matching the shape
+    produced by ``_fetch_google_groups`` — ``[{"id": "...", "name": "..."}]``.
+    Items must have a non-empty ``id``; ``name`` defaults to ``id`` when
+    omitted. Extra fields are preserved verbatim so future group attributes
+    (roles, labels, …) can be mocked without touching this parser.
+
+    Returns ``[]`` on missing/empty/malformed input — dev mock must never
+    break the dev flow. Malformed input is logged at WARNING.
+
+    Cached single-slot: re-parses only when the raw env-var value changes.
+    """
+    global _LOCAL_DEV_GROUPS_CACHE
+    raw = os.environ.get("LOCAL_DEV_GROUPS", "").strip()
+    if _LOCAL_DEV_GROUPS_CACHE is not None and _LOCAL_DEV_GROUPS_CACHE[0] == raw:
+        return _LOCAL_DEV_GROUPS_CACHE[1]
+    result = _parse_local_dev_groups(raw)
+    _LOCAL_DEV_GROUPS_CACHE = (raw, result)
+    return result
+
+
+def _parse_local_dev_groups(raw: str) -> list[dict]:
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as e:
+        logger.warning("LOCAL_DEV_GROUPS is not valid JSON, ignoring: %s", e)
+        return []
+    if not isinstance(parsed, list):
+        logger.warning(
+            "LOCAL_DEV_GROUPS must be a JSON array, got %s — ignoring",
+            type(parsed).__name__,
+        )
+        return []
+    out: list[dict] = []
+    for item in parsed:
+        if not isinstance(item, dict) or not item.get("id"):
+            logger.warning(
+                "LOCAL_DEV_GROUPS item must be an object with 'id', skipping: %r",
+                item,
+            )
+            continue
+        # Don't mutate the parsed input — keeps the parser pure so the cache
+        # value stays a fresh list on each rebuild.
+        out.append({**item, "name": item.get("name") or item["id"]})
+    return out
 
 
 def _get_db():
@@ -77,6 +135,22 @@ async def get_current_user(
     if is_local_dev_mode():
         user = _get_local_dev_user(conn)
         if user:
+            # Mirror the Google OAuth callback (app/auth/providers/google.py:189-194)
+            # which writes session.google_groups on every login — including [] on
+            # failure — so group-aware code paths see authoritative state. We
+            # match that semantics here while skipping the write when nothing
+            # would change: same-value updates are a no-op, and the write on
+            # PAT/CLI requests with no prior session + no target is also skipped
+            # (target → [], existing → None/[], no transition to record).
+            if request is not None and hasattr(request, "session"):
+                target_groups = get_local_dev_groups()
+                current = request.session.get("google_groups")
+                if target_groups and current != target_groups:
+                    request.session["google_groups"] = target_groups
+                elif not target_groups and current:
+                    # Clear stale groups if the operator unsets LOCAL_DEV_GROUPS
+                    # mid-session — matches production's "always-write" semantics.
+                    request.session["google_groups"] = []
             return user
         # Fall through to normal auth if seed missing — surfaces the bug instead of hiding it.
 
