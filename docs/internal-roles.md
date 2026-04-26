@@ -66,6 +66,8 @@ conn.close()
 
 After the mapping is created, affected users must **sign out and back in** for the resolver to pick it up — same refresh semantics as Google's group cache.
 
+If you can't get the user to log out (long-lived session, automated client), `Admin → Users → deactivate then reactivate` invalidates the existing session and forces a fresh sign-in on the next request. That is the supported "force re-resolve now" lever — there's no per-user role-cache invalidation API today.
+
 ## Permission check (callsite)
 
 ```python

@@ -201,12 +201,20 @@ async def google_callback(request: Request):
             from src.db import get_system_db
             conn = get_system_db()
             try:
-                request.session["internal_roles"] = resolve_internal_roles(
+                resolved = resolve_internal_roles(
                     request.session.get("google_groups", []) or [],
                     conn,
                 )
             finally:
                 conn.close()
+            request.session["internal_roles"] = resolved
+            # INFO-level audit so a wrong-role complaint is debuggable from
+            # the log alone — admin can correlate "user X claims they lost
+            # access" with the resolver output without replaying the request.
+            logger.info(
+                "Resolved %d internal role(s) for %s: %s",
+                len(resolved), email, resolved or "<none>",
+            )
         except Exception as e:
             # Resolver errors must not break login — fall back to no roles.
             logger.warning("Failed to resolve internal_roles for %s: %s", email, e)

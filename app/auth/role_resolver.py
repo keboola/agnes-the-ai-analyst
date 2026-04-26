@@ -25,6 +25,7 @@ the existing ``session.google_groups`` flow.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import uuid
 from dataclasses import dataclass
@@ -104,7 +105,18 @@ def list_registered_roles() -> list[InternalRoleSpec]:
 
 
 def _clear_registry_for_tests() -> None:
-    """Reset the module-level registry. Tests only — never call from app code."""
+    """Reset the module-level registry. Tests only — never call from app code.
+
+    Refuses to run unless ``TESTING=1`` so a stray import-path in production
+    can't accidentally drop the registered capabilities. Pytest sets this
+    via conftest / pytest.ini; production never does.
+    """
+    if os.environ.get("TESTING", "").lower() not in ("1", "true"):
+        raise RuntimeError(
+            "_clear_registry_for_tests() called outside of TESTING — "
+            "this drops every registered internal role and is never safe "
+            "in app code. Set TESTING=1 if you really mean this.",
+        )
     _REGISTRY.clear()
 
 
@@ -173,18 +185,42 @@ def require_internal_role(role_key: str):
     Reads ``session["internal_roles"]`` populated at sign-in; no DB hit.
     The ``user`` dependency runs first so we still 401 unauthenticated
     requests with the standard message before checking role membership.
+
+    PAT/headless callers carry no session-resolved roles (the OAuth callback
+    is the only writer of ``session["internal_roles"]``), so any
+    ``require_internal_role`` gate returns 403 for them by design — see
+    ``docs/internal-roles.md`` → *PAT and headless requests*. The 403 detail
+    distinguishes the two failure modes so an API consumer hitting it via
+    a token sees an actionable message instead of a generic "missing role".
     """
     async def _check(
         request: Request,
         user: dict = Depends(get_current_user),
     ) -> dict:
-        roles = []
-        if hasattr(request, "session"):
-            roles = request.session.get("internal_roles") or []
+        # "internal_roles in session" is the marker that this request went
+        # through a sign-in flow (OAuth callback or dev-bypass). Bearer-token
+        # callers leave the key absent — distinguish those from "signed in,
+        # but lacks this specific role" so the API consumer sees what to fix.
+        has_session_roles = (
+            hasattr(request, "session")
+            and "internal_roles" in request.session
+        )
+        roles = (
+            request.session.get("internal_roles") or []
+            if has_session_roles else []
+        )
         if role_key not in roles:
+            if not has_session_roles:
+                detail = (
+                    f"Requires internal role '{role_key}'. This endpoint needs "
+                    f"an interactive (OAuth) session — Bearer/PAT tokens do not "
+                    f"carry session-resolved roles by design."
+                )
+            else:
+                detail = f"Requires internal role '{role_key}'"
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Requires internal role '{role_key}'",
+                detail=detail,
             )
         return user
     return _check

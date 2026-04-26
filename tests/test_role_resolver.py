@@ -283,3 +283,153 @@ class TestRequireInternalRole:
         unsigned = signer.unsign(cookie, max_age=14 * 24 * 3600)
         payload = _json.loads(base64.b64decode(unsigned))
         assert payload.get("internal_roles") == ["ctx_admin"]
+
+    def test_stale_session_keeps_old_roles_after_mapping_change(self, dev_app_with_mapping):
+        """KNOWN LIMITATION (documented in docs/internal-roles.md → Resolution
+        timing): roles are resolved at sign-in only. If an admin revokes a
+        mapping mid-session, the user keeps the cached role keys until they
+        log out + back in. This test pins that behavior so any future cache
+        invalidation pathway (admin UI broadcast, deactivate-then-reactivate
+        side-effect) is a deliberate change, not an accident."""
+        # First request — dev-bypass populates session.internal_roles=["ctx_admin"].
+        resp1 = dev_app_with_mapping.get("/_test/needs-ctx")
+        assert resp1.status_code == 200
+
+        # Admin revokes the mapping out-of-band.
+        from src.db import get_system_db
+        from src.repositories.group_mappings import GroupMappingsRepository
+        from src.repositories.internal_roles import InternalRolesRepository
+        conn = get_system_db()
+        try:
+            role = InternalRolesRepository(conn).get_by_key("ctx_admin")
+            existing = GroupMappingsRepository(conn).list_by_role(role["id"])
+            for m in existing:
+                GroupMappingsRepository(conn).delete(m["id"])
+        finally:
+            conn.close()
+
+        # Second request — session still holds the cached role; gate still passes.
+        # The dev-bypass write-skip path (groups_changed=False AND
+        # internal_roles already in session) keeps the session value intact,
+        # mirroring the OAuth flow where session lives until logout.
+        resp2 = dev_app_with_mapping.get("/_test/needs-ctx")
+        assert resp2.status_code == 200, (
+            "Stale-session contract broken: revoking a mapping must NOT "
+            "drop access mid-session today. If this assertion starts "
+            "failing, decide deliberately whether you've added "
+            "invalidation (good — update the doc) or introduced a "
+            "regression that double-resolves on every request (bad)."
+        )
+
+    def test_pat_caller_gets_pat_specific_403_detail(self):
+        """Bearer/PAT requests don't carry session-resolved roles
+        (session middleware exists but the OAuth callback is the only
+        writer of session.internal_roles). require_internal_role must
+        fail closed AND surface a PAT-specific message so an API
+        consumer hitting the wall sees what to fix instead of a
+        generic 'missing role' from a token they thought was admin."""
+        from unittest.mock import MagicMock
+        import asyncio
+        from fastapi import HTTPException
+        from app.auth.role_resolver import require_internal_role
+
+        # PAT request shape: session middleware ran (session attribute exists),
+        # but OAuth callback never fired (no "internal_roles" key in dict).
+        request = MagicMock()
+        request.session = {}  # empty — no "internal_roles" key
+
+        check = require_internal_role("ctx_admin")
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(check(request=request, user={"email": "pat@example.com"}))
+
+        assert exc_info.value.status_code == 403
+        # The detail spells out the PAT/Bearer caveat, not just the missing role.
+        detail = exc_info.value.detail
+        assert "ctx_admin" in detail
+        assert "Bearer" in detail or "PAT" in detail
+        assert "session" in detail.lower()
+
+    def test_oauth_pipeline_groups_to_internal_roles(self, db_conn):
+        """End-to-end data flow: fake _fetch_google_groups output (the
+        only Cloud Identity touchpoint) → join against group_mappings →
+        internal_roles list. The OAuth handshake itself isn't exercised
+        here — its failure modes live in _fetch_google_groups, which
+        has its own coverage. This test pins the resolver as the
+        contract between 'whatever Google returned' and
+        'session.internal_roles'."""
+        from app.auth.role_resolver import (
+            register_internal_role,
+            sync_registered_roles_to_db,
+            resolve_internal_roles,
+        )
+        from src.repositories.internal_roles import InternalRolesRepository
+        from src.repositories.group_mappings import GroupMappingsRepository
+
+        register_internal_role("ctx_admin", display_name="Context Admin")
+        register_internal_role("agent_op", display_name="Agent Operator")
+        sync_registered_roles_to_db(db_conn)
+
+        ctx = InternalRolesRepository(db_conn).get_by_key("ctx_admin")
+        agent = InternalRolesRepository(db_conn).get_by_key("agent_op")
+        gm = GroupMappingsRepository(db_conn)
+        gm.create(
+            id=str(uuid.uuid4()),
+            external_group_id="engineers@example.com",
+            internal_role_id=ctx["id"],
+        )
+        gm.create(
+            id=str(uuid.uuid4()),
+            external_group_id="ops@example.com",
+            internal_role_id=agent["id"],
+        )
+
+        # Simulate Google's response: two mapped groups + one unrelated.
+        google_groups = [
+            {"id": "engineers@example.com", "name": "Engineering"},
+            {"id": "ops@example.com", "name": "Operations"},
+            {"id": "marketing@example.com", "name": "Marketing"},  # unmapped
+        ]
+        result = resolve_internal_roles(google_groups, db_conn)
+        assert result == ["agent_op", "ctx_admin"]  # sorted, deduped
+
+    def test_dev_bypass_falls_back_to_empty_on_resolver_error(
+        self, tmp_path, monkeypatch
+    ):
+        """If resolve_internal_roles raises mid-request (corrupted DB,
+        schema mid-migration, transient lock), the dev-bypass path
+        catches and writes []. Auth must never break on resolver
+        infrastructure failures — same defensive contract as the OAuth
+        callback's try/except wrapper."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-32chars-minimum!!!!!")
+        monkeypatch.setenv("SESSION_SECRET", "test-session-secret-32chars-minimum!!")
+        monkeypatch.setenv("LOCAL_DEV_MODE", "1")
+        monkeypatch.setenv("LOCAL_DEV_USER_EMAIL", "dev@localhost")
+        monkeypatch.setenv(
+            "LOCAL_DEV_GROUPS",
+            '[{"id":"engineers@example.com","name":"Engineers"}]',
+        )
+        # Patch the symbol on the module so the lazy import inside the
+        # dev-bypass branch picks up the broken stub on call.
+        import app.auth.role_resolver as rr
+
+        def boom(*_args, **_kwargs):
+            raise RuntimeError("simulated resolver failure")
+
+        monkeypatch.setattr(rr, "resolve_internal_roles", boom)
+
+        from app.main import create_app
+        from fastapi import Depends, FastAPI
+        from app.auth.dependencies import get_current_user
+
+        app = create_app()
+
+        @app.get("/_test/probe")
+        async def probe(user: dict = Depends(get_current_user)):
+            return {"email": user["email"]}
+
+        client = TestClient(app)
+        # Auth still succeeds — resolver failure must not 500/401 the request.
+        resp = client.get("/_test/probe")
+        assert resp.status_code == 200
+        assert resp.json()["email"] == "dev@localhost"

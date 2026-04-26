@@ -109,6 +109,16 @@ def create_app() -> FastAPI:
     # Session middleware (required for OAuth state)
     from app.secrets import get_session_secret
     session_secret = get_session_secret()
+    if len(session_secret) < 32:
+        # Same gate JWT applies (app/auth/jwt.py:_get_secret_key) — keeps the
+        # two HMAC surfaces consistent. session_internal_roles + google_groups
+        # are trusted off the cookie signature; a weak SESSION_SECRET means
+        # those gates are weak too.
+        import warnings as _warnings
+        _warnings.warn(
+            f"SESSION_SECRET is {len(session_secret)} chars — minimum 32 recommended",
+            UserWarning, stacklevel=2,
+        )
     app.add_middleware(SessionMiddleware, secret_key=session_secret)
 
     # CORS for CLI and external clients

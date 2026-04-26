@@ -163,8 +163,13 @@ async def get_current_user(
                 if groups_changed or "internal_roles" not in request.session:
                     try:
                         from app.auth.role_resolver import resolve_internal_roles
-                        request.session["internal_roles"] = resolve_internal_roles(
-                            target_groups, conn,
+                        resolved = resolve_internal_roles(target_groups, conn)
+                        request.session["internal_roles"] = resolved
+                        logger.info(
+                            "dev-bypass resolved %d internal role(s) for %s: %s",
+                            len(resolved),
+                            user.get("email", "<unknown>"),
+                            resolved or "<none>",
                         )
                     except Exception as e:
                         logger.warning(
