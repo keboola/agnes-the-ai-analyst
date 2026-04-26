@@ -1,4 +1,13 @@
-"""Admin endpoints — table discovery, registry management, instance configuration."""
+"""Admin endpoints — table discovery, registry management, instance configuration.
+
+v9: every gate on this router uses ``require_role(Role.ADMIN)``, which routes
+through ``require_internal_role("core.admin")`` — the same two-path resolver
+(session cache + ``user_role_grants`` fallback) covers OAuth and PAT callers
+alike. Module authors implementing their own routers should follow the same
+pattern: register a capability with ``register_internal_role(...)`` at import
+time and gate the route with ``Depends(require_internal_role("<your-key>"))``.
+See ``docs/internal-roles.md`` for the full module-author workflow.
+"""
 
 import logging
 import os

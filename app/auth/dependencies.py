@@ -287,26 +287,37 @@ async def get_optional_user(
 
 
 def require_role(minimum_role: Role):
-    """Dependency factory: require user has at least the given role."""
-    async def _check(user: dict = Depends(get_current_user)):
-        user_role = Role(user.get("role", "viewer"))
-        if ROLE_HIERARCHY.get(user_role, 0) < ROLE_HIERARCHY.get(minimum_role, 0):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Requires role {minimum_role.value} or higher",
-            )
-        return user
-    return _check
+    """Dependency factory: require user has at least the given role.
+
+    v9 thin wrapper — delegates to ``require_internal_role(f"core.{role}")``.
+    The implies hierarchy (core.admin → core.km_admin → core.analyst →
+    core.viewer) preserves the legacy "at least this level" semantics
+    automatically: a user holding core.admin satisfies require_role(ANALYST)
+    because resolve_internal_roles expands implies before the membership
+    check. PAT callers route through user_role_grants the same way OAuth
+    callers route through session.internal_roles — see role_resolver.py.
+    """
+    from app.auth.role_resolver import require_internal_role
+    return require_internal_role(f"core.{minimum_role.value}")
 
 
-async def require_admin(user: dict = Depends(get_current_user)) -> dict:
-    """Dependency: require user is an admin. Raises 403 otherwise."""
-    if user.get("role") != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin access required",
-        )
-    return user
+async def require_admin(
+    request: Request,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    """Dependency: require user is an admin. Raises 403 otherwise.
+
+    v9 thin wrapper over ``require_internal_role("core.admin")`` so the
+    PAT-aware session-OR-DB resolution pathway applies uniformly. Existing
+    callsites use ``Depends(require_admin)`` (no parens) — the function
+    keeps that calling convention by accepting the Request + user deps and
+    delegating to the inner check. Behavior is identical to v8 for OAuth
+    users (admin role from group_mappings); PAT users now succeed when
+    they hold a direct core.admin grant in user_role_grants.
+    """
+    from app.auth.role_resolver import require_internal_role
+    check = require_internal_role("core.admin")
+    return await check(request=request, user=user)
 
 
 async def require_session_token(request: Request, user: dict = Depends(get_current_user)) -> dict:

@@ -321,33 +321,62 @@ class TestRequireInternalRole:
             "regression that double-resolves on every request (bad)."
         )
 
-    def test_pat_caller_gets_pat_specific_403_detail(self):
-        """Bearer/PAT requests don't carry session-resolved roles
-        (session middleware exists but the OAuth callback is the only
-        writer of session.internal_roles). require_internal_role must
-        fail closed AND surface a PAT-specific message so an API
-        consumer hitting the wall sees what to fix instead of a
-        generic 'missing role' from a token they thought was admin."""
+    def test_pat_caller_with_direct_grant_passes(self, db_conn, monkeypatch):
+        """v9 PAT-aware path: a user with a direct user_role_grants row
+        passes require_internal_role even without session.internal_roles.
+        This is the new admin-CLI-via-PAT contract — without it, all admin
+        endpoints would 403 to PAT clients after the require_admin
+        wrappers route through require_internal_role('core.admin')."""
+        from unittest.mock import MagicMock
+        import asyncio
+        from app.auth.role_resolver import require_internal_role
+        from src.repositories.users import UserRepository
+        from src.repositories.internal_roles import InternalRolesRepository
+
+        # UserRepository.create(role="admin") auto-grants core.admin in v9
+        # — the explicit grant insert below would violate the UNIQUE
+        # (user_id, internal_role_id) constraint. Just create + verify.
+        user_id = str(uuid.uuid4())
+        UserRepository(db_conn).create(
+            id=user_id, email="admin-pat@example.com", name="Admin PAT",
+            role="admin",
+        )
+
+        # PAT-shape request: session middleware ran (attribute exists) but
+        # no internal_roles key. Gate must consult DB and grant access.
+        request = MagicMock()
+        request.session = {}
+
+        check = require_internal_role("core.admin")
+        result = asyncio.run(check(
+            request=request, user={"id": user_id, "email": "admin-pat@example.com"},
+        ))
+        assert result["id"] == user_id
+
+    def test_pat_caller_without_grant_gets_403(self):
+        """PAT/headless callers carry no session.internal_roles, but v9
+        require_internal_role falls back to user_role_grants in DB. A PAT
+        client whose user has no matching grant must still hit 403, not
+        slip through. Pins the closed-by-default behavior of the new
+        two-path resolver."""
         from unittest.mock import MagicMock
         import asyncio
         from fastapi import HTTPException
         from app.auth.role_resolver import require_internal_role
 
-        # PAT request shape: session middleware ran (session attribute exists),
-        # but OAuth callback never fired (no "internal_roles" key in dict).
+        # PAT request shape: session middleware ran (session attribute exists)
+        # but OAuth callback never fired, so internal_roles is absent.
         request = MagicMock()
-        request.session = {}  # empty — no "internal_roles" key
+        request.session = {}
 
         check = require_internal_role("ctx_admin")
         with pytest.raises(HTTPException) as exc_info:
+            # No matching grant in DB either — empty user dict means user_id
+            # is None and the DB lookup returns []. Gate must close.
             asyncio.run(check(request=request, user={"email": "pat@example.com"}))
 
         assert exc_info.value.status_code == 403
-        # The detail spells out the PAT/Bearer caveat, not just the missing role.
-        detail = exc_info.value.detail
-        assert "ctx_admin" in detail
-        assert "Bearer" in detail or "PAT" in detail
-        assert "session" in detail.lower()
+        assert "ctx_admin" in exc_info.value.detail
 
     def test_oauth_pipeline_groups_to_internal_roles(self, db_conn):
         """End-to-end data flow: fake _fetch_google_groups output (the
