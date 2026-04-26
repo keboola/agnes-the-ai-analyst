@@ -332,3 +332,261 @@ def set_password(
     else:
         typer.echo(f"Failed: {resp.json().get('detail', resp.text)}", err=True)
         raise typer.Exit(1)
+
+
+# ---- Role management (v9 — internal_roles + group_mappings + user_role_grants) ----
+#
+# Calls the role-management REST API under /api/admin (see app/api/role_management.py).
+# All endpoints require core.admin; PAT auth is supported uniformly via the v9
+# require_internal_role two-path resolver.
+
+role_app = typer.Typer(help="Internal-role browsing (read-only)")
+mapping_app = typer.Typer(help="External group → internal role mapping CRUD")
+admin_app.add_typer(role_app, name="role")
+admin_app.add_typer(mapping_app, name="mapping")
+
+
+def _fail(resp, prefix: str = "Failed") -> None:
+    """Print API failure detail and raise typer.Exit(1)."""
+    try:
+        detail = resp.json().get("detail", resp.text)
+    except Exception:
+        detail = resp.text
+    typer.echo(f"{prefix}: {detail}", err=True)
+    raise typer.Exit(1)
+
+
+def _print_rows(rows: list, columns: list[tuple[str, str, int]]) -> None:
+    """Render a list of dicts as a fixed-width table.
+
+    columns: list of (key, header, width) — order matches the column display.
+    """
+    header = "  " + "  ".join(f"{h:<{w}s}" for _, h, w in columns)
+    typer.echo(header)
+    typer.echo("  " + "-" * (len(header) - 2))
+    for row in rows:
+        cells = []
+        for key, _, width in columns:
+            val = row.get(key)
+            cells.append(f"{(str(val) if val is not None else ''):<{width}s}")
+        typer.echo("  " + "  ".join(cells))
+
+
+@role_app.command("list")
+def role_list(as_json: bool = typer.Option(False, "--json", help="Output as JSON")):
+    """List all internal roles (registered capability keys)."""
+    resp = api_get("/api/admin/internal-roles")
+    if resp.status_code != 200:
+        _fail(resp)
+    data = resp.json()
+    # Endpoint may return a list or {roles: [...]} — accept either shape.
+    roles = data["roles"] if isinstance(data, dict) and "roles" in data else data
+    if as_json:
+        typer.echo(json.dumps(roles, indent=2))
+        return
+    if not roles:
+        typer.echo("No internal roles registered.")
+        return
+    typer.echo(f"Internal roles: {len(roles)}")
+    _print_rows(roles, [
+        ("key", "KEY", 30),
+        ("display_name", "DISPLAY NAME", 28),
+        ("owner_module", "OWNER", 16),
+        ("is_core", "CORE", 5),
+    ])
+
+
+@role_app.command("show")
+def role_show(
+    role_key: str = typer.Argument(..., help="Role key, e.g. core.admin"),
+    as_json: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Show a single role detail with mapping + grant counts."""
+    # The list endpoint is the canonical reader; iterate to find the key.
+    resp = api_get("/api/admin/internal-roles")
+    if resp.status_code != 200:
+        _fail(resp)
+    data = resp.json()
+    roles = data["roles"] if isinstance(data, dict) and "roles" in data else data
+    role = next((r for r in roles if r.get("key") == role_key), None)
+    if role is None:
+        typer.echo(f"Role not found: {role_key}", err=True)
+        raise typer.Exit(1)
+
+    mappings_resp = api_get("/api/admin/group-mappings")
+    if mappings_resp.status_code != 200:
+        _fail(mappings_resp)
+    mdata = mappings_resp.json()
+    mappings = mdata["mappings"] if isinstance(mdata, dict) and "mappings" in mdata else mdata
+    matching_mappings = [
+        m for m in mappings
+        if m.get("role_key") == role_key or m.get("internal_role_key") == role_key
+    ]
+
+    # Grants are exposed per-user in the API contract; we summarize what's
+    # cheaply visible here (matched mappings) and leave per-user grants to
+    # `da admin effective-roles <email>`.
+    payload = {
+        "role": role,
+        "mapping_count": len(matching_mappings),
+        "mappings": matching_mappings,
+    }
+    if as_json:
+        typer.echo(json.dumps(payload, indent=2))
+        return
+
+    typer.echo(f"Role: {role.get('key')}")
+    typer.echo(f"  display_name : {role.get('display_name', '')}")
+    typer.echo(f"  description  : {role.get('description', '') or ''}")
+    typer.echo(f"  owner_module : {role.get('owner_module', '') or ''}")
+    typer.echo(f"  is_core      : {bool(role.get('is_core'))}")
+    implies = role.get("implies")
+    if isinstance(implies, str):
+        try:
+            implies = json.loads(implies)
+        except (TypeError, ValueError):
+            implies = []
+    typer.echo(f"  implies      : {', '.join(implies) if implies else '(none)'}")
+    typer.echo(f"  mappings     : {len(matching_mappings)}")
+
+
+@mapping_app.command("list")
+def mapping_list(as_json: bool = typer.Option(False, "--json", help="Output as JSON")):
+    """List all external-group → internal-role mappings."""
+    resp = api_get("/api/admin/group-mappings")
+    if resp.status_code != 200:
+        _fail(resp)
+    data = resp.json()
+    mappings = data["mappings"] if isinstance(data, dict) and "mappings" in data else data
+    if as_json:
+        typer.echo(json.dumps(mappings, indent=2))
+        return
+    if not mappings:
+        typer.echo("No group mappings configured.")
+        return
+    # Normalize role_key (some API shapes nest it under `internal_role_key`).
+    for m in mappings:
+        if "role_key" not in m and "internal_role_key" in m:
+            m["role_key"] = m["internal_role_key"]
+    typer.echo(f"Group mappings: {len(mappings)}")
+    _print_rows(mappings, [
+        ("external_group_id", "EXTERNAL GROUP", 40),
+        ("role_key", "ROLE KEY", 28),
+        ("assigned_by", "ASSIGNED BY", 24),
+        ("id", "MAPPING ID", 36),
+    ])
+
+
+@mapping_app.command("create")
+def mapping_create(
+    external_group_id: str = typer.Argument(..., help="Cloud Identity group ID"),
+    role_key: str = typer.Argument(..., help="Internal role key, e.g. core.admin"),
+    as_json: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Map an external group to an internal role."""
+    resp = api_post(
+        "/api/admin/group-mappings",
+        json={"external_group_id": external_group_id, "role_key": role_key},
+    )
+    if resp.status_code not in (200, 201):
+        _fail(resp)
+    created = resp.json()
+    if as_json:
+        typer.echo(json.dumps(created, indent=2))
+        return
+    typer.echo(
+        f"Created mapping: {created.get('external_group_id')} → "
+        f"{created.get('role_key') or created.get('internal_role_key')} "
+        f"(id={created.get('id')})"
+    )
+
+
+@mapping_app.command("delete")
+def mapping_delete(
+    mapping_id: str = typer.Argument(..., help="Mapping ID to delete"),
+):
+    """Delete a group mapping by ID."""
+    resp = api_delete(f"/api/admin/group-mappings/{mapping_id}")
+    if resp.status_code in (200, 204):
+        typer.echo(f"Deleted mapping {mapping_id}")
+        return
+    _fail(resp)
+
+
+@admin_app.command("grant-role")
+def grant_role(
+    user_email: str = typer.Argument(..., help="User email"),
+    role_key: str = typer.Argument(..., help="Internal role key, e.g. core.admin"),
+    as_json: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Grant an internal role directly to a user (PAT-friendly flow)."""
+    uid = _resolve_user_id(user_email)
+    resp = api_post(
+        f"/api/admin/users/{uid}/role-grants",
+        json={"role_key": role_key},
+    )
+    if resp.status_code not in (200, 201):
+        _fail(resp)
+    granted = resp.json()
+    if as_json:
+        typer.echo(json.dumps(granted, indent=2))
+        return
+    typer.echo(
+        f"Granted {role_key} to {user_email} (grant_id={granted.get('id')})"
+    )
+
+
+@admin_app.command("revoke-role")
+def revoke_role(
+    user_email: str = typer.Argument(..., help="User email"),
+    role_key: str = typer.Argument(..., help="Internal role key to revoke"),
+):
+    """Revoke a previously-granted internal role from a user."""
+    uid = _resolve_user_id(user_email)
+    list_resp = api_get(f"/api/admin/users/{uid}/role-grants")
+    if list_resp.status_code != 200:
+        _fail(list_resp, prefix="Failed to list grants")
+    data = list_resp.json()
+    grants = data["grants"] if isinstance(data, dict) and "grants" in data else data
+    matching = [
+        g for g in grants
+        if g.get("role_key") == role_key or g.get("internal_role_key") == role_key
+    ]
+    if not matching:
+        typer.echo(
+            f"No active grant for {user_email} with role_key={role_key}", err=True,
+        )
+        raise typer.Exit(1)
+    grant_id = matching[0].get("id")
+    if not grant_id:
+        typer.echo(f"Grant row missing id: {matching[0]!r}", err=True)
+        raise typer.Exit(1)
+    del_resp = api_delete(f"/api/admin/users/{uid}/role-grants/{grant_id}")
+    if del_resp.status_code in (200, 204):
+        typer.echo(f"Revoked {role_key} from {user_email}")
+        return
+    _fail(del_resp)
+
+
+@admin_app.command("effective-roles")
+def effective_roles(
+    user_email: str = typer.Argument(..., help="User email"),
+    as_json: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Show the user's effective roles (direct + group + expanded)."""
+    uid = _resolve_user_id(user_email)
+    resp = api_get(f"/api/admin/users/{uid}/effective-roles")
+    if resp.status_code != 200:
+        _fail(resp)
+    data = resp.json()
+    if as_json:
+        typer.echo(json.dumps(data, indent=2))
+        return
+
+    typer.echo(f"Effective roles for {user_email}:")
+    direct = data.get("direct") or data.get("direct_roles") or []
+    group = data.get("group") or data.get("group_roles") or []
+    expanded = data.get("expanded") or data.get("effective") or data.get("effective_roles") or []
+    typer.echo(f"  direct   : {', '.join(direct) if direct else '(none)'}")
+    typer.echo(f"  group    : {', '.join(group) if group else '(none)'}")
+    typer.echo(f"  expanded : {', '.join(expanded) if expanded else '(none)'}")

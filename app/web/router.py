@@ -591,6 +591,47 @@ async def admin_users_page(
     return templates.TemplateResponse(request, "admin_users.html", ctx)
 
 
+@router.get("/admin/users/{user_id}", response_class=HTMLResponse)
+async def admin_user_detail_page(
+    user_id: str,
+    request: Request,
+    user: dict = Depends(require_role(Role.ADMIN)),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Per-user detail page — core role + module capabilities + effective-roles debug.
+
+    Renders shell HTML; the JS bootstraps all role data via the admin REST API
+    (/api/admin/internal-roles, /api/admin/users/{id}/role-grants,
+    /api/admin/users/{id}/effective-roles). Server-side we only need the
+    target user's email + name so the page header renders before the API
+    round-trips finish; everything role-related is loaded client-side so an
+    admin reload picks up state changes from a sibling tab without a
+    full-page reload elsewhere.
+    """
+    repo = UserRepository(conn)
+    target = repo.get_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    ctx = _build_context(request, user=user, target_user=target)
+    return templates.TemplateResponse(request, "admin_user_detail.html", ctx)
+
+
+@router.get("/admin/role-mapping", response_class=HTMLResponse)
+async def admin_role_mapping_page(
+    request: Request,
+    user: dict = Depends(require_role(Role.ADMIN)),
+):
+    """Admin page for managing internal role definitions and group → role mappings.
+
+    Server-side renders the shell only — internal_roles, group_mappings, and
+    user grants are all fetched via the admin REST API. Same pattern as the
+    other admin pages so a single auth gate covers the page render + the
+    underlying JSON endpoints.
+    """
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_role_mapping.html", ctx)
+
+
 @router.get("/tokens", response_class=HTMLResponse)
 async def my_tokens_page(
     request: Request,

@@ -1,0 +1,399 @@
+{% extends "base.html" %}
+{% block title %}Role mapping — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block content %}
+<style>
+  /* Override base.html's 800px .container cap for this wide page. */
+  .container:has(.role-mapping-page) { max-width: none; padding: 24px 16px; }
+  .role-mapping-page { max-width: 1400px; margin: 0 auto; padding: 0; }
+
+  .rm-section { margin-bottom: 32px; }
+  .rm-section h2 {
+    margin: 0 0 12px; font-size: 18px; font-weight: 600;
+    display: flex; align-items: center; gap: 12px;
+  }
+  .rm-section h2 .rm-section-sub {
+    font-size: 12px; color: var(--text-secondary, #6b7280); font-weight: 400;
+  }
+
+  .rm-table-wrap {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+    overflow-x: auto;
+  }
+  .rm-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .rm-table thead th {
+    text-align: left; padding: 12px 16px;
+    background: var(--border-light, #f9fafb);
+    border-bottom: 1px solid var(--border, #e5e7eb);
+    font-weight: 600; color: var(--text-secondary, #6b7280);
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .rm-table tbody td {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+    vertical-align: middle;
+  }
+  .rm-table tbody tr:last-child td { border-bottom: none; }
+  .rm-table tbody tr:hover { background: var(--border-light, #fafafa); }
+
+  .rm-badge {
+    display: inline-block;
+    padding: 2px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .rm-badge-core { background: #dbeafe; color: #1e40af; }
+  .rm-badge-module { background: #f3f4f6; color: #4b5563; }
+
+  .rm-key {
+    font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
+    font-size: 12px; color: var(--text-primary, #111827);
+  }
+
+  .rm-form {
+    display: flex; gap: 8px; align-items: flex-end;
+    margin-top: 12px;
+    padding: 16px;
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+    flex-wrap: wrap;
+  }
+  .rm-form-field { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 220px; }
+  .rm-form-field label {
+    font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.4px; color: var(--text-secondary, #6b7280); font-weight: 600;
+  }
+  .rm-form-field input,
+  .rm-form-field select {
+    padding: 8px 12px;
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px;
+    font-size: 13px;
+    background: var(--surface, #fff);
+    color: var(--text-primary, #111827);
+  }
+  .rm-form-field input:focus,
+  .rm-form-field select:focus {
+    outline: 2px solid var(--primary, #6366f1); outline-offset: -1px;
+  }
+  .rm-btn {
+    padding: 9px 16px; border-radius: 8px;
+    font-size: 13px; font-weight: 500;
+    border: 1px solid var(--border, #e5e7eb);
+    background: var(--surface, #fff);
+    cursor: pointer; transition: all 0.15s;
+  }
+  .rm-btn:hover { background: var(--border-light, #f9fafb); }
+  .rm-btn.primary {
+    background: var(--primary, #6366f1); color: #fff;
+    border-color: var(--primary, #6366f1);
+  }
+  .rm-btn.primary:hover { filter: brightness(1.05); }
+  .rm-btn.danger {
+    background: transparent; color: #b91c1c;
+    border-color: #fecaca;
+  }
+  .rm-btn.danger:hover { background: #fef2f2; }
+
+  .rm-empty, .rm-loading {
+    text-align: center; padding: 36px 16px;
+    color: var(--text-secondary, #6b7280); font-size: 13px;
+  }
+
+  .rm-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+  .rm-title { margin: 0; font-size: 22px; font-weight: 600; }
+
+  /* Toast — same style as admin_users.html */
+  .toast-stack {
+    position: fixed; bottom: 24px; right: 24px; z-index: 2000;
+    display: flex; flex-direction: column; gap: 8px;
+    pointer-events: none;
+  }
+  .toast {
+    background: #111827; color: #fff; padding: 10px 16px;
+    border-radius: 8px; font-size: 13px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+    opacity: 0; transform: translateY(8px);
+    transition: opacity 0.2s, transform 0.2s;
+    pointer-events: auto; max-width: 380px;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast.success { background: #047857; }
+  .toast.error { background: #b91c1c; }
+
+  .role-cell { display: flex; flex-direction: column; gap: 2px; }
+  .role-cell .display { font-weight: 500; }
+  .role-cell .key { font-size: 11px; color: var(--text-secondary, #6b7280); font-family: var(--font-mono, ui-monospace, monospace); }
+
+  .desc-cell { color: var(--text-secondary, #6b7280); font-size: 12px; max-width: 360px; }
+
+  .count-cell { text-align: right; font-variant-numeric: tabular-nums; color: var(--text-secondary, #6b7280); }
+</style>
+
+<div class="role-mapping-page" data-page="role-mapping">
+  <div class="rm-toolbar">
+    <h1 class="rm-title">Role mapping</h1>
+  </div>
+
+  <!-- Section 1: Internal roles (read-only) -->
+  <section class="rm-section">
+    <h2>
+      Internal roles
+      <span class="rm-section-sub">App-defined capabilities. Core roles seed the legacy hierarchy; module roles are registered by feature modules.</span>
+    </h2>
+    <div class="rm-table-wrap">
+      <table class="rm-table" id="roles-table">
+        <thead>
+          <tr>
+            <th>Role</th>
+            <th>Description</th>
+            <th>Owner module</th>
+            <th>Type</th>
+            <th class="count-cell">Mappings</th>
+            <th class="count-cell">Direct grants</th>
+          </tr>
+        </thead>
+        <tbody id="roles-tbody"></tbody>
+      </table>
+      <div id="roles-loading" class="rm-loading">Loading internal roles...</div>
+      <div id="roles-empty" class="rm-empty" style="display:none;">No internal roles registered.</div>
+    </div>
+  </section>
+
+  <!-- Section 2: Group → role mappings -->
+  <section class="rm-section">
+    <h2>
+      Group to role mappings
+      <span class="rm-section-sub">External Cloud Identity group IDs mapped onto internal roles. Resolved at sign-in.</span>
+    </h2>
+    <div class="rm-table-wrap">
+      <table class="rm-table" id="mappings-table">
+        <thead>
+          <tr>
+            <th>External group ID</th>
+            <th>Internal role</th>
+            <th>Assigned by</th>
+            <th>Created</th>
+            <th style="text-align:right">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="mappings-tbody"></tbody>
+      </table>
+      <div id="mappings-loading" class="rm-loading">Loading mappings...</div>
+      <div id="mappings-empty" class="rm-empty" style="display:none;">No group mappings yet. Create one below.</div>
+    </div>
+
+    <form class="rm-form" id="mapping-form" onsubmit="event.preventDefault(); createMapping();">
+      <div class="rm-form-field">
+        <label for="new-external-group">External group ID</label>
+        <input id="new-external-group" type="text" required autocomplete="off"
+               placeholder="e.g. groups/01234567">
+      </div>
+      <div class="rm-form-field">
+        <label for="new-role-key">Internal role</label>
+        <select id="new-role-key" required></select>
+      </div>
+      <button type="submit" class="rm-btn primary" id="create-mapping-btn">Add mapping</button>
+    </form>
+  </section>
+</div>
+
+<div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+
+<script>
+const API_INTERNAL_ROLES = "/api/admin/internal-roles";
+const API_GROUP_MAPPINGS = "/api/admin/group-mappings";
+
+function esc(s) {
+  const d = document.createElement("div");
+  d.textContent = s == null ? "" : String(s);
+  return d.innerHTML;
+}
+function fmtDate(s) { return s ? String(s).slice(0, 16).replace("T", " ") : "-"; }
+
+// Toast helper
+function toast(msg, kind) {
+  const el = document.createElement("div");
+  el.className = "toast " + (kind || "");
+  el.textContent = msg;
+  document.getElementById("toast-stack").appendChild(el);
+  requestAnimationFrame(function () { el.classList.add("show"); });
+  setTimeout(function () {
+    el.classList.remove("show");
+    setTimeout(function () { el.remove(); }, 250);
+  }, 3500);
+}
+
+// ── State ──
+let internalRoles = [];
+let groupMappings = [];
+
+// ── Fetch internal roles ──
+async function loadRoles() {
+  const tbody = document.getElementById("roles-tbody");
+  const loading = document.getElementById("roles-loading");
+  const empty = document.getElementById("roles-empty");
+  try {
+    const r = await fetch(API_INTERNAL_ROLES, { credentials: "include" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    internalRoles = await r.json();
+  } catch (e) {
+    loading.textContent = "Failed to load internal roles: " + e.message;
+    return;
+  }
+  loading.style.display = "none";
+  // Sort: is_core DESC, then key ASC.
+  internalRoles.sort(function (a, b) {
+    if (Boolean(b.is_core) !== Boolean(a.is_core)) {
+      return Boolean(b.is_core) ? 1 : -1;
+    }
+    return String(a.key).localeCompare(String(b.key));
+  });
+
+  if (internalRoles.length === 0) {
+    empty.style.display = "block";
+    tbody.innerHTML = "";
+    populateRoleSelect();
+    return;
+  }
+  empty.style.display = "none";
+
+  tbody.innerHTML = "";
+  for (const role of internalRoles) {
+    const tr = document.createElement("tr");
+    const mappings = role.mapping_count != null ? role.mapping_count : 0;
+    const grants = role.grant_count != null ? role.grant_count : 0;
+    const badgeClass = role.is_core ? "rm-badge-core" : "rm-badge-module";
+    const badgeText = role.is_core ? "core" : "module";
+    tr.innerHTML = `
+      <td>
+        <div class="role-cell">
+          <span class="display">${esc(role.display_name || role.key)}</span>
+          <span class="key">${esc(role.key)}</span>
+        </div>
+      </td>
+      <td class="desc-cell">${esc(role.description || "")}</td>
+      <td class="rm-key">${esc(role.owner_module || "-")}</td>
+      <td><span class="rm-badge ${badgeClass}">${badgeText}</span></td>
+      <td class="count-cell">${mappings}</td>
+      <td class="count-cell">${grants}</td>`;
+    tbody.appendChild(tr);
+  }
+  populateRoleSelect();
+}
+
+function populateRoleSelect() {
+  const sel = document.getElementById("new-role-key");
+  sel.innerHTML = '<option value="">— Select a role —</option>';
+  for (const role of internalRoles) {
+    const opt = document.createElement("option");
+    opt.value = role.key;
+    opt.textContent = role.display_name + " (" + role.key + ")";
+    sel.appendChild(opt);
+  }
+}
+
+// ── Fetch group mappings ──
+async function loadMappings() {
+  const tbody = document.getElementById("mappings-tbody");
+  const loading = document.getElementById("mappings-loading");
+  const empty = document.getElementById("mappings-empty");
+  try {
+    const r = await fetch(API_GROUP_MAPPINGS, { credentials: "include" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    groupMappings = await r.json();
+  } catch (e) {
+    loading.textContent = "Failed to load mappings: " + e.message;
+    return;
+  }
+  loading.style.display = "none";
+
+  if (groupMappings.length === 0) {
+    empty.style.display = "block";
+    tbody.innerHTML = "";
+    return;
+  }
+  empty.style.display = "none";
+
+  tbody.innerHTML = "";
+  for (const m of groupMappings) {
+    const tr = document.createElement("tr");
+    tr.dataset.mappingId = m.id;
+    const roleKey = m.internal_role_key || m.role_key || "";
+    const roleDisplay = m.internal_role_display_name || m.role_display_name || roleKey;
+    tr.innerHTML = `
+      <td class="rm-key">${esc(m.external_group_id)}</td>
+      <td>
+        <div class="role-cell">
+          <span class="display" title="${esc(roleDisplay)}">${esc(roleDisplay)}</span>
+          <span class="key">${esc(roleKey)}</span>
+        </div>
+      </td>
+      <td>${esc(m.assigned_by || "-")}</td>
+      <td>${fmtDate(m.assigned_at || m.created_at)}</td>
+      <td style="text-align:right">
+        <button class="rm-btn danger" data-action="delete-mapping" data-mapping-id="${esc(m.id)}">Delete</button>
+      </td>`;
+    tbody.appendChild(tr);
+  }
+  // Wire delete handlers
+  tbody.querySelectorAll('[data-action="delete-mapping"]').forEach(function (btn) {
+    btn.addEventListener("click", function () { deleteMapping(btn.dataset.mappingId); });
+  });
+}
+
+// ── Create mapping ──
+async function createMapping() {
+  const groupId = document.getElementById("new-external-group").value.trim();
+  const roleKey = document.getElementById("new-role-key").value;
+  if (!groupId) { toast("External group ID is required", "error"); return; }
+  if (!roleKey) { toast("Pick an internal role", "error"); return; }
+
+  const btn = document.getElementById("create-mapping-btn");
+  btn.disabled = true;
+  try {
+    const r = await fetch(API_GROUP_MAPPINGS, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ external_group_id: groupId, role_key: roleKey }),
+    });
+    if (!r.ok) {
+      const txt = await r.text();
+      toast("Failed to create mapping: " + txt, "error");
+      return;
+    }
+    document.getElementById("new-external-group").value = "";
+    document.getElementById("new-role-key").value = "";
+    toast("Mapping created", "success");
+    await Promise.all([loadMappings(), loadRoles()]);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ── Delete mapping ──
+async function deleteMapping(id) {
+  if (!confirm("Delete this group mapping? Users in this external group lose the role at next sign-in.")) {
+    return;
+  }
+  const r = await fetch(API_GROUP_MAPPINGS + "/" + encodeURIComponent(id), {
+    method: "DELETE",
+    credentials: "include",
+  });
+  if (!r.ok) {
+    const txt = await r.text();
+    toast("Failed to delete mapping: " + txt, "error");
+    return;
+  }
+  toast("Mapping deleted", "success");
+  await Promise.all([loadMappings(), loadRoles()]);
+}
+
+// ── Boot ──
+loadRoles();
+loadMappings();
+</script>
+{% endblock %}

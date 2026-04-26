@@ -232,7 +232,7 @@ Module sets `lifecycle { ignore_changes = [metadata_startup_script] }` on `googl
 ## Key Implementation Details
 
 ### DuckDB Schema (src/db.py)
-- Schema v8 with auto-migration v1→…→v8 (v5 adds `users.active`, v6 adds `personal_access_tokens`, v7 adds `personal_access_tokens.last_used_ip`, v8 adds `internal_roles` + `group_mappings`)
+- Schema v9 with auto-migration v1→…→v9 (v5 adds `users.active`, v6 adds `personal_access_tokens`, v7 adds `personal_access_tokens.last_used_ip`, v8 adds `internal_roles` + `group_mappings`, v9 adds `user_role_grants` + `internal_roles.implies/is_core` and seeds `core.*` hierarchy from legacy `users.role`)
 - `table_registry`: id, name, source_type, bucket, source_table, query_mode, sync_schedule, etc.
 - `sync_state`, `sync_history`: track extraction progress
 - `users`, `dataset_permissions`, `audit_log`: auth + RBAC
