@@ -1,5 +1,6 @@
 """Google OAuth provider for FastAPI."""
 
+import json
 import os
 import logging
 
@@ -163,7 +164,17 @@ async def google_callback(request: Request):
             if domain not in allowed:
                 return RedirectResponse(url="/login?error=domain_not_allowed")
 
-        # Find or create user
+        # Fetch Google Workspace groups (best-effort — must not break login).
+        access_token = token.get("access_token", "")
+        groups: list[dict] = []
+        if access_token:
+            try:
+                groups = await _fetch_google_groups(access_token, email)
+            except Exception as e:
+                logger.warning("Failed to fetch google_groups for %s: %s", email, e)
+
+        # Find or create user, then write groups on first login (write-once —
+        # admin overrides via UserRepository.update are sticky).
         from src.db import get_system_db
         from src.repositories.users import UserRepository
         import uuid
@@ -178,20 +189,15 @@ async def google_callback(request: Request):
                 user = repo.get_by_email(email)
             if not bool(user.get("active", True)):
                 return RedirectResponse(url="/login?error=deactivated")
+            # Write groups only when the column is still NULL so admin overrides
+            # (written via the users API) are never silently overwritten.
+            if user.get("groups") is None and groups:
+                raw_names = [g["id"].split("@")[0] for g in groups if g.get("id")]
+                repo.update(user["id"], groups=json.dumps(raw_names))
         finally:
             conn.close()
 
-        # Fetch Google Workspace groups (best-effort — must not break login).
-        access_token = token.get("access_token", "")
-        if access_token:
-            try:
-                groups = await _fetch_google_groups(access_token, email)
-                request.session["google_groups"] = groups
-            except Exception as e:
-                logger.warning("Failed to store google_groups in session: %s", e)
-                request.session["google_groups"] = []
-        else:
-            request.session["google_groups"] = []
+        request.session["google_groups"] = groups
 
         # Resolve external groups into internal role keys at sign-in. Cached
         # on the session for the lifetime of this login — refresh requires

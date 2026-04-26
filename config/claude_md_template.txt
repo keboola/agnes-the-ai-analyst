@@ -21,6 +21,15 @@ This workspace is connected to {server_url}.
 - `da sync --upload-only` — upload sessions and local notes to server
 - Data on the server refreshes every {sync_interval}
 
+## Corporate Memory
+
+Rules injected by `da sync` from the server's corporate knowledge base live in `.claude/rules/km_*.md`. They are automatically loaded by Claude Code on every session start.
+
+- `km_<id>.md` — mandatory rules (always enforced)
+- `km_approved.md` — approved guidance (confidence × recency ranked)
+
+Run `da sync` to refresh. Rules are pruned automatically when items are revoked.
+
 ## Directory Structure
 - `data/` — read-only data downloaded from server
   - `data/parquet/` — table data in Parquet format
