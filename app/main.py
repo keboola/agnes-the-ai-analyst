@@ -210,6 +210,29 @@ def create_app() -> FastAPI:
         except Exception as e:
             logger.warning(f"Could not seed admin: {e}")
 
+    # Sync internal-role registry into DB. Modules call register_internal_role()
+    # at import time; this hook reconciles the registry into the internal_roles
+    # table so the mapping UI has something to show. Idempotent — safe to run
+    # on every startup.
+    try:
+        from app.auth.role_resolver import (
+            sync_registered_roles_to_db, list_registered_roles,
+        )
+        from src.db import get_system_db
+        conn = get_system_db()
+        try:
+            sync_registered_roles_to_db(conn)
+        finally:
+            conn.close()
+        registered = list_registered_roles()
+        if registered:
+            logger.info(
+                "internal_roles registered: %s",
+                ", ".join(s.key for s in registered),
+            )
+    except Exception as e:
+        logger.warning("internal_roles sync failed at startup: %s", e)
+
     # Static files
     static_dir = Path(__file__).parent / "web" / "static"
     if static_dir.exists():

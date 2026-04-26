@@ -144,6 +144,20 @@ async def get_current_user(
                 target_groups = get_local_dev_groups()
                 if request.session.get("google_groups") != target_groups:
                     request.session["google_groups"] = target_groups
+                    # External groups changed → recompute internal roles to
+                    # keep the session coherent (same semantics as a fresh
+                    # Google sign-in). Best-effort: if the resolver tables
+                    # don't exist yet (older DB?), don't break the dev flow.
+                    try:
+                        from app.auth.role_resolver import resolve_internal_roles
+                        request.session["internal_roles"] = resolve_internal_roles(
+                            target_groups, conn,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "dev-bypass: resolve_internal_roles failed: %s", e,
+                        )
+                        request.session["internal_roles"] = []
             return user
         # Fall through to normal auth if seed missing — surfaces the bug instead of hiding it.
 
