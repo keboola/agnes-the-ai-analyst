@@ -19,6 +19,10 @@ services:
       - DATA_DIR=/data
       - LOCAL_DEV_MODE=1
       - LOCAL_DEV_USER_EMAIL=dev@localhost
+      # LOCAL_DEV_GROUPS — JSON array of {id, name} mocking session.google_groups.
+      # Same shape as Google's Cloud Identity searchTransitiveGroups response, so
+      # group-aware code paths exercised in dev match production. Uncomment to set.
+      # - 'LOCAL_DEV_GROUPS=[{"id":"local-dev-engineers@example.com","name":"Local Dev Engineers"}]'
       - SERVER_URL=http://localhost:8000
       - LOG_LEVEL=info
 

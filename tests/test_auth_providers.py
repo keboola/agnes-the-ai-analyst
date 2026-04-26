@@ -235,6 +235,112 @@ class TestGoogleGroupsFetch:
         assert groups == []
 
 
+class TestLocalDevGroupsParser:
+    """Unit tests for get_local_dev_groups() — must tolerate every malformed
+    input shape (typos, wrong type, missing id) and never raise. Bad input
+    becomes [] + a WARNING log so the dev mock can't break the dev flow."""
+
+    def test_returns_empty_when_unset(self, monkeypatch):
+        from app.auth.dependencies import get_local_dev_groups
+        monkeypatch.delenv("LOCAL_DEV_GROUPS", raising=False)
+        assert get_local_dev_groups() == []
+
+    def test_returns_empty_when_blank(self, monkeypatch):
+        from app.auth.dependencies import get_local_dev_groups
+        monkeypatch.setenv("LOCAL_DEV_GROUPS", "   ")
+        assert get_local_dev_groups() == []
+
+    def test_parses_valid_json_array(self, monkeypatch):
+        from app.auth.dependencies import get_local_dev_groups
+        monkeypatch.setenv(
+            "LOCAL_DEV_GROUPS",
+            '[{"id":"eng@x.com","name":"Engineering"},'
+            '{"id":"admins@x.com","name":"Admins"}]',
+        )
+        assert get_local_dev_groups() == [
+            {"id": "eng@x.com", "name": "Engineering"},
+            {"id": "admins@x.com", "name": "Admins"},
+        ]
+
+    def test_defaults_name_to_id(self, monkeypatch):
+        from app.auth.dependencies import get_local_dev_groups
+        monkeypatch.setenv("LOCAL_DEV_GROUPS", '[{"id":"eng@x.com"}]')
+        assert get_local_dev_groups() == [{"id": "eng@x.com", "name": "eng@x.com"}]
+
+    def test_preserves_extra_fields(self, monkeypatch):
+        """Forward-compat: unknown fields like roles/labels survive parsing
+        so future group-aware code can be exercised in dev without parser changes."""
+        from app.auth.dependencies import get_local_dev_groups
+        monkeypatch.setenv(
+            "LOCAL_DEV_GROUPS",
+            '[{"id":"eng@x.com","name":"Eng","roles":["MEMBER","OWNER"]}]',
+        )
+        result = get_local_dev_groups()
+        assert result == [
+            {"id": "eng@x.com", "name": "Eng", "roles": ["MEMBER", "OWNER"]},
+        ]
+
+    def test_returns_empty_on_invalid_json(self, monkeypatch):
+        from app.auth.dependencies import get_local_dev_groups
+        monkeypatch.setenv("LOCAL_DEV_GROUPS", "not-json,foo")
+        assert get_local_dev_groups() == []
+
+    def test_returns_empty_on_non_list(self, monkeypatch):
+        from app.auth.dependencies import get_local_dev_groups
+        monkeypatch.setenv("LOCAL_DEV_GROUPS", '{"id":"eng@x.com"}')
+        assert get_local_dev_groups() == []
+
+    def test_skips_items_without_id(self, monkeypatch):
+        """Bad items are dropped, valid siblings survive — partial config
+        still produces something useful instead of nuking the whole list."""
+        from app.auth.dependencies import get_local_dev_groups
+        monkeypatch.setenv(
+            "LOCAL_DEV_GROUPS",
+            '[{"name":"no-id"},{"id":"eng@x.com","name":"Eng"},"string-not-object"]',
+        )
+        assert get_local_dev_groups() == [{"id": "eng@x.com", "name": "Eng"}]
+
+
+class TestLocalDevGroupsInjection:
+    """End-to-end: with LOCAL_DEV_MODE=1 + LOCAL_DEV_GROUPS, the seeded dev
+    user's session.google_groups gets populated on first authenticated request
+    so /profile renders the mocked groups."""
+
+    @pytest.fixture
+    def dev_client(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-32chars-minimum!!!!!")
+        monkeypatch.setenv("LOCAL_DEV_MODE", "1")
+        monkeypatch.setenv("LOCAL_DEV_USER_EMAIL", "dev@localhost")
+        monkeypatch.setenv(
+            "LOCAL_DEV_GROUPS",
+            '[{"id":"local-dev-engineers@example.com","name":"Local Dev Engineers"}]',
+        )
+        from app.main import create_app
+        return TestClient(create_app())
+
+    def test_dev_user_sees_mocked_groups_on_profile(self, dev_client):
+        resp = dev_client.get("/profile")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "local-dev-engineers@example.com" in body
+        assert "Local Dev Engineers" in body
+        assert "No Google groups available" not in body
+
+    def test_empty_LOCAL_DEV_GROUPS_falls_back_to_empty_state(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-32chars-minimum!!!!!")
+        monkeypatch.setenv("LOCAL_DEV_MODE", "1")
+        monkeypatch.delenv("LOCAL_DEV_GROUPS", raising=False)
+        from app.main import create_app
+        client = TestClient(create_app())
+        resp = client.get("/profile")
+        assert resp.status_code == 200
+        assert "No Google groups available" in resp.text
+
+
 class TestCookieAuth:
     def test_web_ui_with_cookie(self, client):
         """Test that web UI routes accept JWT from cookie."""

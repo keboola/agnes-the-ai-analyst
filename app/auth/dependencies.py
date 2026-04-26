@@ -1,5 +1,6 @@
 """FastAPI auth dependencies — current user, role checking."""
 
+import json
 import logging
 import os
 from typing import Optional
@@ -26,6 +27,45 @@ def is_local_dev_mode() -> bool:
 def get_local_dev_email() -> str:
     """Email of the auto-logged-in dev user. Configurable via LOCAL_DEV_USER_EMAIL."""
     return os.environ.get("LOCAL_DEV_USER_EMAIL", LOCAL_DEV_DEFAULT_EMAIL)
+
+
+def get_local_dev_groups() -> list[dict]:
+    """Mock Google Workspace groups for the dev user when LOCAL_DEV_MODE is on.
+
+    Reads ``LOCAL_DEV_GROUPS`` as a JSON array of objects matching the shape
+    produced by ``_fetch_google_groups`` — ``[{"id": "...", "name": "..."}]``.
+    Items must have a non-empty ``id``; ``name`` defaults to ``id`` when
+    omitted. Extra fields are preserved verbatim so future group attributes
+    (roles, labels, …) can be mocked without touching this parser.
+
+    Returns ``[]`` on missing/empty/malformed input — dev mock must never
+    break the dev flow. Malformed input is logged at WARNING.
+    """
+    raw = os.environ.get("LOCAL_DEV_GROUPS", "").strip()
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as e:
+        logger.warning("LOCAL_DEV_GROUPS is not valid JSON, ignoring: %s", e)
+        return []
+    if not isinstance(parsed, list):
+        logger.warning(
+            "LOCAL_DEV_GROUPS must be a JSON array, got %s — ignoring",
+            type(parsed).__name__,
+        )
+        return []
+    out: list[dict] = []
+    for item in parsed:
+        if not isinstance(item, dict) or not item.get("id"):
+            logger.warning(
+                "LOCAL_DEV_GROUPS item must be an object with 'id', skipping: %r",
+                item,
+            )
+            continue
+        item.setdefault("name", item["id"])
+        out.append(item)
+    return out
 
 
 def _get_db():
@@ -77,6 +117,18 @@ async def get_current_user(
     if is_local_dev_mode():
         user = _get_local_dev_user(conn)
         if user:
+            # Mirror the Google OAuth callback: populate session.google_groups
+            # from LOCAL_DEV_GROUPS so group-aware code paths (profile page,
+            # future group-based access checks) see something realistic in
+            # dev. Compare-then-write avoids spurious Set-Cookie noise on
+            # PAT/CLI requests where the session starts empty each call.
+            if request is not None:
+                try:
+                    target_groups = get_local_dev_groups()
+                    if request.session.get("google_groups") != target_groups:
+                        request.session["google_groups"] = target_groups
+                except (AssertionError, AttributeError):
+                    pass  # SessionMiddleware not configured — non-fatal in dev
             return user
         # Fall through to normal auth if seed missing — surfaces the bug instead of hiding it.
 
