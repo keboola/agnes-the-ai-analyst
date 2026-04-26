@@ -9,7 +9,7 @@ help:
 	@echo "  make test            Run test suite"
 	@echo "  make dev             Start FastAPI dev server (native uvicorn)"
 	@echo "  make docker          Build and start Docker Compose"
-	@echo "  make local-dev       Start Agnes with LOCAL_DEV_MODE=1 (auth bypass, no .env needed)"
+	@echo "  make local-dev       Start Agnes with LOCAL_DEV_MODE=1 (auth bypass + mocked Google groups, no .env needed)"
 	@echo "  make local-dev-down  Stop and remove the local-dev stack"
 	@echo "  make local-dev-logs  Tail logs from the local-dev stack"
 	@echo "  make lint            Run ruff linter (if installed)"

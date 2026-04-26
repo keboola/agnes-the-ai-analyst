@@ -18,6 +18,12 @@ if [[ ! -f .env ]]; then
   touch .env
 fi
 
+# Default LOCAL_DEV_GROUPS so /profile and group-aware code see *something* on
+# first boot. Operators can override (LOCAL_DEV_GROUPS='[...]' make local-dev)
+# or disable (LOCAL_DEV_GROUPS= make local-dev). See docs/local-development.md.
+: "${LOCAL_DEV_GROUPS:=[{\"id\":\"local-dev-engineers@example.com\",\"name\":\"Local Dev Engineers\"},{\"id\":\"local-dev-admins@example.com\",\"name\":\"Local Dev Admins\"}]}"
+export LOCAL_DEV_GROUPS
+
 exec docker compose \
   -f docker-compose.yml \
   -f docker-compose.override.yml \
