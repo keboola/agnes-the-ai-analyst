@@ -21,8 +21,13 @@ fi
 # Default LOCAL_DEV_GROUPS so /profile and group-aware code see *something* on
 # first boot. Operators can override (LOCAL_DEV_GROUPS='[...]' make local-dev)
 # or disable (LOCAL_DEV_GROUPS= make local-dev). See docs/local-development.md.
-: "${LOCAL_DEV_GROUPS:=[{\"id\":\"local-dev-engineers@example.com\",\"name\":\"Local Dev Engineers\"},{\"id\":\"local-dev-admins@example.com\",\"name\":\"Local Dev Admins\"}]}"
-export LOCAL_DEV_GROUPS
+#
+# Indirection through DEFAULT_LOCAL_DEV_GROUPS dodges the parameter-expansion
+# gotcha where a literal `}` inside `${VAR:=default}` closes the expansion
+# early — silently truncating the JSON to the first group and producing an
+# unparseable value. The single-quoted variable holds the JSON intact.
+DEFAULT_LOCAL_DEV_GROUPS='[{"id":"local-dev-engineers@example.com","name":"Local Dev Engineers"},{"id":"local-dev-admins@example.com","name":"Local Dev Admins"}]'
+export LOCAL_DEV_GROUPS="${LOCAL_DEV_GROUPS:-$DEFAULT_LOCAL_DEV_GROUPS}"
 
 exec docker compose \
   -f docker-compose.yml \
