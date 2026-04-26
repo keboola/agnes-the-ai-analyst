@@ -78,8 +78,9 @@ class TestDockerHealth:
         import httpx
         resp = httpx.get(f"{docker_env}/api/health")
         data = resp.json()
-        checks = data.get("checks", {})
-        assert "duckdb" in checks or "database" in checks
+        services = data.get("services", {})
+        assert "duckdb_state" in services
+        assert services["duckdb_state"]["status"] == "ok"
 
 
 class TestDockerFullFlow:
