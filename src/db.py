@@ -766,7 +766,27 @@ _V3_TO_V4_MIGRATIONS = [
 
 
 def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
-    """Create tables if they don't exist. Apply migrations if schema version changed."""
+    """Create tables if they don't exist. Apply migrations if schema version changed.
+
+    The first action — running ``_SYSTEM_SCHEMA`` unconditionally — is the
+    self-heal pass for split-brain DBs. Concrete scenario this fixes: a
+    contributor experiments with a future-schema branch (e.g. lab v10 from a
+    parallel WIP that adds tables this binary doesn't know about), then
+    rebases or switches back to a release that the binary understands (v9).
+    Their on-disk DB has ``schema_version=10`` but is missing the v9 tables
+    that the lab schema didn't keep — every query against
+    ``user_role_grants`` / ``internal_roles`` then crashes at runtime.
+
+    Because ``_SYSTEM_SCHEMA`` is all ``CREATE TABLE IF NOT EXISTS``, running
+    it unconditionally is idempotent: existing tables stay untouched (their
+    columns/data preserved), missing tables get created. Cost: dozens of
+    no-op DDL statements per process start. The migration block below still
+    runs the same call when ``current < SCHEMA_VERSION``; that's the
+    redundant-but-cheap follow-up — kept so the migration ladder reads
+    chronologically.
+    """
+    conn.execute(_SYSTEM_SCHEMA)
+
     current = get_schema_version(conn)
     if current < SCHEMA_VERSION:
         # Snapshot before migration for rollback support
