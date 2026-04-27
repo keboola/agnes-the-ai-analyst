@@ -12,7 +12,7 @@ from pydantic import BaseModel
 import duckdb
 
 from app.auth.jwt import create_access_token
-from app.auth.dependencies import _get_db, is_local_dev_mode
+from app.auth.dependencies import _get_db, is_local_dev_mode, _hydrate_legacy_role
 from src.repositories.users import UserRepository
 
 logger = logging.getLogger(__name__)
@@ -125,7 +125,10 @@ def _consume_token(conn: duckdb.DuckDBPyConnection, email: str, token: str) -> d
 
     # Clear token (one-time use)
     repo.update(id=user["id"], reset_token=None, reset_token_created=None)
-    return user
+    # v9: hydrate role from grants before returning — both /verify endpoints
+    # pass user["role"] into create_access_token / JSON response, which is
+    # NULL for migrated users without this step.
+    return _hydrate_legacy_role(user, conn)
 
 
 @router.post("/verify")

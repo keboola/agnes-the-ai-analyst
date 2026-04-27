@@ -532,3 +532,138 @@ class TestAPIUsersPostMigration:
             "analyst@v8": "analyst",
             "km_admin@v8": "km_admin",
         }, "every legacy role must hydrate back via _to_response"
+
+
+class TestAuthLoginFlowsPostMigration:
+    """Devin review #73 (round 3): every auth login flow must hydrate
+    ``user["role"]`` from ``user_role_grants`` before passing it to
+    ``create_access_token`` / Pydantic response models / login cookies.
+
+    The most severe failure mode was ``POST /auth/token``:
+    ``TokenResponse.role`` is required ``str``, but post-v9 the legacy
+    column is NULL — so any v8-migrated user logging in via password got
+    HTTP 500 (``ValidationError: string_type``). The Google/email/web
+    cookie flows didn't crash but wrote ``role: null`` into the issued
+    JWT, which downstream ``_hydrate_legacy_role`` in
+    ``get_current_user`` would correct on every request — but the token
+    itself stayed semantically wrong. Fix: hydrate inline in each login
+    flow before reading ``user["role"]``."""
+
+    def _seed_v8_user_with_password(
+        self, db_path, email: str, role: str, password: str = "TestPass1!",
+    ) -> str:
+        """Seed a v8 DB with a password-set user, run v9 migration,
+        return the user id."""
+        from argon2 import PasswordHasher
+        conn = _v8_state(db_path)
+        user_id = str(uuid.uuid4())
+        # v8 schema in _v8_state doesn't include password_hash — patch the
+        # column on so we can store a bcrypt/argon2 hash for the login.
+        conn.execute("ALTER TABLE users ADD COLUMN password_hash VARCHAR")
+        conn.execute(
+            "INSERT INTO users (id, email, name, role, password_hash) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [user_id, email, email.split("@")[0], role, PasswordHasher().hash(password)],
+        )
+        conn.close()
+        # Trigger v8→v9 migration.
+        from src.db import get_system_db
+        get_system_db()
+        return user_id
+
+    def test_post_auth_token_returns_200_for_v8_migrated_admin(
+        self, fresh_data_dir, monkeypatch,
+    ):
+        """``POST /auth/token`` with valid email + password for a
+        v8-migrated admin must return 200 with the hydrated role string,
+        NOT crash on ``TokenResponse.role: str`` validating against
+        None."""
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-jwt-secret-key-minimum-32-chars!!")
+        db_path = fresh_data_dir / "state" / "system.duckdb"
+        password = "TestPass1!"
+        self._seed_v8_user_with_password(db_path, "admin@v8", "admin", password)
+
+        # Confirm the legacy column really is NULL post-migration —
+        # otherwise this test isn't covering the regression scenario.
+        from src.db import get_system_db
+        conn = get_system_db()
+        legacy = conn.execute(
+            "SELECT role FROM users WHERE email = ?", ["admin@v8"]
+        ).fetchone()[0]
+        assert legacy is None, (
+            "v9 migration must NULL legacy users.role for this test to "
+            "actually exercise the Devin review #73 round-3 regression"
+        )
+
+        from app.main import app
+        from fastapi.testclient import TestClient
+        client = TestClient(app)
+        resp = client.post(
+            "/auth/token",
+            json={"email": "admin@v8", "password": password},
+        )
+        assert resp.status_code == 200, (
+            f"expected 200, got {resp.status_code}: {resp.text} — "
+            "TokenResponse.role: str must receive the hydrated value, "
+            "not None from the NULL legacy column"
+        )
+        body = resp.json()
+        assert body["role"] == "admin", (
+            "TokenResponse.role must hydrate to the actual core.* grant "
+            f"for a v8-admin user, got {body['role']!r}"
+        )
+        assert body["access_token"], "non-empty JWT issued on success"
+
+    def test_post_auth_token_returns_correct_role_for_each_legacy_value(
+        self, fresh_data_dir, monkeypatch,
+    ):
+        """All four legacy roles (viewer/analyst/km_admin/admin) must
+        round-trip through ``POST /auth/token`` with their hydrated
+        string value — not None, not the wrong level."""
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-jwt-secret-key-minimum-32-chars!!")
+        db_path = fresh_data_dir / "state" / "system.duckdb"
+        password = "TestPass1!"
+
+        # Seed all four levels in one v8 DB.
+        from argon2 import PasswordHasher
+        ph = PasswordHasher()
+        conn = _v8_state(db_path)
+        conn.execute("ALTER TABLE users ADD COLUMN password_hash VARCHAR")
+        for role_str in ("viewer", "analyst", "km_admin", "admin"):
+            conn.execute(
+                "INSERT INTO users (id, email, name, role, password_hash) "
+                "VALUES (?, ?, ?, ?, ?)",
+                [
+                    str(uuid.uuid4()),
+                    f"{role_str}@v8",
+                    role_str.title(),
+                    role_str,
+                    ph.hash(password),
+                ],
+            )
+        conn.close()
+        from src.db import get_system_db
+        get_system_db()
+
+        from app.main import app
+        from fastapi.testclient import TestClient
+        client = TestClient(app)
+        observed: dict[str, str] = {}
+        for role_str in ("viewer", "analyst", "km_admin", "admin"):
+            resp = client.post(
+                "/auth/token",
+                json={"email": f"{role_str}@v8", "password": password},
+            )
+            assert resp.status_code == 200, (
+                f"login for {role_str} crashed: {resp.status_code} {resp.text}"
+            )
+            observed[f"{role_str}@v8"] = resp.json()["role"]
+
+        assert observed == {
+            "viewer@v8": "viewer",
+            "analyst@v8": "analyst",
+            "km_admin@v8": "km_admin",
+            "admin@v8": "admin",
+        }

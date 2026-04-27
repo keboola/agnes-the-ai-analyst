@@ -176,6 +176,13 @@ async def google_callback(request: Request):
                 user_id = str(uuid.uuid4())
                 repo.create(id=user_id, email=email, name=name, role="analyst")
                 user = repo.get_by_email(email)
+            # v9: legacy users.role is NULL after migration; hydrate before
+            # create_access_token reads it (writing role: null into the JWT
+            # is non-crashing but semantically wrong; downstream hydration
+            # in get_current_user would fix the per-request view, but the
+            # token payload itself stays misleading).
+            from app.auth.dependencies import _hydrate_legacy_role
+            user = _hydrate_legacy_role(user, conn)
             if not bool(user.get("active", True)):
                 return RedirectResponse(url="/login?error=deactivated")
         finally:

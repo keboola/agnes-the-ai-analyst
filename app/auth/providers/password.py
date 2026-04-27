@@ -14,7 +14,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 
 from app.auth.jwt import create_access_token
-from app.auth.dependencies import _get_db, is_local_dev_mode
+from app.auth.dependencies import _get_db, is_local_dev_mode, _hydrate_legacy_role
 from src.repositories.users import UserRepository
 
 logger = logging.getLogger(__name__)
@@ -180,6 +180,9 @@ async def password_login(
     user = repo.get_by_email(request.email)
     if not user or not user.get("password_hash"):
         raise HTTPException(status_code=401, detail="Invalid email or password")
+    # v9: legacy users.role is NULL after migration; hydrate from grants so
+    # create_access_token + the JSON response carry the correct enum value.
+    user = _hydrate_legacy_role(user, conn)
     if not bool(user.get("active", True)):
         raise HTTPException(status_code=401, detail="Account deactivated")
 
@@ -208,6 +211,7 @@ async def password_login_web(
     user = repo.get_by_email(email)
     if not user or not user.get("password_hash"):
         return RedirectResponse(url="/login/password?error=invalid", status_code=302)
+    user = _hydrate_legacy_role(user, conn)  # v9: NULL legacy column → grants
     if not bool(user.get("active", True)):
         return RedirectResponse(url="/login/password?error=deactivated", status_code=302)
 
@@ -238,6 +242,7 @@ async def password_setup(
     user = repo.get_by_email(request_body.email)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    user = _hydrate_legacy_role(user, conn)  # v9: NULL legacy column → grants
 
     if user.get("setup_token") != request_body.token:
         raise HTTPException(status_code=400, detail="Invalid setup token")
@@ -323,6 +328,7 @@ async def reset_confirm(
     user = repo.get_by_email(email)
     if not user or user.get("reset_token") != token:
         return _render_reset_form(request, email=email, token=token, error="Invalid or expired reset link.")
+    user = _hydrate_legacy_role(user, conn)  # v9: NULL legacy column → grants
     if not _token_is_fresh(user.get("reset_token_created"), RESET_TOKEN_TTL):
         return _render_reset_form(request, email=email, token=token, error="Reset link has expired. Please request a new one.")
     if not bool(user.get("active", True)):
@@ -413,6 +419,7 @@ async def setup_confirm(
     user = repo.get_by_email(email)
     if not user or user.get("setup_token") != token:
         return _render_setup_form(request, email=email, token=token, name=name, error="Invalid or expired setup link.")
+    user = _hydrate_legacy_role(user, conn)  # v9: NULL legacy column → grants
     if not _token_is_fresh(user.get("setup_token_created"), SETUP_TOKEN_TTL):
         return _render_setup_form(request, email=email, token=token, name=name, error="Setup link has expired. Ask an administrator for a new one.")
     if not bool(user.get("active", True)):

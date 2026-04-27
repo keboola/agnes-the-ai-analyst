@@ -110,22 +110,37 @@ core.viewer    →  []
 
 `expand_implies(role_keys, conn)` does BFS from the input keys and returns the deduped, sorted closure. So `expand_implies(["core.admin"], conn)` returns `["core.admin", "core.analyst", "core.km_admin", "core.viewer"]` and `require_internal_role("core.viewer")` succeeds for any user holding any core.* role.
 
-Module-author roles can declare their own implies — useful when one module-level capability is a strict superset of another. **Never point implies at `core.*` keys** — that would let any module-role expand to platform-admin, breaking the trust boundary. Validation in `register_internal_role` enforces this.
+**`implies` is currently seeded only for the `core.*` hierarchy** (via `_seed_core_roles` in `src/db.py`). The `register_internal_role` API accepts `display_name`, `description`, and `owner_module` — there is no `implies=` keyword argument today, so module authors cannot declare in-namespace hierarchies through the registry. The closure expansion (`expand_implies`) reads whatever `implies` JSON sits in the row, so the *runtime* honors it; what's missing is the registry-side write path.
+
+If your module needs a hierarchy (e.g. `editor` ⊆ `admin`), gate on each level explicitly today:
 
 ```python
-# OK — context_engineering.admin grants the lesser editor capability automatically.
+# Today — register both levels independently, gate per level.
+register_internal_role(
+    "context_engineering.editor",
+    display_name="Context Engineering Editor",
+    description="Save drafts.",
+    owner_module="context_engineering",
+)
 register_internal_role(
     "context_engineering.admin",
-    display_name="Context Eng Admin",
-    implies=["context_engineering.editor"],  # if the field is exposed; see source
+    display_name="Context Engineering Admin",
+    description="Save and ship.",
+    owner_module="context_engineering",
 )
 
-# Wrong — module roles must not lift to core.*.
-# register_internal_role(
-#     "context_engineering.admin",
-#     implies=["core.admin"],  # rejected by validation
-# )
+# Endpoint-level: the admin gate is its own dependency. If you want the
+# admin to satisfy editor checks too, grant them both roles in
+# user_role_grants (or bind both via group_mappings) — until module-level
+# implies lands, the registry won't auto-expand for you.
+@router.post("/save")
+async def save(user = Depends(require_internal_role("context_engineering.editor"))): ...
+
+@router.post("/ship")
+async def ship(user = Depends(require_internal_role("context_engineering.admin"))): ...
 ```
+
+A future change can extend `register_internal_role` + `InternalRoleSpec` + `sync_registered_roles_to_db` to write `implies` from code. The runtime invariant — *module-level implies must never point at `core.*`* — applies whichever side of the registry/seed boundary you're on; today it's not enforced because the field isn't exposed, but a registry-side implementation must validate it.
 
 ---
 
@@ -176,7 +191,7 @@ The dependency reads `session["internal_roles"]` first (the OAuth fast path); on
 
 ### 3. Decide if you need a hierarchy
 
-If your module has multiple capability levels (e.g. *editor* who can save drafts, *publisher* who can ship), register both and wire `implies` so the senior role implicitly carries the junior one:
+If your module has multiple capability levels (e.g. *editor* who can save drafts, *publisher* who can ship), register each level independently — the registry-side `implies` write path doesn't exist yet (see [Implies hierarchy](#implies-hierarchy) for what *is* supported in 0.11.4).
 
 ```python
 register_internal_role(
@@ -190,11 +205,12 @@ register_internal_role(
     display_name="Your Module Publisher",
     description="Ship drafts to production.",
     owner_module="your_module",
-    implies=["your_module.editor"],  # publisher implicitly satisfies editor checks
 )
 ```
 
-Don't manually `OR` two `require_internal_role` checks at the endpoint when one role is a superset of the other — declare the implies once, and every gate stays in sync as you add levels.
+Until module-level `implies` lands, give a publisher both roles when granting (admin issues `your_module.editor` *and* `your_module.publisher` via the UI/CLI/REST, or binds the same Cloud Identity group to both rows in `group_mappings`). The runtime resolver will treat them as a flat union — there's no automatic "publisher ⊇ editor" until the registry side ships.
+
+Don't manually `OR` two `require_internal_role` checks at the endpoint to fake a hierarchy — that pattern doesn't compose as you add levels. Pick a primary capability per endpoint and lean on the grants/mappings to keep "everyone with X also has Y" in sync.
 
 ### 4. Test the gate
 
