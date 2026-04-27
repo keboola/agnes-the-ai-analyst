@@ -693,19 +693,29 @@ class TestReattachRemoteExtensionsBQ:
 
         monkeypatch.setattr(db_module, "get_metadata_token", boom)
 
-        with caplog.at_level(logging.ERROR, logger="src.db"):
-            conn = db_module.get_analytics_db_readonly()
+        # Force-enable propagation + capture at ERROR for the src.db logger AFTER
+        # `importlib.reload(db_module)` so caplog grabs the freshly-resolved logger
+        # reference. Using `caplog.set_level` (not the `with caplog.at_level(...)`
+        # context-manager form) keeps capture active for the entire test, which is
+        # robust against pytest configs where the propagation handler attachment is
+        # narrower than the logger lookup. Also set a root-logger safety net so we
+        # catch the record regardless of which exact name the implementation uses.
+        db_logger = logging.getLogger("src.db")
+        db_logger.propagate = True
+        caplog.set_level(logging.ERROR, logger="src.db")
+        caplog.set_level(logging.ERROR)
+
+        conn = db_module.get_analytics_db_readonly()
         try:
             # Connection still usable for local SQL
             row = conn.execute("SELECT 7 AS n").fetchone()
             assert row[0] == 7
-            # ERROR log mentions metadata
-            assert any(
-                "metadata" in r.message.lower() and r.levelname == "ERROR"
-                for r in caplog.records
-            ), (
-                "expected ERROR log mentioning metadata; got: "
-                f"{[(r.levelname, r.message) for r in caplog.records]}"
+            # ERROR (or higher) log mentions metadata
+            error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
+            assert any("metadata" in r.message.lower() for r in error_records), (
+                "expected ERROR log mentioning metadata; "
+                f"got {len(caplog.records)} records: "
+                f"{[(r.levelname, r.name, r.message[:80]) for r in caplog.records]}"
             )
         finally:
             conn.close()
