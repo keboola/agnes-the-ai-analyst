@@ -345,8 +345,14 @@ def _reattach_remote_extensions(
     """Re-LOAD DuckDB extensions listed in _remote_attach tables of each extract.duckdb.
 
     Called from get_analytics_db_readonly() after ATTACHing extract.duckdb files so
-    that remote views (e.g. BigQuery) resolve correctly.  Uses LOAD only — no INSTALL —
-    to avoid touching the network in read-only query paths.
+    that remote views (e.g. BigQuery, Keboola) resolve correctly. Uses LOAD only — no
+    INSTALL — so the community-extension network call doesn't run on the read path.
+
+    However, BigQuery sources DO touch the GCE metadata server on every readonly-conn
+    open: the secret created by the orchestrator at rebuild time is session-scoped and
+    must be re-created with a fresh access token here. This is a per-conn-open cost
+    (~ms typical, up to 5s timeout — see ``connectors.bigquery.auth``). Non-BQ
+    sources stay network-free.
     """
     if not extracts_dir.exists():
         return
