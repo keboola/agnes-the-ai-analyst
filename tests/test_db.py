@@ -684,7 +684,17 @@ class TestReattachRemoteExtensionsBQ:
         propagation timing differed from the local pytest config and yielded
         empty ``caplog.records``). A method-level spy is fully independent of
         pytest's logging plumbing.
+
+        Also stubs ``LOAD bigquery`` (and friends) via a connection proxy
+        because CI runners don't have the BigQuery community extension cached
+        on disk. Without the stub, ``conn.execute("LOAD bigquery;")`` inside
+        ``_reattach_remote_extensions`` raises a Catalog/IO/HTTP error before
+        the BQ branch can run, the outer ``except`` swallows it at
+        ``logger.debug``, and the BQ-specific ``logger.error`` we're asserting
+        on is never reached. Mirrors the stub already present in
+        ``test_bq_reattach_calls_get_metadata_token``.
         """
+        from unittest.mock import MagicMock
         from connectors.bigquery.auth import BQMetadataAuthError
 
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
@@ -701,6 +711,36 @@ class TestReattachRemoteExtensionsBQ:
         def boom():
             raise BQMetadataAuthError("metadata server unreachable: simulated")
         monkeypatch.setattr("src.db.get_metadata_token", boom)
+
+        # Stub BigQuery-extension-specific SQL on the readonly connection so the
+        # test doesn't depend on the community extension being cached on disk
+        # (CI runners start clean). With this stub, `LOAD bigquery` returns a
+        # MagicMock and the BQ branch in _reattach_remote_extensions is reached;
+        # `boom` then raises BQMetadataAuthError, which the production code
+        # catches and logs at ERROR — exactly what the spy below verifies.
+        class _ConnProxy:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def execute(self, sql, *args, **kwargs):
+                up = sql.upper()
+                if "LOAD BIGQUERY" in up or "INSTALL BIGQUERY" in up:
+                    return MagicMock()
+                if "CREATE OR REPLACE SECRET" in up and "TYPE BIGQUERY" in up:
+                    return MagicMock()
+                if up.startswith("ATTACH ") and "TYPE BIGQUERY" in up:
+                    return MagicMock()
+                return self._inner.execute(sql, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+        real_connect = duckdb.connect
+
+        def spy_connect(path, *a, **kw):
+            return _ConnProxy(real_connect(path, *a, **kw))
+
+        monkeypatch.setattr(db_module.duckdb, "connect", spy_connect)
 
         # Direct spy on logger.error — captures regardless of pytest config /
         # propagation / handler attachment.
