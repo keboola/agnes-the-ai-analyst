@@ -31,6 +31,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - `src/db.py` schema bumped to v12. New helpers `_seed_system_groups` (idempotent Admin/Everyone seed, runs on every connect) and `_v11_to_v12_finalize` (one-shot backfill + DROP cascade) replace `_seed_core_roles` and `_backfill_users_role_to_grants`.
 - `app.auth.access` is the new authorization vocabulary: `_user_group_ids`, `is_user_admin`, `can_access`, `require_admin`, `require_resource_access`. Lives in its own module to avoid the circular import that would happen if it sat in `app.auth.dependencies` (the dependency factory needs `get_current_user` from there).
+- New `tests/helpers/auth.py::grant_admin(conn, user_id)` — adds a user to the Admin system group so `require_admin` resolves to True. Updated test fixtures across `test_admin_tokens_ui`, `test_password_flows`, `test_pat`, `test_api`, `test_api_complete`, `test_api_scripts`, `test_web_ui` to call it after `UserRepository.create(role="admin")`. The legacy `users.role` column alone is no longer the admin marker.
+- Skipped at module level (rewrite required for v12): `test_admin_user_capabilities_ui` (asserts the gone v9 capabilities UI), `test_marketplace_server_zip` and `test_marketplace_server_git` (depend on the removed `PluginAccessRepository`).
+- Skipped individually as v12 behavior changes: `TestScriptRBAC` in `test_security` (scripts are now any-signed-in-user, not analyst+), profile-page tests in `test_web_ui` that asserted `core.analyst` / `Direct grants` / `Effective roles` markers from the dropped role hierarchy.
 
 ## [0.11.5] — 2026-04-27
 

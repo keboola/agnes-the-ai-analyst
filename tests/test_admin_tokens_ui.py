@@ -26,12 +26,19 @@ def fresh_db(monkeypatch):
 
 
 def _make_user_and_session(conn, email: str, role: str):
-    """Create a user and return (uid, session_jwt)."""
+    """Create a user and return (uid, session_jwt).
+
+    v12: ``role='admin'`` also adds the user to the Admin system group so
+    ``require_admin`` resolves to True.
+    """
     from src.repositories.users import UserRepository
     from app.auth.jwt import create_access_token
+    from tests.helpers.auth import grant_admin
 
     uid = str(uuid.uuid4())
     UserRepository(conn).create(id=uid, email=email, name=email.split("@")[0], role=role)
+    if role == "admin":
+        grant_admin(conn, uid)
     token = create_access_token(user_id=uid, email=email, role=role)
     return uid, token
 

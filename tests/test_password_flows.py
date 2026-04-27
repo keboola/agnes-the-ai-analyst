@@ -70,10 +70,12 @@ def _seed_admin() -> str:
     from src.db import get_system_db
     from src.repositories.users import UserRepository
     from app.auth.jwt import create_access_token
+    from tests.helpers.auth import grant_admin
     conn = get_system_db()
     try:
         uid = str(uuid.uuid4())
         UserRepository(conn).create(id=uid, email="admin@test", name="Admin", role="admin")
+        grant_admin(conn, uid)
         return create_access_token(user_id=uid, email="admin@test", role="admin")
     finally:
         conn.close()
