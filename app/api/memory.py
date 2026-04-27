@@ -160,7 +160,26 @@ async def list_knowledge(
         item["downvotes"] = votes["downvotes"]
         item["score"] = votes["upvotes"] - votes["downvotes"]
 
-    return {"items": items, "count": len(items), "page": page, "per_page": per_page}
+    import math
+    total_count = repo.count_items(
+        search=search,
+        statuses=statuses,
+        category=category,
+        domain=domain,
+        source_type=source_type,
+        exclude_personal=effective_exclude_personal,
+        user_groups=effective_groups,
+    )
+    total_pages = math.ceil(total_count / per_page) if per_page > 0 else 1
+
+    return {
+        "items": items,
+        "count": len(items),
+        "page": page,
+        "per_page": per_page,
+        "total_count": total_count,
+        "total_pages": total_pages,
+    }
 
 
 @router.get("/stats")

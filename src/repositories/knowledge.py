@@ -180,6 +180,47 @@ class KnowledgeRepository:
         results = self.conn.execute(sql, params).fetchall()
         return self._rows_to_dicts(results)
 
+    def count_items(
+        self,
+        search: Optional[str] = None,
+        statuses: Optional[List[str]] = None,
+        category: Optional[str] = None,
+        domain: Optional[str] = None,
+        source_type: Optional[str] = None,
+        exclude_personal: bool = False,
+        user_groups: Optional[List[str]] = None,
+    ) -> int:
+        if search:
+            pattern = f"%{search}%"
+            sql = "SELECT COUNT(*) FROM knowledge_items WHERE (title ILIKE ? OR content ILIKE ?)"
+            params: List[Any] = [pattern, pattern]
+        else:
+            sql = "SELECT COUNT(*) FROM knowledge_items WHERE 1=1"
+            params = []
+        if statuses:
+            placeholders = ", ".join("?" for _ in statuses)
+            sql += f" AND status IN ({placeholders})"
+            params.extend(statuses)
+        if category:
+            sql += " AND category = ?"
+            params.append(category)
+        if domain:
+            sql += " AND domain = ?"
+            params.append(domain)
+        if source_type:
+            sql += " AND source_type = ?"
+            params.append(source_type)
+        if exclude_personal:
+            sql += " AND (is_personal = FALSE OR is_personal IS NULL)"
+        if user_groups is not None:
+            if user_groups:
+                audience_placeholders = ", ".join("?" for _ in user_groups)
+                sql += f" AND (audience IS NULL OR audience = 'all' OR audience IN ({audience_placeholders}))"
+                params.extend(user_groups)
+            else:
+                sql += " AND (audience IS NULL OR audience = 'all')"
+        return self.conn.execute(sql, params).fetchone()[0]
+
     def list_by_domain(
         self,
         domain: str,

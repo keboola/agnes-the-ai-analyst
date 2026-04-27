@@ -310,8 +310,10 @@ class TestConfidenceScoring:
         assert c >= 0.50  # admin_mandate floor is 0.50
 
     def test_configure_overrides_defaults(self):
+        import copy
         from services.corporate_memory import confidence as cm
         original_base = dict(cm._BASE_CONFIDENCE)
+        original_decay = copy.deepcopy(cm._DECAY_CONFIG)
         try:
             cm.configure({
                 "base": {
@@ -330,9 +332,9 @@ class TestConfidenceScoring:
             c2 = cm.apply_decay(1.00, created, source_type="admin_mandate")
             assert c2 >= 0.60
         finally:
-            # Restore defaults so other tests are not affected
             cm._BASE_CONFIDENCE = original_base
-            cm._DECAY_CONFIG["floor"]["admin_mandate"] = 0.50
+            cm._DECAY_CONFIG.clear()
+            cm._DECAY_CONFIG.update(original_decay)
 
 
 class TestEntityResolution:
