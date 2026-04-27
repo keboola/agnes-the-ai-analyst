@@ -33,7 +33,7 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compos
     --profile tls up -d
 ```
 
-See `docs/DEPLOYMENT.md` → **TLS** for cert provisioning + `scripts/grpn/agnes-tls-rotate.sh` (daily refetch from `TLS_FULLCHAIN_URL`, `SIGUSR1` reload on diff, no-op when unchanged). The infra repo's `startup.sh` installs this as a systemd timer automatically.
+See `docs/DEPLOYMENT.md` → **TLS** for cert provisioning + `scripts/ops/agnes-tls-rotate.sh` (daily refetch from `TLS_FULLCHAIN_URL`, `SIGUSR1` reload on diff, no-op when unchanged). The infra repo's `startup.sh` installs this as a systemd timer automatically.
 
 ## Project Structure
 

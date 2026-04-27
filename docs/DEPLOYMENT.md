@@ -124,7 +124,7 @@ Both modes converge: once the CA publishes the signed chain at `TLS_FULLCHAIN_UR
 
 #### Automatic rotation
 
-`scripts/grpn/agnes-tls-rotate.sh` is the single entry point — it handles fetch, self-signed fallback, auto-generation on missing key, atomic cert swap, and Caddy reload. Env vars it reads:
+`scripts/ops/agnes-tls-rotate.sh` is the single entry point — it handles fetch, self-signed fallback, auto-generation on missing key, atomic cert swap, and Caddy reload. Env vars it reads:
 
 | Var | Required | Schemes | Notes |
 |---|---|---|---|
