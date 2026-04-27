@@ -160,6 +160,82 @@ Before computing any business metric, look up the canonical definition:
 
 Never invent metric calculations — always use the canonical definitions.
 
+## Marketplace Repositories
+
+Admin-managed git repos cloned nightly to `${DATA_DIR}/marketplaces/<slug>/`
+so FastAPI can read their contents from disk.
+
+- Register via `/admin/marketplaces` (admin UI) or `POST /api/marketplaces`.
+- Scheduler calls `src.marketplace.sync_marketplaces()` in-process at `daily 03:00` UTC — no HTTP round-trip to the main app.
+- Manual re-sync from the UI ("Sync now") hits `POST /api/marketplaces/{id}/sync`.
+- PATs for private repos persist to `${DATA_DIR}/state/.env_overlay` (chmod 600) as `AGNES_MARKETPLACE_<SLUG>_TOKEN`. DuckDB stores only the env-var name (`token_env`), never the secret.
+- Registry lives in DuckDB table `marketplace_registry` (schema v9).
+- After each successful sync, `src/marketplace.py` parses `.claude-plugin/marketplace.json`
+  from the cloned repo and caches the plugin list in `marketplace_plugins`
+  (keyed by `(marketplace_id, plugin_name)`).
+- `src/marketplace.py` handles clone/fetch/reset with token redaction in any surfaced error message.
+
+## Access control (v13)
+
+Two layers, no role hierarchy. Full reference: [`docs/RBAC.md`](docs/RBAC.md).
+
+- `user_groups` — named groups. Two seeded as `is_system=TRUE` at startup:
+  `Admin` (god-mode short-circuit on every authorization check) and
+  `Everyone` (auto-membership for every user).
+- `user_group_members` — `(user_id, group_id, source)`. `source ∈
+  {admin, google_sync, system_seed}` so each writer only manipulates its own
+  rows; Google's nightly DELETE+INSERT does not clobber admin-added members.
+- `resource_grants` — generic `(group, resource_type, resource_id)` triple.
+  Replaces `plugin_access` from v12; the same shape now covers any future
+  entity-scoped grant (datasets, knowledge categories, …).
+
+Resource types are an `app.resource_types.ResourceType` `StrEnum` paired with
+a `ResourceTypeSpec` registered in `RESOURCE_TYPES` — adding a new one is one
+enum member, one `list_blocks(conn)` delegate (projects domain tables into the
+`(block → items)` shape the /admin/access tree renders), and one spec entry.
+No DB migration, no second wiring step. Endpoints gate with either
+`require_admin` (app-level) or `require_resource_access(ResourceType.X,
+"{path}")` (entity-level), both from `app.auth.access`.
+
+Admin UI: `/admin/access`. CLI: `da admin group {list,create,delete,members,
+add-member,remove-member}` and `da admin grant {list,create,delete}`.
+
+## Claude Code marketplace endpoint
+
+Agnes serves a single aggregated Claude Code marketplace over two channels,
+both gated by PAT auth and filtered per caller:
+
+- `GET /marketplace.zip` — deterministic ZIP download with `ETag` /
+  `If-None-Match` (304 when content unchanged). Consumed by a client-side
+  SessionStart hook.
+- `GET /marketplace.git/*` — git smart-HTTP (dulwich via a2wsgi). Registered
+  in Claude Code once, then Claude Code owns the clone/fetch cycle.
+
+Auth: ZIP uses `Authorization: Bearer <PAT>`. Git uses HTTP Basic where the
+password field carries the PAT (`https://x:<PAT>@host/marketplace.git/`) —
+git CLI does not speak Bearer.
+
+Content: filtered via `src.marketplace_filter.resolve_allowed_plugins` which
+joins `resource_grants ↔ marketplace_plugins` (matching
+`mp.marketplace_id || '/' || mp.name = rg.resource_id`) scoped to the
+caller's `user_group_members`. Admin group bypasses to "everything". Plugin
+names are prefixed with marketplace slug (`<slug>-<plugin>`) so two
+marketplaces with the same plugin name don't collide in the aggregated view.
+
+Cache: content-addressed bare repos at `${DATA_DIR}/marketplaces/git-cache/`
+keyed by sha256(filtered content). Two users with the same RBAC view share
+one repo; content change → new repo next to the old one. No TTL / prune yet.
+
+User registration inside Claude Code:
+
+```
+# ZIP channel (typically via a SessionStart hook that unpacks into ./marketplace/)
+curl -H "Authorization: Bearer $AGNES_PAT" https://agnes.example.com/marketplace.zip
+
+# Git channel — one-time registration
+/plugin marketplace add https://x:$AGNES_PAT@agnes.example.com/marketplace.git/
+```
+
 ## Hybrid Queries (BigQuery + Local)
 
 For tables too large to sync locally, use hybrid queries that JOIN local data with on-demand BigQuery results:
@@ -189,11 +265,9 @@ Auth providers in `app/auth/` (FastAPI-based):
 - **Email**: Email magic link (itsdangerous token)
 - **Desktop**: JWT for API
 
-### RBAC (role-based access control)
+### RBAC
 
-Three-layer model: external Cloud Identity groups → admin-curated `group_mappings` → internal roles (`internal_roles` table) → resolved into `session["internal_roles"]` at sign-in OR fetched from `user_role_grants` per request for PAT/headless callers. `core.*` roles (viewer/analyst/km_admin/admin) carry the legacy hierarchy via `implies` JSON; module authors register their own keys (e.g. `corporate_memory.curator`) at import time and gate endpoints with `Depends(require_internal_role("<key>"))`.
-
-**Contributors building a new module or capability — read [`docs/RBAC.md`](docs/RBAC.md) before adding endpoints.** It covers: picking a role key (naming convention, namespace), `register_internal_role` lifecycle, gating with `require_internal_role` vs. the `require_admin` / `require_role(Role.X)` thin wrappers, declaring implies hierarchies inside your module, the `_hydrate_legacy_role` shim that keeps `user["role"]` reads working, and the admin workflows (UI / CLI / REST) for binding groups and granting roles. Quickstart sections by audience: operator, end-user, module author.
+See **[Access control (v13)](#access-control-v13)** above and [`docs/RBAC.md`](docs/RBAC.md) for the full reference. TL;DR for module authors: gate endpoints with `Depends(require_admin)` for app-level mutations or `Depends(require_resource_access(ResourceType.X, "{path}"))` for entity-scoped grants. Add a new resource type by extending the `ResourceType` `StrEnum` and registering a `ResourceTypeSpec` (with a `list_blocks` projection delegate) in `app/resource_types.py`.
 
 ## Release & deploy workflows
 
@@ -238,7 +312,7 @@ Module sets `lifecycle { ignore_changes = [metadata_startup_script] }` on `googl
 ## Key Implementation Details
 
 ### DuckDB Schema (src/db.py)
-- Schema v9 with auto-migration v1→…→v9 (v5 adds `users.active`, v6 adds `personal_access_tokens`, v7 adds `personal_access_tokens.last_used_ip`, v8 adds `internal_roles` + `group_mappings`, v9 adds `user_role_grants` + `internal_roles.implies/is_core` and seeds `core.*` hierarchy from legacy `users.role`)
+- Schema v13 with auto-migration v1→…→v13 (v5 adds `users.active`, v6 adds `personal_access_tokens`, v7 adds `personal_access_tokens.last_used_ip`, v8/v9 added the legacy internal_roles/role-grants tables, v10 added `view_ownership` for cross-connector view-name collision detection (issue #81 Group C), v11 added marketplace_registry + marketplace_plugins + user_groups + plugin_access, v12 added users.groups JSON + user_groups.is_system, **v13 replaces internal_roles/group_mappings/user_role_grants/plugin_access with user_group_members + resource_grants and drops users.groups JSON** — see CHANGELOG and docs/RBAC.md)
 - `table_registry`: id, name, source_type, bucket, source_table, query_mode, sync_schedule, etc.
 - `sync_state`, `sync_history`: track extraction progress
 - `users`, `dataset_permissions`, `audit_log`: auth + RBAC

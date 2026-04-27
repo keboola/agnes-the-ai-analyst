@@ -105,9 +105,17 @@ def write_test_parquet(path: str, data: list[dict]):
 
 @pytest.fixture
 def seeded_app(e2e_env):
-    """FastAPI TestClient with all four core role tokens (admin, km_admin,
-    analyst, viewer). Use the role-specific token in role-gating tests."""
-    from src.db import get_system_db
+    """FastAPI TestClient with seeded users + JWT tokens for all four legacy
+    role tokens (admin, km_admin, analyst, viewer).
+
+    v13: roles are no longer the auth source of truth. The admin user is
+    placed in the Admin user_group; the others are Everyone-only members.
+    Tokens for km_admin and viewer are kept so role-gating regression tests
+    that still reference them keep passing — gate semantics still match
+    where it matters (admin bypass, dataset_permissions checks).
+    """
+    from src.db import SYSTEM_ADMIN_GROUP, get_system_db
+    from src.repositories.user_group_members import UserGroupMembersRepository
     from src.repositories.users import UserRepository
     from app.auth.jwt import create_access_token
     from app.main import create_app
@@ -119,6 +127,13 @@ def seeded_app(e2e_env):
     repo.create(id="km_admin1", email="km@test.com", name="KM Admin", role="km_admin")
     repo.create(id="analyst1", email="analyst@test.com", name="Analyst", role="analyst")
     repo.create(id="viewer1", email="viewer@test.com", name="Viewer", role="viewer")
+
+    admin_gid = conn.execute(
+        "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
+    ).fetchone()[0]
+    UserGroupMembersRepository(conn).add_member(
+        "admin1", admin_gid, source="system_seed",
+    )
     conn.close()
 
     app = create_app()

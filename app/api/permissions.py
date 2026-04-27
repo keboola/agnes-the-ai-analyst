@@ -7,7 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 import duckdb
 
-from app.auth.dependencies import require_role, get_current_user, Role, _get_db
+from app.auth.access import require_admin
+from app.auth.dependencies import get_current_user, _get_db
 from src.repositories.sync_settings import DatasetPermissionRepository
 
 logger = logging.getLogger(__name__)
@@ -23,7 +24,7 @@ class PermissionRequest(BaseModel):
 @router.post("", status_code=201)
 async def grant_permission(
     request: PermissionRequest,
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Grant a user access to a dataset/table."""
@@ -35,7 +36,7 @@ async def grant_permission(
 @router.delete("")
 async def revoke_permission(
     request: PermissionRequest,
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Revoke a user's access to a dataset/table."""
@@ -47,7 +48,7 @@ async def revoke_permission(
 @router.get("/{user_id}")
 async def get_user_permissions(
     user_id: str,
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """List all permissions for a user."""
@@ -58,7 +59,7 @@ async def get_user_permissions(
 
 @router.get("")
 async def list_all_permissions(
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """List all dataset permissions."""

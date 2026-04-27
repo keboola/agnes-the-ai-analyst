@@ -10,8 +10,8 @@ import duckdb
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.auth.dependencies import require_session_token, require_role, get_current_user, _get_db
-from src.rbac import Role
+from app.auth.access import require_admin
+from app.auth.dependencies import require_session_token, get_current_user, _get_db
 from src.repositories.access_tokens import AccessTokenRepository
 from src.repositories.audit import AuditRepository
 from app.auth.jwt import create_access_token
@@ -177,7 +177,7 @@ async def revoke_token(
 
 @admin_router.get("", response_model=List[AdminTokenItem])
 async def admin_list_tokens(
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     return [_row_to_admin_item(r) for r in AccessTokenRepository(conn).list_all_with_user()]
@@ -186,7 +186,7 @@ async def admin_list_tokens(
 @admin_router.delete("/{token_id}", status_code=204)
 async def admin_revoke_token(
     token_id: str,
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     repo = AccessTokenRepository(conn)

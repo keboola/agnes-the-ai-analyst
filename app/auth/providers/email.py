@@ -12,8 +12,15 @@ from pydantic import BaseModel
 import duckdb
 
 from app.auth.jwt import create_access_token
-from app.auth.dependencies import _get_db, is_local_dev_mode, _hydrate_legacy_role
+from app.auth.access import is_user_admin
+from app.auth.dependencies import _get_db, is_local_dev_mode
 from src.repositories.users import UserRepository
+
+
+def _role_label(user: dict, conn: duckdb.DuckDBPyConnection) -> str:
+    if is_user_admin(user["id"], conn):
+        return "admin"
+    return user.get("role") or "user"
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth/email", tags=["auth"])
@@ -125,10 +132,7 @@ def _consume_token(conn: duckdb.DuckDBPyConnection, email: str, token: str) -> d
 
     # Clear token (one-time use)
     repo.update(id=user["id"], reset_token=None, reset_token_created=None)
-    # v9: hydrate role from grants before returning — both /verify endpoints
-    # pass user["role"] into create_access_token / JSON response, which is
-    # NULL for migrated users without this step.
-    return _hydrate_legacy_role(user, conn)
+    return user
 
 
 @router.post("/verify")
@@ -138,8 +142,9 @@ async def verify_magic_link(
 ):
     """Verify a magic link token and issue JWT (JSON API for programmatic clients)."""
     user = _consume_token(conn, request.email, request.token)
-    jwt_token = create_access_token(user["id"], user["email"], user["role"])
-    return {"access_token": jwt_token, "token_type": "bearer", "email": user["email"], "role": user["role"]}
+    role_label = _role_label(user, conn)
+    jwt_token = create_access_token(user["id"], user["email"], role_label)
+    return {"access_token": jwt_token, "token_type": "bearer", "email": user["email"], "role": role_label}
 
 
 @router.get("/verify")
@@ -154,7 +159,7 @@ async def verify_magic_link_get(
     clicking it in a mail client logs the user in without a separate API call.
     """
     user = _consume_token(conn, email, token)
-    jwt_token = create_access_token(user["id"], user["email"], user["role"])
+    jwt_token = create_access_token(user["id"], user["email"], _role_label(user, conn))
     # secure=False when DOMAIN is unset so the cookie is actually sent on plain HTTP (dev).
     use_secure = os.environ.get("DOMAIN", "") != ""
     response = RedirectResponse(url="/dashboard", status_code=302)

@@ -1,0 +1,715 @@
+{% extends "base.html" %}
+{% block title %}Resource access — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block content %}
+<style>
+  .container:has(.ax-page) { max-width: none; padding: 24px 16px; }
+  .ax-page { max-width: 1400px; margin: 0 auto; padding: 0; }
+  .ax-toolbar {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 16px; margin-bottom: 20px; flex-wrap: wrap;
+  }
+  .ax-title { margin: 0; font-size: 22px; font-weight: 600; }
+  .ax-sub { margin: 0; font-size: 13px; color: var(--text-secondary, #6b7280); }
+
+  .ax-layout {
+    display: grid; grid-template-columns: 320px 1fr; gap: 20px;
+    align-items: start;
+  }
+  @media (max-width: 900px) { .ax-layout { grid-template-columns: 1fr; } }
+
+  .ax-card {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .ax-card-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 16px; border-bottom: 1px solid var(--border, #e5e7eb);
+    background: var(--border-light, #f9fafb);
+  }
+  .ax-card-head h3 { margin: 0; font-size: 14px; font-weight: 600; }
+
+  /* Groups list */
+  .group-list { list-style: none; margin: 0; padding: 0; }
+  .group-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 14px; border-bottom: 1px solid var(--border-light, #f3f4f6);
+    cursor: pointer; transition: background 0.12s;
+  }
+  .group-item:last-child { border-bottom: none; }
+  .group-item:hover { background: var(--border-light, #fafafa); }
+  .group-item.is-active { background: #eef2ff; }
+  .group-item.is-active .group-name { color: var(--primary, #4338ca); }
+  .group-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #cbd5e1; flex-shrink: 0;
+  }
+  .group-item.is-active .group-dot { background: var(--primary, #6366f1); }
+  .group-item.is-system .group-dot { background: #f59e0b; }
+  .group-meta { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+  .group-name { font-size: 13px; font-weight: 500; color: var(--text-primary, #111827); }
+  .group-name .system-tag {
+    font-size: 9px; padding: 1px 5px; border-radius: 3px;
+    background: #fef3c7; color: #92400e; margin-left: 6px;
+    text-transform: uppercase; font-weight: 600; letter-spacing: 0.4px;
+  }
+  .group-desc {
+    font-size: 11px; color: var(--text-secondary, #6b7280);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .group-count {
+    font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 999px;
+    background: #e0e7ff; color: #3730a3;
+  }
+  .group-row-actions { display: flex; gap: 4px; opacity: 0; transition: opacity 0.15s; }
+  .group-item:hover .group-row-actions { opacity: 1; }
+  .group-item.is-active .group-row-actions { opacity: 1; }
+  .group-act-btn {
+    background: transparent; border: 1px solid var(--border, #e5e7eb);
+    color: var(--text-secondary, #6b7280);
+    font-size: 10px; padding: 2px 6px; border-radius: 4px; cursor: pointer;
+  }
+  .group-act-btn:hover { color: var(--text-primary, #111827); border-color: #cbd5e1; background: #fff; }
+  .group-act-btn.danger:hover { color: #b91c1c; border-color: #fecaca; background: #fef2f2; }
+
+  .ax-empty {
+    padding: 28px 16px; text-align: center;
+    font-size: 13px; color: var(--text-secondary, #6b7280);
+  }
+
+  /* Right side — resource type sections + per-block collapsibles */
+  .rt-section { border-bottom: 2px solid var(--border, #e5e7eb); }
+  .rt-section:last-child { border-bottom: none; }
+  .rt-section-head {
+    padding: 14px 16px; background: #f8fafc;
+    font-size: 11px; font-weight: 700; letter-spacing: 0.6px;
+    text-transform: uppercase; color: var(--text-secondary, #475569);
+    border-bottom: 1px solid var(--border, #e5e7eb);
+  }
+  .mp-block { border-bottom: 1px solid var(--border-light, #f3f4f6); }
+  .mp-block:last-child { border-bottom: none; }
+  .mp-block-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px; background: var(--border-light, #fafafa);
+    cursor: pointer; user-select: none;
+  }
+  .mp-block-head h4 { margin: 0; font-size: 13px; font-weight: 600; color: var(--text-primary, #111827); }
+  .mp-block-head .count {
+    font-size: 11px; padding: 2px 7px; border-radius: 999px;
+    background: #e0e7ff; color: #3730a3; font-weight: 600;
+  }
+  .mp-block-head .spacer { flex: 1; }
+  .mp-block-head .chev { transition: transform 0.15s; color: #9ca3af; }
+  .mp-block.is-collapsed .item-grid { display: none; }
+  .mp-block.is-collapsed .mp-block-head .chev { transform: rotate(-90deg); }
+  .bulk-btn {
+    font-size: 11px; padding: 4px 8px; border: 1px solid var(--border, #e5e7eb);
+    background: var(--surface, #fff); color: var(--text-secondary, #6b7280);
+    border-radius: 6px; cursor: pointer;
+  }
+  .bulk-btn:hover { color: var(--text-primary, #111827); border-color: #cbd5e1; }
+
+  .item-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 0; padding: 0;
+  }
+  .item-cell {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 10px 16px;
+    border-right: 1px solid var(--border-light, #f3f4f6);
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+    cursor: pointer; transition: background 0.1s;
+  }
+  .item-cell:hover { background: var(--border-light, #fafafa); }
+  .item-cell input[type="checkbox"] {
+    margin-top: 2px; width: 15px; height: 15px; cursor: pointer;
+    accent-color: var(--primary, #6366f1);
+  }
+  .item-cell.is-granted { background: #f5f3ff; }
+  .item-cell.is-granted:hover { background: #ede9fe; }
+  .ic-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .ic-name {
+    font-size: 13px; font-weight: 500; color: var(--text-primary, #111827);
+    word-break: break-word;
+  }
+  .ic-meta { font-size: 11px; color: var(--text-secondary, #6b7280); }
+  .ic-src {
+    display: inline-block; padding: 1px 6px; border-radius: 4px;
+    background: #f3f4f6; color: #374151; font-size: 10px; font-weight: 500;
+    text-transform: uppercase; letter-spacing: 0.3px; margin-left: 4px;
+  }
+  .ic-desc {
+    font-size: 11px; color: var(--text-secondary, #6b7280);
+    margin-top: 2px; line-height: 1.35;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .ax-hint {
+    padding: 14px 16px; font-size: 12px; color: var(--text-secondary, #6b7280);
+    background: #fffbeb; border-bottom: 1px solid #fde68a;
+  }
+  .ax-hint a { color: var(--primary, #6366f1); }
+
+  .ax-filter {
+    padding: 10px 16px; border-bottom: 1px solid var(--border, #e5e7eb);
+    background: var(--surface, #fff);
+  }
+  .ax-filter input {
+    width: 100%; padding: 7px 10px 7px 30px;
+    border: 1px solid var(--border, #e5e7eb); border-radius: 6px;
+    font-size: 12px;
+    background: #fff url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2'><circle cx='11' cy='11' r='8'/><path d='m21 21-4.35-4.35'/></svg>") no-repeat 9px center;
+  }
+
+  .ax-btn {
+    padding: 6px 12px; border-radius: 6px; font-size: 12px; font-weight: 500;
+    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
+    cursor: pointer;
+  }
+  .ax-btn:hover { background: var(--border-light, #f9fafb); }
+  .ax-btn.primary { background: var(--primary, #6366f1); color: #fff; border-color: var(--primary, #6366f1); }
+  .ax-btn.primary:hover { filter: brightness(1.05); }
+
+  /* Modal */
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55);
+    display: none; align-items: center; justify-content: center; z-index: 1000;
+    padding: 16px;
+  }
+  .modal-backdrop.is-open { display: flex; }
+  .modal-card {
+    background: var(--surface, #fff); border-radius: 12px;
+    padding: 24px; width: 100%; max-width: 480px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+    max-height: 90vh; overflow-y: auto;
+  }
+  .modal-card h3 { margin: 0 0 6px; font-size: 17px; font-weight: 600; }
+  .modal-card p.sub { margin: 0 0 18px; font-size: 13px; color: var(--text-secondary, #6b7280); }
+  .modal-card label {
+    display: block; font-size: 12px; font-weight: 500;
+    color: var(--text-secondary, #6b7280); margin: 12px 0 6px;
+  }
+  .modal-card input[type="text"], .modal-card textarea {
+    width: 100%; padding: 9px 12px; border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px; font-size: 13px; box-sizing: border-box;
+    background: var(--surface, #fff); color: var(--text-primary, #111827);
+    font-family: inherit;
+  }
+  .modal-card textarea { min-height: 60px; resize: vertical; }
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
+  .modal-btn {
+    padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 500;
+    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
+    cursor: pointer;
+  }
+  .modal-btn.primary { background: var(--primary, #6366f1); color: #fff; border-color: var(--primary, #6366f1); }
+  .modal-btn.danger { background: #dc2626; color: #fff; border-color: #dc2626; }
+
+  .toast-stack {
+    position: fixed; bottom: 24px; right: 24px; z-index: 2000;
+    display: flex; flex-direction: column; gap: 8px; pointer-events: none;
+  }
+  .toast {
+    background: #111827; color: #fff; padding: 10px 16px;
+    border-radius: 8px; font-size: 13px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+    opacity: 0; transform: translateY(8px); transition: opacity 0.2s, transform 0.2s;
+    pointer-events: auto; max-width: 380px;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast.success { background: #047857; }
+  .toast.error { background: #b91c1c; }
+
+  /* Tabs inside detail panel */
+  .ax-tabs {
+    display: flex; gap: 0;
+    border-bottom: 1px solid var(--border, #e5e7eb);
+    background: var(--surface, #fff);
+    padding: 0 4px;
+  }
+  .ax-tab {
+    padding: 11px 18px;
+    background: transparent; border: 0; border-bottom: 2px solid transparent;
+    font-size: 13px; font-weight: 500;
+    color: var(--text-secondary, #6b7280);
+    cursor: pointer; transition: color 0.12s, border-color 0.12s;
+  }
+  .ax-tab:hover { color: var(--text-primary, #111827); }
+  .ax-tab.is-active {
+    color: var(--primary, #4338ca);
+    border-bottom-color: var(--primary, #6366f1);
+  }
+  .ax-pane { display: none; }
+  .ax-pane.is-active { display: block; }
+
+  /* Members table */
+  .members-table-wrap { padding: 0; }
+  .members-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .members-table thead th {
+    text-align: left; padding: 10px 16px;
+    background: var(--border-light, #f9fafb);
+    border-bottom: 1px solid var(--border, #e5e7eb);
+    font-weight: 600; color: var(--text-secondary, #6b7280);
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .members-table tbody td {
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+  }
+  .members-table tbody tr:last-child td { border-bottom: none; }
+  .members-table tbody tr:hover { background: var(--border-light, #fafafa); }
+  .source-badge {
+    display: inline-block; padding: 2px 7px; border-radius: 999px;
+    font-size: 10px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .source-admin { background: #fef3c7; color: #92400e; }
+  .source-google_sync { background: #dcfce7; color: #166534; }
+  .source-system_seed { background: #e0e7ff; color: #3730a3; }
+
+  /* Form for add-member */
+  .ax-form {
+    display: flex; gap: 8px; align-items: flex-end;
+    padding: 14px 16px;
+    border-top: 1px solid var(--border-light, #f3f4f6);
+    background: var(--border-light, #f9fafb);
+  }
+  .ax-field { display: flex; flex-direction: column; gap: 4px; flex: 1; }
+  .ax-field label {
+    font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.4px; color: var(--text-secondary, #6b7280); font-weight: 600;
+  }
+  .ax-field input {
+    padding: 7px 10px;
+    border: 1px solid var(--border, #e5e7eb); border-radius: 6px;
+    font-size: 13px; background: var(--surface, #fff);
+  }
+</style>
+
+<div class="ax-page">
+  <div class="ax-toolbar">
+    <div>
+      <h2 class="ax-title">Resource access</h2>
+      <p class="ax-sub">Pick a group on the left, check resources on the right to grant access.
+        Manage groups and members on <a href="/admin/groups">Groups</a>.</p>
+    </div>
+  </div>
+
+  <div class="ax-layout">
+    <!-- LEFT: Groups (read-only picker — CRUD lives on /admin/groups) -->
+    <div class="ax-card" id="groups-card">
+      <div class="ax-card-head">
+        <h3>User groups</h3>
+        <a class="ax-btn" href="/admin/groups" title="Manage groups">Manage →</a>
+      </div>
+      <ul class="group-list" id="group-list"></ul>
+      <div class="ax-empty" id="group-empty" style="display:none;">
+        No groups yet.<br>
+        Create one on <a href="/admin/groups">Groups</a>.
+      </div>
+    </div>
+
+    <!-- RIGHT: Group detail with tabs -->
+    <div class="ax-card" id="detail-card">
+      <div class="ax-card-head">
+        <h3 id="detail-title">Select a group</h3>
+        <span id="detail-sub" style="font-size:11px; color: var(--text-secondary, #6b7280);"></span>
+      </div>
+
+      <!-- Resources panel (no tab strip — this page is grants-only) -->
+      <section data-pane="resources" style="display:none;">
+        <div class="ax-hint" id="ax-hint" style="display:none;">
+          No resources have been registered yet. Add a marketplace on the
+          <a href="/admin/marketplaces">Marketplaces</a> page and run a sync.
+        </div>
+        <div class="ax-filter" id="resources-filter-wrap" style="display:none;">
+          <input id="resources-filter" type="search" placeholder="Filter by name, marketplace, category…" autocomplete="off">
+        </div>
+        <div id="resources-body"></div>
+      </section>
+
+      <div class="ax-empty" id="detail-empty">
+        Select a group on the left to assign resource grants.
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+
+<script>
+const OVERVIEW_API = "/api/admin/access-overview";
+const GROUPS_API = "/api/admin/groups";
+const GRANTS_API = "/api/admin/grants";
+
+function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+
+function toast(msg, kind = "") {
+  const el = document.createElement("div");
+  el.className = "toast " + kind;
+  el.textContent = msg;
+  document.getElementById("toast-stack").appendChild(el);
+  requestAnimationFrame(() => el.classList.add("show"));
+  setTimeout(() => { el.classList.remove("show"); setTimeout(() => el.remove(), 250); }, 3500);
+}
+
+function openModal(id) { document.getElementById(id).classList.add("is-open"); }
+function closeModal(id) { document.getElementById(id).classList.remove("is-open"); }
+document.querySelectorAll("[data-close-modal]").forEach(el =>
+  el.addEventListener("click", () => closeModal(el.dataset.closeModal)));
+document.querySelectorAll(".modal-backdrop").forEach(el => {
+  el.addEventListener("click", e => { if (e.target === el) el.classList.remove("is-open"); });
+});
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") document.querySelectorAll(".modal-backdrop.is-open").forEach(m => m.classList.remove("is-open"));
+});
+
+// State
+let state = {
+  groups: [],          // [{id, name, description, is_system, member_count, grant_count}]
+  resources: [],       // [{type_key, type_display, blocks: [{id, name, items: [{resource_id, name, ...}]}]}]
+  grants: [],          // [{id, group_id, resource_type, resource_id}]
+  activeGroupId: null,
+  filter: "",
+  editingGroupId: null,
+};
+
+async function loadOverview() {
+  try {
+    const r = await fetch(OVERVIEW_API, { credentials: "include" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const data = await r.json();
+    state.groups = data.groups;
+    state.resources = data.resources;
+    state.grants = data.grants;
+    if (state.activeGroupId && !state.groups.find(g => g.id === state.activeGroupId)) {
+      state.activeGroupId = null;
+    }
+    renderGroups();
+    renderDetail();
+  } catch (e) {
+    toast("Failed to load: " + e.message, "error");
+  }
+}
+
+async function selectGroup(gid) {
+  state.activeGroupId = gid;
+  // Update URL so the group selection is shareable / deep-linkable.
+  if (gid) {
+    const u = new URL(window.location.href);
+    u.searchParams.set("group", gid);
+    history.replaceState(null, "", u.toString());
+  }
+  renderGroups();
+  renderDetail();
+}
+
+function renderDetail() {
+  const title = document.getElementById("detail-title");
+  const sub = document.getElementById("detail-sub");
+  const empty = document.getElementById("detail-empty");
+  const resourcesPane = document.querySelector('[data-pane="resources"]');
+
+  if (!state.activeGroupId) {
+    title.textContent = "Select a group";
+    sub.textContent = "";
+    resourcesPane.style.display = "none";
+    empty.style.display = "block";
+    return;
+  }
+  empty.style.display = "none";
+  resourcesPane.style.display = "block";
+
+  const group = state.groups.find(g => g.id === state.activeGroupId);
+  title.textContent = group ? group.name : "Group";
+  const grantedCount = state.grants.filter(g => g.group_id === state.activeGroupId).length;
+  sub.textContent = `${grantedCount} resource${grantedCount === 1 ? "" : "s"} granted`;
+
+  renderResources();
+}
+
+function renderGroups() {
+  const list = document.getElementById("group-list");
+  const empty = document.getElementById("group-empty");
+  if (state.groups.length === 0) {
+    list.innerHTML = "";
+    empty.style.display = "block";
+    return;
+  }
+  empty.style.display = "none";
+  list.innerHTML = "";
+  for (const g of state.groups) {
+    const li = document.createElement("li");
+    li.className = "group-item"
+      + (state.activeGroupId === g.id ? " is-active" : "")
+      + (g.is_system ? " is-system" : "");
+    li.dataset.id = g.id;
+    const sysTag = g.is_system ? '<span class="system-tag">system</span>' : '';
+    li.innerHTML = `
+      <span class="group-dot"></span>
+      <div class="group-meta">
+        <span class="group-name">${esc(g.name)}${sysTag}</span>
+        ${g.description ? `<span class="group-desc">${esc(g.description)}</span>` : ""}
+      </div>
+      <span class="group-count" title="Resources granted to this group">${g.grant_count || 0}</span>
+    `;
+    li.addEventListener("click", () => selectGroup(g.id));
+    list.appendChild(li);
+  }
+}
+
+function isGranted(group_id, resource_type, resource_id) {
+  return state.grants.some(g =>
+    g.group_id === group_id &&
+    g.resource_type === resource_type &&
+    g.resource_id === resource_id
+  );
+}
+
+function findGrant(group_id, resource_type, resource_id) {
+  return state.grants.find(g =>
+    g.group_id === group_id &&
+    g.resource_type === resource_type &&
+    g.resource_id === resource_id
+  );
+}
+
+function renderResources() {
+  const body = document.getElementById("resources-body");
+  const hint = document.getElementById("ax-hint");
+  const filterWrap = document.getElementById("resources-filter-wrap");
+
+  if (!state.activeGroupId) {
+    body.innerHTML = "";
+    hint.style.display = "none";
+    filterWrap.style.display = "none";
+    return;
+  }
+
+  const totalItems = state.resources.reduce(
+    (acc, rt) => acc + rt.blocks.reduce((a, b) => a + b.items.length, 0), 0,
+  );
+  if (totalItems === 0) {
+    hint.style.display = "block";
+    filterWrap.style.display = "none";
+    body.innerHTML = "";
+    return;
+  }
+  hint.style.display = "none";
+  filterWrap.style.display = "block";
+
+  const ft = state.filter.trim().toLowerCase();
+  body.innerHTML = "";
+
+  for (const rt of state.resources) {
+    const section = document.createElement("div");
+    section.className = "rt-section";
+    section.innerHTML = `<div class="rt-section-head">${esc(rt.type_display)}</div>`;
+
+    let sectionItemCount = 0;
+
+    for (const block of rt.blocks) {
+      const items = block.items.filter(it => {
+        if (!ft) return true;
+        return (it.name || "").toLowerCase().includes(ft)
+            || (block.name || "").toLowerCase().includes(ft)
+            || (it.category || "").toLowerCase().includes(ft)
+            || (it.description || "").toLowerCase().includes(ft);
+      });
+      if (ft && items.length === 0) continue;
+      sectionItemCount += items.length;
+
+      const grantedHere = items.filter(it =>
+        isGranted(state.activeGroupId, rt.type_key, it.resource_id)).length;
+
+      const blockEl = document.createElement("div");
+      blockEl.className = "mp-block";
+      blockEl.innerHTML = `
+        <div class="mp-block-head" data-toggle="collapse">
+          <svg class="chev" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+            <path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <h4>${esc(block.name)}</h4>
+          <span class="count">${grantedHere}/${items.length}</span>
+          <span class="spacer"></span>
+          <button class="bulk-btn" data-bulk="all">Grant all</button>
+          <button class="bulk-btn" data-bulk="none">Revoke all</button>
+        </div>
+        <div class="item-grid"></div>
+      `;
+      const grid = blockEl.querySelector(".item-grid");
+      if (items.length === 0) {
+        grid.innerHTML = `<div class="ax-empty" style="grid-column: 1/-1;">No items.</div>`;
+      } else {
+        for (const it of items) {
+          const granted = isGranted(state.activeGroupId, rt.type_key, it.resource_id);
+          const cell = document.createElement("label");
+          cell.className = "item-cell" + (granted ? " is-granted" : "");
+          cell.innerHTML = `
+            <input type="checkbox" ${granted ? "checked" : ""}>
+            <div class="ic-text">
+              <div>
+                <span class="ic-name">${esc(it.name)}</span>
+                ${it.source_type ? `<span class="ic-src">${esc(it.source_type)}</span>` : ""}
+              </div>
+              ${(it.version || it.category) ? `<div class="ic-meta">
+                ${it.version ? `v${esc(it.version)}` : ""}${it.version && it.category ? " · " : ""}${it.category ? esc(it.category) : ""}
+              </div>` : ""}
+              ${it.description ? `<div class="ic-desc">${esc(it.description)}</div>` : ""}
+            </div>
+          `;
+          const cb = cell.querySelector("input");
+          cb.addEventListener("change", () => toggleGrant(cb, cell, rt.type_key, it.resource_id));
+          grid.appendChild(cell);
+        }
+      }
+      blockEl.querySelector('[data-toggle="collapse"]').addEventListener("click", e => {
+        if (e.target.closest("[data-bulk]")) return;
+        blockEl.classList.toggle("is-collapsed");
+      });
+      blockEl.querySelector('[data-bulk="all"]').addEventListener("click", () =>
+        bulkSet(rt.type_key, items, true));
+      blockEl.querySelector('[data-bulk="none"]').addEventListener("click", () =>
+        bulkSet(rt.type_key, items, false));
+      section.appendChild(blockEl);
+    }
+
+    if (sectionItemCount > 0 || !ft) {
+      body.appendChild(section);
+    }
+  }
+}
+
+async function toggleGrant(checkbox, cell, resource_type, resource_id) {
+  const grant = checkbox.checked;
+  checkbox.disabled = true;
+  try {
+    if (grant) {
+      const r = await fetch(GRANTS_API, {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          group_id: state.activeGroupId,
+          resource_type, resource_id,
+        }),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        toast("Grant failed: " + (err.detail || r.status), "error");
+        checkbox.checked = false;
+        return;
+      }
+      const created = await r.json();
+      state.grants.push({
+        id: created.id, group_id: state.activeGroupId,
+        resource_type, resource_id,
+      });
+      cell.classList.add("is-granted");
+    } else {
+      const existing = findGrant(state.activeGroupId, resource_type, resource_id);
+      if (!existing) { return; }
+      const r = await fetch(`${GRANTS_API}/${encodeURIComponent(existing.id)}`, {
+        method: "DELETE", credentials: "include",
+      });
+      if (!r.ok) {
+        toast("Revoke failed: " + r.status, "error");
+        checkbox.checked = true;
+        return;
+      }
+      state.grants = state.grants.filter(g => g.id !== existing.id);
+      cell.classList.remove("is-granted");
+    }
+    refreshCounts();
+  } catch (e) {
+    toast("Network error: " + e.message, "error");
+    checkbox.checked = !grant;
+  } finally {
+    checkbox.disabled = false;
+  }
+}
+
+async function bulkSet(resource_type, items, grant) {
+  if (!state.activeGroupId) return;
+  for (const it of items) {
+    const has = isGranted(state.activeGroupId, resource_type, it.resource_id);
+    if (grant === has) continue;
+    try {
+      if (grant) {
+        const r = await fetch(GRANTS_API, {
+          method: "POST", credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            group_id: state.activeGroupId,
+            resource_type, resource_id: it.resource_id,
+          }),
+        });
+        if (!r.ok) continue;
+        const created = await r.json();
+        state.grants.push({
+          id: created.id, group_id: state.activeGroupId,
+          resource_type, resource_id: it.resource_id,
+        });
+      } else {
+        const existing = findGrant(state.activeGroupId, resource_type, it.resource_id);
+        if (!existing) continue;
+        const r = await fetch(`${GRANTS_API}/${encodeURIComponent(existing.id)}`, {
+          method: "DELETE", credentials: "include",
+        });
+        if (!r.ok) continue;
+        state.grants = state.grants.filter(g => g.id !== existing.id);
+      }
+    } catch (_e) { /* ignore */ }
+  }
+  toast(`${grant ? "Grant" : "Revoke"} all applied`, "success");
+  renderDetail();
+  refreshCounts();
+}
+
+function refreshCounts() {
+  // Group list badges + detail sub-header.
+  const grantedCount = state.grants.filter(g => g.group_id === state.activeGroupId).length;
+  document.getElementById("detail-sub").textContent =
+    `${grantedCount} resource${grantedCount === 1 ? "" : "s"} granted`;
+  document.querySelectorAll(".group-item").forEach(li => {
+    const gid = li.dataset.id;
+    const badge = li.querySelector(".group-count");
+    if (badge) badge.textContent = state.grants.filter(g => g.group_id === gid).length;
+  });
+  // Per-block counts inside the rendered tree
+  document.querySelectorAll(".rt-section").forEach(section => {
+    const typeDisplay = section.querySelector(".rt-section-head").textContent;
+    const rt = state.resources.find(r => r.type_display === typeDisplay);
+    if (!rt) return;
+    section.querySelectorAll(".mp-block").forEach(blockEl => {
+      const blockName = blockEl.querySelector(".mp-block-head h4").textContent;
+      const block = rt.blocks.find(b => b.name === blockName);
+      if (!block) return;
+      const visibleItems = Array.from(blockEl.querySelectorAll(".item-cell"));
+      const grantedHere = visibleItems.filter(c => c.classList.contains("is-granted")).length;
+      blockEl.querySelector(".mp-block-head .count").textContent =
+        `${grantedHere}/${visibleItems.length}`;
+    });
+  });
+}
+
+// Filter (resources tab)
+document.getElementById("resources-filter").addEventListener("input", e => {
+  state.filter = e.target.value;
+  renderResources();
+});
+
+// Pre-select a group via ?group=<id> deep-link from /admin/groups/{id}.
+async function bootstrap() {
+  await loadOverview();
+  const params = new URLSearchParams(window.location.search);
+  const target = params.get("group");
+  if (target && state.groups.some(g => g.id === target)) {
+    selectGroup(target);
+  }
+}
+bootstrap();
+</script>
+{% endblock %}

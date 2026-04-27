@@ -5,7 +5,7 @@ from typing import Dict
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.auth.dependencies import require_admin
+from app.auth.access import require_admin
 from src.db import get_analytics_db_readonly
 from src.remote_query import RemoteQueryEngine, RemoteQueryError, load_config
 
