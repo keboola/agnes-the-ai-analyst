@@ -13,6 +13,65 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 <!-- Add bullets here. Group: Added / Changed / Fixed / Removed / Internal.
      Mark breaking changes with **BREAKING** at the start of the bullet. -->
 
+### Changed
+
+- **BREAKING (security)**: The entire Script API is now **admin-only** (issue #44).
+  `GET /api/scripts`, `POST /api/scripts/deploy`, `POST /api/scripts/run`, and
+  `POST /api/scripts/{id}/run` all require the admin role; previously the list
+  endpoint was open to any authenticated user and deploy/run were analyst-accessible.
+  Two reasons: (1) the AST + string-blocklist sandbox in `_execute_script` is
+  defense-in-depth and known to be bypassable through introspection chains
+  (`__class__.__base__.__subclasses__()`, `__globals__['__builtins__']`,
+  `__mro__` traversal — the dunder pattern list was tightened in this PR but
+  the policy is "the role gate is the trust boundary, not the blocklist");
+  (2) gating only `/run` left a planted-script attack open — an analyst could
+  deploy a malicious script and wait for an admin to run it. Operators who
+  need scripted workflows for non-admin users should run them on the user's
+  behalf or expose the relevant data via the read-only `/api/data` surface
+  instead.
+- **BREAKING (ops)**: Generic ops scripts moved out of the customer-named
+  `scripts/grpn/` directory into `scripts/ops/` as part of the OSS
+  vendor-neutralization (issue #88):
+  - `scripts/grpn/agnes-tls-rotate.sh` → `scripts/ops/agnes-tls-rotate.sh`
+  - `scripts/grpn/agnes-auto-upgrade.sh` → `scripts/ops/agnes-auto-upgrade.sh`
+
+  Downstream consumer infra repos that copy these scripts onto VMs (e.g. via
+  their own `startup.sh`) must update the source path. The OSS-shipped
+  `infra/modules/customer-instance/` Terraform module is unaffected — it
+  embeds equivalent logic inline via heredoc and does not source-by-path
+  from `scripts/`. Script behaviour and env vars are unchanged. Cross-refs
+  in `README.md`, `CLAUDE.md`, `docs/DEPLOYMENT.md`, `Caddyfile`, and
+  `docker-compose.yml` were updated.
+- **OSS neutralization (wave 2 — code, tests, planning docs)**. Customer
+  identifiers replaced with placeholders across the codebase to ready the
+  repo for public release (issue #88):
+
+  - **Code docstrings**: `connectors/openmetadata/{client,transformer,enricher}.py`,
+    `src/catalog_export.py`, `scripts/duckdb_manager.py` — `prj-grp-…` →
+    `my-bq-project` / `prj-example-1234`, `AIAgent.FoundryAI` →
+    `AIAgent.MyAgent` (in docstrings) / `AIAgent.Example` (in test fixtures),
+    `FoundryAIDataModel` → `AnalyticsDataModel`.
+  - **Test fixtures** in `tests/test_openmetadata_enricher.py`,
+    `tests/test_duckdb_manager.py`, `tests/test_catalog_export.py`,
+    `tests/test_openmetadata_transformer.py` — same set of replacements,
+    behaviour-preserving (157 tests still green).
+  - **Terraform module** `infra/modules/customer-instance/variables.tf`:
+    `customer_name` description rewritten in English, examples switched
+    from `keboola, grpn` to `acme, example`.
+  - **Workflow** `.github/workflows/keboola-deploy.yml`: comment "Groupon-side
+    dev VMs" → generic "per-developer dev VMs".
+  - **Caddyfile**: TLS-rotation cross-ref updated to `scripts/ops/…` and
+    Keboola-specific aside removed.
+  - **Auth docs** `docs/auth-groups.md` and the OAuth probe in
+    `scripts/debug/probe_google_groups.py`: GCP project name `kids-ai-data-analysis`
+    replaced with placeholder `acme-internal-prod`.
+  - **Planning docs** under `docs/superpowers/plans/` and `…/specs/`: the
+    five hackathon-era documents (`2026-04-21-deployment-log.md`,
+    `…-multi-customer-deployment.md`, `…-issues-14-and-10.md`,
+    `…-hackathon-dry-run.md`, the spec) had `34.77.94.14` / `34.77.102.61`
+    replaced with `<dev-vm-ip>` / `<prod-vm-ip>`, `Groupon`/`GRPN`/`grpn`
+    with `Acme`/`another-customer`, and `prj-grp-…` with `prj-example-…`.
+
 ### Fixed
 
 - **BREAKING (security CRITICAL)**: Jira webhook handler is now
@@ -46,52 +105,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   clips length to 64 chars, and routes the final filename through
   `safe_join_under`.
 
-### Changed
-
-- **BREAKING (ops)**: Generic ops scripts moved out of the customer-named
-  `scripts/grpn/` directory into `scripts/ops/` as part of the OSS
-  vendor-neutralization (issue #88):
-  - `scripts/grpn/agnes-tls-rotate.sh` → `scripts/ops/agnes-tls-rotate.sh`
-  - `scripts/grpn/agnes-auto-upgrade.sh` → `scripts/ops/agnes-auto-upgrade.sh`
-
-  Downstream consumer infra repos that copy these scripts onto VMs (e.g. via
-  their own `startup.sh`) must update the source path. The OSS-shipped
-  `infra/modules/customer-instance/` Terraform module is unaffected — it
-  embeds equivalent logic inline via heredoc and does not source-by-path
-  from `scripts/`. Script behaviour and env vars are unchanged. Cross-refs
-  in `README.md`, `CLAUDE.md`, `docs/DEPLOYMENT.md`, `Caddyfile`, and
-  `docker-compose.yml` were updated.
-
-- **OSS neutralization (wave 2 — code, tests, planning docs)**. Customer
-  identifiers replaced with placeholders across the codebase to ready the
-  repo for public release (issue #88):
-
-  - **Code docstrings**: `connectors/openmetadata/{client,transformer,enricher}.py`,
-    `src/catalog_export.py`, `scripts/duckdb_manager.py` — `prj-grp-…` →
-    `my-bq-project` / `prj-example-1234`, `AIAgent.FoundryAI` →
-    `AIAgent.MyAgent` (in docstrings) / `AIAgent.Example` (in test fixtures),
-    `FoundryAIDataModel` → `AnalyticsDataModel`.
-  - **Test fixtures** in `tests/test_openmetadata_enricher.py`,
-    `tests/test_duckdb_manager.py`, `tests/test_catalog_export.py`,
-    `tests/test_openmetadata_transformer.py` — same set of replacements,
-    behaviour-preserving (157 tests still green).
-  - **Terraform module** `infra/modules/customer-instance/variables.tf`:
-    `customer_name` description rewritten in English, examples switched
-    from `keboola, grpn` to `acme, example`.
-  - **Workflow** `.github/workflows/keboola-deploy.yml`: comment "Groupon-side
-    dev VMs" → generic "per-developer dev VMs".
-  - **Caddyfile**: TLS-rotation cross-ref updated to `scripts/ops/…` and
-    Keboola-specific aside removed.
-  - **Auth docs** `docs/auth-groups.md` and the OAuth probe in
-    `scripts/debug/probe_google_groups.py`: GCP project name `kids-ai-data-analysis`
-    replaced with placeholder `acme-internal-prod`.
-  - **Planning docs** under `docs/superpowers/plans/` and `…/specs/`: the
-    five hackathon-era documents (`2026-04-21-deployment-log.md`,
-    `…-multi-customer-deployment.md`, `…-issues-14-and-10.md`,
-    `…-hackathon-dry-run.md`, the spec) had `34.77.94.14` / `34.77.102.61`
-    replaced with `<dev-vm-ip>` / `<prod-vm-ip>`, `Groupon`/`GRPN`/`grpn`
-    with `Acme`/`another-customer`, and `prj-grp-…` with `prj-example-…`.
-
 ### Removed
 
 - Customer-specific manual-deploy helper `scripts/grpn/Makefile` and its
@@ -104,6 +117,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   the supported pattern now; operators who need an equivalent should use
   `gcloud compute ssh <vm> --command "sed -i …/.env && sudo /usr/local/bin/agnes-auto-upgrade.sh"`
   with their own VM details.
+
+### Internal
+
+- Sandbox blocklist now flags introspection-chain dunders explicitly:
+  `__subclasses__`, `__globals__`, `__class__`, `__base__`, `__bases__`,
+  `__mro__`, `__dict__`, `__code__`, `__builtins__`. `__init__` and
+  `__getattribute__` are intentionally **not** in the list — substring match
+  would flag every legitimate `def __init__(self):`. The chain breaks at
+  the next link anyway.
+- New regression test `test_run_pwn_payload_blocked` parametrized over the
+  exact PoC from issue #44 plus two equivalent variants (lambda+`__globals__`,
+  `__mro__` traversal). If the dunder list is silently weakened in a future
+  refactor, the test fails. New `test_*_requires_admin` tests parametrized
+  over all three non-admin core roles (analyst, viewer, km_admin).
+- `tests/conftest.py::seeded_app` extended with `viewer_token` and
+  `km_admin_token` so role-gating tests cover all four core roles.
 
 ## [0.11.5] — 2026-04-27
 
