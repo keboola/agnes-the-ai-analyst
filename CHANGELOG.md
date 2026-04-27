@@ -46,6 +46,31 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   clips length to 64 chars, and routes the final filename through
   `safe_join_under`.
 
+### Changed
+
+- **BREAKING (ops)**: Generic ops scripts moved out of the customer-named
+  `scripts/grpn/` directory into `scripts/ops/` as part of the OSS
+  vendor-neutralization (issue #88):
+  - `scripts/grpn/agnes-tls-rotate.sh` → `scripts/ops/agnes-tls-rotate.sh`
+  - `scripts/grpn/agnes-auto-upgrade.sh` → `scripts/ops/agnes-auto-upgrade.sh`
+
+  Operators with consumer infra repos that install these as systemd timers
+  (e.g. via `startup.sh`) must update the source path. Script behaviour and
+  env vars are unchanged. Cross-refs in `README.md`, `CLAUDE.md`,
+  `docs/DEPLOYMENT.md`, and `docker-compose.yml` were updated in this PR.
+
+### Removed
+
+- Customer-specific manual-deploy helper `scripts/grpn/Makefile` and its
+  README, plus the corresponding hackathon deploy log under
+  `docs/superpowers/plans/2026-04-22-grpn-deploy-learnings.md`. These
+  documented one operator's hand-rolled stopgap for an org-policy-blocked
+  Terraform flow and do not belong in vendor-neutral OSS. The upstream
+  pattern they implement (single-VM manual deploy when the TF module
+  cannot run) is generic enough that a future contributor can re-introduce
+  a fully placeholder-based version under `scripts/manual-vm-deploy/` if
+  there is demand.
+
 ## [0.11.5] — 2026-04-27
 
 Follow-up release for PR #73: addresses four rounds of Devin AI review on the role-management-complete branch. No new public-API surface; the user-visible payoff is that v8→v9-migrated installations now work end-to-end (login flows, user list, admin nav, privilege revocation), and `make local-dev` startup is finally quiet.

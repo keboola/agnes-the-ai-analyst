@@ -71,7 +71,7 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compos
     --profile tls up -d
 ```
 
-Once running, the FastAPI app is available at `http://localhost:8000` (or `https://$DOMAIN` in TLS mode). See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for cert provisioning + auto-rotation via `scripts/grpn/agnes-tls-rotate.sh`. Trigger a manual sync:
+Once running, the FastAPI app is available at `http://localhost:8000` (or `https://$DOMAIN` in TLS mode). See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for cert provisioning + auto-rotation via `scripts/ops/agnes-tls-rotate.sh`. Trigger a manual sync:
 
 ```bash
 curl -X POST http://localhost:8000/api/sync/trigger
