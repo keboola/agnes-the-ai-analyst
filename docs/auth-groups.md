@@ -4,7 +4,7 @@ How Agnes pulls a user's group memberships at Google sign-in and where they end 
 
 ## Google Cloud setup (per OAuth client / project)
 
-In the GCP project hosting the OAuth client (for Keboola dev: `kids-ai-data-analysis`):
+In the GCP project hosting the OAuth client (e.g. `acme-internal-prod`):
 
 1. **Enable Cloud Identity API** — `APIs & Services → Library → "Cloud Identity API" → Enable`.
 2. **OAuth consent screen → Data Access → Add or Remove Scopes** — manually add:

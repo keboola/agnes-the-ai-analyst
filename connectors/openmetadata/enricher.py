@@ -176,8 +176,8 @@ class CatalogEnricher:
         Derive OpenMetadata FQN from table config.
 
         Auto-derivation: bigquery.{table_config.id}
-        Example: table_config.id = "prj-grp-dataview-prod-1ff9.marketing.roi_datamart_v2"
-                 -> FQN = "bigquery.prj-grp-dataview-prod-1ff9.marketing.roi_datamart_v2"
+        Example: table_config.id = "my-bq-project.marketing.roi_datamart_v2"
+                 -> FQN = "bigquery.my-bq-project.marketing.roi_datamart_v2"
 
         Args:
             table_config: Configuration with id and optional catalog_fqn

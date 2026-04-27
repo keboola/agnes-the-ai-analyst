@@ -13,7 +13,7 @@ Zavést *production-grade* nasazení Agnes, které:
 3. Je **anonymizované** — jeden zákazník nevidí existenci ani identitu ostatních.
 4. Má **auto-deploy s rozumnými gates** — feature branch push → dev VM aktualizace do minut; merge do main → prod s review gate.
 5. Podporuje **branch-aware dev environments** — víc vývojářů paralelně, každý na své branchi, bez interference.
-6. **Škáluje O(1) na zákazníka** — přidání GRPN vedle Keboola znamená jen klonování šablony, ne změnu upstream.
+6. **Škáluje O(1) na zákazníka** — přidání another-customer vedle Keboola znamená jen klonování šablony, ne změnu upstream.
 
 ## 2. Model — Pure Self-Deploy
 
@@ -26,7 +26,7 @@ Zavést *production-grade* nasazení Agnes, které:
 
 Keboola jako upstream **nemá žádný přístup k zákaznickým GCP projektům**. Zákazník zodpovídá za svoje nasazení.
 
-Keboola interní produkční Agnes instance je **speciální případ zákazníka** — Keboola IT vlastní `kids-ai-data-analysis` GCP projekt a spravuje tam svou Agnes stejně jako to bude dělat GRPN ve svém GCP.
+Keboola interní produkční Agnes instance je **speciální případ zákazníka** — Keboola IT vlastní `internal-prod` GCP projekt a spravuje tam svou Agnes stejně jako to bude dělat another-customer ve svém GCP.
 
 ### 2.2 Budoucí rozšíření (out of scope pro tuto vlnu)
 
@@ -99,7 +99,7 @@ Přesně ta samá struktura jako template, jen s konkrétními hodnotami v `terr
 # keboola/agnes-infra-keboola/terraform/terraform.tfvars
 # (gitignored, nebo lokálně v Secret Manageru — viz §6)
 
-gcp_project_id  = "kids-ai-data-analysis"
+gcp_project_id  = "internal-prod"
 region          = "europe-west1"
 zone            = "europe-west1-b"
 
@@ -407,7 +407,7 @@ Všechny designové otázky, které vznikly během brainstormingu, jsou vyřeše
 | Prod upgrade režim | Per-instance volba auto/pinned, default auto |
 | TLS | Caddy default, flex na gcp-lb/cloudflare |
 | DNS | Zákazník si řeší sám, default jen IP |
-| GCP projekt pro Keboola | `kids-ai-data-analysis` zůstává |
+| GCP projekt pro Keboola | `internal-prod` zůstává |
 | Dev VM model | Seznam `dev_instances` v tfvars, per-položka image_tag |
 | `ZdenekSrotyr/tmp_oss` | Smazat po Fázi 1 |
 

@@ -16,11 +16,11 @@ variable "zone" {
 }
 
 variable "customer_name" {
-  description = "Krátký identifikátor zákazníka (např. keboola, grpn). Použije se v prefixu resourců."
+  description = "Short customer identifier (e.g. acme, example). Used as a prefix for created resources."
   type        = string
   validation {
     condition     = can(regex("^[a-z][a-z0-9-]{1,20}$", var.customer_name))
-    error_message = "customer_name musí být lowercase, začínat písmenem, 2-21 znaků."
+    error_message = "customer_name must be lowercase, start with a letter, 2-21 chars."
   }
 }
 
