@@ -128,14 +128,20 @@ async def list_knowledge(
     # Their own personal contributions are visible via /my-contributions, not here.
     effective_exclude_personal = True if not _is_privileged_viewer(user) else exclude_personal
     effective_groups = _effective_groups(user)
+    statuses = [status_filter] if status_filter else None
     if search:
         items = repo.search(
             search,
             exclude_personal=effective_exclude_personal,
             user_groups=effective_groups,
+            statuses=statuses,
+            category=category,
+            domain=domain,
+            source_type=source_type,
+            limit=per_page,
+            offset=offset,
         )
     else:
-        statuses = [status_filter] if status_filter else None
         items = repo.list_items(
             statuses=statuses,
             category=category,
@@ -612,7 +618,11 @@ async def get_bundle(
         offset=0,
     )
 
-    # Rank approved by confidence × recency (days since updated, max 365).
+    # Rank approved by confidence × recency (days since updated_at, max 365).
+    # updated_at is intentional: a recently admin-edited item reflects a human
+    # who just reviewed and corrected it, making it more trustworthy than an
+    # older untouched item. This differs from confidence.py which decays from
+    # created_at — the two scores serve different purposes (credibility vs freshness).
     now = datetime.now(timezone.utc)
 
     def _rank(item: dict) -> float:

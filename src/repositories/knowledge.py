@@ -142,11 +142,30 @@ class KnowledgeRepository:
         query: str,
         exclude_personal: bool = False,
         user_groups: Optional[List[str]] = None,
+        statuses: Optional[List[str]] = None,
+        category: Optional[str] = None,
+        domain: Optional[str] = None,
+        source_type: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
     ) -> List[Dict[str, Any]]:
         pattern = f"%{query}%"
         sql = """SELECT * FROM knowledge_items
             WHERE (title ILIKE ? OR content ILIKE ?)"""
         params: List[Any] = [pattern, pattern]
+        if statuses:
+            placeholders = ", ".join("?" for _ in statuses)
+            sql += f" AND status IN ({placeholders})"
+            params.extend(statuses)
+        if category:
+            sql += " AND category = ?"
+            params.append(category)
+        if domain:
+            sql += " AND domain = ?"
+            params.append(domain)
+        if source_type:
+            sql += " AND source_type = ?"
+            params.append(source_type)
         if exclude_personal:
             sql += " AND (is_personal = FALSE OR is_personal IS NULL)"
         if user_groups is not None:
@@ -156,7 +175,8 @@ class KnowledgeRepository:
                 params.extend(user_groups)
             else:
                 sql += " AND (audience IS NULL OR audience = 'all')"
-        sql += " ORDER BY updated_at DESC"
+        sql += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
         results = self.conn.execute(sql, params).fetchall()
         return self._rows_to_dicts(results)
 

@@ -120,6 +120,44 @@ class TestMemoryList:
         titles = [item["title"] for item in data["items"]]
         assert any("SearchTarget" in t for t in titles)
 
+    def test_search_respects_domain_filter(self, seeded_app):
+        """search + domain must only return items in that domain."""
+        from src.db import get_system_db
+        from src.repositories.knowledge import KnowledgeRepository
+
+        conn = get_system_db()
+        repo = KnowledgeRepository(conn)
+        repo.create(id="srch_fin", title="Finance SearchKeyword", content="x", category="data_analysis", domain="finance")
+        repo.create(id="srch_eng", title="Engineering SearchKeyword", content="x", category="data_analysis", domain="engineering")
+        conn.close()
+
+        resp = seeded_app["client"].get(
+            "/api/memory?search=SearchKeyword&domain=finance",
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert resp.status_code == 200
+        ids = {i["id"] for i in resp.json()["items"]}
+        assert "srch_fin" in ids
+        assert "srch_eng" not in ids
+
+    def test_search_respects_pagination(self, seeded_app):
+        """search + per_page must not return more items than requested."""
+        from src.db import get_system_db
+        from src.repositories.knowledge import KnowledgeRepository
+
+        conn = get_system_db()
+        repo = KnowledgeRepository(conn)
+        for i in range(5):
+            repo.create(id=f"pgn_{i}", title=f"PaginateSearch item {i}", content="x", category="data_analysis")
+        conn.close()
+
+        resp = seeded_app["client"].get(
+            "/api/memory?search=PaginateSearch&per_page=2",
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert resp.status_code == 200
+        assert len(resp.json()["items"]) <= 2
+
 
 class TestMemoryStats:
     def test_get_stats(self, seeded_app):

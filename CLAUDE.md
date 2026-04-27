@@ -238,7 +238,7 @@ Module sets `lifecycle { ignore_changes = [metadata_startup_script] }` on `googl
 ## Key Implementation Details
 
 ### DuckDB Schema (src/db.py)
-- Schema v12 with auto-migration v1→…→v12 (v5 adds `users.active`, v6 adds `personal_access_tokens`, v7 adds `personal_access_tokens.last_used_ip`, v8 adds `internal_roles` + `group_mappings`, v9 adds `user_role_grants` + `internal_roles.implies/is_core` and seeds `core.*` hierarchy, v10 adds `knowledge_items` context-engineering columns incl. `audience` + `knowledge_contradictions` + `session_extraction_state`, v11 adds `knowledge_items.is_personal` + `verification_evidence`, v12 adds `knowledge_items.sensitivity` default backfill)
+- Schema v12 with auto-migration v1→…→v12 (v5 adds `users.active`, v6 adds `personal_access_tokens`, v7 adds `personal_access_tokens.last_used_ip`, v8 adds `internal_roles` + `group_mappings`, v9 adds `user_role_grants` + `internal_roles.implies/is_core` and seeds `core.*` hierarchy, v10 adds `knowledge_items` context-engineering columns incl. `audience`, `is_personal`, `sensitivity` + `knowledge_contradictions` + `session_extraction_state`, v11 adds `verification_evidence`, v12 adds `users.groups`)
 - `table_registry`: id, name, source_type, bucket, source_table, query_mode, sync_schedule, etc.
 - `sync_state`, `sync_history`: track extraction progress
 - `users`, `dataset_permissions`, `audit_log`: auth + RBAC
