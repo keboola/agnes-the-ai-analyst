@@ -116,17 +116,19 @@ class TestSyncApiPartialFailureHandling:
             ],
         )
 
-        # Stub system DB + data-source-type inside the sync module so we
-        # don't depend on instance.yaml or DuckDB state at test time.
-        # sync.py does `from src.db import get_system_db` and
-        # `from app.instance_config import get_data_source_type` at
-        # module top-level, so the names resolve via sync_mod.
+        # Stub system DB + data-source-type. sync.py does
+        # `from src.db import get_system_db` and
+        # `from app.instance_config import get_data_source_type`
+        # **inside** _run_sync (not module top-level), so we must patch
+        # on the SOURCE modules — patching sync_mod is silently
+        # ineffective because the local imports re-bind the names.
         fake_conn = MagicMock()
         fake_conn.close = MagicMock()
-        monkeypatch.setattr(sync_mod, "get_system_db", lambda: fake_conn,
-                            raising=False)
-        monkeypatch.setattr(sync_mod, "get_data_source_type", lambda: "keboola",
-                            raising=False)
+        from src import db as db_mod
+        from app import instance_config as ic_mod
+        monkeypatch.setattr(db_mod, "get_system_db", lambda: fake_conn)
+        monkeypatch.setattr(ic_mod, "get_data_source_type", lambda: "keboola")
+        monkeypatch.setattr(ic_mod, "get_value", lambda *a, **kw: "")
 
         sync_mod._run_sync()
         return capsys.readouterr().err
