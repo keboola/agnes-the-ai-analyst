@@ -1222,22 +1222,34 @@ _V3_TO_V4_MIGRATIONS = [
 def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
     """Create tables if they don't exist. Apply migrations if schema version changed.
 
-    The first action — running ``_SYSTEM_SCHEMA`` unconditionally — is the
-    self-heal pass for split-brain DBs. Scenario: a contributor's DB landed
-    at schema_version=N from a partial migration (crash mid-DDL, parallel
-    WIP branch with a different table set, etc.), but the on-disk file is
-    missing tables this binary expects. Without this pass, the migration
-    block below skips because ``current >= SCHEMA_VERSION`` and every
-    runtime query against the missing table crashes.
+    Self-heal pass for split-brain DBs runs only when ``current >=
+    SCHEMA_VERSION``. Scenario: a contributor's DB landed at
+    ``schema_version=N`` from a partial migration (crash mid-DDL,
+    parallel WIP branch with a different table set, etc.), but the
+    on-disk file is missing tables this binary expects. Without this
+    pass, the migration block below skips because we don't downgrade,
+    and every runtime query against the missing table crashes.
 
     Because ``_SYSTEM_SCHEMA`` is all ``CREATE TABLE IF NOT EXISTS``,
-    running it unconditionally is idempotent: existing tables stay
-    untouched (columns + data preserved), missing tables get created.
-    Cost: dozens of no-op DDLs per process start.
-    """
-    conn.execute(_SYSTEM_SCHEMA)
+    running it is idempotent: existing tables stay untouched (columns +
+    data preserved), missing tables get created. Cost: dozens of no-op
+    DDLs per process start.
 
+    The self-heal explicitly does NOT run on the ``current <
+    SCHEMA_VERSION`` path so the pre-migration snapshot taken inside
+    that branch captures a true point-in-time state of the on-disk DB
+    *before* any DDL runs — operators reading the snapshot for rollback
+    debugging see exactly the tables the old schema had, not the
+    binary's full table set with extras tacked on.
+    """
     current = get_schema_version(conn)
+    if current >= SCHEMA_VERSION:
+        # Split-brain or same-version safety net: heal any tables this
+        # binary expects that aren't on disk. Migration block skipped
+        # because we don't downgrade — the version row is left at
+        # ``current`` so a later binary that understands ``current``
+        # picks up where the split-brain left off.
+        conn.execute(_SYSTEM_SCHEMA)
     if current < SCHEMA_VERSION:
         # Snapshot before migration for rollback support
         if current > 0:

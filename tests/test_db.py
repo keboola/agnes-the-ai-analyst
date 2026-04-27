@@ -326,7 +326,11 @@ class TestMigrationSafety:
             conn.close()
 
     def test_future_version_is_noop(self, tmp_path, monkeypatch):
-        """_ensure_schema does nothing when schema_version > SCHEMA_VERSION."""
+        """``_ensure_schema`` does not modify ``schema_version`` when it's
+        already past ``SCHEMA_VERSION``. The unconditional ``_SYSTEM_SCHEMA``
+        self-heal pass *does* run on the future-version DB — it's all
+        ``CREATE TABLE IF NOT EXISTS``, so tables this binary expects get
+        materialized — but the version row stays put."""
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         import duckdb as _duckdb
         from src.db import _ensure_schema, get_schema_version
@@ -343,6 +347,176 @@ class TestMigrationSafety:
             assert get_schema_version(conn) == 99
         finally:
             conn.close()
+
+    def test_split_brain_future_version_with_missing_tables_self_heals(
+        self, tmp_path, monkeypatch,
+    ):
+        """Regression for the agnes-dev split-brain incident.
+
+        Shape: a contributor experiments with a future-schema branch that
+        bumps the DB to ``schema_version=N`` (N > current binary's
+        ``SCHEMA_VERSION``) with its own table layout, then switches or
+        rebases back to the released binary. The on-disk DB is on a
+        version this binary doesn't understand and is missing tables this
+        binary's code expects. Without self-heal, every query against the
+        missing table crashes at runtime — the migration block correctly
+        skips (we don't downgrade), but nothing creates the missing
+        tables either.
+
+        The contract this test pins: the unconditional
+        ``conn.execute(_SYSTEM_SCHEMA)`` at the top of ``_ensure_schema``
+        materializes any missing tables *and* leaves the future-version
+        ``schema_version`` row untouched. We synthesize a v99 DB whose
+        only table is ``schema_version``, then assert that running
+        ``_ensure_schema`` creates the v13-era core tables that the
+        binary needs (``user_groups``, ``user_group_members``,
+        ``resource_grants``, ``users``) while keeping the version at 99.
+        """
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        import duckdb as _duckdb
+        from src.db import _ensure_schema, get_schema_version
+
+        db_path = tmp_path / "state" / "system.duckdb"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = _duckdb.connect(str(db_path))
+        try:
+            # Synthesize an "old binary on a future-schema DB" state: only
+            # the schema_version table exists (no current-schema tables,
+            # no lab tables either — matches the exact agnes-dev shape
+            # after whatever lab migration had run before the rollback).
+            conn.execute(
+                "CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP DEFAULT current_timestamp);"
+                "INSERT INTO schema_version (version) VALUES (99);"
+            )
+
+            # Sanity: the v13-era tables we expect the self-heal pass to
+            # create are NOT there before the call. Picked from the
+            # post-RBAC-v13 / post-marketplace surface so a future
+            # rename/drop in src/db.py fails this test loudly.
+            expected_tables = {
+                "users",
+                "user_groups",
+                "user_group_members",
+                "resource_grants",
+            }
+            tables_before = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema = ?",
+                    ["main"],
+                ).fetchall()
+            }
+            assert not (expected_tables & tables_before), (
+                "fixture started with a non-empty schema; expected only "
+                "schema_version to be present"
+            )
+
+            _ensure_schema(conn)
+
+            # After: every expected table exists (self-heal worked) AND
+            # the version row stays at the future value.
+            tables_after = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema = ?",
+                    ["main"],
+                ).fetchall()
+            }
+            missing = expected_tables - tables_after
+            assert not missing, (
+                f"self-heal must create v13-era tables on a future-version DB, "
+                f"missing: {sorted(missing)}"
+            )
+
+            # The future-version contract still holds: version row untouched.
+            assert get_schema_version(conn) == 99
+        finally:
+            conn.close()
+
+    def test_pre_migration_snapshot_excludes_post_self_heal_tables(
+        self, tmp_path, monkeypatch,
+    ):
+        """The pre-migration snapshot must capture the on-disk DB state
+        *before* any DDL runs, so operators reading the snapshot for
+        rollback debugging see the old schema as it actually was — not
+        the binary's full table set with extras tacked on.
+
+        Regression for the original hoist in 0.12.0: ``_SYSTEM_SCHEMA``
+        was unconditionally executed at the top of ``_ensure_schema``,
+        ahead of the snapshot copy in the migration block. On a v2→vN
+        migration, ``view_ownership`` / ``user_groups`` /
+        ``resource_grants`` (and every other table the modern binary
+        adds) were created first, then ``CHECKPOINT`` flushed them to
+        disk, and ``shutil.copy2`` copied the already-modified file as
+        the "pre-migration" snapshot. Functionally rollback still
+        worked (extra empty tables are harmless), but the snapshot was
+        misleading. Fix: gate the self-heal call on ``current >=
+        SCHEMA_VERSION`` so the migration path takes its snapshot
+        before any DDL touches the DB.
+        """
+        from src.db import (
+            SCHEMA_VERSION,
+            _ensure_schema,
+            get_schema_version,
+            get_system_db,
+        )
+
+        # Bootstrap a v2 DB on disk, then trigger the migration ladder.
+        db_path = tmp_path / "state" / "system.duckdb"
+        self._create_v2_db(db_path)
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+        conn = get_system_db()
+        try:
+            assert get_schema_version(conn) == SCHEMA_VERSION
+        finally:
+            conn.close()
+            # Drop the cached connection so the snapshot file isn't
+            # locked when we re-open it.
+            from src import db as _db
+            _db._system_db_conn = None
+            _db._system_db_path = None
+
+        snapshot = tmp_path / "state" / "system.duckdb.pre-migrate"
+        assert snapshot.exists(), (
+            "fixture precondition: snapshot must be written for a v2→vN "
+            "migration"
+        )
+
+        import duckdb as _duckdb
+        snap = _duckdb.connect(str(snapshot), read_only=True)
+        try:
+            tables_in_snapshot = {
+                r[0]
+                for r in snap.execute(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema = 'main'"
+                ).fetchall()
+            }
+        finally:
+            snap.close()
+
+        # Tables NOT present in the v2 fixture but added by later
+        # migrations (and therefore created by _SYSTEM_SCHEMA on the
+        # modern binary). If any of these leaked into the snapshot, the
+        # snapshot was contaminated by a self-heal pass running before
+        # the snapshot copy.
+        post_v2_tables = {
+            "view_ownership",        # v10 (#100)
+            "marketplace_registry",  # v11
+            "marketplace_plugins",   # v11
+            "user_groups",           # v11+ / v13
+            "user_group_members",    # v13 (#106)
+            "resource_grants",       # v13 (#106)
+        }
+        leaked = post_v2_tables & tables_in_snapshot
+        assert not leaked, (
+            f"pre-migration snapshot was contaminated with post-v2 "
+            f"tables — self-heal pass ran before the snapshot copy. "
+            f"Leaked: {sorted(leaked)}"
+        )
 
 
 class TestSchemaV4:

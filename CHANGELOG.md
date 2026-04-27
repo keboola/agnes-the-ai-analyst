@@ -10,6 +10,53 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **Pre-migration snapshot integrity** — the snapshot file written
+  before a v(N-k)→vN migration now captures the true on-disk state
+  *before* any DDL runs, instead of the post-self-heal state the
+  0.12.0 hoist (#106) introduced. With the unconditional
+  `conn.execute(_SYSTEM_SCHEMA)` at the top of `_ensure_schema`, the
+  full set of modern-binary tables (`view_ownership`,
+  `marketplace_registry`, `user_groups`, `resource_grants`, etc.) was
+  materialized first, then `CHECKPOINT` flushed them to disk, and
+  `shutil.copy2` copied the already-modified DB as the
+  "pre-migration" snapshot — so an operator inspecting the snapshot
+  for rollback debugging saw the binary's full table set instead of
+  the old schema. Functionally rollback still worked (extra empty
+  tables are harmless and re-running migration is idempotent), but
+  the snapshot was misleading. Fix: gate the self-heal call on
+  `current >= SCHEMA_VERSION`. The split-brain (`current >
+  SCHEMA_VERSION`) and same-version safety-net (`current ==
+  SCHEMA_VERSION`) paths still self-heal as before; the migration
+  path (`current < SCHEMA_VERSION`) takes its snapshot first and
+  then runs `_SYSTEM_SCHEMA` from inside the existing migration
+  block.
+- **Split-brain self-heal regression test for the agnes-dev incident**
+  (2026-04-27). Pins the contract that the gated `_SYSTEM_SCHEMA`
+  self-heal pass keeps working when a binary lands on a
+  future-version DB that's missing tables it expects: every query
+  against the missing table would otherwise crash at runtime
+  (`_duckdb.CatalogException`). New
+  `test_split_brain_future_version_with_missing_tables_self_heals`
+  in `tests/test_db.py::TestMigrationSafety` synthesizes a v99 DB
+  whose only table is `schema_version`, runs `_ensure_schema`, and
+  asserts that the v13-era core tables (`users`, `user_groups`,
+  `user_group_members`, `resource_grants`) now exist *and* that
+  `schema_version` stays at 99 (self-heal without falsely
+  advertising a downgrade). Plus
+  `test_pre_migration_snapshot_excludes_post_self_heal_tables`
+  pins the snapshot-integrity contract: a v2→vN migration's
+  snapshot must not contain any post-v2 table from the modern
+  binary.
+
+### Internal
+
+- `test_future_version_is_noop` docstring updated to reflect that
+  the self-heal pass *does* run on a future-version DB, just
+  doesn't touch the version row. The test still passes unchanged —
+  its only assertion was the version-row contract, which holds.
+
 ## [0.12.0] — 2026-04-28
 
 ### Changed
