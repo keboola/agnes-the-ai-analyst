@@ -13,10 +13,30 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 <!-- Add bullets here. Group: Added / Changed / Fixed / Removed / Internal.
      Mark breaking changes with **BREAKING** at the start of the bullet. -->
 
+### Added
+
+- **BigQuery extractor detects table type** (BASE TABLE vs. VIEW / MATERIALIZED_VIEW) via `INFORMATION_SCHEMA.TABLES` using DuckDB's `bigquery_query()` table function. Emits the appropriate DuckDB view:
+  - BASE TABLE → direct `bq."dataset"."table"` reference (queries hit BigQuery Storage Read API).
+  - VIEW / MATERIALIZED_VIEW → `bigquery_query('project', 'SELECT * FROM \`dataset.table\`')` wrapper (queries hit BigQuery Jobs API, required for views).
+- **GCE metadata-server authentication for BigQuery.** New `connectors/bigquery/auth.py` module (`get_metadata_token()` function) fetches OAuth access tokens from `http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token` on GCE instances. No service-account key file required. Both the extractor (at sync time) and the orchestrator / read-side (at ATTACH time) fetch fresh tokens on every rebuild / readonly-conn open. Raises `BQMetadataAuthError` on failure (network or malformed metadata-server response).
+- **SQL identifier-validation helper** in `src/sql_safe.py`. New functions `is_safe_identifier()` and `validate_identifier()` enforce safe character sets before f-stringing identifiers into SQL. BigQuery extractor and orchestrator `_attach_remote_extensions` both validate `dataset`, `source_table`, and view names before use, closing a SQL-injection surface if admin config is untrusted.
+- **`/api/sync/manifest` response now includes `query_mode` and `source_type` per table**, joined from `table_registry`. Clients can branch on table semantics (remote vs. local, source type) without a second API call.
+- **`da sync --json` output** now includes a `skipped_remote` list with IDs of `query_mode='remote'` tables that were skipped during sync (they're not downloaded locally; only queried via `/api/query`).
+
+### Changed
+
+- **`da sync` skips `query_mode='remote'` tables.** Previously they produced 404s on download attempts. Now the CLI prints a one-line stderr summary (`Skipping N remote-mode tables: a, b, c (and M more)`) and a separate summary line (`Skipped (remote-mode): N`) in the final output, distinct from existing `Skipped (unchanged): M` counts.
+
 ### Fixed
 
-- **BigQuery views failed at first query when FastAPI / CLI reopened `analytics.duckdb`.** `SyncOrchestrator._attach_remote_extensions` refreshes a fresh GCE-metadata access token and creates a `bigquery` DuckDB SECRET before ATTACH, but the secret is session-scoped and didn't persist with the on-disk database. The mirror code in `src.db._reattach_remote_extensions` (called from `get_analytics_db_readonly()`) still ATTACHed BigQuery without auth, so the next query against `bq."dataset"."table"` failed. Added the same three-branch structure to `src.db`: BigQuery → fetch metadata token → `CREATE OR REPLACE SECRET bq_secret_<alias> (TYPE bigquery, ACCESS_TOKEN '<token>')` → ATTACH; otherwise fall back to the existing env-var-token / no-auth paths. Metadata-server failures log at ERROR and skip the source so other connectors still resolve.
-- **`src/orchestrator.py::_attach_remote_extensions` filtered `_remote_attach` lookups by `table_schema=<source_name>`**, but DuckDB lists an attached database with `table_catalog=<source_name>` and `table_schema='main'`, so the loop never executed and `_remote_attach` rows were silently ignored. Switched the filter to `table_catalog`, matching the corresponding query already in `src.db`.
+- **BigQuery views failed at first query when FastAPI / CLI reopened `analytics.duckdb`.** `SyncOrchestrator._attach_remote_extensions` fetches a fresh GCE-metadata access token and creates a `bigquery` DuckDB SECRET before ATTACH, but secrets are session-scoped and don't persist with the on-disk database. The mirror code in `src.db._reattach_remote_extensions` (called from `get_analytics_db_readonly()`) still ATTACHed BigQuery without auth, so the next query against `bq."dataset"."table"` failed. Fixed by adding the same three-branch structure to `src.db`: BigQuery → fetch metadata token → `CREATE OR REPLACE SECRET bq_secret_<alias> (TYPE bigquery, ACCESS_TOKEN '<token>')` → ATTACH; otherwise fall back to env-var-token / no-auth paths. Metadata-server failures log at ERROR and skip the source so other connectors still resolve.
+- **`src/orchestrator.py::_attach_remote_extensions` was ineffective for BigQuery.** It filtered `_remote_attach` lookups by `table_schema=<source_name>`, but DuckDB lists an attached database with `table_catalog=<source_name>` (not `table_schema`), so the loop never executed and `_remote_attach` rows were silently ignored. Switched the filter to `table_catalog`, matching the corresponding query already in `src.db`.
+- **BigQuery extractor `python -m connectors.bigquery.extractor` standalone CLI** now reads project ID from `data_source.bigquery.project` matching `instance.yaml.example`. Previously it looked for an undocumented top-level `bigquery.project_id` key and silently produced an empty string on miss, causing cryptic BigQuery API errors downstream. Now exits with code 2 + a clear `logger.error` when the key is missing.
+
+### Internal
+
+- Test pattern: BigQuery extractor is exercised with a dual-path strategy (BASE TABLE + VIEW detection) via `_CapturingProxy` SQL-capture wrappers. DuckDB's C-implemented `execute` attribute is read-only and can't be monkey-patched directly; the proxy wraps the connection and captures outgoing SQL before forwarding to the real DuckDB conn.
+- Implementation plan: `docs/superpowers/plans/2026-04-27-bq-pipeline-views-and-metadata-auth.md` — subagent-driven development for Tasks 1-7 of this PR.
 
 
 ## [0.11.5] — 2026-04-27
