@@ -13,6 +13,7 @@ from typing import List, Dict, Any
 import duckdb
 
 from connectors.bigquery.auth import get_metadata_token, BQMetadataAuthError
+from src.sql_safe import validate_identifier as _validate_identifier
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +139,14 @@ def init_extract(
             source_table = tc.get("source_table", table_name)
 
             try:
+                # Validate identifiers before SQL construction — see I-1/I-2 from review.
+                if not _validate_identifier(table_name, "BQ table_name"):
+                    raise RuntimeError(f"unsafe table_name: {table_name!r}")
+                if not _validate_identifier(dataset, "BQ dataset"):
+                    raise RuntimeError(f"unsafe dataset: {dataset!r}")
+                if not _validate_identifier(source_table, "BQ source_table"):
+                    raise RuntimeError(f"unsafe source_table: {source_table!r}")
+
                 entity_type = _detect_table_type(conn, project_id, dataset, source_table)
                 if entity_type is None:
                     raise RuntimeError(
@@ -151,6 +160,11 @@ def init_extract(
                         f'SELECT * FROM bq."{dataset}"."{source_table}"'
                     )
                 else:
+                    if entity_type not in ("VIEW", "MATERIALIZED_VIEW"):
+                        logger.warning(
+                            "Unknown BQ entity type %r for %s.%s.%s — using bigquery_query() path",
+                            entity_type, project_id, dataset, source_table,
+                        )
                     # VIEW or MATERIALIZED_VIEW — use jobs API
                     bq_inner = f"SELECT * FROM `{project_id}.{dataset}.{source_table}`"
                     bq_inner_escaped = bq_inner.replace("'", "''")

@@ -20,26 +20,17 @@ so that remote views resolve correctly.
 import hashlib
 import logging
 import os
-import re
 import threading
 from pathlib import Path
 from typing import Dict, List
 
 import duckdb
 
+from src.sql_safe import validate_identifier as _validate_identifier
+
 logger = logging.getLogger(__name__)
 
 _rebuild_lock = threading.Lock()
-
-_SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
-
-
-def _validate_identifier(name: str, context: str) -> bool:
-    """Validate a DuckDB identifier. Returns True if safe, False if not."""
-    if not _SAFE_IDENTIFIER.match(name):
-        logger.warning("Rejected unsafe %s identifier: %r", context, name)
-        return False
-    return True
 
 
 def _atomic_swap_db(tmp_path: str, target_path: str) -> None:

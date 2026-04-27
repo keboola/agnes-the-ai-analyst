@@ -348,7 +348,8 @@ class TestViewVsTableTemplates:
         assert view_create is not None, f"no CREATE VIEW for session_view; got: {view_sqls}"
         assert "bigquery_query(" in view_create
         assert "my-project" in view_create
-        assert "my_ds.session_view" in view_create or "session_view" in view_create
+        assert "`my-project.my_ds.session_view`" in view_create, \
+            f"expected backtick-quoted full path; got: {view_create}"
 
 
 class TestRemoteAttachForBQ:
@@ -421,3 +422,68 @@ class TestInitExtractAuthFailure:
             "extract.duckdb should not be created when auth fails"
         assert result["tables_registered"] == 0
         assert any("metadata" in e.get("error", "").lower() for e in result["errors"])
+
+
+class TestIdentifierValidation:
+    """init_extract must reject unsafe identifiers before any SQL construction."""
+
+    def test_rejects_unsafe_dataset_name(self, tmp_path, monkeypatch):
+        from connectors.bigquery.extractor import init_extract
+
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor.get_metadata_token",
+            lambda: "test-token",
+        )
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor._detect_table_type",
+            lambda *a, **kw: "BASE TABLE",
+        )
+        # Stub all DuckDB BQ-extension calls so the test stays offline
+        captured = []
+        real_connect = duckdb.connect
+        def safe_connect(*a, **kw):
+            return _CapturingProxy(real_connect(*a, **kw), captured)
+        monkeypatch.setattr("connectors.bigquery.extractor.duckdb.connect", safe_connect)
+
+        result = init_extract(
+            str(tmp_path),
+            "my-project",
+            [{
+                "name": "t",
+                "bucket": 'evil"; DROP TABLE foo; --',
+                "source_table": "t",
+                "description": "",
+            }],
+        )
+        assert result["tables_registered"] == 0
+        assert any("dataset" in e.get("error", "").lower() for e in result["errors"])
+
+    def test_rejects_unsafe_source_table_name(self, tmp_path, monkeypatch):
+        from connectors.bigquery.extractor import init_extract
+
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor.get_metadata_token",
+            lambda: "test-token",
+        )
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor._detect_table_type",
+            lambda *a, **kw: "BASE TABLE",
+        )
+        captured = []
+        real_connect = duckdb.connect
+        def safe_connect(*a, **kw):
+            return _CapturingProxy(real_connect(*a, **kw), captured)
+        monkeypatch.setattr("connectors.bigquery.extractor.duckdb.connect", safe_connect)
+
+        result = init_extract(
+            str(tmp_path),
+            "my-project",
+            [{
+                "name": "t",
+                "bucket": "ds",
+                "source_table": "evil`name",
+                "description": "",
+            }],
+        )
+        assert result["tables_registered"] == 0
+        assert any("source_table" in e.get("error", "").lower() for e in result["errors"])
