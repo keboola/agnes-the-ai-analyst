@@ -38,7 +38,7 @@ AGNES_TAG=${AGNES_TAG}
 EOF
 
 chmod 600 "${ENV_FILE}"
-# Chown je best-effort — pokud skript neběží jako root, ignoruj
+# chown is best-effort — ignore if the script isn't running as root.
 chown deploy:deploy "${ENV_FILE}" 2>/dev/null || true
 
 echo "Done. ${ENV_FILE} has $(wc -l < "${ENV_FILE}") lines, chmod 600."

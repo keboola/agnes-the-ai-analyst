@@ -36,7 +36,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   - **Code docstrings**: `connectors/openmetadata/{client,transformer,enricher}.py`,
     `src/catalog_export.py`, `scripts/duckdb_manager.py` — `prj-grp-…` →
     `my-bq-project` / `prj-example-1234`, `AIAgent.FoundryAI` →
-    `AIAgent.MyAgent`, `FoundryAIDataModel` → `AnalyticsDataModel`.
+    `AIAgent.MyAgent` (in docstrings) / `AIAgent.Example` (in test fixtures),
+    `FoundryAIDataModel` → `AnalyticsDataModel`.
   - **Test fixtures** in `tests/test_openmetadata_enricher.py`,
     `tests/test_duckdb_manager.py`, `tests/test_catalog_export.py`,
     `tests/test_openmetadata_transformer.py` — same set of replacements,
