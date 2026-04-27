@@ -13,7 +13,7 @@ ENV_FILE="${APP_DIR}/.env"
 # Non-secret config (override via environment or hardcoded defaults)
 DATA_SOURCE="${DATA_SOURCE:-keboola}"
 KEBOOLA_STACK_URL="${KEBOOLA_STACK_URL:-https://connection.us-east4.gcp.keboola.com/}"
-SEED_ADMIN_EMAIL="${SEED_ADMIN_EMAIL:-zdenek.srotyr@keboola.com}"
+SEED_ADMIN_EMAIL="${SEED_ADMIN_EMAIL:?SEED_ADMIN_EMAIL must be set}"
 LOG_LEVEL="${LOG_LEVEL:-info}"
 DATA_DIR="${DATA_DIR:-/data}"
 AGNES_TAG="${AGNES_TAG:-stable}"

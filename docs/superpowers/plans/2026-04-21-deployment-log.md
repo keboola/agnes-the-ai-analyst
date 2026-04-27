@@ -94,8 +94,8 @@ KEBOOLA_TOKEN_SECRET  = keboola-storage-token (manuálně vytvořený)
 INFRA_MODULE_REF      = infra-v1.0.0 (github.com/keboola/agnes-the-ai-analyst)
 PROD_IP               = <prod-vm-ip> (agnes-prod)
 DEV_IP                = <dev-vm-ip> (agnes-dev)
-STARÝ PROD IP (legacy) = 35.195.96.98 (data-analyst — po stabilitě smazat)
-STARÝ DEV IP (legacy)  = 34.62.223.189 (data-analyst-dev — po stabilitě smazat)
+STARÝ PROD IP (legacy) = <redacted-ip> (data-analyst — po stabilitě smazat)
+STARÝ DEV IP (legacy)  = <redacted-ip> (data-analyst-dev — po stabilitě smazat)
 ```
 
 ## Známá omezení / TODO
