@@ -30,7 +30,7 @@ Known issues already in flight are marked with their tracking links so we do not
 - **URL map:** `app/web/router.py:119` — `"password_auth.reset_request": "/auth/password/reset"`
 - **Backend:** `app/auth/providers/password.py` only registers `/login`, `/login/web`, `/setup`. No `/reset` handler is wired.
 - **Related dead code:** templates `password_reset.html` and `password_setup.html` exist but no route renders them — indicates an abandoned reset flow.
-- **Tracking:** [padak/keboola_agent_cli#206](https://github.com/padak/keboola_agent_cli/issues/206)
+- **Tracking:** tracked upstream in the auth-CLI repo
 - **Confidence:** broken.
 
 ### 3. `[HIGH]` No rate limiting on any auth endpoint
@@ -185,4 +185,4 @@ Several patterns looked scary at first glance but are correctly defended:
 **Backlog (single tracking issue with checkboxes):**
 - #11–24 — timing comparisons, theme XSS gating, config reload, RBAC unification, schedule validation, silent-except triage, dead templates cleanup.
 
-The missing `/auth/password/reset` endpoint (#2) is already tracked in [padak/keboola_agent_cli#206](https://github.com/padak/keboola_agent_cli/issues/206).
+The missing `/auth/password/reset` endpoint (#2) is already tracked in tracked upstream in the auth-CLI repo.

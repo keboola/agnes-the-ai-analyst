@@ -1,5 +1,5 @@
 variable "gcp_project_id" {
-  description = "GCP project ID kde bude instance nasazená"
+  description = "GCP project ID where the instance will be deployed."
   type        = string
 }
 
@@ -25,7 +25,7 @@ variable "customer_name" {
 }
 
 variable "prod_instance" {
-  description = "Prod VM konfigurace"
+  description = "Production VM configuration."
   type = object({
     name         = string
     machine_type = optional(string, "e2-small")
@@ -40,7 +40,7 @@ variable "prod_instance" {
 
 variable "dev_instances" {
   description = <<-EOT
-    Seznam dev VMs. Prázdné pole = žádné dev VMs.
+    List of dev VMs. Empty list = no dev VMs.
 
     tls_mode + domain are optional and default to plain HTTP on :8000. Set
     tls_mode = "caddy" + domain to enable Caddy + Let's Encrypt (or whatever
@@ -57,31 +57,31 @@ variable "dev_instances" {
 }
 
 variable "seed_admin_email" {
-  description = "Email prvního admin usera"
+  description = "Email of the initial admin user."
   type        = string
 }
 
 variable "enable_seed_password" {
-  description = "Pokud true, seed admin user dostane hned password_hash ze seed_admin_password (dev helper). Ponech false v prod — admin si heslo nastaví přes /auth/bootstrap nebo Google OAuth."
+  description = "If true, the seed admin user immediately gets a password_hash from seed_admin_password (dev helper). Keep false in prod — the admin sets a password via /auth/bootstrap or Google OAuth."
   type        = bool
   default     = false
 }
 
 variable "seed_admin_password" {
-  description = "Plain-text heslo pro seed admina. Použije se jen když enable_seed_password=true. POZOR: ukládá se do Terraform state."
+  description = "Plain-text password for the seed admin. Only used when enable_seed_password=true. WARNING: stored in Terraform state."
   type        = string
   default     = ""
   sensitive   = true
 }
 
 variable "data_source" {
-  description = "Typ data source — keboola | bigquery | csv"
+  description = "Data source type — keboola | bigquery | csv."
   type        = string
   default     = "keboola"
 }
 
 variable "keboola_stack_url" {
-  description = "Keboola Stack URL (pokud data_source = keboola)"
+  description = "Keboola Stack URL (used when data_source = keboola)."
   type        = string
   default     = ""
 }
