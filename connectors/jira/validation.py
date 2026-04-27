@@ -25,7 +25,11 @@ from pathlib import Path
 # `[0-9]` rather than `\d` — Python 3's `\d` matches any Unicode decimal
 # (Arabic-Indic ٣, Bengali ৩, Devanagari ३, …), and a Jira issue key like
 # `TEST-٣` is not real Jira input. ASCII-only here closes that bypass.
-_ISSUE_KEY_RE = re.compile(r"^[A-Z][A-Z0-9]{0,31}-[0-9]{1,12}$")
+# `\Z` rather than `$` — Python's `$` matches before a trailing `\n`,
+# so `re.match("…$", "TEST-1\n")` returns a match. `\Z` is hard
+# end-of-string, so a CRLF-injection or trailing-newline payload is
+# rejected as expected.
+_ISSUE_KEY_RE = re.compile(r"^[A-Z][A-Z0-9]{0,31}-[0-9]{1,12}\Z")
 
 
 def is_valid_issue_key(key: object) -> bool:
