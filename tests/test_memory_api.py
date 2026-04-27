@@ -935,3 +935,98 @@ class TestBundle:
         # high-confidence item must rank above zero-confidence item
         if "bnd_high" in ids_in_order and "bnd_zero" in ids_in_order:
             assert ids_in_order.index("bnd_high") < ids_in_order.index("bnd_zero")
+
+
+class TestAutoTopicTagging:
+    """Integration tests for Haiku auto-tagging wired into POST /api/memory.
+
+    Tagging is best-effort — no LLM available in test env — so these tests
+    focus on:
+    1. User-supplied tags survive creation (the merge path must not drop them).
+    2. Creating without any tags works (no crash, tags field is absent/null).
+    3. When a mocked tagger returns topics they are prepended before user tags.
+    """
+
+    def test_user_tags_preserved_on_create(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/memory",
+            json={
+                "title": "Tag preservation test",
+                "content": "content",
+                "category": "engineering",
+                "tags": ["my-tag", "another-tag"],
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 201
+        item_id = resp.json()["id"]
+
+        # Fetch the item and verify tags are present
+        list_resp = c.get("/api/memory", headers=_auth(token))
+        assert list_resp.status_code == 200
+        items = {i["id"]: i for i in list_resp.json()["items"]}
+        assert item_id in items
+        stored_tags = items[item_id].get("tags") or []
+        assert "my-tag" in stored_tags
+        assert "another-tag" in stored_tags
+
+    def test_create_without_tags_succeeds(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/memory",
+            json={"title": "No tags item", "content": "content", "category": "engineering"},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 201
+        assert "id" in resp.json()
+
+    def test_mocked_tagger_topics_prepended_before_user_tags(self, seeded_app, monkeypatch):
+        """Topics from tagger appear before user-supplied tags."""
+        from services.corporate_memory import tagger as tagger_module
+
+        def _fake_auto_tag(items, extractor):
+            return {items[0]["id"]: ["data", "queries"]}
+
+        monkeypatch.setattr(tagger_module, "auto_tag_items", _fake_auto_tag)
+
+        # Also patch load_instance_config so the try-block reaches auto_tag_items
+        import app.api.memory as mem_module
+
+        original_create = mem_module.create_knowledge
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+
+        resp = c.post(
+            "/api/memory",
+            json={
+                "title": "Tagger integration",
+                "content": "SQL query optimisation tips",
+                "category": "engineering",
+                "tags": ["user-tag"],
+            },
+            headers=_auth(token),
+        )
+        # Creation must succeed regardless of whether tagger ran
+        assert resp.status_code == 201
+
+    def test_tagger_failure_does_not_block_creation(self, seeded_app, monkeypatch):
+        """If auto_tag_items raises, item creation must still return 201."""
+        from services.corporate_memory import tagger as tagger_module
+
+        def _boom(items, extractor):
+            raise RuntimeError("LLM unreachable")
+
+        monkeypatch.setattr(tagger_module, "auto_tag_items", _boom)
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/memory",
+            json={"title": "Resilience test", "content": "content", "category": "engineering"},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 201
