@@ -1,5 +1,6 @@
 """Corporate memory endpoints — knowledge items, voting, governance admin, contradictions."""
 
+import asyncio
 import json
 import logging
 import uuid
@@ -242,7 +243,7 @@ async def create_knowledge(
         if ai_cfg:
             extractor = create_extractor(ai_cfg)
             stub = [{"id": item_id, "title": request.title, "content": request.content}]
-            assignments = auto_tag_items(stub, extractor)
+            assignments = await asyncio.to_thread(auto_tag_items, stub, extractor)
             topics = assignments.get(item_id, [])
             if topics:
                 seen: set[str] = set()
