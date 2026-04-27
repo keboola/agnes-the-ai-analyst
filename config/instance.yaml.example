@@ -111,7 +111,7 @@ data_source:
     # Uses ADC (Application Default Credentials) - VM service account on GCP
     # Data can live in a different project -- use fully-qualified table IDs in data_description.md
 
-# --- OpenMetadata catalog (optional - Groupon-specific) ---
+# --- OpenMetadata catalog (optional) ---
 # Enriches table and column metadata from OpenMetadata REST API.
 # If not configured, app works normally without catalog enrichment.
 # openmetadata:

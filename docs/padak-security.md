@@ -185,4 +185,4 @@ Several patterns looked scary at first glance but are correctly defended:
 **Backlog (single tracking issue with checkboxes):**
 - #11–24 — timing comparisons, theme XSS gating, config reload, RBAC unification, schedule validation, silent-except triage, dead templates cleanup.
 
-The missing `/auth/password/reset` endpoint (#2) is already tracked in tracked upstream in the auth-CLI repo.
+The missing `/auth/password/reset` endpoint (#2) is already tracked upstream in the auth-CLI repo.
