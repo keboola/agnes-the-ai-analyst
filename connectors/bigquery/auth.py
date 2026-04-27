@@ -38,7 +38,7 @@ def get_metadata_token() -> str:
             payload = json.loads(resp.read())
     except urllib.error.URLError as e:
         raise BQMetadataAuthError(f"metadata server unreachable: {e}") from e
-    except (json.JSONDecodeError, ValueError) as e:
+    except json.JSONDecodeError as e:
         raise BQMetadataAuthError(f"metadata response not JSON: {e}") from e
 
     token = payload.get("access_token")
