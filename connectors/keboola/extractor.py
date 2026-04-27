@@ -107,7 +107,13 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
             # write access can otherwise inject SQL via the CREATE VIEW /
             # COPY / SELECT interpolation below. Skip-and-continue rather
             # than crashing the whole extraction; valid rows still process.
-            if not validate_identifier(table_name, "Keboola table_name"):
+            #
+            # `table_name` becomes our DuckDB view name. Quoted in
+            # `CREATE OR REPLACE VIEW "..."`, so the relaxed validator
+            # is correct — it accepts existing operator habits like
+            # `my-events` while still refusing anything that could close
+            # the quote.
+            if not validate_quoted_identifier(table_name, "Keboola table_name"):
                 stats["tables_failed"] += 1
                 stats["errors"].append(
                     {"table": table_name, "error": "unsafe identifier"}

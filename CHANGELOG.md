@@ -29,7 +29,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   refusing any character that could close a `"..."` identifier literal).
   Both extractors now skip-and-continue on unsafe rows: invalid identifiers
   are logged and counted in the failure stats but do not abort processing
-  of the rest of the registry.
+  of the rest of the registry. The orchestrator's existing
+  `_validate_identifier` was also lifted into the new shared module so
+  there is a single source of truth for both layers (no duplicate regex
+  drift between extractor and orchestrator). All extractor identifier
+  positions (`table_name`, `bucket`/`dataset`, `source_table`) use the
+  relaxed validator since they all interpolate into `"..."` quoted SQL —
+  this keeps existing operator-habit names like `my-events` working.
 
 ## [0.11.5] — 2026-04-27
 

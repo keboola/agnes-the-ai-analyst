@@ -114,9 +114,11 @@ class TestKeboolaExtractorRefusesUnsafeIdentifiers:
 
         monkeypatch.setattr(kbe, "_extract_via_legacy", fake_legacy)
 
-        # Two rows: one good, one with a hostile name.
+        # Three rows: a good one, one with a legitimate dashed name (must
+        # also pass — operator habit), and one with a hostile injection.
         rows = [
             {"name": "good_table", "query_mode": "local"},
+            {"name": "events-2026", "query_mode": "local"},  # legitimate dash
             {"name": "evil\"; DROP TABLE x; --", "query_mode": "local"},
         ]
         out_dir = tmp_path / "extracts" / "keboola"
@@ -124,7 +126,7 @@ class TestKeboolaExtractorRefusesUnsafeIdentifiers:
             str(out_dir), rows, keboola_url="", keboola_token="",
         )
 
-        assert result["tables_extracted"] == 1
+        assert result["tables_extracted"] == 2  # good_table + events-2026
         assert result["tables_failed"] == 1
         assert any("unsafe identifier" in (e.get("error") or "") for e in result["errors"])
 
