@@ -10,17 +10,34 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+<!-- Add bullets here. Group: Added / Changed / Fixed / Removed / Internal.
+     Mark breaking changes with **BREAKING** at the start of the bullet. -->
+
+---
+
+## [0.12.0] - 2026-04-26
+
 ### Added
+- Corporate memory V1.5: audience-based distribution — `knowledge_items.audience` column; `GET /api/memory` filters by caller's group membership; `users.groups` JSON column (schema v10)
 - `GET /api/memory/bundle` — token-budgeted (6k) bundle of mandatory + confidence×recency-ranked approved items, audience-filtered by caller's groups; consumed by `da sync` step 7
 - `da sync` step 7: fetches `/api/memory/bundle` and writes `.claude/rules/km_<id>.md` (mandatory) and `km_approved.md` (ranked approved); stale files pruned on each sync; best-effort (sync continues if server unreachable)
 - `config/claude_md_template.txt` gains `## Corporate Memory` section documenting the injected rules files
 - `_effective_groups(user)` helper in `memory.py` — shared audience-filter logic used by `list_knowledge` and `/bundle`
+- `GET /api/memory/admin/contradictions` gains `exclude_personal: bool = True` (default) — personal item content is hidden from contradiction enrichment responses
+- Confidence externalization — `corporate_memory.confidence` section in `instance.yaml` now configures base scores, modifier weights, and decay parameters at startup via `confidence.configure()`
+- Exponential confidence decay (default); per-source-type floors: `admin_mandate` >= 0.50, `user_verification` >= 0.40
 
 ### Fixed
+- Admin categories filter now generated dynamically from seeded data (removed hardcoded `Data Analysis / API / Performance` buttons)
+- Dashboard stats URL corrected from `/api/corporate-memory/stats` to `/api/memory/stats`
 - `users.groups` is now written to the DB at Google OAuth login (write-once — admin overrides are sticky); previously the column was always NULL so `GET /api/memory` returned no results for non-admin users
 
-<!-- Add bullets here. Group: Added / Changed / Fixed / Removed / Internal.
-     Mark breaking changes with **BREAKING** at the start of the bullet. -->
+### Breaking Changes
+- `apply_decay()` signature changed: `decay_rate_monthly=` keyword argument removed; use `confidence.configure()` to set decay parameters
+- Default decay model switched from linear (-0.02/month) to exponential (half-life 12 months). Existing items will score lower after upgrade — migration note: `admin_mandate` items are protected by a 0.50 floor; `user_verification` items by a 0.40 floor; other source types may see score reductions up to ~50% at 12 months
+- DuckDB schema bumped v9 -> v12: adds context-engineering columns on `knowledge_items` + `knowledge_contradictions` + `session_extraction_state` (v10), `verification_evidence` table (v11), `users.groups JSON` (v12); migration runs automatically on startup
+
+---
 
 ## [0.11.5] — 2026-04-27
 
@@ -48,22 +65,6 @@ Follow-up release for PR #73: addresses four rounds of Devin AI review on the ro
 
 ---
 
-## [0.12.0] - 2026-04-26
-
-### Added
-- Corporate memory V1.5: audience-based distribution — `knowledge_items.audience` column; `GET /api/memory` filters by caller's group membership; `users.groups` JSON column (schema v10)
-- `GET /api/memory/admin/contradictions` gains `exclude_personal: bool = True` (default) — personal item content is hidden from contradiction enrichment responses
-- Confidence externalization — `corporate_memory.confidence` section in `instance.yaml` now configures base scores, modifier weights, and decay parameters at startup via `confidence.configure()`
-- Exponential confidence decay (default); per-source-type floors: `admin_mandate` >= 0.50, `user_verification` >= 0.40
-
-### Fixed
-- Admin categories filter now generated dynamically from seeded data (removed hardcoded `Data Analysis / API / Performance` buttons)
-- Dashboard stats URL corrected from `/api/corporate-memory/stats` to `/api/memory/stats`
-
-### Breaking Changes
-- `apply_decay()` signature changed: `decay_rate_monthly=` keyword argument removed; use `confidence.configure()` to set decay parameters
-- Default decay model switched from linear (-0.02/month) to exponential (half-life 12 months). Existing items will score lower after upgrade — migration note: `admin_mandate` items are protected by a 0.50 floor; `user_verification` items by a 0.40 floor; other source types may see score reductions up to ~50% at 12 months
-- DuckDB schema bumped v9 -> v12: adds context-engineering columns on `knowledge_items` + `knowledge_contradictions` + `session_extraction_state` (v10), `verification_evidence` table (v11), `users.groups JSON` (v12); migration runs automatically on startup
 ## [0.11.4] — 2026-04-27
 
 Role-management complete release. Sjednocuje legacy `users.role` enum (viewer/analyst/km_admin/admin) with the v8 internal-roles foundation under one model with implies hierarchy, ships admin UI + REST API + CLI for managing both group mappings and direct user grants, and wires `require_internal_role` for PAT-aware resolution so admin endpoints work uniformly across OAuth and headless callers.
