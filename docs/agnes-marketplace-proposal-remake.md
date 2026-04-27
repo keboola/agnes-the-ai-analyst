@@ -63,7 +63,7 @@ The existing GitHub-based marketplace cannot properly manage visibility — ever
 
 ### **Hierarchy: Department → Tribe → Team (Squad)**
 
-Groupon's organizational structure follows a three-level hierarchy. The Agnes governance model mirrors this directly:
+Organizational structure follows a three-level hierarchy. The Agnes governance model mirrors this directly:
 
 **Department** is the top-level organizational unit (e.g., Engineering, HR, Finance, Commerce). Each department maps to one plugin — the distributable bundle that users receive. A department is the unit of RBAC filtering: a user in the HR department sees the HR plugin; a user in Engineering sees the Engineering plugin.
 
