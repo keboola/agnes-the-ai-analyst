@@ -228,13 +228,19 @@ async def vote_knowledge(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    if request.vote not in (1, -1):
-        raise HTTPException(status_code=400, detail="Vote must be 1 or -1")
+    if request.vote not in (1, -1, 0):
+        raise HTTPException(status_code=400, detail="Vote must be 1, -1, or 0 (retract)")
     repo = KnowledgeRepository(conn)
     item = repo.get_by_id(item_id)
     if not item or not _can_view_item(user, item):
         raise HTTPException(status_code=404, detail="Knowledge item not found")
-    repo.vote(item_id, user["id"], request.vote)
+    if request.vote == 0:
+        conn.execute(
+            "DELETE FROM knowledge_votes WHERE item_id = ? AND user_id = ?",
+            [item_id, user["id"]],
+        )
+    else:
+        repo.vote(item_id, user["id"], request.vote)
     return repo.get_votes(item_id)
 
 

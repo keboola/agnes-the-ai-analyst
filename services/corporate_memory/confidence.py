@@ -61,20 +61,16 @@ def configure(config: dict) -> None:
     global _BASE_CONFIDENCE, _MODIFIER_EFFECTS, _DECAY_CONFIG
 
     if "base" in config:
-        new_base: dict = {}
         for raw_key, value in config["base"].items():
             parts = raw_key.split(".", 1)
             key: tuple = (parts[0], parts[1]) if len(parts) == 2 else (parts[0], None)
-            new_base[key] = float(value)
-        _BASE_CONFIDENCE = new_base
+            _BASE_CONFIDENCE[key] = float(value)
 
     if "modifiers" in config:
-        new_modifiers: dict = {}
         for raw_key, effects in config["modifiers"].items():
             parts = raw_key.split(".", 1)
             key = (parts[0], parts[1]) if len(parts) == 2 else (parts[0], None)
-            new_modifiers[key] = {k: float(v) for k, v in effects.items()}
-        _MODIFIER_EFFECTS = new_modifiers
+            _MODIFIER_EFFECTS[key] = {k: float(v) for k, v in effects.items()}
 
     if "decay" in config:
         _DECAY_CONFIG.update(config["decay"])
