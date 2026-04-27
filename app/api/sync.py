@@ -110,10 +110,13 @@ if not url or not token:
     print("ERROR: Missing KEBOOLA_STACK_URL or KEBOOLA_STORAGE_TOKEN", file=sys.stderr)
     sys.exit(1)
 
-from connectors.keboola.extractor import run
+from connectors.keboola.extractor import run, compute_exit_code
 data_dir = Path(os.environ.get("DATA_DIR", "./data"))
 result = run(str(data_dir / "extracts" / "keboola"), configs, url, token)
 print(json.dumps(result))
+# Issue #81 Group B: surface partial-failure as exit 2 so the API
+# caller can distinguish "every table failed" from "9/10 succeeded".
+sys.exit(compute_exit_code(result, len(configs)))
 """]
 
         import sys as _sys
@@ -129,10 +132,22 @@ print(json.dumps(result))
             print(f"[SYNC] Extractor stdout: {result.stdout.strip()[-500:]}", file=_sys.stderr, flush=True)
         if result.stderr:
             print(f"[SYNC] Extractor stderr: {result.stderr[-500:]}", file=_sys.stderr, flush=True)
-        if result.returncode != 0:
-            print(f"[SYNC] Extractor FAILED (exit {result.returncode})", file=_sys.stderr, flush=True)
-        else:
+        # Issue #81 Group B: three exit codes. 0 = full success,
+        # 1 = full failure, 2 = partial. Partial is a data-quality
+        # alert, not a crash — the orchestrator's per-table _meta
+        # machinery already captured which tables succeeded; we just
+        # need to log loudly so operator alerting can pick it up.
+        if result.returncode == 0:
             print(f"[SYNC] Extractor OK", file=_sys.stderr, flush=True)
+        elif result.returncode == 2:
+            print(
+                f"[SYNC] Extractor PARTIAL FAILURE (exit 2) — some tables "
+                f"succeeded, some failed; see stderr for per-table errors. "
+                f"Successful tables will still be published by the orchestrator.",
+                file=_sys.stderr, flush=True,
+            )
+        else:
+            print(f"[SYNC] Extractor FAILED (exit {result.returncode})", file=_sys.stderr, flush=True)
 
         # Run custom connectors (Tier A: local mount)
         connectors_dir = Path(os.environ.get("CONNECTORS_DIR", str(Path(__file__).parent.parent.parent / "connectors" / "custom")))

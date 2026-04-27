@@ -15,6 +15,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
+- **BREAKING (ops)**: Keboola extractor now exits with three distinct
+  codes instead of two (issue #81 Group B / M14): `0` = full success,
+  `1` = full failure, `2` = **partial** failure (some tables succeeded,
+  some failed). Previously `exit(0)` fired even when 9 of 10 tables
+  failed, masking partial failures from the sync API and any operator
+  alerting hooked to non-zero exit codes. The sync API
+  (`POST /api/sync/trigger`) now logs `PARTIAL FAILURE (exit 2)` as a
+  data-quality alert (distinct from `FAILED (exit 1)`) and continues to
+  the orchestrator rebuild step — successful tables from this run plus
+  unchanged tables from previous runs stay queryable. Operators whose
+  alerting treated any non-zero exit as a hard error must teach it that
+  exit 2 is a partial-failure signal, not a deploy failure.
 - **BREAKING (security)**: The entire Script API is now **admin-only** (issue #44).
   `GET /api/scripts`, `POST /api/scripts/deploy`, `POST /api/scripts/run`, and
   `POST /api/scripts/{id}/run` all require the admin role; previously the list
