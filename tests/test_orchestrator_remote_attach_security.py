@@ -121,6 +121,47 @@ class TestTokenEnvAllowlist:
         SyncOrchestrator()._attach_remote_extensions(conn, "src1")
         assert _attach_call_count(sql_calls) == 1
 
+    def test_empty_string_override_falls_back_to_default(
+        self, captured_conn, monkeypatch
+    ):
+        """AGNES_REMOTE_ATTACH_TOKEN_ENVS='' should NOT lock everything down —
+        it falls through to the default. (Operator-typo defense.)"""
+        monkeypatch.setenv("AGNES_REMOTE_ATTACH_TOKEN_ENVS", "")
+        monkeypatch.setenv("KBC_TOKEN", "value")
+        conn, sql_calls, set_rows = captured_conn
+        set_rows([("alias1", "keboola", "https://x", "KBC_TOKEN")])
+        SyncOrchestrator()._attach_remote_extensions(conn, "src1")
+        assert _attach_call_count(sql_calls) == 1
+
+    def test_empty_token_env_skips_check(self, captured_conn, monkeypatch):
+        """token_env='' (the BigQuery-style env-auth path) skips the
+        allowlist check entirely. Verifies the BQ flow keeps working."""
+        conn, sql_calls, set_rows = captured_conn
+        set_rows([("bq", "bigquery", "project=x", "")])
+        SyncOrchestrator()._attach_remote_extensions(conn, "src1")
+        assert _attach_call_count(sql_calls) == 1
+
+    def test_structurally_invalid_token_env_refused(
+        self, captured_conn, monkeypatch, caplog
+    ):
+        """Even names on the allowlist via override must pass the structural
+        regex `^[A-Z][A-Z0-9_]{0,63}$`. A name with a space or lowercase
+        letter is refused regardless of allowlist contents."""
+        # Try to add a structurally-invalid name to the allowlist via
+        # override; the regex inside is_token_env_allowed must still refuse.
+        monkeypatch.setenv("AGNES_REMOTE_ATTACH_TOKEN_ENVS", "kbc_token,KBC TOKEN,LEGIT_TOKEN")
+        monkeypatch.setenv("LEGIT_TOKEN", "value")
+        conn, sql_calls, set_rows = captured_conn
+        set_rows([
+            ("a1", "keboola", "https://x", "kbc_token"),    # lowercase
+            ("a2", "keboola", "https://x", "KBC TOKEN"),    # space
+            ("a3", "keboola", "https://x", "LEGIT_TOKEN"),  # OK
+        ])
+        SyncOrchestrator()._attach_remote_extensions(conn, "src1")
+        # Only a3 should attach; a1 and a2 fail the structural regex even
+        # though the operator listed them in the override.
+        assert _attach_call_count(sql_calls) == 1
+
 
 class TestUrlEscape:
     def test_single_quote_in_url_is_escaped(self, captured_conn, monkeypatch):
