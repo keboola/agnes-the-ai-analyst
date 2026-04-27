@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import duckdb
 import pytest
 
+from connectors.bigquery.extractor import _detect_table_type
 from tests.helpers.contract import validate_extract_contract
 
 
@@ -190,27 +191,18 @@ class TestDetectTableType:
     """Detect whether a BQ entity is a base table or a view."""
 
     def test_base_table_returns_table(self):
-        from connectors.bigquery.extractor import _detect_table_type
-        from unittest.mock import MagicMock
-
         conn = MagicMock()
         conn.execute.return_value.fetchone.return_value = ("BASE TABLE",)
         result = _detect_table_type(conn, "proj", "ds", "tbl")
         assert result == "BASE TABLE"
 
     def test_view_returns_view(self):
-        from connectors.bigquery.extractor import _detect_table_type
-        from unittest.mock import MagicMock
-
         conn = MagicMock()
         conn.execute.return_value.fetchone.return_value = ("VIEW",)
         result = _detect_table_type(conn, "proj", "ds", "tbl")
         assert result == "VIEW"
 
     def test_missing_returns_none(self):
-        from connectors.bigquery.extractor import _detect_table_type
-        from unittest.mock import MagicMock
-
         conn = MagicMock()
         conn.execute.return_value.fetchone.return_value = None
         result = _detect_table_type(conn, "proj", "ds", "tbl")
@@ -218,14 +210,24 @@ class TestDetectTableType:
 
     def test_query_uses_bigquery_query_function(self):
         """Detection must use bigquery_query() table function (works on views via jobs API)."""
-        from connectors.bigquery.extractor import _detect_table_type
-        from unittest.mock import MagicMock
-
         conn = MagicMock()
         conn.execute.return_value.fetchone.return_value = ("VIEW",)
         _detect_table_type(conn, "my-proj", "my_ds", "my_tbl")
 
+        # SQL must use the bigquery_query() table function (not direct ref)
         sql = conn.execute.call_args[0][0]
         assert "bigquery_query" in sql.lower()
-        assert "INFORMATION_SCHEMA.TABLES" in sql
-        assert "my_tbl" in sql
+
+        # The inner BQ SQL is passed as a parameter, not f-stringed in.
+        # Verify both project and the BQ SQL appear in the bound params.
+        params = conn.execute.call_args[0][1]
+        assert "my-proj" in params, f"expected project in params, got: {params}"
+        # The inner BQ SQL is one of the params; it should reference INFORMATION_SCHEMA.TABLES
+        bq_sql_param = next(
+            (p for p in params if isinstance(p, str) and "INFORMATION_SCHEMA.TABLES" in p),
+            None,
+        )
+        assert bq_sql_param is not None, f"inner BQ SQL not found in params: {params}"
+        assert "my_ds" in bq_sql_param  # dataset is f-stringed into the BQ SQL identifier path
+        # Table name should NOT be inline in the BQ SQL — it goes through the param chain
+        assert "my_tbl" in params, f"table name should be a separate param, got: {params}"

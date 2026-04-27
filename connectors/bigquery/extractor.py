@@ -24,15 +24,21 @@ def _detect_table_type(
     """Return BQ entity type for `project.dataset.table`.
 
     Uses `bigquery_query()` table function which routes through the BQ jobs
-    API — works on tables, views, and materialized views alike. Returns one
-    of 'BASE TABLE', 'VIEW', 'MATERIALIZED_VIEW', or None if not found.
+    API — works on tables, views, and materialized views alike. Returns the
+    value of INFORMATION_SCHEMA.TABLES.table_type ('BASE TABLE', 'VIEW',
+    'MATERIALIZED_VIEW') or None if not found.
     """
     bq_sql = (
         f"SELECT table_type FROM `{project}.{dataset}.INFORMATION_SCHEMA.TABLES` "
-        f"WHERE table_name = '{table}' LIMIT 1"
+        f"WHERE table_name = ? LIMIT 1"
     )
-    duck_sql = f"SELECT * FROM bigquery_query('{project}', '{bq_sql}')"
-    row = conn.execute(duck_sql).fetchone()
+    # Parameter-bind project (1st arg of bigquery_query), the inner BQ SQL
+    # (2nd arg), and the table-name predicate. This avoids the nested-quote
+    # bug where inline `'{table}'` would close the outer `bigquery_query('...')`
+    # string. Note: bigquery_query forwards extra positional args as BQ query
+    # parameters, bound positionally to the `?` placeholders inside `bq_sql`.
+    duck_sql = "SELECT * FROM bigquery_query(?, ?, ?)"
+    row = conn.execute(duck_sql, [project, bq_sql, table]).fetchone()
     return row[0] if row else None
 
 
