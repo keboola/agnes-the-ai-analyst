@@ -13,6 +13,21 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 <!-- Add bullets here. Group: Added / Changed / Fixed / Removed / Internal.
      Mark breaking changes with **BREAKING** at the start of the bullet. -->
 
+### Changed
+
+- **BREAKING (ops)**: Keboola extractor now exits with three distinct
+  codes instead of two (issue #81 Group B / M14): `0` = full success,
+  `1` = full failure, `2` = **partial** failure (some tables succeeded,
+  some failed). Previously `exit(0)` fired even when 9 of 10 tables
+  failed, masking partial failures from the sync API and any operator
+  alerting hooked to non-zero exit codes. The sync API
+  (`POST /api/sync/trigger`) now logs `PARTIAL FAILURE (exit 2)` as a
+  data-quality alert (distinct from `FAILED (exit 1)`) and continues to
+  the orchestrator rebuild step — successful tables from this run plus
+  unchanged tables from previous runs stay queryable. Operators whose
+  alerting treated any non-zero exit as a hard error must teach it that
+  exit 2 is a partial-failure signal, not a deploy failure.
+
 ## [0.11.5] — 2026-04-27
 
 Follow-up release for PR #73: addresses four rounds of Devin AI review on the role-management-complete branch. No new public-API surface; the user-visible payoff is that v8→v9-migrated installations now work end-to-end (login flows, user list, admin nav, privilege revocation), and `make local-dev` startup is finally quiet.
