@@ -64,5 +64,5 @@ Open the project in Claude Code. The CLAUDE.md file will guide the AI assistant 
 
 ## Hackathon
 
-Point the shared `agnes-dev` VM at your branch image with `scripts/switch-dev-vm.sh <branch-slug>`. See [`HACKATHON.md`](HACKATHON.md) for the full deploy-and-develop playbook.
+See [`HACKATHON.md`](HACKATHON.md) for the deploy-and-develop playbook. Per-developer dev VMs are the supported pattern — point your VM at your branch image with `gcloud compute ssh <vm> --command "sudo sed -i 's/^AGNES_TAG=.*/AGNES_TAG=dev-<slug>/' /opt/agnes/.env && sudo /usr/local/bin/agnes-auto-upgrade.sh"`.
 <!-- dryrun 2026-04-21T19:12:08Z -->

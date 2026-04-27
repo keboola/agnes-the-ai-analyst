@@ -270,7 +270,7 @@ First tagged semver release. The `version = "2.x"` strings that appeared in earl
 - Bootstrap backdoor closed when passwordless seed admin exists.
 - urllib3 1.26→2.6.3 (resolves 4 Dependabot security alerts).
 - argon2-cffi adopted for password hashing.
-- See [docs/padak-security.md](docs/padak-security.md) for the full audit.
+- See [docs/security-audit-2026-04.md](docs/security-audit-2026-04.md) for the full audit (renamed from `docs/padak-security.md` in #94).
 
 ### Fixed — Other
 
