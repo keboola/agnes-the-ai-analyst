@@ -37,8 +37,8 @@ def client(tmp_path, monkeypatch):
 
 class TestScriptsAPI:
     def test_list_scripts_empty(self, client):
-        c, _, analyst_token = client
-        resp = c.get("/api/scripts", headers={"Authorization": f"Bearer {analyst_token}"})
+        c, admin_token, _ = client
+        resp = c.get("/api/scripts", headers={"Authorization": f"Bearer {admin_token}"})
         assert resp.status_code == 200
         assert resp.json()["count"] == 0
 

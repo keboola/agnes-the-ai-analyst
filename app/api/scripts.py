@@ -43,9 +43,15 @@ class ScriptResponse(BaseModel):
 
 @router.get("")
 async def list_scripts(
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_role(Role.ADMIN)),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
+    """List deployed scripts. Admin-only — issue #44.
+
+    `ScriptRepository.list_all()` returns the full row including the
+    script source code; non-admin callers had been able to read
+    admin-deployed scripts via this endpoint. The whole Script API is
+    admin-only now (deploy + run + list + undeploy)."""
     repo = ScriptRepository(conn)
     scripts = repo.list_all()
     return {"scripts": scripts, "count": len(scripts)}

@@ -22,6 +22,19 @@ class TestScriptsList:
         resp = c.get("/api/scripts")
         assert resp.status_code == 401
 
+    @pytest.mark.parametrize("role_token", ["analyst_token", "viewer_token", "km_admin_token"])
+    def test_list_scripts_requires_admin(self, seeded_app, role_token):
+        """Issue #44: list_all() returns the full row including the script
+        source code; non-admins must not be able to read admin-deployed
+        scripts via this endpoint."""
+        c = seeded_app["client"]
+        resp = c.get(
+            "/api/scripts", headers=_auth(seeded_app[role_token])
+        )
+        assert resp.status_code == 403, (
+            f"role {role_token} should be denied list, got {resp.status_code}"
+        )
+
 
 class TestScriptsDeploy:
     def test_deploy_safe_script(self, seeded_app):
