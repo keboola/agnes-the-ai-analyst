@@ -222,16 +222,26 @@ orchestrator builds without needing a real DuckDB extension installed.
 
 ```markdown
 ### Fixed
-- **Security (CRITICAL)**: hardened the connector → orchestrator trust boundary
-  (issue #81). Three fixes in `src/orchestrator.py::_attach_remote_extensions`:
-  (1) DuckDB extensions referenced by `_remote_attach` are now matched against an
-  allowlist (default: `keboola, bigquery, postgres, mysql, sqlite`; override via
-  `AGNES_REMOTE_ATTACH_EXTENSIONS`); (2) `token_env` names must match a structural
-  policy (`_TOKEN/_API_KEY/_AUTH` suffix, denylist of well-known runtime secrets like
-  `JWT_SECRET_KEY` / `SESSION_SECRET` / `DATABASE_URL`, or operator allowlist via
-  `AGNES_REMOTE_ATTACH_TOKEN_ENVS`); (3) the URL passed to `ATTACH` is now
-  single-quote-escaped (mirrors `src/db.py:411`) and its scheme is checked against
-  an allowlist (`https, bigquery, postgres, mysql, sqlite`).
+- **Security (CRITICAL)**: hardened the connector → orchestrator trust
+  boundary (issue #81). Three fixes in
+  `src/orchestrator.py::_attach_remote_extensions`:
+  (1) DuckDB extensions referenced by `_remote_attach` are now matched
+  against a hard allowlist (default: `keboola, bigquery`; override via
+  `AGNES_REMOTE_ATTACH_EXTENSIONS`). The install path splits between
+  built-in (LOAD only) and community (`INSTALL FROM community; LOAD`).
+  (2) `token_env` names are matched against a hard allowlist (default:
+  `KBC_TOKEN`, `KBC_STORAGE_TOKEN`, `KEBOOLA_STORAGE_TOKEN`,
+  `GOOGLE_APPLICATION_CREDENTIALS`; override via
+  `AGNES_REMOTE_ATTACH_TOKEN_ENVS`). Names must additionally match
+  `^[A-Z][A-Z0-9_]{0,63}$`. The earlier draft of this plan proposed a
+  structural suffix rule + denylist of runtime secrets; that approach was
+  abandoned in review because it required maintainers to remember to
+  denylist every new secret as it was added — a hard allowlist is safer.
+  (3) The URL passed to `ATTACH` is now single-quote-escaped (mirrors
+  `src/db.py:411`). No URL-scheme allowlist is enforced because BigQuery
+  uses `'project=<id>'` (no scheme); the extension allowlist + token
+  allowlist + escape together close the actual injection / exfiltration
+  paths.
 ```
 
 ### A.6 Rollout
