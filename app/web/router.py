@@ -19,6 +19,7 @@ import duckdb
 import jinja2
 
 from app.auth.dependencies import get_current_user, get_optional_user, require_role, _get_db
+from app.api.memory import _is_privileged_viewer, _effective_groups
 from src.rbac import Role
 from app.instance_config import (
     get_instance_name, get_instance_subtitle, get_datasets,
@@ -501,8 +502,12 @@ async def corporate_memory(
     cm_config = get_corporate_memory_config()
     governance_mode = cm_config.get("distribution_mode")
 
-    # Build stats
-    all_items = repo.list_items(limit=10000)
+    # Build stats — apply same privacy filters as /api/memory/stats
+    all_items = repo.list_items(
+        limit=10000,
+        exclude_personal=not _is_privileged_viewer(user),
+        user_groups=_effective_groups(user),
+    )
     categories = sorted(set(i.get("category", "") for i in all_items if i.get("category")))
     domains = sorted(set(i.get("domain", "") for i in all_items if i.get("domain")))
 

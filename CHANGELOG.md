@@ -63,7 +63,7 @@ Follow-up release for PR #73: addresses four rounds of Devin AI review on the ro
 ### Breaking Changes
 - `apply_decay()` signature changed: `decay_rate_monthly=` keyword argument removed; use `confidence.configure()` to set decay parameters
 - Default decay model switched from linear (-0.02/month) to exponential (half-life 12 months). Existing items will score lower after upgrade — migration note: `admin_mandate` items are protected by a 0.50 floor; `user_verification` items by a 0.40 floor; other source types may see score reductions up to ~50% at 12 months
-- DuckDB schema bumped v8 -> v10: adds `knowledge_items.audience VARCHAR` (v9) and `users.groups JSON` (v10); migration runs automatically on startup
+- DuckDB schema bumped v9 -> v12: adds context-engineering columns on `knowledge_items` + `knowledge_contradictions` + `session_extraction_state` (v10), `verification_evidence` table (v11), `users.groups JSON` (v12); migration runs automatically on startup
 ## [0.11.4] — 2026-04-27
 
 Role-management complete release. Sjednocuje legacy `users.role` enum (viewer/analyst/km_admin/admin) with the v8 internal-roles foundation under one model with implies hierarchy, ships admin UI + REST API + CLI for managing both group mappings and direct user grants, and wires `require_internal_role` for PAT-aware resolution so admin endpoints work uniformly across OAuth and headless callers.
