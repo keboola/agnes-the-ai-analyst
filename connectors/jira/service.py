@@ -507,6 +507,13 @@ class JiraService:
             logger.warning(f"Could not extract issue key from webhook event: {event_data.get('webhookEvent')}")
             return False
 
+        # Defense-in-depth: even if the webhook layer's validation is bypassed
+        # (e.g. a future internal caller invokes process_webhook_event directly),
+        # refuse a malformed key here. Issue #83.
+        if not is_valid_issue_key(issue_key):
+            logger.error(f"process_webhook_event: refusing malformed issue key {issue_key!r}")
+            return False
+
         webhook_event = event_data.get("webhookEvent", "unknown")
         logger.info(f"Processing webhook event: {webhook_event} for issue {issue_key}")
 
@@ -537,7 +544,16 @@ class JiraService:
         Returns:
             True if handled successfully
         """
-        file_path = self.data_dir / "issues" / f"{issue_key}.json"
+        # Defense-in-depth path-traversal guard (issue #83). Callers should
+        # already have validated; refuse anyway.
+        if not is_valid_issue_key(issue_key):
+            logger.error(f"_handle_deletion: refusing malformed issue key {issue_key!r}")
+            return False
+        try:
+            file_path = safe_join_under(self.data_dir / "issues", f"{issue_key}.json")
+        except ValueError as e:
+            logger.error(f"_handle_deletion: path traversal blocked for {issue_key!r}: {e}")
+            return False
 
         if file_path.exists():
             # Mark as deleted rather than removing

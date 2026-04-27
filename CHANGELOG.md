@@ -21,15 +21,24 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   full ingest pipeline. The handler now returns **503** when the secret is
   missing (operator-misconfiguration signal, distinct from 401 wrong-signature).
 - **Security (CRITICAL)**: Jira issue keys arriving via webhooks are now
-  validated against the canonical `^[A-Z][A-Z0-9_]{0,31}-\d{1,12}$` format
+  validated against the canonical `^[A-Z][A-Z0-9]{0,31}-\d{1,12}$` format
   before any filesystem operation (issue #83). Previously, `issue_key` flowed
   unsanitized into `connectors/jira/service.py` (`save_issue`,
-  `download_attachment`) and `connectors/jira/incremental_transform.py`,
-  enabling path traversal (`../../etc/passwd` style writes outside the
-  Jira data dir). New module `connectors/jira/validation.py` provides
-  `is_valid_issue_key` (regex whitelist) and `safe_join_under`
-  (`Path.resolve()` containment check) — both are enforced at every
-  filesystem boundary, defense-in-depth.
+  `download_attachment`, `_handle_deletion`, `process_webhook_event`) and
+  `connectors/jira/incremental_transform.py`, enabling path traversal
+  (`../../etc/passwd` style writes outside the Jira data dir). New module
+  `connectors/jira/validation.py` provides `is_valid_issue_key` (regex
+  whitelist; underscore deliberately excluded — Atlassian rejects underscores
+  in real project keys) and `safe_join_under` (`Path.resolve()` containment
+  check). Both are enforced at every filesystem boundary, defense-in-depth.
+- **Security (CRITICAL)**: `webhookEvent` (the second attacker-controlled field
+  in Jira webhook payloads) was used as a filename component in
+  `_log_webhook_event` without sanitization (issue #83 reviewer follow-up).
+  A payload with `webhookEvent: "../../tmp/pwn"` could write a JSON dump
+  outside `WEBHOOK_LOG_DIR`. The handler now strips everything that isn't
+  `[A-Za-z0-9_-]` (dot deliberately excluded to defeat `..` survival),
+  clips length to 64 chars, and routes the final filename through
+  `safe_join_under`.
 
 ## [0.11.5] — 2026-04-27
 

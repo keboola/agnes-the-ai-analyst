@@ -6,7 +6,7 @@ from connectors.jira.validation import is_valid_issue_key, safe_join_under
 
 
 class TestIsValidIssueKey:
-    @pytest.mark.parametrize("key", ["TEST-1", "PROJ-42", "ABC-123", "AB1-9", "A-1", "ABC_DEF-1"])
+    @pytest.mark.parametrize("key", ["TEST-1", "PROJ-42", "ABC-123", "AB1-9", "A-1", "AB42-1234567"])
     def test_valid(self, key):
         assert is_valid_issue_key(key) is True
 
@@ -22,8 +22,13 @@ class TestIsValidIssueKey:
             "../etc/passwd",
             "TEST/1",
             "TEST-1\x00",
+            "TEST-1\r\n",
             "1-TEST",          # starts with digit
             "TEST-1.json",
+            "ABC_DEF-1",       # underscore — Atlassian rejects, so do we
+            "А-1",             # Cyrillic А (looks like Latin A)
+            "A" * 100 + "-1",  # absurd project length
+            "A-" + "9" * 20,   # absurd issue number length
             None,
             123,
             ["TEST-1"],

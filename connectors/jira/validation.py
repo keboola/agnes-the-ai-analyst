@@ -14,10 +14,15 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-# Jira issue keys: project key (one uppercase letter followed by uppercase
-# letters/digits/underscore) + dash + issue number. Bounded length keeps
-# this affordable to evaluate even on adversarial input.
-_ISSUE_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,31}-\d{1,12}$")
+# Jira issue keys: project key + dash + issue number.
+#
+# Atlassian's project-key validator: first char must be a letter; the rest
+# are letters and digits only. Underscores are NOT allowed in real project
+# keys despite some informal docs suggesting otherwise — confirmed via the
+# Atlassian project-creation form, which rejects `A_B`. Bounded length
+# (32 chars on the project, 12 digits on the number) keeps regex evaluation
+# cheap on adversarial input.
+_ISSUE_KEY_RE = re.compile(r"^[A-Z][A-Z0-9]{0,31}-\d{1,12}$")
 
 
 def is_valid_issue_key(key: object) -> bool:

@@ -14,8 +14,17 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
+import re
+
 from connectors.jira.service import Config, get_jira_service
-from connectors.jira.validation import is_valid_issue_key
+from connectors.jira.validation import is_valid_issue_key, safe_join_under
+
+# webhookEvent is attacker-controlled; sanitize before using as a filename
+# component. Real Jira webhookEvent values are like "jira:issue_updated" —
+# alphanumeric + colon. We strip everything that isn't alphanumeric/underscore/dash
+# (the colon → underscore mapping happens via sub). Dots are deliberately
+# refused so `..` cannot survive sanitization as a directory component.
+_WEBHOOK_EVENT_SAFE_RE = re.compile(r"[^A-Za-z0-9_-]+")
 
 logger = logging.getLogger(__name__)
 
@@ -53,13 +62,27 @@ def _verify_signature(payload: bytes, signature: str | None) -> bool:
 
 
 def _log_webhook_event(event_data: dict) -> None:
-    """Log webhook event to file for debugging/audit."""
+    """Log webhook event to file for debugging/audit.
+
+    `webhookEvent` is attacker-controlled. Sanitize it through a strict
+    whitelist before using as a filename component (issue #83) and apply
+    `safe_join_under` to catch anything the regex misses.
+    """
     try:
         WEBHOOK_LOG_DIR.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
-        event_type = event_data.get("webhookEvent", "unknown").replace(":", "_")
+        raw_event = event_data.get("webhookEvent", "unknown")
+        if not isinstance(raw_event, str):
+            raw_event = "unknown"
+        # Replace any non-`[A-Za-z0-9._-]` run with a single `_`. Also clip to
+        # 64 chars to bound filename length on hostile input.
+        event_type = _WEBHOOK_EVENT_SAFE_RE.sub("_", raw_event)[:64] or "unknown"
         filename = f"{timestamp}_{event_type}.json"
-        filepath = WEBHOOK_LOG_DIR / filename
+        try:
+            filepath = safe_join_under(WEBHOOK_LOG_DIR, filename)
+        except ValueError as e:
+            logger.warning(f"Refusing webhook log filename {filename!r}: {e}")
+            return
 
         with open(filepath, "w") as f:
             json.dump(event_data, f, indent=2, default=str)

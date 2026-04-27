@@ -147,12 +147,15 @@ def test_unconfigured_secret_returns_503(tmp_path, monkeypatch):
         "../foo",
         "TEST-1/../../../bar",
         "TEST-1\x00.json",
-        "test-1",          # lowercase project — Jira keys are uppercase
-        "TEST",            # missing -<num>
-        "TEST-",           # missing num
-        "-1",              # missing project
-        "",                # empty
-        "A" * 100 + "-1",  # absurd length
+        "TEST-1\r\n",                  # CRLF injection
+        "test-1",                      # lowercase project — Jira keys are uppercase
+        "TEST",                        # missing -<num>
+        "TEST-",                       # missing num
+        "-1",                          # missing project
+        "",                            # empty
+        "A" * 100 + "-1",              # absurd length
+        "ABC_DEF-1",                   # underscore — not allowed in real Jira
+        "А-1",                         # Cyrillic А (looks like Latin A)
     ],
 )
 def test_path_traversal_in_issue_key_rejected(webhook_client, bad_key):
@@ -197,3 +200,46 @@ def test_valid_issue_key_accepted(webhook_client):
             },
         )
     assert resp.status_code == 200
+
+
+def test_webhook_event_path_traversal_sanitized(webhook_client, tmp_path, monkeypatch):
+    """Issue #83: `webhookEvent` is attacker-controlled and was used to build
+    the webhook log filename. A payload with `../../tmp/pwn` for `webhookEvent`
+    must NOT escape the WEBHOOK_LOG_DIR; the file (if written at all) lands
+    under WEBHOOK_LOG_DIR with the traversal characters sanitized."""
+    from unittest.mock import patch
+    import app.api.jira_webhooks as wh
+
+    log_dir = tmp_path / "webhook_log"
+    log_dir.mkdir()
+    monkeypatch.setattr(wh, "WEBHOOK_LOG_DIR", log_dir)
+
+    payload = json.dumps({
+        "webhookEvent": "../../tmp/pwn",
+        "issue": {"key": "TEST-1"},
+    }).encode()
+    sig = _sign(payload, "test-webhook-secret")
+
+    with patch("app.api.jira_webhooks.get_jira_service") as mock_svc:
+        mock_svc.return_value.is_configured.return_value = True
+        mock_svc.return_value.process_webhook_event.return_value = True
+
+        resp = webhook_client.post(
+            "/webhooks/jira",
+            content=payload,
+            headers={
+                "Content-Type": "application/json",
+                "X-Hub-Signature-256": sig,
+            },
+        )
+
+    assert resp.status_code == 200
+    # No file landed outside log_dir.
+    parent = log_dir.parent
+    assert not (parent / "tmp" / "pwn.json").exists(), "path traversal succeeded"
+    # Either nothing was written (refused), or file is under log_dir with
+    # traversal chars replaced by underscores.
+    written = list(log_dir.glob("*.json"))
+    for f in written:
+        assert f.is_relative_to(log_dir), f"file {f} escaped log dir"
+        assert "/" not in f.name and ".." not in f.name
