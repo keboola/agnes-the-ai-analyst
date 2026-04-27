@@ -60,3 +60,16 @@ Tags: {tags}
 ---
 
 Set safe=true if the item is safe to share, or safe=false with a reason if it contains sensitive data."""
+
+TOPIC_TAG_PROMPT = """Assign topics from the vocabulary to each knowledge item.
+
+Vocabulary (use ONLY these values): {vocab_list}
+
+Items:
+{items_text}
+
+Rules:
+- Assign 1-3 topics per item from the vocabulary above.
+- Pick topics that describe the SUBJECT of the item, not how it was written.
+- If nothing fits, assign the single closest match.
+- Return every item id exactly once."""

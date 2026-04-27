@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- **Automatic topic tagging** — Haiku assigns topics from a shared vocabulary (`data`, `automation`, `reports`, `alerts`, `metrics`, `queries`, `infrastructure`, `processes`, `integrations`, `debugging`, `performance`, `access`) to knowledge items at creation time (via `POST /api/memory`) and during collector runs; topics are stored in the existing `tags` field alongside free-form keywords; tagging is best-effort and never blocks item creation
+
 <!-- Add bullets here. Group: Added / Changed / Fixed / Removed / Internal.
      Mark breaking changes with **BREAKING** at the start of the bullet. -->
 

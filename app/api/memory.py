@@ -106,13 +106,38 @@ async def create_knowledge(
 ):
     repo = KnowledgeRepository(conn)
     item_id = str(uuid.uuid4())
+
+    # Best-effort auto-tagging — runs only when an LLM extractor is configured.
+    tags = list(request.tags) if request.tags else []
+    try:
+        from config.loader import load_instance_config
+        from connectors.llm import create_extractor
+        from services.corporate_memory.tagger import auto_tag_items
+        cfg = load_instance_config()
+        ai_cfg = cfg.get("ai")
+        if ai_cfg:
+            extractor = create_extractor(ai_cfg)
+            stub = [{"id": item_id, "title": request.title, "content": request.content}]
+            assignments = auto_tag_items(stub, extractor)
+            topics = assignments.get(item_id, [])
+            if topics:
+                seen: set[str] = set()
+                merged: list[str] = []
+                for t in topics + tags:
+                    if t not in seen:
+                        seen.add(t)
+                        merged.append(t)
+                tags = merged
+    except Exception:
+        pass  # tagging is non-critical — never block item creation
+
     repo.create(
         id=item_id,
         title=request.title,
         content=request.content,
         category=request.category,
         source_user=user.get("email"),
-        tags=request.tags,
+        tags=tags or None,
     )
     return {"id": item_id, "status": "pending"}
 
