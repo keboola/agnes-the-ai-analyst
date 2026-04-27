@@ -13,6 +13,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 <!-- Add bullets here. Group: Added / Changed / Fixed / Removed / Internal.
      Mark breaking changes with **BREAKING** at the start of the bullet. -->
 
+### Changed
+
+- **BREAKING (security)**: `POST /api/scripts/run` and `POST /api/scripts/{id}/run` now require the **admin** role, not analyst (issue #44). The AST + string-blocklist sandbox is defense-in-depth and known to be bypassable (it does not block `vars()`, `type()`, `__class__.__bases__` introspection chains, and similar dunder paths) — the primary trust boundary is the role gate. `POST /api/scripts/deploy` remains analyst-accessible (storing a script does not execute it). Operators who relied on analysts running scripts must either grant them the admin role or run the scripts on their behalf.
+
 ## [0.11.5] — 2026-04-27
 
 Follow-up release for PR #73: addresses four rounds of Devin AI review on the role-management-complete branch. No new public-API surface; the user-visible payoff is that v8→v9-migrated installations now work end-to-end (login flows, user list, admin nav, privilege revocation), and `make local-dev` startup is finally quiet.

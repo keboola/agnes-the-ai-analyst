@@ -52,18 +52,19 @@ class TestScriptsDeploy:
     def test_deploy_script_with_blocked_import_deploys_ok_but_run_fails(self, seeded_app):
         """Deploy stores scripts as-is; safety validation happens at run time, not deploy time."""
         c = seeded_app["client"]
-        token = seeded_app["analyst_token"]
-        # Deploy succeeds (no pre-validation at deploy time)
+        analyst_token = seeded_app["analyst_token"]
+        admin_token = seeded_app["admin_token"]
+        # Deploy succeeds as analyst (no pre-validation at deploy time)
         deploy_resp = c.post(
             "/api/scripts/deploy",
             json={"name": "bad_import", "source": "import os; print(os.getcwd())"},
-            headers=_auth(token),
+            headers=_auth(analyst_token),
         )
         assert deploy_resp.status_code == 201
         script_id = deploy_resp.json()["id"]
 
-        # Running it should fail with 400 due to blocked import
-        run_resp = c.post(f"/api/scripts/{script_id}/run", headers=_auth(token))
+        # Running it should fail with 400 due to blocked import (admin-only endpoint)
+        run_resp = c.post(f"/api/scripts/{script_id}/run", headers=_auth(admin_token))
         assert run_resp.status_code == 400
         assert "Blocked" in run_resp.json()["detail"] or "disallowed" in run_resp.json()["detail"]
 
@@ -92,7 +93,7 @@ class TestScriptsDeploy:
 class TestScriptsRun:
     def test_run_adhoc_safe_script(self, seeded_app):
         c = seeded_app["client"]
-        token = seeded_app["analyst_token"]
+        token = seeded_app["admin_token"]
         resp = c.post(
             "/api/scripts/run",
             json={"source": "print('hello from adhoc')", "name": "adhoc_test"},
@@ -105,7 +106,7 @@ class TestScriptsRun:
 
     def test_run_adhoc_blocked_os_module(self, seeded_app):
         c = seeded_app["client"]
-        token = seeded_app["analyst_token"]
+        token = seeded_app["admin_token"]
         resp = c.post(
             "/api/scripts/run",
             json={"source": "import sys; print(sys.path)", "name": "bad"},
@@ -121,9 +122,23 @@ class TestScriptsRun:
         )
         assert resp.status_code == 401
 
+    def test_run_adhoc_requires_admin(self, seeded_app):
+        """Regression for issue #44: analyst must NOT be able to run scripts.
+
+        The AST/string sandbox is defense-in-depth and known-bypassable
+        (vars(), type(), __class__ chain, etc.); the primary trust boundary
+        is the role gate. Viewer + analyst → 403."""
+        c = seeded_app["client"]
+        resp = c.post(
+            "/api/scripts/run",
+            json={"source": "print('x')", "name": "should_be_blocked"},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert resp.status_code == 403
+
     def test_run_adhoc_no_source_returns_400(self, seeded_app):
         c = seeded_app["client"]
-        token = seeded_app["analyst_token"]
+        token = seeded_app["admin_token"]
         resp = c.post(
             "/api/scripts/run",
             json={"name": "no_source"},
@@ -133,24 +148,38 @@ class TestScriptsRun:
 
     def test_run_deployed_script(self, seeded_app):
         c = seeded_app["client"]
-        token = seeded_app["analyst_token"]
-        # Deploy first
+        analyst_token = seeded_app["analyst_token"]
+        admin_token = seeded_app["admin_token"]
+        # Deploy as analyst
         deploy_resp = c.post(
             "/api/scripts/deploy",
             json={"name": "calc", "source": "print(2+2)"},
-            headers=_auth(token),
+            headers=_auth(analyst_token),
         )
         assert deploy_resp.status_code == 201
         script_id = deploy_resp.json()["id"]
 
-        # Run deployed script
-        resp = c.post(f"/api/scripts/{script_id}/run", headers=_auth(token))
+        # Run deployed script — admin only
+        resp = c.post(f"/api/scripts/{script_id}/run", headers=_auth(admin_token))
         assert resp.status_code == 200
         assert "4" in resp.json()["stdout"]
 
+    def test_run_deployed_requires_admin(self, seeded_app):
+        """Regression for issue #44: analyst must NOT be able to run a deployed script."""
+        c = seeded_app["client"]
+        analyst_token = seeded_app["analyst_token"]
+        deploy_resp = c.post(
+            "/api/scripts/deploy",
+            json={"name": "blocked_run", "source": "print('hi')"},
+            headers=_auth(analyst_token),
+        )
+        script_id = deploy_resp.json()["id"]
+        resp = c.post(f"/api/scripts/{script_id}/run", headers=_auth(analyst_token))
+        assert resp.status_code == 403
+
     def test_run_nonexistent_script_returns_404(self, seeded_app):
         c = seeded_app["client"]
-        token = seeded_app["analyst_token"]
+        token = seeded_app["admin_token"]
         resp = c.post("/api/scripts/nonexistent-id/run", headers=_auth(token))
         assert resp.status_code == 404
 

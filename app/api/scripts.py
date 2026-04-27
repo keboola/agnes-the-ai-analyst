@@ -76,10 +76,11 @@ async def deploy_script(
 @router.post("/{script_id}/run")
 async def run_deployed_script(
     script_id: str,
-    user: dict = Depends(require_role(Role.ANALYST)),
+    user: dict = Depends(require_role(Role.ADMIN)),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Run a deployed script by ID."""
+    """Run a deployed script by ID. Admin-only — the AST/string sandbox is
+    defense-in-depth, not a primary trust boundary (issue #44)."""
     repo = ScriptRepository(conn)
     script = repo.get(script_id)
     if not script:
@@ -90,9 +91,9 @@ async def run_deployed_script(
 @router.post("/run")
 async def run_adhoc_script(
     request: RunScriptRequest,
-    user: dict = Depends(require_role(Role.ANALYST)),
+    user: dict = Depends(require_role(Role.ADMIN)),
 ):
-    """Run an ad-hoc Python script (not deployed)."""
+    """Run an ad-hoc Python script (not deployed). Admin-only — see /{script_id}/run."""
     if not request.source:
         raise HTTPException(status_code=400, detail="Script source required")
     return _execute_script(request.source, request.name or "adhoc")
