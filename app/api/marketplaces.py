@@ -15,7 +15,8 @@ import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from app.auth.dependencies import Role, _get_db, require_role
+from app.auth.access import require_admin
+from app.auth.dependencies import _get_db
 from src.marketplace import (
     MarketplaceNotFound,
     delete_marketplace_dir,
@@ -179,7 +180,7 @@ def _persist_token(env_name: str, value: str) -> None:
 
 @router.get("", response_model=List[MarketplaceResponse])
 async def list_marketplaces(
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     counts = MarketplacePluginsRepository(conn).count_by_marketplace()
@@ -192,7 +193,7 @@ async def list_marketplaces(
 @router.get("/{marketplace_id}/plugins", response_model=List[PluginResponse])
 async def list_plugins(
     marketplace_id: str,
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Return the cached plugin list for a marketplace.
@@ -223,7 +224,7 @@ async def list_plugins(
 async def create_marketplace(
     payload: CreateMarketplaceRequest,
     request: Request,
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     slug = (payload.slug or "").strip().lower()
@@ -269,7 +270,7 @@ async def create_marketplace(
 async def update_marketplace(
     marketplace_id: str,
     payload: UpdateMarketplaceRequest,
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     repo = MarketplaceRegistryRepository(conn)
@@ -337,7 +338,7 @@ async def update_marketplace(
 async def delete_marketplace(
     marketplace_id: str,
     purge: bool = False,
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     repo = MarketplaceRegistryRepository(conn)
@@ -382,7 +383,7 @@ async def delete_marketplace(
 @router.post("/{marketplace_id}/sync")
 async def trigger_sync(
     marketplace_id: str,
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     try:

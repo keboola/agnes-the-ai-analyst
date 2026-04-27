@@ -175,18 +175,28 @@ so FastAPI can read their contents from disk.
   (keyed by `(marketplace_id, plugin_name)`).
 - `src/marketplace.py` handles clone/fetch/reset with token redaction in any surfaced error message.
 
-## Plugin Access (Groups)
+## Access control (v12)
 
-Admins map which user group has access to which plugin from a marketplace:
+Two layers, no role hierarchy. Full reference: [`docs/RBAC.md`](docs/RBAC.md).
 
-- `user_groups`  — named groups. Two are seeded as `is_system=TRUE` at startup
-  and cannot be renamed or deleted: `Admin` (implicit access to everything)
-  and `Everyone` (fallback for users with no explicit groups).
-- `plugin_access` — `(group_id, marketplace_id, plugin_name)` mapping, one
-  row per grant. Managed from `/admin/plugin-access`.
-- `users.groups` — JSON array of group names the user belongs to. Populated
-  from external auth claims at login (sync to be wired later); admin can set
-  this manually via SQL for testing. Empty/missing → treated as `Everyone`.
+- `user_groups` — named groups. Two seeded as `is_system=TRUE` at startup:
+  `Admin` (god-mode short-circuit on every authorization check) and
+  `Everyone` (auto-membership for every user).
+- `user_group_members` — `(user_id, group_id, source)`. `source ∈
+  {admin, google_sync, system_seed}` so each writer only manipulates its own
+  rows; Google's nightly DELETE+INSERT does not clobber admin-added members.
+- `resource_grants` — generic `(group, resource_type, resource_id)` triple.
+  Replaces `plugin_access` from v11; the same shape now covers any future
+  entity-scoped grant (datasets, knowledge categories, …).
+
+Resource types are an `app.resource_types.ResourceType` `StrEnum` — adding a
+new one is one enum member plus an entry in `RESOURCE_TYPE_META`. No DB
+migration. Endpoints gate with either `require_admin` (app-level) or
+`require_resource_access(ResourceType.X, "{path}")` (entity-level), both from
+`app.auth.access`.
+
+Admin UI: `/admin/access`. CLI: `da admin group {list,create,delete,members,
+add-member,remove-member}` and `da admin grant {list,create,delete}`.
 
 ## Claude Code marketplace endpoint
 
@@ -252,11 +262,9 @@ Auth providers in `app/auth/` (FastAPI-based):
 - **Email**: Email magic link (itsdangerous token)
 - **Desktop**: JWT for API
 
-### RBAC (role-based access control)
+### RBAC
 
-Three-layer model: external Cloud Identity groups → admin-curated `group_mappings` → internal roles (`internal_roles` table) → resolved into `session["internal_roles"]` at sign-in OR fetched from `user_role_grants` per request for PAT/headless callers. `core.*` roles (viewer/analyst/km_admin/admin) carry the legacy hierarchy via `implies` JSON; module authors register their own keys (e.g. `corporate_memory.curator`) at import time and gate endpoints with `Depends(require_internal_role("<key>"))`.
-
-**Contributors building a new module or capability — read [`docs/RBAC.md`](docs/RBAC.md) before adding endpoints.** It covers: picking a role key (naming convention, namespace), `register_internal_role` lifecycle, gating with `require_internal_role` vs. the `require_admin` / `require_role(Role.X)` thin wrappers, declaring implies hierarchies inside your module, the `_hydrate_legacy_role` shim that keeps `user["role"]` reads working, and the admin workflows (UI / CLI / REST) for binding groups and granting roles. Quickstart sections by audience: operator, end-user, module author.
+See **[Access control (v12)](#access-control-v12)** above and [`docs/RBAC.md`](docs/RBAC.md) for the full reference. TL;DR for module authors: gate endpoints with `Depends(require_admin)` for app-level mutations or `Depends(require_resource_access(ResourceType.X, "{path}"))` for entity-scoped grants. Add a new resource type by extending the `ResourceType` `StrEnum` in `app/resource_types.py`.
 
 ## Release & deploy workflows
 
@@ -301,7 +309,7 @@ Module sets `lifecycle { ignore_changes = [metadata_startup_script] }` on `googl
 ## Key Implementation Details
 
 ### DuckDB Schema (src/db.py)
-- Schema v11 with auto-migration v1→…→v11 (v5 adds `users.active`, v6 adds `personal_access_tokens`, v7 adds `personal_access_tokens.last_used_ip`, v8 adds `internal_roles` + `group_mappings`, v9 adds `user_role_grants` + `internal_roles.implies/is_core` and seeds `core.*` hierarchy from legacy `users.role`, v10 adds `marketplace_registry` + `marketplace_plugins` + `user_groups` + `plugin_access`, v11 adds `users.groups` + `user_groups.is_system`)
+- Schema v12 with auto-migration v1→…→v12 (v5 adds `users.active`, v6 adds `personal_access_tokens`, v7 adds `personal_access_tokens.last_used_ip`, v8/v9 added the legacy internal_roles/role-grants tables, v10 added marketplace_registry + marketplace_plugins + user_groups + plugin_access, v11 added users.groups JSON + user_groups.is_system, **v12 replaces internal_roles/group_mappings/user_role_grants/plugin_access with user_group_members + resource_grants and drops users.groups JSON** — see CHANGELOG and docs/RBAC.md)
 - `table_registry`: id, name, source_type, bucket, source_table, query_mode, sync_schedule, etc.
 - `sync_state`, `sync_history`: track extraction progress
 - `users`, `dataset_permissions`, `audit_log`: auth + RBAC

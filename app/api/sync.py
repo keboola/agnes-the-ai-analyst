@@ -12,7 +12,8 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 import duckdb
 
-from app.auth.dependencies import get_current_user, require_role, Role, _get_db
+from app.auth.access import require_admin
+from app.auth.dependencies import get_current_user, _get_db
 from app.utils import get_data_dir as _get_data_dir
 from src.repositories.sync_state import SyncStateRepository
 from src.repositories.sync_settings import SyncSettingsRepository, DatasetPermissionRepository
@@ -256,7 +257,7 @@ async def sync_manifest(
 async def trigger_sync(
     background_tasks: BackgroundTasks,
     tables: Optional[List[str]] = None,
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
 ):
     """Trigger data sync from configured source. Admin only. Runs in background."""
     background_tasks.add_task(_run_sync, tables)

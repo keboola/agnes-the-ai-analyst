@@ -1,17 +1,21 @@
 """Resolver: authenticated user → allowed plugins across all marketplaces.
 
 The marketplace endpoint aggregates plugins from every registered marketplace
-and returns only those the caller is allowed to see. Access is resolved through
-the user's groups:
+and returns only those the caller is allowed to see. Access is resolved
+through ``resource_grants`` (resource_type='marketplace_plugin'):
 
-    user.role == "admin"  OR  "Admin" in user.groups → everything
-    otherwise                                         → join through plugin_access
-    user.groups == []                                 → fallback to ["Everyone"]
+    user in Admin group       → every plugin across all marketplaces
+    otherwise                 → distinct plugins granted to any of the
+                                user's groups (Everyone is implicit)
 
 Plugins from different marketplaces that happen to share a name are NOT the
 same plugin — the caller needs both. We therefore prefix every plugin name
-with its marketplace slug (`<slug>-<plugin_name>`) when projecting out, so the
-merged marketplace.json never has colliding entries.
+with its marketplace slug (`<slug>-<plugin_name>`) when projecting out, so
+the merged marketplace.json never has colliding entries.
+
+resource_id format for ``marketplace_plugin`` grants is
+``<marketplace_slug>/<plugin_name>`` — the slash is the canonical separator;
+neither slugs nor plugin names contain slashes (both regex-constrained).
 """
 
 from __future__ import annotations
@@ -19,48 +23,13 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Iterable, List, Optional
+from typing import Any, Iterable, List
 
 import duckdb
 
+from app.auth.access import _user_group_ids, is_user_admin
+from app.resource_types import ResourceType
 from app.utils import get_marketplaces_dir
-
-ADMIN_GROUP = "Admin"
-EVERYONE_GROUP = "Everyone"
-
-
-def _parse_groups(raw: Any) -> List[str]:
-    """users.groups is a JSON column — DuckDB returns it as str (or None/list)."""
-    if raw is None:
-        return []
-    if isinstance(raw, list):
-        return [str(g) for g in raw if isinstance(g, (str, int))]
-    if isinstance(raw, str):
-        if not raw.strip():
-            return []
-        try:
-            decoded = json.loads(raw)
-        except (ValueError, TypeError):
-            return []
-        if isinstance(decoded, list):
-            return [str(g) for g in decoded if isinstance(g, (str, int))]
-        return []
-    return []
-
-
-def resolve_user_groups(user: dict) -> List[str]:
-    """Groups that gate this user's marketplace view.
-
-    - role == "admin" → forced ["Admin"] regardless of explicit groups
-    - explicit groups non-empty → those groups verbatim
-    - no explicit groups → fallback ["Everyone"]
-    """
-    if (user.get("role") or "").lower() == "admin":
-        return [ADMIN_GROUP]
-    groups = _parse_groups(user.get("groups"))
-    if not groups:
-        return [EVERYONE_GROUP]
-    return groups
 
 
 def _resolve_raw(raw: Any) -> dict:
@@ -102,10 +71,10 @@ def resolve_allowed_plugins(
     name — so ETag / git commit hash stay stable as long as the underlying
     content is unchanged.
     """
-    groups = resolve_user_groups(user)
+    user_id = user.get("id")
     root = get_marketplaces_dir()
 
-    if ADMIN_GROUP in groups:
+    if user_id and is_user_admin(user_id, conn):
         sql = (
             "SELECT mp.marketplace_id, mp.name, mp.version, mp.raw "
             "FROM marketplace_plugins mp "
@@ -115,19 +84,25 @@ def resolve_allowed_plugins(
         rows = conn.execute(sql).fetchall()
     else:
         # Distinct (marketplace_id, plugin_name) across all of the user's
-        # groups. If two groups grant the same plugin, it still appears once.
-        placeholders = ", ".join(["?"] * len(groups))
+        # groups (Everyone is implicit via _user_group_ids). If two groups
+        # grant the same plugin, it still appears once.
+        group_ids = _user_group_ids(user_id, conn) if user_id else set()
+        if not group_ids:
+            return []
+        placeholders = ",".join(["?"] * len(group_ids))
         sql = (
             "SELECT DISTINCT mp.marketplace_id, mp.name, mp.version, mp.raw "
-            "FROM plugin_access pa "
-            "JOIN user_groups ug ON ug.id = pa.group_id "
+            "FROM resource_grants rg "
             "JOIN marketplace_plugins mp "
-            "  ON mp.marketplace_id = pa.marketplace_id AND mp.name = pa.plugin_name "
-            "JOIN marketplace_registry mr ON mr.id = pa.marketplace_id "
-            f"WHERE ug.name IN ({placeholders}) "
+            "  ON mp.marketplace_id || '/' || mp.name = rg.resource_id "
+            "JOIN marketplace_registry mr ON mr.id = mp.marketplace_id "
+            f"WHERE rg.group_id IN ({placeholders}) "
+            "  AND rg.resource_type = ? "
             "ORDER BY mr.registered_at, mp.name"
         )
-        rows = conn.execute(sql, groups).fetchall()
+        rows = conn.execute(
+            sql, [*group_ids, ResourceType.MARKETPLACE_PLUGIN.value],
+        ).fetchall()
 
     result: List[dict] = []
     for marketplace_id, name, version, raw in rows:

@@ -604,10 +604,10 @@ class TestGetAnalyticsDbReadonly:
             conn.close()
 
 
-class TestSchemaV10:
-    """Tests for v10: users.groups JSON column + user_groups.is_system BOOLEAN."""
+class TestSchemaV12:
+    """Tests for v12: user_group_members + resource_grants tables."""
 
-    def test_users_has_groups_column(self, tmp_path, monkeypatch):
+    def test_user_group_members_table_exists(self, tmp_path, monkeypatch):
         _setup_data_dir(tmp_path, monkeypatch)
         from src.db import get_system_db
 
@@ -616,14 +616,15 @@ class TestSchemaV10:
             cols = {
                 r[0]
                 for r in conn.execute(
-                    "SELECT column_name FROM information_schema.columns WHERE table_name='users'"
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name='user_group_members'"
                 ).fetchall()
             }
-            assert "groups" in cols
+            assert {"user_id", "group_id", "source"} <= cols
         finally:
             conn.close()
 
-    def test_user_groups_has_is_system_column(self, tmp_path, monkeypatch):
+    def test_resource_grants_table_exists(self, tmp_path, monkeypatch):
         _setup_data_dir(tmp_path, monkeypatch)
         from src.db import get_system_db
 
@@ -632,105 +633,131 @@ class TestSchemaV10:
             cols = {
                 r[0]
                 for r in conn.execute(
-                    "SELECT column_name FROM information_schema.columns WHERE table_name='user_groups'"
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name='resource_grants'"
                 ).fetchall()
             }
-            assert "is_system" in cols
+            assert {"id", "group_id", "resource_type", "resource_id"} <= cols
         finally:
             conn.close()
 
-    def test_v9_to_v10_migration(self, tmp_path, monkeypatch):
-        """A v9 DB gets both new columns after running _ensure_schema."""
+    def test_admin_and_everyone_seeded(self, tmp_path, monkeypatch):
+        _setup_data_dir(tmp_path, monkeypatch)
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        try:
+            rows = {
+                r[0]: r[1] for r in conn.execute(
+                    "SELECT name, is_system FROM user_groups"
+                ).fetchall()
+            }
+            assert rows.get("Admin") is True
+            assert rows.get("Everyone") is True
+        finally:
+            conn.close()
+
+    def test_legacy_tables_dropped(self, tmp_path, monkeypatch):
+        _setup_data_dir(tmp_path, monkeypatch)
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        try:
+            existing = {
+                r[0] for r in conn.execute(
+                    "SELECT table_name FROM information_schema.tables"
+                ).fetchall()
+            }
+            for legacy in ("internal_roles", "group_mappings", "user_role_grants", "plugin_access"):
+                assert legacy not in existing, f"{legacy} should have been dropped in v12"
+        finally:
+            conn.close()
+
+    def test_v11_to_v12_migration_backfill(self, tmp_path, monkeypatch):
+        """A v11 DB with sample data is fully migrated and backfilled."""
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        import json
+        import uuid
         import duckdb as _duckdb
-        from src.db import _ensure_schema, get_schema_version, SCHEMA_VERSION
+        from src.db import get_system_db, get_schema_version, SCHEMA_VERSION
 
         db_path = tmp_path / "state" / "system.duckdb"
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = _duckdb.connect(str(db_path))
-        try:
-            # Minimal v9 schema: just schema_version + the two tables we mutate
-            conn.execute(
-                "CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP DEFAULT current_timestamp);"
-                "INSERT INTO schema_version (version) VALUES (9);"
-            )
-            # v9-shaped tables (no groups, no is_system)
-            conn.execute("""
-                CREATE TABLE users (
-                    id VARCHAR PRIMARY KEY,
-                    email VARCHAR UNIQUE NOT NULL,
-                    name VARCHAR,
-                    role VARCHAR DEFAULT 'analyst',
-                    active BOOLEAN NOT NULL DEFAULT TRUE
-                );
-                INSERT INTO users (id, email, name, role) VALUES ('u1', 'x@y', 'X', 'analyst');
-                CREATE TABLE user_groups (
-                    id          VARCHAR PRIMARY KEY,
-                    name        VARCHAR NOT NULL UNIQUE,
-                    description TEXT,
-                    created_at  TIMESTAMP DEFAULT current_timestamp,
-                    created_by  VARCHAR
-                );
-                INSERT INTO user_groups (id, name, description) VALUES ('g1', 'preexisting', 'desc');
-            """)
 
-            _ensure_schema(conn)
+        # Build a minimal v11 schema by hand.
+        conn = _duckdb.connect(str(db_path))
+        conn.execute("""
+            CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP DEFAULT current_timestamp);
+            INSERT INTO schema_version (version) VALUES (11);
+            CREATE TABLE users (
+                id VARCHAR PRIMARY KEY, email VARCHAR UNIQUE NOT NULL, name VARCHAR, role VARCHAR,
+                password_hash VARCHAR, setup_token VARCHAR, setup_token_created TIMESTAMP,
+                reset_token VARCHAR, reset_token_created TIMESTAMP,
+                active BOOLEAN DEFAULT TRUE, deactivated_at TIMESTAMP, deactivated_by VARCHAR,
+                groups JSON, created_at TIMESTAMP, updated_at TIMESTAMP
+            );
+            CREATE TABLE internal_roles (id VARCHAR PRIMARY KEY, key VARCHAR UNIQUE NOT NULL,
+                display_name VARCHAR NOT NULL, description TEXT, owner_module VARCHAR,
+                implies VARCHAR, is_core BOOLEAN, created_at TIMESTAMP, updated_at TIMESTAMP);
+            CREATE TABLE user_role_grants (id VARCHAR PRIMARY KEY,
+                user_id VARCHAR REFERENCES users(id),
+                internal_role_id VARCHAR REFERENCES internal_roles(id),
+                granted_at TIMESTAMP, granted_by VARCHAR, source VARCHAR);
+            CREATE TABLE group_mappings (id VARCHAR PRIMARY KEY, external_group_id VARCHAR,
+                internal_role_id VARCHAR REFERENCES internal_roles(id),
+                assigned_at TIMESTAMP, assigned_by VARCHAR);
+            CREATE TABLE user_groups (id VARCHAR PRIMARY KEY, name VARCHAR UNIQUE,
+                description TEXT, is_system BOOLEAN, created_at TIMESTAMP, created_by VARCHAR);
+            CREATE TABLE plugin_access (group_id VARCHAR, marketplace_id VARCHAR,
+                plugin_name VARCHAR, granted_at TIMESTAMP, granted_by VARCHAR);
+        """)
+        admin_uid = str(uuid.uuid4())
+        bob_uid = str(uuid.uuid4())
+        conn.execute("INSERT INTO users (id, email, name, groups) VALUES (?, ?, ?, ?), (?, ?, ?, ?)",
+            [admin_uid, 'admin@x', 'A', json.dumps(['Engineering']),
+             bob_uid, 'bob@x', 'B', None])
+        eng_id = str(uuid.uuid4())
+        conn.execute("INSERT INTO user_groups (id, name) VALUES (?, ?)", [eng_id, 'Engineering'])
+        # core.admin grant on admin
+        core_admin = str(uuid.uuid4())
+        conn.execute("INSERT INTO internal_roles (id, key, display_name) VALUES (?, 'core.admin', 'Admin')",
+            [core_admin])
+        conn.execute("INSERT INTO user_role_grants (id, user_id, internal_role_id) VALUES (?, ?, ?)",
+            [str(uuid.uuid4()), admin_uid, core_admin])
+        conn.execute("INSERT INTO plugin_access (group_id, marketplace_id, plugin_name) VALUES (?, ?, ?)",
+            [eng_id, 'foundry-ai', 'metrics'])
+        conn.close()
+
+        # Trigger upgrade.
+        conn = get_system_db()
+        try:
             assert get_schema_version(conn) == SCHEMA_VERSION
 
-            users_cols = {
-                r[0]
-                for r in conn.execute(
-                    "SELECT column_name FROM information_schema.columns WHERE table_name='users'"
+            # admin → Admin + Engineering + Everyone
+            admin_groups = {
+                r[0] for r in conn.execute(
+                    """SELECT g.name FROM user_group_members m
+                       JOIN user_groups g ON g.id = m.group_id
+                       WHERE m.user_id = ?""", [admin_uid]
                 ).fetchall()
             }
-            assert "groups" in users_cols
+            assert {"Admin", "Engineering", "Everyone"} <= admin_groups
 
-            ug_cols = {
-                r[0]
-                for r in conn.execute(
-                    "SELECT column_name FROM information_schema.columns WHERE table_name='user_groups'"
+            # bob → only Everyone
+            bob_groups = {
+                r[0] for r in conn.execute(
+                    """SELECT g.name FROM user_group_members m
+                       JOIN user_groups g ON g.id = m.group_id
+                       WHERE m.user_id = ?""", [bob_uid]
                 ).fetchall()
             }
-            assert "is_system" in ug_cols
+            assert bob_groups == {"Everyone"}
 
-            # Pre-existing row preserved; is_system defaulted to FALSE
-            row = conn.execute(
-                "SELECT name, is_system FROM user_groups WHERE id = 'g1'"
-            ).fetchone()
-            assert row == ("preexisting", False)
-        finally:
-            conn.close()
-
-    def test_ensure_system_idempotent(self, tmp_path, monkeypatch):
-        """UserGroupsRepository.ensure_system creates once, then returns existing."""
-        _setup_data_dir(tmp_path, monkeypatch)
-        from src.db import get_system_db
-        from src.repositories.plugin_access import UserGroupsRepository
-
-        conn = get_system_db()
-        try:
-            repo = UserGroupsRepository(conn)
-            first = repo.ensure_system("SysGroup", "first")
-            assert first["is_system"] is True
-            second = repo.ensure_system("SysGroup", "ignored-on-second-call")
-            assert first["id"] == second["id"]
-            assert second["is_system"] is True
-        finally:
-            conn.close()
-
-    def test_ensure_system_promotes_existing(self, tmp_path, monkeypatch):
-        """ensure_system upgrades a pre-existing non-system group to is_system=TRUE."""
-        _setup_data_dir(tmp_path, monkeypatch)
-        from src.db import get_system_db
-        from src.repositories.plugin_access import UserGroupsRepository
-
-        conn = get_system_db()
-        try:
-            repo = UserGroupsRepository(conn)
-            manual = repo.create(name="Admin", description="manually created before seed")
-            assert manual["is_system"] is False
-            promoted = repo.ensure_system("Admin", "system seed")
-            assert promoted["id"] == manual["id"]
-            assert promoted["is_system"] is True
+            # plugin_access → resource_grants
+            grants = conn.execute(
+                """SELECT resource_type, resource_id FROM resource_grants
+                   WHERE group_id = ?""", [eng_id]
+            ).fetchall()
+            assert grants == [("marketplace_plugin", "foundry-ai/metrics")]
         finally:
             conn.close()

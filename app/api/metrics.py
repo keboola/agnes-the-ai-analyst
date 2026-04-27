@@ -7,7 +7,8 @@ import yaml
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
-from app.auth.dependencies import get_current_user, require_admin, _get_db
+from app.auth.access import require_admin
+from app.auth.dependencies import get_current_user, _get_db
 from src.repositories.metrics import MetricRepository
 
 router = APIRouter(tags=["metrics"])

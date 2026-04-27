@@ -10,8 +10,27 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-<!-- Add bullets here. Group: Added / Changed / Fixed / Removed / Internal.
-     Mark breaking changes with **BREAKING** at the start of the bullet. -->
+### Changed
+
+- **BREAKING** RBAC redesigned around two layers: app-level access via the `Admin` user-group (god mode short-circuit) and resource-level access via a generic `(group, resource_type, resource_id)` grant model. The four-value `core.viewer/analyst/km_admin/admin` hierarchy with `implies` BFS expansion is gone — every protected endpoint now uses either `require_admin` or `require_resource_access(ResourceType.X, "{path}")` from the new `app.auth.access` module. Authorization is decided per-request via a single DB lookup; no session cache, no dual-path resolver, no `_hydrate_legacy_role` shim. See `docs/RBAC.md`.
+- **BREAKING** `internal_roles`, `group_mappings`, `user_role_grants`, and `plugin_access` tables removed. Replaced by `user_group_members` (binds users to user_groups with a `source` enum: `admin` / `google_sync` / `system_seed`) and `resource_grants` (group → `(resource_type, resource_id)`). Schema v12; the migration backfills from v11 atomically — `users.groups` JSON is converted into `user_group_members` rows with `source='google_sync'`, `core.admin` grants become Admin-group memberships with `source='system_seed'`, and `plugin_access` rows become `resource_grants` of type `marketplace_plugin`. The `users.groups` JSON column is dropped; the deprecated `users.role` column is kept NULL as a legacy artifact.
+- **BREAKING** Admin REST surface unified under `/api/admin/groups`, `/api/admin/groups/{id}/members`, `/api/admin/grants`, `/api/admin/resource-types`. `app.api.role_management` and `app.api.plugin_access` removed. The web UI route `/admin/role-mapping` and `/admin/plugin-access` are replaced by a single `/admin/access` page; the `_app_header.html` link is renamed to "Access".
+- **BREAKING** CLI subcommands `da admin role *`, `da admin mapping *`, `da admin grant-role`, `da admin revoke-role`, `da admin effective-roles` removed. New subcommands: `da admin group {list,create,delete,members,add-member,remove-member}` and `da admin grant {list,create,delete,resource-types}`. `da admin set-role <user> admin` still works as a thin wrapper that toggles Admin-group membership.
+- Module authors no longer call `register_internal_role(...)`. Resource types are an `app.resource_types.ResourceType` `StrEnum`; adding a new resource type means adding one enum member plus an entry in `RESOURCE_TYPE_META`. No DB migration, no startup hook.
+- Google OAuth callback writes Cloud Identity group memberships into `user_group_members` (source='google_sync') instead of `users.groups` JSON. Manual admin-added memberships (source='admin') survive subsequent logins.
+
+### Removed
+
+- `app/auth/role_resolver.py`, `app/api/role_management.py`, `app/api/plugin_access.py`.
+- `src/repositories/internal_roles.py`, `src/repositories/group_mappings.py`, `src/repositories/user_role_grants.py`.
+- `app/web/templates/admin_role_mapping.html`, `app/web/templates/admin_plugin_access.html`.
+- `Role` enum + `has_role`, `is_admin`, `is_km_admin`, `is_analyst`, `_is_admin_user_dict`, `set_user_role`, `get_user_role` from `src/rbac.py`. Dataset-access helpers (`can_access_table`, `get_accessible_tables`, `has_dataset_access`) preserved.
+- Test files: `test_role_resolver.py`, `test_api_role_management.py`, `test_admin_role_mapping_ui.py`, `test_cli_admin_role.py`, `test_schema_v9_migration.py`, `test_plugin_access_api.py`.
+
+### Internal
+
+- `src/db.py` schema bumped to v12. New helpers `_seed_system_groups` (idempotent Admin/Everyone seed, runs on every connect) and `_v11_to_v12_finalize` (one-shot backfill + DROP cascade) replace `_seed_core_roles` and `_backfill_users_role_to_grants`.
+- `app.auth.access` is the new authorization vocabulary: `_user_group_ids`, `is_user_admin`, `can_access`, `require_admin`, `require_resource_access`. Lives in its own module to avoid the circular import that would happen if it sat in `app.auth.dependencies` (the dependency factory needs `get_current_user` from there).
 
 ## [0.11.5] — 2026-04-27
 

@@ -105,8 +105,16 @@ def write_test_parquet(path: str, data: list[dict]):
 
 @pytest.fixture
 def seeded_app(e2e_env):
-    """FastAPI TestClient with seeded admin + analyst users, JWT tokens."""
-    from src.db import get_system_db
+    """FastAPI TestClient with seeded admin + non-admin users, JWT tokens.
+
+    v12: roles are no longer the auth source of truth. The "admin" user is
+    placed in the Admin user_group; the "analyst" user is just a regular
+    Everyone-only member. Existing tests treat analyst_token as "logged-in
+    non-admin" — the gate semantics still match where it matters (admin
+    bypass, dataset_permissions checks).
+    """
+    from src.db import SYSTEM_ADMIN_GROUP, get_system_db
+    from src.repositories.user_group_members import UserGroupMembersRepository
     from src.repositories.users import UserRepository
     from app.auth.jwt import create_access_token
     from app.main import create_app
@@ -116,6 +124,13 @@ def seeded_app(e2e_env):
     repo = UserRepository(conn)
     repo.create(id="admin1", email="admin@test.com", name="Admin", role="admin")
     repo.create(id="analyst1", email="analyst@test.com", name="Analyst", role="analyst")
+
+    admin_gid = conn.execute(
+        "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
+    ).fetchone()[0]
+    UserGroupMembersRepository(conn).add_member(
+        "admin1", admin_gid, source="system_seed",
+    )
     conn.close()
 
     app = create_app()

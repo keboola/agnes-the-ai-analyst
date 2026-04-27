@@ -241,7 +241,7 @@
   <section class="profile-hero" aria-labelledby="profile-title">
     <div class="hero-eyebrow">Your account</div>
     <h2 class="profile-title" id="profile-title">Profile</h2>
-    <p class="profile-subtitle">Account details and Google Workspace group memberships.</p>
+    <p class="profile-subtitle">Account details and your group memberships.</p>
   </section>
 
   <section class="section-card" aria-label="Account details">
@@ -251,98 +251,94 @@
       <span class="v">{{ user.email or "—" }}</span>
       <span class="k">Name</span>
       <span class="v">{{ user.name or "—" }}</span>
-      <span class="k">Role</span>
+      <span class="k">Status</span>
       <span class="v">
-        {% if user.role %}
-          <span class="role-pill">{{ user.role }}</span>
+        {% if is_admin %}
+          <span class="role-pill is-core">Admin</span>
         {% else %}
-          —
+          User
         {% endif %}
       </span>
     </div>
     <div class="tokens-link-row">
       Manage personal access tokens at <a href="/tokens">/tokens</a>.
-      {% if user.role == "admin" %}
-        Edit your capabilities and role grants at
-        <a href="/admin/users/{{ user.id }}">/admin/users/{{ user.id }}</a>.
-      {% endif %}
     </div>
   </section>
 
-  <section class="section-card" aria-label="Effective roles">
-    <h3>Effective roles</h3>
-    {% if effective_roles and effective_roles | length > 0 %}
-    <div class="role-chips" data-testid="effective-roles">
-      {% for key in effective_roles %}
-      <span class="role-chip{% if key.startswith('core.') %} is-core{% endif %}">{{ key }}</span>
-      {% endfor %}
-    </div>
-    <div class="effective-help">
-      The full set of internal-role keys you currently hold — direct grants, group-derived roles, and everything they imply via the role hierarchy. Auth gates check this list.
-    </div>
-    {% else %}
-    <div class="empty-state">
-      <div class="empty-title">No internal roles resolved</div>
-      <div>You don't currently hold any internal-role grants. Ask an admin to map your group or grant you a role at <a href="/admin/role-mapping">/admin/role-mapping</a>.</div>
-    </div>
-    {% endif %}
-  </section>
-
-  <section class="section-card" aria-label="Direct role grants">
-    <h3>Direct grants</h3>
-    {% if direct_grants and direct_grants | length > 0 %}
-    <ul class="grant-list" role="list">
-      {% for g in direct_grants %}
-      <li class="grant-row" role="listitem">
-        <span class="grant-key">{{ g.internal_role_key or g.role_key or "—" }}</span>
-        {% set src = g.source or "direct" %}
-        <span class="grant-source {% if src == 'direct' %}source-direct{% elif src == 'auto-seed' %}source-auto{% endif %}">{{ src }}</span>
-        {% if g.granted_by %}
-        <span class="grant-meta">granted by {{ g.granted_by }}</span>
-        {% endif %}
-      </li>
-      {% endfor %}
-    </ul>
-    {% else %}
-    <div class="empty-state">
-      <div class="empty-title">No direct grants</div>
-      <div>You have no rows in <code>user_role_grants</code>. Roles you hold come from Google Workspace group mappings instead — see below.</div>
-    </div>
-    {% endif %}
-  </section>
-
-  <section class="section-card" aria-label="Google Workspace groups and the roles they grant">
-    <h3>Google Workspace groups</h3>
-    {% if groups and groups | length > 0 %}
+  <section class="section-card" aria-label="Group memberships">
+    <h3>Group memberships</h3>
+    {% if memberships and memberships | length > 0 %}
     <ul class="groups-list" role="list">
-      {% for g in groups %}
+      {% for m in memberships %}
       <li class="group-row" role="listitem">
-        <span class="group-name">{{ g.name or g.id }}</span>
-        <span class="group-id">{{ g.id }}</span>
+        <span class="group-name">
+          {{ m.name }}
+          {% if m.is_system %}<span class="role-chip is-core" style="margin-left:6px;">system</span>{% endif %}
+        </span>
+        <span class="group-id">via {{ m.source }}{% if m.added_at %} · added {{ m.added_at|string|truncate(16, true, '') }}{% endif %}</span>
       </li>
       {% endfor %}
     </ul>
     {% else %}
     <div class="empty-state">
-      <div class="empty-title">No Google groups available</div>
-      <div>Groups are populated when you sign in with Google on a Workspace-enabled tenant. Other sign-in methods (email, password) don't expose group memberships.</div>
+      <div class="empty-title">No group memberships</div>
+      <div>You're not a member of any groups yet. Ask an admin to add you, or wait for the next Google Workspace sync if you sign in via Google.</div>
     </div>
     {% endif %}
+  </section>
 
-    {% if group_roles and group_roles | length > 0 %}
-    <h3 style="margin-top: 22px;">Roles via groups</h3>
-    <ul class="group-roles-list" role="list">
-      {% for gr in group_roles %}
-      <li class="group-roles-row" role="listitem">
-        <span class="group-roles-name">{{ gr.group_name }}</span>
-        <span class="group-roles-arrow">grants</span>
-        <span class="role-chips">
-          {% for k in gr.role_keys %}<span class="role-chip{% if k.startswith('core.') %} is-core{% endif %}">{{ k }}</span>{% endfor %}
-        </span>
-      </li>
-      {% endfor %}
-    </ul>
-    {% endif %}
+  <section class="section-card" aria-label="Effective access">
+    <h3>Effective access</h3>
+    <div id="effective-access-host">
+      <div class="empty-state">
+        <div class="empty-title">Loading…</div>
+      </div>
+    </div>
   </section>
 </div>
+
+<script>
+(function () {
+  const host = document.getElementById("effective-access-host");
+  fetch("/api/me/effective-access", { credentials: "include" })
+    .then(r => r.ok ? r.json() : null)
+    .then(data => {
+      if (!data) {
+        host.innerHTML = `<div class="empty-state">
+          <div class="empty-title">No data</div>
+          <div>Effective-access readout unavailable. Admins can view it at /admin/users/{{ user.id }}.</div>
+        </div>`;
+        return;
+      }
+      if (data.is_admin) {
+        host.innerHTML = `<div class="empty-state" style="background:linear-gradient(135deg,#fef3c7,#fde68a);border:1px solid #f59e0b;color:#78350f;">
+          <div class="empty-title" style="color:#422006;">🔑 Full access via Admin</div>
+          <div>You can read and write everything in Agnes regardless of explicit grants.</div>
+        </div>`;
+        return;
+      }
+      if (!data.items || data.items.length === 0) {
+        host.innerHTML = `<div class="empty-state">
+          <div class="empty-title">No resource access yet</div>
+          <div>Resources are granted to groups; ask an admin to add you to one with the access you need.</div>
+        </div>`;
+        return;
+      }
+      let html = `<ul class="grant-list" role="list">`;
+      for (const it of data.items) {
+        const via = it.via_groups.map(g => `<span class="grant-source source-direct">${g.group_name}</span>`).join(" ");
+        html += `<li class="grant-row">
+          <span class="grant-key">${escapeHtml(it.resource_type)} · ${escapeHtml(it.resource_id)}</span>
+          ${via}
+        </li>`;
+      }
+      html += `</ul>`;
+      host.innerHTML = html;
+    })
+    .catch(() => {
+      host.innerHTML = `<div class="empty-state"><div class="empty-title">Failed to load</div></div>`;
+    });
+  function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+})();
+</script>
 {% endblock %}

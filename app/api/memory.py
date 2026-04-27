@@ -7,7 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 import duckdb
 
-from app.auth.dependencies import get_current_user, require_role, Role, _get_db
+from app.auth.access import require_admin
+from app.auth.dependencies import get_current_user, _get_db
 from src.repositories.knowledge import KnowledgeRepository
 from src.repositories.audit import AuditRepository
 
@@ -162,7 +163,7 @@ def _audit_action(conn, admin_email: str, action: str, item_id: str, details: di
 @router.post("/admin/approve")
 async def admin_approve(
     item_id: str,
-    user: dict = Depends(require_role(Role.KM_ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     repo = KnowledgeRepository(conn)
@@ -176,7 +177,7 @@ async def admin_approve(
 async def admin_reject(
     item_id: str,
     request: AdminActionRequest,
-    user: dict = Depends(require_role(Role.KM_ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     repo = KnowledgeRepository(conn)
@@ -190,7 +191,7 @@ async def admin_reject(
 async def admin_mandate(
     item_id: str,
     request: AdminActionRequest,
-    user: dict = Depends(require_role(Role.KM_ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     repo = KnowledgeRepository(conn)
@@ -206,7 +207,7 @@ async def admin_mandate(
 async def admin_revoke(
     item_id: str,
     request: AdminActionRequest,
-    user: dict = Depends(require_role(Role.KM_ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     repo = KnowledgeRepository(conn)
@@ -220,7 +221,7 @@ async def admin_revoke(
 async def admin_edit(
     item_id: str,
     request: EditRequest,
-    user: dict = Depends(require_role(Role.KM_ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     repo = KnowledgeRepository(conn)
@@ -239,7 +240,7 @@ async def admin_edit(
 @router.post("/admin/batch")
 async def admin_batch(
     request: BatchActionRequest,
-    user: dict = Depends(require_role(Role.KM_ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Batch governance action on multiple items."""
@@ -274,7 +275,7 @@ async def admin_pending(
     category: Optional[str] = None,
     page: int = 1,
     per_page: int = 50,
-    user: dict = Depends(require_role(Role.KM_ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Get pending items queue for admin review."""
@@ -289,7 +290,7 @@ async def admin_audit(
     page: int = 1,
     per_page: int = 50,
     action: Optional[str] = None,
-    user: dict = Depends(require_role(Role.KM_ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Get governance audit log."""

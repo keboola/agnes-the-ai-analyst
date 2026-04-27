@@ -1,12 +1,8 @@
 """Admin endpoints — table discovery, registry management, instance configuration.
 
-v9: every gate on this router uses ``require_role(Role.ADMIN)``, which routes
-through ``require_internal_role("core.admin")`` — the same two-path resolver
-(session cache + ``user_role_grants`` fallback) covers OAuth and PAT callers
-alike. Module authors implementing their own routers should follow the same
-pattern: register a capability with ``register_internal_role(...)`` at import
-time and gate the route with ``Depends(require_internal_role("<your-key>"))``.
-See ``docs/RBAC.md`` for the full module-author workflow.
+Every gate on this router uses ``require_admin`` from ``app.auth.access``,
+which checks Admin user_group membership for both OAuth session and PAT
+callers via the same ``_user_group_ids`` lookup.
 """
 
 import logging
@@ -19,7 +15,8 @@ from pydantic import BaseModel
 from typing import Optional, List
 import duckdb
 
-from app.auth.dependencies import require_role, Role, _get_db
+from app.auth.access import require_admin
+from app.auth.dependencies import _get_db
 from src.repositories.table_registry import TableRegistryRepository
 
 logger = logging.getLogger(__name__)
@@ -65,7 +62,7 @@ class ConfigureRequest(BaseModel):
 
 @router.get("/discover-tables")
 async def discover_tables(
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
 ):
     """Discover all available tables from the configured data source."""
     try:
@@ -91,7 +88,7 @@ async def discover_tables(
 
 @router.get("/registry")
 async def list_registry(
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Get full table registry."""
@@ -103,7 +100,7 @@ async def list_registry(
 @router.post("/register-table", status_code=201)
 async def register_table(
     request: RegisterTableRequest,
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Register a new table in the system."""
@@ -138,7 +135,7 @@ async def register_table(
 async def update_table(
     table_id: str,
     request: UpdateTableRequest,
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Update a registered table's configuration."""
@@ -159,7 +156,7 @@ async def update_table(
 @router.delete("/registry/{table_id}", status_code=204)
 async def unregister_table(
     table_id: str,
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Unregister a table from the system."""
@@ -172,7 +169,7 @@ async def unregister_table(
 @router.post("/configure")
 async def configure_instance(
     request: ConfigureRequest,
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
 ):
     """Configure data source and instance settings via API.
 
@@ -359,7 +356,7 @@ def _discover_and_register_tables(conn: duckdb.DuckDBPyConnection, user_email: s
 
 @router.post("/discover-and-register")
 async def discover_and_register(
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Discover tables from configured source and auto-register them.

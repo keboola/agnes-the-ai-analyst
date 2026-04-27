@@ -1,4 +1,9 @@
-"""FastAPI auth dependencies — current user, role checking."""
+"""FastAPI auth dependencies — current user resolution.
+
+Authorization helpers (require_admin, require_resource_access) live in
+``app.auth.access`` to avoid a circular import — they need ``get_current_user``
+from this module and ``_get_db``, which both come from here.
+"""
 
 import json
 import logging
@@ -10,7 +15,6 @@ from fastapi import Depends, HTTPException, Header, Request, status
 
 from app.auth.jwt import verify_token
 from src.db import get_system_db
-from src.rbac import Role, ROLE_HIERARCHY
 from src.repositories.users import UserRepository
 
 logger = logging.getLogger(__name__)
@@ -141,115 +145,22 @@ def _get_local_dev_user(conn: duckdb.DuckDBPyConnection) -> Optional[dict]:
     return user
 
 
-def _hydrate_legacy_role(user: dict, conn: duckdb.DuckDBPyConnection) -> dict:
-    """v9 compatibility: derive ``user["role"]`` from ``user_role_grants``.
-
-    The v8→v9 migration NULL-ed ``users.role`` (the column is kept as a
-    deprecated artifact because DuckDB rejects DROP COLUMN under the FK).
-    A long tail of read sites still inspects ``user["role"]`` directly —
-    Jinja2 templates (``session.user.role``), dashboard ``UserInfo.is_admin``,
-    ``app/api/catalog.py`` and ``app/api/sync.py`` admin bypass paths,
-    and so on. Mass-rewriting them to the resolver is a migration tax we
-    don't pay here; instead, ``get_current_user`` runs every authenticated
-    request through this helper, which mirrors the highest-level
-    ``core.*`` grant back into ``user["role"]`` as the legacy enum string.
-
-    **Always re-resolves from grants** (Devin review #73): the v9 role
-    management endpoints (``POST/DELETE /api/admin/users/{id}/role-grants``,
-    plus the ``changeCoreRole`` UI flow) modify ``user_role_grants`` without
-    touching the legacy ``users.role`` column. An early-return on
-    ``user.get("role")`` truthy would happily trust the stale legacy value
-    after a revoke — leaving the user dict carrying ``role="admin"`` while
-    the grants table no longer contains the corresponding row. Downstream,
-    ``_is_admin_user_dict`` (``src/rbac.py``) and ``user.get("role") ==
-    "admin"`` short-circuits in ``catalog.py`` / ``sync.py`` would then
-    keep elevated table access alive for a downgraded user even though
-    ``require_internal_role`` correctly denies the API gates. The fix is
-    to always resolve from ``user_role_grants`` and overwrite ``role``,
-    making the grants table the single source of truth for every code
-    path on every request. Cost: one extra DB round-trip per authenticated
-    request — same as the existing PAT-aware ``require_internal_role``
-    fallback. Worth the consistency.
-    """
-    try:
-        from src.rbac import _get_internal_role_keys, Role
-        keys = _get_internal_role_keys(user["id"], conn=conn)
-        for level in (Role.ADMIN, Role.KM_ADMIN, Role.ANALYST, Role.VIEWER):
-            if f"core.{level.value}" in keys:
-                user["role"] = level.value
-                return user
-        user["role"] = Role.VIEWER.value
-    except Exception as e:
-        # Auth path must never fail on a hydration glitch — fall back to
-        # the safest enum value. Logged so a recurring problem surfaces.
-        logger.warning(
-            "v9 role hydration failed for user %s: %s",
-            user.get("email", "<unknown>"), e,
-        )
-        user["role"] = "viewer"
-    return user
-
-
 async def get_current_user(
     request: Request = None,
     authorization: Optional[str] = Header(None),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ) -> dict:
-    """Extract and validate JWT from Authorization header or cookie. Returns user dict."""
+    """Extract and validate JWT from Authorization header or cookie. Returns user dict.
+
+    No role hydration, no session caches — authorization is decided at gate
+    time by ``app.auth.access`` which reads ``user_group_members`` directly.
+    """
     if is_local_dev_mode():
         user = _get_local_dev_user(conn)
         if user:
-            user = _hydrate_legacy_role(user, conn)
-            # Mirror the Google OAuth callback (app/auth/providers/google.py:189-194)
-            # which writes session.google_groups on every login — including [] on
-            # failure — so group-aware code paths see authoritative state. We
-            # match that semantics here while skipping the write when nothing
-            # would change: same-value updates are a no-op, and the write on
-            # PAT/CLI requests with no prior session + no target is also skipped
-            # (target → [], existing → None/[], no transition to record).
-            if request is not None and hasattr(request, "session"):
-                target_groups = get_local_dev_groups()
-                current = request.session.get("google_groups")
-                groups_changed = False
-                if target_groups and current != target_groups:
-                    request.session["google_groups"] = target_groups
-                    groups_changed = True
-                elif not target_groups and current:
-                    # Clear stale groups if the operator unsets LOCAL_DEV_GROUPS
-                    # mid-session — matches production's "always-write" semantics.
-                    request.session["google_groups"] = []
-                    groups_changed = True
-                # Populate internal_roles whenever it would otherwise be missing
-                # — first request after sign-in or any time groups changed. This
-                # mirrors the OAuth callback's unconditional write so a dev
-                # request never reaches require_internal_role with the key
-                # absent. Skipping when role list is already cached + groups
-                # didn't change keeps the per-request cost at a session lookup.
-                if groups_changed or "internal_roles" not in request.session:
-                    try:
-                        from app.auth.role_resolver import resolve_internal_roles
-                        # Pass user_id so direct grants (user_role_grants)
-                        # populate the session cache too — otherwise every
-                        # admin-gated request would fall through to the DB
-                        # fallback in require_internal_role, defeating the
-                        # caching path for dev-mode admins. Devin review #73.
-                        resolved = resolve_internal_roles(
-                            target_groups, conn, user_id=user.get("id"),
-                        )
-                        request.session["internal_roles"] = resolved
-                        logger.info(
-                            "dev-bypass resolved %d internal role(s) for %s: %s",
-                            len(resolved),
-                            user.get("email", "<unknown>"),
-                            resolved or "<none>",
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            "dev-bypass: resolve_internal_roles failed: %s", e,
-                        )
-                        request.session["internal_roles"] = []
             return user
-        # Fall through to normal auth if seed missing — surfaces the bug instead of hiding it.
+        # Fall through to normal auth if seed missing — surfaces the bug
+        # instead of hiding it.
 
     token = None
 
@@ -270,9 +181,7 @@ async def get_current_user(
     from app.auth.pat_resolver import resolve_token_to_user
     user, reason = resolve_token_to_user(conn, token, request)
     if user:
-        # v9 legacy-role hydration — pat_resolver doesn't do it because it's
-        # also used by the git smart-HTTP path (which doesn't need user["role"]).
-        return _hydrate_legacy_role(user, conn)
+        return user
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail=_AUTH_DETAIL_BY_REASON.get(reason, "Invalid or expired token"),
@@ -289,40 +198,6 @@ async def get_optional_user(
         return await get_current_user(request=request, authorization=authorization, conn=conn)
     except HTTPException:
         return None
-
-
-def require_role(minimum_role: Role):
-    """Dependency factory: require user has at least the given role.
-
-    v9 thin wrapper — delegates to ``require_internal_role(f"core.{role}")``.
-    The implies hierarchy (core.admin → core.km_admin → core.analyst →
-    core.viewer) preserves the legacy "at least this level" semantics
-    automatically: a user holding core.admin satisfies require_role(ANALYST)
-    because resolve_internal_roles expands implies before the membership
-    check. PAT callers route through user_role_grants the same way OAuth
-    callers route through session.internal_roles — see role_resolver.py.
-    """
-    from app.auth.role_resolver import require_internal_role
-    return require_internal_role(f"core.{minimum_role.value}")
-
-
-async def require_admin(
-    request: Request,
-    user: dict = Depends(get_current_user),
-) -> dict:
-    """Dependency: require user is an admin. Raises 403 otherwise.
-
-    v9 thin wrapper over ``require_internal_role("core.admin")`` so the
-    PAT-aware session-OR-DB resolution pathway applies uniformly. Existing
-    callsites use ``Depends(require_admin)`` (no parens) — the function
-    keeps that calling convention by accepting the Request + user deps and
-    delegating to the inner check. Behavior is identical to v8 for OAuth
-    users (admin role from group_mappings); PAT users now succeed when
-    they hold a direct core.admin grant in user_role_grants.
-    """
-    from app.auth.role_resolver import require_internal_role
-    check = require_internal_role("core.admin")
-    return await check(request=request, user=user)
 
 
 async def require_session_token(request: Request, user: dict = Depends(get_current_user)) -> dict:
