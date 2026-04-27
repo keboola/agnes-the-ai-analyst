@@ -20,9 +20,6 @@ def client(tmp_path, monkeypatch):
 
     conn = get_system_db()
     repo = UserRepository(conn)
-    # admin needed to reach the script sandbox after the #44 hardening
-    # (whole Script API is admin-only); the analyst is kept around for
-    # access-control tests further down in this module.
     repo.create(id="admin1", email="admin@test.com", name="Admin", role="admin")
     repo.create(id="u1", email="user@test.com", name="User", role="analyst")
     conn.close()

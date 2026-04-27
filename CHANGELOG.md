@@ -16,8 +16,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Changed
 
 - **BREAKING (security)**: The entire Script API is now **admin-only** (issue #44).
-  `POST /api/scripts/deploy`, `POST /api/scripts/run`, and `POST /api/scripts/{id}/run`
-  all require the admin role; previously deploy and run were both analyst-accessible.
+  `GET /api/scripts`, `POST /api/scripts/deploy`, `POST /api/scripts/run`, and
+  `POST /api/scripts/{id}/run` all require the admin role; previously the list
+  endpoint was open to any authenticated user and deploy/run were analyst-accessible.
   Two reasons: (1) the AST + string-blocklist sandbox in `_execute_script` is
   defense-in-depth and known to be bypassable through introspection chains
   (`__class__.__base__.__subclasses__()`, `__globals__['__builtins__']`,

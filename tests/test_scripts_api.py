@@ -24,9 +24,7 @@ class TestScriptsList:
 
     @pytest.mark.parametrize("role_token", ["analyst_token", "viewer_token", "km_admin_token"])
     def test_list_scripts_requires_admin(self, seeded_app, role_token):
-        """Issue #44: list_all() returns the full row including the script
-        source code; non-admins must not be able to read admin-deployed
-        scripts via this endpoint."""
+        """Non-admin roles must not reach list_all() (returns source code)."""
         c = seeded_app["client"]
         resp = c.get(
             "/api/scripts", headers=_auth(seeded_app[role_token])
@@ -88,9 +86,7 @@ class TestScriptsDeploy:
 
     @pytest.mark.parametrize("role_token", ["analyst_token", "viewer_token", "km_admin_token"])
     def test_deploy_requires_admin(self, seeded_app, role_token):
-        """Issue #44: planted-script attack — only admin can deploy. Reviewer
-        flagged that gating /run alone leaves analyst→admin social engineering
-        path open (analyst plants malicious script, tricks admin into running)."""
+        """Only admin can deploy scripts."""
         c = seeded_app["client"]
         resp = c.post(
             "/api/scripts/deploy",
@@ -149,13 +145,7 @@ class TestScriptsRun:
 
     @pytest.mark.parametrize("role_token", ["analyst_token", "viewer_token", "km_admin_token"])
     def test_run_adhoc_requires_admin(self, seeded_app, role_token):
-        """Regression for issue #44: only admin can run scripts.
-
-        The AST/string sandbox is defense-in-depth and known-bypassable
-        (vars(), __class__ chain, etc.); the primary trust boundary is the
-        role gate. Verifies all three non-admin core roles (analyst, viewer,
-        km_admin) are denied — addresses the reviewer's note that gating
-        only against analyst leaves km_admin / viewer untested."""
+        """Only admin can run ad-hoc scripts."""
         c = seeded_app["client"]
         resp = c.post(
             "/api/scripts/run",
@@ -182,12 +172,7 @@ class TestScriptsRun:
         ],
     )
     def test_run_pwn_payload_blocked(self, seeded_app, pwn_payload):
-        """Issue #44 PoC — the exact dunder-chain pivot that the issue lists.
-
-        Even with admin token (so the role gate doesn't short-circuit), the
-        defense-in-depth blocklist must reject the dunder pattern with 400,
-        not allow execution. This is the regression-lock test the reviewer
-        asked for: if the dunder list is ever silently weakened, this fails."""
+        """Dunder-chain PoC payloads must be rejected by the sandbox blocklist."""
         c = seeded_app["client"]
         resp = c.post(
             "/api/scripts/run",
@@ -220,14 +205,13 @@ class TestScriptsRun:
         assert deploy_resp.status_code == 201
         script_id = deploy_resp.json()["id"]
 
-        # Run deployed script — admin only
         resp = c.post(f"/api/scripts/{script_id}/run", headers=_auth(admin_token))
         assert resp.status_code == 200
         assert "4" in resp.json()["stdout"]
 
     @pytest.mark.parametrize("role_token", ["analyst_token", "viewer_token", "km_admin_token"])
     def test_run_deployed_requires_admin(self, seeded_app, role_token):
-        """Regression for issue #44: only admin can run a deployed script."""
+        """Only admin can run a deployed script."""
         c = seeded_app["client"]
         admin_token = seeded_app["admin_token"]
         deploy_resp = c.post(
@@ -255,7 +239,6 @@ class TestScriptsDelete:
         admin_token = seeded_app["admin_token"]
         analyst_token = seeded_app["analyst_token"]
 
-        # Deploy as admin (deploy is now admin-only — issue #44)
         deploy_resp = c.post(
             "/api/scripts/deploy",
             json={"name": "to_delete", "source": "print('bye')"},

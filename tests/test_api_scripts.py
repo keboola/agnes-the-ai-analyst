@@ -82,13 +82,11 @@ class TestScriptsAPI:
         c, admin_token, _ = client
         admin_headers = {"Authorization": f"Bearer {admin_token}"}
 
-        # Deploy is admin-only (issue #44, planted-script defense)
         resp = c.post("/api/scripts/deploy", json={
             "name": "calc", "source": "print(2+2)", "schedule": "0 8 * * MON",
         }, headers=admin_headers)
         script_id = resp.json()["id"]
 
-        # Run is also admin-only
         resp = c.post(f"/api/scripts/{script_id}/run", headers=admin_headers)
         assert resp.status_code == 200
         assert "4" in resp.json()["stdout"]
