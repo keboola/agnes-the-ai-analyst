@@ -46,6 +46,65 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   clips length to 64 chars, and routes the final filename through
   `safe_join_under`.
 
+### Changed
+
+- **BREAKING (ops)**: Generic ops scripts moved out of the customer-named
+  `scripts/grpn/` directory into `scripts/ops/` as part of the OSS
+  vendor-neutralization (issue #88):
+  - `scripts/grpn/agnes-tls-rotate.sh` → `scripts/ops/agnes-tls-rotate.sh`
+  - `scripts/grpn/agnes-auto-upgrade.sh` → `scripts/ops/agnes-auto-upgrade.sh`
+
+  Downstream consumer infra repos that copy these scripts onto VMs (e.g. via
+  their own `startup.sh`) must update the source path. The OSS-shipped
+  `infra/modules/customer-instance/` Terraform module is unaffected — it
+  embeds equivalent logic inline via heredoc and does not source-by-path
+  from `scripts/`. Script behaviour and env vars are unchanged. Cross-refs
+  in `README.md`, `CLAUDE.md`, `docs/DEPLOYMENT.md`, `Caddyfile`, and
+  `docker-compose.yml` were updated.
+
+- **OSS neutralization (wave 2 — code, tests, planning docs)**. Customer
+  identifiers replaced with placeholders across the codebase to ready the
+  repo for public release (issue #88):
+
+  - **Code docstrings**: `connectors/openmetadata/{client,transformer,enricher}.py`,
+    `src/catalog_export.py`, `scripts/duckdb_manager.py` — `prj-grp-…` →
+    `my-bq-project` / `prj-example-1234`, `AIAgent.FoundryAI` →
+    `AIAgent.MyAgent` (in docstrings) / `AIAgent.Example` (in test fixtures),
+    `FoundryAIDataModel` → `AnalyticsDataModel`.
+  - **Test fixtures** in `tests/test_openmetadata_enricher.py`,
+    `tests/test_duckdb_manager.py`, `tests/test_catalog_export.py`,
+    `tests/test_openmetadata_transformer.py` — same set of replacements,
+    behaviour-preserving (157 tests still green).
+  - **Terraform module** `infra/modules/customer-instance/variables.tf`:
+    `customer_name` description rewritten in English, examples switched
+    from `keboola, grpn` to `acme, example`.
+  - **Workflow** `.github/workflows/keboola-deploy.yml`: comment "Groupon-side
+    dev VMs" → generic "per-developer dev VMs".
+  - **Caddyfile**: TLS-rotation cross-ref updated to `scripts/ops/…` and
+    Keboola-specific aside removed.
+  - **Auth docs** `docs/auth-groups.md` and the OAuth probe in
+    `scripts/debug/probe_google_groups.py`: GCP project name `kids-ai-data-analysis`
+    replaced with placeholder `acme-internal-prod`.
+  - **Planning docs** under `docs/superpowers/plans/` and `…/specs/`: the
+    five hackathon-era documents (`2026-04-21-deployment-log.md`,
+    `…-multi-customer-deployment.md`, `…-issues-14-and-10.md`,
+    `…-hackathon-dry-run.md`, the spec) had `34.77.94.14` / `34.77.102.61`
+    replaced with `<dev-vm-ip>` / `<prod-vm-ip>`, `Groupon`/`GRPN`/`grpn`
+    with `Acme`/`another-customer`, and `prj-grp-…` with `prj-example-…`.
+
+### Removed
+
+- Customer-specific manual-deploy helper `scripts/grpn/Makefile` and its
+  README, plus the corresponding hackathon deploy log under
+  `docs/superpowers/plans/2026-04-22-grpn-deploy-learnings.md`. These
+  documented one operator's hand-rolled stopgap for an org-policy-blocked
+  Terraform flow and do not belong in vendor-neutral OSS.
+- `scripts/switch-dev-vm.sh` — hackathon-era helper hardcoded to a specific
+  shared dev VM. Per-developer dev VMs are
+  the supported pattern now; operators who need an equivalent should use
+  `gcloud compute ssh <vm> --command "sed -i …/.env && sudo /usr/local/bin/agnes-auto-upgrade.sh"`
+  with their own VM details.
+
 ## [0.11.5] — 2026-04-27
 
 Follow-up release for PR #73: addresses four rounds of Devin AI review on the role-management-complete branch. No new public-API surface; the user-visible payoff is that v8→v9-migrated installations now work end-to-end (login flows, user list, admin nav, privilege revocation), and `make local-dev` startup is finally quiet.
@@ -211,7 +270,7 @@ First tagged semver release. The `version = "2.x"` strings that appeared in earl
 - Bootstrap backdoor closed when passwordless seed admin exists.
 - urllib3 1.26→2.6.3 (resolves 4 Dependabot security alerts).
 - argon2-cffi adopted for password hashing.
-- See [docs/padak-security.md](docs/padak-security.md) for the full audit.
+- See [docs/security-audit-2026-04.md](docs/security-audit-2026-04.md) for the full audit (renamed from `docs/padak-security.md` in #94).
 
 ### Fixed — Other
 

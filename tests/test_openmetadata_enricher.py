@@ -19,7 +19,7 @@ from connectors.openmetadata.enricher import (
 def sample_table_config():
     """Sample table configuration."""
     return TableConfig(
-        id="prj-grp-dataview-prod-1ff9.marketing.roi_datamart_v2",
+        id="prj-example-1234.marketing.roi_datamart_v2",
         name="roi_datamart_v2",
     )
 
@@ -30,7 +30,7 @@ def sample_om_response():
     return {
         "id": "table-uuid",
         "name": "roi_datamart_v2",
-        "fullyQualifiedName": "bigquery.prj-grp-dataview-prod-1ff9.marketing.roi_datamart_v2",
+        "fullyQualifiedName": "bigquery.prj-example-1234.marketing.roi_datamart_v2",
         "description": "Daily ROI analytics",
         "columns": [
             {
@@ -132,12 +132,12 @@ def test_enrich_table_cache_hit():
             columns={"id": CatalogColumnData(description="ID", data_type="BIGINT")},
         )
         enricher._cache_entry(
-            "bigquery.prj-grp-dataview-prod-1ff9.marketing.test",
+            "bigquery.prj-example-1234.marketing.test",
             cached_data,
         )
 
         table_config = TableConfig(
-            id="prj-grp-dataview-prod-1ff9.marketing.test",
+            id="prj-example-1234.marketing.test",
             name="test",
         )
 
@@ -164,7 +164,7 @@ def test_enrich_table_cache_expiry():
             description="Old data",
             columns={},
         )
-        fqn = "bigquery.prj-grp-dataview-prod-1ff9.marketing.test"
+        fqn = "bigquery.prj-example-1234.marketing.test"
         enricher._cache[fqn] = {
             "data": cached_data,
             "fetched_at": datetime.now() - timedelta(seconds=2),  # 2 seconds old
@@ -188,12 +188,12 @@ def test_derive_fqn_auto():
         )
 
         table_config = TableConfig(
-            id="prj-grp-dataview-prod-1ff9.marketing.roi_datamart_v2",
+            id="prj-example-1234.marketing.roi_datamart_v2",
             name="roi_datamart_v2",
         )
 
         fqn = enricher._derive_fqn(table_config)
-        assert fqn == "bigquery.prj-grp-dataview-prod-1ff9.marketing.roi_datamart_v2"
+        assert fqn == "bigquery.prj-example-1234.marketing.roi_datamart_v2"
 
 
 def test_derive_fqn_explicit_override():
@@ -209,7 +209,7 @@ def test_derive_fqn_explicit_override():
         )
 
         table_config = TableConfig(
-            id="prj-grp-dataview-prod-1ff9.marketing.roi_datamart_v2",
+            id="prj-example-1234.marketing.roi_datamart_v2",
             name="roi_datamart_v2",
         )
         table_config.catalog_fqn = "bigquery.custom.fqn.override"

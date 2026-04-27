@@ -112,7 +112,7 @@ services:
     restart: unless-stopped
 
   # TLS reverse proxy. Corporate-CA certs mounted from /data/state/certs
-  # (managed by scripts/grpn/agnes-tls-rotate.sh on the VM). For local
+  # (managed by scripts/ops/agnes-tls-rotate.sh on the VM). For local
   # development without certs, run without --profile tls and hit :8000
   # directly.
   caddy:
