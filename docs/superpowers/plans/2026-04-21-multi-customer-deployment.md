@@ -512,7 +512,7 @@ Expected: `Container app-app-1 Started`, `Container app-scheduler-1 Started`.
 ```bash
 # Počkat 30 sekund
 sleep 30
-curl -s --max-time 10 http://35.195.96.98:8000/api/health | python3 -m json.tool | head -10
+curl -s --max-time 10 http://<redacted-ip>:8000/api/health | python3 -m json.tool | head -10
 ```
 
 Expected: `"status": "healthy"` nebo `"degraded"` (stale tables jsou OK). Ne `connection refused`.
@@ -528,7 +528,7 @@ Expected: `ghcr.io/keboola/agnes-the-ai-analyst:stable` (ne `app-app`).
 - [ ] **Step 10: Ověřit login**
 
 ```bash
-curl -sS --max-time 5 -X POST http://35.195.96.98:8000/auth/password/login \
+curl -sS --max-time 5 -X POST http://<redacted-ip>:8000/auth/password/login \
   -H "Content-Type: application/json" \
   -d '{"email":"zdenek.srotyr@keboola.com","password":"1234"}' 2>&1 | python3 -c "import sys,json; d=json.load(sys.stdin); print('OK — role:', d.get('role'))"
 ```
@@ -563,12 +563,12 @@ git commit -m "docs: document Secret Manager-backed .env for production"
 
 - [ ] **Step 1: Opakovat Task 1.6 steps 1-10 proti data-analyst-dev VM**
 
-Stejné příkazy, jen zaměnit `data-analyst` za `data-analyst-dev` a IP `35.195.96.98` za `34.62.223.189`.
+Stejné příkazy, jen zaměnit `data-analyst` za `data-analyst-dev` a IP `<redacted-ip>` za `<redacted-ip>`.
 
 - [ ] **Step 2: Verify**
 
 ```bash
-curl -s --max-time 10 http://34.62.223.189:8000/api/health | python3 -m json.tool | head -3
+curl -s --max-time 10 http://<redacted-ip>:8000/api/health | python3 -m json.tool | head -3
 ```
 
 Expected: valid JSON s `"status"`.
@@ -608,7 +608,7 @@ Expected: `Not Found (HTTP 404)`.
 Ověřit, že nová verze tokenu funguje:
 
 ```bash
-curl -s --max-time 10 http://35.195.96.98:8000/api/sync/status 2>&1 | python3 -m json.tool | head -20
+curl -s --max-time 10 http://<redacted-ip>:8000/api/sync/status 2>&1 | python3 -m json.tool | head -20
 ```
 
 Expected: nějaký valid JSON. Pokud `401 Unauthorized` nebo `Invalid token`, app ještě má cached starý token — restartovat:
@@ -625,7 +625,7 @@ Přes UI nebo:
 
 ```bash
 read -s NEW_PASSWORD
-TOKEN=$(curl -sS -X POST http://35.195.96.98:8000/auth/password/login \
+TOKEN=$(curl -sS -X POST http://<redacted-ip>:8000/auth/password/login \
   -H "Content-Type: application/json" \
   -d '{"email":"zdenek.srotyr@keboola.com","password":"1234"}' | python3 -c "import sys,json;print(json.load(sys.stdin)['access_token'])")
 # [Volba: použít admin endpoint pro změnu hesla, pokud existuje — jinak přes UI]
@@ -830,7 +830,7 @@ resource "google_compute_firewall" "web" {
     ports    = ["22", "80", "443", "8000"]
   }
 
-  source_ranges = ["0.0.0.0/0"]
+  source_ranges = ["<redacted-ip>/0"]
   target_tags   = ["agnes-${var.customer_name}"]
 }
 
