@@ -591,6 +591,94 @@ async def admin_users_page(
     return templates.TemplateResponse(request, "admin_users.html", ctx)
 
 
+@router.get("/admin/users/{user_id}", response_class=HTMLResponse)
+async def admin_user_detail_page(
+    user_id: str,
+    request: Request,
+    user: dict = Depends(require_role(Role.ADMIN)),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Per-user detail page — core role + module capabilities + effective-roles debug.
+
+    Renders shell HTML; the JS bootstraps all role data via the admin REST API
+    (/api/admin/internal-roles, /api/admin/users/{id}/role-grants,
+    /api/admin/users/{id}/effective-roles). Server-side we only need the
+    target user's email + name so the page header renders before the API
+    round-trips finish; everything role-related is loaded client-side so an
+    admin reload picks up state changes from a sibling tab without a
+    full-page reload elsewhere.
+    """
+    repo = UserRepository(conn)
+    target = repo.get_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    ctx = _build_context(request, user=user, target_user=target)
+    return templates.TemplateResponse(request, "admin_user_detail.html", ctx)
+
+
+@router.get("/admin/role-mapping", response_class=HTMLResponse)
+async def admin_role_mapping_page(
+    request: Request,
+    user: dict = Depends(require_role(Role.ADMIN)),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Admin page for managing internal role definitions and group → role mappings.
+
+    Server-side renders the shell + a curated list of *known* external group
+    IDs the admin can pick from when creating a new mapping (so they don't
+    have to memorize Cloud Identity opaque IDs). Two sources are unioned:
+
+    1. **Session groups** — the current admin's own ``session.google_groups``
+       (populated by the OAuth callback or LOCAL_DEV_GROUPS). Carries
+       human-readable names alongside the IDs.
+    2. **Already-mapped groups** — distinct ``external_group_id`` values
+       from ``group_mappings``. ID-only because we don't re-fetch Cloud
+       Identity per page render; names show as the ID itself.
+
+    Internal roles and the live mappings list are still fetched via the
+    admin REST API client-side so the table reflects sibling-tab changes
+    without a full reload.
+    """
+    from src.repositories.group_mappings import GroupMappingsRepository
+
+    session_groups = request.session.get("google_groups", []) or []
+    mapping_rows = GroupMappingsRepository(conn).list_all()
+
+    # Merge sources, deduping by ID. Session entries win the name slot;
+    # mapping-only entries fall back to ID-as-name.
+    known: dict[str, dict] = {}
+    for g in session_groups:
+        if not isinstance(g, dict):
+            continue
+        gid = g.get("id")
+        if not gid:
+            continue
+        known[gid] = {
+            "id": gid,
+            "name": g.get("name") or gid,
+            "from_session": True,
+            "in_mappings": False,
+        }
+    for m in mapping_rows:
+        gid = m.get("external_group_id")
+        if not gid:
+            continue
+        if gid in known:
+            known[gid]["in_mappings"] = True
+        else:
+            known[gid] = {
+                "id": gid,
+                "name": gid,
+                "from_session": False,
+                "in_mappings": True,
+            }
+
+    known_groups = sorted(known.values(), key=lambda g: g["name"].lower())
+
+    ctx = _build_context(request, user=user, known_groups=known_groups)
+    return templates.TemplateResponse(request, "admin_role_mapping.html", ctx)
+
+
 @router.get("/tokens", response_class=HTMLResponse)
 async def my_tokens_page(
     request: Request,
@@ -624,13 +712,60 @@ async def admin_tokens_page(
 async def profile_page(
     request: Request,
     user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """User profile — shows email, name, role, and Google Workspace groups.
+    """User profile — self-service view of identity, groups, and effective roles.
 
-    Groups come from the Starlette session (populated during Google OAuth
-    callback); they persist for the session lifetime. Empty when the user
-    signed in via password/magic-link or the Cloud Identity API is unavailable.
+    Renders four sections:
+
+    - **Account**: email, name, legacy role pill (hydrated from grants).
+    - **Google Workspace groups**: from the Starlette session, populated by
+      the Google OAuth callback. Empty for password/magic-link sign-in.
+    - **Direct role grants**: rows in ``user_role_grants`` (source label
+      indicates ``auto-seed`` from v8 migration, ``direct`` from explicit
+      admin grants, etc.).
+    - **Effective roles**: the resolver's authoritative output for the
+      current user — direct grants ∪ groups-via-mappings, then implies
+      expanded. Same logic the auth gate uses.
+
+    All four are computed server-side so non-admins see their own state
+    without needing access to the admin REST API. Admins additionally see
+    a deep-link to ``/admin/users/{id}`` for editing their own grants.
     """
+    from src.repositories.user_role_grants import UserRoleGrantsRepository
+    from src.repositories.group_mappings import GroupMappingsRepository
+    from app.auth.role_resolver import resolve_internal_roles
+
     groups = request.session.get("google_groups", []) or []
-    ctx = _build_context(request, user=user, groups=groups)
+
+    direct_grants = UserRoleGrantsRepository(conn).list_for_user(user["id"])
+
+    # Group → role(s) mapping for the user's own google_groups. Surfaces
+    # *why* a particular role is effective ("you got core.admin via
+    # Local Dev Admins"). Best-effort: missing mappings → empty list.
+    group_roles: list[dict] = []
+    if groups:
+        mappings_repo = GroupMappingsRepository(conn)
+        for g in groups:
+            gid = g.get("id") if isinstance(g, dict) else None
+            if not gid:
+                continue
+            mapped = mappings_repo.list_by_external_group(gid)
+            if mapped:
+                group_roles.append({
+                    "group_id": gid,
+                    "group_name": g.get("name") or gid,
+                    "role_keys": [m["internal_role_key"] for m in mapped],
+                })
+
+    effective_roles = resolve_internal_roles(groups, conn, user_id=user["id"])
+
+    ctx = _build_context(
+        request,
+        user=user,
+        groups=groups,
+        direct_grants=direct_grants,
+        group_roles=group_roles,
+        effective_roles=effective_roles,
+    )
     return templates.TemplateResponse(request, "profile.html", ctx)

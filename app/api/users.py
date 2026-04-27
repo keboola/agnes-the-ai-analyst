@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from argon2 import PasswordHasher
 
-from app.auth.dependencies import require_role, Role, _get_db
+from app.auth.dependencies import require_role, Role, _get_db, _hydrate_legacy_role
 from src.repositories.users import UserRepository
 from src.repositories.audit import AuditRepository
 
@@ -66,7 +66,17 @@ class UserResponse(BaseModel):
     invite_email_sent: Optional[bool] = None
 
 
-def _to_response(u: dict, invite_url: Optional[str] = None, invite_email_sent: Optional[bool] = None) -> UserResponse:
+def _to_response(
+    u: dict,
+    conn: duckdb.DuckDBPyConnection,
+    invite_url: Optional[str] = None,
+    invite_email_sent: Optional[bool] = None,
+) -> UserResponse:
+    # v9 schema NULLs the legacy users.role column for migrated users — derive
+    # role from user_role_grants so list/get endpoints don't 500 on Pydantic
+    # validation (UserResponse.role is required str). Same shim used by
+    # get_current_user for the authenticated caller.
+    u = _hydrate_legacy_role(u, conn)
     return UserResponse(
         id=u["id"],
         email=u["email"],
@@ -85,7 +95,7 @@ async def list_users(
     user: dict = Depends(require_role(Role.ADMIN)),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    return [_to_response(u) for u in UserRepository(conn).list_all()]
+    return [_to_response(u, conn) for u in UserRepository(conn).list_all()]
 
 
 @router.post("", response_model=UserResponse, status_code=201)
@@ -122,7 +132,7 @@ async def create_user(
         _audit(conn, user["id"], "user.invite", user_id, {"email": payload.email, "email_sent": invite_email_sent})
 
     created = repo.get_by_id(user_id)
-    return _to_response(created, invite_url=invite_url, invite_email_sent=invite_email_sent)
+    return _to_response(created, conn, invite_url=invite_url, invite_email_sent=invite_email_sent)
 
 
 @router.patch("/{user_id}", response_model=UserResponse)
@@ -137,6 +147,11 @@ async def update_user(
     target = repo.get_by_id(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
+    # v9: legacy users.role is NULL for migrated users — hydrate from grants
+    # before the role-based protection short-circuits run, otherwise checks
+    # like ``target["role"] == "admin"`` silently skip and let the caller
+    # demote/deactivate the last admin.
+    target = _hydrate_legacy_role(target, conn)
 
     updates: dict = {}
     if payload.name is not None:
@@ -178,7 +193,7 @@ async def update_user(
     if updates:
         repo.update(id=user_id, **updates)
         _audit(conn, user["id"], "user.update", user_id, {k: v for k, v in updates.items() if k != "deactivated_at"})
-    return _to_response(repo.get_by_id(user_id))
+    return _to_response(repo.get_by_id(user_id), conn)
 
 
 @router.delete("/{user_id}", status_code=204)
@@ -192,6 +207,9 @@ async def delete_user(
     target = repo.get_by_id(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
+    # v9: hydrate role from grants so the last-admin guard below doesn't
+    # silently no-op on migrated users with NULL legacy role.
+    target = _hydrate_legacy_role(target, conn)
     if target["id"] == user["id"]:
         raise HTTPException(status_code=409, detail="Cannot delete yourself")
     if target.get("role") == "admin" and repo.count_admins(active_only=True) <= 1:

@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -24,11 +24,22 @@ CREATE TABLE IF NOT EXISTS schema_version (
     applied_at TIMESTAMP DEFAULT current_timestamp
 );
 
+-- v9: role assignments moved to user_role_grants (direct grants) and
+-- group_mappings (Cloud Identity group → role). The four legacy values
+-- (viewer/analyst/km_admin/admin) are seeded as core.* internal_roles with
+-- an implies hierarchy and granted to existing users by the v8→v9 backfill —
+-- see _seed_core_roles + _backfill_users_role_to_grants.
+--
+-- DEPRECATED v9: users.role column kept as NULL-able legacy artifact because
+-- DuckDB rejects DROP COLUMN while a FK (user_role_grants.user_id → users.id)
+-- references the table. UserRepository ignores it on reads + writes; the
+-- column will be physically dropped in a future major release once DuckDB
+-- ALTER w/ FK support stabilizes (or via a planned table-rebuild migration).
 CREATE TABLE IF NOT EXISTS users (
     id VARCHAR PRIMARY KEY,
     email VARCHAR UNIQUE NOT NULL,
     name VARCHAR,
-    role VARCHAR DEFAULT 'analyst',
+    role VARCHAR,
     password_hash VARCHAR,
     setup_token VARCHAR,
     setup_token_created TIMESTAMP,
@@ -233,6 +244,20 @@ CREATE TABLE IF NOT EXISTS internal_roles (
     display_name VARCHAR NOT NULL,
     description  TEXT,
     owner_module VARCHAR,
+    -- v9: implies is a JSON array of role keys this role transitively grants.
+    -- Example: core.admin.implies = ["core.km_admin"], core.km_admin.implies =
+    -- ["core.analyst"], core.analyst.implies = ["core.viewer"]. Resolver does
+    -- BFS expansion at lookup time. Stored as VARCHAR (DuckDB JSON-as-text)
+    -- because JSON typing on legacy DuckDB versions can be uneven; aplikační
+    -- vrstva serializes/deserializes via stdlib json. Refactor to native JSON
+    -- column is straightforward when we drop pre-1.0 compat.
+    implies      VARCHAR DEFAULT '[]',
+    -- v9: is_core distinguishes the seeded core.* hierarchy roles (viewer,
+    -- analyst, km_admin, admin — the legacy users.role enum) from
+    -- module-registered capability roles. UI uses this to render the user
+    -- detail page differently (single-select for core, multi-select for
+    -- module roles). Module authors should never set is_core=true.
+    is_core      BOOLEAN NOT NULL DEFAULT false,
     created_at   TIMESTAMP NOT NULL DEFAULT current_timestamp,
     updated_at   TIMESTAMP NOT NULL DEFAULT current_timestamp
 );
@@ -248,6 +273,23 @@ CREATE TABLE IF NOT EXISTS group_mappings (
     assigned_at       TIMESTAMP NOT NULL DEFAULT current_timestamp,
     assigned_by       VARCHAR,
     UNIQUE (external_group_id, internal_role_id)
+);
+
+-- v9: direct user → internal role grants. Complementary to group_mappings:
+-- group_mappings drives session-cached resolution at sign-in for OAuth users,
+-- user_role_grants drives DB-backed resolution for PAT/headless callers and
+-- persists across sessions. require_internal_role checks both paths.
+-- The v8→v9 backfill seeds one row per existing user with source='auto-seed'
+-- mirroring their pre-v9 users.role value; admin-issued grants use
+-- source='direct'.
+CREATE TABLE IF NOT EXISTS user_role_grants (
+    id                VARCHAR PRIMARY KEY,
+    user_id           VARCHAR NOT NULL REFERENCES users(id),
+    internal_role_id  VARCHAR NOT NULL REFERENCES internal_roles(id),
+    granted_at        TIMESTAMP NOT NULL DEFAULT current_timestamp,
+    granted_by        VARCHAR,
+    source            VARCHAR DEFAULT 'direct',
+    UNIQUE (user_id, internal_role_id)
 );
 """
 
@@ -484,6 +526,141 @@ _V7_TO_V8_MIGRATIONS = [
     """,
 ]
 
+# v9 migration is multi-stage: ALTER + new table → seed core.* rows → backfill
+# existing users.role values into user_role_grants → DROP users.role. The
+# latter three steps run as Python helpers (_seed_core_roles +
+# _backfill_users_role_to_grants) called from _ensure_schema, not raw SQL —
+# they need DuckDB ConstraintException handling and per-user-role lookups
+# that don't translate cleanly to a static SQL list.
+_V8_TO_V9_MIGRATIONS = [
+    "ALTER TABLE internal_roles ADD COLUMN IF NOT EXISTS implies VARCHAR DEFAULT '[]'",
+    "ALTER TABLE internal_roles ADD COLUMN IF NOT EXISTS is_core BOOLEAN DEFAULT false",
+    """
+    CREATE TABLE IF NOT EXISTS user_role_grants (
+        id                VARCHAR PRIMARY KEY,
+        user_id           VARCHAR NOT NULL REFERENCES users(id),
+        internal_role_id  VARCHAR NOT NULL REFERENCES internal_roles(id),
+        granted_at        TIMESTAMP NOT NULL DEFAULT current_timestamp,
+        granted_by        VARCHAR,
+        source            VARCHAR DEFAULT 'direct',
+        UNIQUE (user_id, internal_role_id)
+    )
+    """,
+]
+
+
+# Core role seed data — single source of truth. Used by both _seed_core_roles
+# (idempotent insert) and the v8→v9 backfill. Order matters: lowest privilege
+# first so implies references resolve cleanly when expand_implies does BFS.
+_CORE_ROLES_SEED = [
+    # (key, display_name, description, implies)
+    ("core.viewer", "Viewer",
+     "Read-only access to permitted datasets.", []),
+    ("core.analyst", "Analyst",
+     "Default user role; query data, run analyses.", ["core.viewer"]),
+    ("core.km_admin", "Knowledge-management admin",
+     "Manages metric definitions and column metadata.", ["core.analyst"]),
+    ("core.admin", "Administrator",
+     "Full system access; bypasses dataset_permissions.", ["core.km_admin"]),
+]
+
+# Maps the legacy users.role string values onto core.* keys for the v8→v9
+# backfill. Anything unrecognized falls back to core.viewer — safest default
+# for existing rows that somehow held a value outside the documented enum.
+_LEGACY_ROLE_TO_CORE_KEY = {
+    "viewer": "core.viewer",
+    "analyst": "core.analyst",
+    "km_admin": "core.km_admin",
+    "admin": "core.admin",
+}
+
+
+def _seed_core_roles(conn: duckdb.DuckDBPyConnection) -> None:
+    """Idempotently insert/refresh the four core.* hierarchy roles.
+
+    Called from _ensure_schema on every system-DB connect (the unconditional
+    tail call below the migration guard) — fresh installs need the rows to
+    exist before any user_role_grants can reference them, and existing DBs
+    benefit from the safety net if a deployment somehow loses a row
+    (e.g. accidental admin DELETE). Implies field is rewritten on every call
+    to keep the hierarchy in sync with code; display_name + description are
+    rewritten too so a doc tweak deploys without manual SQL.
+    """
+    import json as _json
+    import uuid as _uuid
+
+    for key, display_name, description, implies in _CORE_ROLES_SEED:
+        existing = conn.execute(
+            "SELECT id FROM internal_roles WHERE key = ?", [key]
+        ).fetchone()
+        implies_json = _json.dumps(implies)
+        if existing:
+            conn.execute(
+                """UPDATE internal_roles
+                   SET display_name = ?, description = ?, implies = ?,
+                       is_core = true, owner_module = 'core',
+                       updated_at = current_timestamp
+                   WHERE id = ?""",
+                [display_name, description, implies_json, existing[0]],
+            )
+        else:
+            conn.execute(
+                """INSERT INTO internal_roles
+                   (id, key, display_name, description, owner_module, implies, is_core)
+                   VALUES (?, ?, ?, ?, 'core', ?, true)""",
+                [str(_uuid.uuid4()), key, display_name, description, implies_json],
+            )
+
+
+def _backfill_users_role_to_grants(conn: duckdb.DuckDBPyConnection) -> None:
+    """One-shot: convert legacy users.role values into user_role_grants rows.
+
+    Runs as part of the v8→v9 migration, after _seed_core_roles populated the
+    target internal_roles rows and before users.role is dropped. Idempotent
+    via the (user_id, internal_role_id) UNIQUE constraint — re-run is safe.
+    """
+    import uuid as _uuid
+
+    # Verify users.role column still exists (we may be re-running after a
+    # half-applied migration); skip silently if it's already gone.
+    has_role_col = conn.execute(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name = 'users' AND column_name = 'role'"
+    ).fetchone()
+    if not has_role_col:
+        return
+
+    rows = conn.execute(
+        "SELECT id, role FROM users WHERE role IS NOT NULL"
+    ).fetchall()
+    backfilled = 0
+    for user_id, role_str in rows:
+        role_key = _LEGACY_ROLE_TO_CORE_KEY.get(role_str, "core.viewer")
+        role_row = conn.execute(
+            "SELECT id FROM internal_roles WHERE key = ?", [role_key]
+        ).fetchone()
+        if not role_row:
+            logger.warning(
+                "v9 backfill: core role %s missing — skipping user %s",
+                role_key, user_id,
+            )
+            continue
+        try:
+            conn.execute(
+                """INSERT INTO user_role_grants
+                   (id, user_id, internal_role_id, granted_by, source)
+                   VALUES (?, ?, ?, 'system:v9-backfill', 'auto-seed')""",
+                [str(_uuid.uuid4()), user_id, role_row[0]],
+            )
+            backfilled += 1
+        except duckdb.ConstraintException:
+            pass  # already granted (idempotent re-run)
+    if backfilled:
+        logger.info(
+            "v9 backfill: seeded user_role_grants for %d existing user(s)",
+            backfilled,
+        )
+
 _V3_TO_V4_MIGRATIONS = [
     """
     CREATE TABLE IF NOT EXISTS metric_definitions (
@@ -555,6 +732,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 "INSERT INTO schema_version (version) VALUES (?)",
                 [SCHEMA_VERSION],
             )
+            # Fresh-install seed is handled by the unconditional
+            # _seed_core_roles call at the bottom of _ensure_schema —
+            # left as a no-op branch here so the migration ladder still
+            # reads chronologically.
         else:
             if current < 2:
                 for sql in _V1_TO_V2_MIGRATIONS:
@@ -577,10 +758,49 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             if current < 8:
                 for sql in _V7_TO_V8_MIGRATIONS:
                     conn.execute(sql)
+            if current < 9:
+                for sql in _V8_TO_V9_MIGRATIONS:
+                    conn.execute(sql)
+                # v9 finalize: seed core.* roles, backfill grants from
+                # legacy users.role, then drop the column. Order matters —
+                # backfill needs the seed rows to exist; drop must be last.
+                _seed_core_roles(conn)
+                _backfill_users_role_to_grants(conn)
+                # DuckDB rejects DROP COLUMN while user_role_grants FK
+                # references users(id), so we NULL the legacy values instead
+                # — UserRepository ignores the column going forward. Physical
+                # drop is deferred to a future schema-rebuild migration.
+                # Skip UPDATE if the column never existed (e.g. test fixtures
+                # starting from v2/v3 with a hand-crafted minimal users table).
+                has_role_col = conn.execute(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_name = 'users' AND column_name = 'role'"
+                ).fetchone()
+                if has_role_col:
+                    conn.execute("UPDATE users SET role = NULL")
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
             )
+
+    # Always run the core-role seed when the DB is on a version this binary
+    # understands — the per-connect safety net the function's docstring
+    # promises. UPSERTs four rows; near-zero cost. Three reasons this lives
+    # OUTSIDE the migration guard:
+    #   1. recovery — if a row gets DELETEd manually (or a doc-tweak release
+    #      lands a new display_name), the next process start re-syncs without
+    #      operator action;
+    #   2. fresh installs — the (current == 0) branch above no longer needs
+    #      its own seed call;
+    #   3. v8→v9 migration — keeps its own _seed_core_roles call inside the
+    #      block because _backfill_users_role_to_grants depends on the rows
+    #      existing first; this tail call is the redundant-but-cheap follow-up.
+    #
+    # Skip when current > SCHEMA_VERSION — that's the future-version-is-noop
+    # rollback contract (future schema may not even have an internal_roles
+    # table; this binary leaves it alone).
+    if get_schema_version(conn) <= SCHEMA_VERSION:
+        _seed_core_roles(conn)
 
 
 def get_schema_version(conn: duckdb.DuckDBPyConnection) -> int:

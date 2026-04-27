@@ -39,11 +39,55 @@ class UserRepository:
         role: str = "analyst",
         password_hash: Optional[str] = None,
     ) -> None:
+        """Create a user and grant the matching core.* role.
+
+        v9: ``role`` argument is preserved for API compatibility but no longer
+        the source of truth — we also insert a ``user_role_grants`` row
+        pointing at ``core.{role}``. The legacy column write is kept (and
+        will be NULL-ed by the v9 backfill on existing DBs) so that during
+        the transition window mixed-version code paths still see consistent
+        state.
+        """
+        import uuid as _uuid
         now = datetime.now(timezone.utc)
         self.conn.execute(
             """INSERT INTO users (id, email, name, role, password_hash, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)""",
             [id, email, name, role, password_hash, now, now],
+        )
+        self._grant_core_role(id, role)
+
+    def _grant_core_role(self, user_id: str, role_name: str) -> None:
+        """Insert/replace the user's core.* user_role_grants row.
+
+        Idempotent — strips any existing core.* grants for this user before
+        inserting the new one, so callers can re-issue without worrying
+        about duplicate-row errors. Called from create() and update() when
+        the role changes.
+        """
+        import uuid as _uuid
+        # Drop any existing core.* grants for this user.
+        self.conn.execute(
+            """DELETE FROM user_role_grants
+               WHERE user_id = ?
+               AND internal_role_id IN (
+                   SELECT id FROM internal_roles WHERE is_core = true
+               )""",
+            [user_id],
+        )
+        target_key = f"core.{role_name}"
+        target = self.conn.execute(
+            "SELECT id FROM internal_roles WHERE key = ?", [target_key],
+        ).fetchone()
+        if not target:
+            # Unknown role string — no grant. has_role() will return False
+            # via the resolver, which preserves the pre-v9 fallback to VIEWER.
+            return
+        self.conn.execute(
+            """INSERT INTO user_role_grants
+               (id, user_id, internal_role_id, granted_by, source)
+               VALUES (?, ?, ?, 'user_repo.create', 'direct')""",
+            [str(_uuid.uuid4()), user_id, target[0]],
         )
 
     def update(self, id: str, **kwargs) -> None:
@@ -55,17 +99,41 @@ class UserRepository:
         updates = {k: v for k, v in kwargs.items() if k in allowed}
         if not updates:
             return
+        # v9: when role changes, propagate to user_role_grants too.
+        new_role = updates.get("role")
         updates["updated_at"] = datetime.now(timezone.utc)
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         values = list(updates.values()) + [id]
         self.conn.execute(f"UPDATE users SET {set_clause} WHERE id = ?", values)
+        if new_role is not None:
+            self._grant_core_role(id, new_role)
 
     def count_admins(self, active_only: bool = True) -> int:
-        sql = "SELECT COUNT(*) FROM users WHERE role = 'admin'"
+        """Count users holding the core.admin role.
+
+        v9: counts via ``user_role_grants`` join on ``internal_roles.key =
+        'core.admin'``. The legacy ``users.role = 'admin'`` is NULL after
+        backfill, so the old SQL would always return 0.
+        """
+        sql = """
+            SELECT COUNT(DISTINCT u.id)
+            FROM users u
+            JOIN user_role_grants g ON g.user_id = u.id
+            JOIN internal_roles r ON g.internal_role_id = r.id
+            WHERE r.key = 'core.admin'
+        """
         if active_only:
-            sql += " AND COALESCE(active, TRUE) = TRUE"
+            sql += " AND COALESCE(u.active, TRUE) = TRUE"
         result = self.conn.execute(sql).fetchone()
         return int(result[0]) if result else 0
 
     def delete(self, user_id: str) -> None:
+        """Delete user + cascade their role grants.
+
+        v9: ``user_role_grants.user_id`` has a FK to ``users(id)``; DuckDB
+        will reject the user delete unless the grants are removed first.
+        """
+        self.conn.execute(
+            "DELETE FROM user_role_grants WHERE user_id = ?", [user_id],
+        )
         self.conn.execute("DELETE FROM users WHERE id = ?", [user_id])

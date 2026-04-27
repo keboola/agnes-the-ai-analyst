@@ -11,7 +11,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 
 from app.auth.jwt import create_access_token
-from app.auth.dependencies import _get_db
+from app.auth.dependencies import _get_db, _hydrate_legacy_role
 from src.repositories.users import UserRepository
 
 logger = logging.getLogger(__name__)
@@ -65,6 +65,10 @@ async def create_token(
     user = repo.get_by_email(request.email)
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+    # v9: legacy users.role is NULL for migrated users; hydrate from grants
+    # before TokenResponse (role: str) or create_access_token reads it.
+    # Without this, POST /auth/token raises Pydantic ValidationError → 500.
+    user = _hydrate_legacy_role(user, conn)
     if not bool(user.get("active", True)):
         _audit(user["id"], "login_failed", result="deactivated")
         raise HTTPException(status_code=401, detail="Account deactivated")

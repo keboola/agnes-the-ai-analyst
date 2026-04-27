@@ -24,27 +24,38 @@ logger = logging.getLogger(__name__)
 API_URL = os.environ.get("API_URL", "http://localhost:8000")
 SCHEDULER_API_TOKEN = os.environ.get("SCHEDULER_API_TOKEN", "")
 
-_cached_token = ""
+_token_warning_emitted = False
+
 
 def _get_auth_token() -> str:
-    """Get auth token — use SCHEDULER_API_TOKEN or auto-fetch from API."""
-    global _cached_token
+    """Return the bearer token for API calls.
+
+    Production: ``SCHEDULER_API_TOKEN`` env var carries a long-lived PAT
+    minted via ``/tokens`` for a service-account user with the roles the
+    jobs need (typically ``core.admin`` for sync triggers). Set it.
+
+    Dev / LOCAL_DEV_MODE: leave it unset. The scheduler returns the empty
+    string and calls the API without an ``Authorization`` header — the
+    API's dev-bypass auto-authenticates the request as the dev user.
+
+    The previous implementation tried to auto-fetch a token by POSTing to
+    ``/auth/token`` with just the seed admin's email. That endpoint
+    requires email + password (or rejects external-auth accounts that
+    have no local password), so the call always 401-ed and the scheduler
+    log was noisy with one access-log line per cron tick. Removed in
+    favor of explicit configuration: either set the PAT or rely on
+    LOCAL_DEV_MODE.
+    """
+    global _token_warning_emitted
     if SCHEDULER_API_TOKEN:
         return SCHEDULER_API_TOKEN
-    if _cached_token:
-        return _cached_token
-    admin_email = os.environ.get("SEED_ADMIN_EMAIL", "")
-    if not admin_email:
-        logger.warning("No SCHEDULER_API_TOKEN or SEED_ADMIN_EMAIL — calls will be unauthenticated")
-        return ""
-    try:
-        resp = httpx.post(f"{API_URL}/auth/token", json={"email": admin_email}, timeout=10)
-        if resp.status_code == 200:
-            _cached_token = resp.json().get("access_token", "")
-            logger.info("Auto-fetched scheduler token for %s", admin_email)
-            return _cached_token
-    except Exception as e:
-        logger.warning("Failed to fetch scheduler token: %s", e)
+    if not _token_warning_emitted:
+        logger.warning(
+            "SCHEDULER_API_TOKEN is not set — calling the API without "
+            "Authorization. Required in production; in LOCAL_DEV_MODE "
+            "the dev-bypass auto-authenticates and this is fine."
+        )
+        _token_warning_emitted = True
     return ""
 
 # Schedule definitions: (name, interval_seconds, api_endpoint, http_method)

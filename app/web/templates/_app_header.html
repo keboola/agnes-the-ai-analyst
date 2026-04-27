@@ -14,6 +14,7 @@
         <a class="app-nav-link {% if _path.startswith('/install') %}is-active{% endif %}" href="/install">Install CLI</a>
         {% if session.user.role == 'admin' %}
         <a class="app-nav-link {% if _path.startswith('/admin/users') %}is-active{% endif %}" href="/admin/users">Users</a>
+        <a class="app-nav-link {% if _path.startswith('/admin/role-mapping') %}is-active{% endif %}" href="/admin/role-mapping">Role mapping</a>
         <a class="app-nav-link {% if _path.startswith('/admin/tokens') %}is-active{% endif %}" href="/admin/tokens">All tokens</a>
         {% endif %}
 

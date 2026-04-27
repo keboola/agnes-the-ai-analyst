@@ -1,0 +1,483 @@
+{% extends "base.html" %}
+{% block title %}{{ target_user.email }} — User detail — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block content %}
+<style>
+  .container:has(.user-detail-page) { max-width: none; padding: 24px 16px; }
+  .user-detail-page { max-width: 1200px; margin: 0 auto; padding: 0; }
+
+  .ud-header { display: flex; align-items: center; gap: 16px; margin-bottom: 28px; }
+  .ud-back {
+    display: inline-flex; align-items: center; gap: 6px;
+    text-decoration: none; color: var(--text-secondary, #6b7280);
+    font-size: 13px;
+  }
+  .ud-back:hover { color: var(--text-primary, #111827); }
+
+  .ud-title-block { flex: 1; }
+  .ud-title { font-size: 22px; font-weight: 600; margin: 0; }
+  .ud-subtitle {
+    font-size: 13px; color: var(--text-secondary, #6b7280);
+    font-family: var(--font-mono, ui-monospace, monospace);
+    margin-top: 2px;
+  }
+
+  .ud-section {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+  .ud-section h2 {
+    margin: 0 0 4px; font-size: 16px; font-weight: 600;
+  }
+  .ud-section .ud-section-sub {
+    font-size: 12px; color: var(--text-secondary, #6b7280);
+    margin: 0 0 16px;
+  }
+
+  /* Section A: Core role */
+  .ud-core-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .ud-core-row label {
+    font-size: 12px; text-transform: uppercase;
+    letter-spacing: 0.4px; color: var(--text-secondary, #6b7280); font-weight: 600;
+  }
+  .ud-core-row select {
+    padding: 8px 12px;
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px;
+    font-size: 13px;
+    background: var(--surface, #fff);
+    color: var(--text-primary, #111827);
+    min-width: 220px;
+  }
+  .ud-core-row select:focus {
+    outline: 2px solid var(--primary, #6366f1); outline-offset: -1px;
+  }
+  .ud-status {
+    font-size: 12px; color: var(--text-secondary, #6b7280);
+  }
+
+  /* Section B: capabilities */
+  .ud-cap-list {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 8px;
+  }
+  .ud-cap-item {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--border-light, #f3f4f6);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .ud-cap-item:hover { background: var(--border-light, #fafafa); }
+  .ud-cap-item input[type="checkbox"] { margin-top: 2px; }
+  .ud-cap-meta { flex: 1; min-width: 0; }
+  .ud-cap-meta .display { font-weight: 500; font-size: 13px; }
+  .ud-cap-meta .key {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 11px; color: var(--text-secondary, #6b7280); display: block;
+  }
+  .ud-cap-meta .desc {
+    font-size: 12px; color: var(--text-secondary, #6b7280);
+    margin-top: 4px;
+  }
+
+  /* Section C: effective roles (debug) */
+  .ud-effective-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 16px;
+  }
+  .ud-effective-block {
+    background: var(--border-light, #f9fafb);
+    border-radius: 8px;
+    padding: 12px;
+  }
+  .ud-effective-block h3 {
+    margin: 0 0 8px; font-size: 12px;
+    text-transform: uppercase; letter-spacing: 0.4px;
+    color: var(--text-secondary, #6b7280); font-weight: 600;
+  }
+  .ud-effective-list {
+    list-style: none; margin: 0; padding: 0;
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 12px;
+  }
+  .ud-effective-list li {
+    padding: 4px 0;
+    border-bottom: 1px solid var(--border, #e5e7eb);
+  }
+  .ud-effective-list li:last-child { border-bottom: none; }
+  .ud-effective-list .source {
+    font-size: 10px; color: var(--text-secondary, #6b7280);
+    margin-left: 6px; text-transform: uppercase; letter-spacing: 0.3px;
+  }
+  .ud-effective-empty {
+    font-size: 12px; color: var(--text-secondary, #6b7280); font-style: italic;
+  }
+
+  .ud-loading {
+    text-align: center; padding: 24px; color: var(--text-secondary, #6b7280);
+    font-size: 13px;
+  }
+
+  /* Toast — same style as admin_users */
+  .toast-stack {
+    position: fixed; bottom: 24px; right: 24px; z-index: 2000;
+    display: flex; flex-direction: column; gap: 8px;
+    pointer-events: none;
+  }
+  .toast {
+    background: #111827; color: #fff; padding: 10px 16px;
+    border-radius: 8px; font-size: 13px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+    opacity: 0; transform: translateY(8px);
+    transition: opacity 0.2s, transform 0.2s;
+    pointer-events: auto; max-width: 380px;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast.success { background: #047857; }
+  .toast.error { background: #b91c1c; }
+</style>
+
+<div class="user-detail-page"
+     data-user-id="{{ target_user.id }}"
+     data-user-email="{{ target_user.email }}">
+  <div class="ud-header">
+    <a class="ud-back" href="/admin/users">&larr; Back to users</a>
+    <div class="ud-title-block">
+      <h1 class="ud-title">{{ target_user.name or target_user.email }}</h1>
+      <div class="ud-subtitle">{{ target_user.email }} &middot; <code>{{ target_user.id }}</code></div>
+    </div>
+  </div>
+
+  <!-- Section A: Core role (single-select) -->
+  <section class="ud-section" data-section="core-role">
+    <h2>Core role</h2>
+    <p class="ud-section-sub">
+      Single-select role from the legacy hierarchy (viewer &rarr; analyst &rarr; km_admin &rarr; admin).
+      Implies expansion at sign-in: a user holding <code>core.admin</code> automatically holds the
+      lower roles.
+    </p>
+    <div class="ud-core-row">
+      <label for="core-role-select">Current role</label>
+      <select id="core-role-select" disabled>
+        <option value="">Loading...</option>
+      </select>
+      <span class="ud-status" id="core-role-status"></span>
+    </div>
+  </section>
+
+  <!-- Section B: Additional capabilities (multi-checkbox) -->
+  <section class="ud-section" data-section="capabilities">
+    <h2>Additional capabilities</h2>
+    <p class="ud-section-sub">
+      Module-registered roles. Toggle to grant or revoke direct access. Changes apply immediately
+      for PAT/headless callers; OAuth users see the new role on next sign-in.
+    </p>
+    <div id="caps-list" class="ud-cap-list"></div>
+    <div id="caps-loading" class="ud-loading">Loading capabilities...</div>
+    <div id="caps-empty" class="ud-loading" style="display:none;">No module-registered capabilities yet.</div>
+  </section>
+
+  <!-- Section C: Effective roles (debug) -->
+  <section class="ud-section" data-section="effective-roles">
+    <h2>Effective roles</h2>
+    <p class="ud-section-sub">
+      Read-only view of the resolver output: direct grants, group-derived grants, and the fully
+      expanded role set. Useful for debugging "why can/can't this user do X?".
+    </p>
+    <div id="effective-loading" class="ud-loading">Loading effective roles...</div>
+    <div class="ud-effective-grid" id="effective-grid" style="display:none;">
+      <div class="ud-effective-block">
+        <h3>Direct grants</h3>
+        <ul class="ud-effective-list" id="effective-direct"></ul>
+      </div>
+      <div class="ud-effective-block">
+        <h3>Group-derived grants</h3>
+        <ul class="ud-effective-list" id="effective-groups"></ul>
+      </div>
+      <div class="ud-effective-block">
+        <h3>Expanded set</h3>
+        <ul class="ud-effective-list" id="effective-expanded"></ul>
+      </div>
+    </div>
+  </section>
+</div>
+
+<div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+
+<script>
+const USER_ID = document.querySelector(".user-detail-page").dataset.userId;
+const USER_EMAIL = document.querySelector(".user-detail-page").dataset.userEmail;
+const API_INTERNAL_ROLES = "/api/admin/internal-roles";
+const API_USER_GRANTS = "/api/admin/users/" + encodeURIComponent(USER_ID) + "/role-grants";
+const API_USER_EFFECTIVE = "/api/admin/users/" + encodeURIComponent(USER_ID) + "/effective-roles";
+
+function esc(s) {
+  const d = document.createElement("div");
+  d.textContent = s == null ? "" : String(s);
+  return d.innerHTML;
+}
+
+function toast(msg, kind) {
+  const el = document.createElement("div");
+  el.className = "toast " + (kind || "");
+  el.textContent = msg;
+  document.getElementById("toast-stack").appendChild(el);
+  requestAnimationFrame(function () { el.classList.add("show"); });
+  setTimeout(function () {
+    el.classList.remove("show");
+    setTimeout(function () { el.remove(); }, 250);
+  }, 3500);
+}
+
+// ── State ──
+let internalRoles = [];   // all internal_roles rows
+let directGrants = [];    // current user's direct grants from effective-roles
+
+async function fetchJson(url, opts) {
+  const r = await fetch(url, Object.assign({ credentials: "include" }, opts || {}));
+  if (!r.ok) {
+    const txt = await r.text().catch(function () { return ""; });
+    throw new Error(r.status + " " + (txt || r.statusText));
+  }
+  if (r.status === 204) return null;
+  return r.json();
+}
+
+async function loadInternalRoles() {
+  internalRoles = await fetchJson(API_INTERNAL_ROLES);
+}
+
+async function loadEffectiveRoles() {
+  const data = await fetchJson(API_USER_EFFECTIVE);
+  // Expected shape:
+  //   { direct: [{role_key, source, grant_id?}],
+  //     groups: [{group_id, role_key}],
+  //     expanded: [role_key, ...] }
+  // The renderer is tolerant of legacy field names too.
+  directGrants = data.direct || data.direct_grants || [];
+  return data;
+}
+
+// ── Section A: Core role ──
+function renderCoreRole() {
+  const sel = document.getElementById("core-role-select");
+  const status = document.getElementById("core-role-status");
+  const coreRoles = internalRoles.filter(function (r) { return r.is_core; });
+  // Current core role from direct grants
+  const currentDirect = directGrants.find(function (g) {
+    const k = g.role_key || g.key || "";
+    return k.indexOf("core.") === 0;
+  });
+  const currentKey = currentDirect ? (currentDirect.role_key || currentDirect.key) : "";
+
+  sel.innerHTML = "";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "— No core role —";
+  sel.appendChild(placeholder);
+
+  // Sort core roles: viewer, analyst, km_admin, admin (by ordering in seed list)
+  const coreOrder = ["core.viewer", "core.analyst", "core.km_admin", "core.admin"];
+  coreRoles.sort(function (a, b) {
+    return coreOrder.indexOf(a.key) - coreOrder.indexOf(b.key);
+  });
+
+  for (const r of coreRoles) {
+    const opt = document.createElement("option");
+    opt.value = r.key;
+    opt.textContent = r.display_name + " (" + r.key + ")";
+    if (r.key === currentKey) opt.selected = true;
+    sel.appendChild(opt);
+  }
+
+  sel.disabled = false;
+  sel.dataset.currentKey = currentKey;
+  status.textContent = currentKey ? "Currently: " + currentKey : "No core role assigned";
+
+  sel.onchange = function () { changeCoreRole(sel.value, currentKey); };
+}
+
+async function changeCoreRole(newKey, currentKey) {
+  if (newKey === currentKey) return;
+  const sel = document.getElementById("core-role-select");
+  sel.disabled = true;
+  try {
+    // Remove existing core.* direct grants first.
+    const coreDirect = directGrants.filter(function (g) {
+      const k = g.role_key || g.key || "";
+      return k.indexOf("core.") === 0 && (g.source !== "auto-seed" || true);
+      // We delete auto-seed too — UserRepository._grant_core_role does the
+      // same so the source field doesn't actually block deletion semantics.
+    });
+    for (const g of coreDirect) {
+      const gid = g.grant_id || g.id;
+      if (!gid) continue;
+      await fetchJson(API_USER_GRANTS + "/" + encodeURIComponent(gid), {
+        method: "DELETE",
+      });
+    }
+    if (newKey) {
+      await fetchJson(API_USER_GRANTS, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role_key: newKey }),
+      });
+    }
+    toast("Core role updated", "success");
+    await refreshAfterMutation();
+  } catch (e) {
+    toast("Failed to update core role: " + e.message, "error");
+    // Reset dropdown to whatever the server says
+    await refreshAfterMutation();
+  }
+}
+
+// ── Section B: Capabilities ──
+function renderCapabilities() {
+  const list = document.getElementById("caps-list");
+  const loading = document.getElementById("caps-loading");
+  const empty = document.getElementById("caps-empty");
+  loading.style.display = "none";
+
+  const moduleRoles = internalRoles.filter(function (r) { return !r.is_core; });
+  if (moduleRoles.length === 0) {
+    empty.style.display = "block";
+    list.innerHTML = "";
+    return;
+  }
+  empty.style.display = "none";
+
+  // Build a set of currently held direct role keys.
+  const heldKeys = new Set();
+  for (const g of directGrants) {
+    heldKeys.add(g.role_key || g.key || "");
+  }
+
+  list.innerHTML = "";
+  for (const role of moduleRoles) {
+    const isHeld = heldKeys.has(role.key);
+    const div = document.createElement("label");
+    div.className = "ud-cap-item";
+    div.innerHTML =
+      '<input type="checkbox" data-cap-key="' + esc(role.key) + '"' +
+      (isHeld ? " checked" : "") + ">" +
+      '<span class="ud-cap-meta">' +
+        '<span class="display">' + esc(role.display_name) + "</span>" +
+        '<span class="key">' + esc(role.key) + "</span>" +
+        (role.description ? '<span class="desc">' + esc(role.description) + "</span>" : "") +
+      "</span>";
+    list.appendChild(div);
+    const cb = div.querySelector("input[type=checkbox]");
+    cb.addEventListener("change", function () {
+      toggleCapability(role.key, cb.checked, cb);
+    });
+  }
+}
+
+async function toggleCapability(roleKey, wantHeld, cb) {
+  cb.disabled = true;
+  try {
+    if (wantHeld) {
+      await fetchJson(API_USER_GRANTS, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role_key: roleKey }),
+      });
+      toast("Granted " + roleKey, "success");
+    } else {
+      // Find grant id from directGrants.
+      const g = directGrants.find(function (x) {
+        return (x.role_key || x.key) === roleKey;
+      });
+      const gid = g && (g.grant_id || g.id);
+      if (!gid) {
+        toast("Grant not found locally; refreshing", "error");
+      } else {
+        await fetchJson(API_USER_GRANTS + "/" + encodeURIComponent(gid), {
+          method: "DELETE",
+        });
+        toast("Revoked " + roleKey, "success");
+      }
+    }
+    await refreshAfterMutation();
+  } catch (e) {
+    toast("Toggle failed: " + e.message, "error");
+    cb.checked = !wantHeld;
+  } finally {
+    cb.disabled = false;
+  }
+}
+
+// ── Section C: Effective roles ──
+function renderEffectiveRoles(data) {
+  document.getElementById("effective-loading").style.display = "none";
+  const grid = document.getElementById("effective-grid");
+  grid.style.display = "";
+
+  const direct = data.direct || data.direct_grants || [];
+  // API returns `group` (singular, matches EffectiveRolesResponse pydantic
+  // field). The other names are tolerated for past/future shape drift.
+  const groups = data.group || data.groups || data.group_derived || data.derived || [];
+  const expanded = data.expanded || data.expanded_set || data.all || [];
+
+  fillList("effective-direct", direct, function (g) {
+    const k = g.role_key || g.key || "";
+    const src = g.source ? '<span class="source">' + esc(g.source) + "</span>" : "";
+    return esc(k) + src;
+  });
+  fillList("effective-groups", groups, function (g) {
+    const gid = g.group_id || g.external_group_id || "";
+    const k = g.role_key || g.key || "";
+    return esc(k) + ' <span class="source">via ' + esc(gid) + "</span>";
+  });
+  fillList("effective-expanded", expanded, function (k) {
+    return esc(typeof k === "string" ? k : (k.role_key || k.key || ""));
+  });
+}
+
+function fillList(id, items, renderItem) {
+  const ul = document.getElementById(id);
+  ul.innerHTML = "";
+  if (!items || items.length === 0) {
+    const li = document.createElement("li");
+    li.className = "ud-effective-empty";
+    li.textContent = "(none)";
+    ul.appendChild(li);
+    return;
+  }
+  for (const item of items) {
+    const li = document.createElement("li");
+    li.innerHTML = renderItem(item);
+    ul.appendChild(li);
+  }
+}
+
+// ── Boot + refresh ──
+async function refreshAfterMutation() {
+  const data = await loadEffectiveRoles();
+  renderCoreRole();
+  renderCapabilities();
+  renderEffectiveRoles(data);
+}
+
+async function boot() {
+  try {
+    await loadInternalRoles();
+    const eff = await loadEffectiveRoles();
+    renderCoreRole();
+    renderCapabilities();
+    renderEffectiveRoles(eff);
+  } catch (e) {
+    document.getElementById("caps-loading").textContent = "Failed to load: " + e.message;
+    document.getElementById("effective-loading").textContent = "Failed to load: " + e.message;
+    toast("Failed to load user role data: " + e.message, "error");
+  }
+}
+
+boot();
+</script>
+{% endblock %}

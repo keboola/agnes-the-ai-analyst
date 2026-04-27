@@ -158,6 +158,41 @@ class TestWebUISmoke:
         # Auth dep raises 401; some configs may redirect to /login — accept either.
         assert resp.status_code in (401, 302)
 
+    def test_profile_shows_admin_detail_link_for_admin(self, web_client, admin_cookie):
+        """Admins see a self-service link to /admin/users/{their_id} so they
+        can manage their own capabilities/role-grants from the profile page —
+        the page is admin-gated, but admins viewing it for themselves is the
+        natural entry point for self-management."""
+        resp = web_client.get("/profile", cookies=admin_cookie)
+        assert resp.status_code == 200
+        # Link includes the admin's own user id (admin1 from fixture).
+        assert 'href="/admin/users/admin1"' in resp.text
+
+    def test_profile_hides_admin_detail_link_for_non_admin(self, web_client, analyst_cookie):
+        """Non-admins must NOT see the /admin/users/{id} link — the target
+        page 403s for non-admins, so surfacing the link would just generate
+        a confusing dead-end click."""
+        resp = web_client.get("/profile", cookies=analyst_cookie)
+        assert resp.status_code == 200
+        assert "/admin/users/" not in resp.text
+
+    def test_profile_shows_effective_roles_for_non_admin(self, web_client, analyst_cookie):
+        """Self-service: every signed-in user sees the resolver's authoritative
+        view of their internal roles on /profile (not just admins). For an
+        analyst, that's core.analyst expanded to include core.viewer via
+        the implies hierarchy."""
+        resp = web_client.get("/profile", cookies=analyst_cookie)
+        assert resp.status_code == 200
+        body = resp.text
+        # Effective-roles section header + chip for the analyst's role.
+        assert "Effective roles" in body
+        assert "core.analyst" in body
+        # Implies expansion: viewer must appear too because analyst → viewer.
+        assert "core.viewer" in body
+        # Direct-grants section is also surfaced (auto-seed source from
+        # UserRepository.create's _grant_core_role).
+        assert "Direct grants" in body
+
 
 class TestClaudeSetupPreview:
     """/install and /dashboard render a visible, read-only preview of the

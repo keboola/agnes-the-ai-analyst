@@ -189,6 +189,12 @@ Auth providers in `app/auth/` (FastAPI-based):
 - **Email**: Email magic link (itsdangerous token)
 - **Desktop**: JWT for API
 
+### RBAC (role-based access control)
+
+Three-layer model: external Cloud Identity groups → admin-curated `group_mappings` → internal roles (`internal_roles` table) → resolved into `session["internal_roles"]` at sign-in OR fetched from `user_role_grants` per request for PAT/headless callers. `core.*` roles (viewer/analyst/km_admin/admin) carry the legacy hierarchy via `implies` JSON; module authors register their own keys (e.g. `corporate_memory.curator`) at import time and gate endpoints with `Depends(require_internal_role("<key>"))`.
+
+**Contributors building a new module or capability — read [`docs/RBAC.md`](docs/RBAC.md) before adding endpoints.** It covers: picking a role key (naming convention, namespace), `register_internal_role` lifecycle, gating with `require_internal_role` vs. the `require_admin` / `require_role(Role.X)` thin wrappers, declaring implies hierarchies inside your module, the `_hydrate_legacy_role` shim that keeps `user["role"]` reads working, and the admin workflows (UI / CLI / REST) for binding groups and granting roles. Quickstart sections by audience: operator, end-user, module author.
+
 ## Release & deploy workflows
 
 Two separate release.yml-style workflows produce GHCR images. Pick the one that matches what you're shipping.
@@ -232,7 +238,7 @@ Module sets `lifecycle { ignore_changes = [metadata_startup_script] }` on `googl
 ## Key Implementation Details
 
 ### DuckDB Schema (src/db.py)
-- Schema v8 with auto-migration v1→…→v8 (v5 adds `users.active`, v6 adds `personal_access_tokens`, v7 adds `personal_access_tokens.last_used_ip`, v8 adds `internal_roles` + `group_mappings`)
+- Schema v9 with auto-migration v1→…→v9 (v5 adds `users.active`, v6 adds `personal_access_tokens`, v7 adds `personal_access_tokens.last_used_ip`, v8 adds `internal_roles` + `group_mappings`, v9 adds `user_role_grants` + `internal_roles.implies/is_core` and seeds `core.*` hierarchy from legacy `users.role`)
 - `table_registry`: id, name, source_type, bucket, source_table, query_mode, sync_schedule, etc.
 - `sync_state`, `sync_history`: track extraction progress
 - `users`, `dataset_permissions`, `audit_log`: auth + RBAC

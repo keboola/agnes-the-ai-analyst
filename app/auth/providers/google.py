@@ -176,6 +176,13 @@ async def google_callback(request: Request):
                 user_id = str(uuid.uuid4())
                 repo.create(id=user_id, email=email, name=name, role="analyst")
                 user = repo.get_by_email(email)
+            # v9: legacy users.role is NULL after migration; hydrate before
+            # create_access_token reads it (writing role: null into the JWT
+            # is non-crashing but semantically wrong; downstream hydration
+            # in get_current_user would fix the per-request view, but the
+            # token payload itself stays misleading).
+            from app.auth.dependencies import _hydrate_legacy_role
+            user = _hydrate_legacy_role(user, conn)
             if not bool(user.get("active", True)):
                 return RedirectResponse(url="/login?error=deactivated")
         finally:
@@ -195,7 +202,10 @@ async def google_callback(request: Request):
 
         # Resolve external groups into internal role keys at sign-in. Cached
         # on the session for the lifetime of this login — refresh requires
-        # re-login, same as the google_groups list itself.
+        # re-login, same as the google_groups list itself. We pass user_id
+        # so direct user_role_grants are also folded into the session cache
+        # (otherwise the DB-fallback in require_internal_role would fire on
+        # every admin-gated request, defeating the OAuth fast path).
         try:
             from app.auth.role_resolver import resolve_internal_roles
             from src.db import get_system_db
@@ -204,6 +214,7 @@ async def google_callback(request: Request):
                 resolved = resolve_internal_roles(
                     request.session.get("google_groups", []) or [],
                     conn,
+                    user_id=user["id"],
                 )
             finally:
                 conn.close()
