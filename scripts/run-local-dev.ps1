@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Windows/PowerShell equivalent of `make local-dev{,-down,-logs}`.
+    Windows/PowerShell sibling of scripts/run-local-dev.sh.
 
 .DESCRIPTION
     Runs Agnes locally with auth bypass + dev-mode magic links. Stacks three compose files:
@@ -28,23 +28,23 @@
     Anything else (e.g. -d, --remove-orphans) passes through to docker compose.
 
 .EXAMPLE
-    .\make-local-dev.ps1
-    # up — fast path; reuses existing image (auto-builds if none exists yet)
+    .\scripts\run-local-dev.ps1
+    # up - fast path; reuses existing image (auto-builds if none exists yet)
 
 .EXAMPLE
-    .\make-local-dev.ps1 -Build
-    # up --build — force rebuild after dep / Dockerfile changes
+    .\scripts\run-local-dev.ps1 -Build
+    # up --build - force rebuild after dep / Dockerfile changes
 
 .EXAMPLE
-    .\make-local-dev.ps1 up -d
+    .\scripts\run-local-dev.ps1 up -d
     # detached
 
 .EXAMPLE
-    .\make-local-dev.ps1 down
+    .\scripts\run-local-dev.ps1 down
     # stop + remove containers (data volume preserved)
 
 .EXAMPLE
-    .\make-local-dev.ps1 logs
+    .\scripts\run-local-dev.ps1 logs
     # tail logs from the running stack
 #>
 [CmdletBinding()]
@@ -61,8 +61,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# Run from the repo root regardless of where the user invoked from.
-Set-Location $PSScriptRoot
+# Run from the repo root regardless of where the user invoked from. Script lives
+# at scripts/run-local-dev.ps1, so the repo root is the parent of $PSScriptRoot.
+Set-Location (Split-Path -Parent $PSScriptRoot)
 
 # docker-compose.yml declares env_file: .env on several services. Compose
 # validates that path even for profiled services that never start, so make
