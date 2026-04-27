@@ -196,7 +196,7 @@ Server-side flow:
    - For `source_type=keboola` / `source_type=jira`: query the local parquet via DuckDB.
 8. Enforce **`max_result_bytes`** guard (`instance.yaml: api.scan.max_result_bytes`, default 2 GB). If the cumulative Arrow stream exceeds this, abort and return partial result with `X-Agnes-Truncated: true` header + warning log. Prevents a single fetch from OOMing the server worker.
 9. **Stream Arrow IPC** back over HTTP. Server emits chunks as BQ delivers them; client buffers entire stream into a parquet file before exposing as DuckDB view (no streaming on the client side in v1 — see §7 deferred). Content-Type: `application/vnd.apache.arrow.stream`.
-10. Append `audit_log` row per request (§11.1).
+10. Append `audit_log` row per request (§10.1).
 
 ### 3.5 `POST /api/v2/scan/estimate`
 
@@ -313,7 +313,7 @@ This is the only place sqlglot lives in the codebase. Constrained, testable, sin
 }
 ```
 
-CLI translates 429 to exit code 3 with a clear message (§11.3).
+CLI translates 429 to exit code 3 with a clear message (§10.3).
 
 ## 4. CLI commands
 
@@ -346,6 +346,7 @@ da fetch <table> \
     [--order-by <cols>] \
     [--as <name>] \
     [--estimate] \
+    [--no-estimate] \
     [--force]
 ```
 
@@ -426,7 +427,7 @@ Configured cap:   10 GB (~/.agnes/config: snapshot_quota_gb)
 - `da query --remote "..."` — passthrough to `/api/query`. For one-shot aggregates, ad-hoc raw BQ-flavor SQL.
 - `da sync` — refreshes local-mode parquets. Snapshot files don't get touched.
 
-**v1 keeps `da query --remote` as-is.** A future rename to `da query-remote` (subcommand vs flag) is OUT OF SCOPE for this spec; track separately if desired.
+**v1 keeps `da query --remote` as-is.** A future rename to `da query-remote` (subcommand instead of flag, for clarity) is OUT OF SCOPE for this spec; track separately if desired.
 
 `da catalog --refresh` clears the **client-side** cache only (forces next call to fetch fresh from server). It does NOT call the admin invalidate endpoint — that requires admin role (separate `da admin catalog-refresh` for admins).
 
@@ -462,7 +463,7 @@ Tables in `da catalog` have a `query_mode`:
 - **`remote`** (typically BigQuery): the parquet does NOT exist on the laptop.
   You MUST either:
   1. **`da fetch`** a filtered subset → query the local snapshot, OR
-  2. **`da query-remote`** for one-shot server-side execution, OR
+  2. **`da query --remote`** for one-shot server-side execution, OR
   3. **`da query --register-bq`** for hybrid joins (rarely needed).
 
 ### `da fetch` workflow (preferred for remote tables)
@@ -517,11 +518,11 @@ in your `da query` calls — there's no `--where` on local since fetch is implic
 ### When NOT to use `da fetch`
 
 - Single aggregate on remote table (`SELECT COUNT(*) FROM remote`):
-  use `da query-remote "SELECT COUNT(*) FROM web_sessions_example"`.
+  use `da query --remote "SELECT COUNT(*) FROM web_sessions_example"`.
   No materialization needed; cheap.
-- Throwaway exploration with raw BQ syntax: `da query-remote`.
+- Throwaway exploration with raw BQ syntax: `da query --remote`.
 - Cross-table JOIN with both tables remote: combine `da fetch` for one
-  side + `da query-remote` for the other; full cross-remote JOIN
+  side + `da query --remote` for the other; full cross-remote JOIN
   requires more thought (see #101 for design space).
 ```
 
@@ -570,7 +571,7 @@ User's existing test workflow: `da fetch web_sessions_example --where ...` → s
 
 These are real concerns but explicitly NOT addressed in this design:
 
-- **Cross-remote JOINs**: A query joining two remote BQ views directly. Workaround: fetch one side as a snapshot, then `da query-remote` with `bigquery_query()` for the other side. Long-term: see #101 follow-up "predicate templates" or "hosted Postgres bridge" alternatives.
+- **Cross-remote JOINs**: A query joining two remote BQ views directly. Workaround: fetch one side as a snapshot, then `da query --remote` with `bigquery_query()` for the other side. Long-term: see #101 follow-up "predicate templates" or "hosted Postgres bridge" alternatives.
 - **Streaming results**: `da fetch` materializes the full Arrow buffer before writing to disk. For multi-GB fetches this can pause for tens of seconds. Future optimization: chunked Arrow stream → parquet writer pipe.
 - **Async fetches**: `da fetch` is synchronous. No background mode. If fetch times out (default 5 min), user must retry.
 - **Cross-org BQ**: assume one BQ project per Agnes deployment. Multi-project fan-out is a separate spec.
@@ -646,14 +647,14 @@ Why `where_hash` instead of full text: WHERE clauses can include sensitive const
 | 0 | Success |
 | 2 | Validation failed (bad WHERE, unknown column, malformed args) |
 | 3 | Quota exceeded (concurrent or daily) |
-| 4 | Disk full / soft quota exceeded (snapshot would not fit) |
+| 4 | Disk full (snapshot file write failed; soft quota only emits a warning, not an exit) |
 | 5 | Server error (5xx; transient) |
 | 6 | Snapshot already exists (use `--force`) |
 | 7 | Auth failed (no PAT, expired) |
 | 8 | RBAC denied (table not accessible) |
 | 9 | Network unreachable (server down) |
 
-Each non-zero exit also writes a structured error to stderr (§11.3).
+Each non-zero exit also writes a structured error to stderr (§10.3).
 
 ### 10.3 Error UX
 
@@ -704,7 +705,7 @@ api:
     request_timeout_seconds: 300
   catalog_cache_ttl_seconds: 300  # 5 min
   schema_cache_ttl_seconds: 3600  # 1 h
-  sample_cache_ttl_seconds: 3600  # 1 h, but see I6 caveat
+  sample_cache_ttl_seconds: 3600  # 1 h; admin force-refresh path per §3.6
 ```
 
 All optional; defaults applied if missing. Documented in `config/instance.yaml.example`.
