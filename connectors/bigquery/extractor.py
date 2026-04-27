@@ -13,6 +13,7 @@ from typing import List, Dict, Any
 import duckdb
 
 from connectors.bigquery.auth import get_metadata_token, BQMetadataAuthError
+from app.instance_config import get_value
 from src.sql_safe import (
     validate_identifier as _validate_identifier,
     validate_project_id as _validate_project_id,
@@ -164,13 +165,19 @@ def init_extract(
                         f"BQ entity {project_id}.{dataset}.{source_table} not found"
                     )
 
+                legacy_wrap_views = bool(
+                    get_value("data_source", "bigquery", "legacy_wrap_views", default=False)
+                )
+
                 if entity_type == "BASE TABLE":
                     # Storage Read API — fast for full scans
                     view_sql = (
                         f'CREATE OR REPLACE VIEW "{table_name}" AS '
                         f'SELECT * FROM bq."{dataset}"."{source_table}"'
                     )
-                else:
+                    conn.execute(view_sql)
+                elif legacy_wrap_views:
+                    # Backwards compatibility — for one release cycle only.
                     if entity_type not in ("VIEW", "MATERIALIZED_VIEW"):
                         logger.warning(
                             "Unknown BQ entity type %r for %s.%s.%s — using bigquery_query() path",
@@ -183,8 +190,16 @@ def init_extract(
                         f'CREATE OR REPLACE VIEW "{table_name}" AS '
                         f"SELECT * FROM bigquery_query('{project_id}', '{bq_inner_escaped}')"
                     )
+                    conn.execute(view_sql)
+                else:
+                    # Default: VIEW / MATERIALIZED_VIEW are recorded in _meta but no master
+                    # view created. Analyst must use `da fetch` (v2 primitives) to materialise
+                    # a snapshot locally.
+                    logger.info(
+                        "Skipping wrap view for %s entity %s.%s.%s — use `da fetch`",
+                        entity_type, project_id, dataset, source_table,
+                    )
 
-                conn.execute(view_sql)
                 conn.execute(
                     "INSERT INTO _meta VALUES (?, ?, 0, 0, ?, 'remote')",
                     [table_name, tc.get("description", ""), now],
