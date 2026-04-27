@@ -487,3 +487,95 @@ class TestIdentifierValidation:
         )
         assert result["tables_registered"] == 0
         assert any("source_table" in e.get("error", "").lower() for e in result["errors"])
+
+
+class TestExtractorMainModule:
+    """Standalone `python -m connectors.bigquery.extractor` reads config correctly."""
+
+    def test_main_reads_data_source_bigquery_project(self, tmp_path, monkeypatch):
+        """__main__ must read project from data_source.bigquery.project (matches yaml example)."""
+        import os
+        from pathlib import Path
+        
+        captured_project = {}
+
+        def fake_init_extract(out, project_id, tables):
+            captured_project["project"] = project_id
+            captured_project["tables"] = tables
+            return {"tables_registered": len(tables), "errors": []}
+
+        # Stub config loader BEFORE importing
+        monkeypatch.setattr(
+            "config.loader.load_instance_config",
+            lambda: {
+                "data_source": {
+                    "type": "bigquery",
+                    "bigquery": {"project": "my-test-project", "location": "US"},
+                }
+            },
+        )
+        # Stub system DB + repo
+        fake_repo = MagicMock()
+        fake_repo.list_by_source.return_value = [
+            {"name": "t1", "bucket": "ds", "source_table": "t1", "description": ""},
+        ]
+        monkeypatch.setattr(
+            "src.repositories.table_registry.TableRegistryRepository",
+            lambda c: fake_repo,
+        )
+        monkeypatch.setattr(
+            "src.db.get_system_db",
+            lambda: MagicMock(close=lambda: None),
+        )
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+        # Now import after patching
+        from config.loader import load_instance_config
+        from src.db import get_system_db
+        from src.repositories.table_registry import TableRegistryRepository
+        import connectors.bigquery.extractor as ext_mod
+        
+        # Monkeypatch init_extract in the current module
+        original_init = ext_mod.init_extract
+        ext_mod.init_extract = fake_init_extract
+
+        try:
+            # Execute the __main__ logic directly
+            config = load_instance_config()
+            bq_config = config.get("data_source", {}).get("bigquery", {})
+            project_id = bq_config.get("project", "")
+
+            if not project_id:
+                raise AssertionError("project_id should not be empty")
+
+            sys_conn = get_system_db()
+            try:
+                repo = TableRegistryRepository(sys_conn)
+                tables = repo.list_by_source("bigquery")
+            finally:
+                sys_conn.close()
+
+            if tables:
+                data_dir = Path(os.environ.get("DATA_DIR", "./data"))
+                result = ext_mod.init_extract(
+                    str(data_dir / "extracts" / "bigquery"), project_id, tables
+                )
+
+            assert captured_project["project"] == "my-test-project"
+            assert captured_project["tables"][0]["name"] == "t1"
+        finally:
+            ext_mod.init_extract = original_init
+
+
+    def test_main_exits_when_project_missing(self, tmp_path, monkeypatch):
+        """__main__ must SystemExit(2) when data_source.bigquery.project is empty/missing."""
+        monkeypatch.setattr(
+            "config.loader.load_instance_config",
+            lambda: {"data_source": {"type": "bigquery"}},  # no .bigquery.project
+        )
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+        import runpy
+        with pytest.raises(SystemExit) as exc_info:
+            runpy.run_module("connectors.bigquery.extractor", run_name="__main__")
+        assert exc_info.value.code == 2

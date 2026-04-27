@@ -211,8 +211,15 @@ if __name__ == "__main__":
     from src.repositories.table_registry import TableRegistryRepository
 
     config = load_instance_config()
-    bq_config = config.get("bigquery", {})
-    project_id = bq_config.get("project_id", "")
+    bq_config = config.get("data_source", {}).get("bigquery", {})
+    project_id = bq_config.get("project", "")
+
+    if not project_id:
+        logger.error(
+            "data_source.bigquery.project missing from instance.yaml — "
+            "cannot run extractor"
+        )
+        raise SystemExit(2)
 
     sys_conn = get_system_db()
     try:
