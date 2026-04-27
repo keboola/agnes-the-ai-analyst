@@ -68,23 +68,31 @@ class TestSyncApiPartialFailureHandling:
         """Invoke `_run_sync` with the extractor subprocess returning
         ``returncode``, return the captured stderr as a single string.
 
-        sync.py does `import subprocess` locally inside `_run_sync`, so
-        we patch `subprocess.run` on the real `subprocess` module —
-        Python caches it, the local import resolves to the patched one.
+        sync.py does several `import` inside `_run_sync` (subprocess,
+        SyncOrchestrator, get_system_db). Stubs must target either the
+        global module (so the local import-from-cache picks them up)
+        or the runtime call sites via ``patch.object`` on the imported
+        names after the function has resolved them.
         """
-        from unittest.mock import MagicMock
+        from unittest.mock import MagicMock, patch
         from app.api import sync as sync_mod
 
         def fake_run(*args, **kwargs):
             return MagicMock(
                 returncode=returncode, stdout="{}", stderr="",
             )
+        # subprocess is imported locally inside _run_sync; patching the
+        # real module's run() works because Python's module cache means
+        # both call sites resolve to the same object.
         monkeypatch.setattr(subprocess_real, "run", fake_run)
 
-        # Stub the orchestrator + profiler (out of scope for this test).
+        # SyncOrchestrator is imported as `from src.orchestrator import
+        # SyncOrchestrator` inside _run_sync, so patching sync_mod
+        # doesn't reach it. Patch the source module instead.
+        from src import orchestrator as orch_mod
         monkeypatch.setattr(
-            sync_mod, "SyncOrchestrator",
-            lambda: MagicMock(rebuild=MagicMock(return_value={})),
+            orch_mod, "SyncOrchestrator",
+            lambda *a, **kw: MagicMock(rebuild=MagicMock(return_value={})),
             raising=False,
         )
 
@@ -93,8 +101,11 @@ class TestSyncApiPartialFailureHandling:
         monkeypatch.setenv("KEBOOLA_STORAGE_TOKEN", "test-token")
         monkeypatch.setenv("KEBOOLA_STACK_URL", "https://test.example")
 
-        # _run_sync needs at least one table_config to reach the
-        # subprocess; stub the registry lookup to return one.
+        # _run_sync calls TableRegistryRepository.list_local on a real
+        # system DB connection. Stub the registry method directly so we
+        # don't need a populated DB; also stub get_system_db /
+        # get_data_source_type to avoid filesystem-dependency on a
+        # configured instance.yaml in CI.
         from src.repositories.table_registry import TableRegistryRepository
         monkeypatch.setattr(
             TableRegistryRepository, "list_local",
@@ -104,6 +115,18 @@ class TestSyncApiPartialFailureHandling:
                  "query_mode": "local"}
             ],
         )
+
+        # Stub system DB + data-source-type inside the sync module so we
+        # don't depend on instance.yaml or DuckDB state at test time.
+        # sync.py does `from src.db import get_system_db` and
+        # `from app.instance_config import get_data_source_type` at
+        # module top-level, so the names resolve via sync_mod.
+        fake_conn = MagicMock()
+        fake_conn.close = MagicMock()
+        monkeypatch.setattr(sync_mod, "get_system_db", lambda: fake_conn,
+                            raising=False)
+        monkeypatch.setattr(sync_mod, "get_data_source_type", lambda: "keboola",
+                            raising=False)
 
         sync_mod._run_sync()
         return capsys.readouterr().err
