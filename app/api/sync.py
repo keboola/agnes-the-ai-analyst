@@ -16,6 +16,7 @@ from app.auth.dependencies import get_current_user, require_role, Role, _get_db
 from app.utils import get_data_dir as _get_data_dir
 from src.repositories.sync_state import SyncStateRepository
 from src.repositories.sync_settings import SyncSettingsRepository, DatasetPermissionRepository
+from src.repositories.table_registry import TableRegistryRepository
 from src.rbac import can_access_table
 
 logger = logging.getLogger(__name__)
@@ -202,14 +203,21 @@ print(json.dumps(result))
 
 # ---- Manifest ----
 
-@router.get("/manifest")
-async def sync_manifest(
-    user: dict = Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
-):
-    """Return hash-based manifest of all synced data, filtered per user."""
-    repo = SyncStateRepository(conn)
-    all_states = repo.get_all_states()
+def _build_manifest_for_user(conn, user: dict) -> dict:
+    """Build manifest dict filtered by user's accessible tables.
+
+    Joins ``sync_state`` with ``table_registry`` so each table entry exposes
+    ``query_mode`` and ``source_type``. The CLI uses these to decide whether
+    to download a parquet (local) or skip it (remote, e.g. BigQuery views).
+
+    Defensive defaults: if a sync_state row has no matching registry entry
+    (race / manual deletion), fall back to ``query_mode='local'`` and
+    ``source_type=''`` so the manifest still serializes cleanly.
+    """
+    sync_repo = SyncStateRepository(conn)
+    table_repo = TableRegistryRepository(conn)
+    all_states = sync_repo.get_all_states()
+    registry_by_id = {t["id"]: t for t in table_repo.list_all()}
 
     # Filter by user's accessible tables (admin sees all)
     if user.get("role") != "admin":
@@ -219,11 +227,14 @@ async def sync_manifest(
     tables = {}
     for state in all_states:
         table_id = state["table_id"]
+        reg = registry_by_id.get(table_id, {})
         tables[table_id] = {
             "hash": state.get("hash", ""),
             "updated": state.get("last_sync").isoformat() if state.get("last_sync") else None,
             "size_bytes": state.get("file_size_bytes", 0),
             "rows": state.get("rows", 0),
+            "query_mode": reg.get("query_mode") or "local",
+            "source_type": reg.get("source_type") or "",
         }
 
     # Asset hashes
@@ -248,6 +259,15 @@ async def sync_manifest(
         "assets": assets,
         "server_time": datetime.now(timezone.utc).isoformat(),
     }
+
+
+@router.get("/manifest")
+async def sync_manifest(
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Return hash-based manifest of all synced data, filtered per user."""
+    return _build_manifest_for_user(conn, user)
 
 
 # ---- Trigger ----
