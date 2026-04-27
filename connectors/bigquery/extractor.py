@@ -206,6 +206,7 @@ def init_extract(
 
 if __name__ == "__main__":
     """Standalone: reads config from instance.yaml + table_registry, creates extract."""
+    import connectors.bigquery.extractor as _self
     from config.loader import load_instance_config
     from src.db import get_system_db
     from src.repositories.table_registry import TableRegistryRepository
@@ -232,7 +233,9 @@ if __name__ == "__main__":
         logger.warning("No BigQuery tables registered in table_registry")
     else:
         data_dir = Path(os.environ.get("DATA_DIR", "./data"))
-        result = init_extract(
+        # Look up init_extract via the cached module (sys.modules) instead of
+        # the fresh runpy namespace, so tests can monkey-patch it.
+        result = _self.init_extract(
             str(data_dir / "extracts" / "bigquery"), project_id, tables
         )
         logger.info("BigQuery extract init complete: %s", result)

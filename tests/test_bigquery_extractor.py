@@ -493,18 +493,25 @@ class TestExtractorMainModule:
     """Standalone `python -m connectors.bigquery.extractor` reads config correctly."""
 
     def test_main_reads_data_source_bigquery_project(self, tmp_path, monkeypatch):
-        """__main__ must read project from data_source.bigquery.project (matches yaml example)."""
-        import os
-        from pathlib import Path
-        
-        captured_project = {}
+        """__main__ must read project from data_source.bigquery.project (matches yaml example).
+
+        Runs the production __main__ block via runpy and captures the project_id
+        passed to init_extract. If __main__ ever regresses to reading
+        config.get("bigquery", {}).get("project_id"), the captured value will
+        be empty and the assertion will fail.
+        """
+        from unittest.mock import MagicMock
+
+        captured: dict = {}
 
         def fake_init_extract(out, project_id, tables):
-            captured_project["project"] = project_id
-            captured_project["tables"] = tables
+            captured["project"] = project_id
+            captured["tables"] = tables
             return {"tables_registered": len(tables), "errors": []}
 
-        # Stub config loader BEFORE importing
+        # Patch every external dependency the __main__ block touches.
+        # Targets are at the module path the __main__ block imports from,
+        # because runpy re-executes the module under __name__ == "__main__".
         monkeypatch.setattr(
             "config.loader.load_instance_config",
             lambda: {
@@ -514,7 +521,6 @@ class TestExtractorMainModule:
                 }
             },
         )
-        # Stub system DB + repo
         fake_repo = MagicMock()
         fake_repo.list_by_source.return_value = [
             {"name": "t1", "bucket": "ds", "source_table": "t1", "description": ""},
@@ -527,44 +533,20 @@ class TestExtractorMainModule:
             "src.db.get_system_db",
             lambda: MagicMock(close=lambda: None),
         )
+        # __main__ looks up init_extract via the cached connectors.bigquery.extractor
+        # module (sys.modules), so patching its attribute survives runpy's reimport.
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor.init_extract",
+            fake_init_extract,
+        )
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
 
-        # Now import after patching
-        from config.loader import load_instance_config
-        from src.db import get_system_db
-        from src.repositories.table_registry import TableRegistryRepository
-        import connectors.bigquery.extractor as ext_mod
-        
-        # Monkeypatch init_extract in the current module
-        original_init = ext_mod.init_extract
-        ext_mod.init_extract = fake_init_extract
+        import runpy
+        runpy.run_module("connectors.bigquery.extractor", run_name="__main__")
 
-        try:
-            # Execute the __main__ logic directly
-            config = load_instance_config()
-            bq_config = config.get("data_source", {}).get("bigquery", {})
-            project_id = bq_config.get("project", "")
-
-            if not project_id:
-                raise AssertionError("project_id should not be empty")
-
-            sys_conn = get_system_db()
-            try:
-                repo = TableRegistryRepository(sys_conn)
-                tables = repo.list_by_source("bigquery")
-            finally:
-                sys_conn.close()
-
-            if tables:
-                data_dir = Path(os.environ.get("DATA_DIR", "./data"))
-                result = ext_mod.init_extract(
-                    str(data_dir / "extracts" / "bigquery"), project_id, tables
-                )
-
-            assert captured_project["project"] == "my-test-project"
-            assert captured_project["tables"][0]["name"] == "t1"
-        finally:
-            ext_mod.init_extract = original_init
+        assert captured.get("project") == "my-test-project", \
+            f"expected __main__ to pass project='my-test-project' to init_extract; got {captured!r}"
+        assert captured.get("tables", [{}])[0].get("name") == "t1"
 
 
     def test_main_exits_when_project_missing(self, tmp_path, monkeypatch):
