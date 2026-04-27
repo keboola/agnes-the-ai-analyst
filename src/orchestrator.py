@@ -27,6 +27,13 @@ from typing import Dict, List
 
 import duckdb
 
+from src.orchestrator_security import (
+    escape_sql_string_literal,
+    is_builtin_extension,
+    is_extension_allowed,
+    is_token_env_allowed,
+)
+
 logger = logging.getLogger(__name__)
 
 _rebuild_lock = threading.Lock()
@@ -216,9 +223,32 @@ class SyncOrchestrator:
         ).fetchall()
 
         for alias, extension, url, token_env in rows:
+            # Identifier sanity (defense against weird input). The hard
+            # security boundary is the allowlist a few lines down.
             if not _validate_identifier(alias, "remote_attach alias"):
                 continue
             if not _validate_identifier(extension, "remote_attach extension"):
+                continue
+
+            # #81 Group A.1 — extension allowlist. The connector does NOT
+            # get to pick what extensions the orchestrator loads.
+            if not is_extension_allowed(extension):
+                logger.error(
+                    "Remote attach %s: extension %r is not in the allowlist; refusing. "
+                    "Override via AGNES_REMOTE_ATTACH_EXTENSIONS if intended.",
+                    alias, extension,
+                )
+                continue
+
+            # #81 Group A.2 — token-env hard allowlist. Refuses well-known
+            # runtime secrets (JWT_SECRET_KEY, OPENAI_API_KEY, …) that a
+            # malicious connector might ask us to send to its server.
+            if token_env and not is_token_env_allowed(token_env):
+                logger.error(
+                    "Remote attach %s: token_env %r is not in the allowlist; refusing. "
+                    "Override via AGNES_REMOTE_ATTACH_TOKEN_ENVS if intended.",
+                    alias, token_env,
+                )
                 continue
 
             token = os.environ.get(token_env, "") if token_env else ""
@@ -239,16 +269,22 @@ class SyncOrchestrator:
                     logger.debug("Remote source %s already attached", alias)
                     continue
 
-                conn.execute(f"INSTALL {extension} FROM community; LOAD {extension};")
+                # #81 Group A.1 — built-ins LOAD only; community needs INSTALL+LOAD.
+                if is_builtin_extension(extension):
+                    conn.execute(f"LOAD {extension};")
+                else:
+                    conn.execute(f"INSTALL {extension} FROM community; LOAD {extension};")
+                # #81 Group A.3 — escape URL single-quotes (mirrors src/db.py).
+                safe_url = escape_sql_string_literal(url)
                 if token:
-                    escaped_token = token.replace("'", "''")
+                    escaped_token = escape_sql_string_literal(token)
                     conn.execute(
-                        f"ATTACH '{url}' AS {alias} (TYPE {extension}, TOKEN '{escaped_token}')"
+                        f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, TOKEN '{escaped_token}')"
                     )
                 else:
                     # Extensions like BigQuery handle auth via env (e.g. GOOGLE_APPLICATION_CREDENTIALS)
                     conn.execute(
-                        f"ATTACH '{url}' AS {alias} (TYPE {extension}, READ_ONLY)"
+                        f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)"
                     )
                 logger.info("Attached remote source %s via %s extension", alias, extension)
             except Exception as e:

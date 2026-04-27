@@ -13,7 +13,27 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 <!-- Add bullets here. Group: Added / Changed / Fixed / Removed / Internal.
      Mark breaking changes with **BREAKING** at the start of the bullet. -->
 
-## [0.11.5] — 2026-04-27
+### Fixed
+
+- **Security (CRITICAL)**: hardened the connector → orchestrator trust
+  boundary (issue #81 Group A). Three fixes in
+  `src/orchestrator.py::_attach_remote_extensions`:
+  (1) DuckDB extensions referenced by `_remote_attach` are now matched
+  against a hard allowlist (default: `keboola, bigquery`; override via
+  `AGNES_REMOTE_ATTACH_EXTENSIONS`). The install path splits between
+  built-in (LOAD only) and community (`INSTALL FROM community; LOAD`).
+  (2) `token_env` names are matched against a hard allowlist (default:
+  `KBC_TOKEN`, `KBC_STORAGE_TOKEN`, `KEBOOLA_STORAGE_TOKEN`,
+  `GOOGLE_APPLICATION_CREDENTIALS`; override via
+  `AGNES_REMOTE_ATTACH_TOKEN_ENVS`). Names must additionally match
+  `^[A-Z][A-Z0-9_]{0,63}$`. A malicious connector cannot ask the
+  orchestrator to read `JWT_SECRET_KEY` / `SESSION_SECRET` /
+  `OPENAI_API_KEY` and exfiltrate them via `ATTACH ... TOKEN`.
+  (3) The URL passed to `ATTACH` is now single-quote-escaped (mirrors
+  `src/db.py:_attach_extracts`). New module `src/orchestrator_security.py`
+  centralises the policy. See
+  `docs/superpowers/plans/2026-04-27-issue-81-trust-boundary.md` for the
+  full threat model.
 
 Follow-up release for PR #73: addresses four rounds of Devin AI review on the role-management-complete branch. No new public-API surface; the user-visible payoff is that v8→v9-migrated installations now work end-to-end (login flows, user list, admin nav, privilege revocation), and `make local-dev` startup is finally quiet.
 
