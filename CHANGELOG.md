@@ -15,7 +15,35 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
-- **BREAKING (security)**: `POST /api/scripts/run` and `POST /api/scripts/{id}/run` now require the **admin** role, not analyst (issue #44). The AST + string-blocklist sandbox is defense-in-depth and known to be bypassable (it does not block `vars()`, `type()`, `__class__.__bases__` introspection chains, and similar dunder paths) — the primary trust boundary is the role gate. `POST /api/scripts/deploy` remains analyst-accessible (storing a script does not execute it). Operators who relied on analysts running scripts must either grant them the admin role or run the scripts on their behalf.
+- **BREAKING (security)**: The entire Script API is now **admin-only** (issue #44).
+  `POST /api/scripts/deploy`, `POST /api/scripts/run`, and `POST /api/scripts/{id}/run`
+  all require the admin role; previously deploy and run were both analyst-accessible.
+  Two reasons: (1) the AST + string-blocklist sandbox in `_execute_script` is
+  defense-in-depth and known to be bypassable through introspection chains
+  (`__class__.__base__.__subclasses__()`, `__globals__['__builtins__']`,
+  `__mro__` traversal — the dunder pattern list was tightened in this PR but
+  the policy is "the role gate is the trust boundary, not the blocklist");
+  (2) gating only `/run` left a planted-script attack open — an analyst could
+  deploy a malicious script and wait for an admin to run it. Operators who
+  need scripted workflows for non-admin users should run them on the user's
+  behalf or expose the relevant data via the read-only `/api/data` surface
+  instead.
+
+### Internal
+
+- Sandbox blocklist now flags introspection-chain dunders explicitly:
+  `__subclasses__`, `__globals__`, `__class__`, `__base__`, `__bases__`,
+  `__mro__`, `__dict__`, `__code__`, `__builtins__`. `__init__` and
+  `__getattribute__` are intentionally **not** in the list — substring match
+  would flag every legitimate `def __init__(self):`. The chain breaks at
+  the next link anyway.
+- New regression test `test_run_pwn_payload_blocked` parametrized over the
+  exact PoC from issue #44 plus two equivalent variants (lambda+`__globals__`,
+  `__mro__` traversal). If the dunder list is silently weakened in a future
+  refactor, the test fails. New `test_*_requires_admin` tests parametrized
+  over all three non-admin core roles (analyst, viewer, km_admin).
+- `tests/conftest.py::seeded_app` extended with `viewer_token` and
+  `km_admin_token` so role-gating tests cover all four core roles.
 
 ## [0.11.5] — 2026-04-27
 

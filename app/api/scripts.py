@@ -54,10 +54,16 @@ async def list_scripts(
 @router.post("/deploy", status_code=201)
 async def deploy_script(
     request: DeployScriptRequest,
-    user: dict = Depends(require_role(Role.ANALYST)),
+    user: dict = Depends(require_role(Role.ADMIN)),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Deploy a Python script to be run on the server (optionally on schedule)."""
+    """Deploy a Python script to be run on the server (optionally on schedule).
+
+    Admin-only — issue #44. The previous gate (analyst) created a planted-script
+    attack: an analyst could deploy a malicious script and wait for an admin to
+    run it. The whole Script API is admin-only; analysts who need scripted
+    workflows should ask an admin to deploy on their behalf or use the
+    read-only data API."""
     repo = ScriptRepository(conn)
     script_id = str(uuid.uuid4())
     repo.deploy(
@@ -112,7 +118,13 @@ async def undeploy_script(
 
 
 def _execute_script(source: str, name: str) -> dict:
-    """Execute a Python script in a sandboxed subprocess."""
+    """Execute a Python script in a sandboxed subprocess.
+
+    The blocklist below is **defense-in-depth**, not a primary trust
+    boundary — a determined caller with admin rights can bypass it through
+    introspection chains we cannot enumerate. The role gate on the route
+    (admin-only, see issue #44) is the actual boundary. The blocklist is
+    here to catch obvious mistakes, not to stop a hostile admin."""
     # Comprehensive safety checks — block dangerous patterns
     blocked_patterns = [
         # Direct imports of dangerous modules
@@ -146,13 +158,34 @@ def _execute_script(source: str, name: str) -> dict:
         "setattr(",
         "delattr(",
         "breakpoint(",
+        # Introspection chains that pivot to RCE — issue #44 PoC uses
+        # ().__class__.__base__.__subclasses__() to find subprocess.Popen.
+        # `__init__`/`__getattribute__` are deliberately NOT here: substring
+        # match would flag every `def __init__(self):`. The chain is broken
+        # at the next link (`__subclasses__`, `__globals__`, etc.) anyway.
+        "__subclasses__",
+        "__globals__",
+        "__class__",
+        "__base__",
+        "__bases__",
+        "__mro__",
+        "__dict__",
+        "__code__",
+        "__builtins__",
     ]
     import ast
 
     BLOCKED_MODULES = {"os", "sys", "subprocess", "shutil", "ctypes", "importlib", "socket",
                        "requests", "httpx", "urllib", "http", "signal", "pathlib", "builtins"}
     BLOCKED_FUNCTIONS = {"exec", "eval", "compile", "open", "globals", "locals",
-                         "getattr", "setattr", "delattr", "breakpoint", "__import__"}
+                         "getattr", "setattr", "delattr", "breakpoint", "__import__",
+                         # Introspection helper that exposes module dicts and frame
+                         # locals — common pivot for sandbox escape (issue #44).
+                         # `type(x)` and `dir(x)` are intentionally NOT here:
+                         # they're frequent in legitimate admin scripts and the
+                         # dunder-pattern blocklist below already catches the
+                         # follow-on attribute access (`__class__`, `__mro__`).
+                         "vars"}
 
     try:
         tree = ast.parse(source)

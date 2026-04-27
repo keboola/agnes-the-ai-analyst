@@ -43,8 +43,8 @@ class TestScriptsAPI:
         assert resp.json()["count"] == 0
 
     def test_deploy_and_list(self, client):
-        c, _, analyst_token = client
-        headers = {"Authorization": f"Bearer {analyst_token}"}
+        c, admin_token, _ = client
+        headers = {"Authorization": f"Bearer {admin_token}"}
 
         resp = c.post("/api/scripts/deploy", json={
             "name": "hello", "source": "print('hello world')",
@@ -79,17 +79,16 @@ class TestScriptsAPI:
         assert "disallowed" in detail or "Blocked" in detail
 
     def test_deploy_run_undeploy(self, client):
-        c, admin_token, analyst_token = client
-        analyst_headers = {"Authorization": f"Bearer {analyst_token}"}
+        c, admin_token, _ = client
         admin_headers = {"Authorization": f"Bearer {admin_token}"}
 
-        # Deploy as analyst
+        # Deploy is admin-only (issue #44, planted-script defense)
         resp = c.post("/api/scripts/deploy", json={
             "name": "calc", "source": "print(2+2)", "schedule": "0 8 * * MON",
-        }, headers=analyst_headers)
+        }, headers=admin_headers)
         script_id = resp.json()["id"]
 
-        # Run requires admin (issue #44)
+        # Run is also admin-only
         resp = c.post(f"/api/scripts/{script_id}/run", headers=admin_headers)
         assert resp.status_code == 200
         assert "4" in resp.json()["stdout"]
