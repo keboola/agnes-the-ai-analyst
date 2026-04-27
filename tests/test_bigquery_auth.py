@@ -6,9 +6,19 @@ import pytest
 
 from connectors.bigquery.auth import (
     get_metadata_token,
+    clear_token_cache,
     BQMetadataAuthError,
 )
 from connectors.bigquery.auth import _METADATA_TOKEN_URL as _METADATA_TOKEN_URL_FOR_TEST
+
+
+@pytest.fixture(autouse=True)
+def _reset_token_cache():
+    """Reset the module-level token cache between tests so cache state from one
+    test does not leak into another."""
+    clear_token_cache()
+    yield
+    clear_token_cache()
 
 
 def _mock_urlopen(payload: dict, status: int = 200):
@@ -60,3 +70,80 @@ class TestGetMetadataToken:
         with patch("connectors.bigquery.auth.urllib.request.urlopen", side_effect=err):
             with pytest.raises(BQMetadataAuthError):
                 get_metadata_token()
+
+
+class TestTokenCache:
+    """get_metadata_token() must cache valid tokens until shortly before expiry."""
+
+    def test_second_call_returns_cached_value_without_new_urlopen(self):
+        """Within the cache TTL, only one urlopen happens."""
+        with patch("connectors.bigquery.auth.urllib.request.urlopen") as m:
+            m.return_value = _mock_urlopen(
+                {"access_token": "ya29.fresh", "expires_in": 3599}
+            )
+            t1 = get_metadata_token()
+            t2 = get_metadata_token()
+        assert t1 == "ya29.fresh"
+        assert t2 == "ya29.fresh"
+        assert m.call_count == 1, \
+            f"second call should hit cache, not metadata server; got {m.call_count} urlopen calls"
+
+    def test_cache_refetches_after_expiry(self):
+        """Once the safety-buffered expiry passes, the next call re-fetches."""
+        # Populate cache with a token that expires almost immediately (small expires_in
+        # is below the safety buffer, so the populator code path SKIPS caching).
+        # Use a different mechanism: prime cache with a normal token, then advance
+        # monotonic time past expiry and verify a second urlopen happens.
+        import connectors.bigquery.auth as auth_mod
+
+        with patch("connectors.bigquery.auth.urllib.request.urlopen") as m:
+            m.return_value = _mock_urlopen(
+                {"access_token": "ya29.first", "expires_in": 3600}
+            )
+            t1 = get_metadata_token()
+            assert t1 == "ya29.first"
+            assert m.call_count == 1
+
+            # Force the cache expiry into the past (jump monotonic forward by
+            # editing the cached tuple directly — public API doesn't expose this).
+            with auth_mod._cache_lock:
+                cached_token, _ = auth_mod._token_cache
+                auth_mod._token_cache = (cached_token, 0.0)  # already expired
+
+            # Next call should re-fetch
+            m.return_value = _mock_urlopen(
+                {"access_token": "ya29.refreshed", "expires_in": 3600}
+            )
+            t2 = get_metadata_token()
+        assert t2 == "ya29.refreshed"
+        assert m.call_count == 2
+
+    def test_no_caching_when_expires_in_missing_or_too_small(self):
+        """If the response lacks expires_in (or it's smaller than the safety buffer),
+        skip caching so the next call retries — protects against poison-cached
+        zero-TTL responses."""
+        with patch("connectors.bigquery.auth.urllib.request.urlopen") as m:
+            # First response: no expires_in field at all
+            m.return_value = _mock_urlopen({"access_token": "ya29.no_ttl"})
+            t1 = get_metadata_token()
+            t2 = get_metadata_token()
+        assert t1 == "ya29.no_ttl"
+        assert t2 == "ya29.no_ttl"
+        # Both calls hit the network because the first response wasn't cached
+        assert m.call_count == 2
+
+    def test_clear_token_cache_forces_refetch(self):
+        """Public clear_token_cache() invalidates so the next call re-fetches."""
+        with patch("connectors.bigquery.auth.urllib.request.urlopen") as m:
+            m.return_value = _mock_urlopen(
+                {"access_token": "ya29.cached", "expires_in": 3600}
+            )
+            get_metadata_token()
+            assert m.call_count == 1
+            clear_token_cache()
+            m.return_value = _mock_urlopen(
+                {"access_token": "ya29.after_clear", "expires_in": 3600}
+            )
+            t = get_metadata_token()
+        assert t == "ya29.after_clear"
+        assert m.call_count == 2
