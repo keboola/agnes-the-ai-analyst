@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- `docker-compose.host-mount.yml` now uses `o: bind,rbind` instead of `o: bind` for the `data` volume. With a plain bind, sub-mounts under `/data` on the host (e.g. the dual-disk layout where sdc is mounted on `/data/state`) are silently shadowed inside the container by an empty subdirectory on the parent disk. The container then writes `system.duckdb` and other state to the wrong disk; the dedicated state disk receives no writes and accumulates only the snapshot left by the migration script. Recursive bind propagates existing sub-mounts at container start, so the container sees the same filesystem the host does. Operators on dual-disk VMs need to copy the live DB from `/var/lib/docker/volumes/agnes_data/_data/state/` (sdb's empty subdir) onto `/data/state/` (sdc) **before** redeploying with the fix, or the next start will surface the stale snapshot.
+
 ### Changed
 
 - **BREAKING** RBAC redesigned around two layers: app-level access via the `Admin` user-group (god mode short-circuit) and resource-level access via a generic `(group, resource_type, resource_id)` grant model. The four-value `core.viewer/analyst/km_admin/admin` hierarchy with `implies` BFS expansion is gone — every protected endpoint now uses either `require_admin` or `require_resource_access(ResourceType.X, "{path}")` from the new `app.auth.access` module. Authorization is decided per-request via a single DB lookup; no session cache, no dual-path resolver, no `_hydrate_legacy_role` shim. See `docs/RBAC.md`.
