@@ -12,6 +12,8 @@ from typing import List, Dict, Any
 
 import duckdb
 
+from connectors.bigquery.auth import get_metadata_token, BQMetadataAuthError
+
 logger = logging.getLogger(__name__)
 
 
@@ -58,7 +60,9 @@ def _create_meta_table(conn: duckdb.DuckDBPyConnection) -> None:
 def _create_remote_attach_table(
     conn: duckdb.DuckDBPyConnection, project_id: str
 ) -> None:
-    """Write _remote_attach so orchestrator can re-ATTACH the BigQuery extension."""
+    """Write _remote_attach. token_env is empty for BQ — orchestrator
+    detects extension='bigquery' and refreshes the token from GCE metadata
+    on its own."""
     conn.execute("DROP TABLE IF EXISTS _remote_attach")
     conn.execute("""CREATE TABLE _remote_attach (
         alias VARCHAR,
@@ -66,8 +70,6 @@ def _create_remote_attach_table(
         url VARCHAR,
         token_env VARCHAR
     )""")
-    # BigQuery uses GOOGLE_APPLICATION_CREDENTIALS env var for auth automatically.
-    # token_env is empty — orchestrator ATTACHes without TOKEN param.
     conn.execute(
         "INSERT INTO _remote_attach VALUES (?, ?, ?, ?)",
         ["bq", "bigquery", f"project={project_id}", ""],
@@ -81,9 +83,15 @@ def init_extract(
 ) -> Dict[str, Any]:
     """Create extract.duckdb with remote views into BigQuery.
 
+    Authenticates via the GCE metadata server. For each registered table,
+    detects whether the BQ entity is a BASE TABLE or VIEW, and emits a
+    DuckDB view that uses the appropriate path:
+      - BASE TABLE → direct ATTACH ref (Storage Read API, fast for full scans)
+      - VIEW       → bigquery_query() table function (jobs API, supports views)
+
     Args:
         output_dir: Path to write extract.duckdb
-        project_id: GCP project ID
+        project_id: GCP project ID for billing/job execution
         table_configs: List of table config dicts from table_registry
 
     Returns:
@@ -92,21 +100,33 @@ def init_extract(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    # Write to temp file then rename — avoids lock conflict with orchestrator
-    # which may hold a read lock on the existing extract.duckdb
     db_path = output_path / "extract.duckdb"
     tmp_db_path = output_path / "extract.duckdb.tmp"
     if tmp_db_path.exists():
         tmp_db_path.unlink()
-    conn = duckdb.connect(str(tmp_db_path))
 
-    stats = {"tables_registered": 0, "errors": []}
+    stats: Dict[str, Any] = {"tables_registered": 0, "errors": []}
     now = datetime.now(timezone.utc)
 
+    # Fetch token before opening DB so failure aborts cleanly without partial file
     try:
-        # Install and load BigQuery extension
+        token = get_metadata_token()
+    except BQMetadataAuthError as e:
+        logger.error("BQ metadata auth failed: %s", e)
+        stats["errors"].append({"table": "<auth>", "error": str(e)})
+        return stats
+
+    conn = duckdb.connect(str(tmp_db_path))
+    try:
         conn.execute("INSTALL bigquery FROM community; LOAD bigquery;")
-        conn.execute(f"ATTACH 'project={project_id}' AS bq (TYPE bigquery, READ_ONLY)")
+        # session-scoped DuckDB secret with the metadata token
+        escaped_token = token.replace("'", "''")
+        conn.execute(
+            f"CREATE SECRET bq_session (TYPE bigquery, ACCESS_TOKEN '{escaped_token}')"
+        )
+        conn.execute(
+            f"ATTACH 'project={project_id}' AS bq (TYPE bigquery, READ_ONLY)"
+        )
         logger.info("Attached BigQuery project: %s", project_id)
 
         _create_meta_table(conn)
@@ -114,22 +134,40 @@ def init_extract(
 
         for tc in table_configs:
             table_name = tc["name"]
-            dataset = tc.get("bucket", "")  # BigQuery dataset
+            dataset = tc.get("bucket", "")
             source_table = tc.get("source_table", table_name)
 
             try:
-                conn.execute(
-                    f'CREATE OR REPLACE VIEW "{table_name}" AS '
-                    f'SELECT * FROM bq."{dataset}"."{source_table}"'
-                )
+                entity_type = _detect_table_type(conn, project_id, dataset, source_table)
+                if entity_type is None:
+                    raise RuntimeError(
+                        f"BQ entity {project_id}.{dataset}.{source_table} not found"
+                    )
+
+                if entity_type == "BASE TABLE":
+                    # Storage Read API — fast for full scans
+                    view_sql = (
+                        f'CREATE OR REPLACE VIEW "{table_name}" AS '
+                        f'SELECT * FROM bq."{dataset}"."{source_table}"'
+                    )
+                else:
+                    # VIEW or MATERIALIZED_VIEW — use jobs API
+                    bq_inner = f"SELECT * FROM `{project_id}.{dataset}.{source_table}`"
+                    bq_inner_escaped = bq_inner.replace("'", "''")
+                    view_sql = (
+                        f'CREATE OR REPLACE VIEW "{table_name}" AS '
+                        f"SELECT * FROM bigquery_query('{project_id}', '{bq_inner_escaped}')"
+                    )
+
+                conn.execute(view_sql)
                 conn.execute(
                     "INSERT INTO _meta VALUES (?, ?, 0, 0, ?, 'remote')",
                     [table_name, tc.get("description", ""), now],
                 )
                 stats["tables_registered"] += 1
                 logger.info(
-                    "Registered remote view: %s -> bq.%s.%s",
-                    table_name, dataset, source_table,
+                    "Registered remote view: %s -> %s.%s.%s (%s)",
+                    table_name, project_id, dataset, source_table, entity_type,
                 )
             except Exception as e:
                 logger.error("Failed to register %s: %s", table_name, e)
@@ -139,14 +177,12 @@ def init_extract(
     finally:
         conn.close()
 
-    # Atomic swap with WAL cleanup
+    # Atomic swap (preserve from existing implementation)
     old_wal = Path(str(db_path) + ".wal")
     if old_wal.exists():
         old_wal.unlink()
-
     if tmp_db_path.exists():
         shutil.move(str(tmp_db_path), str(db_path))
-
     tmp_wal = Path(str(tmp_db_path) + ".wal")
     if tmp_wal.exists():
         tmp_wal.unlink()
