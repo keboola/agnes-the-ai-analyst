@@ -257,6 +257,19 @@ class JiraService:
             logger.error("Issue data missing 'key' field")
             return None
 
+        # Defense-in-depth: validate `issue_key` BEFORE any code path
+        # uses it — including the HTTP URL constructions in
+        # fetch_remote_links / fetch_sla_fields below. The webhook
+        # handler already validates upstream, but a future internal
+        # caller invoking save_issue directly with attacker-controlled
+        # input would otherwise fire outbound requests with a malicious
+        # path component (limited SSRF / path manipulation against the
+        # Jira API server) before the filesystem-side guard rejected it.
+        # Issue #83 round 3.
+        if not is_valid_issue_key(issue_key):
+            logger.error(f"Refusing to save issue with malformed key: {issue_key!r}")
+            return None
+
         # Create data directory if needed
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -279,11 +292,8 @@ class JiraService:
             logger.info(f"Overlayed SLA fields for {issue_key}")
 
         # Save to file (one file per issue for now, later we'll batch to parquet)
-        # Two-layer guard: regex whitelist + Path.resolve() containment.
-        # Issue #83 — issue_key is attacker-controlled (webhook payload).
-        if not is_valid_issue_key(issue_key):
-            logger.error(f"Refusing to save issue with malformed key: {issue_key!r}")
-            return None
+        # Path.resolve() containment as second layer; the regex check
+        # above is the primary defense.
         issues_dir = self.data_dir / "issues"
         issues_dir.mkdir(parents=True, exist_ok=True)
         try:

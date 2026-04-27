@@ -127,9 +127,17 @@ async def receive_jira_webhook(request: Request) -> Response:
     webhook_event = event_data.get("webhookEvent", "unknown")
     issue = event_data.get("issue", {})
     issue_key = issue.get("key", "")
+    # Some Jira webhook event types deliver the key at the top level
+    # instead of `issue.key` (e.g. delete events historically).
+    # `process_webhook_event` already supports this fallback at
+    # connectors/jira/service.py — mirror it here so the handler
+    # doesn't reject those events with 400 before they ever reach the
+    # service layer.
+    if not issue_key:
+        issue_key = event_data.get("issue_key", "")
 
     # Validate issue_key format BEFORE any filesystem operation. Jira issue
-    # keys follow `[A-Z][A-Z0-9_]+-\d+`; anything else (path traversal,
+    # keys follow `[A-Z][A-Z0-9]+-\d+`; anything else (path traversal,
     # SQL injection, control chars) is refused with 400. Issue #83.
     if not is_valid_issue_key(issue_key):
         logger.warning(
