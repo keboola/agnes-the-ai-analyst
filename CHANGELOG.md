@@ -34,6 +34,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   centralises the policy. See
   `docs/superpowers/plans/2026-04-27-issue-81-trust-boundary.md` for the
   full threat model.
+- **Security (CRITICAL follow-up)**: the same allowlists are now enforced
+  on the **query-time** code path in `src/db.py::_reattach_remote_extensions`
+  (called by `get_analytics_db_readonly()` on every query request). The
+  earlier draft of this PR hardened only the rebuild path; without this
+  follow-up a malicious connector could still exfiltrate runtime
+  secrets via `ATTACH ... TOKEN` on every query. Both paths now share
+  the `is_extension_allowed` / `is_token_env_allowed` /
+  `escape_sql_string_literal` helpers from `src/orchestrator_security.py`.
+
+## [0.11.5] — 2026-04-27
 
 Follow-up release for PR #73: addresses four rounds of Devin AI review on the role-management-complete branch. No new public-API surface; the user-visible payoff is that v8→v9-migrated installations now work end-to-end (login flows, user list, admin nav, privilege revocation), and `make local-dev` startup is finally quiet.
 
