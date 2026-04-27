@@ -255,6 +255,30 @@ def _extract_via_legacy(
             os.unlink(csv_path)
 
 
+def compute_exit_code(stats: Dict[str, Any], total: int) -> int:
+    """Map an extraction `stats` dict to a process exit code.
+
+    Issue #81 Group B: distinguish full success from partial failure so
+    the sync API and CLI consumers can alert on partial vs. full failure
+    rather than treating any non-zero as one bucket.
+
+    - ``0`` — every table succeeded (or no tables registered).
+    - ``1`` — every table failed (full failure).
+    - ``2`` — at least one succeeded and at least one failed (partial).
+
+    `total` is the count of tables the extractor was asked to process.
+    `stats["tables_failed"]` is the count it actually failed.
+    """
+    failed = stats.get("tables_failed", 0)
+    if total == 0:
+        return 0
+    if failed == 0:
+        return 0
+    if failed >= total:
+        return 1
+    return 2
+
+
 if __name__ == "__main__":
     """Standalone: reads config from env + table_registry, runs extraction.
 
@@ -303,5 +327,11 @@ if __name__ == "__main__":
     result = run(str(data_dir / "extracts" / "keboola"), tables, url, token)
     logger.info("Extraction complete: %s", result)
 
-    failed = result.get("tables_failed", 0)
-    exit(1 if failed == len(tables) else 0)  # exit 1 only if ALL tables failed
+    code = compute_exit_code(result, len(tables))
+    if code == 2:
+        logger.error(
+            "Partial failure: %d of %d tables failed", result.get("tables_failed", 0), len(tables)
+        )
+    elif code == 1:
+        logger.error("All %d tables failed", len(tables))
+    exit(code)
