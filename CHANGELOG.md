@@ -25,7 +25,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   it was never documented) must set `JIRA_WEBHOOK_SECRET` before this
   merges.
 - **Security (CRITICAL)**: Jira issue keys arriving via webhooks are now
-  validated against the canonical `^[A-Z][A-Z0-9]{0,31}-\d{1,12}$` format
+  validated against the canonical `^[A-Z][A-Z0-9]{0,31}-[0-9]{1,12}\Z` format
+  (`[0-9]` not `\d` to refuse non-ASCII Unicode digits, `\Z` not `$` to
+  refuse trailing newlines that `$` would tolerate)
   before any filesystem operation (issue #83). Previously, `issue_key` flowed
   unsanitized into `connectors/jira/service.py` (`save_issue`,
   `download_attachment`, `_handle_deletion`, `process_webhook_event`) and
