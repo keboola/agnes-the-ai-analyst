@@ -64,7 +64,11 @@ def _grant(conn, *, group_id: str, marketplace: str, plugin: str) -> None:
 
 
 class TestResolveAllowedPlugins:
-    def test_admin_sees_every_plugin_across_marketplaces(self, db_conn):
+    def test_admin_filtered_through_grants_like_anyone_else(self, db_conn):
+        # Admin is just one of the user's groups — no god-mode shortcut for
+        # the marketplace feed. Without grants on Admin (or another of their
+        # groups), an admin sees nothing; with grants, they see exactly what
+        # those grants allow.
         from src.marketplace_filter import resolve_allowed_plugins
         t = datetime.now(timezone.utc)
         _register_marketplace(db_conn, id="mkt-a", registered_at=t,
@@ -76,9 +80,15 @@ class TestResolveAllowedPlugins:
         _add_member(db_conn, user_id="u-admin", group_id=admin_gid)
 
         admin = {"id": "u-admin"}
+        # Without any grants admin sees zero plugins.
+        assert resolve_allowed_plugins(db_conn, admin) == []
+
+        # Grant Admin two of the three plugins; admin now sees exactly those.
+        _grant(db_conn, group_id=admin_gid, marketplace="mkt-a", plugin="p1")
+        _grant(db_conn, group_id=admin_gid, marketplace="mkt-b", plugin="p3")
         result = resolve_allowed_plugins(db_conn, admin)
         prefixed = {p["prefixed_name"] for p in result}
-        assert prefixed == {"mkt-a-p1", "mkt-b-p2", "mkt-b-p3"}
+        assert prefixed == {"mkt-a-p1", "mkt-b-p3"}
 
     def test_everyone_grants_visible_to_all(self, db_conn):
         from src.marketplace_filter import resolve_allowed_plugins
@@ -134,11 +144,13 @@ class TestResolveAllowedPlugins:
             plugins=[{"name": "p", "version": "1"}])
         _register_marketplace(db_conn, id="earlier-mkt", registered_at=earlier,
             plugins=[{"name": "p", "version": "1"}])
-        _make_user(db_conn, user_id="u-admin2", email="a2@x")
-        admin_gid = db_conn.execute("SELECT id FROM user_groups WHERE name='Admin'").fetchone()[0]
-        _add_member(db_conn, user_id="u-admin2", group_id=admin_gid)
+        _make_user(db_conn, user_id="u2", email="a2@x")
+        gid = _make_group(db_conn, name="Order")
+        _add_member(db_conn, user_id="u2", group_id=gid)
+        _grant(db_conn, group_id=gid, marketplace="earlier-mkt", plugin="p")
+        _grant(db_conn, group_id=gid, marketplace="later-mkt", plugin="p")
 
-        result = resolve_allowed_plugins(db_conn, {"id": "u-admin2"})
+        result = resolve_allowed_plugins(db_conn, {"id": "u2"})
         order = [p["marketplace_id"] for p in result]
         assert order == ["earlier-mkt", "later-mkt"]
 

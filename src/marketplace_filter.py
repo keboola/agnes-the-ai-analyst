@@ -2,11 +2,11 @@
 
 The marketplace endpoint aggregates plugins from every registered marketplace
 and returns only those the caller is allowed to see. Access is resolved
-through ``resource_grants`` (resource_type='marketplace_plugin'):
-
-    user in Admin group       → every plugin across all marketplaces
-    otherwise                 → distinct plugins granted to any of the
-                                user's groups (Everyone is implicit)
+uniformly through ``resource_grants`` (resource_type='marketplace_plugin'):
+the caller sees the distinct plugins granted to any of their groups
+(Everyone is implicit; Admin is just one of those groups here — there is no
+god-mode shortcut for the marketplace feed, so admins curate their own
+view by granting plugins to the Admin group).
 
 Plugins from different marketplaces that happen to share a name are NOT the
 same plugin — the caller needs both. We therefore prefix every plugin name
@@ -27,7 +27,7 @@ from typing import Any, Iterable, List
 
 import duckdb
 
-from app.auth.access import _user_group_ids, is_user_admin
+from app.auth.access import _user_group_ids
 from app.resource_types import ResourceType
 from app.utils import get_marketplaces_dir
 
@@ -74,35 +74,28 @@ def resolve_allowed_plugins(
     user_id = user.get("id")
     root = get_marketplaces_dir()
 
-    if user_id and is_user_admin(user_id, conn):
-        sql = (
-            "SELECT mp.marketplace_id, mp.name, mp.version, mp.raw "
-            "FROM marketplace_plugins mp "
-            "JOIN marketplace_registry mr ON mr.id = mp.marketplace_id "
-            "ORDER BY mr.registered_at, mp.name"
-        )
-        rows = conn.execute(sql).fetchall()
-    else:
-        # Distinct (marketplace_id, plugin_name) across all of the user's
-        # groups (Everyone is implicit via _user_group_ids). If two groups
-        # grant the same plugin, it still appears once.
-        group_ids = _user_group_ids(user_id, conn) if user_id else set()
-        if not group_ids:
-            return []
-        placeholders = ",".join(["?"] * len(group_ids))
-        sql = (
-            "SELECT DISTINCT mp.marketplace_id, mp.name, mp.version, mp.raw "
-            "FROM resource_grants rg "
-            "JOIN marketplace_plugins mp "
-            "  ON mp.marketplace_id || '/' || mp.name = rg.resource_id "
-            "JOIN marketplace_registry mr ON mr.id = mp.marketplace_id "
-            f"WHERE rg.group_id IN ({placeholders}) "
-            "  AND rg.resource_type = ? "
-            "ORDER BY mr.registered_at, mp.name"
-        )
-        rows = conn.execute(
-            sql, [*group_ids, ResourceType.MARKETPLACE_PLUGIN.value],
-        ).fetchall()
+    # Distinct (marketplace_id, plugin_name) across all of the user's
+    # groups (Everyone is implicit via _user_group_ids). If two groups
+    # grant the same plugin, it still appears once. Admin is treated as
+    # a regular group — admins get only the plugins their groups have
+    # been granted.
+    group_ids = _user_group_ids(user_id, conn) if user_id else set()
+    if not group_ids:
+        return []
+    placeholders = ",".join(["?"] * len(group_ids))
+    sql = (
+        "SELECT DISTINCT mp.marketplace_id, mp.name, mp.version, mp.raw "
+        "FROM resource_grants rg "
+        "JOIN marketplace_plugins mp "
+        "  ON mp.marketplace_id || '/' || mp.name = rg.resource_id "
+        "JOIN marketplace_registry mr ON mr.id = mp.marketplace_id "
+        f"WHERE rg.group_id IN ({placeholders}) "
+        "  AND rg.resource_type = ? "
+        "ORDER BY mr.registered_at, mp.name"
+    )
+    rows = conn.execute(
+        sql, [*group_ids, ResourceType.MARKETPLACE_PLUGIN.value],
+    ).fetchall()
 
     result: List[dict] = []
     for marketplace_id, name, version, raw in rows:

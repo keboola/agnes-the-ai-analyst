@@ -218,8 +218,10 @@ git CLI does not speak Bearer.
 Content: filtered via `src.marketplace_filter.resolve_allowed_plugins` which
 joins `resource_grants ↔ marketplace_plugins` (matching
 `mp.marketplace_id || '/' || mp.name = rg.resource_id`) scoped to the
-caller's `user_group_members`. Admin group bypasses to "everything". Plugin
-names are prefixed with marketplace slug (`<slug>-<plugin>`) so two
+caller's `user_group_members`. Admin is treated as a regular group here —
+no god-mode shortcut for the marketplace feed, so admins curate their own
+view by granting plugins to the Admin group (or any group they belong to).
+Plugin names are prefixed with marketplace slug (`<slug>-<plugin>`) so two
 marketplaces with the same plugin name don't collide in the aggregated view.
 
 Cache: content-addressed bare repos at `${DATA_DIR}/marketplaces/git-cache/`
