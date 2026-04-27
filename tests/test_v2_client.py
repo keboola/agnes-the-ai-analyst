@@ -30,12 +30,12 @@ def _fake_response(*, status=200, json_body=None, arrow_body=None, content_type=
 
 class TestApiGetJson:
     def test_200_returns_parsed_json(self):
-        with patch("cli.v2_client.requests.get") as m:
+        with patch("cli.v2_client.httpx.get") as m:
             m.return_value = _fake_response(json_body={"hello": "world"})
             assert api_get_json("/api/v2/catalog") == {"hello": "world"}
 
     def test_4xx_raises_v2clienterror(self):
-        with patch("cli.v2_client.requests.get") as m:
+        with patch("cli.v2_client.httpx.get") as m:
             m.return_value = _fake_response(status=403, json_body={"detail": "nope"})
             with pytest.raises(V2ClientError) as e:
                 api_get_json("/api/v2/catalog")
@@ -46,7 +46,7 @@ class TestApiPostArrow:
     def test_returns_arrow_table(self):
         from app.api.v2_arrow import arrow_table_to_ipc_bytes
         ipc = arrow_table_to_ipc_bytes(pa.table({"x": [1, 2, 3]}))
-        with patch("cli.v2_client.requests.post") as m:
+        with patch("cli.v2_client.httpx.post") as m:
             m.return_value = _fake_response(
                 arrow_body=ipc,
                 content_type="application/vnd.apache.arrow.stream",

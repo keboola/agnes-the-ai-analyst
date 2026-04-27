@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 import io
 
-import requests
+import httpx
 import pyarrow as pa
 
 from cli.config import get_server_url, get_token
@@ -28,7 +28,7 @@ def _headers() -> dict:
 
 def api_get_json(path: str, **params) -> dict:
     url = f"{get_server_url().rstrip('/')}{path}"
-    r = requests.get(url, headers=_headers(), params=params or None, timeout=30)
+    r = httpx.get(url, headers=_headers(), params=params or None, timeout=30)
     if r.status_code >= 400:
         body = r.json() if "json" in r.headers.get("content-type", "") else r.text
         raise V2ClientError(status_code=r.status_code, body=body, message=str(body)[:200])
@@ -37,7 +37,7 @@ def api_get_json(path: str, **params) -> dict:
 
 def api_post_json(path: str, payload: dict) -> dict:
     url = f"{get_server_url().rstrip('/')}{path}"
-    r = requests.post(url, json=payload, headers=_headers(), timeout=120)
+    r = httpx.post(url, json=payload, headers=_headers(), timeout=120)
     if r.status_code >= 400:
         body = r.json() if "json" in r.headers.get("content-type", "") else r.text
         raise V2ClientError(status_code=r.status_code, body=body, message=str(body)[:200])
@@ -47,7 +47,7 @@ def api_post_json(path: str, payload: dict) -> dict:
 def api_post_arrow(path: str, payload: dict) -> pa.Table:
     """Post JSON, expect Arrow IPC stream response."""
     url = f"{get_server_url().rstrip('/')}{path}"
-    r = requests.post(url, json=payload, headers=_headers(), timeout=600)
+    r = httpx.post(url, json=payload, headers=_headers(), timeout=600)
     if r.status_code >= 400:
         body = r.json() if "json" in r.headers.get("content-type", "") else r.text
         raise V2ClientError(status_code=r.status_code, body=body, message=str(body)[:200])
