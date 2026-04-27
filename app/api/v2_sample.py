@@ -1,0 +1,97 @@
+"""GET /api/v2/sample/{table_id}?n=5 — sample rows (spec §3.3)."""
+
+from __future__ import annotations
+import logging
+from fastapi import APIRouter, Depends, HTTPException, Query
+import duckdb
+
+from app.auth.dependencies import get_current_user, _get_db
+from app.instance_config import get_value
+from src.rbac import can_access_table
+from src.repositories.table_registry import TableRegistryRepository
+from app.api.v2_cache import TTLCache
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/api/v2", tags=["v2"])
+
+_sample_cache = TTLCache(maxsize=512, ttl_seconds=3600)
+_MAX_N = 100
+
+
+def _fetch_bq_sample(project: str, dataset: str, table: str, n: int) -> list[dict]:
+    import duckdb
+    from connectors.bigquery.auth import get_metadata_token
+
+    token = get_metadata_token()
+    conn = duckdb.connect(":memory:")
+    try:
+        conn.execute("INSTALL bigquery FROM community; LOAD bigquery;")
+        escaped = token.replace("'", "''")
+        conn.execute(f"CREATE OR REPLACE SECRET bq_s (TYPE bigquery, ACCESS_TOKEN '{escaped}')")
+        bq_sql = f"SELECT * FROM `{project}.{dataset}.{table}` LIMIT {int(n)}"
+        df = conn.execute(
+            "SELECT * FROM bigquery_query(?, ?)",
+            [project, bq_sql],
+        ).fetchdf()
+        return df.to_dict(orient="records")
+    finally:
+        conn.close()
+
+
+def build_sample(
+    conn: duckdb.DuckDBPyConnection,
+    user: dict,
+    table_id: str,
+    *,
+    n: int,
+    project_id: str,
+) -> dict:
+    n = max(1, min(int(n), _MAX_N))
+    cache_key = f"{table_id}|{n}"
+    cached = _sample_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    repo = TableRegistryRepository(conn)
+    row = repo.get(table_id)
+    if not row:
+        raise FileNotFoundError(table_id)
+
+    if user.get("role") != "admin" and not can_access_table(user, table_id, conn):
+        raise PermissionError(table_id)
+
+    source_type = row.get("source_type") or ""
+    if source_type == "bigquery":
+        rows = _fetch_bq_sample(project_id, row.get("bucket") or "", row.get("source_table") or table_id, n)
+    else:
+        from app.utils import get_data_dir
+        parquet = get_data_dir() / "extracts" / source_type / "data" / f"{table_id}.parquet"
+        c = duckdb.connect(":memory:")
+        try:
+            df = c.execute(
+                f"SELECT * FROM read_parquet(?) LIMIT {n}",
+                [str(parquet)],
+            ).fetchdf()
+            rows = df.to_dict(orient="records")
+        finally:
+            c.close()
+
+    payload = {"table_id": table_id, "rows": rows, "source": source_type}
+    _sample_cache.set(cache_key, payload)
+    return payload
+
+
+@router.get("/sample/{table_id}")
+async def sample(
+    table_id: str,
+    n: int = Query(default=5, ge=1, le=_MAX_N),
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    project_id = get_value("data_source", "bigquery", "project", default="") or ""
+    try:
+        return build_sample(conn, user, table_id, n=n, project_id=project_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"table {table_id!r} not found")
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="not authorized for this table")
