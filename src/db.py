@@ -434,14 +434,16 @@ def _reattach_remote_extensions(
                 logger.debug("Remote source %s already attached, skipping", alias)
                 continue
             try:
-                # Built-ins LOAD only; community needs INSTALL+LOAD per
-                # Group A.1. Read-only path historically used LOAD only;
-                # we keep that for built-ins and add INSTALL+LOAD for
-                # community extensions to match the rebuild path.
-                if is_builtin_extension(extension):
-                    conn.execute(f"LOAD {extension};")
-                else:
-                    conn.execute(f"INSTALL {extension} FROM community; LOAD {extension};")
+                # LOAD only on the read-only query path — no INSTALL.
+                # Per the function docstring, this path runs on every
+                # query request and must not touch the network. The
+                # rebuild path (orchestrator) is responsible for INSTALL;
+                # by the time a query lands here, any community extension
+                # we'll see is already on disk. If LOAD fails because the
+                # extension isn't installed, log + skip (caller will see
+                # missing remote views and the operator will trigger a
+                # rebuild).
+                conn.execute(f"LOAD {extension};")
                 token = os.environ.get(token_env, "") if token_env else ""
                 safe_url = escape_sql_string_literal(url)
                 if token:

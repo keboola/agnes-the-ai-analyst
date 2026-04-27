@@ -209,9 +209,17 @@ class SyncOrchestrator:
     ) -> None:
         """Read _remote_attach from extract.duckdb and ATTACH external sources."""
         try:
+            # DuckDB attached-DB layout: ATTACH 'extract.duckdb' AS <alias>
+            # exposes information_schema.tables with table_catalog=<alias>
+            # and table_schema='main'. The earlier draft used
+            # table_schema=<alias> here, which never matched and made
+            # _attach_remote_extensions a silent no-op for every
+            # connector — defeating the entire Group A hardening in
+            # production. db.py:_reattach_remote_extensions already used
+            # the correct column; this aligns the rebuild path.
             tables = conn.execute(
                 f"SELECT table_name FROM information_schema.tables "
-                f"WHERE table_schema='{source_name}' AND table_name='_remote_attach'"
+                f"WHERE table_catalog='{source_name}' AND table_name='_remote_attach'"
             ).fetchall()
             if not tables:
                 return
