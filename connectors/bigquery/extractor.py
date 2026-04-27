@@ -15,6 +15,27 @@ import duckdb
 logger = logging.getLogger(__name__)
 
 
+def _detect_table_type(
+    conn: duckdb.DuckDBPyConnection,
+    project: str,
+    dataset: str,
+    table: str,
+) -> str | None:
+    """Return BQ entity type for `project.dataset.table`.
+
+    Uses `bigquery_query()` table function which routes through the BQ jobs
+    API — works on tables, views, and materialized views alike. Returns one
+    of 'BASE TABLE', 'VIEW', 'MATERIALIZED_VIEW', or None if not found.
+    """
+    bq_sql = (
+        f"SELECT table_type FROM `{project}.{dataset}.INFORMATION_SCHEMA.TABLES` "
+        f"WHERE table_name = '{table}' LIMIT 1"
+    )
+    duck_sql = f"SELECT * FROM bigquery_query('{project}', '{bq_sql}')"
+    row = conn.execute(duck_sql).fetchone()
+    return row[0] if row else None
+
+
 def _create_meta_table(conn: duckdb.DuckDBPyConnection) -> None:
     """Create the _meta table required by the extract.duckdb contract."""
     conn.execute("DROP TABLE IF EXISTS _meta")

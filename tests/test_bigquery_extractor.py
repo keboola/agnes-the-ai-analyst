@@ -184,3 +184,48 @@ class TestBigQueryExtractor:
             "query_mode",
         ]
         conn.close()
+
+
+class TestDetectTableType:
+    """Detect whether a BQ entity is a base table or a view."""
+
+    def test_base_table_returns_table(self):
+        from connectors.bigquery.extractor import _detect_table_type
+        from unittest.mock import MagicMock
+
+        conn = MagicMock()
+        conn.execute.return_value.fetchone.return_value = ("BASE TABLE",)
+        result = _detect_table_type(conn, "proj", "ds", "tbl")
+        assert result == "BASE TABLE"
+
+    def test_view_returns_view(self):
+        from connectors.bigquery.extractor import _detect_table_type
+        from unittest.mock import MagicMock
+
+        conn = MagicMock()
+        conn.execute.return_value.fetchone.return_value = ("VIEW",)
+        result = _detect_table_type(conn, "proj", "ds", "tbl")
+        assert result == "VIEW"
+
+    def test_missing_returns_none(self):
+        from connectors.bigquery.extractor import _detect_table_type
+        from unittest.mock import MagicMock
+
+        conn = MagicMock()
+        conn.execute.return_value.fetchone.return_value = None
+        result = _detect_table_type(conn, "proj", "ds", "tbl")
+        assert result is None
+
+    def test_query_uses_bigquery_query_function(self):
+        """Detection must use bigquery_query() table function (works on views via jobs API)."""
+        from connectors.bigquery.extractor import _detect_table_type
+        from unittest.mock import MagicMock
+
+        conn = MagicMock()
+        conn.execute.return_value.fetchone.return_value = ("VIEW",)
+        _detect_table_type(conn, "my-proj", "my_ds", "my_tbl")
+
+        sql = conn.execute.call_args[0][0]
+        assert "bigquery_query" in sql.lower()
+        assert "INFORMATION_SCHEMA.TABLES" in sql
+        assert "my_tbl" in sql
