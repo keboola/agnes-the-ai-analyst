@@ -49,7 +49,9 @@ Admin short-circuits both helpers — admins never need explicit grants.
 
 ## Adding a new resource type
 
-1. Add an enum member in `app/resource_types.py`:
+Everything lives in `app/resource_types.py`. Three edits, one file:
+
+1. Add an enum member to `ResourceType`:
 
    ```python
    class ResourceType(StrEnum):
@@ -57,19 +59,39 @@ Admin short-circuits both helpers — admins never need explicit grants.
        DATASET = "dataset"  # new
    ```
 
-2. Add metadata for the admin UI:
+2. Write a `list_blocks` delegate that projects the domain tables into the `(block → items)` shape the admin /access page consumes. Each item must include `resource_id` matching the path string written into `resource_grants`:
 
    ```python
-   RESOURCE_TYPE_META[ResourceType.DATASET] = {
-       "display_name": "Dataset",
-       "description": "A table available in the analytics catalog.",
-       "id_format": "<bucket>.<table_name>",
-   }
+   def _dataset_blocks(conn) -> list[Block]:
+       rows = conn.execute(
+           "SELECT bucket, name, description FROM table_registry ORDER BY bucket, name"
+       ).fetchall()
+       blocks: dict[str, Block] = {}
+       for bucket, name, desc in rows:
+           block = blocks.setdefault(bucket, {"id": bucket, "name": bucket, "items": []})
+           block["items"].append({
+               "resource_id": f"{bucket}.{name}",
+               "name": name,
+               "description": desc,
+           })
+       return list(blocks.values())
    ```
 
-3. Wire your endpoints with `require_resource_access(ResourceType.DATASET, "{bucket}.{table}")`.
+3. Register a `ResourceTypeSpec` in `RESOURCE_TYPES`. The dataclass requires `list_blocks` so the type checker will catch a missing delegate:
 
-No DB migration, no startup hook. The admin UI's resource-type dropdown reads `/api/admin/resource-types` which projects this dict.
+   ```python
+   RESOURCE_TYPES[ResourceType.DATASET] = ResourceTypeSpec(
+       key=ResourceType.DATASET,
+       display_name="Datasets",
+       description="A table available in the analytics catalog.",
+       id_format="<bucket>.<table_name>",
+       list_blocks=_dataset_blocks,
+   )
+   ```
+
+Then wire your endpoints with `require_resource_access(ResourceType.DATASET, "{bucket}.{table}")`.
+
+No DB migration, no startup hook, no second wiring step in `access-overview` — the registry drives both `/api/admin/resource-types` (UI dropdown) and `/api/admin/access-overview` (resource tree).
 
 ---
 

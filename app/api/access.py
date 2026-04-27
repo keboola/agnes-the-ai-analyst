@@ -24,9 +24,9 @@ from pydantic import BaseModel
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db, get_current_user
-from app.resource_types import ResourceType, list_resource_types
+from app.resource_types import RESOURCE_TYPES, ResourceType, list_resource_types
 from src.repositories.audit import AuditRepository
-from src.repositories.plugin_access import (
+from src.repositories.user_groups import (
     SystemGroupProtected,
     UserGroupsRepository,
 )
@@ -98,45 +98,44 @@ async def get_resource_types(
     return list_resource_types()
 
 
+@router.get("/group-suggestions", response_model=List[dict])
+async def get_group_suggestions(
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Suggest Google Workspace group names the calling admin belongs to that
+    are *not yet* registered as ``user_groups`` rows.
+
+    Powers the "Suggested from your Google account" picker on the
+    /admin/groups create modal — click a chip → name input is pre-filled.
+
+    Fail-soft: returns ``[]`` if the Cloud Identity call errors. Off-VM the
+    call falls through to the real path and bails out empty unless
+    ``GOOGLE_ADMIN_SDK_MOCK_GROUPS`` is set.
+    """
+    from app.auth.group_sync import fetch_user_groups
+
+    email = user.get("email") or ""
+    if not email:
+        return []
+    try:
+        google_names = fetch_user_groups(email)
+    except Exception as e:  # noqa: BLE001 - fail-soft by design
+        logger.warning("group-suggestions fetch failed for %s: %s", email, e)
+        return []
+    if not google_names:
+        return []
+    existing = {g["name"] for g in UserGroupsRepository(conn).list_all()}
+    return [
+        {"name": n, "source": "google"}
+        for n in google_names
+        if n and n not in existing
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Access overview — single-shot payload for the /admin/access page
 # ---------------------------------------------------------------------------
-
-
-def _marketplace_plugin_blocks(conn: duckdb.DuckDBPyConnection) -> List[dict]:
-    """Project marketplace_registry + marketplace_plugins into the
-    hierarchical (block → items) shape the admin UI renders.
-
-    One block per marketplace_registry row, ordered by registered_at.
-    Items inside are plugins; resource_id encodes the canonical path
-    ``<marketplace_slug>/<plugin_name>`` that ``resource_grants.resource_id``
-    matches against.
-    """
-    rows = conn.execute(
-        """SELECT mr.id, mr.name, mr.registered_at,
-                  mp.name AS plugin_name, mp.version, mp.category,
-                  mp.description, mp.source_type
-           FROM marketplace_registry mr
-           LEFT JOIN marketplace_plugins mp ON mp.marketplace_id = mr.id
-           ORDER BY mr.registered_at, mr.id, mp.name"""
-    ).fetchall()
-    blocks: dict[str, dict] = {}
-    for mr_id, mr_name, _, p_name, p_ver, p_cat, p_desc, p_src in rows:
-        block = blocks.setdefault(mr_id, {
-            "id": mr_id,
-            "name": mr_name,
-            "items": [],
-        })
-        if p_name:
-            block["items"].append({
-                "resource_id": f"{mr_id}/{p_name}",
-                "name": p_name,
-                "version": p_ver,
-                "category": p_cat,
-                "description": p_desc,
-                "source_type": p_src,
-            })
-    return list(blocks.values())
 
 
 @router.get("/access-overview", response_model=dict)
@@ -182,14 +181,16 @@ async def access_overview(
         for r in grants_repo.list_all()
     ]
 
-    # Per-resource-type hierarchies. Add new types here as their modules
-    # land — each projection function returns a list of blocks.
+    # Per-resource-type hierarchies. Driven by the registry in
+    # app.resource_types — adding a new type there is the one place that
+    # surfaces here, no extra wiring.
     resources = [
         {
-            "type_key": ResourceType.MARKETPLACE_PLUGIN.value,
-            "type_display": "Marketplace plugins",
-            "blocks": _marketplace_plugin_blocks(conn),
-        },
+            "type_key": spec.key.value,
+            "type_display": spec.display_name,
+            "blocks": spec.list_blocks(conn),
+        }
+        for spec in RESOURCE_TYPES.values()
     ]
 
     return {"groups": groups, "grants": grants, "resources": resources}

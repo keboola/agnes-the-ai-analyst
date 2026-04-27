@@ -641,7 +641,7 @@ async def admin_group_detail_page(
 ):
     """Single-group detail page — header + members table. Resource grants
     live on /admin/grants (deep-linked from here)."""
-    from src.repositories.plugin_access import UserGroupsRepository
+    from src.repositories.user_groups import UserGroupsRepository
     g = UserGroupsRepository(conn).get(group_id)
     if not g:
         raise HTTPException(status_code=404, detail="Group not found")

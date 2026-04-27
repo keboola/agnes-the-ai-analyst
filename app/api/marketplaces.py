@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
+from app.resource_types import ResourceType
 from src.marketplace import (
     MarketplaceNotFound,
     delete_marketplace_dir,
@@ -352,15 +353,18 @@ async def delete_marketplace(
         _persist_token(existing["token_env"], "")
 
     repo.unregister(marketplace_id)
-    # Drop cached plugin rows and any access grants that reference this marketplace.
+    # Drop cached plugin rows and any resource grants that reference plugins
+    # from this marketplace. resource_grants stores resource_id as
+    # "<marketplace_slug>/<plugin_name>" — match the slash-prefix.
     try:
         conn.execute(
             "DELETE FROM marketplace_plugins WHERE marketplace_id = ?",
             [marketplace_id],
         )
         conn.execute(
-            "DELETE FROM plugin_access WHERE marketplace_id = ?",
-            [marketplace_id],
+            "DELETE FROM resource_grants "
+            "WHERE resource_type = ? AND resource_id LIKE ? || '/%'",
+            [ResourceType.MARKETPLACE_PLUGIN.value, marketplace_id],
         )
     except Exception as e:
         logger.warning("cleanup for marketplace %s failed: %s", marketplace_id, e)

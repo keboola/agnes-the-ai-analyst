@@ -1,13 +1,15 @@
-"""Repositories for user groups and plugin-access grants.
+"""Repository for the ``user_groups`` table.
 
-`user_groups` is a lightweight label registry — just `(id, name)` —
-intended to be consumed by a future code path that will materialise a
-per-group Claude Code marketplace endpoint. There is no user-to-group
-membership table yet; that lives outside the scope of this admin UI.
+A ``user_group`` is a named bucket admins create (e.g. ``data-team``,
+``Engineering``) plus the two seeded ``is_system=TRUE`` groups ``Admin``
+and ``Everyone``. Membership lives in
+:mod:`src.repositories.user_group_members`; resource grants in
+:mod:`src.repositories.resource_grants`.
 
-`plugin_access` is a many-to-many join keyed by
-`(group_id, marketplace_id, plugin_name)`. Each row is an explicit grant
-saying "group X may install plugin Y from marketplace Z".
+System groups are write-protected — :exc:`SystemGroupProtected` is raised
+on attempts to rename or delete them so the canonical ``Admin`` /
+``Everyone`` names referenced from code (``app.auth.access``) cannot
+disappear out from under the authorization layer.
 """
 
 from __future__ import annotations

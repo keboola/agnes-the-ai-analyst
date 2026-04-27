@@ -45,7 +45,7 @@ def _make_user(conn, *, user_id: str, email: str) -> None:
 
 
 def _make_group(conn, *, name: str) -> str:
-    from src.repositories.plugin_access import UserGroupsRepository
+    from src.repositories.user_groups import UserGroupsRepository
     return UserGroupsRepository(conn).create(name=name)["id"]
 
 

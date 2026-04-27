@@ -470,7 +470,7 @@ class TestGoogleCallbackGroupSync:
 
         from src.db import get_system_db
         from src.repositories.users import UserRepository
-        from src.repositories.plugin_access import UserGroupsRepository
+        from src.repositories.user_groups import UserGroupsRepository
 
         conn = get_system_db()
         try:

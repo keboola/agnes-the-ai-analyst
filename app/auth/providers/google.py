@@ -93,7 +93,7 @@ async def google_callback(request: Request):
         # user_group_members.
         from src.db import get_system_db
         from src.repositories.users import UserRepository
-        from src.repositories.plugin_access import UserGroupsRepository
+        from src.repositories.user_groups import UserGroupsRepository
         from src.repositories.user_group_members import UserGroupMembersRepository
         from app.auth.group_sync import fetch_user_groups
         import uuid

@@ -370,19 +370,19 @@ class TestProfileRepository:
 
 class TestUserGroupsRepository:
     def test_create_non_system_by_default(self, db_conn):
-        from src.repositories.plugin_access import UserGroupsRepository
+        from src.repositories.user_groups import UserGroupsRepository
         repo = UserGroupsRepository(db_conn)
         row = repo.create(name="Analysts", description="data folks")
         assert row["is_system"] is False
 
     def test_create_system_flag(self, db_conn):
-        from src.repositories.plugin_access import UserGroupsRepository
+        from src.repositories.user_groups import UserGroupsRepository
         repo = UserGroupsRepository(db_conn)
         row = repo.create(name="SysGroup", description="seeded", is_system=True)
         assert row["is_system"] is True
 
     def test_update_system_group_blocked(self, db_conn):
-        from src.repositories.plugin_access import (
+        from src.repositories.user_groups import (
             UserGroupsRepository, SystemGroupProtected,
         )
         repo = UserGroupsRepository(db_conn)
@@ -391,7 +391,7 @@ class TestUserGroupsRepository:
             repo.update(row["id"], name="Renamed")
 
     def test_delete_system_group_blocked(self, db_conn):
-        from src.repositories.plugin_access import (
+        from src.repositories.user_groups import (
             UserGroupsRepository, SystemGroupProtected,
         )
         repo = UserGroupsRepository(db_conn)
@@ -401,7 +401,7 @@ class TestUserGroupsRepository:
         assert repo.get(row["id"]) is not None
 
     def test_update_delete_non_system_ok(self, db_conn):
-        from src.repositories.plugin_access import UserGroupsRepository
+        from src.repositories.user_groups import UserGroupsRepository
         repo = UserGroupsRepository(db_conn)
         row = repo.create(name="Analysts2", description="normal")
         repo.update(row["id"], description="updated")
@@ -410,7 +410,7 @@ class TestUserGroupsRepository:
         assert repo.get(row["id"]) is None
 
     def test_ensure_system_promotes_existing(self, db_conn):
-        from src.repositories.plugin_access import UserGroupsRepository
+        from src.repositories.user_groups import UserGroupsRepository
         repo = UserGroupsRepository(db_conn)
         row = repo.create(name="LaterPromoted", description="manual")
         assert row["is_system"] is False
@@ -419,7 +419,7 @@ class TestUserGroupsRepository:
         assert promoted["is_system"] is True
 
     def test_ensure_creates_missing(self, db_conn):
-        from src.repositories.plugin_access import UserGroupsRepository
+        from src.repositories.user_groups import UserGroupsRepository
         repo = UserGroupsRepository(db_conn)
         created = repo.ensure("grp_from_claim@groupon.com")
         assert created["name"] == "grp_from_claim@groupon.com"
@@ -430,7 +430,7 @@ class TestUserGroupsRepository:
     def test_ensure_returns_existing_unchanged(self, db_conn):
         """A second ensure() must return the existing row verbatim.
            Must not overwrite a description an admin may have edited."""
-        from src.repositories.plugin_access import UserGroupsRepository
+        from src.repositories.user_groups import UserGroupsRepository
         repo = UserGroupsRepository(db_conn)
         first = repo.create(
             name="grp_existing@groupon.com",
@@ -444,7 +444,7 @@ class TestUserGroupsRepository:
 
     def test_ensure_preserves_is_system_flag(self, db_conn):
         """System groups stay system even when fetched via ensure()."""
-        from src.repositories.plugin_access import UserGroupsRepository
+        from src.repositories.user_groups import UserGroupsRepository
         repo = UserGroupsRepository(db_conn)
         sys_row = repo.create(name="Admin-x", description="seeded", is_system=True)
         returned = repo.ensure("Admin-x")

@@ -189,11 +189,13 @@ Two layers, no role hierarchy. Full reference: [`docs/RBAC.md`](docs/RBAC.md).
   Replaces `plugin_access` from v11; the same shape now covers any future
   entity-scoped grant (datasets, knowledge categories, …).
 
-Resource types are an `app.resource_types.ResourceType` `StrEnum` — adding a
-new one is one enum member plus an entry in `RESOURCE_TYPE_META`. No DB
-migration. Endpoints gate with either `require_admin` (app-level) or
-`require_resource_access(ResourceType.X, "{path}")` (entity-level), both from
-`app.auth.access`.
+Resource types are an `app.resource_types.ResourceType` `StrEnum` paired with
+a `ResourceTypeSpec` registered in `RESOURCE_TYPES` — adding a new one is one
+enum member, one `list_blocks(conn)` delegate (projects domain tables into the
+`(block → items)` shape the /admin/access tree renders), and one spec entry.
+No DB migration, no second wiring step. Endpoints gate with either
+`require_admin` (app-level) or `require_resource_access(ResourceType.X,
+"{path}")` (entity-level), both from `app.auth.access`.
 
 Admin UI: `/admin/access`. CLI: `da admin group {list,create,delete,members,
 add-member,remove-member}` and `da admin grant {list,create,delete}`.
@@ -214,10 +216,11 @@ password field carries the PAT (`https://x:<PAT>@host/marketplace.git/`) —
 git CLI does not speak Bearer.
 
 Content: filtered via `src.marketplace_filter.resolve_allowed_plugins` which
-joins `plugin_access ↔ user_groups ↔ marketplace_plugins` scoped to
-`users.groups`. Admin role bypasses to "everything". Plugin names are
-prefixed with marketplace slug (`<slug>-<plugin>`) so two marketplaces with
-the same plugin name don't collide in the aggregated view.
+joins `resource_grants ↔ marketplace_plugins` (matching
+`mp.marketplace_id || '/' || mp.name = rg.resource_id`) scoped to the
+caller's `user_group_members`. Admin group bypasses to "everything". Plugin
+names are prefixed with marketplace slug (`<slug>-<plugin>`) so two
+marketplaces with the same plugin name don't collide in the aggregated view.
 
 Cache: content-addressed bare repos at `${DATA_DIR}/marketplaces/git-cache/`
 keyed by sha256(filtered content). Two users with the same RBAC view share
@@ -264,7 +267,7 @@ Auth providers in `app/auth/` (FastAPI-based):
 
 ### RBAC
 
-See **[Access control (v12)](#access-control-v12)** above and [`docs/RBAC.md`](docs/RBAC.md) for the full reference. TL;DR for module authors: gate endpoints with `Depends(require_admin)` for app-level mutations or `Depends(require_resource_access(ResourceType.X, "{path}"))` for entity-scoped grants. Add a new resource type by extending the `ResourceType` `StrEnum` in `app/resource_types.py`.
+See **[Access control (v12)](#access-control-v12)** above and [`docs/RBAC.md`](docs/RBAC.md) for the full reference. TL;DR for module authors: gate endpoints with `Depends(require_admin)` for app-level mutations or `Depends(require_resource_access(ResourceType.X, "{path}"))` for entity-scoped grants. Add a new resource type by extending the `ResourceType` `StrEnum` and registering a `ResourceTypeSpec` (with a `list_blocks` projection delegate) in `app/resource_types.py`.
 
 ## Release & deploy workflows
 

@@ -40,7 +40,7 @@ def git_env(e2e_env, monkeypatch):
     from src.db import get_system_db
     from src.repositories.users import UserRepository
     from src.repositories.access_tokens import AccessTokenRepository
-    from src.repositories.plugin_access import (
+    from src.repositories.user_groups import (
         UserGroupsRepository, PluginAccessRepository,
     )
     import hashlib
