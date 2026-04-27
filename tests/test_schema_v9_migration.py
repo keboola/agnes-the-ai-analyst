@@ -78,9 +78,11 @@ class TestFreshInstall:
     """Fresh DB → v9 directly via _SYSTEM_SCHEMA + INSERT version + seed."""
 
     def test_schema_version_is_9(self, fresh_data_dir):
-        from src.db import get_system_db, get_schema_version
+        # Test name retained for git history; assertion uses SCHEMA_VERSION
+        # so it survives future schema bumps (e.g. PR #72 takes v10/v11/v12).
+        from src.db import get_system_db, get_schema_version, SCHEMA_VERSION
         conn = get_system_db()
-        assert get_schema_version(conn) == 9
+        assert get_schema_version(conn) == SCHEMA_VERSION
 
     def test_core_roles_seeded_with_implies_hierarchy(self, fresh_data_dir):
         from src.db import get_system_db
@@ -130,9 +132,9 @@ class TestV8ToV9Migration:
         conn.close()
 
         # Trigger migration.
-        from src.db import get_system_db, get_schema_version
+        from src.db import get_system_db, get_schema_version, SCHEMA_VERSION
         conn = get_system_db()
-        assert get_schema_version(conn) == 9
+        assert get_schema_version(conn) == SCHEMA_VERSION
 
         rows = conn.execute(
             """SELECT u.email, r.key, g.source
