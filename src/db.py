@@ -395,6 +395,18 @@ def _reattach_remote_extensions(
         except Exception:
             pass
 
+        # Issue #81 Group A — apply the same allowlist policy on the
+        # query path that the orchestrator's rebuild path uses. Without
+        # this, a malicious connector's _remote_attach row exfiltrates
+        # JWT_SECRET_KEY / SESSION_SECRET / OPENAI_API_KEY on every
+        # query, defeating the rebuild-path hardening entirely.
+        from src.orchestrator_security import (
+            escape_sql_string_literal,
+            is_builtin_extension,
+            is_extension_allowed,
+            is_token_env_allowed,
+        )
+
         for alias, extension, url, token_env in rows:
             if not _SAFE_IDENTIFIER.match(alias or ""):
                 logger.debug("Skipping unsafe remote_attach alias: %r", alias)
@@ -402,15 +414,40 @@ def _reattach_remote_extensions(
             if not _SAFE_IDENTIFIER.match(extension or ""):
                 logger.debug("Skipping unsafe remote_attach extension: %r", extension)
                 continue
+            if not is_extension_allowed(extension):
+                logger.error(
+                    "query-path remote_attach: extension %r not in allowlist; "
+                    "refusing to LOAD/ATTACH for source %s. Override via "
+                    "AGNES_REMOTE_ATTACH_EXTENSIONS if intended.",
+                    extension, alias,
+                )
+                continue
+            if token_env and not is_token_env_allowed(token_env):
+                logger.error(
+                    "query-path remote_attach: token_env %r not in allowlist; "
+                    "refusing for source %s. Override via "
+                    "AGNES_REMOTE_ATTACH_TOKEN_ENVS if intended.",
+                    token_env, alias,
+                )
+                continue
             if alias in attached_dbs:
                 logger.debug("Remote source %s already attached, skipping", alias)
                 continue
             try:
+                # LOAD only on the read-only query path — no INSTALL.
+                # Per the function docstring, this path runs on every
+                # query request and must not touch the network. The
+                # rebuild path (orchestrator) is responsible for INSTALL;
+                # by the time a query lands here, any community extension
+                # we'll see is already on disk. If LOAD fails because the
+                # extension isn't installed, log + skip (caller will see
+                # missing remote views and the operator will trigger a
+                # rebuild).
                 conn.execute(f"LOAD {extension};")
                 token = os.environ.get(token_env, "") if token_env else ""
-                safe_url = url.replace("'", "''")
+                safe_url = escape_sql_string_literal(url)
                 if token:
-                    escaped_token = token.replace("'", "''")
+                    escaped_token = escape_sql_string_literal(token)
                     conn.execute(
                         f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, TOKEN '{escaped_token}')"
                     )
