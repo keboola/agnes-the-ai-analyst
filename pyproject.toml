@@ -32,6 +32,8 @@ dependencies = [
     "pandas>=2.0.0",
     "pyarrow>=12.0.0",
     "pytz>=2024.1",
+    # SQL parsing — server-side WHERE validator for /api/v2/scan (app/api/where_validator.py)
+    "sqlglot>=26.0.0",
     # Data source connectors
     "google-cloud-bigquery>=3.0.0",
     "google-cloud-bigquery-storage>=2.0.0",
