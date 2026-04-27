@@ -43,6 +43,38 @@ _DDL_DML_NODES = (
 )
 
 
+# v1 BigQuery function allow-list (spec §3.7). Stored as upper-case names.
+_ALLOW_FUNCTIONS_DATETIME = {
+    "CURRENT_DATE", "CURRENT_TIMESTAMP", "CURRENT_TIME",
+    "DATE", "DATETIME", "TIMESTAMP", "TIME",
+    "DATE_ADD", "DATE_SUB", "DATE_DIFF", "DATE_TRUNC", "EXTRACT",
+    "FORMAT_DATE", "FORMAT_TIMESTAMP", "PARSE_DATE", "PARSE_TIMESTAMP",
+    "UNIX_SECONDS", "UNIX_MILLIS",
+}
+_ALLOW_FUNCTIONS_STRING = {
+    "CONCAT", "LENGTH", "LOWER", "UPPER", "SUBSTR", "SUBSTRING",
+    "TRIM", "LTRIM", "RTRIM", "REPLACE",
+    "STARTS_WITH", "ENDS_WITH", "CONTAINS_SUBSTR",
+    "REGEXP_CONTAINS", "REGEXP_EXTRACT", "SAFE_CAST",
+    # sqlglot normalizes some BQ funcs to a canonical SQL name; allow both spellings.
+    "REGEXP_LIKE",  # sqlglot canonical for REGEXP_CONTAINS
+}
+_ALLOW_FUNCTIONS_MATH = {
+    "ABS", "CEIL", "FLOOR", "ROUND", "MOD", "POWER", "SQRT",
+    "LOG", "LN", "EXP", "SIGN", "GREATEST", "LEAST",
+}
+_ALLOW_FUNCTIONS_CAST = {"CAST"}
+_ALLOW_FUNCTIONS_CONDITIONAL = {"IF", "IFNULL", "COALESCE", "NULLIF", "CASE"}
+
+ALLOWED_FUNCTIONS: frozenset[str] = frozenset(
+    _ALLOW_FUNCTIONS_DATETIME
+    | _ALLOW_FUNCTIONS_STRING
+    | _ALLOW_FUNCTIONS_MATH
+    | _ALLOW_FUNCTIONS_CAST
+    | _ALLOW_FUNCTIONS_CONDITIONAL
+)
+
+
 def validate_where(
     predicate: str,
     table_id: str,
@@ -100,4 +132,53 @@ def _walk_structural(node: exp.Expression, table_id: str, schema: Mapping[str, s
             raise WhereValidationError(
                 REJECT_CROSS_TABLE,
                 f"column {col.sql()} references table {qualifier!r}, expected {table_id!r}",
+            )
+
+    _walk_functions(node)
+
+
+def _walk_functions(node: exp.Expression) -> None:
+    """Reject function calls outside the allow-list.
+
+    sqlglot represents function calls in two ways:
+      - typed subclasses (e.g. ``exp.Length``, ``exp.StartsWith``, ``exp.SessionUser``,
+        ``exp.Cast``, ``exp.Coalesce``) — canonical SQL name available via ``sql_name()``;
+      - ``exp.Anonymous`` for unknown built-ins or UDFs — name in ``func.name``.
+    Both paths funnel into ``ALLOWED_FUNCTIONS``; everything else is rejected.
+    """
+    for func in node.find_all(exp.Func):
+        # Logical connectors (AND/OR/XOR) inherit exp.Func in sqlglot but are
+        # operators, not user-callable functions. Skip them.
+        if isinstance(func, exp.Connector):
+            continue
+
+        if isinstance(func, exp.AggFunc):
+            raise WhereValidationError(
+                REJECT_UNKNOWN_FUNCTION,
+                f"aggregate function not allowed in WHERE: {type(func).__name__}",
+                detail={"function": type(func).__name__.upper()},
+            )
+
+        # `Anonymous` carries the source name in `func.name`; typed nodes carry
+        # their canonical SQL name via `sql_name()`. `name` on typed nodes often
+        # holds the first child's identifier, so we never trust it directly.
+        if isinstance(func, exp.Anonymous):
+            name = (func.name or "").upper()
+        else:
+            try:
+                name = (func.sql_name() or "").upper()
+            except Exception:
+                name = ""
+
+        # Skip nodes we cannot resolve to a SQL function name (operators-as-nodes,
+        # casts already covered by typed sql_name(), etc.). If sql_name() returns
+        # empty for a typed Func, it is not a callable form — leave it alone.
+        if not name:
+            continue
+
+        if name not in ALLOWED_FUNCTIONS:
+            raise WhereValidationError(
+                REJECT_UNKNOWN_FUNCTION,
+                f"function not in v1 allow-list: {name}",
+                detail={"function": name},
             )
