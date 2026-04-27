@@ -109,3 +109,91 @@ def test_empty_payload_400(webhook_client):
         },
     )
     assert resp.status_code == 400
+
+
+def test_unconfigured_secret_returns_503(tmp_path, monkeypatch):
+    """Issue #83: missing JIRA_WEBHOOK_SECRET must fail-closed (no fall-through to 200)."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "issues").mkdir()
+
+    monkeypatch.setenv("DATA_DIR", str(data_dir))
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-jwt-secret")
+    monkeypatch.delenv("JIRA_WEBHOOK_SECRET", raising=False)
+    monkeypatch.setenv("JIRA_DATA_DIR", str(data_dir))
+
+    from connectors.jira import service as svc
+    monkeypatch.setattr(svc.Config, "JIRA_WEBHOOK_SECRET", "")
+    monkeypatch.setattr(svc.Config, "JIRA_DATA_DIR", data_dir)
+    svc._jira_service = None
+
+    from app.main import create_app
+    client = TestClient(create_app())
+
+    payload = json.dumps({"webhookEvent": "jira:issue_updated", "issue": {"key": "TEST-1"}}).encode()
+    resp = client.post(
+        "/webhooks/jira",
+        content=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status_code == 503
+    assert "secret" in resp.json()["detail"].lower()
+
+
+@pytest.mark.parametrize(
+    "bad_key",
+    [
+        "../../etc/passwd",
+        "../foo",
+        "TEST-1/../../../bar",
+        "TEST-1\x00.json",
+        "test-1",          # lowercase project — Jira keys are uppercase
+        "TEST",            # missing -<num>
+        "TEST-",           # missing num
+        "-1",              # missing project
+        "",                # empty
+        "A" * 100 + "-1",  # absurd length
+    ],
+)
+def test_path_traversal_in_issue_key_rejected(webhook_client, bad_key):
+    """Issue #83: malformed issue keys must be rejected with 400, not used in paths."""
+    payload = json.dumps({
+        "webhookEvent": "jira:issue_updated",
+        "issue": {"key": bad_key},
+    }).encode()
+    sig = _sign(payload, "test-webhook-secret")
+
+    resp = webhook_client.post(
+        "/webhooks/jira",
+        content=payload,
+        headers={
+            "Content-Type": "application/json",
+            "X-Hub-Signature-256": sig,
+        },
+    )
+    assert resp.status_code == 400, f"key {bad_key!r} should have been rejected, got {resp.status_code}"
+
+
+def test_valid_issue_key_accepted(webhook_client):
+    """Sanity: a well-formed issue key still passes validation."""
+    from unittest.mock import patch
+
+    payload = json.dumps({
+        "webhookEvent": "jira:issue_updated",
+        "issue": {"key": "PROJ-42"},
+    }).encode()
+    sig = _sign(payload, "test-webhook-secret")
+
+    with patch("app.api.jira_webhooks.get_jira_service") as mock_svc:
+        mock_svc.return_value.is_configured.return_value = True
+        mock_svc.return_value.process_webhook_event.return_value = True
+
+        resp = webhook_client.post(
+            "/webhooks/jira",
+            content=payload,
+            headers={
+                "Content-Type": "application/json",
+                "X-Hub-Signature-256": sig,
+            },
+        )
+    assert resp.status_code == 200

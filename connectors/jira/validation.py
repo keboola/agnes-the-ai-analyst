@@ -1,0 +1,41 @@
+"""Input validation for the Jira connector.
+
+Two layers of defense for issue keys (which arrive from attacker-controlled
+webhook payloads, see issue #83):
+
+1. ``is_valid_issue_key`` — whitelist regex against the Jira format.
+2. ``safe_join_under`` — Path.resolve() containment check, defense-in-depth
+   against future regex relaxation, symlink shenanigans, or callers that
+   forget the regex check.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+# Jira issue keys: project key (one uppercase letter followed by uppercase
+# letters/digits/underscore) + dash + issue number. Bounded length keeps
+# this affordable to evaluate even on adversarial input.
+_ISSUE_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,31}-\d{1,12}$")
+
+
+def is_valid_issue_key(key: object) -> bool:
+    """Return True if ``key`` is a syntactically valid Jira issue key."""
+    return isinstance(key, str) and bool(_ISSUE_KEY_RE.match(key))
+
+
+def safe_join_under(base: Path, *parts: str) -> Path:
+    """Join ``parts`` under ``base`` and verify the result stays within ``base``.
+
+    Raises ValueError on any escape attempt. Use at every filesystem boundary
+    that touches attacker-supplied path components, even when callers have
+    already validated the components — this is defense-in-depth.
+    """
+    base_resolved = base.resolve()
+    candidate = base.joinpath(*parts).resolve()
+    if base_resolved != candidate and base_resolved not in candidate.parents:
+        raise ValueError(
+            f"Path traversal blocked: {candidate} is not under {base_resolved}"
+        )
+    return candidate

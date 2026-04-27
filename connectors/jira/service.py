@@ -18,6 +18,8 @@ from typing import Any
 
 import httpx
 
+from connectors.jira.validation import is_valid_issue_key, safe_join_under
+
 logger = logging.getLogger(__name__)
 
 
@@ -277,9 +279,18 @@ class JiraService:
             logger.info(f"Overlayed SLA fields for {issue_key}")
 
         # Save to file (one file per issue for now, later we'll batch to parquet)
+        # Two-layer guard: regex whitelist + Path.resolve() containment.
+        # Issue #83 — issue_key is attacker-controlled (webhook payload).
+        if not is_valid_issue_key(issue_key):
+            logger.error(f"Refusing to save issue with malformed key: {issue_key!r}")
+            return None
         issues_dir = self.data_dir / "issues"
-        file_path = issues_dir / f"{issue_key}.json"
-        file_path.parent.mkdir(parents=True, exist_ok=True)
+        issues_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            file_path = safe_join_under(issues_dir, f"{issue_key}.json")
+        except ValueError as e:
+            logger.error(f"Path traversal blocked for issue {issue_key!r}: {e}")
+            return None
 
         try:
             from connectors.jira.file_lock import issue_json_lock
@@ -353,13 +364,25 @@ class JiraService:
             )
             return None
 
-        # Create issue-specific attachment directory
-        issue_attachments_dir = self.attachments_dir / issue_key
+        # Create issue-specific attachment directory.
+        # Two-layer guard against path traversal via issue_key (issue #83).
+        if not is_valid_issue_key(issue_key):
+            logger.error(f"Refusing to download attachment for malformed key: {issue_key!r}")
+            return None
+        try:
+            issue_attachments_dir = safe_join_under(self.attachments_dir, issue_key)
+        except ValueError as e:
+            logger.error(f"Path traversal blocked for attachment {issue_key!r}: {e}")
+            return None
         issue_attachments_dir.mkdir(parents=True, exist_ok=True)
 
         # Use attachment ID in filename to avoid collisions
         safe_filename = f"{attachment_id}_{filename}"
-        file_path = issue_attachments_dir / safe_filename
+        try:
+            file_path = safe_join_under(issue_attachments_dir, safe_filename)
+        except ValueError as e:
+            logger.error(f"Path traversal blocked for attachment filename {safe_filename!r}: {e}")
+            return None
 
         try:
             with httpx.Client(timeout=60, follow_redirects=True) as client:
