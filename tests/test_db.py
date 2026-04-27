@@ -326,7 +326,11 @@ class TestMigrationSafety:
             conn.close()
 
     def test_future_version_is_noop(self, tmp_path, monkeypatch):
-        """_ensure_schema does nothing when schema_version > SCHEMA_VERSION."""
+        """``_ensure_schema`` does not modify ``schema_version`` when it's
+        already past ``SCHEMA_VERSION``. The unconditional ``_SYSTEM_SCHEMA``
+        self-heal pass *does* run on the future-version DB — it's all
+        ``CREATE TABLE IF NOT EXISTS``, so tables this binary expects get
+        materialized — but the version row stays put."""
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         import duckdb as _duckdb
         from src.db import _ensure_schema, get_schema_version
@@ -340,6 +344,93 @@ class TestMigrationSafety:
                 "INSERT INTO schema_version (version) VALUES (99);"
             )
             _ensure_schema(conn)
+            assert get_schema_version(conn) == 99
+        finally:
+            conn.close()
+
+    def test_split_brain_future_version_with_missing_tables_self_heals(
+        self, tmp_path, monkeypatch,
+    ):
+        """Regression for the agnes-dev split-brain incident.
+
+        Shape: a contributor experiments with a future-schema branch that
+        bumps the DB to ``schema_version=N`` (N > current binary's
+        ``SCHEMA_VERSION``) with its own table layout, then switches or
+        rebases back to the released binary. The on-disk DB is on a
+        version this binary doesn't understand and is missing tables this
+        binary's code expects. Without self-heal, every query against the
+        missing table crashes at runtime — the migration block correctly
+        skips (we don't downgrade), but nothing creates the missing
+        tables either.
+
+        The contract this test pins: the unconditional
+        ``conn.execute(_SYSTEM_SCHEMA)`` at the top of ``_ensure_schema``
+        materializes any missing tables *and* leaves the future-version
+        ``schema_version`` row untouched. We synthesize a v99 DB whose
+        only table is ``schema_version``, then assert that running
+        ``_ensure_schema`` creates the v13-era core tables that the
+        binary needs (``user_groups``, ``user_group_members``,
+        ``resource_grants``, ``users``) while keeping the version at 99.
+        """
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        import duckdb as _duckdb
+        from src.db import _ensure_schema, get_schema_version
+
+        db_path = tmp_path / "state" / "system.duckdb"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = _duckdb.connect(str(db_path))
+        try:
+            # Synthesize an "old binary on a future-schema DB" state: only
+            # the schema_version table exists (no current-schema tables,
+            # no lab tables either — matches the exact agnes-dev shape
+            # after whatever lab migration had run before the rollback).
+            conn.execute(
+                "CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP DEFAULT current_timestamp);"
+                "INSERT INTO schema_version (version) VALUES (99);"
+            )
+
+            # Sanity: the v13-era tables we expect the self-heal pass to
+            # create are NOT there before the call. Picked from the
+            # post-RBAC-v13 / post-marketplace surface so a future
+            # rename/drop in src/db.py fails this test loudly.
+            expected_tables = {
+                "users",
+                "user_groups",
+                "user_group_members",
+                "resource_grants",
+            }
+            tables_before = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema = ?",
+                    ["main"],
+                ).fetchall()
+            }
+            assert not (expected_tables & tables_before), (
+                "fixture started with a non-empty schema; expected only "
+                "schema_version to be present"
+            )
+
+            _ensure_schema(conn)
+
+            # After: every expected table exists (self-heal worked) AND
+            # the version row stays at the future value.
+            tables_after = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema = ?",
+                    ["main"],
+                ).fetchall()
+            }
+            missing = expected_tables - tables_after
+            assert not missing, (
+                f"self-heal must create v13-era tables on a future-version DB, "
+                f"missing: {sorted(missing)}"
+            )
+
+            # The future-version contract still holds: version row untouched.
             assert get_schema_version(conn) == 99
         finally:
             conn.close()

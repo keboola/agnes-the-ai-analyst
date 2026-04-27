@@ -10,6 +10,29 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **Split-brain self-heal regression test for the agnes-dev incident**
+  (2026-04-27). Pins the contract that the unconditional
+  `conn.execute(_SYSTEM_SCHEMA)` self-heal pass — added in 0.12.0
+  (#106) — keeps working when a binary lands on a future-version DB
+  that's missing tables it expects: every query against the missing
+  table would otherwise crash at runtime (`_duckdb.CatalogException`).
+  New `test_split_brain_future_version_with_missing_tables_self_heals`
+  in `tests/test_db.py::TestMigrationSafety` synthesizes a v99 DB
+  whose only table is `schema_version`, runs `_ensure_schema`, and
+  asserts that the v13-era core tables (`users`, `user_groups`,
+  `user_group_members`, `resource_grants`) now exist *and* that
+  `schema_version` stays at 99 (self-heal without falsely advertising
+  a downgrade).
+
+### Internal
+
+- `test_future_version_is_noop` docstring updated to reflect that
+  the self-heal pass *does* run on a future-version DB, just
+  doesn't touch the version row. The test still passes unchanged —
+  its only assertion was the version-row contract, which holds.
+
 ## [0.12.0] — 2026-04-28
 
 ### Changed
