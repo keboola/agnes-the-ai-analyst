@@ -93,16 +93,27 @@ class SyncOrchestrator:
         with _rebuild_lock:
             return self._do_rebuild_source(source_name)
 
-    def _scan_meta_pairs(self, extracts_dir: Path) -> List[tuple]:
-        """Read every connector's `_meta` and return (source, table_name)
-        pairs. Used by view_ownership.reconcile to release stale claims
-        before the main rebuild loop tries to claim new names.
+    def _scan_meta_pairs(self, extracts_dir: Path) -> tuple:
+        """Read every connector's `_meta` and return (pairs, clean) where:
 
-        Failures on any single source are logged but don't abort the
-        scan — that source's tables will simply not contribute to the
-        reconcile (rebuild's own claim path will catch any collision).
+        - ``pairs`` — list of (source_name, table_name) tuples successfully
+          gathered from `_meta`.
+        - ``clean`` — True iff every source's pre-scan succeeded. False if
+          any source's `_meta` couldn't be read (transient I/O, mid-write,
+          missing/corrupt extract.duckdb).
+
+        Used by view_ownership.reconcile to release stale claims before
+        the main rebuild loop tries to claim new names. The ``clean`` flag
+        guards against a correctness bug: if source B's pre-scan fails
+        and we naively reconcile against an incomplete `pairs` list, B's
+        prior ownership is dropped, and another source could claim B's
+        name in the same rebuild — a silent overwrite, exactly what
+        Group C is meant to prevent. Callers MUST skip reconcile when
+        ``clean`` is False; per-row claim-time collision detection still
+        catches actual collisions.
         """
         pairs: List[tuple] = []
+        clean = True
         for ext_dir in sorted(extracts_dir.iterdir()):
             if not ext_dir.is_dir():
                 continue
@@ -123,10 +134,14 @@ class SyncOrchestrator:
                 finally:
                     ro_conn.close()
             except Exception as e:
-                logger.debug(
-                    "scan_meta_pairs: skip %s (%s)", ext_dir.name, e,
+                logger.warning(
+                    "scan_meta_pairs: failed to read %s (%s) — "
+                    "skipping reconcile this rebuild to avoid releasing "
+                    "ownerships prematurely",
+                    ext_dir.name, e,
                 )
-        return pairs
+                clean = False
+        return pairs, clean
 
     def _do_rebuild(self) -> Dict[str, List[str]]:
         extracts_dir = _get_extracts_dir()
@@ -149,8 +164,22 @@ class SyncOrchestrator:
             # pass BEFORE claims are evaluated. This makes "owner stopped
             # publishing → name freed → another source can claim" work in
             # the SAME rebuild rather than requiring two consecutive runs.
-            current_pairs = self._scan_meta_pairs(extracts_dir)
-            view_repo.reconcile(current_pairs)
+            #
+            # Correctness: only reconcile when EVERY source's pre-scan
+            # succeeded. Otherwise a transient I/O failure on source B
+            # would drop B's prior ownership and let another source steal
+            # B's name — silent overwrite, exactly the bug Group C
+            # prevents. Per-row claim-time collision detection still
+            # catches actual collisions even without reconcile this run.
+            current_pairs, pre_scan_clean = self._scan_meta_pairs(extracts_dir)
+            if pre_scan_clean:
+                view_repo.reconcile(current_pairs)
+            else:
+                logger.warning(
+                    "view_ownership: skipping reconcile this rebuild — "
+                    "pre-scan was incomplete; renamed tables will release "
+                    "their names on the next clean rebuild instead"
+                )
             existing_owners = view_repo.get_all()
         except Exception as e:
             logger.warning(
@@ -211,21 +240,15 @@ class SyncOrchestrator:
                     result[ext_dir.name] = tables
                     logger.info("Attached %s: %d tables", ext_dir.name, len(tables))
 
-            # End-of-rebuild reconcile: drop ownership for any
-            # (source, view) pair that no longer appears in this rebuild's
-            # claims (issue #81 Group C). Renamed/removed upstream tables
-            # release their name immediately so the next rebuild can let a
-            # different source claim it without operator intervention.
-            if sys_conn_for_views is not None:
-                try:
-                    dropped = view_repo.reconcile(claimed_pairs)
-                    if dropped:
-                        logger.info(
-                            "view_ownership reconcile: released %d stale pair(s): %s",
-                            len(dropped), dropped,
-                        )
-                except Exception as e:
-                    logger.warning("view_ownership reconcile failed: %s", e)
+            # No end-of-rebuild reconcile: the pre-scan reconcile above
+            # already released stale ownerships using a complete view of
+            # every source's `_meta`. Reconciling again here against
+            # `claimed_pairs` (which excludes refused collisions and any
+            # source that failed to attach) would incorrectly drop the
+            # legitimate prior owner of a name when its DB happens to be
+            # transiently unreadable. See test
+            # `test_pre_scan_failure_does_not_release_ownership` for the
+            # contract.
         finally:
             conn.execute("CHECKPOINT")
             conn.close()

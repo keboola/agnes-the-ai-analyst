@@ -167,6 +167,79 @@ class TestOrchestratorCollisionRefusal:
         finally:
             sys_conn.close()
 
+    def test_partial_collision_does_not_block_other_tables(
+        self, tmp_path, monkeypatch
+    ):
+        """Source A publishes [orders, alpha_only_a, alpha_only_b]; source
+        B publishes [orders, beta_only]. The collision on `orders` (A wins,
+        first by alphabet) must NOT prevent B from publishing `beta_only`,
+        nor prevent A from publishing its other two."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+        _make_extract_db(
+            str(tmp_path / "extracts" / "alpha" / "extract.duckdb"),
+            ["orders", "alpha_only_a", "alpha_only_b"],
+        )
+        _make_extract_db(
+            str(tmp_path / "extracts" / "beta" / "extract.duckdb"),
+            ["orders", "beta_only"],
+        )
+
+        from src.orchestrator import SyncOrchestrator
+        result = SyncOrchestrator().rebuild()
+
+        assert set(result["alpha"]) == {"orders", "alpha_only_a", "alpha_only_b"}
+        assert set(result["beta"]) == {"beta_only"}
+
+    def test_pre_scan_failure_does_not_release_ownership(
+        self, tmp_path, monkeypatch
+    ):
+        """When `_scan_meta_pairs` cannot read source B (corrupt
+        extract.duckdb, transient I/O), the orchestrator must SKIP
+        reconcile this rebuild — otherwise B's name would be released and
+        another source could silently steal it. Issue #81 Group C
+        review-2."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+        # Round 1: alpha owns orders.
+        _make_extract_db(
+            str(tmp_path / "extracts" / "alpha" / "extract.duckdb"),
+            ["orders"],
+        )
+        from src.orchestrator import SyncOrchestrator
+        SyncOrchestrator().rebuild()
+
+        # Round 2: alpha's extract.duckdb is unreadable (simulate corrupt
+        # file by writing garbage). beta now publishes `orders`. The
+        # reconcile should be SKIPPED because the scan was incomplete;
+        # alpha keeps ownership; beta is refused.
+        alpha_db = tmp_path / "extracts" / "alpha" / "extract.duckdb"
+        alpha_wal = tmp_path / "extracts" / "alpha" / "extract.duckdb.wal"
+        alpha_db.write_bytes(b"NOT A REAL DUCKDB FILE")
+        if alpha_wal.exists():
+            alpha_wal.unlink()
+        _make_extract_db(
+            str(tmp_path / "extracts" / "beta" / "extract.duckdb"),
+            ["orders"],
+        )
+        result = SyncOrchestrator().rebuild()
+
+        # alpha did not contribute a view (file unreadable); beta did NOT
+        # get to claim `orders` because reconcile was skipped.
+        assert "orders" not in result.get("beta", []), (
+            "beta should have been refused `orders` — reconcile must skip "
+            "when pre-scan is incomplete"
+        )
+
+        # Ownership unchanged.
+        from src.db import get_system_db
+        sys_conn = get_system_db()
+        try:
+            repo = ViewOwnershipRepository(sys_conn)
+            assert repo.get_owner("orders") == "alpha"
+        finally:
+            sys_conn.close()
+
     def test_owner_releases_name_after_rename(self, tmp_path, monkeypatch):
         """If the previous owner of a name no longer publishes it, the
         next rebuild releases the name — a different source can then
