@@ -578,9 +578,10 @@ _LEGACY_ROLE_TO_CORE_KEY = {
 def _seed_core_roles(conn: duckdb.DuckDBPyConnection) -> None:
     """Idempotently insert/refresh the four core.* hierarchy roles.
 
-    Called from _ensure_schema on every connect — fresh installs need the
-    rows to exist before any user_role_grants can reference them, and existing
-    DBs benefit from the safety net if a deployment somehow loses a row
+    Called from _ensure_schema on every system-DB connect (the unconditional
+    tail call below the migration guard) — fresh installs need the rows to
+    exist before any user_role_grants can reference them, and existing DBs
+    benefit from the safety net if a deployment somehow loses a row
     (e.g. accidental admin DELETE). Implies field is rewritten on every call
     to keep the hierarchy in sync with code; display_name + description are
     rewritten too so a doc tweak deploys without manual SQL.
@@ -731,10 +732,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 "INSERT INTO schema_version (version) VALUES (?)",
                 [SCHEMA_VERSION],
             )
-            # Fresh install — populate the core role hierarchy so empty DBs
-            # come up ready to gate require_internal_role("core.admin")
-            # without an extra seed step.
-            _seed_core_roles(conn)
+            # Fresh-install seed is handled by the unconditional
+            # _seed_core_roles call at the bottom of _ensure_schema —
+            # left as a no-op branch here so the migration ladder still
+            # reads chronologically.
         else:
             if current < 2:
                 for sql in _V1_TO_V2_MIGRATIONS:
@@ -781,6 +782,25 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
             )
+
+    # Always run the core-role seed when the DB is on a version this binary
+    # understands — the per-connect safety net the function's docstring
+    # promises. UPSERTs four rows; near-zero cost. Three reasons this lives
+    # OUTSIDE the migration guard:
+    #   1. recovery — if a row gets DELETEd manually (or a doc-tweak release
+    #      lands a new display_name), the next process start re-syncs without
+    #      operator action;
+    #   2. fresh installs — the (current == 0) branch above no longer needs
+    #      its own seed call;
+    #   3. v8→v9 migration — keeps its own _seed_core_roles call inside the
+    #      block because _backfill_users_role_to_grants depends on the rows
+    #      existing first; this tail call is the redundant-but-cheap follow-up.
+    #
+    # Skip when current > SCHEMA_VERSION — that's the future-version-is-noop
+    # rollback contract (future schema may not even have an internal_roles
+    # table; this binary leaves it alone).
+    if get_schema_version(conn) <= SCHEMA_VERSION:
+        _seed_core_roles(conn)
 
 
 def get_schema_version(conn: duckdb.DuckDBPyConnection) -> int:

@@ -667,3 +667,107 @@ class TestAuthLoginFlowsPostMigration:
             "km_admin@v8": "km_admin",
             "admin@v8": "admin",
         }
+
+
+class TestSeedCoreRolesSafetyNet:
+    """The unconditional _seed_core_roles call at the tail of _ensure_schema
+    is the on-every-connect safety net the function's docstring promises.
+
+    Pin the contract so a future refactor that moves the call back inside the
+    migration guard fails loudly: a deleted/modified core.* row must be
+    restored on the next process start, without bumping the schema version
+    or running migrations."""
+
+    def test_deleted_core_role_is_reseeded_on_next_ensure_schema(
+        self, fresh_data_dir,
+    ):
+        """An accidental DELETE on internal_roles WHERE key='core.admin'
+        should be self-healing: the next _ensure_schema call restores the row
+        even though schema_version is already at SCHEMA_VERSION."""
+        from src.db import get_system_db, _ensure_schema, SCHEMA_VERSION, get_schema_version
+
+        conn = get_system_db()
+        assert get_schema_version(conn) == SCHEMA_VERSION
+
+        # Sanity: row is there after fresh install.
+        before = conn.execute(
+            "SELECT key FROM internal_roles WHERE key = 'core.admin'"
+        ).fetchone()
+        assert before is not None
+
+        # Simulate accidental deletion.
+        conn.execute("DELETE FROM internal_roles WHERE key = 'core.admin'")
+        gone = conn.execute(
+            "SELECT key FROM internal_roles WHERE key = 'core.admin'"
+        ).fetchone()
+        assert gone is None
+
+        # Second _ensure_schema call (what happens on next process start)
+        # — migration guard skips because version is already current, but the
+        # tail seed call must still run and restore the row.
+        _ensure_schema(conn)
+
+        restored = conn.execute(
+            "SELECT key, is_core, owner_module FROM internal_roles "
+            "WHERE key = 'core.admin'"
+        ).fetchone()
+        assert restored is not None, (
+            "core.admin must be re-seeded by the tail _seed_core_roles call"
+        )
+        assert restored[0] == "core.admin"
+        assert restored[1] is True
+        assert restored[2] == "core"
+
+    def test_mutated_core_role_display_name_is_resynced(
+        self, fresh_data_dir,
+    ):
+        """If an operator hand-edits a core.* row's display_name, the next
+        startup must rewrite it from the in-code _CORE_ROLES_SEED — that's
+        how doc tweaks ship without manual SQL."""
+        from src.db import get_system_db, _ensure_schema
+
+        conn = get_system_db()
+        # Stomp the display_name to something wrong.
+        conn.execute(
+            "UPDATE internal_roles SET display_name = 'WRONG' "
+            "WHERE key = 'core.admin'"
+        )
+        wrong = conn.execute(
+            "SELECT display_name FROM internal_roles WHERE key = 'core.admin'"
+        ).fetchone()[0]
+        assert wrong == "WRONG"
+
+        _ensure_schema(conn)
+
+        restored = conn.execute(
+            "SELECT display_name FROM internal_roles WHERE key = 'core.admin'"
+        ).fetchone()[0]
+        assert restored == "Administrator", (
+            "tail _seed_core_roles must rewrite display_name from in-code seed"
+        )
+
+    def test_seed_runs_on_already_v9_db_without_bumping_version(
+        self, fresh_data_dir,
+    ):
+        """Pin the no-op behavior: on a current-version DB, _ensure_schema
+        runs the tail seed but does not re-apply migrations or change the
+        version row's applied_at timestamp."""
+        from src.db import get_system_db, _ensure_schema, SCHEMA_VERSION
+
+        conn = get_system_db()
+        version_before = conn.execute(
+            "SELECT version, applied_at FROM schema_version"
+        ).fetchone()
+        assert version_before[0] == SCHEMA_VERSION
+
+        _ensure_schema(conn)
+
+        version_after = conn.execute(
+            "SELECT version, applied_at FROM schema_version"
+        ).fetchone()
+        # applied_at must NOT change — the migration guard short-circuits
+        # before the UPDATE schema_version statement when current ==
+        # SCHEMA_VERSION.
+        assert version_after == version_before, (
+            "schema_version row must not be touched on a current-version DB"
+        )
