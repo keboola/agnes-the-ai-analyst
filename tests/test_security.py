@@ -19,12 +19,17 @@ def client(tmp_path, monkeypatch):
     from app.auth.jwt import create_access_token
 
     conn = get_system_db()
-    UserRepository(conn).create(id="u1", email="user@test.com", name="User", role="analyst")
+    repo = UserRepository(conn)
+    # admin needed to reach the script sandbox after the #44 hardening
+    # (whole Script API is admin-only); the analyst is kept around for
+    # access-control tests further down in this module.
+    repo.create(id="admin1", email="admin@test.com", name="Admin", role="admin")
+    repo.create(id="u1", email="user@test.com", name="User", role="analyst")
     conn.close()
 
     app = create_app()
     c = TestClient(app)
-    token = create_access_token("u1", "user@test.com", "analyst")
+    token = create_access_token("admin1", "admin@test.com", "admin")
     return c, token
 
 
