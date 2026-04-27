@@ -104,6 +104,30 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `[A-Za-z0-9_-]` (dot deliberately excluded to defeat `..` survival),
   clips length to 64 chars, and routes the final filename through
   `safe_join_under`.
+- **Security (CRITICAL)**: hardened the connector → orchestrator trust
+  boundary on BOTH the rebuild path
+  (`src/orchestrator.py::_attach_remote_extensions`) AND the read-only
+  query path (`src/db.py::_reattach_remote_extensions`, called by
+  `get_analytics_db_readonly()` on every request) — issue #81 Group A.
+  Three fixes: (1) DuckDB extensions referenced by `_remote_attach` are
+  matched against a hard allowlist (default: `keboola, bigquery`;
+  override via `AGNES_REMOTE_ATTACH_EXTENSIONS`). Install path splits
+  built-in (LOAD only) from community (`INSTALL FROM community; LOAD`
+  on rebuild path; LOAD only on the read-only query path which must
+  not touch the network). (2) `token_env` names are matched against a
+  hard allowlist (default: `KBC_TOKEN`, `KBC_STORAGE_TOKEN`,
+  `KEBOOLA_STORAGE_TOKEN`, `GOOGLE_APPLICATION_CREDENTIALS`; override
+  via `AGNES_REMOTE_ATTACH_TOKEN_ENVS`). Names must additionally match
+  `^[A-Z][A-Z0-9_]{0,63}$`. A malicious connector cannot ask the
+  orchestrator to read `JWT_SECRET_KEY` / `SESSION_SECRET` /
+  `OPENAI_API_KEY` and exfiltrate them via `ATTACH ... TOKEN`.
+  (3) The URL passed to `ATTACH` is now single-quote-escaped on both
+  paths. Also fixed a `table_schema` vs `table_catalog` mismatch that
+  silently no-op'd `_attach_remote_extensions` for every connector
+  (the rebuild-path hardening would have been moot in production
+  without this fix). New module `src/orchestrator_security.py`
+  centralises the policy. See
+  `docs/superpowers/plans/2026-04-27-issue-81-trust-boundary.md`.
 
 ### Removed
 
