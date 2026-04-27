@@ -12,6 +12,8 @@ from typing import List, Dict, Any
 
 import duckdb
 
+from src.identifier_validation import validate_identifier, validate_quoted_identifier
+
 logger = logging.getLogger(__name__)
 
 
@@ -89,6 +91,20 @@ def init_extract(
             table_name = tc["name"]
             dataset = tc.get("bucket", "")  # BigQuery dataset
             source_table = tc.get("source_table", table_name)
+
+            # #81 Group D — refuse rows with unsafe identifiers. Same
+            # rationale as the keboola extractor: registry is admin-controlled
+            # but anyone with write access can otherwise inject SQL via the
+            # CREATE VIEW interpolation below. Skip-and-continue.
+            # table_name becomes our own view name (strict); dataset and
+            # source_table are upstream-typed and may contain dashes.
+            if not (validate_identifier(table_name, "BigQuery table_name") and
+                    validate_quoted_identifier(dataset, "BigQuery dataset") and
+                    validate_quoted_identifier(source_table, "BigQuery source_table")):
+                stats["errors"].append(
+                    {"table": table_name, "error": "unsafe identifier"}
+                )
+                continue
 
             try:
                 conn.execute(

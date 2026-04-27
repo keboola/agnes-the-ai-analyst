@@ -8,6 +8,13 @@ from typing import List, Dict, Any
 
 import duckdb
 
+from src.identifier_validation import (
+    is_safe_identifier,
+    is_safe_quoted_identifier,
+    validate_identifier,
+    validate_quoted_identifier,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -95,10 +102,29 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
             table_name = tc["name"]
             query_mode = tc.get("query_mode", "local")
 
+            # #81 Group D — refuse rows whose identifiers don't pass the
+            # whitelist. The registry is admin-controlled but anyone with
+            # write access can otherwise inject SQL via the CREATE VIEW /
+            # COPY / SELECT interpolation below. Skip-and-continue rather
+            # than crashing the whole extraction; valid rows still process.
+            if not validate_identifier(table_name, "Keboola table_name"):
+                stats["tables_failed"] += 1
+                stats["errors"].append(
+                    {"table": table_name, "error": "unsafe identifier"}
+                )
+                continue
+
             if query_mode == "remote":
                 # Create view pointing to kbc extension (requires re-ATTACH at query time)
                 bucket = tc.get("bucket", "")
                 source_table = tc.get("source_table", table_name)
+                if not (validate_quoted_identifier(bucket, "Keboola bucket") and
+                        validate_quoted_identifier(source_table, "Keboola source_table")):
+                    stats["tables_failed"] += 1
+                    stats["errors"].append(
+                        {"table": table_name, "error": "unsafe bucket/source_table"}
+                    )
+                    continue
                 if use_extension and bucket:
                     conn.execute(
                         f'CREATE OR REPLACE VIEW "{table_name}" AS '
@@ -119,13 +145,19 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
                 else:
                     _extract_via_legacy(tc, pq_path, keboola_url, keboola_token)
 
-                # Get row count and file size
-                rows = conn.execute(f"SELECT count(*) FROM read_parquet('{pq_path}')").fetchone()[0]
+                # Get row count and file size. pq_path is built from the
+                # validated table_name above, but escape the parquet path
+                # literal for defense-in-depth.
+                safe_pq_lit = pq_path.replace("'", "''")
+                rows = conn.execute(
+                    f"SELECT count(*) FROM read_parquet('{safe_pq_lit}')"
+                ).fetchone()[0]
                 size = os.path.getsize(pq_path)
 
                 # Create view and register in _meta
                 conn.execute(
-                    f'CREATE OR REPLACE VIEW "{table_name}" AS SELECT * FROM read_parquet(\'{pq_path}\')'
+                    f'CREATE OR REPLACE VIEW "{table_name}" AS '
+                    f'SELECT * FROM read_parquet(\'{safe_pq_lit}\')'
                 )
                 conn.execute(
                     "INSERT INTO _meta VALUES (?, ?, ?, ?, ?, 'local')",
@@ -172,8 +204,17 @@ def _extract_via_extension(
     """Extract a table using the DuckDB Keboola extension."""
     bucket = tc.get("bucket", "")
     source_table = tc.get("source_table", tc["name"])
+    # #81 Group D — defense-in-depth. The caller already validates these;
+    # refuse here too in case a future caller forgets. Use the relaxed
+    # quoted-identifier check that accepts Keboola's `in.c-foo` form.
+    if not (is_safe_quoted_identifier(bucket) and is_safe_quoted_identifier(source_table)):
+        raise ValueError(
+            f"unsafe bucket/source_table: {bucket!r}/{source_table!r}"
+        )
+    safe_pq_lit = pq_path.replace("'", "''")
     conn.execute(
-        f'COPY (SELECT * FROM kbc."{bucket}"."{source_table}") TO \'{pq_path}\' (FORMAT PARQUET)'
+        f'COPY (SELECT * FROM kbc."{bucket}"."{source_table}") '
+        f'TO \'{safe_pq_lit}\' (FORMAT PARQUET)'
     )
 
 

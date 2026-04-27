@@ -13,6 +13,24 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 <!-- Add bullets here. Group: Added / Changed / Fixed / Removed / Internal.
      Mark breaking changes with **BREAKING** at the start of the bullet. -->
 
+### Fixed
+
+- **Security (MEDIUM)**: extractor-side identifier validation (issue #81
+  Group D / M15). The Keboola and BigQuery extractors interpolate
+  `table_name`, `bucket` (Keboola) / `dataset` (BigQuery), and
+  `source_table` from `table_registry` directly into `CREATE OR REPLACE
+  VIEW`, `INSERT INTO _meta`, and `COPY ... TO` SQL. Anyone with write
+  access to `table_registry` (admin, registry-write API) could inject SQL
+  via these identifiers. New shared module
+  `src/identifier_validation.py` exposes a strict `validate_identifier`
+  (for our own view names — `^[a-zA-Z_][a-zA-Z0-9_]{0,63}$`) and a
+  relaxed `validate_quoted_identifier` (for upstream-typed names like
+  Keboola `in.c-foo` / BigQuery `my-dataset`: `[a-zA-Z0-9_][a-zA-Z0-9_.\-]*`,
+  refusing any character that could close a `"..."` identifier literal).
+  Both extractors now skip-and-continue on unsafe rows: invalid identifiers
+  are logged and counted in the failure stats but do not abort processing
+  of the rest of the registry.
+
 ## [0.11.5] — 2026-04-27
 
 Follow-up release for PR #73: addresses four rounds of Devin AI review on the role-management-complete branch. No new public-API surface; the user-visible payoff is that v8→v9-migrated installations now work end-to-end (login flows, user list, admin nav, privilege revocation), and `make local-dev` startup is finally quiet.
