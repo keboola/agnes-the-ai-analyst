@@ -105,6 +105,14 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app):
+    # Issue #81 Group A — log the effective remote_attach allowlist at
+    # startup so an operator's typo in AGNES_REMOTE_ATTACH_EXTENSIONS
+    # (which REPLACES, not extends, the default) is visible.
+    try:
+        from src.orchestrator_security import log_effective_policy
+        log_effective_policy()
+    except Exception:
+        pass  # never block startup on a logging convenience
     yield
     from src.db import close_system_db
     close_system_db()
