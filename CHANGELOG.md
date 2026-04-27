@@ -32,10 +32,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   of the rest of the registry. The orchestrator's existing
   `_validate_identifier` was also lifted into the new shared module so
   there is a single source of truth for both layers (no duplicate regex
-  drift between extractor and orchestrator). All extractor identifier
-  positions (`table_name`, `bucket`/`dataset`, `source_table`) use the
-  relaxed validator since they all interpolate into `"..."` quoted SQL —
-  this keeps existing operator-habit names like `my-events` working.
+  drift between extractor and orchestrator).
+
+  Validator split: `table_name` (which becomes the DuckDB view name in
+  the master analytics DB) uses the **strict** validator
+  (`^[a-zA-Z_][a-zA-Z0-9_]{0,63}$`) — same as the orchestrator's
+  rebuild-time check, so a name with `-` or `.` fails fast at
+  extraction rather than being silently dropped at rebuild time.
+  `bucket` / `dataset` / `source_table` (upstream-typed names like
+  Keboola `in.c-events`, BigQuery `my-dataset`) use the **relaxed**
+  validator since they only appear inside `"..."` quoted SQL inside the
+  extractor and are not re-validated by the orchestrator. Operators
+  with existing registry rows whose `name` contains `-` or `.` should
+  rename to underscore form before this lands.
 
 ## [0.11.5] — 2026-04-27
 

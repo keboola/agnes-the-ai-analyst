@@ -108,12 +108,14 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
             # COPY / SELECT interpolation below. Skip-and-continue rather
             # than crashing the whole extraction; valid rows still process.
             #
-            # `table_name` becomes our DuckDB view name. Quoted in
-            # `CREATE OR REPLACE VIEW "..."`, so the relaxed validator
-            # is correct — it accepts existing operator habits like
-            # `my-events` while still refusing anything that could close
-            # the quote.
-            if not validate_quoted_identifier(table_name, "Keboola table_name"):
+            # `table_name` is the DuckDB view name in the master
+            # analytics DB. The orchestrator uses the STRICT validator
+            # (`^[a-zA-Z_][a-zA-Z0-9_]{0,63}$`) when re-creating views,
+            # so any name with `-` or `.` would pass extraction here
+            # but be silently dropped at orchestrator-rebuild time.
+            # Use the strict validator here too so the failure is
+            # caught early and visible in tables_failed.
+            if not validate_identifier(table_name, "Keboola table_name"):
                 stats["tables_failed"] += 1
                 stats["errors"].append(
                     {"table": table_name, "error": "unsafe identifier"}

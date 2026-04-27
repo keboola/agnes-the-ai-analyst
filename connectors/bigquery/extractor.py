@@ -96,11 +96,14 @@ def init_extract(
             # rationale as the keboola extractor: registry is admin-controlled
             # but anyone with write access can otherwise inject SQL via the
             # CREATE VIEW interpolation below. Skip-and-continue.
-            # All three names go into `"..."` quoted positions, so the
-            # relaxed validator (accepts dashes/dots, refuses quote/control
-            # chars) is the right fit. The view-name is also relaxed to
-            # accept existing operator habits like `my-events`.
-            if not (validate_quoted_identifier(table_name, "BigQuery table_name") and
+            # `table_name` is the DuckDB view name in the master
+            # analytics DB and the orchestrator uses the STRICT
+            # validator there — accept the same constraint upstream
+            # so a name with `-` or `.` fails fast in extraction
+            # rather than getting silently dropped at rebuild time.
+            # `dataset` and `source_table` are upstream-typed (BQ
+            # naming) so use the relaxed validator for those.
+            if not (validate_identifier(table_name, "BigQuery table_name") and
                     validate_quoted_identifier(dataset, "BigQuery dataset") and
                     validate_quoted_identifier(source_table, "BigQuery source_table")):
                 stats["errors"].append(

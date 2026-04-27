@@ -114,11 +114,13 @@ class TestKeboolaExtractorRefusesUnsafeIdentifiers:
 
         monkeypatch.setattr(kbe, "_extract_via_legacy", fake_legacy)
 
-        # Three rows: a good one, one with a legitimate dashed name (must
-        # also pass — operator habit), and one with a hostile injection.
+        # Three rows: a good underscore-only name, one with a dash (now
+        # rejected at the extractor — orchestrator's strict validator
+        # would have silently dropped it at rebuild time), and one with
+        # a hostile injection.
         rows = [
             {"name": "good_table", "query_mode": "local"},
-            {"name": "events-2026", "query_mode": "local"},  # legitimate dash
+            {"name": "events-2026", "query_mode": "local"},
             {"name": "evil\"; DROP TABLE x; --", "query_mode": "local"},
         ]
         out_dir = tmp_path / "extracts" / "keboola"
@@ -126,8 +128,12 @@ class TestKeboolaExtractorRefusesUnsafeIdentifiers:
             str(out_dir), rows, keboola_url="", keboola_token="",
         )
 
-        assert result["tables_extracted"] == 2  # good_table + events-2026
-        assert result["tables_failed"] == 1
+        # Only good_table passes. events-2026 is rejected up front because
+        # the orchestrator would silently drop it at rebuild time anyway —
+        # better to fail fast and visibly. Operators with dashed names
+        # rename them to underscore form.
+        assert result["tables_extracted"] == 1
+        assert result["tables_failed"] == 2
         assert any("unsafe identifier" in (e.get("error") or "") for e in result["errors"])
 
     def test_unsafe_bucket_in_remote_row_rejected(self, tmp_path, monkeypatch):
