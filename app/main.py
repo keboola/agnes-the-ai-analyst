@@ -1,5 +1,26 @@
 """FastAPI main application — unified server for web UI + API."""
 
+# Silence authlib's internal forward-compat note. Authlib emits an
+# AuthlibDeprecationWarning from its own _joserfc_helpers when our
+# `from authlib.integrations.starlette_client import OAuth` import
+# touches `authlib.jose` paths. The warning is upstream-internal — it's
+# telling authlib to migrate to joserfc before its 2.0; it's not
+# actionable on our side until either authlib ships the fix or we
+# rewrite OAuth handling on top of joserfc directly. Filtering here
+# (before authlib gets imported transitively) keeps `make local-dev`
+# stdout clean without hiding warnings from any other package.
+import warnings as _warnings
+try:
+    from authlib.deprecate import AuthlibDeprecationWarning as _AuthlibDepr
+    _warnings.filterwarnings("ignore", category=_AuthlibDepr)
+except ImportError:
+    # authlib too old / class moved — fall back to message-based match
+    # so the filter still keeps startup clean.
+    _warnings.filterwarnings(
+        "ignore",
+        message=r"authlib\.jose module is deprecated.*",
+    )
+
 import logging
 from contextlib import asynccontextmanager
 from importlib.metadata import PackageNotFoundError
