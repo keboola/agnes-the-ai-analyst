@@ -33,13 +33,14 @@ def _generate_id(title: str, content: str) -> str:
     return "kv_" + hashlib.sha256(raw.encode()).hexdigest()[:12]
 
 
-def scan_unprocessed_sessions(conn) -> list[tuple[str, Path]]:
+def scan_unprocessed_sessions(conn, session_dir: Path | None = None) -> list[tuple[str, Path]]:
     """Find JSONL files not yet in session_extraction_state table."""
     repo = KnowledgeRepository(conn)
     results: list[tuple[str, Path]] = []
-    if not SESSION_DATA_DIR.exists():
+    effective_dir = session_dir if session_dir is not None else SESSION_DATA_DIR
+    if not effective_dir.exists():
         return results
-    for user_dir in SESSION_DATA_DIR.iterdir():
+    for user_dir in effective_dir.iterdir():
         if not user_dir.is_dir():
             continue
         username = user_dir.name
@@ -135,9 +136,7 @@ def run(
 
     Returns stats dict with counts.
     """
-    global SESSION_DATA_DIR
-    if session_data_dir is not None:
-        SESSION_DATA_DIR = session_data_dir
+    effective_session_dir = session_data_dir if session_data_dir is not None else SESSION_DATA_DIR
 
     stats: dict[str, Any] = {
         "sessions_scanned": 0,
@@ -149,7 +148,7 @@ def run(
         "errors": [],
     }
 
-    unprocessed = scan_unprocessed_sessions(conn)
+    unprocessed = scan_unprocessed_sessions(conn, session_dir=effective_session_dir)
     stats["sessions_scanned"] = len(unprocessed)
 
     if not unprocessed:

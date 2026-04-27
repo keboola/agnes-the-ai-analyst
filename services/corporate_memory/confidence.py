@@ -73,7 +73,10 @@ def configure(config: dict) -> None:
             _MODIFIER_EFFECTS[key] = {k: float(v) for k, v in effects.items()}
 
     if "decay" in config:
-        _DECAY_CONFIG.update(config["decay"])
+        decay_override = dict(config["decay"])
+        if "floor" in decay_override and "floor" in _DECAY_CONFIG:
+            _DECAY_CONFIG["floor"].update(decay_override.pop("floor"))
+        _DECAY_CONFIG.update(decay_override)
 
 
 def _lookup_key(source_type: str, detection_type: str | None) -> tuple:

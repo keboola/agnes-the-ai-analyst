@@ -173,6 +173,7 @@ async def get_stats(
     all_items = repo.list_items(
         limit=10000,
         exclude_personal=not _is_privileged_viewer(user),
+        user_groups=_effective_groups(user),
     )
     status_counts: dict = {}
     categories: set = set()
