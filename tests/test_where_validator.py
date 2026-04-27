@@ -9,6 +9,7 @@ from app.api.where_validator import (
     REJECT_DDL_DML,
     REJECT_PARSE,
     REJECT_CROSS_TABLE,
+    REJECT_UNKNOWN_COLUMN,
 )
 
 
@@ -114,3 +115,29 @@ class TestFunctionAllowList:
         assert expected_func.upper() in str(e.value).upper() or (
             e.value.detail and expected_func.upper() in str(e.value.detail).upper()
         )
+
+
+class TestColumnExistence:
+    def test_known_column_accepted(self):
+        validate_where("country_code = 'CZ'", TABLE_ID, SCHEMA)
+
+    def test_unknown_column_rejected(self):
+        with pytest.raises(WhereValidationError) as e:
+            validate_where("nonexistent_field = 'X'", TABLE_ID, SCHEMA)
+        assert e.value.kind == REJECT_UNKNOWN_COLUMN
+        assert "nonexistent_field" in str(e.value).lower()
+
+    def test_qualified_known_column_accepted(self):
+        # Same-table qualifier is allowed
+        validate_where(
+            f"{TABLE_ID}.country_code = 'CZ'",
+            TABLE_ID, SCHEMA,
+        )
+
+    def test_qualified_unknown_column_rejected(self):
+        with pytest.raises(WhereValidationError) as e:
+            validate_where(
+                f"{TABLE_ID}.bogus_field = 'X'",
+                TABLE_ID, SCHEMA,
+            )
+        assert e.value.kind == REJECT_UNKNOWN_COLUMN

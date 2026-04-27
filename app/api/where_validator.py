@@ -135,6 +135,23 @@ def _walk_structural(node: exp.Expression, table_id: str, schema: Mapping[str, s
             )
 
     _walk_functions(node)
+    _walk_columns(node, schema)
+
+
+def _walk_columns(node: exp.Expression, schema: Mapping[str, str]) -> None:
+    """Reject column references not present in the target table's schema."""
+    known = {c.lower() for c in schema}
+    for col in node.find_all(exp.Column):
+        # `col.name` is the leaf column name (e.g. "country_code" in
+        # "tbl.country_code"). For dotted struct fields like "rec.sub.leaf",
+        # sqlglot models as nested exp.Dot; v1 only checks top-level names.
+        leaf = (col.name or "").lower()
+        if leaf and leaf not in known:
+            raise WhereValidationError(
+                REJECT_UNKNOWN_COLUMN,
+                f"column {col.name!r} not in schema for {col.table!r}",
+                detail={"column": col.name},
+            )
 
 
 def _walk_functions(node: exp.Expression) -> None:
