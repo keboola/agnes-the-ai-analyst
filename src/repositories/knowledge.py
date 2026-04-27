@@ -79,12 +79,20 @@ class KnowledgeRepository:
             ],
         )
 
+    _UPDATABLE_FIELDS = {
+        "title", "content", "category", "tags", "domain", "entities",
+        "source_type", "source_ref", "source_user", "audience",
+        "confidence", "status", "sensitivity", "is_personal",
+        "valid_from", "valid_until", "supersedes",
+    }
+
     def update(self, item_id: str, **fields) -> None:
-        if not fields:
+        safe = {k: v for k, v in fields.items() if k in self._UPDATABLE_FIELDS}
+        if not safe:
             return
         now = datetime.now(timezone.utc)
-        set_clause = ", ".join(f"{k} = ?" for k in fields)
-        values = list(fields.values()) + [now, item_id]
+        set_clause = ", ".join(f"{k} = ?" for k in safe)
+        values = list(safe.values()) + [now, item_id]
         self.conn.execute(
             f"UPDATE knowledge_items SET {set_clause}, updated_at = ? WHERE id = ?",
             values,

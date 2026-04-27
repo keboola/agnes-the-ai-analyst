@@ -10,17 +10,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-### Added
-- **Automatic topic tagging** — Haiku assigns topics from a shared vocabulary (`data`, `automation`, `reports`, `alerts`, `metrics`, `queries`, `infrastructure`, `processes`, `integrations`, `debugging`, `performance`, `access`) to knowledge items at creation time (via `POST /api/memory`) and during collector runs; topics are stored in the existing `tags` field alongside free-form keywords; tagging is best-effort and never blocks item creation
-
 <!-- Add bullets here. Group: Added / Changed / Fixed / Removed / Internal.
      Mark breaking changes with **BREAKING** at the start of the bullet. -->
 
 ---
 
-## [0.12.0] — 2026-04-26
+## [0.12.0] — 2026-04-27
 
 ### Added
+- **Automatic topic tagging** — Haiku assigns topics from a shared vocabulary (`data`, `automation`, `reports`, `alerts`, `metrics`, `queries`, `infrastructure`, `processes`, `integrations`, `debugging`, `performance`, `access`) to knowledge items at creation time (via `POST /api/memory`) and during collector runs; topics are stored in the existing `tags` field alongside free-form keywords; tagging is best-effort and never blocks item creation
 - Corporate memory V1.5: audience-based distribution — `knowledge_items.audience` column; `GET /api/memory` filters by caller's group membership; `users.groups` JSON column (schema v10)
 - `GET /api/memory/bundle` — token-budgeted (6k) bundle of mandatory + confidence×recency-ranked approved items, audience-filtered by caller's groups; consumed by `da sync` step 7
 - `da sync` step 7: fetches `/api/memory/bundle` and writes `.claude/rules/km_<id>.md` (mandatory) and `km_approved.md` (ranked approved); stale files pruned on each sync; best-effort (sync continues if server unreachable)
