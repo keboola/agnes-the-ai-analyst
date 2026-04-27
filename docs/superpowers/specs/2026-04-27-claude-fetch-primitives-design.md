@@ -15,14 +15,14 @@
 The current BigQuery view pipeline (shipped in branch `zs/test-bq-e2e`, PR #102) wraps each registered BQ view as:
 
 ```sql
-CREATE VIEW "S1_session_landings" AS
-  SELECT * FROM bigquery_query('proj', 'SELECT * FROM `proj.ds.S1_session_landings`')
+CREATE VIEW "web_sessions_example" AS
+  SELECT * FROM bigquery_query('proj', 'SELECT * FROM `proj.ds.web_sessions_example`')
 ```
 
 This is correct in principle, but **fails at query time** for any non-trivial view:
 
 ```sql
-SELECT COUNT(*) FROM S1_session_landings
+SELECT COUNT(*) FROM web_sessions_example
 -- DuckDB rewrites to:
 -- SELECT COUNT(*) FROM (SELECT * FROM bigquery_query(...))
 -- BigQuery sees the inner SELECT * as the literal job and tries to materialize 225M rows.
@@ -69,9 +69,13 @@ Local DuckDB stays the analyst's interactive SQL surface. Server-side DuckDB is 
 
 ## 3. Server endpoints
 
+### 3.0 Identifier conventions (applies to all v2 endpoints)
+
+`table_id` is the **registry primary key** (`table_registry.id`) verbatim — lowercase ASCII, alphanumeric + underscore, ≤64 chars, validated by `src/sql_safe.py::validate_identifier`. The display name (`table_registry.name`) may differ in case but is NOT a query key. CLI commands accept `table_id` only. The registry `register-table` endpoint already lowercases id at insert time, which is the canonical normalization point.
+
 ### 3.1 `GET /api/v2/catalog`
 
-Returns the user-visible table catalog. Filtered by RBAC (`can_access_table`).
+Returns the user-visible table catalog. Filtered by RBAC (`can_access_table`, table-grain). The user must have an explicit `dataset_permissions` row OR the table must be `is_public=true` OR the user must be `admin`.
 
 Response shape:
 
@@ -79,8 +83,8 @@ Response shape:
 {
   "tables": [
     {
-      "id": "s1_session_landings",
-      "name": "S1_session_landings",
+      "id": "web_sessions_example",
+      "name": "web_sessions_example",
       "description": "Session landings event view",
       "source_type": "bigquery",
       "query_mode": "remote",
@@ -89,7 +93,7 @@ Response shape:
         "event_date > DATE '2026-01-01'",
         "country_code = 'CZ' AND platform = 'web'"
       ],
-      "fetch_via": "da fetch s1_session_landings --select <cols> --where '<BQ predicate>' --limit <N>",
+      "fetch_via": "da fetch web_sessions_example --select <cols> --where '<BQ predicate>' --limit <N>",
       "rough_size_hint": null
     },
     {
@@ -116,7 +120,7 @@ Response shape:
 
 ```json
 {
-  "table_id": "s1_session_landings",
+  "table_id": "web_sessions_example",
   "source_type": "bigquery",
   "sql_flavor": "bigquery",
   "columns": [
@@ -148,7 +152,7 @@ Response shape:
 
 ```json
 {
-  "table_id": "s1_session_landings",
+  "table_id": "web_sessions_example",
   "rows": [
     {"event_date": "2026-04-27", "session_id": "...", "country_code": "CZ"},
     ...
@@ -167,7 +171,7 @@ Request shape:
 
 ```json
 {
-  "table_id": "s1_session_landings",
+  "table_id": "web_sessions_example",
   "select": ["event_date", "country_code", "session_id"],
   "where": "event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY) AND country_code = 'CZ'",
   "limit": 1000000,
@@ -177,21 +181,22 @@ Request shape:
 
 Response: Arrow IPC stream (HTTP body), schema in headers.
 
+**RBAC scope (v1):** **table-grain parity with `/api/query`** — same `can_access_table(user, table_id, conn)` check. **No column-level or row-level access control in v1.** A user who can read the table can fetch any subset of columns and rows from it. Column/row-level RBAC is deferred to a follow-up; if added, it would extend `dataset_permissions` with `column_allowlist` and `row_predicate` fields and the validator would augment user-supplied `where` with a server-pinned predicate.
+
 Server-side flow:
 
-1. Auth + RBAC: user can read this table?
-2. Validate `where` with `sqlglot` — single-table predicate, no DDL/DML, no semicolons, only allow-listed function names. Reject malformed, log + 400.
-3. Validate `select` columns: each must exist in the table's schema (cross-checked with cached schema endpoint result).
-4. Validate `limit` (max 10M rows hard cap, or per-instance config).
-5. Build target SQL:
+1. Auth: PAT or session → resolved user.
+2. RBAC: `can_access_table(user, table_id)` — same gate as `/api/query`. 403 on deny.
+3. Validate `where` with the focused validator in §3.7 (sqlglot-backed). Reject malformed → 400 with structured error.
+4. Validate `select` columns: each must exist in the table's schema (cross-checked against cached schema endpoint result). 400 on unknown column.
+5. Validate `limit` against `instance.yaml: api.scan.max_limit` (hard cap, default 10_000_000). 400 if exceeded.
+6. Quota check (§3.8). 429 if exceeded.
+7. Build target SQL:
    - For `source_type=bigquery`: `SELECT [select] FROM \`{project}.{dataset}.{source_table}\` WHERE [where] ORDER BY [order_by] LIMIT [limit]`. Pass to `bigquery_query()` with the metadata token (#98 cache helps).
    - For `source_type=keboola` / `source_type=jira`: query the local parquet via DuckDB.
-6. Stream Arrow IPC back. No materialization on server beyond the BQ jobs API result buffer.
-
-Quotas:
-- Per-user concurrent scan count (default 5 simultaneous).
-- Per-user daily byte cap (configurable; typical: 50 GB).
-- Tracked in `audit_log` per request.
+8. Enforce **`max_result_bytes`** guard (`instance.yaml: api.scan.max_result_bytes`, default 2 GB). If the cumulative Arrow stream exceeds this, abort and return partial result with `X-Agnes-Truncated: true` header + warning log. Prevents a single fetch from OOMing the server worker.
+9. **Stream Arrow IPC** back over HTTP. Server emits chunks as BQ delivers them; client buffers entire stream into a parquet file before exposing as DuckDB view (no streaming on the client side in v1 — see §7 deferred). Content-Type: `application/vnd.apache.arrow.stream`.
+10. Append `audit_log` row per request (§11.1).
 
 ### 3.5 `POST /api/v2/scan/estimate`
 
@@ -201,7 +206,7 @@ Response shape:
 
 ```json
 {
-  "table_id": "s1_session_landings",
+  "table_id": "web_sessions_example",
   "estimated_scan_bytes": 4400000000,
   "estimated_result_rows": 245000,
   "estimated_result_bytes": 12000000,
@@ -222,19 +227,93 @@ Server uses an in-process LRU + TTL cache for catalog/schema/sample. Cache inval
 
 ### 3.7 Server-side WHERE validator (sqlglot)
 
-A focused module: `app/api/where_validator.py`. Surface ~80 LOC.
+A focused module: `app/api/where_validator.py`. The **load-bearing security perimeter** of `/api/v2/scan`. Targeting ~250 LOC + adversarial test corpus.
 
-Rules:
-- Parse with `sqlglot.parse_one(predicate, into=exp.Where, dialect="bigquery")`.
-- Walk AST. Reject if any of:
-  - `exp.Subquery`, `exp.Select` (no nested SELECTs)
-  - `exp.SemicolonSegment` (no statement chaining)
-  - `exp.Insert / Update / Delete / Drop / Truncate / Alter / Create / Copy` (DDL/DML)
-  - References to tables other than the target (no JOINs)
-  - Function calls outside an allow-list (date/time/string/math/comparison; no `BIGQUERY()`, `EXEC`, etc.)
-- Pass-through fragments that match these constraints.
+#### Parser
 
-This is the only place sqlglot lives in the codebase. Constrained, testable, single responsibility.
+Parse with `sqlglot.parse_one(f"WHERE {predicate}", into=exp.Where, dialect="bigquery")`. Reject if parse fails.
+
+#### Structural rejects
+
+Walk AST and reject on any of:
+- `exp.Subquery`, `exp.Select` — no nested SELECTs (prevents `WHERE x IN (SELECT ... FROM other_table)` exfiltration)
+- Multiple statements (semicolon chaining)
+- DDL/DML nodes: `Insert`, `Update`, `Delete`, `Drop`, `Truncate`, `Alter`, `Create`, `Copy`, `Merge`
+- `exp.Column` references where the qualifier is anything other than the target `table_id` or unqualified
+- Star expressions (`*`) outside aggregates
+- Bytes/binary literals raw embedding
+- Comments (`--` or `/* */`) — strip in pre-processing or reject
+
+#### Function allow-list (v1, BigQuery dialect)
+
+Allowed function categories. The list is the **explicit** v1 contract; expanding it requires a spec amendment.
+
+| Category | Functions |
+|----------|-----------|
+| Comparison | `=`, `!=`, `<`, `<=`, `>`, `>=`, `IS NULL`, `IS NOT NULL`, `IN`, `NOT IN`, `BETWEEN`, `LIKE`, `NOT LIKE` |
+| Boolean | `AND`, `OR`, `NOT`, `XOR` |
+| Date/Time | `CURRENT_DATE`, `CURRENT_TIMESTAMP`, `CURRENT_TIME`, `DATE`, `DATETIME`, `TIMESTAMP`, `TIME`, `DATE_ADD`, `DATE_SUB`, `DATE_DIFF`, `DATE_TRUNC`, `EXTRACT`, `FORMAT_DATE`, `FORMAT_TIMESTAMP`, `PARSE_DATE`, `PARSE_TIMESTAMP`, `UNIX_SECONDS`, `UNIX_MILLIS` |
+| String | `CONCAT`, `LENGTH`, `LOWER`, `UPPER`, `SUBSTR`, `SUBSTRING`, `TRIM`, `LTRIM`, `RTRIM`, `REPLACE`, `STARTS_WITH`, `ENDS_WITH`, `CONTAINS_SUBSTR`, `REGEXP_CONTAINS`, `REGEXP_EXTRACT`, `SAFE_CAST` |
+| Math | `ABS`, `CEIL`, `FLOOR`, `ROUND`, `MOD`, `POWER`, `SQRT`, `LOG`, `LN`, `EXP`, `SIGN`, `GREATEST`, `LEAST` |
+| Casts | `CAST` (target types: `INT64`, `FLOAT64`, `NUMERIC`, `STRING`, `BYTES`, `BOOL`, `DATE`, `DATETIME`, `TIMESTAMP`, `TIME`, `DECIMAL`, `BIGNUMERIC`) |
+| Conditional | `IF`, `IFNULL`, `COALESCE`, `NULLIF`, `CASE` |
+
+Any function not on this list is rejected with `unknown_function` error including the function name. We avoid:
+- `EXTERNAL_QUERY` (data exfiltration)
+- `SESSION_USER`, `CURRENT_USER`, `IS_MEMBER` (impersonation surface)
+- `ML.*` (cost surprise — ML predictions are billed by row)
+- `ARRAY_AGG`, `STRING_AGG` and all aggregates (predicate context, not aggregate context)
+- User-defined functions and table-valued functions
+- `ROW_NUMBER`, window functions (predicate context)
+- BQ scripting (`BEGIN`, `LOOP`, etc.)
+
+#### Identifier-path validation
+
+Column references in BigQuery can be dotted (`record.subfield.leaf`) or indexed (`array[OFFSET(0)]`). The validator must:
+- Walk every `exp.Column` reference
+- For each path segment, validate against the cached schema (paths must be present in `INFORMATION_SCHEMA.COLUMNS` field-shape data, not just top-level columns)
+- Reject array subscripts containing function calls (e.g. `array[OFFSET(SAFE_CAST(x AS INT64))]` — too clever, overrun risk)
+
+#### Adversarial test corpus
+
+Mandatory test cases the implementer must add (`tests/test_where_validator.py`):
+- 20+ accepted predicates (typical analyst-written WHEREs across all function categories)
+- 30+ rejected predicates with explicit rejection codes:
+  - `nested_select`: `x IN (SELECT y FROM t)`
+  - `multi_statement`: `x = 1; DROP TABLE t`
+  - `ddl_in_predicate`: `x = (CREATE TABLE t (id INT))`
+  - `external_query`: `x = EXTERNAL_QUERY('...')`
+  - `unknown_function`: `x = OBSCURE_BUILTIN(y)`
+  - `comment_inject`: `x = 1 -- AND y > 0`
+  - `wildcard_expansion`: `* = 5`
+  - `cross_table_ref`: `other_table.id = 1`
+  - `bytes_literal_raw`: `x = b'\\x00...'`
+  - And 20+ more permutations
+
+This is the only place sqlglot lives in the codebase. Constrained, testable, single responsibility. **All decisions are explicit and listed**; no "trust sqlglot's defaults".
+
+### 3.8 Quota architecture (v1: process-local)
+
+`/api/v2/scan` quotas live in **process-local memory** for v1. This is a **deliberate trade-off** documented here:
+
+- Per-user concurrent scan: in-memory dict keyed by user_id, value is `set[request_id]`. Default cap: 5. Configurable via `instance.yaml: api.scan.max_concurrent_per_user`.
+- Per-user daily byte cap: same dict, value also tracks `bytes_today` + `last_reset_utc`. Reset at UTC midnight. Default: 50 GB. Configurable via `instance.yaml: api.scan.max_daily_bytes_per_user`.
+
+**Multi-replica caveat:** if Agnes is deployed with N FastAPI replicas, each tracks quotas independently — effectively **N× the cap** is the enforced ceiling per user. **Document this in §9 risks and CHANGELOG.** A future v2 with horizontal scale must move quotas to durable storage (recommend: a `quota_state` row in `system.duckdb` mutated under `BEGIN; UPDATE … RETURNING; COMMIT;` per request — or shared Redis if Agnes ever takes a Redis dependency).
+
+429 response shape:
+
+```json
+{
+  "error": "quota_exceeded",
+  "kind": "concurrent_scans" | "daily_bytes",
+  "current": 5,
+  "limit": 5,
+  "retry_after_seconds": 0      // for daily_bytes: seconds until UTC midnight
+}
+```
+
+CLI translates 429 to exit code 3 with a clear message (§11.3).
 
 ## 4. CLI commands
 
@@ -272,7 +351,13 @@ da fetch <table> \
 
 Materializes a filtered subset locally as `~/agnes-data/user/snapshots/<name>.parquet`, registers `<name>` as a DuckDB view in `analytics.duckdb`, writes metadata to `~/agnes-data/user/snapshots/<name>.meta.json`.
 
-Default `<name>` is `<table>` (overwrites previous snapshot of that table unless `--force` not given and snapshot exists — then prompt or error).
+**`--as <name>` semantics (no interactive prompts ever):**
+- Default `<name>` is `<table_id>`.
+- If snapshot `<name>` already exists: **fail with exit code 6** (`snapshot_exists`) and a clear message naming the existing snapshot's `fetched_at` / `rows`.
+- `--force` overwrites unconditionally. No confirmation prompt; agents can't answer prompts reliably.
+- `--no-confirm` is unnecessary — there are no prompts.
+
+**Snapshot install is file-locked.** The write transaction (move parquet into place + `CREATE OR REPLACE VIEW` + write meta sidecar) acquires an exclusive `flock(2)` on `~/agnes-data/user/snapshots/.lock` for the duration. Concurrent `da fetch` invocations queue. Concurrent reads (`da query`) take a shared lock on the analytics.duckdb file via DuckDB's own concurrency model — they're not blocked by snapshot install (DuckDB allows concurrent readers, and `CREATE OR REPLACE VIEW` is metadata-only fast).
 
 `--estimate` runs only the dry-run estimate, doesn't fetch. Prints scan bytes + result row/byte estimate + cost. Always shown before fetch unless `--no-estimate` is set.
 
@@ -288,17 +373,35 @@ The metadata sidecar (`<name>.meta.json`) is the source of truth for `refresh`:
 ```json
 {
   "name": "cz_recent",
-  "table_id": "s1_session_landings",
+  "table_id": "web_sessions_example",
   "select": ["event_date", "country_code", "session_id"],
   "where": "event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY) AND country_code = 'CZ'",
   "limit": 1000000,
   "order_by": null,
   "fetched_at": "2026-04-27T17:30:00Z",
+  "effective_as_of": "2026-04-27T17:30:00Z",   // server eval time of CURRENT_DATE() etc.
   "rows": 245832,
   "bytes_local": 8400000,
-  "estimated_scan_bytes_at_fetch": 4400000000
+  "estimated_scan_bytes_at_fetch": 4400000000,
+  "result_hash_md5": "abc123..."                // for refresh diff detection
 }
 ```
+
+**Refresh staleness UX:**
+
+`da snapshot refresh <name>` re-runs the stored fetch with the same `where`. Behavior:
+
+1. WHERE may contain time-relative constructs (`CURRENT_DATE()`, `INTERVAL N DAY`). Server re-evaluates them at refresh time. The new sidecar gets a fresh `effective_as_of`.
+2. After refresh, CLI prints a **diff summary**:
+   ```
+   Refreshed cz_recent
+     rows:           245 832  →  248 401   (+2 569)
+     bytes_local:    8.4 MB   →  8.5 MB
+     effective_as_of: 2026-04-27 17:30 UTC  →  2026-04-28 09:00 UTC
+     identical:      no
+   ```
+3. If `result_hash_md5` matches (rows + content didn't change), print `identical: yes` and skip the parquet swap.
+4. If snapshot is older than `~/.agnes/config: snapshot_stale_warn_days` (default 7), `da query` prints a one-line warning when the snapshot is referenced: `WARN: snapshot 'cz_recent' is 12 days old; consider 'da snapshot refresh cz_recent'`.
 
 ### 4.3 Disk awareness
 
@@ -320,8 +423,12 @@ Configured cap:   10 GB (~/.agnes/config: snapshot_quota_gb)
 ### 4.4 Existing commands stay
 
 - `da query "..."` — local DuckDB query, fast, offline-capable. Works on local-mode tables and snapshots.
-- `da query --remote "..."` — passthrough to `/api/query`. For one-shot aggregates, ad-hoc raw BQ-flavor SQL. (Will evolve into `da query-remote` for clarity.)
+- `da query --remote "..."` — passthrough to `/api/query`. For one-shot aggregates, ad-hoc raw BQ-flavor SQL.
 - `da sync` — refreshes local-mode parquets. Snapshot files don't get touched.
+
+**v1 keeps `da query --remote` as-is.** A future rename to `da query-remote` (subcommand vs flag) is OUT OF SCOPE for this spec; track separately if desired.
+
+`da catalog --refresh` clears the **client-side** cache only (forces next call to fetch fresh from server). It does NOT call the admin invalidate endpoint — that requires admin role (separate `da admin catalog-refresh` for admins).
 
 ## 5. Claude rails (CLAUDE.md + skill)
 
@@ -361,7 +468,7 @@ Tables in `da catalog` have a `query_mode`:
 ### `da fetch` workflow (preferred for remote tables)
 
     # 1. estimate first
-    da fetch s1_session_landings \
+    da fetch web_sessions_example \
         --select event_date,country_code,session_id \
         --where "event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY) 
                  AND country_code = 'CZ'" \
@@ -369,7 +476,7 @@ Tables in `da catalog` have a `query_mode`:
     # → "estimated_scan_bytes: 4.2 GB, result: ~250k rows, 12 MB locally"
 
     # 2. if reasonable, fetch
-    da fetch s1_session_landings ... --as cz_recent
+    da fetch web_sessions_example ... --as cz_recent
 
     # 3. query the local snapshot
     da query "SELECT event_date, COUNT(*) FROM cz_recent GROUP BY 1 ORDER BY 1"
@@ -410,7 +517,7 @@ in your `da query` calls — there's no `--where` on local since fetch is implic
 ### When NOT to use `da fetch`
 
 - Single aggregate on remote table (`SELECT COUNT(*) FROM remote`):
-  use `da query-remote "SELECT COUNT(*) FROM s1_session_landings"`.
+  use `da query-remote "SELECT COUNT(*) FROM web_sessions_example"`.
   No materialization needed; cheap.
 - Throwaway exploration with raw BQ syntax: `da query-remote`.
 - Cross-table JOIN with both tables remote: combine `da fetch` for one
@@ -439,7 +546,7 @@ Change: **don't emit any wrap view for VIEW-type entities**. The `_meta` row sti
 
 For BASE TABLE entities, keep the existing direct-ref view template — Storage Read API handles those fine.
 
-Result: `analytics.duckdb` only has master views for source-type=keboola / source-type=jira / BQ-base-tables. BQ views are **not** queryable directly through `da query --remote "SELECT * FROM s1_session_landings"`. They MUST be either fetched or queried via `bigquery_query()` explicitly.
+Result: `analytics.duckdb` only has master views for source-type=keboola / source-type=jira / BQ-base-tables. BQ views are **not** queryable directly through `da query --remote "SELECT * FROM web_sessions_example"`. They MUST be either fetched or queried via `bigquery_query()` explicitly.
 
 ### 6.2 Backwards compatibility
 
@@ -453,11 +560,11 @@ Existing PRs against `zs/test-bq-e2e` ship the wrap-view code. This design repla
 
 ### 6.3 Data already on dev VM
 
-The dev VM has `s1_session_landings` registered as a remote-mode view. Post-migration:
+The dev VM has `web_sessions_example` registered as a remote-mode view. Post-migration:
 - `analytics.duckdb` won't have a master view for it (existing wrap view will be dropped on next orchestrator rebuild).
 - Claude is expected to use `da fetch` instead.
 
-User's existing test workflow: `da fetch s1_session_landings --where ...` → snapshot → `da query`.
+User's existing test workflow: `da fetch web_sessions_example --where ...` → snapshot → `da query`.
 
 ## 7. Out of scope
 
@@ -473,37 +580,180 @@ These are real concerns but explicitly NOT addressed in this design:
 
 | Component | Owner | Days |
 |-----------|-------|------|
-| `/api/v2/scan` server endpoint + sqlglot WHERE validator | server | 1 |
-| `/api/v2/scan/estimate` (BQ dryRun) | server | 1 |
-| `/api/v2/catalog` + `/api/v2/schema` + `/api/v2/sample` | server | 1.5 |
-| Server-side caching layer (LRU+TTL) | server | 0.5 |
-| `da fetch` + snapshot metadata + refresh support | client | 1 |
-| `da snapshot list/refresh/drop/prune` + `da disk-info` | client | 1 |
-| `da catalog/schema/describe` (with SQL flavor info) | client | 1 |
-| Arrow over HTTP serialization (pyarrow) | shared | 0.5 |
+| `/api/v2/scan` endpoint + RBAC + quota wiring | server | 1 |
+| WHERE validator (§3.7) + adversarial test corpus (50+ cases) | server | 2 |
+| `/api/v2/scan/estimate` (BQ dryRun via `google.cloud.bigquery` client) | server | 1.5 |
+| `/api/v2/catalog` + `/api/v2/schema` + `/api/v2/sample` + caching | server | 2 |
+| Audit log shape + `audit_log` migration if needed | server | 0.5 |
+| `da fetch` + snapshot metadata + file-locked install | client | 1.5 |
+| `da snapshot list/refresh/drop/prune` + diff summary + stale warn | client | 1.5 |
+| `da catalog/schema/describe/disk-info` (with SQL flavor info) | client | 1 |
+| Arrow streaming server-side, parquet write client-side | shared | 1 |
 | Client-side cache at `~/agnes-data/user/cache/` | client | 0.5 |
-| Drop wrap-view code path + tests | server | 0.5 |
-| CLAUDE.md instructions + skill file | docs | 1 |
-| Tests (unit + 1-2 integration tests against real BQ) | shared | 1.5 |
-| **Total** | | **~10.5** |
+| Drop wrap-view code path + migrate existing tests | server | 0.5 |
+| CLAUDE.md instructions + skill file (with BQ flavor table + recovery prompts) | docs | 1 |
+| Tests — unit (validator, quotas, RBAC) + integration (snapshot lifecycle, real BQ) | shared | 3 |
+| **Total** | | **~16.5** |
 
-Two developers in parallel could finish in ~5-6 calendar days. One developer: 2 weeks.
+Realistic timelines:
+- **Two developers in parallel:** 8-9 calendar days (server+CLI tracks).
+- **One developer:** ~3 weeks.
+
+The estimate **revised upward from 10.5** based on review feedback (validator alone is ~2 d not 1; tests ~3 d not 1.5; estimate dryRun is more involved than `bigquery_query()` can do directly — needs `google.cloud.bigquery` client path).
 
 ## 9. Risks & open questions
 
-1. **WHERE validator coverage**: sqlglot may misclassify some BQ-specific functions (e.g., `ARRAY_AGG(DISTINCT x ORDER BY y)`). Allow-list will need iteration. Mitigation: explicit fall-through to "reject with clear error message; user retries with simpler predicate."
-2. **Snapshot refresh staleness**: `da snapshot refresh` re-runs the same WHERE — if the WHERE used `CURRENT_DATE()`, the data shifts naturally. If it used a fixed literal (`DATE '2026-01-01'`), refresh is a no-op modulo upstream changes. Document this.
-3. **BQ dry-run accuracy for scan estimate**: BQ reports `totalBytesProcessed` accurately, but our `estimated_result_rows` heuristic is approximate. Worst case: under-estimate → fetch larger than expected → disk usage warning fires. Acceptable.
-4. **Per-user concurrent fetch limit**: hard cap (5) might frustrate power users running multiple parallel notebooks. Configurable per-user via admin UI (#91 follow-up). For v1, default is fine.
-5. **Multi-conversation snapshots**: one user's snapshots persist across `da` invocations. Multiple Claude sessions sharing the same machine could collide on `--as <name>`. Snapshot list is shared scope; OK for now since dev VMs are per-user.
+1. **WHERE validator coverage**: the v1 allow-list (§3.7) is finite; legitimate analyst predicates may be rejected on first cut. Mitigation: explicit `unknown_function` error names the function so the analyst (or Claude) immediately sees what to drop. Allow-list expanded in follow-ups based on production rejection logs.
+2. **Snapshot refresh staleness**: `CURRENT_DATE()` re-evaluates at refresh time → data shifts. Fixed literals → refresh is a content no-op (caught by `result_hash_md5` comparison per §4.2). Documented in CLI output (`identical: yes/no`).
+3. **BQ dry-run accuracy for scan estimate**: `totalBytesProcessed` is accurate. `estimated_result_rows` is heuristic — worst case under-estimate → user fetches more than expected → max_result_bytes guard truncates (§3.4 step 8) with `X-Agnes-Truncated` header.
+4. **Multi-replica quota**: process-local quotas (§3.8) mean N replicas → effective N×cap per user. **Documented caveat for v1.** Single-replica deployments (today's default) unaffected. Horizontal scale upgrade path: durable counter in `system.duckdb`. Captured as a follow-up issue when scale demand emerges.
+5. **Multi-conversation snapshots collision**: per §4.2 file-locked install + exit-code-6-on-exists semantics make this safe — concurrent `da fetch --as same_name` causes the second to fail-fast with a clear error rather than corrupt state.
+6. **BREAKING change for `da query --remote`**: dropping the wrap view (§6.1) means `da query --remote "SELECT * FROM <bq_view>"` no longer works. Existing automation scripts may break. **Must be flagged as `**BREAKING**` in CHANGELOG** per the project's changelog discipline. Mitigation: optional `--legacy-wrap-views` flag in `connectors/bigquery/extractor.py` for one release cycle to ease rollout (operator-controlled via `instance.yaml: bigquery.legacy_wrap_views: true`). Document in §6.
 
-## 10. Success criteria
+## 10. Implementation contracts
 
-- [ ] Claude can ask "show me X session count for last 30 days" against `s1_session_landings` and produce an answer in <30 s without "Response too large" errors.
-- [ ] Server-side `/api/v2/scan` rejects malicious WHERE clauses with clear error messages (verified by 5+ unit tests).
-- [ ] `da catalog --json` output is machine-readable and includes `sql_flavor` per table.
-- [ ] `da fetch --estimate` outputs both BQ scan bytes and local result bytes.
-- [ ] `da snapshot list` shows current cache with sizes and ages.
-- [ ] CLAUDE.md instructions are followed by a fresh Claude session without explicit prompting (verified by 3 different unguided agent runs).
-- [ ] All existing tests still green (CI on branch).
-- [ ] Demo: end-to-end agent flow on dev VM shows the full discover → estimate → fetch → query loop in <2 min wall time.
+These are the concrete artifacts the implementer must produce; spec requirements distilled into checkable shapes.
+
+### 10.1 Audit log shape
+
+Every `/api/v2/scan` and `/api/v2/scan/estimate` request appends one row to the existing `audit_log` table:
+
+```
+event_type     = 'fetch_scan' | 'fetch_estimate'
+user_email     = <from session/PAT>
+table_id       = <request.table_id>
+event_data     = JSON: {
+                   select: [...],
+                   where_hash: md5(where || ''),  -- not full text, can be sensitive
+                   limit: ...,
+                   estimated_scan_bytes: ... | null,
+                   actual_result_rows: ... | null,
+                   actual_result_bytes: ... | null,
+                   latency_ms: ...,
+                   status: 'ok' | 'rejected' | 'quota_exceeded' | 'truncated' | 'error',
+                   error_kind: 'validator' | 'rbac' | 'bq' | null
+                 }
+```
+
+Why `where_hash` instead of full text: WHERE clauses can include sensitive constants (user emails, IDs). Hash + structure remains debuggable from the validator's per-request log lines if needed, without persistent disclosure.
+
+### 10.2 CLI exit codes
+
+`da fetch`, `da snapshot *`, `da catalog`, `da schema`, `da describe`, `da disk-info` follow this exit-code contract (used by the agent to branch):
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 2 | Validation failed (bad WHERE, unknown column, malformed args) |
+| 3 | Quota exceeded (concurrent or daily) |
+| 4 | Disk full / soft quota exceeded (snapshot would not fit) |
+| 5 | Server error (5xx; transient) |
+| 6 | Snapshot already exists (use `--force`) |
+| 7 | Auth failed (no PAT, expired) |
+| 8 | RBAC denied (table not accessible) |
+| 9 | Network unreachable (server down) |
+
+Each non-zero exit also writes a structured error to stderr (§11.3).
+
+### 10.3 Error UX
+
+CLI error format on stderr (single line + optional next-step hint):
+
+```
+Error: <one-line summary>. <Hint about how to recover.>
+```
+
+Examples:
+
+```
+Error: WHERE validator rejected 'unknown_function'. Function 'OBSCURE_FN' not in v1 allow-list.
+       See: da catalog --json | jq '.tables[].sql_flavor' for the supported dialect.
+
+Error: quota exceeded (daily_bytes). Used 51.2 GB of 50 GB cap (resets at 00:00 UTC).
+       Hint: 'da snapshot list' to find oversized snapshots, 'da snapshot prune'.
+
+Error: snapshot 'cz_recent' already exists (fetched 2 days ago, 245k rows).
+       Pass --force to overwrite, or 'da snapshot refresh cz_recent' to update in place.
+```
+
+Server `/api/v2/*` errors return JSON:
+
+```json
+{
+  "error": "validator_rejected",
+  "kind": "unknown_function",
+  "details": { "function": "OBSCURE_FN" },
+  "request_id": "..."
+}
+```
+
+`request_id` lets server-side log correlation work without exposing internal stack traces to clients.
+
+### 10.4 Server config knobs (`instance.yaml`)
+
+New section:
+
+```yaml
+api:
+  scan:
+    max_limit: 10000000           # rows
+    max_result_bytes: 2147483648  # 2 GB
+    max_concurrent_per_user: 5
+    max_daily_bytes_per_user: 53687091200  # 50 GB
+    bq_cost_per_tb_usd: 5.00      # for cost estimate output
+    request_timeout_seconds: 300
+  catalog_cache_ttl_seconds: 300  # 5 min
+  schema_cache_ttl_seconds: 3600  # 1 h
+  sample_cache_ttl_seconds: 3600  # 1 h, but see I6 caveat
+```
+
+All optional; defaults applied if missing. Documented in `config/instance.yaml.example`.
+
+### 10.5 Client config (`~/.agnes/config`)
+
+New keys:
+
+```yaml
+snapshot_quota_gb: 10
+snapshot_stale_warn_days: 7
+fetch_default_estimate: true   # whether `da fetch` runs --estimate first by default
+```
+
+### 10.6 Schema drift handling
+
+When `da snapshot refresh <name>` is called and the upstream BQ schema has changed since the snapshot was taken:
+
+- **New column added** in BQ (not in original `--select`): no-op for refresh (we only re-fetch what's in `select`).
+- **Column from `--select` was removed** in BQ: refresh fails with exit code 2 (`schema_drift`) and message `Column 'X' no longer exists in <table_id>. Drop snapshot and re-fetch with updated --select.` — leave the existing snapshot file untouched.
+- **Column type changed**: re-fetch proceeds; new parquet has new type. CLI prints `WARN: column 'X' type changed STRING → INT64; downstream queries may break.`
+
+### 10.7 Telemetry / observability
+
+Server emits Prometheus-compatible metrics (`/metrics` endpoint, gated by admin):
+
+- `agnes_v2_scan_request_total{status,user}` counter — request count by status
+- `agnes_v2_scan_bytes_total{user}` counter — bytes returned per user
+- `agnes_v2_scan_latency_seconds{quantile}` summary — request latency
+- `agnes_v2_scan_concurrent_gauge{user}` gauge — current concurrent scans
+
+Wired into existing observability stack (TBD per deploy — minimum: log lines structured for grep).
+
+## 11. Success criteria
+
+CI-verifiable (must pass automatically on the PR):
+
+- [ ] **CI** — All existing tests still green on `zs/test-bq-e2e`.
+- [ ] **CI** — `tests/test_where_validator.py` 50+ adversarial cases pass (§3.7 corpus).
+- [ ] **CI** — Quota state correctly enforced in unit tests (concurrent + daily byte cap, 429 shape per §3.8).
+- [ ] **CI** — `da catalog --json` output is machine-readable and includes `sql_flavor` per table (output-shape test).
+- [ ] **CI** — `da fetch --estimate` outputs both BQ scan bytes and local result bytes (output-shape test).
+- [ ] **CI** — `da snapshot list/refresh/drop/prune` lifecycle round-trip test.
+- [ ] **CI** — Exit codes per §10.2 verified for every documented failure mode.
+- [ ] **CI** — Vendor-token scan on touched files: empty.
+
+Manual gates (release-time, signed off by author):
+
+- [ ] **Manual** — On the dev VM, Claude (with the new skill loaded) answers "show me web_sessions_example for last 30 days" and produces an aggregated result in <30 s without "Response too large" errors. Verify the agent followed `da catalog → da schema → da fetch → da query` rather than direct `da query --remote`.
+- [ ] **Manual** — 3 different fresh Claude sessions (without explicit prompting) follow the discovery-first protocol when asked about Agnes data. (Manual replay; document transcripts in PR.)
+- [ ] **Manual** — End-to-end demo on dev VM: full discover → estimate → fetch → query loop in <2 min wall time, recorded in the PR description.
+- [ ] **Manual** — Audit log inspection after demo run shows expected `event_data` shape per §10.1.
