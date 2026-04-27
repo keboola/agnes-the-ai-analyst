@@ -13,6 +13,26 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 <!-- Add bullets here. Group: Added / Changed / Fixed / Removed / Internal.
      Mark breaking changes with **BREAKING** at the start of the bullet. -->
 
+### Added
+
+- **Schema v10** introduces `view_ownership` to detect cross-connector
+  view-name collisions in the master analytics DB (issue #81 Group C).
+  When two connectors register the same `_meta.table_name`, the
+  orchestrator now refuses to silently overwrite the prior owner's view —
+  it logs a `view_ownership collision` ERROR identifying both sources
+  and the colliding name, and the second source's view is NOT created.
+  Previously this was last-write-wins, which depended on directory
+  iteration order and could change deployment-to-deployment. Operators
+  resolve a collision by renaming `name` in `table_registry` on one side
+  (registry-side aliasing — `source_table` stays unchanged, only the
+  view name changes). The orchestrator pre-scans every connector's
+  `_meta` at the start of each rebuild and releases stale ownerships
+  immediately (when ALL pre-scans succeed; if any fail, reconcile is
+  skipped to avoid silently stealing a transient-IO source's name),
+  so a renamed table frees its name in the SAME rebuild that introduces
+  the rename — no two-step waits needed. New module
+  `src/repositories/view_ownership.py` exposes the repository.
+
 ### Changed
 
 - **BREAKING (ops)**: Keboola extractor now exits with three distinct
@@ -193,6 +213,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   over all three non-admin core roles (analyst, viewer, km_admin).
 - `tests/conftest.py::seeded_app` extended with `viewer_token` and
   `km_admin_token` so role-gating tests cover all four core roles.
+
+### Migrated
+
+- **Schema bumped from v9 to v10**. Auto-migration applies on next start
+  (creates the `view_ownership` table; data on disk is unaffected). The
+  pre-migration snapshot machinery (added at v8→v9) covers v9→v10 too —
+  if anything goes wrong during the migration, the snapshot at
+  `<DATA_DIR>/state/system.duckdb.pre-migrate` lets you roll back.
 
 ## [0.11.5] — 2026-04-27
 

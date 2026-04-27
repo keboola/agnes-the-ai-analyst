@@ -23,7 +23,7 @@ import os
 import re
 import threading
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import duckdb
 
@@ -99,11 +99,109 @@ class SyncOrchestrator:
         with _rebuild_lock:
             return self._do_rebuild_source(source_name)
 
+    def _scan_meta_pairs(self, extracts_dir: Path) -> tuple:
+        """Read every connector's `_meta` and return (pairs, clean) where:
+
+        - ``pairs`` — list of (source_name, table_name) tuples successfully
+          gathered from `_meta`.
+        - ``clean`` — True iff every source's pre-scan succeeded. False if
+          any source's `_meta` couldn't be read (transient I/O, mid-write,
+          missing/corrupt extract.duckdb).
+
+        Used by view_ownership.reconcile to release stale claims before
+        the main rebuild loop tries to claim new names. The ``clean`` flag
+        guards against a correctness bug: if source B's pre-scan fails
+        and we naively reconcile against an incomplete `pairs` list, B's
+        prior ownership is dropped, and another source could claim B's
+        name in the same rebuild — a silent overwrite, exactly what
+        Group C is meant to prevent. Callers MUST skip reconcile when
+        ``clean`` is False; per-row claim-time collision detection still
+        catches actual collisions.
+        """
+        pairs: List[tuple] = []
+        clean = True
+        for ext_dir in sorted(extracts_dir.iterdir()):
+            if not ext_dir.is_dir():
+                continue
+            db_file = ext_dir / "extract.duckdb"
+            if not db_file.exists():
+                continue
+            if not _validate_identifier(ext_dir.name, "source_name"):
+                continue
+            try:
+                ro_conn = duckdb.connect(str(db_file), read_only=True)
+                try:
+                    rows = ro_conn.execute(
+                        "SELECT table_name FROM _meta"
+                    ).fetchall()
+                    for (table_name,) in rows:
+                        if _validate_identifier(table_name, "table_name"):
+                            pairs.append((ext_dir.name, table_name))
+                finally:
+                    ro_conn.close()
+            except Exception as e:
+                logger.warning(
+                    "scan_meta_pairs: failed to read %s (%s) — "
+                    "skipping reconcile this rebuild to avoid releasing "
+                    "ownerships prematurely",
+                    ext_dir.name, e,
+                )
+                clean = False
+        return pairs, clean
+
     def _do_rebuild(self) -> Dict[str, List[str]]:
         extracts_dir = _get_extracts_dir()
         if not extracts_dir.exists():
             logger.warning("Extracts directory %s does not exist", extracts_dir)
             return {}
+
+        # Issue #81 Group C — load view ownership map from system DB so we
+        # can detect cross-connector view-name collisions during this
+        # rebuild and refuse to silently overwrite a previously-claimed
+        # name. The map is kept in system.duckdb (analytics.duckdb is
+        # rebuilt fresh each time and would not survive).
+        from src.db import get_system_db
+        from src.repositories.view_ownership import ViewOwnershipRepository
+        sys_conn_for_views = get_system_db()
+        view_repo = None
+        try:
+            view_repo = ViewOwnershipRepository(sys_conn_for_views)
+            # Pre-scan every connector's _meta so we can run the reconcile
+            # pass BEFORE claims are evaluated. This makes "owner stopped
+            # publishing → name freed → another source can claim" work in
+            # the SAME rebuild rather than requiring two consecutive runs.
+            #
+            # Correctness: only reconcile when EVERY source's pre-scan
+            # succeeded. Otherwise a transient I/O failure on source B
+            # would drop B's prior ownership and let another source steal
+            # B's name — silent overwrite, exactly the bug Group C
+            # prevents. Per-row claim-time collision detection still
+            # catches actual collisions even without reconcile this run.
+            current_pairs, pre_scan_clean = self._scan_meta_pairs(extracts_dir)
+            if pre_scan_clean:
+                view_repo.reconcile(current_pairs)
+            else:
+                logger.warning(
+                    "view_ownership: skipping reconcile this rebuild — "
+                    "pre-scan was incomplete; renamed tables will release "
+                    "their names on the next clean rebuild instead"
+                )
+            existing_owners = view_repo.get_all()
+        except Exception as e:
+            logger.warning(
+                "view_ownership pre-scan failed: %s — proceeding without "
+                "collision detection", e,
+            )
+            existing_owners = {}
+            view_repo = None
+            try:
+                sys_conn_for_views.close()
+            except Exception:
+                pass
+            sys_conn_for_views = None
+
+        # Track every (source, view) pair this rebuild successfully claims.
+        claimed_pairs: List[tuple] = []
 
         result = {}
         # Write to temp file then rename — avoids lock conflict with query endpoint
@@ -139,14 +237,32 @@ class SyncOrchestrator:
                     continue
 
                 tables = self._attach_and_create_views(
-                    conn, ext_dir.name, str(db_file)
+                    conn, ext_dir.name, str(db_file),
+                    existing_owners=existing_owners,
+                    claimed_pairs=claimed_pairs,
+                    view_repo=view_repo if sys_conn_for_views else None,
                 )
                 if tables:
                     result[ext_dir.name] = tables
                     logger.info("Attached %s: %d tables", ext_dir.name, len(tables))
+
+            # No end-of-rebuild reconcile: the pre-scan reconcile above
+            # already released stale ownerships using a complete view of
+            # every source's `_meta`. Reconciling again here against
+            # `claimed_pairs` (which excludes refused collisions and any
+            # source that failed to attach) would incorrectly drop the
+            # legitimate prior owner of a name when its DB happens to be
+            # transiently unreadable. See test
+            # `test_pre_scan_failure_does_not_release_ownership` for the
+            # contract.
         finally:
             conn.execute("CHECKPOINT")
             conn.close()
+            if sys_conn_for_views is not None:
+                try:
+                    sys_conn_for_views.close()
+                except Exception:
+                    pass
 
         # Atomic swap: replace analytics.duckdb with new version
         _atomic_swap_db(tmp_path, self._db_path)
@@ -170,9 +286,25 @@ class SyncOrchestrator:
         return result.get(source_name, [])
 
     def _attach_and_create_views(
-        self, conn: duckdb.DuckDBPyConnection, source_name: str, db_path: str
+        self,
+        conn: duckdb.DuckDBPyConnection,
+        source_name: str,
+        db_path: str,
+        existing_owners: Optional[Dict[str, str]] = None,
+        claimed_pairs: Optional[List[tuple]] = None,
+        view_repo=None,
     ) -> List[str]:
-        """ATTACH extract.duckdb, read _meta, create views in master."""
+        """ATTACH extract.duckdb, read _meta, create views in master.
+
+        Issue #81 Group C — when ``existing_owners`` and ``view_repo`` are
+        provided, the orchestrator checks for cross-connector view-name
+        collisions and refuses to overwrite a name owned by another source.
+        ``claimed_pairs`` accumulates the (source, view) tuples this
+        rebuild successfully claims; the caller uses it for end-of-rebuild
+        reconcile.
+        """
+        if existing_owners is None:
+            existing_owners = {}
         tables = []
         try:
             conn.execute(f"ATTACH '{db_path}' AS {source_name} (READ_ONLY)")
@@ -189,6 +321,26 @@ class SyncOrchestrator:
             for table_name, rows, size_bytes, query_mode in meta_rows:
                 if not _validate_identifier(table_name, "table_name"):
                     continue
+
+                # Issue #81 Group C — refuse cross-connector collisions.
+                # First-come-first-served: the source already in
+                # view_ownership keeps the name; any other source that
+                # tries to claim it gets logged + skipped until the
+                # operator renames one side. Re-claim by the same source
+                # is fine (idempotent rebuild).
+                if view_repo is not None:
+                    if not view_repo.claim(table_name, source_name):
+                        prior_owner = existing_owners.get(table_name, "<unknown>")
+                        logger.error(
+                            "view_ownership collision: %s already owns view %r; "
+                            "%s.%s will NOT be exposed. Rename `name` in the "
+                            "table_registry on one side to resolve.",
+                            prior_owner, table_name, source_name, table_name,
+                        )
+                        continue
+                    if claimed_pairs is not None:
+                        claimed_pairs.append((source_name, table_name))
+
                 conn.execute(
                     f"CREATE OR REPLACE VIEW \"{table_name}\" AS "
                     f"SELECT * FROM {source_name}.\"{table_name}\""
