@@ -40,33 +40,25 @@ class TestJiraWebhookJourney:
         assert "status" in body
         assert body["status"] == "ok"
 
-    def test_webhook_with_no_secret_configured_accepted(self, seeded_app):
-        """When JIRA_WEBHOOK_SECRET is not set, signature is skipped and webhook is processed."""
+    def test_webhook_with_no_secret_configured_refused(self, seeded_app):
+        """Issue #83: when JIRA_WEBHOOK_SECRET is not set, webhook is REFUSED
+        with 503 (was previously fail-open — accepted unauthenticated). The
+        rename of this test from `_accepted` → `_refused` documents the
+        contract change."""
         c = seeded_app["client"]
         payload = json.dumps(SAMPLE_JIRA_EVENT).encode()
 
-        with patch("connectors.jira.service._JiraConfig.JIRA_WEBHOOK_SECRET", ""), \
-             patch("app.api.jira_webhooks.Config") as mock_cfg:
+        with patch("app.api.jira_webhooks.Config") as mock_cfg:
             mock_cfg.JIRA_WEBHOOK_SECRET = ""
             mock_cfg.JIRA_DATA_DIR = MagicMock()
-            mock_cfg.JIRA_DATA_DIR.__truediv__ = lambda self, other: MagicMock(
-                __truediv__=lambda s, o: MagicMock(mkdir=MagicMock(), __truediv__=lambda s2, o2: MagicMock())
+
+            resp = c.post(
+                "/webhooks/jira",
+                content=payload,
+                headers={"Content-Type": "application/json"},
             )
-
-            mock_service = MagicMock()
-            mock_service.is_configured.return_value = True
-            mock_service.process_webhook_event.return_value = True
-
-            with patch("app.api.jira_webhooks.get_jira_service", return_value=mock_service), \
-                 patch("app.api.jira_webhooks._verify_signature", return_value=True), \
-                 patch("app.api.jira_webhooks._log_webhook_event"):
-                resp = c.post(
-                    "/webhooks/jira",
-                    content=payload,
-                    headers={"Content-Type": "application/json"},
-                )
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "ok"
+        assert resp.status_code == 503
+        assert "secret" in resp.json()["detail"].lower()
 
     def test_webhook_with_valid_hmac_signature(self, seeded_app):
         """POST with valid HMAC-SHA256 signature is accepted."""
@@ -121,12 +113,13 @@ class TestJiraWebhookJourney:
         assert "Invalid signature" in resp.json()["detail"]
 
     def test_webhook_empty_payload_rejected(self, seeded_app):
-        """Empty body returns 400."""
+        """Empty body returns 400 (the secret-configured path; the
+        no-secret path returns 503 — see test_webhook_with_no_secret_configured_refused)."""
         c = seeded_app["client"]
 
         with patch("app.api.jira_webhooks.Config") as mock_cfg, \
              patch("app.api.jira_webhooks._verify_signature", return_value=True):
-            mock_cfg.JIRA_WEBHOOK_SECRET = ""
+            mock_cfg.JIRA_WEBHOOK_SECRET = "test-secret-not-empty"
 
             resp = c.post(
                 "/webhooks/jira",
