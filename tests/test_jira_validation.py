@@ -27,6 +27,9 @@ class TestIsValidIssueKey:
             "TEST-1.json",
             "ABC_DEF-1",       # underscore — Atlassian rejects, so do we
             "А-1",             # Cyrillic А (looks like Latin A)
+            "TEST-٣",           # Arabic-Indic 3 — \\d would match, [0-9] doesn't
+            "TEST-৩",           # Bengali 3
+            "TEST-३",           # Devanagari 3
             "A" * 100 + "-1",  # absurd project length
             "A-" + "9" * 20,   # absurd issue number length
             None,

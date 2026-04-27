@@ -22,7 +22,10 @@ from pathlib import Path
 # Atlassian project-creation form, which rejects `A_B`. Bounded length
 # (32 chars on the project, 12 digits on the number) keeps regex evaluation
 # cheap on adversarial input.
-_ISSUE_KEY_RE = re.compile(r"^[A-Z][A-Z0-9]{0,31}-\d{1,12}$")
+# `[0-9]` rather than `\d` — Python 3's `\d` matches any Unicode decimal
+# (Arabic-Indic ٣, Bengali ৩, Devanagari ३, …), and a Jira issue key like
+# `TEST-٣` is not real Jira input. ASCII-only here closes that bypass.
+_ISSUE_KEY_RE = re.compile(r"^[A-Z][A-Z0-9]{0,31}-[0-9]{1,12}$")
 
 
 def is_valid_issue_key(key: object) -> bool:
