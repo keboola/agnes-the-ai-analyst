@@ -15,11 +15,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
-- **Security (CRITICAL)**: Jira webhook handler is now fail-closed (issue #83).
-  Previously, if `JIRA_WEBHOOK_SECRET` was unset, `_verify_signature` returned
-  `True` and any unauthenticated POST to `/webhooks/jira` could trigger the
-  full ingest pipeline. The handler now returns **503** when the secret is
-  missing (operator-misconfiguration signal, distinct from 401 wrong-signature).
+- **BREAKING (security CRITICAL)**: Jira webhook handler is now
+  fail-closed (issue #83). Previously, if `JIRA_WEBHOOK_SECRET` was
+  unset, `_verify_signature` returned `True` and any unauthenticated
+  POST to `/webhooks/jira` could trigger the full ingest pipeline. The
+  handler now returns **503** when the secret is missing
+  (operator-misconfiguration signal, distinct from 401 wrong-signature).
+  Operators relying on the no-secret = accept-everything mode (don't —
+  it was never documented) must set `JIRA_WEBHOOK_SECRET` before this
+  merges.
 - **Security (CRITICAL)**: Jira issue keys arriving via webhooks are now
   validated against the canonical `^[A-Z][A-Z0-9]{0,31}-\d{1,12}$` format
   before any filesystem operation (issue #83). Previously, `issue_key` flowed
