@@ -561,3 +561,60 @@ class TestExtractorMainModule:
         with pytest.raises(SystemExit) as exc_info:
             runpy.run_module("connectors.bigquery.extractor", run_name="__main__")
         assert exc_info.value.code == 2
+
+
+class TestInitExtractProjectIdValidation:
+    """init_extract must reject unsafe project_id before any auth or DB work."""
+
+    def test_rejects_unsafe_project_id_with_quote(self, tmp_path):
+        """Project IDs containing SQL metacharacters must be rejected before
+        any token fetch or DuckDB work."""
+        from connectors.bigquery.extractor import init_extract
+
+        result = init_extract(
+            str(tmp_path),
+            "evil'; DROP TABLE foo; --",
+            [{"name": "t", "bucket": "ds", "source_table": "t", "description": ""}],
+        )
+        assert result["tables_registered"] == 0
+        assert any("project_id" in e.get("error", "").lower() for e in result["errors"]), \
+            f"expected error mentioning project_id; got: {result['errors']}"
+        # No partial extract.duckdb on rejection
+        assert not (tmp_path / "extract.duckdb").exists()
+
+    def test_rejects_uppercase_project_id(self, tmp_path):
+        """GCP project IDs are lowercase-only."""
+        from connectors.bigquery.extractor import init_extract
+
+        result = init_extract(
+            str(tmp_path),
+            "MY-PROJECT",
+            [{"name": "t", "bucket": "ds", "source_table": "t", "description": ""}],
+        )
+        assert result["tables_registered"] == 0
+        assert any("project_id" in e.get("error", "").lower() for e in result["errors"])
+
+    def test_valid_project_id_passes_validation(self, tmp_path, monkeypatch):
+        """A well-formed project_id must pass validation. We stub the metadata
+        fetch to fail right after, which produces a different error shape — that
+        confirms validation didn't reject the project_id itself."""
+        from connectors.bigquery.extractor import init_extract
+        from connectors.bigquery.auth import BQMetadataAuthError
+
+        def fail_metadata():
+            raise BQMetadataAuthError("simulated — beyond validation")
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor.get_metadata_token",
+            fail_metadata,
+        )
+
+        result = init_extract(
+            str(tmp_path),
+            "my-valid-project",
+            [{"name": "t", "bucket": "ds", "source_table": "t", "description": ""}],
+        )
+        assert result["tables_registered"] == 0
+        errors = result["errors"]
+        assert errors, "expected metadata-stub error"
+        assert all("project_id" not in e.get("error", "").lower() for e in errors), \
+            f"valid project_id should not trip the validator; got: {errors}"

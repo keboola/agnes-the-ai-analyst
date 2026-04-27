@@ -13,7 +13,10 @@ from typing import List, Dict, Any
 import duckdb
 
 from connectors.bigquery.auth import get_metadata_token, BQMetadataAuthError
-from src.sql_safe import validate_identifier as _validate_identifier
+from src.sql_safe import (
+    validate_identifier as _validate_identifier,
+    validate_project_id as _validate_project_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +111,14 @@ def init_extract(
 
     stats: Dict[str, Any] = {"tables_registered": 0, "errors": []}
     now = datetime.now(timezone.utc)
+
+    # Validate project_id before any work — no point opening DB or fetching a
+    # token if the value is structurally bogus and would only break SQL later.
+    if not _validate_project_id(project_id):
+        msg = f"unsafe BQ project_id: {project_id!r}"
+        logger.error(msg)
+        stats["errors"].append({"table": "<config>", "error": msg})
+        return stats
 
     # Fetch token before opening DB so failure aborts cleanly without partial file
     try:
