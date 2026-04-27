@@ -518,7 +518,7 @@ def collect_all(dry_run: bool = False) -> dict:
         },
     }
 
-    # Step 9: Save unless dry run
+    # Step 10: Save unless dry run
     if not dry_run:
         _write_json(KNOWLEDGE_FILE, updated)
         logger.info(

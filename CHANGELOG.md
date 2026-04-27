@@ -18,7 +18,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ---
 
-## [0.12.0] - 2026-04-26
+## [0.12.0] — 2026-04-26
 
 ### Added
 - Corporate memory V1.5: audience-based distribution — `knowledge_items.audience` column; `GET /api/memory` filters by caller's group membership; `users.groups` JSON column (schema v10)
