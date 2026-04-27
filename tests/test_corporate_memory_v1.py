@@ -1420,8 +1420,9 @@ class TestExponentialDecayWithLinearFallback:
     """Verify exponential decay and linear fallback via configure()."""
 
     def test_linear_mode_still_works(self):
+        import copy
         from services.corporate_memory import confidence as cm
-        orig = dict(cm._DECAY_CONFIG)
+        orig = copy.deepcopy(cm._DECAY_CONFIG)
         try:
             cm.configure({"decay": {"mode": "linear", "decay_rate_monthly": 0.02, "floor": {"default": 0.0}}})
             created = datetime.now(timezone.utc) - timedelta(days=60)
@@ -1429,4 +1430,5 @@ class TestExponentialDecayWithLinearFallback:
             assert c < 0.90
             assert c == pytest.approx(0.86, abs=0.01)
         finally:
+            cm._DECAY_CONFIG.clear()
             cm._DECAY_CONFIG.update(orig)
