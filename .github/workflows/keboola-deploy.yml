@@ -3,10 +3,9 @@ name: Keboola Deploy
 # Tag-triggered build for Keboola's internal dev instance.
 #
 # Why a separate workflow: the default release.yml builds an image for *every* push
-# to *every* branch, which means Keboola's `agnes-dev` VM (pinned to `:dev` or
-# similar floating tag) sees whoever pushed last — Vojta, Minas, anyone. That
-# convenience for Groupon-side dev VMs (per-developer `dev-<prefix>-latest` aliases)
-# is a footgun for shared instances.
+# to *every* branch, which means a shared dev VM pinned to a floating tag like
+# `:dev` sees whoever pushed last. That convenience for per-developer dev VMs
+# (`dev-<prefix>-latest` aliases) is a footgun for shared instances.
 #
 # This workflow runs ONLY when an operator explicitly creates a `keboola-deploy-*`
 # git tag. The image is published with two tags:

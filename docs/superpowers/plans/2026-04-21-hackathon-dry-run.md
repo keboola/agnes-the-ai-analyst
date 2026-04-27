@@ -36,14 +36,14 @@ Before starting, the executing agent MUST verify all of the following. If any fa
 
   Expected: line containing `Logged in to github.com` and a line listing scopes that include `workflow`. If `workflow` scope is missing, abort with message: `Run: gh auth refresh -h github.com -s workflow`.
 
-- [ ] **`gcloud` authenticated** to project `kids-ai-data-analysis`. Run:
+- [ ] **`gcloud` authenticated** to project `internal-prod`. Run:
 
   ```bash
   gcloud config get-value project
   gcloud auth list --filter=status:ACTIVE --format="value(account)"
   ```
 
-  Expected: project is `kids-ai-data-analysis`, at least one active account. If not, abort with message: `Run: gcloud config set project kids-ai-data-analysis && gcloud auth login`.
+  Expected: project is `internal-prod`, at least one active account. If not, abort with message: `Run: gcloud config set project internal-prod && gcloud auth login`.
 
 - [ ] **SSH to `agnes-dev` works** (OS Login). Run:
 
@@ -98,7 +98,7 @@ Before starting, the executing agent MUST verify all of the following. If any fa
 - [ ] **Step 1.2: Capture prod health**
 
   ```bash
-  curl -sf --max-time 10 http://34.77.102.61:8000/api/health > /tmp/dryrun-baseline/prod-health.json
+  curl -sf --max-time 10 http://<prod-vm-ip>:8000/api/health > /tmp/dryrun-baseline/prod-health.json
   cat /tmp/dryrun-baseline/prod-health.json | python3 -m json.tool
   ```
 
@@ -107,7 +107,7 @@ Before starting, the executing agent MUST verify all of the following. If any fa
 - [ ] **Step 1.3: Capture dev health**
 
   ```bash
-  curl -sf --max-time 10 http://34.77.94.14:8000/api/health > /tmp/dryrun-baseline/dev-health.json
+  curl -sf --max-time 10 http://<dev-vm-ip>:8000/api/health > /tmp/dryrun-baseline/dev-health.json
   cat /tmp/dryrun-baseline/dev-health.json | python3 -m json.tool
   ```
 
@@ -297,7 +297,7 @@ Before starting, the executing agent MUST verify all of the following. If any fa
   ```bash
   # Poll /api/health for up to 90s
   for i in $(seq 1 30); do
-    STATUS=$(curl -s --max-time 5 http://34.77.94.14:8000/api/health | jq -r '.status' 2>/dev/null || echo "down")
+    STATUS=$(curl -s --max-time 5 http://<dev-vm-ip>:8000/api/health | jq -r '.status' 2>/dev/null || echo "down")
     echo "[$i/30] status=$STATUS"
     if [ "$STATUS" = "healthy" ] || [ "$STATUS" = "degraded" ]; then
       break
@@ -412,7 +412,7 @@ Before starting, the executing agent MUST verify all of the following. If any fa
 
   ```bash
   cd /tmp/agnes-infra-keboola/terraform
-  export GOOGLE_APPLICATION_CREDENTIALS="$HOME/.agnes-keys/agnes-deploy-kids-ai-data-analysis-key.json"
+  export GOOGLE_APPLICATION_CREDENTIALS="$HOME/.agnes-keys/agnes-deploy-internal-prod-key.json"
   [ -f "$GOOGLE_APPLICATION_CREDENTIALS" ] || { echo "SA key not found — skipping plan"; exit 2; }
   terraform init -input=false -upgrade=false
   terraform plan -input=false -no-color -out=/tmp/dryrun-tfplan.bin > /tmp/dryrun-tfplan.txt 2>&1
@@ -609,7 +609,7 @@ Before starting, the executing agent MUST verify all of the following. If any fa
 
   ```bash
   for i in $(seq 1 30); do
-    STATUS=$(curl -s --max-time 5 http://34.77.94.14:8000/api/health | jq -r '.status' 2>/dev/null || echo down)
+    STATUS=$(curl -s --max-time 5 http://<dev-vm-ip>:8000/api/health | jq -r '.status' 2>/dev/null || echo down)
     echo "[$i/30] status=$STATUS"
     [ "$STATUS" = "healthy" ] || [ "$STATUS" = "degraded" ] && break
     sleep 3
@@ -651,7 +651,7 @@ Before starting, the executing agent MUST verify all of the following. If any fa
 - [ ] **Step 6.5: Final health check on prod (must match baseline)**
 
   ```bash
-  curl -sf --max-time 10 http://34.77.102.61:8000/api/health > /tmp/dryrun-baseline/prod-health-after.json
+  curl -sf --max-time 10 http://<prod-vm-ip>:8000/api/health > /tmp/dryrun-baseline/prod-health-after.json
   BEFORE=$(jq -r '.status' /tmp/dryrun-baseline/prod-health.json)
   AFTER=$(jq -r '.status' /tmp/dryrun-baseline/prod-health-after.json)
   echo "Prod status before: $BEFORE / after: $AFTER"
@@ -667,7 +667,7 @@ Before starting, the executing agent MUST verify all of the following. If any fa
   ## Task 6: Cleanup — <PASS|FAIL>
 
   - agnes-dev AGNES_TAG restored to: $(cat /tmp/dryrun-baseline/dev-env.txt)
-  - agnes-dev health after restore: $(curl -s --max-time 5 http://34.77.94.14:8000/api/health | jq -r '.status')
+  - agnes-dev health after restore: $(curl -s --max-time 5 http://<dev-vm-ip>:8000/api/health | jq -r '.status')
   - agnes-dev image: matches baseline? <MATCH|MISMATCH — paste both>
   - Throwaway branches deleted: feature, smoke
   - Prod status unchanged: <UNCHANGED|DRIFT>
@@ -737,10 +737,10 @@ Before starting, the executing agent MUST verify all of the following. If any fa
 
   echo "[4/4] Waiting for app to become healthy..."
   for i in $(seq 1 30); do
-    STATUS=$(curl -s --max-time 5 http://34.77.94.14:8000/api/health | python3 -c 'import sys,json; print(json.load(sys.stdin).get("status","down"))' 2>/dev/null || echo down)
+    STATUS=$(curl -s --max-time 5 http://<dev-vm-ip>:8000/api/health | python3 -c 'import sys,json; print(json.load(sys.stdin).get("status","down"))' 2>/dev/null || echo down)
     echo "  [$i/30] status=$STATUS"
     if [ "$STATUS" = "healthy" ] || [ "$STATUS" = "degraded" ]; then
-      echo "OK — agnes-dev now running $TAG. Open http://34.77.94.14:8000"
+      echo "OK — agnes-dev now running $TAG. Open http://<dev-vm-ip>:8000"
       exit 0
     fi
     sleep 3
@@ -790,7 +790,7 @@ Before starting, the executing agent MUST verify all of the following. If any fa
 
   1. <If protection-note said NONE/PARTIAL:> Configure required status check 'test' on main branch of keboola/agnes-the-ai-analyst.
   2. Pin prod image_tag in agnes-infra-keboola/terraform/terraform.tfvars from "stable" to "stable-2026.04.XX" (current running version). Revert after hackathon.
-  3. Rotate admin password '1234' on prod (34.77.102.61:8000/login) and dev (34.77.94.14:8000/login).
+  3. Rotate admin password '1234' on prod (<prod-vm-ip>:8000/login) and dev (<dev-vm-ip>:8000/login).
   4. Wire notification_channel_ids in tfvars so uptime alerts actually notify someone.
   5. Share the hackathon 1-pager + switch-dev-vm.sh via the team Slack channel.
   6. Review PR $(cat /tmp/dryrun-baseline/deliverable-pr.txt) and merge if switch-dev-vm.sh looks good.

@@ -89,13 +89,13 @@ tables:
     primary_key: "id"
     sync_strategy: "full_refresh"
 
-  - id: "prj-grp-dataview-prod-1ff9.finance.revenue"
+  - id: "prj-example-1234.finance.revenue"
     name: "revenue"
     description: "Remote BQ table"
     primary_key: "id"
     query_mode: "remote"
 
-  - id: "prj-grp-dataview-prod-1ff9.marketing.campaigns"
+  - id: "prj-example-1234.marketing.campaigns"
     name: "campaigns"
     description: "Hybrid table"
     primary_key: "id"
@@ -111,7 +111,7 @@ tables:
     table = pa.table({"id": [1, 2], "name": ["a", "b"]})
     pq.write_table(table, crm_dir / "company.parquet")
 
-    marketing_dir = tmp_path / "server" / "parquet" / "prj-grp-dataview-prod-1ff9.marketing"
+    marketing_dir = tmp_path / "server" / "parquet" / "prj-example-1234.marketing"
     marketing_dir.mkdir(parents=True)
     campaigns_table = pa.table({"id": [10], "campaign": ["test"]})
     pq.write_table(campaigns_table, marketing_dir / "campaigns.parquet")
@@ -134,13 +134,13 @@ def tmp_project_remote_only(tmp_path):
 
 ```yaml
 tables:
-  - id: "prj-grp-dataview-prod-1ff9.finance.revenue"
+  - id: "prj-example-1234.finance.revenue"
     name: "revenue"
     description: "Remote BQ table"
     primary_key: "id"
     query_mode: "remote"
 
-  - id: "prj-grp-dataview-prod-1ff9.finance.costs"
+  - id: "prj-example-1234.finance.costs"
     name: "costs"
     description: "Remote BQ table"
     primary_key: "id"
@@ -165,9 +165,9 @@ class TestGetBqProjectFromTableId:
 
     def test_valid_bq_table_id(self):
         result = _get_bq_project_from_table_id(
-            "prj-grp-dataview-prod-1ff9.finance.table"
+            "prj-example-1234.finance.table"
         )
-        assert result == "prj-grp-dataview-prod-1ff9"
+        assert result == "prj-example-1234"
 
     def test_valid_bq_table_id_different_project(self):
         result = _get_bq_project_from_table_id(

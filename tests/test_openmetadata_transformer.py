@@ -336,24 +336,24 @@ class TestHasTag:
     def test_has_tag_present(self):
         """Returns True when tag with matching FQN is in the list."""
         tags = [
-            {"tagFQN": "AIAgent.FoundryAI", "name": "FoundryAI"},
+            {"tagFQN": "AIAgent.Example", "name": "Example"},
             {"tagFQN": "Tier.Tier1"},
         ]
-        assert has_tag(tags, "AIAgent.FoundryAI") is True
+        assert has_tag(tags, "AIAgent.Example") is True
 
     def test_has_tag_absent(self):
         """Returns False when tag is not in the list."""
         tags = [{"tagFQN": "Tier.Tier2"}]
-        assert has_tag(tags, "AIAgent.FoundryAI") is False
+        assert has_tag(tags, "AIAgent.Example") is False
 
     def test_has_tag_empty_list(self):
         """Returns False for empty tag list."""
-        assert has_tag([], "AIAgent.FoundryAI") is False
+        assert has_tag([], "AIAgent.Example") is False
 
     def test_has_tag_partial_match(self):
         """Does not match partial FQN."""
-        tags = [{"tagFQN": "AIAgent.FoundryAI_v2"}]
-        assert has_tag(tags, "AIAgent.FoundryAI") is False
+        tags = [{"tagFQN": "AIAgent.Example_v2"}]
+        assert has_tag(tags, "AIAgent.Example") is False
 
 
 class TestExtractTagNames:
@@ -768,7 +768,7 @@ class TestTableToYamlDict:
                 },
             ],
             "tags": [
-                {"name": "FoundryAI", "tagFQN": "AIAgent.FoundryAI"},
+                {"name": "Example", "tagFQN": "AIAgent.Example"},
                 {"tagFQN": "Tier.Tier1"},
             ],
             "owners": [
@@ -781,7 +781,7 @@ class TestTableToYamlDict:
         assert result["fqn"] == "bigquery.prj.dataset.order_economics"
         assert result["description"] == "Order-level economics data"
         assert result["owners"] == ["data_team"]
-        assert result["tags"] == ["FoundryAI", "Tier1"]
+        assert result["tags"] == ["Example", "Tier1"]
         assert result["tier"] == "Tier1"
 
         # Columns
