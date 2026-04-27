@@ -203,3 +203,17 @@ def format_candidates_block(candidates: list[dict]) -> str:
             f"</item>"
         )
     return "\n".join(lines)
+
+
+TOPIC_TAG_PROMPT = """Assign topics from the vocabulary to each knowledge item.
+
+Vocabulary (use ONLY these values): {vocab_list}
+
+Items:
+{items_text}
+
+Rules:
+- Assign 1-3 topics per item from the vocabulary above.
+- Pick topics that describe the SUBJECT of the item, not how it was written.
+- If nothing fits, assign the single closest match.
+- Return every item id exactly once."""
