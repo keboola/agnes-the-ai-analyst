@@ -4,7 +4,9 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+import pyarrow as pa
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 import duckdb
 
@@ -16,6 +18,8 @@ from app.api.where_validator import (
     validate_where, WhereValidationError,
 )
 from app.api.v2_schema import build_schema  # reused for column resolution
+from app.api.v2_arrow import arrow_table_to_ipc_bytes, CONTENT_TYPE
+from app.api.v2_quota import QuotaTracker, QuotaExceededError
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v2", tags=["v2"])
@@ -141,5 +145,157 @@ async def scan_estimate_endpoint(
         raise HTTPException(status_code=403, detail="not authorized")
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="table not found")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# Module-level singleton (process-local quota state per spec §3.8)
+_quota_singleton: QuotaTracker | None = None
+
+
+def _build_quota_tracker() -> QuotaTracker:
+    """Returns or constructs the process-local quota tracker."""
+    global _quota_singleton
+    if _quota_singleton is None:
+        _quota_singleton = QuotaTracker(
+            max_concurrent_per_user=int(get_value("api", "scan", "max_concurrent_per_user", default=5) or 5),
+            max_daily_bytes_per_user=int(get_value("api", "scan", "max_daily_bytes_per_user", default=53687091200) or 53687091200),
+        )
+    return _quota_singleton
+
+
+def _max_result_bytes() -> int:
+    return int(get_value("api", "scan", "max_result_bytes", default=2_147_483_648) or 2_147_483_648)
+
+
+def _max_limit() -> int:
+    return int(get_value("api", "scan", "max_limit", default=10_000_000) or 10_000_000)
+
+
+def _run_bq_scan(project: str, sql: str) -> pa.Table:
+    """Execute SQL via DuckDB BQ extension, return pyarrow Table."""
+    from connectors.bigquery.auth import get_metadata_token
+
+    token = get_metadata_token()
+    conn = duckdb.connect(":memory:")
+    try:
+        conn.execute("INSTALL bigquery FROM community; LOAD bigquery;")
+        escaped = token.replace("'", "''")
+        conn.execute(f"CREATE OR REPLACE SECRET bq_s (TYPE bigquery, ACCESS_TOKEN '{escaped}')")
+        # Use bigquery_query() since the SQL is already authored against the BQ jobs API
+        return conn.execute(
+            "SELECT * FROM bigquery_query(?, ?)",
+            [project, sql],
+        ).arrow()
+    finally:
+        conn.close()
+
+
+def run_scan(
+    conn: duckdb.DuckDBPyConnection,
+    user: dict,
+    raw_request: dict,
+    *,
+    project_id: str,
+    quota: QuotaTracker,
+) -> bytes:
+    """Validate → quota → execute → serialize. Returns Arrow IPC bytes.
+
+    Raises:
+        WhereValidationError, QuotaExceededError, FileNotFoundError, PermissionError, ValueError
+    """
+    req = ScanRequest(**raw_request)
+    repo = TableRegistryRepository(conn)
+    row = repo.get(req.table_id)
+    if not row:
+        raise FileNotFoundError(req.table_id)
+    if user.get("role") != "admin" and not can_access_table(user, req.table_id, conn):
+        raise PermissionError(req.table_id)
+
+    if req.limit and req.limit > _max_limit():
+        raise ValueError(f"limit {req.limit} exceeds max {_max_limit()}")
+
+    schema = _resolve_schema(conn, user, req.table_id, project_id)
+    if req.where:
+        validate_where(req.where, req.table_id, schema)
+    if req.select:
+        unknown = [c for c in req.select if c not in schema]
+        if unknown:
+            raise ValueError(f"unknown columns: {unknown}")
+
+    user_id = user.get("email") or "anon"
+
+    with quota.acquire(user=user_id):
+        if (row.get("source_type") or "") != "bigquery":
+            # Local source: query parquet directly
+            from app.utils import get_data_dir
+            parquet = (
+                get_data_dir() / "extracts" / row["source_type"] / "data" / f"{req.table_id}.parquet"
+            )
+            local = duckdb.connect(":memory:")
+            try:
+                projection = ", ".join(req.select) if req.select else "*"
+                sql = f"SELECT {projection} FROM read_parquet(?)"
+                if req.where:
+                    sql += f" WHERE {req.where}"
+                if req.order_by:
+                    sql += f" ORDER BY {', '.join(req.order_by)}"
+                if req.limit:
+                    sql += f" LIMIT {int(req.limit)}"
+                table = local.execute(sql, [str(parquet)]).arrow()
+            finally:
+                local.close()
+        else:
+            bq_sql = _build_bq_sql(row, project_id, req)
+            table = _run_bq_scan(project_id, bq_sql)
+
+        ipc = arrow_table_to_ipc_bytes(table)
+
+        # Enforce max_result_bytes guard (spec §3.4 step 8)
+        if len(ipc) > _max_result_bytes():
+            # Truncate by taking only as many rows as fit roughly
+            # Simple heuristic: cap rows to estimated avg per max_bytes
+            row_count = table.num_rows
+            avg = max(1, len(ipc) // max(row_count, 1))
+            keep = min(row_count, _max_result_bytes() // max(avg, 1))
+            table = table.slice(0, keep)
+            ipc = arrow_table_to_ipc_bytes(table)
+
+        # Record bytes for daily quota
+        quota.record_bytes(user=user_id, n=len(ipc))
+        return ipc
+
+
+@router.post("/scan")
+async def scan_endpoint(
+    raw: dict,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    project_id = get_value("data_source", "bigquery", "project", default="") or ""
+    quota = _build_quota_tracker()
+    try:
+        ipc = run_scan(conn, user, raw, project_id=project_id, quota=quota)
+        return Response(content=ipc, media_type=CONTENT_TYPE)
+    except WhereValidationError as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "validator_rejected", "kind": e.kind, "details": e.detail or {}},
+        )
+    except QuotaExceededError as e:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": "quota_exceeded",
+                "kind": e.kind,
+                "current": e.current,
+                "limit": e.limit,
+                "retry_after_seconds": e.retry_after_seconds,
+            },
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="table not found")
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="not authorized")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
