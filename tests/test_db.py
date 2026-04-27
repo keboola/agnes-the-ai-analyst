@@ -326,7 +326,11 @@ class TestMigrationSafety:
             conn.close()
 
     def test_future_version_is_noop(self, tmp_path, monkeypatch):
-        """_ensure_schema does nothing when schema_version > SCHEMA_VERSION."""
+        """``_ensure_schema`` does not modify ``schema_version`` when it's
+        already past ``SCHEMA_VERSION``. The unconditional ``_SYSTEM_SCHEMA``
+        self-heal pass *does* run on the future-version DB — it's all
+        ``CREATE TABLE IF NOT EXISTS``, so tables this binary expects get
+        materialized — but the version row stays put."""
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         import duckdb as _duckdb
         from src.db import _ensure_schema, get_schema_version
@@ -340,6 +344,82 @@ class TestMigrationSafety:
                 "INSERT INTO schema_version (version) VALUES (99);"
             )
             _ensure_schema(conn)
+            assert get_schema_version(conn) == 99
+        finally:
+            conn.close()
+
+    def test_split_brain_future_version_with_missing_tables_self_heals(
+        self, tmp_path, monkeypatch,
+    ):
+        """The agnes-dev incident regression. Pin the contract:
+
+        Concrete shape: contributor experiments with a "lab" future-schema
+        branch (PR #72 etc.) that bumps DB to v10/v11 with its own table
+        layout. They later switch/rebase to the released binary (v9). Their
+        on-disk DB has ``schema_version=10`` but is missing the v9 tables
+        the lab schema never created. Without self-heal, every query against
+        ``user_role_grants`` / ``internal_roles`` crashes with a Catalog
+        Error at runtime — the migration block correctly skips (we don't
+        downgrade), but nothing creates the missing tables either.
+
+        The fix is the unconditional ``conn.execute(_SYSTEM_SCHEMA)`` at the
+        top of ``_ensure_schema``. This test pins it: synthesize a v99 DB
+        that's missing ``user_role_grants`` + ``internal_roles``, run
+        ``_ensure_schema``, assert both tables now exist *and* the
+        ``schema_version`` row stays at 99."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        import duckdb as _duckdb
+        from src.db import _ensure_schema, get_schema_version
+
+        db_path = tmp_path / "state" / "system.duckdb"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = _duckdb.connect(str(db_path))
+        try:
+            # Synthesize an "old binary on a future-schema DB" state: only
+            # the schema_version table exists (no v9 tables, no lab v10
+            # tables either — matches the exact agnes-dev shape after
+            # whatever lab migration had run before the rollback).
+            conn.execute(
+                "CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP DEFAULT current_timestamp);"
+                "INSERT INTO schema_version (version) VALUES (99);"
+            )
+
+            # Sanity: v9 tables are NOT there before the call.
+            tables_before = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema = ?",
+                    ["main"],
+                ).fetchall()
+            }
+            assert "user_role_grants" not in tables_before
+            assert "internal_roles" not in tables_before
+
+            _ensure_schema(conn)
+
+            # After: tables exist (self-heal worked) AND version row stays.
+            tables_after = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema = ?",
+                    ["main"],
+                ).fetchall()
+            }
+            assert "user_role_grants" in tables_after, (
+                "self-heal must create user_role_grants on a future-version DB"
+            )
+            assert "internal_roles" in tables_after, (
+                "self-heal must create internal_roles on a future-version DB"
+            )
+            # group_mappings + users are also expected — covered for
+            # completeness so the regression catches narrower edits to
+            # _SYSTEM_SCHEMA that drop one of these.
+            assert "group_mappings" in tables_after
+            assert "users" in tables_after
+
+            # The future-version contract still holds: version row untouched.
             assert get_schema_version(conn) == 99
         finally:
             conn.close()

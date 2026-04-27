@@ -13,6 +13,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 <!-- Add bullets here. Group: Added / Changed / Fixed / Removed / Internal.
      Mark breaking changes with **BREAKING** at the start of the bullet. -->
 
+## [0.11.6] — 2026-04-27
+
+Hotfix release for the 0.11.5 → agnes-dev deploy. Cleanly recovers any system DB that's on a *future* schema version this binary doesn't understand but is missing tables the binary's code expects to exist.
+
+### Fixed
+
+- **Split-brain self-heal: missing v9 tables on future-schema DBs** (agnes-dev incident, 2026-04-27). Discovered when `0.11.5` deployed onto a DB that had been bumped to `schema_version=10` during local experimentation with a parallel WIP branch. The lab v10 migration created its own table set without including the v9 role tables (`user_role_grants`, `internal_roles`, `group_mappings`); when the v9 binary booted against this DB, `_ensure_schema` correctly identified `current=10 > SCHEMA_VERSION=9` as a future-version-rollback and skipped its migration ladder. But it also skipped the table-creation step — so every subsequent query against `user_role_grants` (e.g. `_hydrate_legacy_role`, `/profile`, `require_internal_role`'s DB fallback path, every admin-gated request) crashed with `_duckdb.CatalogException: Table with name user_role_grants does not exist`. Result: HTTP 500 on `/profile`, all admin nav vanished, role-gated endpoints returned 403. Fix: hoisted `conn.execute(_SYSTEM_SCHEMA)` to the top of `_ensure_schema`, **unconditional**. `_SYSTEM_SCHEMA` is all `CREATE TABLE IF NOT EXISTS`, so existing tables stay untouched (columns + data preserved); missing tables get created. Cost: dozens of no-op DDL statements per process start (negligible). The migration block below still calls `_SYSTEM_SCHEMA` when migrating; that's the redundant-but-cheap follow-up — left in place so the migration ladder reads chronologically. New `test_split_brain_future_version_with_missing_tables_self_heals` regression in `tests/test_db.py::TestMigrationSafety` pins the contract: future-version DB with missing v9 tables → tables exist after `_ensure_schema` *and* `schema_version` row stays at the future value (i.e. we self-heal the schema without falsely advertising a downgrade).
+
+### Internal
+
+- `test_future_version_is_noop` docstring updated to reflect that the self-heal pass *does* run on a future-version DB, just doesn't touch the version row. The test still passes unchanged — its only assertion was the version-row contract, which holds.
+
 ## [0.11.5] — 2026-04-27
 
 Follow-up release for PR #73: addresses four rounds of Devin AI review on the role-management-complete branch. No new public-API surface; the user-visible payoff is that v8→v9-migrated installations now work end-to-end (login flows, user list, admin nav, privilege revocation), and `make local-dev` startup is finally quiet.
