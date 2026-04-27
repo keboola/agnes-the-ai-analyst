@@ -65,16 +65,30 @@ def sync(
 
         # 2. Determine what to download
         to_download = []
+        skipped_remote = []
         for tid, info in server_tables.items():
             if table and tid != table:
                 continue
             if docs_only:
+                continue
+            # Tables with query_mode='remote' have no parquet on the server —
+            # they're queried via /api/query (BQ pushdown). Skip in sync.
+            if info.get("query_mode") == "remote":
+                skipped_remote.append(tid)
                 continue
             local_hash = local_tables.get(tid, {}).get("hash", "")
             server_hash = info.get("hash", "")
             # Download if: hashes differ, or no local copy, or hash is empty (not computed)
             if server_hash != local_hash or tid not in local_tables or not server_hash:
                 to_download.append(tid)
+
+        if skipped_remote and not as_json:
+            preview = ", ".join(skipped_remote[:5])
+            extra = f" (+{len(skipped_remote) - 5} more)" if len(skipped_remote) > 5 else ""
+            typer.echo(
+                f"Skipping {len(skipped_remote)} remote-mode tables: {preview}{extra}",
+                err=True,
+            )
 
         # Switch the bar from indeterminate to "X/N" progress once we know the total.
         progress.update(
