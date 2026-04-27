@@ -602,3 +602,136 @@ class TestGetAnalyticsDbReadonly:
             assert malicious_name not in attached
         finally:
             conn.close()
+
+
+class TestV9ToV12Migration:
+    """Regression tests for the v9→v12 migration path.
+
+    Before this fix, _V9_TO_V10_MIGRATIONS was missing the `audience` ALTER,
+    so any install upgrading from v9 ended up without the column, causing
+    BinderException on every /api/memory* call.
+    """
+
+    _STUB_TABLES = [
+        "CREATE TABLE IF NOT EXISTS sync_state (table_id VARCHAR PRIMARY KEY)",
+        "CREATE TABLE IF NOT EXISTS sync_history (id VARCHAR PRIMARY KEY, table_id VARCHAR)",
+        "CREATE TABLE IF NOT EXISTS user_sync_settings (user_id VARCHAR, dataset VARCHAR, PRIMARY KEY(user_id, dataset))",
+        "CREATE TABLE IF NOT EXISTS knowledge_votes (item_id VARCHAR, user_id VARCHAR, PRIMARY KEY(item_id, user_id))",
+        "CREATE TABLE IF NOT EXISTS audit_log (id VARCHAR PRIMARY KEY, action VARCHAR)",
+        "CREATE TABLE IF NOT EXISTS telegram_links (user_id VARCHAR PRIMARY KEY, chat_id BIGINT)",
+        "CREATE TABLE IF NOT EXISTS pending_codes (code VARCHAR PRIMARY KEY, chat_id BIGINT)",
+        "CREATE TABLE IF NOT EXISTS script_registry (id VARCHAR PRIMARY KEY, name VARCHAR, source TEXT)",
+        "CREATE TABLE IF NOT EXISTS table_profiles (table_id VARCHAR PRIMARY KEY, profile JSON)",
+        "CREATE TABLE IF NOT EXISTS dataset_permissions (user_id VARCHAR, dataset VARCHAR, PRIMARY KEY(user_id, dataset))",
+        "CREATE TABLE IF NOT EXISTS personal_access_tokens (id VARCHAR PRIMARY KEY, user_id VARCHAR NOT NULL, name VARCHAR NOT NULL, token_hash VARCHAR NOT NULL, prefix VARCHAR NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS metric_definitions (id VARCHAR PRIMARY KEY, name VARCHAR)",
+        "CREATE TABLE IF NOT EXISTS column_metadata (id VARCHAR PRIMARY KEY)",
+    ]
+
+    def _create_v9_db(self, db_path):
+        """Create a minimal v9-schema DuckDB — knowledge_items without audience column."""
+        import duckdb as _duckdb
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = _duckdb.connect(str(db_path))
+        try:
+            conn.execute(
+                "CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP DEFAULT current_timestamp);"
+                "INSERT INTO schema_version (version) VALUES (9);"
+            )
+            conn.execute("""
+                CREATE TABLE users (
+                    id VARCHAR PRIMARY KEY, email VARCHAR, name VARCHAR, role VARCHAR,
+                    active BOOLEAN DEFAULT TRUE, groups VARCHAR
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE table_registry (
+                    id VARCHAR PRIMARY KEY, name VARCHAR NOT NULL,
+                    source_type VARCHAR, bucket VARCHAR, source_table VARCHAR,
+                    query_mode VARCHAR DEFAULT 'local', sync_schedule VARCHAR,
+                    profile_after_sync BOOLEAN DEFAULT true, is_public BOOLEAN DEFAULT true,
+                    primary_key VARCHAR, folder VARCHAR, description TEXT,
+                    registered_by VARCHAR, registered_at TIMESTAMP DEFAULT current_timestamp
+                )
+            """)
+            # knowledge_items WITHOUT the audience column — simulates v9 state
+            conn.execute("""
+                CREATE TABLE knowledge_items (
+                    id VARCHAR PRIMARY KEY, title VARCHAR, content TEXT, category VARCHAR,
+                    source_user VARCHAR, tags JSON, status VARCHAR DEFAULT 'pending',
+                    confidence DOUBLE, domain VARCHAR, entities JSON,
+                    source_type VARCHAR DEFAULT 'claude_local_md', source_ref VARCHAR,
+                    valid_from TIMESTAMP, valid_until TIMESTAMP, supersedes VARCHAR,
+                    sensitivity VARCHAR DEFAULT 'internal', is_personal BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP, updated_at TIMESTAMP
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE internal_roles (
+                    id VARCHAR PRIMARY KEY, key VARCHAR UNIQUE NOT NULL,
+                    display_name VARCHAR NOT NULL, description TEXT, owner_module VARCHAR,
+                    implies VARCHAR DEFAULT '[]', is_core BOOLEAN DEFAULT false,
+                    created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+                    updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE group_mappings (
+                    id VARCHAR PRIMARY KEY, external_group_id VARCHAR NOT NULL,
+                    internal_role_id VARCHAR NOT NULL, assigned_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+                    assigned_by VARCHAR, UNIQUE (external_group_id, internal_role_id)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE user_role_grants (
+                    id VARCHAR PRIMARY KEY, user_id VARCHAR NOT NULL, internal_role_id VARCHAR NOT NULL,
+                    granted_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+                    granted_by VARCHAR, source VARCHAR DEFAULT 'direct',
+                    UNIQUE (user_id, internal_role_id)
+                )
+            """)
+            for ddl in self._STUB_TABLES:
+                conn.execute(ddl)
+        finally:
+            conn.close()
+
+    def test_audience_column_added_on_v9_upgrade(self, tmp_path, monkeypatch):
+        """Upgrading from v9 must add knowledge_items.audience (regression: was missing)."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        import duckdb as _duckdb
+        from src.db import _ensure_schema, SCHEMA_VERSION
+
+        db_path = tmp_path / "state" / "system.duckdb"
+        self._create_v9_db(db_path)
+
+        conn = _duckdb.connect(str(db_path))
+        try:
+            _ensure_schema(conn)
+            cols = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT column_name FROM information_schema.columns WHERE table_name='knowledge_items'"
+                ).fetchall()
+            }
+            assert "audience" in cols, (
+                "knowledge_items.audience missing after v9→v12 migration — "
+                "BinderException would fire on every /api/memory* call"
+            )
+        finally:
+            conn.close()
+
+    def test_v9_upgrade_reaches_current_schema_version(self, tmp_path, monkeypatch):
+        """v9 database must reach SCHEMA_VERSION after migration."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        import duckdb as _duckdb
+        from src.db import _ensure_schema, get_schema_version, SCHEMA_VERSION
+
+        db_path = tmp_path / "state" / "system.duckdb"
+        self._create_v9_db(db_path)
+
+        conn = _duckdb.connect(str(db_path))
+        try:
+            _ensure_schema(conn)
+            assert get_schema_version(conn) == SCHEMA_VERSION
+        finally:
+            conn.close()

@@ -198,6 +198,9 @@ async def google_callback(request: Request):
                 return RedirectResponse(url="/login?error=deactivated")
             # Write groups only when the column is still NULL so admin overrides
             # (written via the users API) are never silently overwritten.
+            # Note: if an admin explicitly sets groups=[] this guard won't fire
+            # again even if the user's actual memberships change — that's
+            # intentional; admins own the override lifecycle.
             if user.get("groups") is None and groups:
                 raw_names = [g["id"].split("@")[0] for g in groups if g.get("id")]
                 repo.update(user["id"], groups=json.dumps(raw_names))

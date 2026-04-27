@@ -236,10 +236,7 @@ async def vote_knowledge(
     if not item or not _can_view_item(user, item):
         raise HTTPException(status_code=404, detail="Knowledge item not found")
     if request.vote == 0:
-        conn.execute(
-            "DELETE FROM knowledge_votes WHERE item_id = ? AND user_id = ?",
-            [item_id, user["id"]],
-        )
+        repo.unvote(item_id, user["id"])
     else:
         repo.vote(item_id, user["id"], request.vote)
     return repo.get_votes(item_id)
@@ -589,9 +586,10 @@ async def get_bundle(
 ):
     """Token-budgeted bundle of knowledge items for AI agent injection.
 
-    Returns all mandatory items (always included) plus confidence×recency-ranked
-    approved items that fit within the token budget. Audience-filtered by the
-    caller's group memberships (admins see everything).
+    Mandatory items are always included regardless of the token budget.
+    Approved items are confidence×recency-ranked and included until the budget
+    is exhausted. Audience-filtered by the caller's group memberships (admins
+    see everything).
     """
     from datetime import datetime, timezone
 
@@ -618,7 +616,7 @@ async def get_bundle(
     now = datetime.now(timezone.utc)
 
     def _rank(item: dict) -> float:
-        confidence = float(item.get("confidence") or 0.5)
+        confidence = float(item["confidence"]) if item.get("confidence") is not None else 0.5
         updated_raw = item.get("updated_at")
         if updated_raw:
             try:

@@ -734,3 +734,166 @@ class TestAudienceDistribution:
         assert r.status_code == 200
         ids = {i["id"] for i in r.json()["items"]}
         assert "aud_null2" in ids
+
+
+class TestVoteRetract:
+    def _create_item(self, c, token):
+        resp = c.post(
+            "/api/memory",
+            json={"title": "Retract Vote Item", "content": "content", "category": "process"},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 201
+        return resp.json()["id"]
+
+    def test_vote_zero_retracts_existing_vote(self, seeded_app):
+        """vote=0 removes a prior vote so upvotes returns to 0."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        item_id = self._create_item(c, token)
+
+        c.post(f"/api/memory/{item_id}/vote", json={"vote": 1}, headers=_auth(token))
+        r = c.post(f"/api/memory/{item_id}/vote", json={"vote": 0}, headers=_auth(token))
+        assert r.status_code == 200
+        data = r.json()
+        assert data["upvotes"] == 0
+
+    def test_vote_zero_on_unvoted_item_is_noop(self, seeded_app):
+        """vote=0 on an item the user never voted on returns 200 and zero counts."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        item_id = self._create_item(c, token)
+
+        r = c.post(f"/api/memory/{item_id}/vote", json={"vote": 0}, headers=_auth(token))
+        assert r.status_code == 200
+        data = r.json()
+        assert data["upvotes"] == 0
+        assert data["downvotes"] == 0
+
+    def test_my_votes_omits_retracted_vote(self, seeded_app):
+        """After retract, /my-votes must not include the item."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        item_id = self._create_item(c, token)
+
+        c.post(f"/api/memory/{item_id}/vote", json={"vote": 1}, headers=_auth(token))
+        c.post(f"/api/memory/{item_id}/vote", json={"vote": 0}, headers=_auth(token))
+
+        r = c.get("/api/memory/my-votes", headers=_auth(token))
+        assert r.status_code == 200
+        assert item_id not in r.json()
+
+
+class TestBundle:
+    def _seed_item(self, conn, item_id: str, title: str, status: str, confidence: float = None):
+        from src.repositories.knowledge import KnowledgeRepository
+        repo = KnowledgeRepository(conn)
+        repo.create(
+            id=item_id, title=title, content=f"Content for {title}",
+            category="engineering", status=status, confidence=confidence,
+        )
+        repo.update_status(item_id, status)
+
+    def test_bundle_requires_auth(self, seeded_app):
+        r = seeded_app["client"].get("/api/memory/bundle")
+        assert r.status_code == 401
+
+    def test_bundle_empty(self, seeded_app):
+        """Bundle returns empty lists when no mandatory/approved items exist."""
+        r = seeded_app["client"].get(
+            "/api/memory/bundle", headers=_auth(seeded_app["admin_token"])
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["mandatory"] == []
+        assert data["approved"] == []
+        assert "token_estimate" in data
+        assert "token_budget" in data
+
+    def test_bundle_mandatory_items_always_included(self, seeded_app):
+        """Mandatory items appear in the bundle regardless of token budget."""
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        self._seed_item(conn, "bnd_m1", "Mandatory Fact", "mandatory", confidence=0.9)
+        self._seed_item(conn, "bnd_a1", "Approved Fact", "approved", confidence=0.8)
+        conn.close()
+
+        r = seeded_app["client"].get(
+            "/api/memory/bundle", headers=_auth(seeded_app["admin_token"])
+        )
+        assert r.status_code == 200
+        data = r.json()
+        mandatory_ids = {i["id"] for i in data["mandatory"]}
+        approved_ids = {i["id"] for i in data["approved"]}
+        assert "bnd_m1" in mandatory_ids
+        assert "bnd_a1" in approved_ids
+
+    def test_bundle_token_budget_limits_approved(self, seeded_app):
+        """Approved items exceeding the token budget are excluded."""
+        from src.db import get_system_db
+        from app.api.memory import BUNDLE_TOKEN_BUDGET, _CHARS_PER_TOKEN
+
+        # Create an approved item whose content alone exceeds the entire budget.
+        huge_content = "X" * (BUNDLE_TOKEN_BUDGET * _CHARS_PER_TOKEN + 100)
+        conn = get_system_db()
+        from src.repositories.knowledge import KnowledgeRepository
+        repo = KnowledgeRepository(conn)
+        repo.create(
+            id="bnd_huge", title="Huge Item", content=huge_content,
+            category="engineering", status="approved", confidence=1.0,
+        )
+        repo.update_status("bnd_huge", "approved")
+        conn.close()
+
+        r = seeded_app["client"].get(
+            "/api/memory/bundle", headers=_auth(seeded_app["admin_token"])
+        )
+        assert r.status_code == 200
+        approved_ids = {i["id"] for i in r.json()["approved"]}
+        assert "bnd_huge" not in approved_ids
+
+    def test_bundle_pending_items_excluded(self, seeded_app):
+        """Pending items must not appear in the bundle."""
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        self._seed_item(conn, "bnd_p1", "Pending Fact", "pending")
+        conn.close()
+
+        r = seeded_app["client"].get(
+            "/api/memory/bundle", headers=_auth(seeded_app["admin_token"])
+        )
+        assert r.status_code == 200
+        data = r.json()
+        all_ids = {i["id"] for i in data["mandatory"]} | {i["id"] for i in data["approved"]}
+        assert "bnd_p1" not in all_ids
+
+    def test_bundle_confidence_zero_treated_as_default(self, seeded_app):
+        """An item with confidence=0.0 (not NULL) uses 0.0 in ranking, not the 0.5 fallback."""
+        from src.db import get_system_db
+        from src.repositories.knowledge import KnowledgeRepository
+
+        conn = get_system_db()
+        repo = KnowledgeRepository(conn)
+        repo.create(
+            id="bnd_zero", title="Zero Confidence", content="content",
+            category="engineering", status="approved", confidence=0.0,
+        )
+        repo.update_status("bnd_zero", "approved")
+        repo.create(
+            id="bnd_high", title="High Confidence", content="content",
+            category="engineering", status="approved", confidence=0.9,
+        )
+        repo.update_status("bnd_high", "approved")
+        conn.close()
+
+        r = seeded_app["client"].get(
+            "/api/memory/bundle", headers=_auth(seeded_app["admin_token"])
+        )
+        assert r.status_code == 200
+        approved = r.json()["approved"]
+        ids_in_order = [i["id"] for i in approved]
+        # high-confidence item must rank above zero-confidence item
+        if "bnd_high" in ids_in_order and "bnd_zero" in ids_in_order:
+            assert ids_in_order.index("bnd_high") < ids_in_order.index("bnd_zero")

@@ -595,6 +595,7 @@ _V8_TO_V9_MIGRATIONS = [
 
 _V9_TO_V10_MIGRATIONS = [
     # New columns on knowledge_items for context engineering
+    "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS audience VARCHAR",
     "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS confidence DOUBLE",
     "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS domain VARCHAR",
     "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS entities JSON",

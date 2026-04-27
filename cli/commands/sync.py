@@ -171,8 +171,15 @@ def _item_to_md(item: dict) -> str:
     return "\n".join(lines)
 
 
+_SAFE_ID_RE = __import__("re").compile(r"^[a-zA-Z0-9_\-]{1,128}$")
+
+
 def _fetch_and_write_rules(local_dir: Path) -> None:
     """Fetch /api/memory/bundle and write .claude/rules/km_*.md files.
+
+    The km_*.md namespace in .claude/rules/ is server-managed: this function
+    is the only writer, and it prunes any stale km_*.md files on every run.
+    Do not create km_*.md files manually — they will be removed on next sync.
 
     Best-effort — sync continues if the server is unreachable or the endpoint
     returns an error. Stale files from previously-mandated items are removed.
@@ -191,7 +198,11 @@ def _fetch_and_write_rules(local_dir: Path) -> None:
 
     # Write one file per mandatory item.
     for item in bundle.get("mandatory", []):
-        fname = f"km_{item['id']}.md"
+        item_id = item.get("id", "")
+        if not _SAFE_ID_RE.match(item_id):
+            typer.echo(f"Skipping mandatory item with unsafe id: {item_id!r}", err=True)
+            continue
+        fname = f"km_{item_id}.md"
         (rules_dir / fname).write_text(_item_to_md(item), encoding="utf-8")
         written.add(fname)
 

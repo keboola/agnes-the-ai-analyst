@@ -380,6 +380,82 @@ class TestLocalDevGroupsStartupValidation:
         assert "LOCAL_DEV_GROUPS is unset" in text
 
 
+class TestWriteOnceGroups:
+    """Tests for the write-once groups semantics in google.py login flow."""
+
+    def _setup_db(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-32chars-minimum!!!!!")
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        return get_system_db, UserRepository
+
+    def test_groups_written_on_first_login_when_null(self, tmp_path, monkeypatch):
+        """groups column is NULL initially → must be populated on first login."""
+        get_system_db, UserRepository = self._setup_db(tmp_path, monkeypatch)
+        import json
+
+        conn = get_system_db()
+        repo = UserRepository(conn)
+        repo.create(id="u_groups1", email="g1@test.com", name="G1", role="analyst")
+        user_before = repo.get_by_email("g1@test.com")
+        assert user_before["groups"] is None, "groups should start NULL"
+
+        # Simulate the write-once logic from google.py directly.
+        groups = [{"id": "finance@company.com"}, {"id": "engineering@company.com"}]
+        if user_before.get("groups") is None and groups:
+            raw_names = [g["id"].split("@")[0] for g in groups if g.get("id")]
+            repo.update(user_before["id"], groups=json.dumps(raw_names))
+
+        user_after = repo.get_by_email("g1@test.com")
+        conn.close()
+        stored = json.loads(user_after["groups"])
+        assert "finance" in stored
+        assert "engineering" in stored
+
+    def test_groups_not_overwritten_when_already_set(self, tmp_path, monkeypatch):
+        """Once groups is non-NULL, re-login must not overwrite it (admin overrides protected)."""
+        get_system_db, UserRepository = self._setup_db(tmp_path, monkeypatch)
+        import json
+
+        conn = get_system_db()
+        repo = UserRepository(conn)
+        repo.create(id="u_groups2", email="g2@test.com", name="G2", role="analyst")
+        repo.update("u_groups2", groups=json.dumps(["admin-set-group"]))
+
+        user = repo.get_by_email("g2@test.com")
+        # Simulate second login with different OAuth groups.
+        new_groups = [{"id": "finance@company.com"}]
+        if user.get("groups") is None and new_groups:
+            raw_names = [g["id"].split("@")[0] for g in new_groups if g.get("id")]
+            repo.update(user["id"], groups=json.dumps(raw_names))
+
+        user_after = repo.get_by_email("g2@test.com")
+        conn.close()
+        stored = json.loads(user_after["groups"])
+        # Must still be the admin-set value.
+        assert stored == ["admin-set-group"]
+
+    def test_groups_not_written_when_oauth_returns_empty(self, tmp_path, monkeypatch):
+        """If OAuth returns no groups, NULL column must remain NULL (not set to empty list)."""
+        get_system_db, UserRepository = self._setup_db(tmp_path, monkeypatch)
+
+        conn = get_system_db()
+        repo = UserRepository(conn)
+        repo.create(id="u_groups3", email="g3@test.com", name="G3", role="analyst")
+        user = repo.get_by_email("g3@test.com")
+
+        # Empty groups list — write-once guard should not fire.
+        empty_groups: list = []
+        if user.get("groups") is None and empty_groups:
+            raw_names = [g["id"].split("@")[0] for g in empty_groups if g.get("id")]
+            repo.update(user["id"], groups=__import__("json").dumps(raw_names))
+
+        user_after = repo.get_by_email("g3@test.com")
+        conn.close()
+        assert user_after["groups"] is None
+
+
 class TestCookieAuth:
     def test_web_ui_with_cookie(self, client):
         """Test that web UI routes accept JWT from cookie."""

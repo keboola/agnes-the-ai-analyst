@@ -201,6 +201,12 @@ class KnowledgeRepository:
             [item_id, user_id, vote, now],
         )
 
+    def unvote(self, item_id: str, user_id: str) -> None:
+        self.conn.execute(
+            "DELETE FROM knowledge_votes WHERE item_id = ? AND user_id = ?",
+            [item_id, user_id],
+        )
+
     def get_votes(self, item_id: str) -> Dict[str, int]:
         result = self.conn.execute(
             """SELECT
