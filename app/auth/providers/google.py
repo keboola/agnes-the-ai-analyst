@@ -166,6 +166,8 @@ async def google_callback(request: Request):
         # Find or create user
         from src.db import get_system_db
         from src.repositories.users import UserRepository
+        from src.repositories.plugin_access import UserGroupsRepository
+        from app.auth.group_sync import fetch_user_groups
         import uuid
 
         conn = get_system_db()
@@ -185,6 +187,20 @@ async def google_callback(request: Request):
             user = _hydrate_legacy_role(user, conn)
             if not bool(user.get("active", True)):
                 return RedirectResponse(url="/login?error=deactivated")
+
+            # Sync Workspace groups — fail-soft: any error leaves users.groups
+            # as-is (stale from previous login) and the login still proceeds.
+            try:
+                groups = fetch_user_groups(email)
+                if groups:
+                    ug_repo = UserGroupsRepository(conn)
+                    for group_name in groups:
+                        ug_repo.ensure(group_name)
+                    repo.set_groups(user["id"], groups)
+            except Exception as sync_err:  # noqa: BLE001 - fail-soft by design
+                logger.warning(
+                    "Google group sync failed for %s: %s", email, sync_err
+                )
         finally:
             conn.close()
 

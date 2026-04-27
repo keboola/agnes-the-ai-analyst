@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 11
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS users (
     active BOOLEAN NOT NULL DEFAULT TRUE,
     deactivated_at TIMESTAMP,
     deactivated_by VARCHAR,
+    groups JSON,
     created_at TIMESTAMP DEFAULT current_timestamp,
     updated_at TIMESTAMP
 );
@@ -290,6 +291,53 @@ CREATE TABLE IF NOT EXISTS user_role_grants (
     granted_by        VARCHAR,
     source            VARCHAR DEFAULT 'direct',
     UNIQUE (user_id, internal_role_id)
+);
+
+CREATE TABLE IF NOT EXISTS marketplace_registry (
+    id              VARCHAR PRIMARY KEY,
+    name            VARCHAR NOT NULL,
+    url             VARCHAR NOT NULL,
+    branch          VARCHAR,
+    token_env       VARCHAR,
+    description     TEXT,
+    registered_by   VARCHAR,
+    registered_at   TIMESTAMP DEFAULT current_timestamp,
+    last_synced_at  TIMESTAMP,
+    last_commit_sha VARCHAR,
+    last_error      TEXT
+);
+
+CREATE TABLE IF NOT EXISTS marketplace_plugins (
+    marketplace_id  VARCHAR NOT NULL,
+    name            VARCHAR NOT NULL,
+    description     TEXT,
+    version         VARCHAR,
+    author_name     VARCHAR,
+    homepage        VARCHAR,
+    category        VARCHAR,
+    source_type     VARCHAR,
+    source_spec     JSON,
+    raw             JSON,
+    updated_at      TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (marketplace_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS user_groups (
+    id          VARCHAR PRIMARY KEY,
+    name        VARCHAR NOT NULL UNIQUE,
+    description TEXT,
+    is_system   BOOLEAN DEFAULT FALSE,
+    created_at  TIMESTAMP DEFAULT current_timestamp,
+    created_by  VARCHAR
+);
+
+CREATE TABLE IF NOT EXISTS plugin_access (
+    group_id       VARCHAR NOT NULL,
+    marketplace_id VARCHAR NOT NULL,
+    plugin_name    VARCHAR NOT NULL,
+    granted_at     TIMESTAMP DEFAULT current_timestamp,
+    granted_by     VARCHAR,
+    PRIMARY KEY (group_id, marketplace_id, plugin_name)
 );
 """
 
@@ -548,6 +596,69 @@ _V8_TO_V9_MIGRATIONS = [
     """,
 ]
 
+# v10: marketplace registry + plugin listing + group access mapping. Was
+# plugin-mapping's v7→v8 + v8→v9 before PR #73 took the v9 slot for role
+# management; shifted up to v10 here.
+_V9_TO_V10_MIGRATIONS = [
+    """
+    CREATE TABLE IF NOT EXISTS marketplace_registry (
+        id              VARCHAR PRIMARY KEY,
+        name            VARCHAR NOT NULL,
+        url             VARCHAR NOT NULL,
+        branch          VARCHAR,
+        token_env       VARCHAR,
+        description     TEXT,
+        registered_by   VARCHAR,
+        registered_at   TIMESTAMP DEFAULT current_timestamp,
+        last_synced_at  TIMESTAMP,
+        last_commit_sha VARCHAR,
+        last_error      TEXT
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS marketplace_plugins (
+        marketplace_id  VARCHAR NOT NULL,
+        name            VARCHAR NOT NULL,
+        description     TEXT,
+        version         VARCHAR,
+        author_name     VARCHAR,
+        homepage        VARCHAR,
+        category        VARCHAR,
+        source_type     VARCHAR,
+        source_spec     JSON,
+        raw             JSON,
+        updated_at      TIMESTAMP DEFAULT current_timestamp,
+        PRIMARY KEY (marketplace_id, name)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS user_groups (
+        id          VARCHAR PRIMARY KEY,
+        name        VARCHAR NOT NULL UNIQUE,
+        description TEXT,
+        created_at  TIMESTAMP DEFAULT current_timestamp,
+        created_by  VARCHAR
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS plugin_access (
+        group_id       VARCHAR NOT NULL,
+        marketplace_id VARCHAR NOT NULL,
+        plugin_name    VARCHAR NOT NULL,
+        granted_at     TIMESTAMP DEFAULT current_timestamp,
+        granted_by     VARCHAR,
+        PRIMARY KEY (group_id, marketplace_id, plugin_name)
+    )
+    """,
+]
+
+# v11: users.groups + user_groups.is_system. Was plugin-mapping's v9→v10;
+# shifted up to v11 here.
+_V10_TO_V11_MIGRATIONS = [
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS groups JSON",
+    "ALTER TABLE user_groups ADD COLUMN IF NOT EXISTS is_system BOOLEAN DEFAULT FALSE",
+]
+
 
 # Core role seed data — single source of truth. Used by both _seed_core_roles
 # (idempotent insert) and the v8→v9 backfill. Order matters: lowest privilege
@@ -660,6 +771,7 @@ def _backfill_users_role_to_grants(conn: duckdb.DuckDBPyConnection) -> None:
             "v9 backfill: seeded user_role_grants for %d existing user(s)",
             backfilled,
         )
+
 
 _V3_TO_V4_MIGRATIONS = [
     """
@@ -778,6 +890,12 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 ).fetchone()
                 if has_role_col:
                     conn.execute("UPDATE users SET role = NULL")
+            if current < 10:
+                for sql in _V9_TO_V10_MIGRATIONS:
+                    conn.execute(sql)
+            if current < 11:
+                for sql in _V10_TO_V11_MIGRATIONS:
+                    conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

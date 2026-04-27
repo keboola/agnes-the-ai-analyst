@@ -1,5 +1,6 @@
 """Repository for user management."""
 
+import json
 from datetime import datetime, timezone
 from typing import Any, Optional, List, Dict
 
@@ -107,6 +108,17 @@ class UserRepository:
         self.conn.execute(f"UPDATE users SET {set_clause} WHERE id = ?", values)
         if new_role is not None:
             self._grant_core_role(id, new_role)
+
+    def set_groups(self, user_id: str, groups: List[str]) -> None:
+        """Overwrite users.groups with the given list. Workspace is source of truth.
+
+        Kept out of update(**kwargs) on purpose — groups are rewritten only
+        from the authenticated login path, never via generic admin update.
+        """
+        self.conn.execute(
+            "UPDATE users SET groups = ?, updated_at = ? WHERE id = ?",
+            [json.dumps(list(groups)), datetime.now(timezone.utc), user_id],
+        )
 
     def count_admins(self, active_only: bool = True) -> int:
         """Count users holding the core.admin role.

@@ -679,6 +679,26 @@ async def admin_role_mapping_page(
     return templates.TemplateResponse(request, "admin_role_mapping.html", ctx)
 
 
+@router.get("/admin/marketplaces", response_class=HTMLResponse)
+async def admin_marketplaces_page(
+    request: Request,
+    user: dict = Depends(require_role(Role.ADMIN)),
+):
+    """Admin page for marketplace git repositories (register / sync / delete)."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_marketplaces.html", ctx)
+
+
+@router.get("/admin/plugin-access", response_class=HTMLResponse)
+async def admin_plugin_access_page(
+    request: Request,
+    user: dict = Depends(require_role(Role.ADMIN)),
+):
+    """Admin page — map which user groups may access which marketplace plugins."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_plugin_access.html", ctx)
+
+
 @router.get("/tokens", response_class=HTMLResponse)
 async def my_tokens_page(
     request: Request,

@@ -399,3 +399,174 @@ class TestCookieAuth:
         resp = client.get("/dashboard")
         # Should not be 401 — cookie auth works
         assert resp.status_code != 401
+
+
+class TestGoogleCallbackGroupSync:
+    """Google OAuth callback populates users.groups from Workspace.
+
+    The real google.py module captures GOOGLE_CLIENT_ID/SECRET at import
+    time and conditionally registers `oauth.google`. For tests we:
+      1. Patch `is_available` so the callback's early-return guard doesn't fire
+      2. Stub `oauth.google.authorize_access_token` with an AsyncMock
+      3. Stub `fetch_user_groups` at the import site (app.auth.providers.google)
+         to return a fixed list — no real Google traffic
+    """
+
+    @pytest.fixture
+    def google_app(self, tmp_path, monkeypatch):
+        import json as _json
+        from unittest.mock import AsyncMock
+        from types import SimpleNamespace
+
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-32chars-minimum!!!!!")
+
+        from app.main import create_app
+        import app.auth.providers.google as g_mod
+
+        # (1) bypass the is_available guard
+        monkeypatch.setattr(g_mod, "is_available", lambda: True)
+
+        # (2) fake oauth.google with async authorize_access_token
+        fake_oauth_google = SimpleNamespace(
+            authorize_access_token=AsyncMock(
+                return_value={
+                    "userinfo": {
+                        "email": "tester@groupon.com",
+                        "name": "Tester",
+                    }
+                }
+            )
+        )
+        monkeypatch.setattr(g_mod.oauth, "google", fake_oauth_google, raising=False)
+
+        # (3) fake fetch_user_groups — also patches the import inside
+        # google_callback because it does `from app.auth.group_sync import fetch_user_groups`
+        # inside the function body, so patching the source module is enough.
+        import app.auth.group_sync as gs_mod
+        monkeypatch.setattr(
+            gs_mod,
+            "fetch_user_groups",
+            lambda email: ["grp_a@groupon.com", "grp_b@groupon.com"],
+        )
+
+        app = create_app()
+        client = TestClient(app, follow_redirects=False)
+        return {"client": client, "json": _json}
+
+    def test_callback_creates_user_with_groups(self, google_app):
+        """First-time login → user row + groups populated + two user_groups rows."""
+        c = google_app["client"]
+        _json = google_app["json"]
+
+        resp = c.get("/auth/google/callback?code=x&state=y")
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/dashboard"
+        # access_token cookie set
+        assert "access_token" in resp.cookies
+
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        from src.repositories.plugin_access import UserGroupsRepository
+
+        conn = get_system_db()
+        try:
+            user = UserRepository(conn).get_by_email("tester@groupon.com")
+            assert user is not None
+            assert user["role"] == "analyst"
+            assert _json.loads(user["groups"]) == [
+                "grp_a@groupon.com",
+                "grp_b@groupon.com",
+            ]
+            names = {g["name"] for g in UserGroupsRepository(conn).list_all()}
+            assert "grp_a@groupon.com" in names
+            assert "grp_b@groupon.com" in names
+            # non-system flag
+            row = UserGroupsRepository(conn).get_by_name("grp_a@groupon.com")
+            assert row["is_system"] is False
+            assert row["created_by"] == "system:google-sync"
+        finally:
+            conn.close()
+
+    def test_callback_updates_groups_on_relogin(self, google_app, monkeypatch):
+        """Second login with a different group set overwrites the first."""
+        c = google_app["client"]
+        _json = google_app["json"]
+
+        # First login — default stub returns [a, b]
+        c.get("/auth/google/callback?code=x&state=y")
+
+        # Swap the mock to return a single, different group on the next call
+        import app.auth.group_sync as gs_mod
+        monkeypatch.setattr(
+            gs_mod, "fetch_user_groups", lambda email: ["grp_c@groupon.com"]
+        )
+
+        c.get("/auth/google/callback?code=x&state=y")
+
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+
+        conn = get_system_db()
+        try:
+            user = UserRepository(conn).get_by_email("tester@groupon.com")
+            assert _json.loads(user["groups"]) == ["grp_c@groupon.com"]
+        finally:
+            conn.close()
+
+    def test_callback_fails_soft_on_group_sync_exception(self, google_app, monkeypatch):
+        """An exception inside fetch_user_groups does not block the login."""
+        c = google_app["client"]
+        _json = google_app["json"]
+
+        def raise_boom(email):
+            raise RuntimeError("Google API is down")
+
+        import app.auth.group_sync as gs_mod
+        monkeypatch.setattr(gs_mod, "fetch_user_groups", raise_boom)
+
+        resp = c.get("/auth/google/callback?code=x&state=y")
+        # Login still proceeds, redirect to dashboard with token cookie
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/dashboard"
+        assert "access_token" in resp.cookies
+
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+
+        conn = get_system_db()
+        try:
+            user = UserRepository(conn).get_by_email("tester@groupon.com")
+            assert user is not None
+            # groups stays NULL (no previous value either)
+            assert user["groups"] is None
+        finally:
+            conn.close()
+
+    def test_callback_empty_groups_does_not_overwrite_existing(self, google_app, monkeypatch):
+        """fetch_user_groups returning [] means 'no data' — don't wipe existing
+           groups on a transient failure masked as empty."""
+        c = google_app["client"]
+        _json = google_app["json"]
+
+        # First login populates groups
+        c.get("/auth/google/callback?code=x&state=y")
+
+        # Second login: Google returns empty
+        import app.auth.group_sync as gs_mod
+        monkeypatch.setattr(gs_mod, "fetch_user_groups", lambda email: [])
+        c.get("/auth/google/callback?code=x&state=y")
+
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+
+        conn = get_system_db()
+        try:
+            user = UserRepository(conn).get_by_email("tester@groupon.com")
+            # Previous groups preserved
+            assert _json.loads(user["groups"]) == [
+                "grp_a@groupon.com",
+                "grp_b@groupon.com",
+            ]
+        finally:
+            conn.close()
