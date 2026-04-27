@@ -399,3 +399,35 @@ class TestSyncRespectsQueryMode:
         out = result.output or ""
         assert "skip" in out.lower() or "remote" in out.lower(), \
             f"expected stderr summary mentioning skipped/remote tables; got: {out!r}"
+
+        # Summary count separates unchanged vs remote-mode (Fix 1)
+        assert "Skipped (remote-mode)" in out, \
+            f"expected separate remote-mode summary line; got: {out!r}"
+
+    def test_sync_json_includes_skipped_remote(self, tmp_config):
+        """--json output must include skipped_remote list for programmatic consumers (Fix 2)."""
+        manifest = {
+            "tables": {
+                "orders": {"hash": _FAKE_PARQUET_MD5, "query_mode": "local", "source_type": "keboola"},
+                "bq_view": {"hash": "", "query_mode": "remote", "source_type": "bigquery"},
+            },
+            "assets": {},
+            "server_time": "2026-04-27T00:00:00Z",
+        }
+
+        with patch("cli.commands.sync.api_get", return_value=_resp(200, manifest)):
+            with patch("cli.commands.sync.stream_download", side_effect=_fake_stream_download):
+                with patch("cli.commands.sync._rebuild_duckdb_views"):
+                    result = runner.invoke(app, ["sync", "--json"])
+        assert result.exit_code == 0, f"sync --json failed: {result.output}"
+
+        # Rich Progress may emit a spinner line before the JSON block; match the
+        # pattern used by test_sync_json_output above.
+        output = result.output
+        json_start = output.find("{")
+        assert json_start >= 0, f"No JSON found in output: {output!r}"
+        data, _ = json.JSONDecoder().raw_decode(output[json_start:])
+
+        assert "skipped_remote" in data, f"--json output missing skipped_remote key: {data}"
+        assert "bq_view" in data["skipped_remote"], \
+            f"expected bq_view in skipped_remote; got: {data['skipped_remote']}"

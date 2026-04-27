@@ -109,7 +109,7 @@ def sync(
         parquet_dir = local_dir / "server" / "parquet"
         parquet_dir.mkdir(parents=True, exist_ok=True)
 
-        results = {"downloaded": [], "skipped": [], "errors": []}
+        results = {"downloaded": [], "skipped": [], "skipped_remote": list(skipped_remote), "errors": []}
         total = len(to_download)
         for idx, tid in enumerate(to_download, start=1):
             progress.update(task, description=f"[{idx}/{total}] Downloading {tid}...")
@@ -157,12 +157,14 @@ def sync(
         progress.update(task, description="Sync complete")
 
     # Output
-    skipped = len(server_tables) - len(to_download)
     if as_json:
         typer.echo(json.dumps(results, indent=2))
     else:
+        skipped_unchanged = len(server_tables) - len(to_download) - len(skipped_remote)
         typer.echo(f"Downloaded: {len(results['downloaded'])} tables")
-        typer.echo(f"Skipped (unchanged): {skipped}")
+        typer.echo(f"Skipped (unchanged): {skipped_unchanged}")
+        if skipped_remote:
+            typer.echo(f"Skipped (remote-mode): {len(skipped_remote)}")
         if results["errors"]:
             typer.echo(f"Errors: {len(results['errors'])}")
             for err in results["errors"]:
