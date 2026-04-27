@@ -74,8 +74,10 @@ def _log_webhook_event(event_data: dict) -> None:
         raw_event = event_data.get("webhookEvent", "unknown")
         if not isinstance(raw_event, str):
             raw_event = "unknown"
-        # Replace any non-`[A-Za-z0-9._-]` run with a single `_`. Also clip to
-        # 64 chars to bound filename length on hostile input.
+        # Replace any non-`[A-Za-z0-9_-]` run with a single `_` (dot
+        # deliberately excluded — see _WEBHOOK_EVENT_SAFE_RE module
+        # comment). Also clip to 64 chars to bound filename length on
+        # hostile input.
         event_type = _WEBHOOK_EVENT_SAFE_RE.sub("_", raw_event)[:64] or "unknown"
         filename = f"{timestamp}_{event_type}.json"
         try:
@@ -125,7 +127,10 @@ async def receive_jira_webhook(request: Request) -> Response:
         return JSONResponse({"detail": "Empty payload"}, status_code=400)
 
     webhook_event = event_data.get("webhookEvent", "unknown")
-    issue = event_data.get("issue", {})
+    # Defensive: some webhook senders pass `"issue": null` rather than
+    # omitting the key. Normalise to {} so the next .get() doesn't
+    # raise AttributeError on None.
+    issue = event_data.get("issue") or {}
     issue_key = issue.get("key", "")
     # Some Jira webhook event types deliver the key at the top level
     # instead of `issue.key` (e.g. delete events historically).

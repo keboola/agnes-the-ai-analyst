@@ -177,6 +177,29 @@ def test_path_traversal_in_issue_key_rejected(webhook_client, bad_key):
     assert resp.status_code == 400, f"key {bad_key!r} should have been rejected, got {resp.status_code}"
 
 
+def test_null_issue_field_does_not_crash(webhook_client):
+    """Issue #83 round-5: a payload with `issue: null` (not just missing)
+    used to raise AttributeError on `issue.get('key')` → unhandled 500.
+    The handler now normalises None to {} and falls through to the
+    400 'Malformed or missing issue key' response."""
+    payload = json.dumps({
+        "webhookEvent": "jira:issue_updated",
+        "issue": None,
+    }).encode()
+    sig = _sign(payload, "test-webhook-secret")
+
+    resp = webhook_client.post(
+        "/webhooks/jira",
+        content=payload,
+        headers={
+            "Content-Type": "application/json",
+            "X-Hub-Signature-256": sig,
+        },
+    )
+    assert resp.status_code == 400
+    assert "issue key" in resp.json()["detail"].lower()
+
+
 def test_valid_issue_key_accepted(webhook_client):
     """Sanity: a well-formed issue key still passes validation."""
     from unittest.mock import patch
