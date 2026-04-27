@@ -133,6 +133,25 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `keboola, bigquery`) is visible at boot rather than at the next
   failed attach. See
   `docs/superpowers/plans/2026-04-27-issue-81-trust-boundary.md`.
+- **Security (MEDIUM)**: extractor-side identifier validation (issue
+  #81 Group D / M15). The Keboola and BigQuery extractors interpolate
+  `table_name`, `bucket` / `dataset`, and `source_table` from
+  `table_registry` directly into `CREATE OR REPLACE VIEW`,
+  `INSERT INTO _meta`, and `COPY ... TO` SQL. Anyone with write access
+  to `table_registry` (admin, registry-write API) could inject SQL via
+  these identifiers. New shared module `src/identifier_validation.py`
+  exposes a strict `validate_identifier` (for our own view names —
+  `^[a-zA-Z_][a-zA-Z0-9_]{0,63}$`, used for `table_name` so it matches
+  the orchestrator's rebuild-time check and dashed names fail fast at
+  extraction rather than being silently dropped at rebuild) and a
+  relaxed `validate_quoted_identifier` (for upstream-typed names like
+  Keboola `in.c-foo` / BigQuery `my-dataset`:
+  `[a-zA-Z0-9_][a-zA-Z0-9_.\-]*`, refusing any character that could
+  close a `"..."` identifier literal). The orchestrator's existing
+  `_validate_identifier` was lifted into the new module so both layers
+  share a single source of truth; both extractors skip-and-continue on
+  unsafe rows (logged + counted in failure stats; the rest of the
+  registry still processes).
 
 ### Removed
 
