@@ -705,11 +705,11 @@
         <!-- Pagination -->
         <div id="pagination" class="pagination">
             {% if knowledge.total_pages > 1 %}
-            <button class="page-btn" onclick="goToPage({{ knowledge.page - 1 }})" {% if knowledge.page == 0 %}disabled{% endif %}>Prev</button>
-            {% for p in range(knowledge.total_pages) %}
-            <button class="page-btn {% if p == knowledge.page %}active{% endif %}" onclick="goToPage({{ p }})">{{ p + 1 }}</button>
+            <button class="page-btn" onclick="goToPage({{ knowledge.page - 1 }})" {% if knowledge.page == 1 %}disabled{% endif %}>Prev</button>
+            {% for p in range(1, knowledge.total_pages + 1) %}
+            <button class="page-btn {% if p == knowledge.page %}active{% endif %}" onclick="goToPage({{ p }})">{{ p }}</button>
             {% endfor %}
-            <button class="page-btn" onclick="goToPage({{ knowledge.page + 1 }})" {% if knowledge.page >= knowledge.total_pages - 1 %}disabled{% endif %}>Next</button>
+            <button class="page-btn" onclick="goToPage({{ knowledge.page + 1 }})" {% if knowledge.page >= knowledge.total_pages %}disabled{% endif %}>Next</button>
             {% endif %}
         </div>
 
@@ -890,13 +890,13 @@
         // Render pagination
         if (data.total_pages > 1) {
             let paginationHtml = `
-                <button class="page-btn" onclick="goToPage(${data.page - 1})" ${data.page === 0 ? 'disabled' : ''}>Prev</button>
+                <button class="page-btn" onclick="goToPage(${data.page - 1})" ${data.page === 1 ? 'disabled' : ''}>Prev</button>
             `;
-            for (let p = 0; p < data.total_pages; p++) {
-                paginationHtml += `<button class="page-btn ${p === data.page ? 'active' : ''}" onclick="goToPage(${p})">${p + 1}</button>`;
+            for (let p = 1; p <= data.total_pages; p++) {
+                paginationHtml += `<button class="page-btn ${p === data.page ? 'active' : ''}" onclick="goToPage(${p})">${p}</button>`;
             }
             paginationHtml += `
-                <button class="page-btn" onclick="goToPage(${data.page + 1})" ${data.page >= data.total_pages - 1 ? 'disabled' : ''}>Next</button>
+                <button class="page-btn" onclick="goToPage(${data.page + 1})" ${data.page >= data.total_pages ? 'disabled' : ''}>Next</button>
             `;
             pagination.innerHTML = paginationHtml;
         } else {

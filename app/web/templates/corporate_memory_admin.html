@@ -919,7 +919,7 @@
         <div id="tab-all" class="tab-content">
             <div class="filter-bar">
                 <label for="statusFilter">Status:</label>
-                <select class="filter-select" id="statusFilter" onchange="loadAllItems(0)">
+                <select class="filter-select" id="statusFilter" onchange="loadAllItems(1)">
                     <option value="">All</option>
                     <option value="pending">Pending</option>
                     <option value="approved">Approved</option>
@@ -928,7 +928,7 @@
                     <option value="revoked">Revoked</option>
                 </select>
                 <label for="sourceTypeFilter" style="margin-left: var(--space-4);">Source:</label>
-                <select class="filter-select" id="sourceTypeFilter" onchange="loadAllItems(0)">
+                <select class="filter-select" id="sourceTypeFilter" onchange="loadAllItems(1)">
                     <option value="">All sources</option>
                     <option value="user_verification">Verified facts (from sessions)</option>
                     <option value="claude_local_md">CLAUDE.local.md</option>
@@ -1443,7 +1443,7 @@
 
         // Pagination for audit (using total and per_page)
         const totalPages = Math.ceil((data.total || 0) / (data.per_page || 20));
-        renderPaginationGeneric(paginationEl, data.page || 0, totalPages, 'loadAuditLog');
+        renderPaginationGeneric(paginationEl, data.page || 1, totalPages, 'loadAuditLog');
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -1451,7 +1451,7 @@
     // ─────────────────────────────────────────────────────────────
 
     function renderPagination(el, data, fnName) {
-        renderPaginationGeneric(el, data.page || 0, data.total_pages || 0, fnName);
+        renderPaginationGeneric(el, data.page || 1, data.total_pages || 0, fnName);
     }
 
     function renderPaginationGeneric(el, page, totalPages, fnName) {
@@ -1460,31 +1460,31 @@
             return;
         }
 
-        let html = `<button class="page-btn" onclick="${fnName}(${page - 1})" ${page === 0 ? 'disabled' : ''}>Prev</button>`;
+        let html = `<button class="page-btn" onclick="${fnName}(${page - 1})" ${page <= 1 ? 'disabled' : ''}>Prev</button>`;
 
-        // Smart pagination: show max 7 page buttons
+        // Smart pagination: show max 7 page buttons (1-based)
         const maxVisible = 7;
-        let startPage = Math.max(0, page - Math.floor(maxVisible / 2));
-        let endPage = Math.min(totalPages, startPage + maxVisible);
-        if (endPage - startPage < maxVisible) {
-            startPage = Math.max(0, endPage - maxVisible);
+        let startPage = Math.max(1, page - Math.floor(maxVisible / 2));
+        let endPage = Math.min(totalPages, startPage + maxVisible - 1);
+        if (endPage - startPage < maxVisible - 1) {
+            startPage = Math.max(1, endPage - maxVisible + 1);
         }
 
-        if (startPage > 0) {
-            html += `<button class="page-btn" onclick="${fnName}(0)">1</button>`;
-            if (startPage > 1) html += `<span style="padding: var(--space-2); color: var(--text-secondary);">...</span>`;
+        if (startPage > 1) {
+            html += `<button class="page-btn" onclick="${fnName}(1)">1</button>`;
+            if (startPage > 2) html += `<span style="padding: var(--space-2); color: var(--text-secondary);">...</span>`;
         }
 
-        for (let p = startPage; p < endPage; p++) {
-            html += `<button class="page-btn ${p === page ? 'active' : ''}" onclick="${fnName}(${p})">${p + 1}</button>`;
+        for (let p = startPage; p <= endPage; p++) {
+            html += `<button class="page-btn ${p === page ? 'active' : ''}" onclick="${fnName}(${p})">${p}</button>`;
         }
 
         if (endPage < totalPages) {
             if (endPage < totalPages - 1) html += `<span style="padding: var(--space-2); color: var(--text-secondary);">...</span>`;
-            html += `<button class="page-btn" onclick="${fnName}(${totalPages - 1})">${totalPages}</button>`;
+            html += `<button class="page-btn" onclick="${fnName}(${totalPages})">${totalPages}</button>`;
         }
 
-        html += `<button class="page-btn" onclick="${fnName}(${page + 1})" ${page >= totalPages - 1 ? 'disabled' : ''}>Next</button>`;
+        html += `<button class="page-btn" onclick="${fnName}(${page + 1})" ${page >= totalPages ? 'disabled' : ''}>Next</button>`;
         el.innerHTML = html;
     }
 

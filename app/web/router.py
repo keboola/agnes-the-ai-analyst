@@ -478,7 +478,7 @@ async def corporate_memory(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     repo = KnowledgeRepository(conn)
-    items = repo.list_items(statuses=["approved", "mandatory"], exclude_personal=True, limit=100)
+    items = repo.list_items(statuses=["approved", "mandatory"], exclude_personal=True, user_groups=_effective_groups(user), limit=100)
 
     # Enrich items for template rendering
     for item in items:
