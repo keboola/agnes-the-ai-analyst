@@ -506,7 +506,11 @@ class JiraService:
         """
         # Extract issue key from event
         # Jira webhook format: {"webhookEvent": "jira:issue_updated", "issue": {"key": "KSP-123", ...}}
-        issue = event_data.get("issue", {})
+        # Defensive: a payload may carry `"issue": null` rather than
+        # omitting the key. The webhook handler normalises this, but
+        # do the same here too — process_webhook_event is reachable from
+        # internal callers as well as the webhook path.
+        issue = event_data.get("issue") or {}
         issue_key = issue.get("key")
 
         if not issue_key:
