@@ -30,6 +30,39 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   behalf or expose the relevant data via the read-only `/api/data` surface
   instead.
 
+### Fixed
+
+- **BREAKING (security CRITICAL)**: Jira webhook handler is now
+  fail-closed (issue #83). Previously, if `JIRA_WEBHOOK_SECRET` was
+  unset, `_verify_signature` returned `True` and any unauthenticated
+  POST to `/webhooks/jira` could trigger the full ingest pipeline. The
+  handler now returns **503** when the secret is missing
+  (operator-misconfiguration signal, distinct from 401 wrong-signature).
+  Operators relying on the no-secret = accept-everything mode (don't —
+  it was never documented) must set `JIRA_WEBHOOK_SECRET` before this
+  merges.
+- **Security (CRITICAL)**: Jira issue keys arriving via webhooks are now
+  validated against the canonical `^[A-Z][A-Z0-9]{0,31}-[0-9]{1,12}\Z` format
+  (`[0-9]` not `\d` to refuse non-ASCII Unicode digits, `\Z` not `$` to
+  refuse trailing newlines that `$` would tolerate)
+  before any filesystem operation (issue #83). Previously, `issue_key` flowed
+  unsanitized into `connectors/jira/service.py` (`save_issue`,
+  `download_attachment`, `_handle_deletion`, `process_webhook_event`) and
+  `connectors/jira/incremental_transform.py`, enabling path traversal
+  (`../../etc/passwd` style writes outside the Jira data dir). New module
+  `connectors/jira/validation.py` provides `is_valid_issue_key` (regex
+  whitelist; underscore deliberately excluded — Atlassian rejects underscores
+  in real project keys) and `safe_join_under` (`Path.resolve()` containment
+  check). Both are enforced at every filesystem boundary, defense-in-depth.
+- **Security (CRITICAL)**: `webhookEvent` (the second attacker-controlled field
+  in Jira webhook payloads) was used as a filename component in
+  `_log_webhook_event` without sanitization (issue #83 reviewer follow-up).
+  A payload with `webhookEvent: "../../tmp/pwn"` could write a JSON dump
+  outside `WEBHOOK_LOG_DIR`. The handler now strips everything that isn't
+  `[A-Za-z0-9_-]` (dot deliberately excluded to defeat `..` survival),
+  clips length to 64 chars, and routes the final filename through
+  `safe_join_under`.
+
 ### Internal
 
 - Sandbox blocklist now flags introspection-chain dunders explicitly:

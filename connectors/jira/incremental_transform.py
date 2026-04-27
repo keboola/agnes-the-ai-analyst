@@ -17,6 +17,7 @@ import pyarrow.parquet as pq
 
 # Import transform functions from batch transform
 from .file_lock import parquet_month_lock
+from .validation import is_valid_issue_key, safe_join_under
 from .transform import (
     ATTACHMENTS_SCHEMA,
     CHANGELOG_SCHEMA,
@@ -138,7 +139,17 @@ def transform_single_issue(
     output_dir = output_dir or DEFAULT_OUTPUT_DIR
     attachments_dir = attachments_dir or (raw_dir / "attachments")
 
-    json_path = raw_dir / "issues" / f"{issue_key}.json"
+    # Defense-in-depth: even if a stale/legacy code path bypasses webhook
+    # validation, the transform step will refuse a malformed key (issue #83).
+    if not is_valid_issue_key(issue_key):
+        logger.error(f"Refusing transform for malformed issue key: {issue_key!r}")
+        return False
+    issues_dir = raw_dir / "issues"
+    try:
+        json_path = safe_join_under(issues_dir, f"{issue_key}.json")
+    except ValueError as e:
+        logger.error(f"Path traversal blocked in transform for {issue_key!r}: {e}")
+        return False
 
     if deleted:
         # For deletion, we need to find which month the issue was in

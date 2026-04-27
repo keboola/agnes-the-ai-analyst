@@ -18,6 +18,8 @@ from typing import Any
 
 import httpx
 
+from connectors.jira.validation import is_valid_issue_key, safe_join_under
+
 logger = logging.getLogger(__name__)
 
 
@@ -255,6 +257,19 @@ class JiraService:
             logger.error("Issue data missing 'key' field")
             return None
 
+        # Defense-in-depth: validate `issue_key` BEFORE any code path
+        # uses it — including the HTTP URL constructions in
+        # fetch_remote_links / fetch_sla_fields below. The webhook
+        # handler already validates upstream, but a future internal
+        # caller invoking save_issue directly with attacker-controlled
+        # input would otherwise fire outbound requests with a malicious
+        # path component (limited SSRF / path manipulation against the
+        # Jira API server) before the filesystem-side guard rejected it.
+        # Issue #83 round 3.
+        if not is_valid_issue_key(issue_key):
+            logger.error(f"Refusing to save issue with malformed key: {issue_key!r}")
+            return None
+
         # Create data directory if needed
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -277,9 +292,15 @@ class JiraService:
             logger.info(f"Overlayed SLA fields for {issue_key}")
 
         # Save to file (one file per issue for now, later we'll batch to parquet)
+        # Path.resolve() containment as second layer; the regex check
+        # above is the primary defense.
         issues_dir = self.data_dir / "issues"
-        file_path = issues_dir / f"{issue_key}.json"
-        file_path.parent.mkdir(parents=True, exist_ok=True)
+        issues_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            file_path = safe_join_under(issues_dir, f"{issue_key}.json")
+        except ValueError as e:
+            logger.error(f"Path traversal blocked for issue {issue_key!r}: {e}")
+            return None
 
         try:
             from connectors.jira.file_lock import issue_json_lock
@@ -353,13 +374,25 @@ class JiraService:
             )
             return None
 
-        # Create issue-specific attachment directory
-        issue_attachments_dir = self.attachments_dir / issue_key
+        # Create issue-specific attachment directory.
+        # Two-layer guard against path traversal via issue_key (issue #83).
+        if not is_valid_issue_key(issue_key):
+            logger.error(f"Refusing to download attachment for malformed key: {issue_key!r}")
+            return None
+        try:
+            issue_attachments_dir = safe_join_under(self.attachments_dir, issue_key)
+        except ValueError as e:
+            logger.error(f"Path traversal blocked for attachment {issue_key!r}: {e}")
+            return None
         issue_attachments_dir.mkdir(parents=True, exist_ok=True)
 
         # Use attachment ID in filename to avoid collisions
         safe_filename = f"{attachment_id}_{filename}"
-        file_path = issue_attachments_dir / safe_filename
+        try:
+            file_path = safe_join_under(issue_attachments_dir, safe_filename)
+        except ValueError as e:
+            logger.error(f"Path traversal blocked for attachment filename {safe_filename!r}: {e}")
+            return None
 
         try:
             with httpx.Client(timeout=60, follow_redirects=True) as client:
@@ -473,7 +506,11 @@ class JiraService:
         """
         # Extract issue key from event
         # Jira webhook format: {"webhookEvent": "jira:issue_updated", "issue": {"key": "KSP-123", ...}}
-        issue = event_data.get("issue", {})
+        # Defensive: a payload may carry `"issue": null` rather than
+        # omitting the key. The webhook handler normalises this, but
+        # do the same here too — process_webhook_event is reachable from
+        # internal callers as well as the webhook path.
+        issue = event_data.get("issue") or {}
         issue_key = issue.get("key")
 
         if not issue_key:
@@ -482,6 +519,13 @@ class JiraService:
 
         if not issue_key:
             logger.warning(f"Could not extract issue key from webhook event: {event_data.get('webhookEvent')}")
+            return False
+
+        # Defense-in-depth: even if the webhook layer's validation is bypassed
+        # (e.g. a future internal caller invokes process_webhook_event directly),
+        # refuse a malformed key here. Issue #83.
+        if not is_valid_issue_key(issue_key):
+            logger.error(f"process_webhook_event: refusing malformed issue key {issue_key!r}")
             return False
 
         webhook_event = event_data.get("webhookEvent", "unknown")
@@ -514,7 +558,16 @@ class JiraService:
         Returns:
             True if handled successfully
         """
-        file_path = self.data_dir / "issues" / f"{issue_key}.json"
+        # Defense-in-depth path-traversal guard (issue #83). Callers should
+        # already have validated; refuse anyway.
+        if not is_valid_issue_key(issue_key):
+            logger.error(f"_handle_deletion: refusing malformed issue key {issue_key!r}")
+            return False
+        try:
+            file_path = safe_join_under(self.data_dir / "issues", f"{issue_key}.json")
+        except ValueError as e:
+            logger.error(f"_handle_deletion: path traversal blocked for {issue_key!r}: {e}")
+            return False
 
         if file_path.exists():
             # Mark as deleted rather than removing

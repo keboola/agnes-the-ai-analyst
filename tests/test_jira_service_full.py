@@ -126,7 +126,7 @@ class TestJiraServiceWebhookProcessing:
     def test_deletion_of_nonexistent_issue_returns_true(self, jira_env):
         """Deleting an issue that has no local file returns True (idempotent)."""
         service = _make_jira_service(jira_env)
-        event_data, _, _ = WebhookEventFactory.issue_deleted("PROJ-NOEXIST")
+        event_data, _, _ = WebhookEventFactory.issue_deleted("PROJ-99999")
 
         result = service.process_webhook_event(event_data)
         assert result is True
