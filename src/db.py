@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -62,6 +62,19 @@ CREATE TABLE IF NOT EXISTS sync_state (
     hash VARCHAR,
     status VARCHAR DEFAULT 'ok',
     error TEXT
+);
+
+-- v10: view-name collision detection across connectors. The orchestrator
+-- writes views into the master analytics.duckdb under a flat namespace; two
+-- connectors with the same `_meta.table_name` would otherwise silently
+-- overwrite each other (last-write-wins). This table records the FIRST
+-- source to register a given view name; subsequent attempts from a different
+-- source are refused with a `name_collision` log line until the operator
+-- renames one side. Issue #81 Group C.
+CREATE TABLE IF NOT EXISTS view_ownership (
+    view_name     VARCHAR PRIMARY KEY,
+    source_name   VARCHAR NOT NULL,
+    registered_at TIMESTAMP NOT NULL DEFAULT current_timestamp
 );
 
 CREATE TABLE IF NOT EXISTS sync_history (
@@ -585,6 +598,18 @@ _V8_TO_V9_MIGRATIONS = [
     """,
 ]
 
+# Issue #81 Group C — view-name collision detection. New table records the
+# first source to register a given view name in the master analytics DB.
+_V9_TO_V10_MIGRATIONS = [
+    """
+    CREATE TABLE IF NOT EXISTS view_ownership (
+        view_name     VARCHAR PRIMARY KEY,
+        source_name   VARCHAR NOT NULL,
+        registered_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+    )
+    """,
+]
+
 
 # Core role seed data — single source of truth. Used by both _seed_core_roles
 # (idempotent insert) and the v8→v9 backfill. Order matters: lowest privilege
@@ -798,6 +823,13 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             if current < 9:
                 for sql in _V8_TO_V9_MIGRATIONS:
                     conn.execute(sql)
+                _did_v9_finalize = True
+            else:
+                _did_v9_finalize = False
+            if current < 10:
+                for sql in _V9_TO_V10_MIGRATIONS:
+                    conn.execute(sql)
+            if _did_v9_finalize:
                 # v9 finalize: seed core.* roles, backfill grants from
                 # legacy users.role, then drop the column. Order matters —
                 # backfill needs the seed rows to exist; drop must be last.
