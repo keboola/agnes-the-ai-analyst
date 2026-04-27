@@ -13,6 +13,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 <!-- Add bullets here. Group: Added / Changed / Fixed / Removed / Internal.
      Mark breaking changes with **BREAKING** at the start of the bullet. -->
 
+### Fixed
+
+- **BigQuery views failed at first query when FastAPI / CLI reopened `analytics.duckdb`.** `SyncOrchestrator._attach_remote_extensions` refreshes a fresh GCE-metadata access token and creates a `bigquery` DuckDB SECRET before ATTACH, but the secret is session-scoped and didn't persist with the on-disk database. The mirror code in `src.db._reattach_remote_extensions` (called from `get_analytics_db_readonly()`) still ATTACHed BigQuery without auth, so the next query against `bq."dataset"."table"` failed. Added the same three-branch structure to `src.db`: BigQuery → fetch metadata token → `CREATE OR REPLACE SECRET bq_secret_<alias> (TYPE bigquery, ACCESS_TOKEN '<token>')` → ATTACH; otherwise fall back to the existing env-var-token / no-auth paths. Metadata-server failures log at ERROR and skip the source so other connectors still resolve.
+- **`src/orchestrator.py::_attach_remote_extensions` filtered `_remote_attach` lookups by `table_schema=<source_name>`**, but DuckDB lists an attached database with `table_catalog=<source_name>` and `table_schema='main'`, so the loop never executed and `_remote_attach` rows were silently ignored. Switched the filter to `table_catalog`, matching the corresponding query already in `src.db`.
+
+
 ## [0.11.5] — 2026-04-27
 
 Follow-up release for PR #73: addresses four rounds of Devin AI review on the role-management-complete branch. No new public-API surface; the user-visible payoff is that v8→v9-migrated installations now work end-to-end (login flows, user list, admin nav, privilege revocation), and `make local-dev` startup is finally quiet.

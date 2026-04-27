@@ -9,12 +9,22 @@ BigQuery) must include a ``_remote_attach`` table in their extract.duckdb:
         alias     VARCHAR,  -- DuckDB alias used in views, e.g. 'kbc'
         extension VARCHAR,  -- Extension name, e.g. 'keboola'
         url       VARCHAR,  -- Connection URL
-        token_env VARCHAR   -- Env-var name holding the auth token (NOT the token itself)
+        token_env VARCHAR   -- Env-var name holding the auth token (NOT the token itself).
+                            -- Empty string for BigQuery — orchestrator detects
+                            -- extension='bigquery' and refreshes the token from the
+                            -- GCE metadata server on its own.
     );
 
 At rebuild time the orchestrator reads ``_remote_attach``, installs/loads the
-extension, reads the token from the environment, and ATTACHes the external source
-so that remote views resolve correctly.
+extension, then either: (a) for BigQuery, fetches a fresh access token from the
+GCE metadata server and creates a session-scoped DuckDB SECRET before ATTACH;
+(b) for sources with a non-empty ``token_env``, reads that env var and passes
+the token inline; (c) ATTACHes without auth. Views referencing
+``bq."dataset"."table"`` or ``kbc."bucket"."table"`` then resolve correctly.
+
+Note: BQ secrets are session-scoped, so ``src.db._reattach_remote_extensions``
+re-fetches the metadata token and re-creates the secret each time a read-only
+analytics connection is opened.
 """
 
 import hashlib

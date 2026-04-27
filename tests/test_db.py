@@ -566,6 +566,151 @@ class TestExtensionReattach:
             conn.close()
 
 
+class TestReattachRemoteExtensionsBQ:
+    """src.db.get_analytics_db_readonly() / _reattach_remote_extensions must
+    refresh BQ token from GCE metadata when extension='bigquery' (secret is
+    session-scoped, so it has to be recreated on every readonly-conn open)."""
+
+    def _make_analytics_db(self, tmp_path):
+        analytics_dir = tmp_path / "analytics"
+        analytics_dir.mkdir(parents=True, exist_ok=True)
+        conn = duckdb.connect(str(analytics_dir / "server.duckdb"))
+        conn.close()
+
+    def _make_bq_extract(self, tmp_path, source_name):
+        ext_dir = tmp_path / "extracts" / source_name
+        ext_dir.mkdir(parents=True, exist_ok=True)
+        conn = duckdb.connect(str(ext_dir / "extract.duckdb"))
+        try:
+            conn.execute(
+                "CREATE TABLE _meta (table_name VARCHAR, description VARCHAR, "
+                "rows BIGINT, size_bytes BIGINT, extracted_at TIMESTAMP, "
+                "query_mode VARCHAR DEFAULT 'remote')"
+            )
+            conn.execute(
+                "CREATE TABLE _remote_attach "
+                "(alias VARCHAR, extension VARCHAR, url VARCHAR, token_env VARCHAR)"
+            )
+            conn.execute(
+                "INSERT INTO _remote_attach VALUES "
+                "('bq', 'bigquery', 'project=test-proj', '')"
+            )
+            # Co-located local stub table so the readonly conn has something usable.
+            conn.execute('CREATE TABLE "stub" (x INT)')
+            conn.execute("INSERT INTO stub VALUES (1)")
+            conn.execute(
+                "INSERT INTO _meta VALUES "
+                "('stub', '', 1, 0, current_timestamp, 'local')"
+            )
+        finally:
+            conn.close()
+
+    def test_bq_reattach_calls_get_metadata_token(self, tmp_path, monkeypatch):
+        """BQ row in _remote_attach triggers get_metadata_token() and a
+        CREATE OR REPLACE SECRET for the alias."""
+        from unittest.mock import MagicMock
+
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        import importlib
+        import src.db as db_module
+        importlib.reload(db_module)
+
+        self._make_analytics_db(tmp_path)
+        self._make_bq_extract(tmp_path, "bigquery")
+
+        called = {"count": 0}
+
+        def fake_token():
+            called["count"] += 1
+            return "ya29.fake-token"
+
+        monkeypatch.setattr(db_module, "get_metadata_token", fake_token)
+
+        # Capture SQL on the readonly connection. DuckDB connections have
+        # read-only attributes, so wrap in a proxy. Stub LOAD/SECRET/ATTACH
+        # for BigQuery (TYPE bigquery) so we don't need real BQ network.
+        captured = []
+
+        class _ConnProxy:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def execute(self, sql, *args, **kwargs):
+                captured.append(sql)
+                up = sql.upper()
+                if "LOAD BIGQUERY" in up:
+                    return MagicMock()
+                if "CREATE OR REPLACE SECRET" in up and "TYPE BIGQUERY" in up:
+                    return MagicMock()
+                if up.startswith("ATTACH ") and "TYPE BIGQUERY" in up:
+                    return MagicMock()
+                return self._inner.execute(sql, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+        real_connect = duckdb.connect
+
+        def spy_connect(path, *a, **kw):
+            return _ConnProxy(real_connect(path, *a, **kw))
+
+        monkeypatch.setattr(db_module.duckdb, "connect", spy_connect)
+
+        conn = db_module.get_analytics_db_readonly()
+        try:
+            assert called["count"] >= 1, \
+                "get_metadata_token() must be called for BQ source"
+            assert any(
+                "CREATE OR REPLACE SECRET" in s.upper() and "TYPE BIGQUERY" in s.upper()
+                for s in captured
+            ), "must create DuckDB secret with metadata token"
+            attach_for_bq = [
+                s for s in captured
+                if s.upper().startswith("ATTACH ") and "TYPE BIGQUERY" in s.upper()
+            ]
+            assert attach_for_bq, "expected ATTACH for the bq alias"
+            assert all("TOKEN '" not in s for s in attach_for_bq), \
+                f"BQ ATTACH must not pass TOKEN= directly; got: {attach_for_bq}"
+        finally:
+            conn.close()
+
+    def test_bq_reattach_failure_logs_and_skips(self, tmp_path, monkeypatch, caplog):
+        """If GCE metadata is unreachable, _reattach_remote_extensions logs an
+        ERROR and skips ATTACH — connection is still usable for local queries."""
+        import logging
+        from connectors.bigquery.auth import BQMetadataAuthError
+
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        import importlib
+        import src.db as db_module
+        importlib.reload(db_module)
+
+        self._make_analytics_db(tmp_path)
+        self._make_bq_extract(tmp_path, "bigquery")
+
+        def boom():
+            raise BQMetadataAuthError("metadata server unreachable: simulated")
+
+        monkeypatch.setattr(db_module, "get_metadata_token", boom)
+
+        with caplog.at_level(logging.ERROR, logger="src.db"):
+            conn = db_module.get_analytics_db_readonly()
+        try:
+            # Connection still usable for local SQL
+            row = conn.execute("SELECT 7 AS n").fetchone()
+            assert row[0] == 7
+            # ERROR log mentions metadata
+            assert any(
+                "metadata" in r.message.lower() and r.levelname == "ERROR"
+                for r in caplog.records
+            ), (
+                "expected ERROR log mentioning metadata; got: "
+                f"{[(r.levelname, r.message) for r in caplog.records]}"
+            )
+        finally:
+            conn.close()
+
+
 class TestGetAnalyticsDbReadonly:
     def test_analytics_readonly_rejects_malicious_dir_name(self, tmp_path, monkeypatch):
         """Directories with SQL-injection chars in their name are skipped."""

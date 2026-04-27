@@ -12,6 +12,8 @@ from pathlib import Path
 
 import duckdb
 
+from connectors.bigquery.auth import get_metadata_token, BQMetadataAuthError
+
 logger = logging.getLogger(__name__)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
@@ -407,14 +409,45 @@ def _reattach_remote_extensions(
                 continue
             try:
                 conn.execute(f"LOAD {extension};")
-                token = os.environ.get(token_env, "") if token_env else ""
                 safe_url = url.replace("'", "''")
-                if token:
-                    escaped_token = token.replace("'", "''")
+
+                # BQ-specific: refresh token from GCE metadata, create session-scoped
+                # secret before ATTACH. The empty token_env (set by the BQ extractor) is
+                # the contract that signals "use built-in metadata path". The secret is
+                # created here on every readonly-connection open because secrets are
+                # session-scoped and don't persist with the analytics.duckdb file.
+                if extension == "bigquery":
+                    try:
+                        bq_token = get_metadata_token()
+                    except BQMetadataAuthError as e:
+                        logger.error(
+                            "Failed to fetch BQ metadata token for %s: %s — skipping ATTACH",
+                            alias, e,
+                        )
+                        continue
+                    escaped = bq_token.replace("'", "''")
+                    secret_name = f"bq_secret_{alias}"
                     conn.execute(
-                        f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, TOKEN '{escaped_token}')"
+                        f"CREATE OR REPLACE SECRET {secret_name} "
+                        f"(TYPE bigquery, ACCESS_TOKEN '{escaped}')"
                     )
+                    conn.execute(
+                        f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)"
+                    )
+                elif token_env:
+                    # Generic env-var token path (e.g. Keboola)
+                    token = os.environ.get(token_env, "")
+                    if token:
+                        escaped_token = token.replace("'", "''")
+                        conn.execute(
+                            f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, TOKEN '{escaped_token}')"
+                        )
+                    else:
+                        conn.execute(
+                            f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)"
+                        )
                 else:
+                    # No auth required (or extension handles it via env automatically)
                     conn.execute(
                         f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)"
                     )
