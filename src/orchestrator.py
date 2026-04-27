@@ -26,6 +26,7 @@ from typing import Dict, List
 
 import duckdb
 
+from connectors.bigquery.auth import get_metadata_token, BQMetadataAuthError
 from src.sql_safe import validate_identifier as _validate_identifier
 
 logger = logging.getLogger(__name__)
@@ -195,7 +196,7 @@ class SyncOrchestrator:
         try:
             tables = conn.execute(
                 f"SELECT table_name FROM information_schema.tables "
-                f"WHERE table_schema='{source_name}' AND table_name='_remote_attach'"
+                f"WHERE table_catalog='{source_name}' AND table_name='_remote_attach'"
             ).fetchall()
             if not tables:
                 return
@@ -212,13 +213,6 @@ class SyncOrchestrator:
             if not _validate_identifier(extension, "remote_attach extension"):
                 continue
 
-            token = os.environ.get(token_env, "") if token_env else ""
-            if token_env and not token:
-                logger.warning(
-                    "Remote attach %s: env var %s not set, skipping", alias, token_env
-                )
-                continue
-
             try:
                 # Skip if already attached (e.g. multiple sources share same extension)
                 attached = {
@@ -231,16 +225,47 @@ class SyncOrchestrator:
                     continue
 
                 conn.execute(f"INSTALL {extension} FROM community; LOAD {extension};")
-                if token:
+
+                # BQ-specific: refresh token from GCE metadata, create secret before ATTACH.
+                # The empty token_env in _remote_attach (set by the BQ extractor) is the
+                # contract that signals "use built-in metadata path".
+                if extension == "bigquery":
+                    try:
+                        bq_token = get_metadata_token()
+                    except BQMetadataAuthError as e:
+                        logger.error(
+                            "Failed to fetch BQ metadata token for %s: %s — skipping ATTACH",
+                            alias, e,
+                        )
+                        continue
+                    escaped = bq_token.replace("'", "''")
+                    secret_name = f"bq_secret_{alias}"
+                    conn.execute(
+                        f"CREATE OR REPLACE SECRET {secret_name} "
+                        f"(TYPE bigquery, ACCESS_TOKEN '{escaped}')"
+                    )
+                    conn.execute(
+                        f"ATTACH '{url}' AS {alias} (TYPE {extension}, READ_ONLY)"
+                    )
+                elif token_env:
+                    # Generic env-var token path (e.g. Keboola)
+                    token = os.environ.get(token_env, "")
+                    if not token:
+                        logger.warning(
+                            "Remote attach %s: env var %s not set, skipping",
+                            alias, token_env,
+                        )
+                        continue
                     escaped_token = token.replace("'", "''")
                     conn.execute(
                         f"ATTACH '{url}' AS {alias} (TYPE {extension}, TOKEN '{escaped_token}')"
                     )
                 else:
-                    # Extensions like BigQuery handle auth via env (e.g. GOOGLE_APPLICATION_CREDENTIALS)
+                    # No auth required (or extension handles it via env automatically)
                     conn.execute(
                         f"ATTACH '{url}' AS {alias} (TYPE {extension}, READ_ONLY)"
                     )
+
                 logger.info("Attached remote source %s via %s extension", alias, extension)
             except Exception as e:
                 logger.error("Failed to attach remote source %s: %s", alias, e)
