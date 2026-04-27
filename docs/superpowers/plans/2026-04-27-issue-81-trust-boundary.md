@@ -206,14 +206,25 @@ New `tests/test_orchestrator_remote_attach_security.py`. Each test writes a mali
 `_remote_attach` row into a fixture `extract.duckdb`, runs `_attach_remote_extensions`,
 and asserts:
 
-- Disallowed extension → not installed; `attached` set unchanged; ERROR log.
-- `token_env = "SESSION_SECRET"` → no `ATTACH` call; ERROR log.
-- `token_env = "MALICIOUS_TOKEN"` (matches naming convention but absent) → existing
-  warning path, no ATTACH.
-- URL with embedded single-quote → `ATTACH` succeeds against a captured SQL string
-  that contains `''` (double-escaped), proving no injection.
-- URL scheme `file://` → refused.
-- Happy path (`extension=keboola, token_env=KEBOOLA_STORAGE_TOKEN, https url`) → ATTACH succeeds.
+- Disallowed extension (`extension="httpfs"` — community ext not on
+  allowlist) → not installed; `attached` set unchanged; ERROR log.
+- `token_env = "SESSION_SECRET"` → no `ATTACH` call; ERROR log. Confirms
+  the hard allowlist catches well-known runtime secrets.
+- `token_env = "MY_CUSTOM_TOKEN"` (not on allowlist, env unset) → no
+  `ATTACH` call; ERROR log. Confirms structurally-plausible names without
+  allowlist membership are still refused.
+- URL with embedded single-quote (`url = "https://x';DROP--"`) → `ATTACH`
+  succeeds against a captured SQL string that contains `''` (double-escaped),
+  proving the injection cannot break out of the literal.
+- Happy path (`extension="keboola", token_env="KEBOOLA_STORAGE_TOKEN",
+  https url`) → ATTACH succeeds.
+
+Note: there is **no** `URL scheme file:// → refused` test, because §A.3
+explicitly drops the scheme allowlist (BigQuery uses `'project=<id>'`
+which has no scheme). The defense against `file://` comes from the
+extension allowlist refusing `httpfs`-class extensions, not from the
+URL string. If a future PR adds per-extension URL form rules, that's
+the place to add `file://`-rejection tests.
 
 Use a captured-SQL fake `duckdb.Connection` so we can assert the exact strings the
 orchestrator builds without needing a real DuckDB extension installed.
@@ -376,10 +387,11 @@ strictly better than today's last-write-wins.
 
 **Branch:** `zs/fix-81-extractor-identifier-validation`.
 **Reviewer correction**: the earlier draft skipped M15 entirely. M15 is the
-peer of M15 (the `_meta.table_name` SQLi which `_validate_identifier` already
-fixed at the orchestrator level) but at the **extractor** level. Same trust
-problem: an attacker who controls `table_registry` (admin or the registry-
-write API surface) can inject SQL via identifier interpolation.
+extractor-layer peer of the orchestrator-layer `_meta.table_name` SQLi
+(which `_validate_identifier` already fixed at the orchestrator level).
+Same trust problem at a different layer: an attacker who controls
+`table_registry` (admin or the registry-write API surface) can inject SQL
+via identifier interpolation in the extractor itself.
 
 ### D.1 Affected sites
 
