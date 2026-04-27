@@ -152,7 +152,7 @@ class OpenMetadataClient:
         by data product membership (queryFilter is unreliable for dataProducts field).
 
         Args:
-            data_product_name: Name of the data product (e.g., "FoundryAIDataModel")
+            data_product_name: Name of the data product (e.g., "AnalyticsDataModel")
             entity_type: Filter by entity type (e.g., "metric", "table"). Empty = all types.
             limit: Maximum number of results to fetch before filtering
 

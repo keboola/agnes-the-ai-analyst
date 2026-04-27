@@ -177,7 +177,7 @@ def _get_bq_project_from_table_id(table_id: str) -> Optional[str]:
     """Extract BQ project ID from a fully-qualified table ID.
 
     Args:
-        table_id: e.g. "prj-grp-dataview-prod-1ff9.finance_unit_economics.unit_economics"
+        table_id: e.g. "my-bq-project.finance_unit_economics.unit_economics"
 
     Returns:
         Project ID or None if format doesn't match BQ convention

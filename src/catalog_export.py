@@ -140,7 +140,7 @@ def export_metrics(
         client: Initialized OpenMetadata API client
         docs_dir: Base docs directory (e.g., /data/docs)
         catalog_url: Catalog URL for header comments
-        filter_tag: If set, only export metrics that have this tag (e.g., "AIAgent.FoundryAI")
+        filter_tag: If set, only export metrics that have this tag (e.g., "AIAgent.MyAgent")
         data_product: If set, discover metrics via data product assets (preferred over filter_tag)
 
     Returns:
