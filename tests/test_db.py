@@ -674,10 +674,17 @@ class TestReattachRemoteExtensionsBQ:
         finally:
             conn.close()
 
-    def test_bq_reattach_failure_logs_and_skips(self, tmp_path, monkeypatch, caplog):
+    def test_bq_reattach_failure_logs_and_skips(self, tmp_path, monkeypatch):
         """If GCE metadata is unreachable, _reattach_remote_extensions logs an
-        ERROR and skips ATTACH — connection is still usable for local queries."""
-        import logging
+        ERROR and skips ATTACH — connection is still usable for local queries.
+
+        Uses a direct spy on ``logger.error`` instead of pytest's ``caplog``
+        because ``caplog`` was unreliable in CI when combined with the
+        ``importlib.reload(src.db)`` setup pattern (handler attachment / log-
+        propagation timing differed from the local pytest config and yielded
+        empty ``caplog.records``). A method-level spy is fully independent of
+        pytest's logging plumbing.
+        """
         from connectors.bigquery.auth import BQMetadataAuthError
 
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
@@ -688,34 +695,36 @@ class TestReattachRemoteExtensionsBQ:
         self._make_analytics_db(tmp_path)
         self._make_bq_extract(tmp_path, "bigquery")
 
+        # Patch the local binding in src.db (NOT in connectors.bigquery.auth) —
+        # `from connectors.bigquery.auth import get_metadata_token` creates a
+        # fresh name in src.db's namespace; the call site looks it up there.
         def boom():
             raise BQMetadataAuthError("metadata server unreachable: simulated")
+        monkeypatch.setattr("src.db.get_metadata_token", boom)
 
-        monkeypatch.setattr(db_module, "get_metadata_token", boom)
+        # Direct spy on logger.error — captures regardless of pytest config /
+        # propagation / handler attachment.
+        captured_errors: list[str] = []
+        real_error = db_module.logger.error
 
-        # Force-enable propagation + capture at ERROR for the src.db logger AFTER
-        # `importlib.reload(db_module)` so caplog grabs the freshly-resolved logger
-        # reference. Using `caplog.set_level` (not the `with caplog.at_level(...)`
-        # context-manager form) keeps capture active for the entire test, which is
-        # robust against pytest configs where the propagation handler attachment is
-        # narrower than the logger lookup. Also set a root-logger safety net so we
-        # catch the record regardless of which exact name the implementation uses.
-        db_logger = logging.getLogger("src.db")
-        db_logger.propagate = True
-        caplog.set_level(logging.ERROR, logger="src.db")
-        caplog.set_level(logging.ERROR)
+        def spy_error(msg, *args, **kwargs):
+            try:
+                formatted = msg % args if args else msg
+            except (TypeError, ValueError):
+                formatted = str(msg) + " | args=" + repr(args)
+            captured_errors.append(formatted)
+            return real_error(msg, *args, **kwargs)
+
+        monkeypatch.setattr(db_module.logger, "error", spy_error)
 
         conn = db_module.get_analytics_db_readonly()
         try:
-            # Connection still usable for local SQL
+            # Connection still usable for local SQL — BQ failure didn't break it
             row = conn.execute("SELECT 7 AS n").fetchone()
             assert row[0] == 7
-            # ERROR (or higher) log mentions metadata
-            error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
-            assert any("metadata" in r.message.lower() for r in error_records), (
-                "expected ERROR log mentioning metadata; "
-                f"got {len(caplog.records)} records: "
-                f"{[(r.levelname, r.name, r.message[:80]) for r in caplog.records]}"
+            assert any("metadata" in m.lower() for m in captured_errors), (
+                f"expected ERROR log mentioning metadata; "
+                f"got {len(captured_errors)} errors: {captured_errors}"
             )
         finally:
             conn.close()
