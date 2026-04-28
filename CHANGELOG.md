@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+
+- `/admin/access` resource tree now visually separates the three-level hierarchy (resource type → block/bucket → item). Each resource-type section gets a colored left stripe and a faint tinted banner; sections are separated by an 8px neutral gap. Stripe colors cycle 4-wide via `nth-child` so adding new resource types to `app/resource_types.py` works without touching CSS. The first-position color is the project primary blue (`#0073D1`), avoiding the violet (`#6366f1`) reserved for granted items.
+
 ### Added
 
 - `ResourceType.TABLE` — admins can grant table-level access per `user_group` via the `/admin/access` page. Tables registered in `table_registry` are listed grouped by `bucket`, with the existing per-block "Grant all" / "Revoke all" bulk actions. Listing and grant storage only — runtime enforcement still flows through legacy `dataset_permissions`; the migration plan lives in `docs/TODO-rbac-data-enforcement.md`.

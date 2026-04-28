@@ -79,14 +79,37 @@
     font-size: 13px; color: var(--text-secondary, #6b7280);
   }
 
-  /* Right side — resource type sections + per-block collapsibles */
-  .rt-section { border-bottom: 2px solid var(--border, #e5e7eb); }
-  .rt-section:last-child { border-bottom: none; }
+  /* Right side — resource type sections + per-block collapsibles.
+     Each resource type gets a colored left stripe + faint tinted banner
+     so the three-level hierarchy (type → block/bucket → item) reads at
+     a glance. Colors cycle 4-wide via :nth-child so adding more resource
+     types in app/resource_types.py works without touching CSS. */
+  .rt-section + .rt-section {
+    border-top: 8px solid var(--border-light, #f1f5f9);
+  }
   .rt-section-head {
-    padding: 14px 16px; background: #f8fafc;
-    font-size: 11px; font-weight: 700; letter-spacing: 0.6px;
-    text-transform: uppercase; color: var(--text-secondary, #475569);
+    padding: 16px 20px;
+    font-size: 12px; font-weight: 700; letter-spacing: 0.6px;
+    text-transform: uppercase; color: #1e293b;
     border-bottom: 1px solid var(--border, #e5e7eb);
+    border-left: 4px solid #0073D1;
+    background: linear-gradient(to right,
+      rgba(0, 115, 209, 0.10), rgba(0, 115, 209, 0.02));
+  }
+  .rt-section:nth-child(4n+2) > .rt-section-head {
+    border-left-color: #10b981;
+    background: linear-gradient(to right,
+      rgba(16, 185, 129, 0.10), rgba(16, 185, 129, 0.02));
+  }
+  .rt-section:nth-child(4n+3) > .rt-section-head {
+    border-left-color: #f59e0b;
+    background: linear-gradient(to right,
+      rgba(245, 158, 11, 0.10), rgba(245, 158, 11, 0.02));
+  }
+  .rt-section:nth-child(4n+4) > .rt-section-head {
+    border-left-color: #f43f5e;
+    background: linear-gradient(to right,
+      rgba(244, 63, 94, 0.10), rgba(244, 63, 94, 0.02));
   }
   .mp-block { border-bottom: 1px solid var(--border-light, #f3f4f6); }
   .mp-block:last-child { border-bottom: none; }
