@@ -174,18 +174,27 @@ async def scan_estimate_endpoint(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-# Module-level singleton (process-local quota state per spec §3.8)
+# Module-level singleton (process-local quota state per spec §3.8). FastAPI
+# dispatches sync handlers via a thread pool, so two concurrent first-time
+# requests can both observe `_quota_singleton is None` and each construct a
+# separate tracker; the second assignment wins and the first reference leaks
+# split-brain quota state. Guard with an init lock + double-check.
+import threading as _threading
+_quota_init_lock = _threading.Lock()
 _quota_singleton: QuotaTracker | None = None
 
 
 def _build_quota_tracker() -> QuotaTracker:
-    """Returns or constructs the process-local quota tracker."""
+    """Returns or constructs the process-local quota tracker (thread-safe)."""
     global _quota_singleton
-    if _quota_singleton is None:
-        _quota_singleton = QuotaTracker(
-            max_concurrent_per_user=int(get_value("api", "scan", "max_concurrent_per_user", default=5) or 5),
-            max_daily_bytes_per_user=int(get_value("api", "scan", "max_daily_bytes_per_user", default=53687091200) or 53687091200),
-        )
+    if _quota_singleton is not None:
+        return _quota_singleton
+    with _quota_init_lock:
+        if _quota_singleton is None:
+            _quota_singleton = QuotaTracker(
+                max_concurrent_per_user=int(get_value("api", "scan", "max_concurrent_per_user", default=5) or 5),
+                max_daily_bytes_per_user=int(get_value("api", "scan", "max_daily_bytes_per_user", default=53687091200) or 53687091200),
+            )
     return _quota_singleton
 
 

@@ -64,7 +64,20 @@ def _fetch_bq_schema(project: str, dataset: str, table: str) -> list[dict]:
 
 
 def _fetch_bq_table_options(project: str, dataset: str, table: str) -> dict:
-    """Best-effort fetch of partition/cluster info; returns empty dict on miss."""
+    """Best-effort fetch of partition/cluster info from INFORMATION_SCHEMA.COLUMNS.
+
+    BigQuery exposes partition + cluster metadata as per-column flags:
+      - `is_partitioning_column` ('YES' / 'NO') — at most one column per table
+      - `clustering_ordinal_position` (INT64, null for non-clustered columns;
+        otherwise 1, 2, ... in cluster-key order)
+
+    Earlier versions of this code queried `partition_column` / `cluster_columns`
+    on `INFORMATION_SCHEMA.TABLES` — those columns don't exist in BigQuery, so
+    the query always failed silently and partition/cluster info was always
+    empty.
+
+    Returns empty dict on any failure (best-effort).
+    """
     import duckdb
     from connectors.bigquery.auth import get_metadata_token
 
@@ -76,20 +89,23 @@ def _fetch_bq_table_options(project: str, dataset: str, table: str) -> dict:
             escaped = token.replace("'", "''")
             conn.execute(f"CREATE OR REPLACE SECRET bq_s (TYPE bigquery, ACCESS_TOKEN '{escaped}')")
             bq_sql = (
-                f"SELECT partition_column, cluster_columns "
-                f"FROM `{project}.{dataset}.INFORMATION_SCHEMA.TABLES` "
-                f"WHERE table_name = ?"
+                f"SELECT column_name, is_partitioning_column, clustering_ordinal_position "
+                f"FROM `{project}.{dataset}.INFORMATION_SCHEMA.COLUMNS` "
+                f"WHERE table_name = ? "
+                f"ORDER BY clustering_ordinal_position NULLS LAST"
             )
-            row = conn.execute(
+            rows = conn.execute(
                 "SELECT * FROM bigquery_query(?, ?, ?)",
                 [project, bq_sql, table],
-            ).fetchone()
-            if not row:
+            ).fetchall()
+            if not rows:
                 return {}
-            return {
-                "partition_by": row[0],
-                "clustered_by": (row[1] or "").split(",") if row[1] else [],
-            }
+            partition_by = next(
+                (r[0] for r in rows if (r[1] or "").upper() == "YES"),
+                None,
+            )
+            clustered_by = [r[0] for r in rows if r[2] is not None]
+            return {"partition_by": partition_by, "clustered_by": clustered_by}
         finally:
             conn.close()
     except Exception as e:

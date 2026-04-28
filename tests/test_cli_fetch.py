@@ -19,6 +19,20 @@ def cli_env(tmp_path, monkeypatch):
     yield tmp_path
 
 
+def test_print_estimate_handles_none_values():
+    """Regression: server returns None (not absent keys) for non-BQ tables.
+    `dict.get(k, default)` returns the default only when k is missing, not when
+    it maps to None. f-string format on None used to crash the CLI."""
+    from cli.commands.fetch import _print_estimate
+    # Should not raise
+    _print_estimate({
+        "estimated_scan_bytes": 0,
+        "estimated_result_rows": None,
+        "estimated_result_bytes": None,
+        "bq_cost_estimate_usd": None,
+    })
+
+
 class TestDaFetch:
     def test_estimate_only_does_not_create_snapshot(self, cli_env, monkeypatch):
         from cli.commands.fetch import fetch_app

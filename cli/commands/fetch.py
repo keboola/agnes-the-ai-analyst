@@ -28,10 +28,13 @@ def _local_dir() -> Path:
 
 
 def _print_estimate(d: dict) -> None:
-    typer.echo(f"  estimated_scan_bytes:   {d.get('estimated_scan_bytes', 0):>15,} bytes")
-    typer.echo(f"  estimated_result_rows:  {d.get('estimated_result_rows', 0):>15,}")
-    typer.echo(f"  estimated_result_bytes: {d.get('estimated_result_bytes', 0):>15,} bytes")
-    typer.echo(f"  bq_cost_estimate_usd:   $ {d.get('bq_cost_estimate_usd', 0):.4f}")
+    # `dict.get(k, default)` returns `default` only when k is missing; if k
+    # maps to None (server returns None for non-BQ tables) the default doesn't
+    # kick in. `or 0` covers both cases.
+    typer.echo(f"  estimated_scan_bytes:   {(d.get('estimated_scan_bytes') or 0):>15,} bytes")
+    typer.echo(f"  estimated_result_rows:  {(d.get('estimated_result_rows') or 0):>15,}")
+    typer.echo(f"  estimated_result_bytes: {(d.get('estimated_result_bytes') or 0):>15,} bytes")
+    typer.echo(f"  bq_cost_estimate_usd:   $ {(d.get('bq_cost_estimate_usd') or 0):.4f}")
 
 
 @fetch_app.callback(invoke_without_command=True)
