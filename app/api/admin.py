@@ -32,11 +32,13 @@ _PRIVATE_HOST_RE = _re.compile(
     r"|10\.\d+\.\d+\.\d+"            # 10.0.0.0/8
     r"|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+"  # 172.16.0.0/12
     r"|192\.168\.\d+\.\d+"           # 192.168.0.0/16
+    r"|169\.254\.\d+\.\d+"           # 169.254.0.0/16 (link-local, cloud metadata)
     r"|0\.\d+\.\d+\.\d+"             # 0.0.0.0/8
     r"|localhost"                     # localhost
     r"|::1"                           # IPv6 loopback
     r"|fe80:"                         # link-local
     r"|fc00:"                         # unique-local
+    r"|ff[0-9a-f]{2}:"               # IPv6 multicast
     r")$", _re.IGNORECASE
 )
 

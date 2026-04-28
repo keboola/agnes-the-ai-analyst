@@ -161,10 +161,15 @@ def _consume_token(conn: duckdb.DuckDBPyConnection, email: str, token: str) -> d
 
     # Step 3: Clear the consumed marker. Safe to do unconditionally —
     # only the winner reaches here, and the marker is transient.
-    conn.execute(
-        "UPDATE users SET reset_token = NULL WHERE email = ? AND reset_token = ?",
-        [email, consume_id],
-    )
+    # If this UPDATE fails (DB error), the marker persists but the user
+    # can still request a new magic link — not a lockout.
+    try:
+        conn.execute(
+            "UPDATE users SET reset_token = NULL WHERE email = ? AND reset_token = ?",
+            [email, consume_id],
+        )
+    except Exception:
+        logger.warning("Failed to clear CONSUMED marker for %s — marker will persist", email)
 
     # Fetch the user (token is now cleared, but we need the rest of the fields).
     # CAS already validated token + expiry atomically, so no further checks

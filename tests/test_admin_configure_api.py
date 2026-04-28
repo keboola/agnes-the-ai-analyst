@@ -127,6 +127,17 @@ class TestAdminConfigureSSRF:
         )
         assert resp.status_code == 400
 
+    def test_configure_rejects_169_254_metadata_url(self, seeded_app):
+        """169.254.x.x (link-local) must be rejected — cloud metadata endpoint."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/configure",
+            json={"data_source": "keboola", "keboola_token": "tok", "keboola_url": "http://169.254.169.254"},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400
+
     def test_configure_accepts_public_url(self, seeded_app):
         """A public URL should pass SSRF validation (connection test may still fail)."""
         c = seeded_app["client"]
