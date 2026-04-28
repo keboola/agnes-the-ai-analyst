@@ -448,13 +448,18 @@ function renderGroups() {
       + (g.is_system ? " is-system" : "");
     li.dataset.id = g.id;
     const sysTag = g.is_system ? '<span class="system-tag">system</span>' : '';
+    // Compute live from state.grants — g.grant_count is a server-side
+    // snapshot from /access-overview that goes stale as soon as the user
+    // toggles a checkbox; reading it here would clobber refreshCounts()
+    // updates whenever the sidebar re-renders (e.g. on selectGroup).
+    const liveCount = state.grants.filter(gr => gr.group_id === g.id).length;
     li.innerHTML = `
       <span class="group-dot"></span>
       <div class="group-meta">
         <span class="group-name">${esc(g.name)}${sysTag}</span>
         ${g.description ? `<span class="group-desc">${esc(g.description)}</span>` : ""}
       </div>
-      <span class="group-count" title="Resources granted to this group">${g.grant_count || 0}</span>
+      <span class="group-count" title="Resources granted to this group">${liveCount}</span>
     `;
     li.addEventListener("click", () => selectGroup(g.id));
     list.appendChild(li);
