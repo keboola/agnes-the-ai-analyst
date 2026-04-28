@@ -89,7 +89,14 @@ def test_cli_agnes_whl_alias_is_gone(monkeypatch, tmp_path):
     assert resp.status_code == 404
 
 
-def test_install_page_renders_with_server_url():
+def test_install_page_renders_with_server_url(tmp_path, monkeypatch):
+    """Parallel-test isolation: GET /install routes through the shared
+    system.duckdb. Without per-worker DATA_DIR isolation, two xdist
+    workers exercising this test (or any DB-touching test) at the same
+    time hit `Could not set lock on file …system.duckdb` because
+    conftest's default DATA_DIR is shared across the worker pool."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    (tmp_path / "state").mkdir(parents=True, exist_ok=True)
     from fastapi.testclient import TestClient
     from app.main import app
     client = TestClient(app)

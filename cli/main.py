@@ -20,6 +20,12 @@ from cli.commands.server import server_app
 from cli.commands.explore import explore_app
 from cli.commands.metrics import metrics_app
 from cli.commands.analyst import analyst_app
+from cli.commands.catalog import catalog_app
+from cli.commands.schema import schema_app
+from cli.commands.describe import describe_app
+from cli.commands.fetch import fetch_app
+from cli.commands.snapshot import snapshot_app
+from cli.commands.disk_info import disk_info_app
 
 
 def _cli_version() -> str:
@@ -95,6 +101,12 @@ app.add_typer(server_app, name="server")
 app.add_typer(explore_app, name="explore")
 app.add_typer(metrics_app, name="metrics")
 app.add_typer(analyst_app, name="analyst")
+app.add_typer(catalog_app, name="catalog")
+app.add_typer(schema_app, name="schema")
+app.add_typer(describe_app, name="describe")
+app.add_typer(fetch_app, name="fetch")
+app.add_typer(snapshot_app, name="snapshot")
+app.add_typer(disk_info_app, name="disk-info")
 
 
 if __name__ == "__main__":

@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Dict, Any
 import duckdb
 
@@ -80,6 +80,23 @@ def _validate_url_not_private(url: str, field_name: str = "url") -> None:
                 status_code=400,
                 detail=f"Invalid {field_name}: must not point to a private or reserved network",
             )
+
+
+def _normalize_primary_key(v):
+    """Coerce a string primary_key to ``[v]`` for backward compatibility.
+
+    The 0.14.0 contract is ``Optional[List[str]]`` so composite primary keys
+    (e.g. session-grain tables keyed on ``(session_id, event_date)``) round-
+    trip cleanly. Pre-0.14.0 callers sent a single string; Pydantic v2
+    refuses to coerce, so without this validator a CLI script posting
+    ``"primary_key": "session_id"`` would now hit a 422. Wrap a bare string
+    in a one-element list so old and new callers both work.
+    """
+    if v is None:
+        return v
+    if isinstance(v, str):
+        return [v]
+    return v
 
 
 # Patches to these section paths must pass _validate_url_not_private. The
@@ -560,7 +577,11 @@ class RegisterTableRequest(BaseModel):
     name: str
     folder: Optional[str] = None
     sync_strategy: str = "full_refresh"
-    primary_key: Optional[str] = None
+    # Composite primary keys are real (session-grain MSA tables key on
+    # `(session_id, event_date)`, browse rows on more). The frontend sends +
+    # reads this as a list; backend stores it JSON-serialized in VARCHAR.
+    # A bare string is accepted for backward compat — see _normalize_primary_key.
+    primary_key: Optional[List[str]] = None
     description: Optional[str] = None
     source_type: Optional[str] = None
     bucket: Optional[str] = None
@@ -569,11 +590,16 @@ class RegisterTableRequest(BaseModel):
     sync_schedule: Optional[str] = None
     profile_after_sync: bool = True
 
+    @field_validator("primary_key", mode="before")
+    @classmethod
+    def _coerce_primary_key(cls, v):
+        return _normalize_primary_key(v)
+
 
 class UpdateTableRequest(BaseModel):
     name: Optional[str] = None
     sync_strategy: Optional[str] = None
-    primary_key: Optional[str] = None
+    primary_key: Optional[List[str]] = None
     description: Optional[str] = None
     source_type: Optional[str] = None
     bucket: Optional[str] = None
@@ -581,6 +607,11 @@ class UpdateTableRequest(BaseModel):
     query_mode: Optional[str] = None
     sync_schedule: Optional[str] = None
     profile_after_sync: Optional[bool] = None
+
+    @field_validator("primary_key", mode="before")
+    @classmethod
+    def _coerce_primary_key(cls, v):
+        return _normalize_primary_key(v)
 
 
 class ConfigureRequest(BaseModel):

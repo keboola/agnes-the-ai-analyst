@@ -411,6 +411,28 @@ class TestRegisterTable:
         )
         assert resp.status_code == 201
 
+    def test_register_table_accepts_string_primary_key_for_backcompat(self, seeded_app):
+        """primary_key changed from Optional[str] to Optional[List[str]] in
+        0.14.0. Pydantic v2 doesn't coerce, so without a backward-compat
+        normalizer a CLI script posting `"primary_key": "session_id"` would
+        hit a 422. The field validator wraps a bare string in a one-element
+        list so old and new callers both work."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/register-table",
+            json={"name": "single_pk", "primary_key": "session_id"},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 201, resp.text
+
+        resp = c.post(
+            "/api/admin/register-table",
+            json={"name": "composite_pk", "primary_key": ["session_id", "event_date"]},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 201, resp.text
+
 
 class TestDeleteRegistryTable:
     def test_delete_registered_table(self, seeded_app):

@@ -12,6 +12,8 @@ from pathlib import Path
 
 import duckdb
 
+from connectors.bigquery.auth import get_metadata_token, BQMetadataAuthError
+
 logger = logging.getLogger(__name__)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
@@ -470,7 +472,31 @@ def _reattach_remote_extensions(
                 conn.execute(f"LOAD {extension};")
                 token = os.environ.get(token_env, "") if token_env else ""
                 safe_url = escape_sql_string_literal(url)
-                if token:
+
+                # BQ-specific: refresh token from GCE metadata, create session-scoped
+                # secret before ATTACH. Empty token_env (set by the BQ extractor)
+                # is the contract that signals "use built-in metadata path". The
+                # secret is created here on every readonly-connection open because
+                # secrets are session-scoped and don't persist with analytics.duckdb.
+                if extension == "bigquery":
+                    try:
+                        bq_token = get_metadata_token()
+                    except BQMetadataAuthError as e:
+                        logger.error(
+                            "Failed to fetch BQ metadata token for %s: %s — skipping ATTACH",
+                            alias, e,
+                        )
+                        continue
+                    escaped = escape_sql_string_literal(bq_token)
+                    secret_name = f"bq_secret_{alias}"
+                    conn.execute(
+                        f"CREATE OR REPLACE SECRET {secret_name} "
+                        f"(TYPE bigquery, ACCESS_TOKEN '{escaped}')"
+                    )
+                    conn.execute(
+                        f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)"
+                    )
+                elif token:
                     escaped_token = escape_sql_string_literal(token)
                     conn.execute(
                         f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, TOKEN '{escaped_token}')"

@@ -98,6 +98,10 @@ from app.api.metadata import router as metadata_router
 from app.api.query_hybrid import router as query_hybrid_router
 from app.api.cli_artifacts import router as cli_artifacts_router
 from app.api.tokens import router as tokens_router, admin_router as tokens_admin_router
+from app.api.v2_catalog import router as v2_catalog_router
+from app.api.v2_schema import router as v2_schema_router
+from app.api.v2_sample import router as v2_sample_router
+from app.api.v2_scan import router as v2_scan_router
 from app.api.marketplaces import router as marketplaces_router
 from app.marketplace_server.router import router as marketplace_server_router
 from app.marketplace_server.git_router import make_git_wsgi_app
@@ -334,6 +338,10 @@ def create_app() -> FastAPI:
     app.include_router(cli_artifacts_router)
     app.include_router(tokens_router)
     app.include_router(tokens_admin_router)
+    app.include_router(v2_catalog_router)
+    app.include_router(v2_schema_router)
+    app.include_router(v2_sample_router)
+    app.include_router(v2_scan_router)
     app.include_router(marketplaces_router)
     app.include_router(marketplace_server_router)
 

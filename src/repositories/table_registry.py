@@ -1,9 +1,65 @@
 """Repository for table registry."""
 
+import json
 from datetime import datetime, timezone
-from typing import Any, Optional, List, Dict
+from typing import Any, Optional, List, Dict, Union
 
 import duckdb
+
+
+def _encode_primary_key(pk: Union[None, str, List[str]]) -> Optional[str]:
+    """Serialize primary_key (list-or-string) to a canonical VARCHAR form.
+
+    Frontend + API send lists (composite PKs are real — session-grain MSA
+    tables key on `(session_id, event_date)` etc.). The schema column is
+    VARCHAR for backwards compat, so we JSON-encode the list on write.
+    Accepts a string for legacy CLI callers.
+    """
+    if pk is None or pk == "":
+        return None
+    if isinstance(pk, list):
+        return json.dumps(pk) if pk else None
+    if isinstance(pk, str):
+        return json.dumps([pk])
+    return json.dumps([str(pk)])
+
+
+def _decode_primary_key(stored: Any) -> Optional[List[str]]:
+    """Decode a registry-stored primary_key into the API-canonical list-of-str
+    form. Tolerates four legacy representations:
+
+    - None / empty string → None
+    - JSON-array string `'["a","b"]'` (current canonical)
+    - Comma-separated string `'a,b'` (legacy CLI input)
+    - Python repr literal `"['a', 'b']"` (legacy bug — see #111)
+    - Plain string `'a'` (legacy single-PK CLI input)
+    """
+    if stored is None or stored == "":
+        return None
+    if isinstance(stored, list):
+        return [str(x) for x in stored if x]
+    if not isinstance(stored, str):
+        return [str(stored)]
+    s = stored.strip()
+    if not s:
+        return None
+    if s.startswith("[") and s.endswith("]"):
+        try:
+            v = json.loads(s)
+            if isinstance(v, list):
+                return [str(x) for x in v if x]
+        except json.JSONDecodeError:
+            # Python repr legacy: `"['a', 'b']"` (single-quoted)
+            try:
+                import ast
+                v = ast.literal_eval(s)
+                if isinstance(v, list):
+                    return [str(x) for x in v if x]
+            except Exception:
+                pass
+    if "," in s:
+        return [p.strip() for p in s.split(",") if p.strip()]
+    return [s]
 
 
 class TableRegistryRepository:
@@ -12,7 +68,8 @@ class TableRegistryRepository:
 
     def register(
         self, id: str, name: str, folder: Optional[str] = None,
-        sync_strategy: Optional[str] = None, primary_key: Optional[str] = None,
+        sync_strategy: Optional[str] = None,
+        primary_key: Union[None, str, List[str]] = None,
         description: Optional[str] = None, registered_by: Optional[str] = None,
         source_type: Optional[str] = None, bucket: Optional[str] = None,
         source_table: Optional[str] = None, query_mode: str = "local",
@@ -20,6 +77,7 @@ class TableRegistryRepository:
         is_public: bool = True,
     ) -> None:
         now = datetime.now(timezone.utc)
+        encoded_pk = _encode_primary_key(primary_key)
         self.conn.execute(
             """INSERT INTO table_registry (id, name, folder, sync_strategy,
                 primary_key, description, registered_by, registered_at,
@@ -34,9 +92,16 @@ class TableRegistryRepository:
                 source_table = excluded.source_table, query_mode = excluded.query_mode,
                 sync_schedule = excluded.sync_schedule, profile_after_sync = excluded.profile_after_sync,
                 is_public = excluded.is_public""",
-            [id, name, folder, sync_strategy, primary_key, description, registered_by, now,
+            [id, name, folder, sync_strategy, encoded_pk, description, registered_by, now,
              source_type, bucket, source_table, query_mode, sync_schedule, profile_after_sync, is_public],
         )
+
+    @staticmethod
+    def _decode_row(row_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply JSON-decoding to fields stored as canonical VARCHAR."""
+        if "primary_key" in row_dict:
+            row_dict["primary_key"] = _decode_primary_key(row_dict["primary_key"])
+        return row_dict
 
     def unregister(self, table_id: str) -> None:
         self.conn.execute("DELETE FROM table_registry WHERE id = ?", [table_id])
@@ -48,14 +113,14 @@ class TableRegistryRepository:
         if not result:
             return None
         columns = [desc[0] for desc in self.conn.description]
-        return dict(zip(columns, result))
+        return self._decode_row(dict(zip(columns, result)))
 
     def list_all(self) -> List[Dict[str, Any]]:
         results = self.conn.execute("SELECT * FROM table_registry ORDER BY name").fetchall()
         if not results:
             return []
         columns = [desc[0] for desc in self.conn.description]
-        return [dict(zip(columns, row)) for row in results]
+        return [self._decode_row(dict(zip(columns, row))) for row in results]
 
     def list_by_source(self, source_type: str) -> List[Dict[str, Any]]:
         """List tables for a given source type (keboola, bigquery, jira, etc.)."""
@@ -66,7 +131,7 @@ class TableRegistryRepository:
         if not results:
             return []
         columns = [desc[0] for desc in self.conn.description]
-        return [dict(zip(columns, row)) for row in results]
+        return [self._decode_row(dict(zip(columns, row))) for row in results]
 
     def list_local(self, source_type: Optional[str] = None) -> List[Dict[str, Any]]:
         """List tables with query_mode='local' (data downloaded to parquet)."""
@@ -82,4 +147,4 @@ class TableRegistryRepository:
         if not results:
             return []
         columns = [desc[0] for desc in self.conn.description]
-        return [dict(zip(columns, row)) for row in results]
+        return [self._decode_row(dict(zip(columns, row))) for row in results]
