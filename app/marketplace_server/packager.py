@@ -81,7 +81,7 @@ def build_info(conn: duckdb.DuckDBPyConnection, user: dict) -> Dict[str, Any]:
     return {
         "user_id": user.get("id"),
         "email": user.get("email"),
-        "groups": marketplace_filter.resolve_user_groups(user),
+        "groups": marketplace_filter.resolve_user_groups(conn, user),
         "marketplace_name": MARKETPLACE_NAME,
         "etag": etag,
         "plugin_count": len(plugins),
@@ -149,7 +149,7 @@ def build_zip(conn: duckdb.DuckDBPyConnection, user: dict) -> Tuple[bytes, str]:
     version_payload = {
         "user_id": user.get("id"),
         "email": user.get("email"),
-        "groups": marketplace_filter.resolve_user_groups(user),
+        "groups": marketplace_filter.resolve_user_groups(conn, user),
         "marketplace_name": MARKETPLACE_NAME,
         "etag": etag,
         "plugin_count": len(plugins),

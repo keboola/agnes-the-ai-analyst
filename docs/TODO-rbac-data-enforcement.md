@@ -128,3 +128,13 @@ plugins to groups; tables are the last holdout.
   per-table bulk-action UX, admins still want first-class bucket grants
   that auto-cover newly registered tables, add `ResourceType.BUCKET`
   in a later iteration.
+- **Legacy role-based remnants.** Several places in the code still
+  carry role-based artifacts (API contracts, CLI gestures, helper
+  functions, DB column, JWT claim). Audit the codebase end-to-end and
+  replace each with the v13 group-based mechanism. **Gated on Google
+  Workspace group sync (`app/auth/group_sync.py`) being verified
+  reliable end-to-end in production** — until then, `users.role`
+  serves as a defensive fallback for admin elevation when Cloud
+  Identity calls silently return `[]`. The asymmetry flagged in PR
+  #106 (Devin review on `_set_admin_membership`) falls under this
+  cleanup and will be resolved together with the rest.

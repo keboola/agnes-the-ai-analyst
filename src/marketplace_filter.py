@@ -114,6 +114,37 @@ def resolve_allowed_plugins(
     return result
 
 
+def resolve_user_groups(
+    conn: duckdb.DuckDBPyConnection, user: dict
+) -> List[str]:
+    """Return the names of groups this user belongs to, sorted alphabetically.
+
+    Diagnostic only — the actual RBAC filtering of the marketplace feed is
+    owned by ``resolve_allowed_plugins``. This helper backs the ``groups``
+    field in ``/marketplace/info`` and in ``.agnes/version.json`` inside the
+    ZIP, so an operator can read those payloads and answer "which groups
+    granted me visibility into this plugin set?" without opening the admin UI.
+
+    Membership semantics mirror ``app.auth.access._user_group_ids``:
+    Everyone is implicit and is returned even if the explicit
+    ``user_group_members`` row is missing (fresh-install / mis-seeded
+    fixture safety).
+    """
+    user_id = user.get("id")
+    if not user_id:
+        return []
+    group_ids = _user_group_ids(user_id, conn)
+    if not group_ids:
+        return []
+    placeholders = ",".join(["?"] * len(group_ids))
+    rows = conn.execute(
+        f"SELECT name FROM user_groups "
+        f"WHERE id IN ({placeholders}) ORDER BY name",
+        list(group_ids),
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
 def _sha256_file(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:

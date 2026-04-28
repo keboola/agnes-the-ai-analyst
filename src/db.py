@@ -788,134 +788,148 @@ def _v12_to_v13_finalize(conn: duckdb.DuckDBPyConnection) -> None:
     5. Backfill resource_grants from plugin_access.
     6. DROP legacy tables in FK-correct order.
     7. ALTER users DROP COLUMN groups (DuckDB ≥ 0.8 supports it).
+
+    Wrapped in an explicit transaction so an unhandled mid-flight failure
+    rolls the DB back to a clean v12 state. Per-step soft-fails on DROP
+    TABLE / ALTER (already caught and logged inline) do NOT abort the
+    transaction — only an unexpected exception from a backfill SELECT or
+    INSERT does. The outer caller in _ensure_schema then skips the
+    schema_version bump and the next start retries the whole step.
     """
     import uuid as _uuid
 
-    _seed_system_groups(conn)
+    conn.execute("BEGIN TRANSACTION")
+    try:
+        _seed_system_groups(conn)
 
-    admin_group_id = conn.execute(
-        "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
-    ).fetchone()[0]
-    everyone_group_id = conn.execute(
-        "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_EVERYONE_GROUP]
-    ).fetchone()[0]
+        admin_group_id = conn.execute(
+            "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
+        ).fetchone()[0]
+        everyone_group_id = conn.execute(
+            "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_EVERYONE_GROUP]
+        ).fetchone()[0]
 
-    # 2. users.groups JSON → user_group_members (google_sync). Tolerant of the
-    # column having been physically dropped already (re-run safety) and of
-    # malformed JSON (caught row-by-row, skipped silently).
-    has_groups_col = conn.execute(
-        "SELECT 1 FROM information_schema.columns "
-        "WHERE table_name = 'users' AND column_name = 'groups'"
-    ).fetchone()
-    if has_groups_col:
-        rows = conn.execute(
-            "SELECT id, groups FROM users WHERE groups IS NOT NULL"
-        ).fetchall()
-        for user_id, groups_json in rows:
-            try:
-                import json as _json
-                names = _json.loads(groups_json) if isinstance(groups_json, str) else (groups_json or [])
-            except (ValueError, TypeError):
-                names = []
-            if not isinstance(names, list):
-                continue
-            for name in names:
-                if not isinstance(name, str) or not name.strip():
+        # 2. users.groups JSON → user_group_members (google_sync). Tolerant of the
+        # column having been physically dropped already (re-run safety) and of
+        # malformed JSON (caught row-by-row, skipped silently).
+        has_groups_col = conn.execute(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = 'users' AND column_name = 'groups'"
+        ).fetchone()
+        if has_groups_col:
+            rows = conn.execute(
+                "SELECT id, groups FROM users WHERE groups IS NOT NULL"
+            ).fetchall()
+            for user_id, groups_json in rows:
+                try:
+                    import json as _json
+                    names = _json.loads(groups_json) if isinstance(groups_json, str) else (groups_json or [])
+                except (ValueError, TypeError):
+                    names = []
+                if not isinstance(names, list):
                     continue
-                group_row = conn.execute(
-                    "SELECT id FROM user_groups WHERE name = ?", [name],
-                ).fetchone()
-                if not group_row:
-                    continue
+                for name in names:
+                    if not isinstance(name, str) or not name.strip():
+                        continue
+                    group_row = conn.execute(
+                        "SELECT id FROM user_groups WHERE name = ?", [name],
+                    ).fetchone()
+                    if not group_row:
+                        continue
+                    try:
+                        conn.execute(
+                            """INSERT INTO user_group_members
+                               (user_id, group_id, source, added_by)
+                               VALUES (?, ?, 'google_sync', 'system:v13-backfill')""",
+                            [user_id, group_row[0]],
+                        )
+                    except duckdb.ConstraintException:
+                        pass  # already present (re-run safety)
+
+        # 3. core.admin grants → Admin membership. Tolerant of either table being
+        # absent (e.g. fresh install path that skipped v8→v9).
+        has_internal_roles = conn.execute(
+            "SELECT 1 FROM information_schema.tables WHERE table_name = 'internal_roles'"
+        ).fetchone()
+        has_user_role_grants = conn.execute(
+            "SELECT 1 FROM information_schema.tables WHERE table_name = 'user_role_grants'"
+        ).fetchone()
+        if has_internal_roles and has_user_role_grants:
+            admin_users = conn.execute(
+                """SELECT DISTINCT g.user_id
+                   FROM user_role_grants g
+                   JOIN internal_roles r ON r.id = g.internal_role_id
+                   WHERE r.key = 'core.admin'"""
+            ).fetchall()
+            for (user_id,) in admin_users:
                 try:
                     conn.execute(
                         """INSERT INTO user_group_members
                            (user_id, group_id, source, added_by)
-                           VALUES (?, ?, 'google_sync', 'system:v13-backfill')""",
-                        [user_id, group_row[0]],
+                           VALUES (?, ?, 'system_seed', 'system:v13-backfill')""",
+                        [user_id, admin_group_id],
                     )
                 except duckdb.ConstraintException:
-                    pass  # already present (re-run safety)
+                    pass
 
-    # 3. core.admin grants → Admin membership. Tolerant of either table being
-    # absent (e.g. fresh install path that skipped v8→v9).
-    has_internal_roles = conn.execute(
-        "SELECT 1 FROM information_schema.tables WHERE table_name = 'internal_roles'"
-    ).fetchone()
-    has_user_role_grants = conn.execute(
-        "SELECT 1 FROM information_schema.tables WHERE table_name = 'user_role_grants'"
-    ).fetchone()
-    if has_internal_roles and has_user_role_grants:
-        admin_users = conn.execute(
-            """SELECT DISTINCT g.user_id
-               FROM user_role_grants g
-               JOIN internal_roles r ON r.id = g.internal_role_id
-               WHERE r.key = 'core.admin'"""
-        ).fetchall()
-        for (user_id,) in admin_users:
+        # 4. Everyone for every user (idempotent via UNIQUE PK).
+        user_rows = conn.execute("SELECT id FROM users").fetchall()
+        for (user_id,) in user_rows:
             try:
                 conn.execute(
                     """INSERT INTO user_group_members
                        (user_id, group_id, source, added_by)
                        VALUES (?, ?, 'system_seed', 'system:v13-backfill')""",
-                    [user_id, admin_group_id],
+                    [user_id, everyone_group_id],
                 )
             except duckdb.ConstraintException:
                 pass
 
-    # 4. Everyone for every user (idempotent via UNIQUE PK).
-    user_rows = conn.execute("SELECT id FROM users").fetchall()
-    for (user_id,) in user_rows:
-        try:
-            conn.execute(
-                """INSERT INTO user_group_members
-                   (user_id, group_id, source, added_by)
-                   VALUES (?, ?, 'system_seed', 'system:v13-backfill')""",
-                [user_id, everyone_group_id],
-            )
-        except duckdb.ConstraintException:
-            pass
+        # 5. plugin_access → resource_grants
+        has_plugin_access = conn.execute(
+            "SELECT 1 FROM information_schema.tables WHERE table_name = 'plugin_access'"
+        ).fetchone()
+        if has_plugin_access:
+            pa_rows = conn.execute(
+                """SELECT group_id, marketplace_id, plugin_name, granted_at, granted_by
+                   FROM plugin_access"""
+            ).fetchall()
+            for group_id, marketplace_id, plugin_name, granted_at, granted_by in pa_rows:
+                resource_id = f"{marketplace_id}/{plugin_name}"
+                try:
+                    conn.execute(
+                        """INSERT INTO resource_grants
+                           (id, group_id, resource_type, resource_id, assigned_at, assigned_by)
+                           VALUES (?, ?, 'marketplace_plugin', ?, ?, ?)""",
+                        [str(_uuid.uuid4()), group_id, resource_id, granted_at, granted_by],
+                    )
+                except duckdb.ConstraintException:
+                    pass  # already migrated (re-run safety)
 
-    # 5. plugin_access → resource_grants
-    has_plugin_access = conn.execute(
-        "SELECT 1 FROM information_schema.tables WHERE table_name = 'plugin_access'"
-    ).fetchone()
-    if has_plugin_access:
-        pa_rows = conn.execute(
-            """SELECT group_id, marketplace_id, plugin_name, granted_at, granted_by
-               FROM plugin_access"""
-        ).fetchall()
-        for group_id, marketplace_id, plugin_name, granted_at, granted_by in pa_rows:
-            resource_id = f"{marketplace_id}/{plugin_name}"
+        # 6. Drop legacy tables in FK-correct order: dependent tables first.
+        for stmt in [
+            "DROP TABLE IF EXISTS plugin_access",
+            "DROP TABLE IF EXISTS user_role_grants",
+            "DROP TABLE IF EXISTS group_mappings",
+            "DROP TABLE IF EXISTS internal_roles",
+        ]:
             try:
-                conn.execute(
-                    """INSERT INTO resource_grants
-                       (id, group_id, resource_type, resource_id, assigned_at, assigned_by)
-                       VALUES (?, ?, 'marketplace_plugin', ?, ?, ?)""",
-                    [str(_uuid.uuid4()), group_id, resource_id, granted_at, granted_by],
-                )
-            except duckdb.ConstraintException:
-                pass  # already migrated (re-run safety)
+                conn.execute(stmt)
+            except Exception as e:
+                logger.warning("v13 drop failed (%s): %s", stmt, e)
 
-    # 6. Drop legacy tables in FK-correct order: dependent tables first.
-    for stmt in [
-        "DROP TABLE IF EXISTS plugin_access",
-        "DROP TABLE IF EXISTS user_role_grants",
-        "DROP TABLE IF EXISTS group_mappings",
-        "DROP TABLE IF EXISTS internal_roles",
-    ]:
-        try:
-            conn.execute(stmt)
-        except Exception as e:
-            logger.warning("v13 drop failed (%s): %s", stmt, e)
+        # 7. Drop users.groups column. DuckDB supports DROP COLUMN; silently no-op
+        # if it's already gone (fresh-install path or partial re-run).
+        if has_groups_col:
+            try:
+                conn.execute("ALTER TABLE users DROP COLUMN groups")
+            except Exception as e:
+                logger.warning("v13 ALTER users DROP COLUMN groups failed: %s", e)
 
-    # 7. Drop users.groups column. DuckDB supports DROP COLUMN; silently no-op
-    # if it's already gone (fresh-install path or partial re-run).
-    if has_groups_col:
-        try:
-            conn.execute("ALTER TABLE users DROP COLUMN groups")
-        except Exception as e:
-            logger.warning("v13 ALTER users DROP COLUMN groups failed: %s", e)
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
 
 
 def _seed_core_roles(conn: duckdb.DuckDBPyConnection) -> None:
