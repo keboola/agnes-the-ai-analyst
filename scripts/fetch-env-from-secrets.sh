@@ -13,7 +13,7 @@ ENV_FILE="${APP_DIR}/.env"
 # Non-secret config (override via environment or hardcoded defaults)
 DATA_SOURCE="${DATA_SOURCE:-keboola}"
 KEBOOLA_STACK_URL="${KEBOOLA_STACK_URL:-https://connection.us-east4.gcp.keboola.com/}"
-SEED_ADMIN_EMAIL="${SEED_ADMIN_EMAIL:-zdenek.srotyr@keboola.com}"
+SEED_ADMIN_EMAIL="${SEED_ADMIN_EMAIL:?SEED_ADMIN_EMAIL must be set}"
 LOG_LEVEL="${LOG_LEVEL:-info}"
 DATA_DIR="${DATA_DIR:-/data}"
 AGNES_TAG="${AGNES_TAG:-stable}"
@@ -38,7 +38,7 @@ AGNES_TAG=${AGNES_TAG}
 EOF
 
 chmod 600 "${ENV_FILE}"
-# Chown je best-effort — pokud skript neběží jako root, ignoruj
+# chown is best-effort — ignore if the script isn't running as root.
 chown deploy:deploy "${ENV_FILE}" 2>/dev/null || true
 
 echo "Done. ${ENV_FILE} has $(wc -l < "${ENV_FILE}") lines, chmod 600."

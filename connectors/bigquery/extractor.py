@@ -18,6 +18,7 @@ from src.sql_safe import (
     validate_identifier as _validate_identifier,
     validate_project_id as _validate_project_id,
 )
+from src.identifier_validation import validate_identifier, validate_quoted_identifier
 
 logger = logging.getLogger(__name__)
 
@@ -150,15 +151,28 @@ def init_extract(
             dataset = tc.get("bucket", "")
             source_table = tc.get("source_table", table_name)
 
-            try:
-                # Validate identifiers before SQL construction — see I-1/I-2 from review.
-                if not _validate_identifier(table_name, "BQ table_name"):
-                    raise RuntimeError(f"unsafe table_name: {table_name!r}")
-                if not _validate_identifier(dataset, "BQ dataset"):
-                    raise RuntimeError(f"unsafe dataset: {dataset!r}")
-                if not _validate_identifier(source_table, "BQ source_table"):
-                    raise RuntimeError(f"unsafe source_table: {source_table!r}")
+            # #81 Group D — refuse rows with unsafe identifiers. Same
+            # rationale as the keboola extractor: registry is admin-controlled
+            # but anyone with write access can otherwise inject SQL via the
+            # CREATE VIEW interpolation below. Skip-and-continue.
+            # `table_name` is the DuckDB view name in the master
+            # analytics DB and the orchestrator uses the STRICT
+            # validator there — accept the same constraint upstream
+            # so a name with `-` or `.` fails fast in extraction
+            # rather than getting silently dropped at rebuild time.
+            # `dataset` and `source_table` are upstream-typed (BQ
+            # naming) so use the relaxed validator for those.
+            if not validate_identifier(table_name, "BigQuery table_name"):
+                stats["errors"].append({"table": table_name, "error": f"unsafe table_name: {table_name!r}"})
+                continue
+            if not validate_quoted_identifier(dataset, "BigQuery dataset"):
+                stats["errors"].append({"table": table_name, "error": f"unsafe dataset: {dataset!r}"})
+                continue
+            if not validate_quoted_identifier(source_table, "BigQuery source_table"):
+                stats["errors"].append({"table": table_name, "error": f"unsafe source_table: {source_table!r}"})
+                continue
 
+            try:
                 entity_type = _detect_table_type(conn, project_id, dataset, source_table)
                 if entity_type is None:
                     raise RuntimeError(

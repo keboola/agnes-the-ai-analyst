@@ -118,7 +118,7 @@ data_source:
     # legacy_wrap_views: false           # Set true to restore pre-v2 wrap views for BQ VIEW/MATERIALIZED_VIEW
     #                                    # tables in analytics.duckdb (migration escape hatch; default: false)
 
-# --- OpenMetadata catalog (optional - Groupon-specific) ---
+# --- OpenMetadata catalog (optional) ---
 # Enriches table and column metadata from OpenMetadata REST API.
 # If not configured, app works normally without catalog enrichment.
 # openmetadata:

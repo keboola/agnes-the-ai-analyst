@@ -30,6 +30,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **SQL identifier-validation helper** in `src/sql_safe.py`. New functions `is_safe_identifier()` and `validate_identifier()` enforce safe character sets before f-stringing identifiers into SQL. BigQuery extractor and orchestrator `_attach_remote_extensions` both validate `dataset`, `source_table`, and view names before use, closing a SQL-injection surface if admin config is untrusted.
 - **`/api/sync/manifest` response now includes `query_mode` and `source_type` per table**, joined from `table_registry`. Clients can branch on table semantics (remote vs. local, source type) without a second API call.
 - **`da sync --json` output** now includes a `skipped_remote` list with IDs of `query_mode='remote'` tables that were skipped during sync (they're not downloaded locally; only queried via `/api/query`).
+- **Schema v10** introduces `view_ownership` to detect cross-connector view-name collisions in the master analytics DB (issue #81 Group C). When two connectors register the same `_meta.table_name`, the orchestrator now refuses to silently overwrite the prior owner's view — it logs a `view_ownership collision` ERROR identifying both sources and the colliding name, and the second source's view is NOT created. Previously this was last-write-wins, which depended on directory iteration order and could change deployment-to-deployment. Operators resolve a collision by renaming `name` in `table_registry` on one side (registry-side aliasing — `source_table` stays unchanged, only the view name changes). The orchestrator pre-scans every connector's `_meta` at the start of each rebuild and releases stale ownerships immediately (when ALL pre-scans succeed; if any fail, reconcile is skipped to avoid silently stealing a transient-IO source's name), so a renamed table frees its name in the SAME rebuild that introduces the rename — no two-step waits needed. New module `src/repositories/view_ownership.py` exposes the repository.
 
 ### Changed
 
@@ -49,6 +50,194 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - Test pattern: BigQuery extractor is exercised with a dual-path strategy (BASE TABLE + VIEW detection) via `_CapturingProxy` SQL-capture wrappers. DuckDB's C-implemented `execute` attribute is read-only and can't be monkey-patched directly; the proxy wraps the connection and captures outgoing SQL before forwarding to the real DuckDB conn.
 - Implementation plan: `docs/superpowers/plans/2026-04-27-bq-pipeline-views-and-metadata-auth.md` — subagent-driven development for Tasks 1-7 of this PR.
 
+### Changed (issue #81 / #44 / #88 — security & OSS neutralization)
+
+- **BREAKING (ops)**: Keboola extractor now exits with three distinct
+  codes instead of two (issue #81 Group B / M14): `0` = full success,
+  `1` = full failure, `2` = **partial** failure (some tables succeeded,
+  some failed). Previously `exit(0)` fired even when 9 of 10 tables
+  failed, masking partial failures from the sync API and any operator
+  alerting hooked to non-zero exit codes. The sync API
+  (`POST /api/sync/trigger`) now logs `PARTIAL FAILURE (exit 2)` as a
+  data-quality alert (distinct from `FAILED (exit 1)`) and continues to
+  the orchestrator rebuild step — successful tables from this run plus
+  unchanged tables from previous runs stay queryable. Operators whose
+  alerting treated any non-zero exit as a hard error must teach it that
+  exit 2 is a partial-failure signal, not a deploy failure.
+- **BREAKING (security)**: The entire Script API is now **admin-only** (issue #44).
+  `GET /api/scripts`, `POST /api/scripts/deploy`, `POST /api/scripts/run`, and
+  `POST /api/scripts/{id}/run` all require the admin role; previously the list
+  endpoint was open to any authenticated user and deploy/run were analyst-accessible.
+  Two reasons: (1) the AST + string-blocklist sandbox in `_execute_script` is
+  defense-in-depth and known to be bypassable through introspection chains
+  (`__class__.__base__.__subclasses__()`, `__globals__['__builtins__']`,
+  `__mro__` traversal — the dunder pattern list was tightened in this PR but
+  the policy is "the role gate is the trust boundary, not the blocklist");
+  (2) gating only `/run` left a planted-script attack open — an analyst could
+  deploy a malicious script and wait for an admin to run it. Operators who
+  need scripted workflows for non-admin users should run them on the user's
+  behalf or expose the relevant data via the read-only `/api/data` surface
+  instead.
+- **BREAKING (ops)**: Generic ops scripts moved out of the customer-named
+  `scripts/grpn/` directory into `scripts/ops/` as part of the OSS
+  vendor-neutralization (issue #88):
+  - `scripts/grpn/agnes-tls-rotate.sh` → `scripts/ops/agnes-tls-rotate.sh`
+  - `scripts/grpn/agnes-auto-upgrade.sh` → `scripts/ops/agnes-auto-upgrade.sh`
+
+  Downstream consumer infra repos that copy these scripts onto VMs (e.g. via
+  their own `startup.sh`) must update the source path. The OSS-shipped
+  `infra/modules/customer-instance/` Terraform module is unaffected — it
+  embeds equivalent logic inline via heredoc and does not source-by-path
+  from `scripts/`. Script behaviour and env vars are unchanged. Cross-refs
+  in `README.md`, `CLAUDE.md`, `docs/DEPLOYMENT.md`, `Caddyfile`, and
+  `docker-compose.yml` were updated.
+- **OSS neutralization (wave 2 — code, tests, planning docs)**. Customer
+  identifiers replaced with placeholders across the codebase to ready the
+  repo for public release (issue #88):
+
+  - **Code docstrings**: `connectors/openmetadata/{client,transformer,enricher}.py`,
+    `src/catalog_export.py`, `scripts/duckdb_manager.py` — `prj-grp-…` →
+    `my-bq-project` / `prj-example-1234`, `AIAgent.FoundryAI` →
+    `AIAgent.MyAgent` (in docstrings) / `AIAgent.Example` (in test fixtures),
+    `FoundryAIDataModel` → `AnalyticsDataModel`.
+  - **Test fixtures** in `tests/test_openmetadata_enricher.py`,
+    `tests/test_duckdb_manager.py`, `tests/test_catalog_export.py`,
+    `tests/test_openmetadata_transformer.py` — same set of replacements,
+    behaviour-preserving (157 tests still green).
+  - **Terraform module** `infra/modules/customer-instance/variables.tf`:
+    `customer_name` description rewritten in English, examples switched
+    from `keboola, grpn` to `acme, example`.
+  - **Workflow** `.github/workflows/keboola-deploy.yml`: comment "Groupon-side
+    dev VMs" → generic "per-developer dev VMs".
+  - **Caddyfile**: TLS-rotation cross-ref updated to `scripts/ops/…` and
+    Keboola-specific aside removed.
+  - **Auth docs** `docs/auth-groups.md` and the OAuth probe in
+    `scripts/debug/probe_google_groups.py`: GCP project name `kids-ai-data-analysis`
+    replaced with placeholder `acme-internal-prod`.
+  - **Planning docs** under `docs/superpowers/plans/` and `…/specs/`: the
+    five hackathon-era documents (`2026-04-21-deployment-log.md`,
+    `…-multi-customer-deployment.md`, `…-issues-14-and-10.md`,
+    `…-hackathon-dry-run.md`, the spec) had `34.77.94.14` / `34.77.102.61`
+    replaced with `<dev-vm-ip>` / `<prod-vm-ip>`, `Groupon`/`GRPN`/`grpn`
+    with `Acme`/`another-customer`, and `prj-grp-…` with `prj-example-…`.
+
+### Fixed
+
+- **BREAKING (security CRITICAL)**: Jira webhook handler is now
+  fail-closed (issue #83). Previously, if `JIRA_WEBHOOK_SECRET` was
+  unset, `_verify_signature` returned `True` and any unauthenticated
+  POST to `/webhooks/jira` could trigger the full ingest pipeline. The
+  handler now returns **503** when the secret is missing
+  (operator-misconfiguration signal, distinct from 401 wrong-signature).
+  Operators relying on the no-secret = accept-everything mode (don't —
+  it was never documented) must set `JIRA_WEBHOOK_SECRET` before this
+  merges.
+- **Security (CRITICAL)**: Jira issue keys arriving via webhooks are now
+  validated against the canonical `^[A-Z][A-Z0-9]{0,31}-[0-9]{1,12}\Z` format
+  (`[0-9]` not `\d` to refuse non-ASCII Unicode digits, `\Z` not `$` to
+  refuse trailing newlines that `$` would tolerate)
+  before any filesystem operation (issue #83). Previously, `issue_key` flowed
+  unsanitized into `connectors/jira/service.py` (`save_issue`,
+  `download_attachment`, `_handle_deletion`, `process_webhook_event`) and
+  `connectors/jira/incremental_transform.py`, enabling path traversal
+  (`../../etc/passwd` style writes outside the Jira data dir). New module
+  `connectors/jira/validation.py` provides `is_valid_issue_key` (regex
+  whitelist; underscore deliberately excluded — Atlassian rejects underscores
+  in real project keys) and `safe_join_under` (`Path.resolve()` containment
+  check). Both are enforced at every filesystem boundary, defense-in-depth.
+- **Security (CRITICAL)**: `webhookEvent` (the second attacker-controlled field
+  in Jira webhook payloads) was used as a filename component in
+  `_log_webhook_event` without sanitization (issue #83 reviewer follow-up).
+  A payload with `webhookEvent: "../../tmp/pwn"` could write a JSON dump
+  outside `WEBHOOK_LOG_DIR`. The handler now strips everything that isn't
+  `[A-Za-z0-9_-]` (dot deliberately excluded to defeat `..` survival),
+  clips length to 64 chars, and routes the final filename through
+  `safe_join_under`.
+- **Security (CRITICAL)**: hardened the connector → orchestrator trust
+  boundary on BOTH the rebuild path
+  (`src/orchestrator.py::_attach_remote_extensions`) AND the read-only
+  query path (`src/db.py::_reattach_remote_extensions`, called by
+  `get_analytics_db_readonly()` on every request) — issue #81 Group A.
+  Three fixes: (1) DuckDB extensions referenced by `_remote_attach` are
+  matched against a hard allowlist (default: `keboola, bigquery`;
+  override via `AGNES_REMOTE_ATTACH_EXTENSIONS`). Install path splits
+  built-in (LOAD only) from community (`INSTALL FROM community; LOAD`
+  on rebuild path; LOAD only on the read-only query path which must
+  not touch the network). (2) `token_env` names are matched against a
+  hard allowlist (default: `KBC_TOKEN`, `KBC_STORAGE_TOKEN`,
+  `KEBOOLA_STORAGE_TOKEN`, `GOOGLE_APPLICATION_CREDENTIALS`; override
+  via `AGNES_REMOTE_ATTACH_TOKEN_ENVS`). Names must additionally match
+  `^[A-Z][A-Z0-9_]{0,63}$`. A malicious connector cannot ask the
+  orchestrator to read `JWT_SECRET_KEY` / `SESSION_SECRET` /
+  `OPENAI_API_KEY` and exfiltrate them via `ATTACH ... TOKEN`.
+  (3) The URL passed to `ATTACH` is now single-quote-escaped on both
+  paths. Also fixed a `table_schema` vs `table_catalog` mismatch that
+  silently no-op'd `_attach_remote_extensions` for every connector
+  (the rebuild-path hardening would have been moot in production
+  without this fix). New module `src/orchestrator_security.py`
+  centralises the policy and exposes `log_effective_policy()`, called
+  from app startup so an operator's typo in
+  `AGNES_REMOTE_ATTACH_EXTENSIONS` (which **replaces** the default,
+  not extends it — a setting of `httpfs` would silently lock out
+  `keboola, bigquery`) is visible at boot rather than at the next
+  failed attach. See
+  `docs/superpowers/plans/2026-04-27-issue-81-trust-boundary.md`.
+- **Security (MEDIUM)**: extractor-side identifier validation (issue
+  #81 Group D / M15). The Keboola and BigQuery extractors interpolate
+  `table_name`, `bucket` / `dataset`, and `source_table` from
+  `table_registry` directly into `CREATE OR REPLACE VIEW`,
+  `INSERT INTO _meta`, and `COPY ... TO` SQL. Anyone with write access
+  to `table_registry` (admin, registry-write API) could inject SQL via
+  these identifiers. New shared module `src/identifier_validation.py`
+  exposes a strict `validate_identifier` (for our own view names —
+  `^[a-zA-Z_][a-zA-Z0-9_]{0,63}$`, used for `table_name` so it matches
+  the orchestrator's rebuild-time check and dashed names fail fast at
+  extraction rather than being silently dropped at rebuild) and a
+  relaxed `validate_quoted_identifier` (for upstream-typed names like
+  Keboola `in.c-foo` / BigQuery `my-dataset`:
+  `[a-zA-Z0-9_][a-zA-Z0-9_.\-]*`, refusing any character that could
+  close a `"..."` identifier literal). The orchestrator's existing
+  `_validate_identifier` was lifted into the new module so both layers
+  share a single source of truth; both extractors skip-and-continue on
+  unsafe rows (logged + counted in failure stats; the rest of the
+  registry still processes).
+
+### Removed
+
+- Customer-specific manual-deploy helper `scripts/grpn/Makefile` and its
+  README, plus the corresponding hackathon deploy log under
+  `docs/superpowers/plans/2026-04-22-grpn-deploy-learnings.md`. These
+  documented one operator's hand-rolled stopgap for an org-policy-blocked
+  Terraform flow and do not belong in vendor-neutral OSS.
+- `scripts/switch-dev-vm.sh` — hackathon-era helper hardcoded to a specific
+  shared dev VM. Per-developer dev VMs are
+  the supported pattern now; operators who need an equivalent should use
+  `gcloud compute ssh <vm> --command "sed -i …/.env && sudo /usr/local/bin/agnes-auto-upgrade.sh"`
+  with their own VM details.
+
+### Internal
+
+- Sandbox blocklist now flags introspection-chain dunders explicitly:
+  `__subclasses__`, `__globals__`, `__class__`, `__base__`, `__bases__`,
+  `__mro__`, `__dict__`, `__code__`, `__builtins__`. `__init__` and
+  `__getattribute__` are intentionally **not** in the list — substring match
+  would flag every legitimate `def __init__(self):`. The chain breaks at
+  the next link anyway.
+- New regression test `test_run_pwn_payload_blocked` parametrized over the
+  exact PoC from issue #44 plus two equivalent variants (lambda+`__globals__`,
+  `__mro__` traversal). If the dunder list is silently weakened in a future
+  refactor, the test fails. New `test_*_requires_admin` tests parametrized
+  over all three non-admin core roles (analyst, viewer, km_admin).
+- `tests/conftest.py::seeded_app` extended with `viewer_token` and
+  `km_admin_token` so role-gating tests cover all four core roles.
+
+### Migrated
+
+- **Schema bumped from v9 to v10**. Auto-migration applies on next start
+  (creates the `view_ownership` table; data on disk is unaffected). The
+  pre-migration snapshot machinery (added at v8→v9) covers v9→v10 too —
+  if anything goes wrong during the migration, the snapshot at
+  `<DATA_DIR>/state/system.duckdb.pre-migrate` lets you roll back.
 
 ## [0.11.5] — 2026-04-27
 
@@ -215,7 +404,7 @@ First tagged semver release. The `version = "2.x"` strings that appeared in earl
 - Bootstrap backdoor closed when passwordless seed admin exists.
 - urllib3 1.26→2.6.3 (resolves 4 Dependabot security alerts).
 - argon2-cffi adopted for password hashing.
-- See [docs/padak-security.md](docs/padak-security.md) for the full audit.
+- See [docs/security-audit-2026-04.md](docs/security-audit-2026-04.md) for the full audit (renamed from `docs/padak-security.md` in #94).
 
 ### Fixed — Other
 
