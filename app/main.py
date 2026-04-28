@@ -88,8 +88,8 @@ from app.api.scripts import router as scripts_router
 from app.api.settings import router as settings_router
 from app.api.catalog import router as catalog_router
 from app.api.telegram import router as telegram_router
+from app.api.access import router as access_router, me_router as me_access_router
 from app.api.admin import router as admin_router
-from app.api.role_management import router as role_management_router
 from app.api.permissions import router as permissions_router
 from app.api.access_requests import router as access_requests_router
 from app.api.jira_webhooks import router as jira_webhooks_router
@@ -102,6 +102,9 @@ from app.api.v2_catalog import router as v2_catalog_router
 from app.api.v2_schema import router as v2_schema_router
 from app.api.v2_sample import router as v2_sample_router
 from app.api.v2_scan import router as v2_scan_router
+from app.api.marketplaces import router as marketplaces_router
+from app.marketplace_server.router import router as marketplace_server_router
+from app.marketplace_server.git_router import make_git_wsgi_app
 from app.web.router import router as web_router
 
 logger = logging.getLogger(__name__)
@@ -137,7 +140,12 @@ def create_app() -> FastAPI:
     app.add_middleware(
         _SelectiveGZipMiddleware,
         minimum_size=1024,
-        skip_prefixes=("/api/data/", "/cli/wheel/", "/cli/download"),
+        skip_prefixes=(
+            "/api/data/",
+            "/cli/wheel/",
+            "/cli/download",
+            "/marketplace.git",  # git smart-HTTP is self-chunked; double-gzip bloats
+        ),
     )
 
     # Session middleware (required for OAuth state)
@@ -220,14 +228,17 @@ def create_app() -> FastAPI:
         logger.warning("NEVER enable this in a deployment reachable from the internet.")
         logger.warning("=" * 60)
 
-    # Seed admin user for testing/CI (when SEED_ADMIN_EMAIL is set) OR for local dev.
-    # Optional: SEED_ADMIN_PASSWORD sets password_hash on first seed so the user
-    # can log in immediately without bootstrap. Only applied if the user has no
-    # password_hash yet — never overwrites an existing password.
+    # Seed admin user (SEED_ADMIN_EMAIL) and add them to the Admin user_group.
+    # Optional SEED_ADMIN_PASSWORD lets the seeded user sign in immediately
+    # without going through bootstrap; never overwritten if already set.
+    # The Admin/Everyone user_groups themselves are seeded inside
+    # _ensure_schema (src.db._seed_system_groups), so this hook only has to
+    # handle membership for the seed admin.
     seed_email = os.environ.get("SEED_ADMIN_EMAIL") or (get_local_dev_email() if is_local_dev_mode() else None)
     if seed_email:
         try:
-            from src.db import get_system_db
+            from src.db import SYSTEM_ADMIN_GROUP, get_system_db
+            from src.repositories.user_group_members import UserGroupMembersRepository
             from src.repositories.users import UserRepository
             conn = get_system_db()
             repo = UserRepository(conn)
@@ -239,43 +250,35 @@ def create_app() -> FastAPI:
             existing = repo.get_by_email(seed_email)
             if not existing:
                 import uuid
+                user_id = str(uuid.uuid4())
                 repo.create(
-                    id=str(uuid.uuid4()),
+                    id=user_id,
                     email=seed_email,
                     name="Admin",
                     role="admin",
                     password_hash=password_hash,
                 )
                 logger.info("Seeded admin user: %s (password=%s)", seed_email, "yes" if password_hash else "no")
-            elif password_hash and not existing.get("password_hash"):
-                repo.update(id=existing["id"], password_hash=password_hash, role="admin")
-                logger.info("Set password on existing seed admin: %s", seed_email)
+            else:
+                user_id = existing["id"]
+                if password_hash and not existing.get("password_hash"):
+                    repo.update(id=user_id, password_hash=password_hash)
+                    logger.info("Set password on existing seed admin: %s", seed_email)
+            # Make sure the seed admin is actually in the Admin group — this
+            # is what gives them admin access in v12. Idempotent.
+            admin_group = conn.execute(
+                "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP],
+            ).fetchone()
+            if admin_group:
+                UserGroupMembersRepository(conn).add_member(
+                    user_id=user_id,
+                    group_id=admin_group[0],
+                    source="system_seed",
+                    added_by="app.main:seed_admin",
+                )
             conn.close()
         except Exception as e:
             logger.warning(f"Could not seed admin: {e}")
-
-    # Sync internal-role registry into DB. Modules call register_internal_role()
-    # at import time; this hook reconciles the registry into the internal_roles
-    # table so the mapping UI has something to show. Idempotent — safe to run
-    # on every startup.
-    try:
-        from app.auth.role_resolver import (
-            sync_registered_roles_to_db, list_registered_roles,
-        )
-        from src.db import get_system_db
-        conn = get_system_db()
-        try:
-            sync_registered_roles_to_db(conn)
-        finally:
-            conn.close()
-        registered = list_registered_roles()
-        if registered:
-            logger.info(
-                "internal_roles registered: %s",
-                ", ".join(s.key for s in registered),
-            )
-    except Exception as e:
-        logger.warning("internal_roles sync failed at startup: %s", e)
 
     # Static files
     static_dir = Path(__file__).parent / "web" / "static"
@@ -304,7 +307,8 @@ def create_app() -> FastAPI:
     app.include_router(catalog_router)
     app.include_router(telegram_router)
     app.include_router(admin_router)
-    app.include_router(role_management_router)
+    app.include_router(access_router)
+    app.include_router(me_access_router)
     app.include_router(permissions_router)
     app.include_router(access_requests_router)
     app.include_router(jira_webhooks_router)
@@ -318,24 +322,42 @@ def create_app() -> FastAPI:
     app.include_router(v2_schema_router)
     app.include_router(v2_sample_router)
     app.include_router(v2_scan_router)
+    app.include_router(marketplaces_router)
+    app.include_router(marketplace_server_router)
+
+    # Git smart-HTTP endpoint for Claude Code: /marketplace.git/*
+    # WSGI → ASGI bridge (dulwich is WSGI-native; FastAPI is ASGI).
+    from a2wsgi import WSGIMiddleware
+    app.mount("/marketplace.git", WSGIMiddleware(make_git_wsgi_app()))
 
     # Web UI router (must be last — has catch-all routes)
     app.include_router(web_router)
+
+    # Paths served as API responses (JSON / ZIP / git smart-HTTP) — never
+    # redirect a 401 here to the HTML login page; clients expect the raw 401.
+    _API_PATH_PREFIXES: tuple[str, ...] = (
+        "/api/",
+        "/auth/",
+        "/marketplace.zip",
+        "/marketplace.git",
+        "/marketplace/",
+    )
 
     @app.exception_handler(StarletteHTTPException)
     async def _html_auth_redirect_handler(request, exc: StarletteHTTPException):
         """Redirect unauthenticated HTML page loads (GET) to /login.
 
-        Only GET requests outside `/api/` and `/auth/` are redirected — that
+        Only GET requests outside the API prefixes are redirected — that
         targets browser navigations to HTML pages. POSTs, API prefixes, and
         non-401 errors fall through to Starlette's default JSON response so
-        JSON clients (including `/auth/tokens` for PAT CRUD) keep their
-        existing contract.
+        JSON clients (including `/auth/tokens` for PAT CRUD and
+        `/marketplace.zip` consumed by Claude Code) keep their existing
+        contract.
         """
         if (
             exc.status_code == 401
             and request.method == "GET"
-            and not request.url.path.startswith(("/api/", "/auth/"))
+            and not request.url.path.startswith(_API_PATH_PREFIXES)
         ):
             next_param = quote(request.url.path, safe="")
             return RedirectResponse(url=f"/login?next={next_param}", status_code=302)

@@ -17,10 +17,13 @@ def client(tmp_path, monkeypatch):
     from src.repositories.sync_settings import DatasetPermissionRepository
     from app.auth.jwt import create_access_token
 
+    from tests.helpers.auth import grant_admin
+
     conn = get_system_db()
     user_repo = UserRepository(conn)
     user_repo.create(id="admin1", email="admin@acme.com", name="Admin", role="admin")
     user_repo.create(id="analyst1", email="analyst@acme.com", name="Analyst", role="analyst")
+    grant_admin(conn, "admin1")
 
     perm_repo = DatasetPermissionRepository(conn)
     perm_repo.grant("analyst1", "sales", "read")

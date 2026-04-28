@@ -4,6 +4,12 @@
 # Use this when /data is a persistent disk mounted by the VM startup script,
 # so Agnes data lives on the PD (not on the boot disk's Docker volume).
 #
+# `bind,rbind` (recursive bind) is required when the host nests a second
+# disk under /data — e.g. the dual-disk layout where sdb is mounted on /data
+# and sdc on /data/state. A plain `bind` captures only the top-level mount
+# and silently shadows the sub-mount with an empty subdirectory inside the
+# container, causing the app to write to the wrong disk.
+#
 # Usage (combined with docker-compose.prod.yml):
 #   docker compose \
 #     -f docker-compose.yml \
@@ -17,5 +23,5 @@ volumes:
     driver: local
     driver_opts:
       type: none
-      o: bind
+      o: bind,rbind
       device: /data

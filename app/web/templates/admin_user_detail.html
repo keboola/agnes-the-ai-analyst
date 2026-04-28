@@ -3,17 +3,19 @@
 
 {% block content %}
 <style>
-  .container:has(.user-detail-page) { max-width: none; padding: 24px 16px; }
-  .user-detail-page { max-width: 1200px; margin: 0 auto; padding: 0; }
+  .container:has(.ud-page) { max-width: none; padding: 24px 16px; }
+  .ud-page { max-width: 1100px; margin: 0 auto; padding: 0; }
 
-  .ud-header { display: flex; align-items: center; gap: 16px; margin-bottom: 28px; }
+  .ud-header {
+    display: flex; align-items: center; gap: 16px;
+    margin-bottom: 24px;
+  }
   .ud-back {
     display: inline-flex; align-items: center; gap: 6px;
     text-decoration: none; color: var(--text-secondary, #6b7280);
     font-size: 13px;
   }
   .ud-back:hover { color: var(--text-primary, #111827); }
-
   .ud-title-block { flex: 1; }
   .ud-title { font-size: 22px; font-weight: 600; margin: 0; }
   .ud-subtitle {
@@ -21,119 +23,146 @@
     font-family: var(--font-mono, ui-monospace, monospace);
     margin-top: 2px;
   }
+  .ud-status-pill {
+    display: inline-block; padding: 3px 10px; border-radius: 999px;
+    font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .ud-status-pill.active { background: #dcfce7; color: #166534; }
+  .ud-status-pill.inactive { background: #fee2e2; color: #991b1b; }
+  .ud-status-pill.admin { background: #fef3c7; color: #92400e; margin-left: 6px; }
 
   .ud-section {
     background: var(--surface, #fff);
     border: 1px solid var(--border, #e5e7eb);
     border-radius: 12px;
-    padding: 20px;
-    margin-bottom: 20px;
+    margin-bottom: 16px;
+    overflow: hidden;
   }
-  .ud-section h2 {
-    margin: 0 0 4px; font-size: 16px; font-weight: 600;
-  }
-  .ud-section .ud-section-sub {
-    font-size: 12px; color: var(--text-secondary, #6b7280);
-    margin: 0 0 16px;
-  }
-
-  /* Section A: Core role */
-  .ud-core-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-  .ud-core-row label {
-    font-size: 12px; text-transform: uppercase;
-    letter-spacing: 0.4px; color: var(--text-secondary, #6b7280); font-weight: 600;
-  }
-  .ud-core-row select {
-    padding: 8px 12px;
-    border: 1px solid var(--border, #e5e7eb);
-    border-radius: 8px;
-    font-size: 13px;
-    background: var(--surface, #fff);
-    color: var(--text-primary, #111827);
-    min-width: 220px;
-  }
-  .ud-core-row select:focus {
-    outline: 2px solid var(--primary, #6366f1); outline-offset: -1px;
-  }
-  .ud-status {
-    font-size: 12px; color: var(--text-secondary, #6b7280);
-  }
-
-  /* Section B: capabilities */
-  .ud-cap-list {
-    display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-    gap: 8px;
-  }
-  .ud-cap-item {
-    display: flex; align-items: flex-start; gap: 10px;
-    padding: 10px 12px;
-    border: 1px solid var(--border-light, #f3f4f6);
-    border-radius: 8px;
-    cursor: pointer;
-    transition: border-color 0.15s, background 0.15s;
-  }
-  .ud-cap-item:hover { background: var(--border-light, #fafafa); }
-  .ud-cap-item input[type="checkbox"] { margin-top: 2px; }
-  .ud-cap-meta { flex: 1; min-width: 0; }
-  .ud-cap-meta .display { font-weight: 500; font-size: 13px; }
-  .ud-cap-meta .key {
-    font-family: var(--font-mono, ui-monospace, monospace);
-    font-size: 11px; color: var(--text-secondary, #6b7280); display: block;
-  }
-  .ud-cap-meta .desc {
-    font-size: 12px; color: var(--text-secondary, #6b7280);
-    margin-top: 4px;
-  }
-
-  /* Section C: effective roles (debug) */
-  .ud-effective-grid {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-    gap: 16px;
-  }
-  .ud-effective-block {
+  .ud-section-head {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border, #e5e7eb);
     background: var(--border-light, #f9fafb);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .ud-section-head h2 { margin: 0; font-size: 14px; font-weight: 600; }
+  .ud-section-head .sub { font-size: 11px; color: var(--text-secondary, #6b7280); }
+
+  /* Account actions */
+  .account-grid {
+    padding: 16px 18px;
+    display: grid; grid-template-columns: 1fr auto; gap: 12px;
+    align-items: center;
+  }
+  .account-action-btn {
+    padding: 7px 14px; border-radius: 6px; font-size: 12px;
+    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
+    cursor: pointer;
+  }
+  .account-action-btn:hover { background: var(--border-light, #f9fafb); }
+  .account-action-btn.danger { color: #b91c1c; border-color: #fecaca; }
+  .account-action-btn.danger:hover { background: #fef2f2; }
+
+  /* Memberships table */
+  .members-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .members-table thead th {
+    text-align: left; padding: 10px 18px;
+    background: var(--border-light, #f9fafb);
+    border-bottom: 1px solid var(--border, #e5e7eb);
+    font-weight: 600; color: var(--text-secondary, #6b7280);
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .members-table tbody td {
+    padding: 10px 18px;
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+  }
+  .members-table tbody tr:last-child td { border-bottom: none; }
+  .members-table tbody tr:hover { background: var(--border-light, #fafafa); }
+  /* Source as quiet metadata, not a status pill — group name dominates. */
+  .source-meta {
+    font-size: 12px; color: var(--text-secondary, #9ca3af);
+    font-weight: 400;
+  }
+  .source-meta .label { font-style: italic; }
+  .source-meta .added {
+    color: var(--text-secondary, #9ca3af);
+    font-size: 11px; margin-left: 6px;
+  }
+  .group-link {
+    color: var(--text-primary, #111827); font-weight: 500;
+    text-decoration: none;
+  }
+  .group-link:hover { color: var(--primary, #4338ca); text-decoration: underline; }
+
+  .add-member-row {
+    padding: 12px 18px;
+    background: var(--border-light, #f9fafb);
+    border-top: 1px solid var(--border-light, #f3f4f6);
+    display: flex; gap: 8px; align-items: center;
+  }
+  .add-member-row select {
+    flex: 1; padding: 7px 10px;
+    border: 1px solid var(--border, #e5e7eb); border-radius: 6px;
+    font-size: 13px; background: var(--surface, #fff);
+  }
+  .add-member-row button {
+    padding: 7px 14px; border-radius: 6px; font-size: 12px; font-weight: 500;
+    background: var(--primary, #6366f1); color: #fff;
+    border: 1px solid var(--primary, #6366f1); cursor: pointer;
+  }
+  .add-member-row button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* Effective access */
+  .ea-empty, .ea-loading {
+    padding: 24px 18px; text-align: center;
+    color: var(--text-secondary, #6b7280); font-size: 13px;
+  }
+  .ea-admin-pill {
+    margin: 18px;
+    padding: 16px;
+    background: linear-gradient(135deg, #fef3c7, #fde68a);
+    border: 1px solid #f59e0b;
     border-radius: 8px;
-    padding: 12px;
+    display: flex; align-items: center; gap: 12px;
   }
-  .ud-effective-block h3 {
-    margin: 0 0 8px; font-size: 12px;
-    text-transform: uppercase; letter-spacing: 0.4px;
-    color: var(--text-secondary, #6b7280); font-weight: 600;
+  .ea-admin-pill .icon { font-size: 22px; }
+  .ea-admin-pill .text { font-size: 13px; color: #78350f; line-height: 1.4; }
+  .ea-admin-pill strong { color: #422006; }
+  .ea-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .ea-table thead th {
+    text-align: left; padding: 10px 18px;
+    background: var(--border-light, #f9fafb);
+    border-bottom: 1px solid var(--border, #e5e7eb);
+    font-weight: 600; color: var(--text-secondary, #6b7280);
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
   }
-  .ud-effective-list {
-    list-style: none; margin: 0; padding: 0;
+  .ea-table tbody td {
+    padding: 10px 18px;
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+    vertical-align: top;
+  }
+  .ea-table tbody tr:last-child td { border-bottom: none; }
+  .ea-rid {
     font-family: var(--font-mono, ui-monospace, monospace);
     font-size: 12px;
   }
-  .ud-effective-list li {
-    padding: 4px 0;
-    border-bottom: 1px solid var(--border, #e5e7eb);
+  .ea-via {
+    font-size: 11px; color: var(--text-secondary, #6b7280);
   }
-  .ud-effective-list li:last-child { border-bottom: none; }
-  .ud-effective-list .source {
-    font-size: 10px; color: var(--text-secondary, #6b7280);
-    margin-left: 6px; text-transform: uppercase; letter-spacing: 0.3px;
-  }
-  .ud-effective-empty {
-    font-size: 12px; color: var(--text-secondary, #6b7280); font-style: italic;
+  .ea-via .via-group {
+    display: inline-block; margin-right: 6px;
+    padding: 1px 6px; border-radius: 4px;
+    background: #e0e7ff; color: #3730a3; font-weight: 500;
   }
 
-  .ud-loading {
-    text-align: center; padding: 24px; color: var(--text-secondary, #6b7280);
-    font-size: 13px;
-  }
-
-  /* Toast — same style as admin_users */
   .toast-stack {
     position: fixed; bottom: 24px; right: 24px; z-index: 2000;
-    display: flex; flex-direction: column; gap: 8px;
-    pointer-events: none;
+    display: flex; flex-direction: column; gap: 8px; pointer-events: none;
   }
   .toast {
     background: #111827; color: #fff; padding: 10px 16px;
     border-radius: 8px; font-size: 13px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
-    opacity: 0; transform: translateY(8px);
-    transition: opacity 0.2s, transform 0.2s;
+    opacity: 0; transform: translateY(8px); transition: opacity 0.2s, transform 0.2s;
     pointer-events: auto; max-width: 380px;
   }
   .toast.show { opacity: 1; transform: translateY(0); }
@@ -141,343 +170,340 @@
   .toast.error { background: #b91c1c; }
 </style>
 
-<div class="user-detail-page"
-     data-user-id="{{ target_user.id }}"
-     data-user-email="{{ target_user.email }}">
+<div class="ud-page" data-user-id="{{ target_user.id }}">
   <div class="ud-header">
-    <a class="ud-back" href="/admin/users">&larr; Back to users</a>
+    <a href="/admin/users" class="ud-back">← Back to users</a>
     <div class="ud-title-block">
-      <h1 class="ud-title">{{ target_user.name or target_user.email }}</h1>
-      <div class="ud-subtitle">{{ target_user.email }} &middot; <code>{{ target_user.id }}</code></div>
+      <h1 class="ud-title">
+        {{ target_user.name or target_user.email }}
+        <span id="status-pill" class="ud-status-pill"
+              style="display:none; vertical-align: middle; margin-left: 8px;"></span>
+        <span id="admin-pill" class="ud-status-pill admin" style="display:none; vertical-align:middle;">Admin</span>
+      </h1>
+      <div class="ud-subtitle">{{ target_user.email }} · id {{ target_user.id[:8] }}…</div>
     </div>
   </div>
 
-  <!-- Section A: Core role (single-select) -->
-  <section class="ud-section" data-section="core-role">
-    <h2>Core role</h2>
-    <p class="ud-section-sub">
-      Single-select role from the legacy hierarchy (viewer &rarr; analyst &rarr; km_admin &rarr; admin).
-      Implies expansion at sign-in: a user holding <code>core.admin</code> automatically holds the
-      lower roles.
-    </p>
-    <div class="ud-core-row">
-      <label for="core-role-select">Current role</label>
-      <select id="core-role-select" disabled>
-        <option value="">Loading...</option>
+  <!-- Account actions -->
+  <section class="ud-section">
+    <div class="ud-section-head">
+      <h2>Account</h2>
+    </div>
+    <div class="account-grid">
+      <div id="account-status-text" style="font-size:13px;color:var(--text-secondary,#6b7280);">
+        Loading…
+      </div>
+      <div style="display:flex; gap:8px;">
+        <button class="account-action-btn" id="reset-pw-btn">Reset password</button>
+        <button class="account-action-btn" id="toggle-active-btn">Deactivate</button>
+        <button class="account-action-btn danger" id="delete-user-btn">Delete</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Group memberships -->
+  <section class="ud-section">
+    <div class="ud-section-head">
+      <h2>Group memberships</h2>
+      <span class="sub">Groups this user belongs to. Add to <strong>Admin</strong> to grant full access.</span>
+    </div>
+    <div id="memberships-loading" class="ea-loading">Loading memberships…</div>
+    <table class="members-table" id="memberships-table" style="display:none;">
+      <thead><tr>
+        <th>Group</th><th>Origin</th>
+        <th style="text-align:right">Actions</th>
+      </tr></thead>
+      <tbody id="memberships-tbody"></tbody>
+    </table>
+    <div class="ea-empty" id="memberships-empty" style="display:none;">
+      User is not in any groups.
+    </div>
+    <div class="add-member-row">
+      <select id="add-group-select">
+        <option value="">— Pick a group —</option>
       </select>
-      <span class="ud-status" id="core-role-status"></span>
+      <button id="add-group-btn" disabled>Add to group</button>
     </div>
   </section>
 
-  <!-- Section B: Additional capabilities (multi-checkbox) -->
-  <section class="ud-section" data-section="capabilities">
-    <h2>Additional capabilities</h2>
-    <p class="ud-section-sub">
-      Module-registered roles. Toggle to grant or revoke direct access. Changes apply immediately
-      for PAT/headless callers; OAuth users see the new role on next sign-in.
-    </p>
-    <div id="caps-list" class="ud-cap-list"></div>
-    <div id="caps-loading" class="ud-loading">Loading capabilities...</div>
-    <div id="caps-empty" class="ud-loading" style="display:none;">No module-registered capabilities yet.</div>
-  </section>
-
-  <!-- Section C: Effective roles (debug) -->
-  <section class="ud-section" data-section="effective-roles">
-    <h2>Effective roles</h2>
-    <p class="ud-section-sub">
-      Read-only view of the resolver output: direct grants, group-derived grants, and the fully
-      expanded role set. Useful for debugging "why can/can't this user do X?".
-    </p>
-    <div id="effective-loading" class="ud-loading">Loading effective roles...</div>
-    <div class="ud-effective-grid" id="effective-grid" style="display:none;">
-      <div class="ud-effective-block">
-        <h3>Direct grants</h3>
-        <ul class="ud-effective-list" id="effective-direct"></ul>
-      </div>
-      <div class="ud-effective-block">
-        <h3>Group-derived grants</h3>
-        <ul class="ud-effective-list" id="effective-groups"></ul>
-      </div>
-      <div class="ud-effective-block">
-        <h3>Expanded set</h3>
-        <ul class="ud-effective-list" id="effective-expanded"></ul>
-      </div>
+  <!-- Effective access -->
+  <section class="ud-section">
+    <div class="ud-section-head">
+      <h2>Effective access</h2>
+      <span class="sub">Resources this user can see, derived from group memberships.</span>
     </div>
+    <div id="effective-loading" class="ea-loading">Loading…</div>
+    <div id="effective-content" style="display:none;"></div>
   </section>
 </div>
 
 <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
 
 <script>
-const USER_ID = document.querySelector(".user-detail-page").dataset.userId;
-const USER_EMAIL = document.querySelector(".user-detail-page").dataset.userEmail;
-const API_INTERNAL_ROLES = "/api/admin/internal-roles";
-const API_USER_GRANTS = "/api/admin/users/" + encodeURIComponent(USER_ID) + "/role-grants";
-const API_USER_EFFECTIVE = "/api/admin/users/" + encodeURIComponent(USER_ID) + "/effective-roles";
+const USER_ID = document.querySelector("[data-user-id]").dataset.userId;
+const USER_API = `/api/users/${encodeURIComponent(USER_ID)}`;
+const MEMBERSHIPS_API = `/api/admin/users/${encodeURIComponent(USER_ID)}/memberships`;
+const EFFECTIVE_API = `/api/admin/users/${encodeURIComponent(USER_ID)}/effective-access`;
+const GROUPS_API = "/api/admin/groups";
 
-function esc(s) {
-  const d = document.createElement("div");
-  d.textContent = s == null ? "" : String(s);
-  return d.innerHTML;
-}
+function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+function fmtDate(s) { return s ? String(s).slice(0, 16).replace("T", " ") : "-"; }
 
-function toast(msg, kind) {
+function toast(msg, kind = "") {
   const el = document.createElement("div");
-  el.className = "toast " + (kind || "");
+  el.className = "toast " + kind;
   el.textContent = msg;
   document.getElementById("toast-stack").appendChild(el);
-  requestAnimationFrame(function () { el.classList.add("show"); });
-  setTimeout(function () {
-    el.classList.remove("show");
-    setTimeout(function () { el.remove(); }, 250);
-  }, 3500);
+  requestAnimationFrame(() => el.classList.add("show"));
+  setTimeout(() => { el.classList.remove("show"); setTimeout(() => el.remove(), 250); }, 3500);
 }
 
-// ── State ──
-let internalRoles = [];   // all internal_roles rows
-let directGrants = [];    // current user's direct grants from effective-roles
+let userState = null;     // /api/users/{id} response
+let memberships = [];     // [{group_id, group_name, is_system, source, added_at}]
+let allGroups = [];       // for the add-to-group dropdown
 
-async function fetchJson(url, opts) {
-  const r = await fetch(url, Object.assign({ credentials: "include" }, opts || {}));
+async function loadAll() {
+  await Promise.all([loadUser(), loadMemberships(), loadGroups(), loadEffectiveAccess()]);
+}
+
+async function loadUser() {
+  const r = await fetch(USER_API, { credentials: "include" });
+  if (r.ok) {
+    userState = await r.json();
+    renderHeader();
+    renderAccountStatus();
+  }
+}
+
+function renderHeader() {
+  const pill = document.getElementById("status-pill");
+  if (userState && !userState.active) {
+    pill.textContent = "Deactivated";
+    pill.className = "ud-status-pill inactive";
+    pill.style.display = "inline-block";
+  } else if (userState) {
+    pill.textContent = "Active";
+    pill.className = "ud-status-pill active";
+    pill.style.display = "inline-block";
+  }
+  const adminPill = document.getElementById("admin-pill");
+  const isAdmin = memberships.some(m => m.group_name === "Admin");
+  adminPill.style.display = isAdmin ? "inline-block" : "none";
+}
+
+function renderAccountStatus() {
+  const node = document.getElementById("account-status-text");
+  const toggleBtn = document.getElementById("toggle-active-btn");
+  if (!userState) { node.textContent = "—"; return; }
+  if (userState.active) {
+    node.innerHTML = `<strong>${esc(userState.email)}</strong> is active.`;
+    toggleBtn.textContent = "Deactivate";
+  } else {
+    node.innerHTML = `<strong>${esc(userState.email)}</strong> is deactivated. They cannot log in.`;
+    toggleBtn.textContent = "Reactivate";
+  }
+}
+
+async function loadMemberships() {
+  const r = await fetch(MEMBERSHIPS_API, { credentials: "include" });
+  document.getElementById("memberships-loading").style.display = "none";
   if (!r.ok) {
-    const txt = await r.text().catch(function () { return ""; });
-    throw new Error(r.status + " " + (txt || r.statusText));
+    toast("Failed to load memberships", "error");
+    return;
   }
-  if (r.status === 204) return null;
-  return r.json();
+  memberships = await r.json();
+  renderMemberships();
+  renderHeader();  // admin pill depends on memberships
 }
 
-async function loadInternalRoles() {
-  internalRoles = await fetchJson(API_INTERNAL_ROLES);
-}
+function renderMemberships() {
+  const table = document.getElementById("memberships-table");
+  const empty = document.getElementById("memberships-empty");
+  const tbody = document.getElementById("memberships-tbody");
 
-async function loadEffectiveRoles() {
-  const data = await fetchJson(API_USER_EFFECTIVE);
-  // Expected shape:
-  //   { direct: [{role_key, source, grant_id?}],
-  //     groups: [{group_id, role_key}],
-  //     expanded: [role_key, ...] }
-  // The renderer is tolerant of legacy field names too.
-  directGrants = data.direct || data.direct_grants || [];
-  return data;
-}
-
-// ── Section A: Core role ──
-function renderCoreRole() {
-  const sel = document.getElementById("core-role-select");
-  const status = document.getElementById("core-role-status");
-  const coreRoles = internalRoles.filter(function (r) { return r.is_core; });
-  // Current core role from direct grants
-  const currentDirect = directGrants.find(function (g) {
-    const k = g.role_key || g.key || "";
-    return k.indexOf("core.") === 0;
-  });
-  const currentKey = currentDirect ? (currentDirect.role_key || currentDirect.key) : "";
-
-  sel.innerHTML = "";
-  const placeholder = document.createElement("option");
-  placeholder.value = "";
-  placeholder.textContent = "— No core role —";
-  sel.appendChild(placeholder);
-
-  // Sort core roles: viewer, analyst, km_admin, admin (by ordering in seed list)
-  const coreOrder = ["core.viewer", "core.analyst", "core.km_admin", "core.admin"];
-  coreRoles.sort(function (a, b) {
-    return coreOrder.indexOf(a.key) - coreOrder.indexOf(b.key);
-  });
-
-  for (const r of coreRoles) {
-    const opt = document.createElement("option");
-    opt.value = r.key;
-    opt.textContent = r.display_name + " (" + r.key + ")";
-    if (r.key === currentKey) opt.selected = true;
-    sel.appendChild(opt);
-  }
-
-  sel.disabled = false;
-  sel.dataset.currentKey = currentKey;
-  status.textContent = currentKey ? "Currently: " + currentKey : "No core role assigned";
-
-  sel.onchange = function () { changeCoreRole(sel.value, currentKey); };
-}
-
-async function changeCoreRole(newKey, currentKey) {
-  if (newKey === currentKey) return;
-  const sel = document.getElementById("core-role-select");
-  sel.disabled = true;
-  try {
-    // Remove existing core.* direct grants first.
-    const coreDirect = directGrants.filter(function (g) {
-      const k = g.role_key || g.key || "";
-      return k.indexOf("core.") === 0 && (g.source !== "auto-seed" || true);
-      // We delete auto-seed too — UserRepository._grant_core_role does the
-      // same so the source field doesn't actually block deletion semantics.
-    });
-    for (const g of coreDirect) {
-      const gid = g.grant_id || g.id;
-      if (!gid) continue;
-      await fetchJson(API_USER_GRANTS + "/" + encodeURIComponent(gid), {
-        method: "DELETE",
-      });
-    }
-    if (newKey) {
-      await fetchJson(API_USER_GRANTS, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role_key: newKey }),
-      });
-    }
-    toast("Core role updated", "success");
-    await refreshAfterMutation();
-  } catch (e) {
-    toast("Failed to update core role: " + e.message, "error");
-    // Reset dropdown to whatever the server says
-    await refreshAfterMutation();
-  }
-}
-
-// ── Section B: Capabilities ──
-function renderCapabilities() {
-  const list = document.getElementById("caps-list");
-  const loading = document.getElementById("caps-loading");
-  const empty = document.getElementById("caps-empty");
-  loading.style.display = "none";
-
-  const moduleRoles = internalRoles.filter(function (r) { return !r.is_core; });
-  if (moduleRoles.length === 0) {
+  if (memberships.length === 0) {
+    table.style.display = "none";
     empty.style.display = "block";
-    list.innerHTML = "";
     return;
   }
   empty.style.display = "none";
-
-  // Build a set of currently held direct role keys.
-  const heldKeys = new Set();
-  for (const g of directGrants) {
-    heldKeys.add(g.role_key || g.key || "");
+  table.style.display = "table";
+  tbody.innerHTML = "";
+  for (const m of memberships) {
+    const tr = document.createElement("tr");
+    const removable = m.source === "admin"
+      ? `<button class="account-action-btn danger" data-action="remove" data-group-id="${esc(m.group_id)}">Remove</button>`
+      : `<span style="color:#9ca3af;font-size:11px">managed by ${esc(m.source)}</span>`;
+    // Map raw source value to a humane phrase. Keep the date inline as
+    // secondary metadata rather than a separate column.
+    const sourceLabel = ({
+      admin: "added by admin",
+      google_sync: "synced from Google",
+      system_seed: "system-managed",
+    })[m.source] || m.source;
+    const addedFragment = m.added_at
+      ? `<span class="added">· ${esc(fmtDate(m.added_at))}</span>` : "";
+    tr.innerHTML = `
+      <td><a class="group-link" href="/admin/groups">${esc(m.group_name)}</a></td>
+      <td><span class="source-meta"><span class="label">${esc(sourceLabel)}</span>${addedFragment}</span></td>
+      <td style="text-align:right">${removable}</td>
+    `;
+    tbody.appendChild(tr);
   }
-
-  list.innerHTML = "";
-  for (const role of moduleRoles) {
-    const isHeld = heldKeys.has(role.key);
-    const div = document.createElement("label");
-    div.className = "ud-cap-item";
-    div.innerHTML =
-      '<input type="checkbox" data-cap-key="' + esc(role.key) + '"' +
-      (isHeld ? " checked" : "") + ">" +
-      '<span class="ud-cap-meta">' +
-        '<span class="display">' + esc(role.display_name) + "</span>" +
-        '<span class="key">' + esc(role.key) + "</span>" +
-        (role.description ? '<span class="desc">' + esc(role.description) + "</span>" : "") +
-      "</span>";
-    list.appendChild(div);
-    const cb = div.querySelector("input[type=checkbox]");
-    cb.addEventListener("change", function () {
-      toggleCapability(role.key, cb.checked, cb);
-    });
-  }
-}
-
-async function toggleCapability(roleKey, wantHeld, cb) {
-  cb.disabled = true;
-  try {
-    if (wantHeld) {
-      await fetchJson(API_USER_GRANTS, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role_key: roleKey }),
-      });
-      toast("Granted " + roleKey, "success");
-    } else {
-      // Find grant id from directGrants.
-      const g = directGrants.find(function (x) {
-        return (x.role_key || x.key) === roleKey;
-      });
-      const gid = g && (g.grant_id || g.id);
-      if (!gid) {
-        toast("Grant not found locally; refreshing", "error");
-      } else {
-        await fetchJson(API_USER_GRANTS + "/" + encodeURIComponent(gid), {
-          method: "DELETE",
-        });
-        toast("Revoked " + roleKey, "success");
-      }
-    }
-    await refreshAfterMutation();
-  } catch (e) {
-    toast("Toggle failed: " + e.message, "error");
-    cb.checked = !wantHeld;
-  } finally {
-    cb.disabled = false;
-  }
-}
-
-// ── Section C: Effective roles ──
-function renderEffectiveRoles(data) {
-  document.getElementById("effective-loading").style.display = "none";
-  const grid = document.getElementById("effective-grid");
-  grid.style.display = "";
-
-  const direct = data.direct || data.direct_grants || [];
-  // API returns `group` (singular, matches EffectiveRolesResponse pydantic
-  // field). The other names are tolerated for past/future shape drift.
-  const groups = data.group || data.groups || data.group_derived || data.derived || [];
-  const expanded = data.expanded || data.expanded_set || data.all || [];
-
-  fillList("effective-direct", direct, function (g) {
-    const k = g.role_key || g.key || "";
-    const src = g.source ? '<span class="source">' + esc(g.source) + "</span>" : "";
-    return esc(k) + src;
-  });
-  fillList("effective-groups", groups, function (g) {
-    const gid = g.group_id || g.external_group_id || "";
-    const k = g.role_key || g.key || "";
-    return esc(k) + ' <span class="source">via ' + esc(gid) + "</span>";
-  });
-  fillList("effective-expanded", expanded, function (k) {
-    return esc(typeof k === "string" ? k : (k.role_key || k.key || ""));
+  tbody.querySelectorAll('[data-action="remove"]').forEach(btn => {
+    btn.addEventListener("click", () => removeFromGroup(btn.dataset.groupId));
   });
 }
 
-function fillList(id, items, renderItem) {
-  const ul = document.getElementById(id);
-  ul.innerHTML = "";
-  if (!items || items.length === 0) {
-    const li = document.createElement("li");
-    li.className = "ud-effective-empty";
-    li.textContent = "(none)";
-    ul.appendChild(li);
+async function loadGroups() {
+  const r = await fetch(GROUPS_API, { credentials: "include" });
+  if (!r.ok) return;
+  allGroups = await r.json();
+  refreshGroupDropdown();
+}
+
+function refreshGroupDropdown() {
+  const sel = document.getElementById("add-group-select");
+  const memberOf = new Set(memberships.map(m => m.group_id));
+  sel.innerHTML = '<option value="">— Pick a group —</option>';
+  for (const g of allGroups) {
+    if (memberOf.has(g.id)) continue;  // already a member, hide
+    const opt = document.createElement("option");
+    opt.value = g.id;
+    opt.textContent = g.name + (g.is_system ? " (system)" : "");
+    sel.appendChild(opt);
+  }
+  document.getElementById("add-group-btn").disabled = sel.options.length <= 1;
+}
+
+document.getElementById("add-group-select").addEventListener("change", e => {
+  document.getElementById("add-group-btn").disabled = !e.target.value;
+});
+
+document.getElementById("add-group-btn").addEventListener("click", async () => {
+  const sel = document.getElementById("add-group-select");
+  const gid = sel.value;
+  if (!gid) return;
+  const r = await fetch(MEMBERSHIPS_API, {
+    method: "POST", credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ group_id: gid }),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    toast("Add failed: " + (err.detail || r.status), "error");
     return;
   }
-  for (const item of items) {
-    const li = document.createElement("li");
-    li.innerHTML = renderItem(item);
-    ul.appendChild(li);
+  toast("Added to group", "success");
+  await Promise.all([loadMemberships(), loadEffectiveAccess()]);
+  refreshGroupDropdown();
+});
+
+async function removeFromGroup(group_id) {
+  if (!confirm("Remove user from this group?")) return;
+  const r = await fetch(`${MEMBERSHIPS_API}/${encodeURIComponent(group_id)}`, {
+    method: "DELETE", credentials: "include",
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    toast("Remove failed: " + (err.detail || r.status), "error");
+    return;
   }
+  toast("Removed from group", "success");
+  await Promise.all([loadMemberships(), loadEffectiveAccess()]);
+  refreshGroupDropdown();
 }
 
-// ── Boot + refresh ──
-async function refreshAfterMutation() {
-  const data = await loadEffectiveRoles();
-  renderCoreRole();
-  renderCapabilities();
-  renderEffectiveRoles(data);
-}
+async function loadEffectiveAccess() {
+  const r = await fetch(EFFECTIVE_API, { credentials: "include" });
+  document.getElementById("effective-loading").style.display = "none";
+  const content = document.getElementById("effective-content");
+  content.style.display = "block";
 
-async function boot() {
-  try {
-    await loadInternalRoles();
-    const eff = await loadEffectiveRoles();
-    renderCoreRole();
-    renderCapabilities();
-    renderEffectiveRoles(eff);
-  } catch (e) {
-    document.getElementById("caps-loading").textContent = "Failed to load: " + e.message;
-    document.getElementById("effective-loading").textContent = "Failed to load: " + e.message;
-    toast("Failed to load user role data: " + e.message, "error");
+  if (!r.ok) {
+    content.innerHTML = `<div class="ea-empty">Failed to load.</div>`;
+    return;
   }
+  const data = await r.json();
+
+  if (data.is_admin) {
+    content.innerHTML = `
+      <div class="ea-admin-pill">
+        <span class="icon">🔑</span>
+        <span class="text">
+          <strong>Full access via the Admin group.</strong><br>
+          This user can read/write everything regardless of explicit grants.
+        </span>
+      </div>`;
+    return;
+  }
+
+  if (!data.items || data.items.length === 0) {
+    content.innerHTML = `<div class="ea-empty">User has no resource access yet. Add them to a group with grants.</div>`;
+    return;
+  }
+
+  let html = `<table class="ea-table">
+    <thead><tr>
+      <th>Type</th><th>Resource</th><th>Granted via</th>
+    </tr></thead><tbody>`;
+  for (const it of data.items) {
+    const viaHtml = it.via_groups
+      .map(g => `<span class="via-group">${esc(g.group_name)}</span>`).join(" ");
+    html += `
+      <tr>
+        <td style="white-space:nowrap">${esc(it.resource_type)}</td>
+        <td class="ea-rid">${esc(it.resource_id)}</td>
+        <td class="ea-via">${viaHtml}</td>
+      </tr>`;
+  }
+  html += `</tbody></table>`;
+  content.innerHTML = html;
 }
 
-boot();
+// Account actions
+document.getElementById("reset-pw-btn").addEventListener("click", async () => {
+  if (!confirm("Send password reset link to " + (userState && userState.email) + "?")) return;
+  const r = await fetch(`${USER_API}/reset-password`, {
+    method: "POST", credentials: "include",
+  });
+  if (!r.ok) {
+    toast("Reset failed: " + r.status, "error");
+    return;
+  }
+  const data = await r.json();
+  toast(data.email_sent ? "Reset link emailed" : "Reset token: " + data.reset_token, "success");
+});
+
+document.getElementById("toggle-active-btn").addEventListener("click", async () => {
+  if (!userState) return;
+  const newActive = !userState.active;
+  const verb = newActive ? "Reactivate" : "Deactivate";
+  if (!confirm(`${verb} this user?`)) return;
+  const path = newActive ? "/activate" : "/deactivate";
+  const r = await fetch(`${USER_API}${path}`, { method: "POST", credentials: "include" });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    toast(verb + " failed: " + (err.detail || r.status), "error");
+    return;
+  }
+  toast(verb + "d", "success");
+  loadUser();
+});
+
+document.getElementById("delete-user-btn").addEventListener("click", async () => {
+  if (!userState) return;
+  if (!confirm(`Delete ${userState.email}? This cannot be undone.`)) return;
+  const r = await fetch(USER_API, { method: "DELETE", credentials: "include" });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    toast("Delete failed: " + (err.detail || r.status), "error");
+    return;
+  }
+  toast("User deleted", "success");
+  setTimeout(() => { window.location.href = "/admin/users"; }, 800);
+});
+
+loadAll();
 </script>
 {% endblock %}

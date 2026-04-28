@@ -9,7 +9,8 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.auth.dependencies import get_current_user, require_admin, _get_db
+from app.auth.access import require_admin
+from app.auth.dependencies import get_current_user, _get_db
 from src.repositories.column_metadata import ColumnMetadataRepository
 from src.repositories.table_registry import TableRegistryRepository
 

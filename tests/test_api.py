@@ -27,12 +27,15 @@ def seeded_client(tmp_path, monkeypatch):
     from argon2 import PasswordHasher
     ph = PasswordHasher()
 
+    from tests.helpers.auth import grant_admin
+
     conn = get_system_db()
     repo = UserRepository(conn)
     repo.create(id="admin1", email="admin@acme.com", name="Admin", role="admin",
                 password_hash=ph.hash("adminpass"))
     repo.create(id="analyst1", email="analyst@acme.com", name="Analyst", role="analyst",
                 password_hash=ph.hash("analystpass"))
+    grant_admin(conn, "admin1")
     conn.close()
 
     app = create_app()

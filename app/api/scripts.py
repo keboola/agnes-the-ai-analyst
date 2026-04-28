@@ -11,8 +11,8 @@ from typing import Optional
 
 import duckdb
 
-from app.auth.dependencies import require_role, _get_db
-from src.rbac import Role
+from app.auth.access import require_admin
+from app.auth.dependencies import _get_db
 from src.repositories.notifications import ScriptRepository
 
 router = APIRouter(prefix="/api/scripts", tags=["scripts"])
@@ -41,7 +41,7 @@ class ScriptResponse(BaseModel):
 
 @router.get("")
 async def list_scripts(
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """List deployed scripts. Admin-only."""
@@ -53,7 +53,7 @@ async def list_scripts(
 @router.post("/deploy", status_code=201)
 async def deploy_script(
     request: DeployScriptRequest,
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Deploy a Python script to be run on the server (optionally on schedule). Admin-only."""
@@ -75,7 +75,7 @@ async def deploy_script(
 @router.post("/{script_id}/run")
 async def run_deployed_script(
     script_id: str,
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Run a deployed script by ID. Admin-only."""
@@ -89,7 +89,7 @@ async def run_deployed_script(
 @router.post("/run")
 async def run_adhoc_script(
     request: RunScriptRequest,
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
 ):
     """Run an ad-hoc Python script (not deployed). Admin-only."""
     if not request.source:
@@ -100,7 +100,7 @@ async def run_adhoc_script(
 @router.delete("/{script_id}", status_code=204)
 async def undeploy_script(
     script_id: str,
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     repo = ScriptRepository(conn)
