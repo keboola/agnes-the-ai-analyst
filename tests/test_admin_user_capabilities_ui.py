@@ -1,20 +1,24 @@
 """Tests for the per-user detail page (/admin/users/{user_id}).
 
-Covers the three sections the v9 plan adds:
-- Section A: core role single-select (core.* hierarchy).
-- Section B: additional capabilities multi-checkbox (non-core internal_roles).
-- Section C: effective-roles debug view (direct, group-derived, expanded).
-
-Server-side renders shell HTML; all role mutations are driven by the admin
-REST API client-side. These tests verify the page shell renders the right
-structure so the JS can drive against it. Direct API behavior is owned by
-the API agent's tests.
+v12 status: the legacy v9 capabilities UI (core-role dropdown / additional
+capabilities checkboxes / effective-roles debug section) is gone — the
+new /admin/users/{id} page surfaces group memberships and an effective
+resource-access readout instead. The whole module asserts v9 markers and
+hits removed REST endpoints (/api/role-grants, /api/admin/users/.../core-role)
+so it's skipped en bloc until rewritten against the v12 layout.
 """
 
 import tempfile
 import uuid
 
 import pytest
+
+pytest.skip(
+    "v12: legacy capabilities UI replaced by group memberships + effective "
+    "access. Rewrite the module against templates/admin_user_detail.html "
+    "(v12) and /api/admin/users/{id}/memberships endpoints.",
+    allow_module_level=True,
+)
 
 
 @pytest.fixture
@@ -29,9 +33,12 @@ def fresh_db(monkeypatch):
 def _make_user_and_session(conn, email: str, role: str):
     from src.repositories.users import UserRepository
     from app.auth.jwt import create_access_token
+    from tests.helpers.auth import grant_admin
 
     uid = str(uuid.uuid4())
     UserRepository(conn).create(id=uid, email=email, name=email.split("@")[0], role=role)
+    if role == "admin":
+        grant_admin(conn, uid)
     token = create_access_token(user_id=uid, email=email, role=role)
     return uid, token
 

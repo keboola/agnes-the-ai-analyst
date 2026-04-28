@@ -57,17 +57,28 @@
   .user-cell.no-name .name { display: none; }
   .user-cell.no-name .email { font-size: 13px; color: var(--text-primary, #111827); font-weight: 500; }
 
-  .role-pill {
-    display: inline-block;
-    padding: 3px 10px; border-radius: 999px;
-    font-size: 11px; font-weight: 600;
-    text-transform: uppercase; letter-spacing: 0.4px;
-    cursor: pointer; border: 1px solid transparent;
+  /* Group chip cloud — admin pill is highlighted, system groups have a subtle border */
+  .group-chips {
+    display: flex; flex-wrap: wrap; gap: 4px;
+    max-width: 320px;
   }
-  .role-pill.role-admin    { background: #fee2e2; color: #b91c1c; }
-  .role-pill.role-analyst  { background: #dbeafe; color: #1e40af; }
-  .role-pill.role-km_admin { background: #ede9fe; color: #6d28d9; }
-  .role-pill.role-viewer   { background: #f3f4f6; color: #4b5563; }
+  .group-chip {
+    display: inline-block;
+    padding: 3px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 500;
+    background: #e0e7ff; color: #3730a3;
+    white-space: nowrap;
+  }
+  .group-chip.is-admin {
+    background: #fef3c7; color: #92400e; font-weight: 600;
+  }
+  .group-chip.is-system {
+    background: #f3f4f6; color: #4b5563;
+  }
+  .group-chips-empty {
+    color: var(--text-secondary, #9ca3af);
+    font-size: 11px; font-style: italic;
+  }
 
   /* Toggle switch */
   .toggle { position: relative; display: inline-block; width: 36px; height: 20px; }
@@ -191,7 +202,7 @@
       <thead>
         <tr>
           <th>User</th>
-          <th>Role</th>
+          <th>Groups</th>
           <th>Active</th>
           <th>Created</th>
           <th>Deactivated</th>
@@ -217,13 +228,11 @@
     <input id="new-email" type="email" required autocomplete="off">
     <label for="new-name">Name (optional)</label>
     <input id="new-name" type="text" autocomplete="off">
-    <label for="new-role">Role</label>
-    <select id="new-role">
-      <option value="viewer">viewer</option>
-      <option value="analyst" selected>analyst</option>
-      <option value="km_admin">km_admin</option>
-      <option value="admin">admin</option>
-    </select>
+    <p class="sub" style="margin-top: 12px; font-size: 12px;">
+      New users start with no group memberships — assign them on the user
+      detail page after creating. They are auto-added to the <code>Everyone</code>
+      group at creation.
+    </p>
     <label style="display:flex; align-items:center; gap:8px; margin-top:12px; font-size:13px; color: var(--text-primary, #111827); font-weight:500;">
       <input id="new-send-invite" type="checkbox" checked>
       Send invitation link (generates setup token, emails it if transport is configured)
@@ -297,7 +306,6 @@
 
 <script>
 const API = "/api/users";
-const ROLES = ["viewer", "analyst", "km_admin", "admin"];
 
 function esc(s) {
   const d = document.createElement("div");
@@ -398,8 +406,17 @@ function renderUsers() {
   for (const u of filtered) {
     const tr = document.createElement("tr");
     if (!u.active) tr.classList.add("is-deactivated");
-    const role = u.role || "viewer";
     const hasName = !!(u.name && u.name !== u.email);
+    const groups = Array.isArray(u.groups) ? u.groups : [];
+    const chipsHtml = groups.length === 0
+      ? `<span class="group-chips-empty">— no groups —</span>`
+      : `<div class="group-chips">${
+          groups.map(g => {
+            const cls = g.name === "Admin" ? "is-admin"
+                      : g.is_system ? "is-system" : "";
+            return `<span class="group-chip ${cls}">${esc(g.name)}</span>`;
+          }).join("")
+        }</div>`;
     tr.innerHTML = `
       <td>
         <div class="user-cell ${hasName ? "" : "no-name"}">
@@ -410,9 +427,7 @@ function renderUsers() {
           </div>
         </div>
       </td>
-      <td>
-        <span class="role-pill role-${esc(role)}" data-action="edit-role" data-user-id="${esc(u.id)}" title="Click to change role">${esc(role)}</span>
-      </td>
+      <td>${chipsHtml}</td>
       <td>
         <label class="toggle">
           <input type="checkbox" ${u.active ? "checked" : ""} data-action="toggle-active" data-user-id="${esc(u.id)}">
@@ -423,7 +438,7 @@ function renderUsers() {
       <td class="date-cell">${u.deactivated_at ? fmtDate(u.deactivated_at) : "—"}</td>
       <td>
         <div class="row-actions">
-          <a class="icon-btn" href="/admin/users/${encodeURIComponent(u.id)}" title="Open detail view: roles + capabilities + effective-roles debug">Detail</a>
+          <a class="icon-btn" href="/admin/users/${encodeURIComponent(u.id)}" title="Open detail view: memberships + effective access">Detail</a>
           <a class="icon-btn" href="/admin/tokens?user=${encodeURIComponent(u.email || "")}" title="View this user's personal access tokens">Tokens</a>
           <button class="icon-btn" data-action="reset-password" data-user-id="${esc(u.id)}" data-user-email="${esc(u.email)}" title="Generate a reset link (user picks their own new password)">Reset</button>
           <button class="icon-btn" data-action="set-password" data-user-id="${esc(u.id)}" data-user-email="${esc(u.email)}" title="Assign a password directly">Set pwd</button>
@@ -434,8 +449,6 @@ function renderUsers() {
   }
 
   // Wire up actions via delegation-like loop
-  tbody.querySelectorAll('[data-action="edit-role"]').forEach(el =>
-    el.addEventListener("click", () => editRole(el.dataset.userId)));
   tbody.querySelectorAll('[data-action="toggle-active"]').forEach(el =>
     el.addEventListener("change", () => toggleActive(el.dataset.userId, el.checked)));
   tbody.querySelectorAll('[data-action="reset-password"]').forEach(el =>
@@ -462,15 +475,6 @@ document.getElementById("user-search").addEventListener("input", e => {
   filterText = e.target.value;
   renderUsers();
 });
-
-// ── Role editing via cycling pill click ──
-async function editRole(id) {
-  const u = allUsers.find(x => x.id === id);
-  if (!u) return;
-  const next = ROLES[(ROLES.indexOf(u.role || "viewer") + 1) % ROLES.length];
-  if (!await confirmModal(`Change role for ${u.email} from "${u.role}" to "${next}"?`)) return;
-  await patch(id, { role: next }, `Role changed to ${next}`);
-}
 
 async function toggleActive(id, active) {
   const path = active ? "activate" : "deactivate";
@@ -551,20 +555,18 @@ async function delUser(id, email) {
 document.getElementById("open-create-btn").addEventListener("click", () => {
   document.getElementById("new-email").value = "";
   document.getElementById("new-name").value = "";
-  document.getElementById("new-role").value = "analyst";
   document.getElementById("new-send-invite").checked = true;
   openModal("create-modal");
 });
 document.getElementById("confirm-create-btn").addEventListener("click", async () => {
   const email = document.getElementById("new-email").value.trim();
   const name = document.getElementById("new-name").value.trim();
-  const role = document.getElementById("new-role").value;
   const sendInvite = document.getElementById("new-send-invite").checked;
   if (!email) { toast("Email is required", "error"); return; }
   const r = await fetch(API, {
     method: "POST", credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, name: name || email.split("@")[0], role, send_invite: sendInvite }),
+    body: JSON.stringify({ email, name: name || email.split("@")[0], send_invite: sendInvite }),
   });
   if (!r.ok) { toast("Failed: " + (await r.text()), "error"); return; }
   const data = await r.json().catch(() => ({}));

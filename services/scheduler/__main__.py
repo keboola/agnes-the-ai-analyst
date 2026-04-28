@@ -1,7 +1,11 @@
 """Scheduler service — replaces systemd timers.
 
-Lightweight sidecar that triggers jobs by calling the main app's API.
-Keeps all business logic in the main app.
+Lightweight sidecar that fires scheduled jobs. Two job kinds:
+  - "http": POST/GET an endpoint on the main app (e.g. data-refresh).
+  - "fn":   call a Python function in-process (e.g. marketplaces sync).
+
+Schedules are strings parsed by src.scheduler.is_table_due — accepts
+"every 15m", "every 1h", "daily 03:00", "daily 07:00,13:00".
 
 Usage: python -m services.scheduler
 """
@@ -9,11 +13,12 @@ Usage: python -m services.scheduler
 import logging
 import os
 import signal
-import sys
 import time
 from datetime import datetime, timezone
 
 import httpx
+
+from src.scheduler import is_table_due
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO").upper(),
@@ -25,6 +30,7 @@ API_URL = os.environ.get("API_URL", "http://localhost:8000")
 SCHEDULER_API_TOKEN = os.environ.get("SCHEDULER_API_TOKEN", "")
 
 _token_warning_emitted = False
+
 
 
 def _get_auth_token() -> str:
@@ -58,10 +64,25 @@ def _get_auth_token() -> str:
         _token_warning_emitted = True
     return ""
 
-# Schedule definitions: (name, interval_seconds, api_endpoint, http_method)
+
+def _marketplaces_job():
+    """Entry point for the nightly marketplaces sync.
+
+    Imported lazily so the scheduler container still starts even if the
+    module has an import-time issue in development — a failure here only
+    kills one job, not the whole loop.
+    """
+    from src.marketplace import sync_marketplaces
+    return sync_marketplaces()
+
+
+# Schedule definitions: (name, schedule_string, kind, target)
+#   kind = "http"  -> target = (endpoint, method)
+#   kind = "fn"    -> target = callable_returning_any
 JOBS = [
-    ("data-refresh", 15 * 60, "/api/sync/trigger", "POST"),
-    ("health-check", 5 * 60, "/api/health", "GET"),
+    ("data-refresh",    "every 15m",   "http", ("/api/sync/trigger", "POST")),
+    ("health-check",    "every 5m",    "http", ("/api/health",       "GET")),
+    ("marketplaces",    "daily 03:00", "fn",   _marketplaces_job),
 ]
 
 _running = True
@@ -96,23 +117,46 @@ def _call_api(endpoint: str, method: str = "POST") -> bool:
         return False
 
 
+def _call_fn(label: str, fn) -> bool:
+    """Run an in-process callable. Returns True on success."""
+    try:
+        result = fn()
+        logger.info("Job %s OK: %s", label, result)
+        return True
+    except Exception as e:
+        logger.error("Job %s failed: %s", label, e)
+        return False
+
+
 def run():
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 
     logger.info(f"Scheduler started. API_URL={API_URL}, {len(JOBS)} jobs configured.")
 
-    # Track last run time per job
-    last_run = {name: 0.0 for name, _, _, _ in JOBS}
+    # Track last successful run per job as ISO string — matches what
+    # src.scheduler.is_table_due expects.
+    last_run: dict[str, str | None] = {name: None for name, *_ in JOBS}
 
     while _running:
-        now = time.time()
-        for name, interval, endpoint, method in JOBS:
-            if now - last_run[name] >= interval:
-                logger.info(f"Running job: {name}")
-                _call_api(endpoint, method)
-                last_run[name] = now
-        time.sleep(10)  # check every 10 seconds
+        now_iso = datetime.now(timezone.utc).isoformat()
+        for name, schedule, kind, target in JOBS:
+            if not is_table_due(schedule, last_run[name]):
+                continue
+            logger.info("Running job: %s (%s)", name, schedule)
+            if kind == "http":
+                endpoint, method = target
+                ok = _call_api(endpoint, method)
+            elif kind == "fn":
+                ok = _call_fn(name, target)
+            else:
+                logger.error("Unknown job kind %r for %s", kind, name)
+                ok = False
+            if ok:
+                last_run[name] = now_iso
+        # 30s tick is plenty: interval jobs have minute-level resolution,
+        # daily jobs have a ~24 h retry window.
+        time.sleep(30)
 
     logger.info("Scheduler stopped.")
 

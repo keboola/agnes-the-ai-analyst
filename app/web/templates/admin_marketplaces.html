@@ -1,0 +1,659 @@
+{% extends "base.html" %}
+{% block title %}Marketplaces — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block content %}
+<style>
+  /* Override base.html's 800px .container cap for this wide table. */
+  .container:has(.marketplaces-page) { max-width: none; padding: 24px 16px; }
+  .marketplaces-page { max-width: 1400px; margin: 0 auto; padding: 0; }
+  .marketplaces-toolbar {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 16px; margin-bottom: 20px; flex-wrap: wrap;
+  }
+  .marketplaces-title { margin: 0; font-size: 22px; font-weight: 600; }
+  .marketplaces-search {
+    flex: 1; max-width: 360px;
+    padding: 8px 12px 8px 36px;
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px;
+    font-size: 13px;
+    background: var(--surface, #fff) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2'><circle cx='11' cy='11' r='8'/><path d='m21 21-4.35-4.35'/></svg>") no-repeat 12px center;
+  }
+  .marketplaces-search:focus { outline: 2px solid var(--primary, #6366f1); outline-offset: -1px; }
+
+  .marketplaces-table-wrap {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+    overflow-x: auto;
+  }
+  .marketplaces-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .marketplaces-table thead th {
+    text-align: left; padding: 12px 16px;
+    background: var(--border-light, #f9fafb);
+    border-bottom: 1px solid var(--border, #e5e7eb);
+    font-weight: 600; color: var(--text-secondary, #6b7280);
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .marketplaces-table tbody td {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+    vertical-align: middle;
+  }
+  .marketplaces-table tbody tr:last-child td { border-bottom: none; }
+  .marketplaces-table tbody tr:hover { background: var(--border-light, #fafafa); }
+
+  .mp-cell { display: flex; align-items: center; gap: 10px; }
+  .mp-avatar {
+    width: 32px; height: 32px; border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--primary-light, #eef2ff); color: var(--primary, #6366f1);
+    flex-shrink: 0;
+  }
+  .mp-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .mp-meta .slug { font-weight: 500; color: var(--text-primary, #111827); font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; }
+  .mp-meta .name { font-size: 11px; color: var(--text-secondary, #6b7280); }
+
+  .mp-url {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 12px; color: var(--text-secondary, #6b7280);
+    max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block;
+  }
+  .mp-branch-pill {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 500;
+    background: #e0e7ff; color: #3730a3;
+    font-family: var(--font-mono, ui-monospace, monospace);
+  }
+  .mp-sha { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; color: var(--text-primary, #111827); }
+  .mp-muted { color: var(--text-secondary, #9ca3af); }
+  .mp-err-badge {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    background: #fee2e2; color: #b91c1c;
+    font-size: 11px; font-weight: 500;
+    cursor: help;
+  }
+  .mp-ok-dot { color: #047857; font-weight: 600; }
+  .mp-token-dot {
+    display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+    background: #cbd5e1;
+  }
+  .mp-token-dot.has-token { background: #10b981; }
+
+  .date-cell { color: var(--text-secondary, #6b7280); font-size: 12px; white-space: nowrap; }
+
+  .row-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: nowrap; white-space: nowrap; }
+  .icon-btn {
+    background: transparent; border: 1px solid var(--border, #e5e7eb); border-radius: 6px;
+    padding: 5px 10px; font-size: 12px; cursor: pointer;
+    color: var(--text-secondary, #6b7280); transition: all 0.15s;
+    text-decoration: none; line-height: 1.4;
+    white-space: nowrap;
+  }
+  .icon-btn:hover { color: var(--text-primary, #111827); border-color: #cbd5e1; background: #f9fafb; }
+  .icon-btn.primary { color: var(--primary, #6366f1); border-color: #c7d2fe; }
+  .icon-btn.primary:hover { background: #eef2ff; }
+  .icon-btn.danger:hover { color: #b91c1c; border-color: #fecaca; background: #fef2f2; }
+  .icon-btn[disabled] { opacity: 0.5; cursor: wait; }
+
+  .mp-empty, .mp-loading {
+    text-align: center; padding: 48px 16px;
+    color: var(--text-secondary, #6b7280); font-size: 13px;
+  }
+  .mp-empty .big { font-size: 15px; color: var(--text-primary, #111827); margin-bottom: 6px; font-weight: 500; }
+
+  /* Modal — identical to admin_users.html */
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55);
+    display: none; align-items: center; justify-content: center; z-index: 1000;
+    padding: 16px;
+  }
+  .modal-backdrop.is-open { display: flex; }
+  .modal-card {
+    background: var(--surface, #fff); border-radius: 12px;
+    padding: 24px; width: 100%; max-width: 480px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+    max-height: 90vh; overflow-y: auto;
+  }
+  .modal-card h3 { margin: 0 0 6px; font-size: 17px; font-weight: 600; }
+  .modal-card p.sub { margin: 0 0 18px; font-size: 13px; color: var(--text-secondary, #6b7280); }
+  .modal-card label { display: block; font-size: 12px; font-weight: 500; color: var(--text-secondary, #6b7280); margin: 12px 0 6px; }
+  .modal-card .help { font-size: 11px; color: var(--text-secondary, #9ca3af); margin-top: 4px; }
+  .modal-card input[type="text"], .modal-card input[type="url"], .modal-card input[type="password"], .modal-card textarea {
+    width: 100%; padding: 9px 12px; border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px; font-size: 13px; box-sizing: border-box;
+    background: var(--surface, #fff); color: var(--text-primary, #111827);
+    font-family: inherit;
+  }
+  .modal-card textarea { min-height: 60px; resize: vertical; }
+  .modal-card input:focus, .modal-card textarea:focus { outline: 2px solid var(--primary, #6366f1); outline-offset: -1px; }
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
+  .modal-btn {
+    padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 500;
+    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
+    cursor: pointer; transition: all 0.15s;
+  }
+  .modal-btn:hover { background: var(--border-light, #f9fafb); }
+  .modal-btn.primary { background: var(--primary, #6366f1); color: #fff; border-color: var(--primary, #6366f1); }
+  .modal-btn.primary:hover { filter: brightness(1.05); }
+  .modal-btn.danger { background: #dc2626; color: #fff; border-color: #dc2626; }
+  .modal-btn.danger:hover { filter: brightness(1.05); }
+
+  .sync-result {
+    margin: 12px 0;
+    padding: 12px; border-radius: 8px;
+    background: #f0fdf4; border: 1px solid #bbf7d0;
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 12px; word-break: break-all;
+  }
+  .sync-result.err { background: #fef2f2; border-color: #fecaca; }
+
+  .mp-plugin-count {
+    display: inline-block; min-width: 22px; padding: 2px 8px;
+    border-radius: 999px; background: #ede9fe; color: #5b21b6;
+    font-size: 11px; font-weight: 600; text-align: center;
+  }
+
+  /* Details modal — plugin list */
+  .plugin-list {
+    margin: 12px 0 4px;
+    max-height: 60vh; overflow-y: auto;
+    border: 1px solid var(--border, #e5e7eb); border-radius: 8px;
+    background: var(--surface, #fff);
+  }
+  .plugin-list .empty { padding: 24px; text-align: center; color: var(--text-secondary, #6b7280); font-size: 13px; }
+  .plugin-item {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+  }
+  .plugin-item:last-child { border-bottom: none; }
+  .plugin-item-head {
+    display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  }
+  .plugin-name { font-weight: 600; color: var(--text-primary, #111827); font-size: 13px; }
+  .plugin-version {
+    font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px;
+    color: var(--text-secondary, #6b7280);
+  }
+  .plugin-source {
+    display: inline-block; padding: 1px 6px; border-radius: 4px;
+    background: #f3f4f6; color: #374151; font-size: 10px; font-weight: 500;
+    text-transform: uppercase; letter-spacing: 0.3px;
+  }
+  .plugin-desc {
+    margin-top: 4px; font-size: 12px; color: var(--text-secondary, #4b5563);
+    line-height: 1.45;
+  }
+  .plugin-meta {
+    margin-top: 6px; display: flex; gap: 12px; flex-wrap: wrap;
+    font-size: 11px; color: var(--text-secondary, #6b7280);
+  }
+  .plugin-meta a { color: var(--primary, #6366f1); text-decoration: none; }
+  .plugin-meta a:hover { text-decoration: underline; }
+
+  /* Toast */
+  .toast-stack {
+    position: fixed; bottom: 24px; right: 24px; z-index: 2000;
+    display: flex; flex-direction: column; gap: 8px;
+    pointer-events: none;
+  }
+  .toast {
+    background: #111827; color: #fff; padding: 10px 16px;
+    border-radius: 8px; font-size: 13px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+    opacity: 0; transform: translateY(8px);
+    transition: opacity 0.2s, transform 0.2s;
+    pointer-events: auto; max-width: 380px;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast.success { background: #047857; }
+  .toast.error { background: #b91c1c; }
+</style>
+
+<div class="marketplaces-page">
+  <div class="marketplaces-toolbar">
+    <h2 class="marketplaces-title">Marketplaces</h2>
+    <input id="mp-search" type="search" class="marketplaces-search" placeholder="Filter by slug, name, or URL…" autocomplete="off">
+    <button class="modal-btn primary" id="open-create-btn">+ Add marketplace</button>
+  </div>
+
+  <div class="marketplaces-table-wrap">
+    <table class="marketplaces-table" id="marketplaces-table">
+      <thead>
+        <tr>
+          <th>Marketplace</th>
+          <th>URL</th>
+          <th>Branch</th>
+          <th title="Plugins discovered in .claude-plugin/marketplace.json on last sync">Plugins</th>
+          <th>Last sync</th>
+          <th>Commit</th>
+          <th title="Auth token persisted to .env_overlay (not the DB)">Token</th>
+          <th style="text-align:right">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="mp-tbody"></tbody>
+    </table>
+    <div id="mp-loading" class="mp-loading">Loading marketplaces…</div>
+    <div id="mp-empty" class="mp-empty" style="display:none;">
+      <div class="big">No marketplaces registered</div>
+      <div>Click <strong>Add marketplace</strong> to register the first git repo.</div>
+      <div style="margin-top:8px; font-size:12px;">They are cloned to <code>$DATA_DIR/marketplaces/&lt;slug&gt;/</code> every night at 03:00 UTC and can be re-synced manually.</div>
+    </div>
+  </div>
+</div>
+
+<!-- Create modal -->
+<div class="modal-backdrop" id="create-modal" role="dialog" aria-modal="true" aria-labelledby="create-modal-title">
+  <div class="modal-card">
+    <h3 id="create-modal-title">Add marketplace</h3>
+    <p class="sub">Register a git repository. It will be cloned into <code>$DATA_DIR/marketplaces/&lt;slug&gt;/</code> and fast-forwarded every night at 03:00 UTC.</p>
+
+    <label for="new-name">Display name</label>
+    <input id="new-name" type="text" placeholder="e.g. Groupon FoundryAI" required autocomplete="off">
+
+    <label for="new-slug">Slug (directory name)</label>
+    <input id="new-slug" type="text" placeholder="e.g. foundryai" required autocomplete="off" pattern="[a-z0-9][a-z0-9_-]{0,63}">
+    <div class="help">Lower-case alphanumerics, hyphens, and underscores. 1-64 chars, must start with a letter or digit.</div>
+
+    <label for="new-url">Git URL (https://)</label>
+    <input id="new-url" type="url" placeholder="https://github.com/org/repo.git" required autocomplete="off">
+
+    <label for="new-branch">Branch (optional)</label>
+    <input id="new-branch" type="text" placeholder="main (leave empty for remote HEAD)" autocomplete="off">
+
+    <label for="new-description">Description (optional)</label>
+    <textarea id="new-description" autocomplete="off"></textarea>
+
+    <label for="new-token">GitHub PAT (optional — private repos only)</label>
+    <input id="new-token" type="password" placeholder="ghp_… or ghs_… (leave empty for public repos)" autocomplete="off">
+    <div class="help">Stored in <code>$DATA_DIR/state/.env_overlay</code> (chmod 600) on the data volume. Never written to the database or committed to git.</div>
+
+    <div class="modal-actions">
+      <button class="modal-btn" data-close-modal="create-modal">Cancel</button>
+      <button class="modal-btn primary" id="confirm-create-btn">Register</button>
+    </div>
+  </div>
+</div>
+
+<!-- Edit modal -->
+<div class="modal-backdrop" id="edit-modal" role="dialog" aria-modal="true" aria-labelledby="edit-modal-title">
+  <div class="modal-card">
+    <h3 id="edit-modal-title">Edit marketplace</h3>
+    <p class="sub" id="edit-slug-label"></p>
+
+    <label for="edit-name">Display name</label>
+    <input id="edit-name" type="text" autocomplete="off">
+
+    <label for="edit-url">Git URL</label>
+    <input id="edit-url" type="url" autocomplete="off">
+
+    <label for="edit-branch">Branch</label>
+    <input id="edit-branch" type="text" placeholder="main (leave empty for remote HEAD)" autocomplete="off">
+
+    <label for="edit-description">Description</label>
+    <textarea id="edit-description" autocomplete="off"></textarea>
+
+    <label for="edit-token">GitHub PAT</label>
+    <input id="edit-token" type="password" placeholder="Leave empty to keep current. Type a new token to rotate." autocomplete="off">
+    <div class="help">
+      <label style="display:inline-flex; align-items:center; gap:6px; margin:6px 0 0; font-weight:400; color: var(--text-secondary, #6b7280);">
+        <input id="edit-clear-token" type="checkbox"> Remove the stored token (revert to public access)
+      </label>
+    </div>
+
+    <div class="modal-actions">
+      <button class="modal-btn" data-close-modal="edit-modal">Cancel</button>
+      <button class="modal-btn primary" id="confirm-edit-btn">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Sync result modal -->
+<div class="modal-backdrop" id="sync-modal" role="dialog" aria-modal="true" aria-labelledby="sync-title">
+  <div class="modal-card">
+    <h3 id="sync-title">Sync result</h3>
+    <p class="sub" id="sync-target"></p>
+    <div id="sync-result-body" class="sync-result"></div>
+    <div class="modal-actions">
+      <button class="modal-btn primary" data-close-modal="sync-modal">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Marketplace details modal -->
+<div class="modal-backdrop" id="details-modal" role="dialog" aria-modal="true" aria-labelledby="details-title">
+  <div class="modal-card" style="max-width:720px;">
+    <h3 id="details-title">Marketplace details</h3>
+    <p class="sub" id="details-sub"></p>
+    <div id="details-body" class="plugin-list"></div>
+    <div class="modal-actions">
+      <button class="modal-btn primary" data-close-modal="details-modal">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Confirm dialog -->
+<div class="modal-backdrop" id="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+  <div class="modal-card">
+    <h3 id="confirm-title">Are you sure?</h3>
+    <p class="sub" id="confirm-text"></p>
+    <label style="display:flex; align-items:center; gap:8px; margin-top:6px; font-size:13px; color: var(--text-primary, #111827); font-weight:500;">
+      <input id="confirm-purge" type="checkbox" checked> Also delete the working copy from disk
+    </label>
+    <div class="modal-actions">
+      <button class="modal-btn" data-close-modal="confirm-modal">Cancel</button>
+      <button class="modal-btn danger" id="confirm-ok-btn">Delete</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+
+<script>
+const API = "/api/marketplaces";
+
+function esc(s) {
+  const d = document.createElement("div");
+  d.textContent = s == null ? "" : String(s);
+  return d.innerHTML;
+}
+function fmtDate(s) { return s ? s.slice(0, 16).replace("T", " ") : "—"; }
+function shortSha(s) { return s ? s.slice(0, 7) : "—"; }
+
+// ── Toast ──
+function toast(msg, kind = "") {
+  const el = document.createElement("div");
+  el.className = "toast " + kind;
+  el.textContent = msg;
+  document.getElementById("toast-stack").appendChild(el);
+  requestAnimationFrame(() => el.classList.add("show"));
+  setTimeout(() => {
+    el.classList.remove("show");
+    setTimeout(() => el.remove(), 250);
+  }, 3500);
+}
+
+// ── Modal helpers ──
+function openModal(id) {
+  document.getElementById(id).classList.add("is-open");
+  const focusable = document.querySelector(`#${id} input, #${id} button.primary`);
+  focusable && focusable.focus();
+}
+function closeModal(id) {
+  document.getElementById(id).classList.remove("is-open");
+}
+document.querySelectorAll("[data-close-modal]").forEach(el =>
+  el.addEventListener("click", () => closeModal(el.dataset.closeModal)));
+document.querySelectorAll(".modal-backdrop").forEach(el => {
+  el.addEventListener("click", e => { if (e.target === el) el.classList.remove("is-open"); });
+});
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") document.querySelectorAll(".modal-backdrop.is-open").forEach(m => m.classList.remove("is-open"));
+});
+
+// ── State ──
+let allMarketplaces = [];
+let filterText = "";
+
+function renderMarketplaces() {
+  const tbody = document.getElementById("mp-tbody");
+  const loading = document.getElementById("mp-loading");
+  const empty = document.getElementById("mp-empty");
+  loading.style.display = "none";
+
+  const ft = filterText.trim().toLowerCase();
+  const filtered = ft
+    ? allMarketplaces.filter(m => (m.id || "").toLowerCase().includes(ft)
+                              || (m.name || "").toLowerCase().includes(ft)
+                              || (m.url || "").toLowerCase().includes(ft))
+    : allMarketplaces;
+
+  if (allMarketplaces.length === 0) {
+    empty.style.display = "block";
+    tbody.innerHTML = "";
+    return;
+  }
+  empty.style.display = "none";
+
+  if (filtered.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="8" class="mp-loading">No matches for "${esc(filterText)}"</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = "";
+  for (const m of filtered) {
+    const tr = document.createElement("tr");
+    const lastSync = m.last_error
+      ? `<span class="mp-err-badge" title="${esc(m.last_error)}">failed ${esc(fmtDate(m.last_synced_at))}</span>`
+      : (m.last_synced_at ? `<span class="mp-ok-dot">●</span> ${esc(fmtDate(m.last_synced_at))}` : `<span class="mp-muted">never</span>`);
+    tr.innerHTML = `
+      <td>
+        <div class="mp-cell">
+          <div class="mp-avatar">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>
+          </div>
+          <div class="mp-meta">
+            <span class="slug">${esc(m.id)}</span>
+            <span class="name">${esc(m.name || "")}</span>
+          </div>
+        </div>
+      </td>
+      <td><span class="mp-url" title="${esc(m.url)}">${esc(m.url)}</span></td>
+      <td>${m.branch ? `<span class="mp-branch-pill">${esc(m.branch)}</span>` : `<span class="mp-muted">HEAD</span>`}</td>
+      <td>${m.plugin_count > 0
+            ? `<span class="mp-plugin-count">${m.plugin_count}</span>`
+            : `<span class="mp-muted">0</span>`}</td>
+      <td class="date-cell">${lastSync}</td>
+      <td class="mp-sha">${m.last_commit_sha ? esc(shortSha(m.last_commit_sha)) : `<span class="mp-muted">—</span>`}</td>
+      <td><span class="mp-token-dot ${m.has_token ? "has-token" : ""}" title="${m.has_token ? "Authenticated (PAT present in environment)" : "Public / no token"}"></span></td>
+      <td>
+        <div class="row-actions">
+          <button class="icon-btn primary" data-action="sync" data-id="${esc(m.id)}">Sync now</button>
+          <button class="icon-btn" data-action="details" data-id="${esc(m.id)}" data-name="${esc(m.name || m.id)}">Details</button>
+          <button class="icon-btn" data-action="edit" data-id="${esc(m.id)}">Edit</button>
+          <button class="icon-btn danger" data-action="delete" data-id="${esc(m.id)}" data-name="${esc(m.name || m.id)}">Delete</button>
+        </div>
+      </td>`;
+    tbody.appendChild(tr);
+  }
+
+  tbody.querySelectorAll('[data-action="sync"]').forEach(el =>
+    el.addEventListener("click", () => syncNow(el.dataset.id, el)));
+  tbody.querySelectorAll('[data-action="details"]').forEach(el =>
+    el.addEventListener("click", () => openDetails(el.dataset.id, el.dataset.name)));
+  tbody.querySelectorAll('[data-action="edit"]').forEach(el =>
+    el.addEventListener("click", () => openEdit(el.dataset.id)));
+  tbody.querySelectorAll('[data-action="delete"]').forEach(el =>
+    el.addEventListener("click", () => delMarketplace(el.dataset.id, el.dataset.name)));
+}
+
+async function loadMarketplaces() {
+  try {
+    const r = await fetch(API, { credentials: "include" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    allMarketplaces = await r.json();
+    renderMarketplaces();
+  } catch (e) {
+    document.getElementById("mp-loading").textContent = "Failed to load marketplaces: " + e.message;
+    toast("Failed to load marketplaces", "error");
+  }
+}
+
+document.getElementById("mp-search").addEventListener("input", e => {
+  filterText = e.target.value;
+  renderMarketplaces();
+});
+
+// ── Sync now ──
+async function syncNow(id, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = "Syncing…"; }
+  let body, ok = false;
+  try {
+    const r = await fetch(`${API}/${encodeURIComponent(id)}/sync`, { method: "POST", credentials: "include" });
+    body = await r.json().catch(() => ({}));
+    ok = r.ok;
+  } catch (e) {
+    body = { error: e.message };
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Sync now"; }
+  }
+  document.getElementById("sync-target").textContent = id;
+  const rb = document.getElementById("sync-result-body");
+  rb.classList.toggle("err", !ok);
+  if (ok) {
+    const plugLine = body.plugin_count != null ? `\nplugins: ${body.plugin_count}` : "";
+    rb.textContent = `action: ${body.action}\ncommit: ${body.commit}\npath:   ${body.path}${plugLine}`;
+    toast("Sync OK", "success");
+  } else {
+    rb.textContent = body.detail || body.error || "Sync failed";
+    toast("Sync failed", "error");
+  }
+  openModal("sync-modal");
+  loadMarketplaces();
+}
+
+// ── Details ──
+async function openDetails(id, name) {
+  const m = allMarketplaces.find(x => x.id === id);
+  document.getElementById("details-title").textContent = `${name || id}`;
+  const sub = document.getElementById("details-sub");
+  sub.innerHTML = `<code>${esc(id)}</code>${m && m.url ? ` · <span class="mp-url" title="${esc(m.url)}">${esc(m.url)}</span>` : ""}`;
+  const body = document.getElementById("details-body");
+  body.innerHTML = `<div class="empty">Loading plugins…</div>`;
+  openModal("details-modal");
+  try {
+    const r = await fetch(`${API}/${encodeURIComponent(id)}/plugins`, { credentials: "include" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const plugins = await r.json();
+    if (!plugins.length) {
+      body.innerHTML = `<div class="empty">No plugins found.<br>
+        Either the marketplace has never been synced, or its
+        <code>.claude-plugin/marketplace.json</code> does not list any plugins.</div>`;
+      return;
+    }
+    body.innerHTML = plugins.map(p => {
+      const src = p.source_type ? `<span class="plugin-source">${esc(p.source_type)}</span>` : "";
+      const ver = p.version ? `<span class="plugin-version">v${esc(p.version)}</span>` : "";
+      const desc = p.description ? `<div class="plugin-desc">${esc(p.description)}</div>` : "";
+      const meta = [];
+      if (p.author_name) meta.push(`by ${esc(p.author_name)}`);
+      if (p.category) meta.push(`category: ${esc(p.category)}`);
+      if (p.homepage) meta.push(`<a href="${esc(p.homepage)}" target="_blank" rel="noopener">homepage ↗</a>`);
+      const metaHtml = meta.length ? `<div class="plugin-meta">${meta.join(" · ")}</div>` : "";
+      return `<div class="plugin-item">
+        <div class="plugin-item-head">
+          <span class="plugin-name">${esc(p.name)}</span>${ver}${src}
+        </div>${desc}${metaHtml}
+      </div>`;
+    }).join("");
+  } catch (e) {
+    body.innerHTML = `<div class="empty" style="color:#b91c1c;">Failed to load plugins: ${esc(e.message)}</div>`;
+  }
+}
+
+// ── Edit ──
+function openEdit(id) {
+  const m = allMarketplaces.find(x => x.id === id);
+  if (!m) return;
+  document.getElementById("edit-slug-label").textContent = `Editing ${m.id}`;
+  document.getElementById("edit-name").value = m.name || "";
+  document.getElementById("edit-url").value = m.url || "";
+  document.getElementById("edit-branch").value = m.branch || "";
+  document.getElementById("edit-description").value = m.description || "";
+  document.getElementById("edit-token").value = "";
+  document.getElementById("edit-clear-token").checked = false;
+
+  const btn = document.getElementById("confirm-edit-btn");
+  btn.onclick = async () => {
+    const payload = {
+      name: document.getElementById("edit-name").value.trim() || null,
+      url: document.getElementById("edit-url").value.trim() || null,
+      branch: document.getElementById("edit-branch").value.trim(), // empty string cleared by API (None=untouched)
+      description: document.getElementById("edit-description").value,
+    };
+    // branch: null means untouched; explicit "" clears to HEAD. Treat empty input as clear only if user typed then erased.
+    // Simpler UX: always send current value (empty = HEAD).
+    if (payload.branch === "") payload.branch = null;  // untouched
+    const tokenVal = document.getElementById("edit-token").value;
+    const clearTok = document.getElementById("edit-clear-token").checked;
+    if (clearTok) payload.token = "";
+    else if (tokenVal) payload.token = tokenVal;
+    const r = await fetch(`${API}/${encodeURIComponent(id)}`, {
+      method: "PATCH", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) { toast("Update failed: " + (await r.text()), "error"); return; }
+    closeModal("edit-modal");
+    toast("Marketplace updated", "success");
+    loadMarketplaces();
+  };
+  openModal("edit-modal");
+}
+
+// ── Delete ──
+function delMarketplace(id, name) {
+  document.getElementById("confirm-text").textContent =
+    `Delete marketplace "${name}" (${id})? Unregisters it and stops future nightly syncs.`;
+  document.getElementById("confirm-purge").checked = true;
+  const okBtn = document.getElementById("confirm-ok-btn");
+  okBtn.onclick = async () => {
+    const purge = document.getElementById("confirm-purge").checked;
+    const r = await fetch(`${API}/${encodeURIComponent(id)}?purge=${purge}`, {
+      method: "DELETE", credentials: "include",
+    });
+    closeModal("confirm-modal");
+    if (!r.ok) { toast("Delete failed: " + (await r.text()), "error"); return; }
+    toast("Marketplace removed", "success");
+    loadMarketplaces();
+  };
+  openModal("confirm-modal");
+}
+
+// ── Create ──
+document.getElementById("open-create-btn").addEventListener("click", () => {
+  document.getElementById("new-name").value = "";
+  document.getElementById("new-slug").value = "";
+  document.getElementById("new-url").value = "";
+  document.getElementById("new-branch").value = "";
+  document.getElementById("new-description").value = "";
+  document.getElementById("new-token").value = "";
+  openModal("create-modal");
+});
+document.getElementById("confirm-create-btn").addEventListener("click", async () => {
+  const payload = {
+    name: document.getElementById("new-name").value.trim(),
+    slug: document.getElementById("new-slug").value.trim().toLowerCase(),
+    url: document.getElementById("new-url").value.trim(),
+    branch: document.getElementById("new-branch").value.trim() || null,
+    description: document.getElementById("new-description").value.trim() || null,
+    token: document.getElementById("new-token").value || null,
+  };
+  if (!payload.name || !payload.slug || !payload.url) {
+    toast("Name, slug, and URL are required", "error");
+    return;
+  }
+  const r = await fetch(API, {
+    method: "POST", credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    toast("Create failed: " + (err.detail || r.status), "error");
+    return;
+  }
+  closeModal("create-modal");
+  toast("Marketplace registered", "success");
+  loadMarketplaces();
+});
+
+// Auto-derive slug from name on first focus
+document.getElementById("new-slug").addEventListener("focus", e => {
+  if (e.target.value) return;
+  const name = document.getElementById("new-name").value.trim().toLowerCase();
+  e.target.value = name.replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64);
+});
+
+loadMarketplaces();
+</script>
+{% endblock %}
