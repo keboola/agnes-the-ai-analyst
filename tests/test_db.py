@@ -762,3 +762,131 @@ class TestSchemaV12:
             assert grants == [("marketplace_plugin", "foundry-ai/metrics")]
         finally:
             conn.close()
+
+    def test_v12_to_v13_finalize_rollback_on_failure(self, tmp_path, monkeypatch):
+        """Mid-flight failure in _v12_to_v13_finalize rolls the v13 backfill
+        back to a clean v12 state and the next start retries the migration.
+
+        Setup mirrors test_v12_to_v13_migration_backfill — a hand-crafted v12
+        DB with sample data that the finalize would otherwise migrate. We
+        monkey-patch _seed_system_groups (the first call inside the
+        transaction) to raise mid-finalize and verify:
+
+            1. schema_version stays at 12.
+            2. Legacy tables (user_role_grants, plugin_access, …) are NOT
+               dropped — the finalize had not reached the DROP step.
+            3. user_group_members + resource_grants are EMPTY (the inserts
+               that ran before the failure were rolled back).
+            4. A second start succeeds and produces the same final state as
+               a clean run.
+        """
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        import json
+        import uuid
+        import duckdb as _duckdb
+        from src import db as _db
+        from src.db import get_system_db, get_schema_version, SCHEMA_VERSION
+
+        db_path = tmp_path / "state" / "system.duckdb"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = _duckdb.connect(str(db_path))
+        conn.execute("""
+            CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP DEFAULT current_timestamp);
+            INSERT INTO schema_version (version) VALUES (12);
+            CREATE TABLE users (
+                id VARCHAR PRIMARY KEY, email VARCHAR UNIQUE NOT NULL, name VARCHAR, role VARCHAR,
+                password_hash VARCHAR, setup_token VARCHAR, setup_token_created TIMESTAMP,
+                reset_token VARCHAR, reset_token_created TIMESTAMP,
+                active BOOLEAN DEFAULT TRUE, deactivated_at TIMESTAMP, deactivated_by VARCHAR,
+                groups JSON, created_at TIMESTAMP, updated_at TIMESTAMP
+            );
+            CREATE TABLE internal_roles (id VARCHAR PRIMARY KEY, key VARCHAR UNIQUE NOT NULL,
+                display_name VARCHAR NOT NULL, description TEXT, owner_module VARCHAR,
+                implies VARCHAR, is_core BOOLEAN, created_at TIMESTAMP, updated_at TIMESTAMP);
+            CREATE TABLE user_role_grants (id VARCHAR PRIMARY KEY,
+                user_id VARCHAR REFERENCES users(id),
+                internal_role_id VARCHAR REFERENCES internal_roles(id),
+                granted_at TIMESTAMP, granted_by VARCHAR, source VARCHAR);
+            CREATE TABLE group_mappings (id VARCHAR PRIMARY KEY, external_group_id VARCHAR,
+                internal_role_id VARCHAR REFERENCES internal_roles(id),
+                assigned_at TIMESTAMP, assigned_by VARCHAR);
+            CREATE TABLE user_groups (id VARCHAR PRIMARY KEY, name VARCHAR UNIQUE,
+                description TEXT, is_system BOOLEAN, created_at TIMESTAMP, created_by VARCHAR);
+            CREATE TABLE plugin_access (group_id VARCHAR, marketplace_id VARCHAR,
+                plugin_name VARCHAR, granted_at TIMESTAMP, granted_by VARCHAR);
+        """)
+        admin_uid = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO users (id, email, name, groups) VALUES (?, ?, ?, ?)",
+            [admin_uid, 'admin@x', 'A', json.dumps(['Engineering'])],
+        )
+        eng_id = str(uuid.uuid4())
+        conn.execute("INSERT INTO user_groups (id, name) VALUES (?, ?)", [eng_id, 'Engineering'])
+        core_admin = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO internal_roles (id, key, display_name) VALUES (?, 'core.admin', 'Admin')",
+            [core_admin],
+        )
+        conn.execute(
+            "INSERT INTO user_role_grants (id, user_id, internal_role_id) VALUES (?, ?, ?)",
+            [str(uuid.uuid4()), admin_uid, core_admin],
+        )
+        conn.execute(
+            "INSERT INTO plugin_access (group_id, marketplace_id, plugin_name) VALUES (?, ?, ?)",
+            [eng_id, 'foundry-ai', 'metrics'],
+        )
+        conn.close()
+
+        # Inject a failure inside the v12→v13 finalize transaction.
+        original_seed = _db._seed_system_groups
+        def _boom(_conn):
+            raise RuntimeError("synthetic mid-flight failure")
+        monkeypatch.setattr(_db, "_seed_system_groups", _boom)
+
+        with pytest.raises(RuntimeError, match="synthetic mid-flight failure"):
+            get_system_db()
+        # Drop the cached connection the failed _ensure_schema may have
+        # registered (its lock is held; we want a clean re-attempt below).
+        _db._system_db_conn = None
+
+        # Open the DB raw and verify rollback.
+        conn = _duckdb.connect(str(db_path))
+        try:
+            assert get_schema_version(conn) == 12, (
+                "schema_version must stay at 12 after rollback"
+            )
+            tables = {
+                r[0] for r in conn.execute(
+                    "SELECT table_name FROM information_schema.tables"
+                ).fetchall()
+            }
+            for legacy in ("internal_roles", "group_mappings",
+                           "user_role_grants", "plugin_access"):
+                assert legacy in tables, (
+                    f"{legacy} must NOT be dropped on rollback"
+                )
+            # New tables exist (created by _V12_TO_V13_MIGRATIONS before the
+            # finalize ran) but contain no rows.
+            assert tables.issuperset({"user_group_members", "resource_grants"})
+            count_members = conn.execute(
+                "SELECT COUNT(*) FROM user_group_members"
+            ).fetchone()[0]
+            count_grants = conn.execute(
+                "SELECT COUNT(*) FROM resource_grants"
+            ).fetchone()[0]
+            assert count_members == 0, "backfill rows leaked past ROLLBACK"
+            assert count_grants == 0, "backfill rows leaked past ROLLBACK"
+        finally:
+            conn.close()
+
+        # Restore the real finalize and verify a fresh start completes.
+        monkeypatch.setattr(_db, "_seed_system_groups", original_seed)
+        conn = get_system_db()
+        try:
+            assert get_schema_version(conn) == SCHEMA_VERSION
+            count_members = conn.execute(
+                "SELECT COUNT(*) FROM user_group_members"
+            ).fetchone()[0]
+            assert count_members > 0, "retry should backfill members"
+        finally:
+            conn.close()

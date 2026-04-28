@@ -381,7 +381,7 @@ class TestUserGroupsRepository:
         row = repo.create(name="SysGroup", description="seeded", is_system=True)
         assert row["is_system"] is True
 
-    def test_update_system_group_blocked(self, db_conn):
+    def test_update_system_group_rename_blocked(self, db_conn):
         from src.repositories.user_groups import (
             UserGroupsRepository, SystemGroupProtected,
         )
@@ -389,6 +389,22 @@ class TestUserGroupsRepository:
         row = repo.create(name="Admin2", description="sys", is_system=True)
         with pytest.raises(SystemGroupProtected):
             repo.update(row["id"], name="Renamed")
+
+    def test_update_system_group_description_allowed(self, db_conn):
+        from src.repositories.user_groups import UserGroupsRepository
+        repo = UserGroupsRepository(db_conn)
+        row = repo.create(name="Admin3", description="seeded", is_system=True)
+        repo.update(row["id"], description="curated by ops")
+        assert repo.get(row["id"])["description"] == "curated by ops"
+
+    def test_update_system_group_same_name_no_op(self, db_conn):
+        """Endpoint may pass payload.name unchanged on a description PATCH;
+        repo must not raise when the name argument equals the existing name."""
+        from src.repositories.user_groups import UserGroupsRepository
+        repo = UserGroupsRepository(db_conn)
+        row = repo.create(name="Admin4", description="seeded", is_system=True)
+        repo.update(row["id"], name="Admin4", description="curated")
+        assert repo.get(row["id"])["description"] == "curated"
 
     def test_delete_system_group_blocked(self, db_conn):
         from src.repositories.user_groups import (
@@ -417,6 +433,20 @@ class TestUserGroupsRepository:
         promoted = repo.ensure_system("LaterPromoted", "now system")
         assert promoted["id"] == row["id"]
         assert promoted["is_system"] is True
+
+    def test_ensure_system_preserves_user_description_on_promotion(self, db_conn):
+        """Pre-existing non-system group named 'Admin' (e.g. created manually
+        on a v9 deploy) must be promoted in place without losing the operator's
+        description. Startup must never fatal-error here."""
+        from src.repositories.user_groups import UserGroupsRepository
+        repo = UserGroupsRepository(db_conn)
+        manual = repo.create(name="ClaimMe", description="operator-curated")
+        promoted = repo.ensure_system("ClaimMe", "seeded default")
+        assert promoted["id"] == manual["id"]
+        assert promoted["is_system"] is True
+        # Description on the existing row is preserved — the seeded default
+        # only applies when a brand-new system group is created.
+        assert promoted["description"] == "operator-curated"
 
     def test_ensure_creates_missing(self, db_conn):
         from src.repositories.user_groups import UserGroupsRepository

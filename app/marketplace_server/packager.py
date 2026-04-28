@@ -22,15 +22,36 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import threading
 import zipfile
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import duckdb
+from cachetools import TTLCache
 
 from src import marketplace_filter
 
 MARKETPLACE_NAME = "agnes"
+
+# In-process TTL cache for compute_etag() results. The expensive part of
+# compute_etag is a SHA256 over every plugin file on disk; for a stable
+# marketplace this hash doesn't change between requests. We key on the
+# resolved plugin set (prefixed_name + version + plugin_dir path) so two
+# users with the same allowed view share the same cache entry.
+#
+# TTL bounds drift between cache and on-disk content. Marketplace sync runs
+# nightly; the default 120s TTL means the first session-start in a cold
+# minute pays the SHA cost and the next ~120s of session-starts (across all
+# users with the same view) hit the cache. Override with
+# AGNES_MARKETPLACE_ETAG_TTL=<seconds> for tests / tighter staleness bounds;
+# set 0 to disable.
+_ETAG_CACHE_TTL = int(os.environ.get("AGNES_MARKETPLACE_ETAG_TTL", "120"))
+_ETAG_CACHE: Optional[TTLCache] = (
+    TTLCache(maxsize=512, ttl=_ETAG_CACHE_TTL) if _ETAG_CACHE_TTL > 0 else None
+)
+_ETAG_CACHE_LOCK = threading.Lock()
 MARKETPLACE_OWNER = {"name": "Agnes AI Analyst"}
 MARKETPLACE_DESCRIPTION = (
     "Aggregated per-user Claude Code marketplace — served by agnes-the-ai-analyst"
@@ -132,18 +153,55 @@ def _write_zip_entry(zf: zipfile.ZipFile, arcname: str, data: bytes) -> None:
     zf.writestr(info, data)
 
 
-def compute_zip_etag(conn: duckdb.DuckDBPyConnection, user: dict) -> str:
-    """Cheaply compute the ETag for a user's marketplace ZIP.
+def _etag_cache_key(plugins: List[dict]) -> tuple:
+    return tuple(
+        sorted(
+            (p["prefixed_name"], p.get("version") or "", str(p["plugin_dir"]))
+            for p in plugins
+        )
+    )
 
-    Resolves allowed plugins and hashes their on-disk content without reading
-    file bodies into memory or building the ZIP.  Used by the router to serve
-    ``304 Not Modified`` without the full build cost.
+
+def compute_etag_for_user(
+    conn: duckdb.DuckDBPyConnection, user: dict
+) -> Tuple[str, List[dict]]:
+    """Resolve the user's allowed plugins and compute their content-addressed
+    ETag, without doing any file collection or ZIP assembly.
+
+    Returns (etag, plugins) so callers that proceed to build_zip can reuse
+    the resolved plugin set and skip the second DB query.
     """
     plugins = marketplace_filter.resolve_allowed_plugins(conn, user)
-    return marketplace_filter.compute_etag(plugins)
+    if _ETAG_CACHE is None:
+        return marketplace_filter.compute_etag(plugins), plugins
+    cache_key = _etag_cache_key(plugins)
+    with _ETAG_CACHE_LOCK:
+        cached = _ETAG_CACHE.get(cache_key)
+    if cached is not None:
+        return cached, plugins
+    etag = marketplace_filter.compute_etag(plugins)
+    with _ETAG_CACHE_LOCK:
+        _ETAG_CACHE[cache_key] = etag
+    return etag, plugins
 
 
-def build_zip(conn: duckdb.DuckDBPyConnection, user: dict) -> Tuple[bytes, str]:
+def invalidate_etag_cache() -> None:
+    """Drop all cached etags. Called by marketplace sync after refresh so the
+    next request re-hashes against the new on-disk content instead of waiting
+    for TTL expiry."""
+    if _ETAG_CACHE is None:
+        return
+    with _ETAG_CACHE_LOCK:
+        _ETAG_CACHE.clear()
+
+
+def build_zip(
+    conn: duckdb.DuckDBPyConnection,
+    user: dict,
+    *,
+    plugins: Optional[List[dict]] = None,
+    etag: Optional[str] = None,
+) -> Tuple[bytes, str]:
     """Build the deterministic ZIP for this user. Returns (bytes, etag).
 
     The `.agnes/version.json` entry carries `generated_at` for diagnostics and
@@ -151,9 +209,12 @@ def build_zip(conn: duckdb.DuckDBPyConnection, user: dict) -> Tuple[bytes, str]:
     for the ZIP channel (the ETag gate is computed from content hashes *before*
     that file is added). The git channel uses file_set_for_user() instead,
     which deliberately omits this diagnostic file.
+
+    Callers that already resolved plugins + etag (e.g. the router after an
+    If-None-Match miss) pass them as kwargs so we don't redo the work.
     """
-    plugins = marketplace_filter.resolve_allowed_plugins(conn, user)
-    etag = marketplace_filter.compute_etag(plugins)
+    if plugins is None or etag is None:
+        etag, plugins = compute_etag_for_user(conn, user)
 
     members = _collect_members(plugins, etag)
 

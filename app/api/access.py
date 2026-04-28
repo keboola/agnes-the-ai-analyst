@@ -183,14 +183,17 @@ async def access_overview(
 
     # Per-resource-type hierarchies. Driven by the registry in
     # app.resource_types — adding a new type there is the one place that
-    # surfaces here, no extra wiring.
+    # surfaces here, no extra wiring. Disabled types (e.g. TABLE without
+    # AGNES_ENABLE_TABLE_GRANTS) are skipped so the admin UI does not
+    # render a chip for grants the runtime cannot enforce yet.
+    from app.resource_types import enabled_resource_types
     resources = [
         {
             "type_key": spec.key.value,
             "type_display": spec.display_name,
             "blocks": spec.list_blocks(conn),
         }
-        for spec in RESOURCE_TYPES.values()
+        for spec in enabled_resource_types()
     ]
 
     return {"groups": groups, "grants": grants, "resources": resources}
@@ -369,17 +372,18 @@ async def delete_group(
         raise HTTPException(status_code=404, detail="Group not found")
     if g.get("is_system"):
         raise HTTPException(status_code=409, detail="Cannot delete a system group")
-    # Atomic delete: cascade child rows then the group itself, all in one
-    # transaction. group_id has no FK constraints in the schema — the
-    # cascade is application-level — so an unhandled mid-flight failure
-    # without the BEGIN/COMMIT wrap could leave orphaned member / grant
-    # rows that the admin UI cannot clean up (the parent group_id is
-    # gone). With the transaction, either all three deletes commit or
-    # none do.
-    conn.execute("BEGIN TRANSACTION")
+    # Cascade members + grants atomically with the group row so a partial
+    # failure cannot leave orphans pointing at a deleted group_id. There are
+    # no FK constraints (group_id is plain VARCHAR), so the application is
+    # responsible for the invariant — wrap in an explicit transaction.
     try:
-        conn.execute("DELETE FROM user_group_members WHERE group_id = ?", [group_id])
-        conn.execute("DELETE FROM resource_grants WHERE group_id = ?", [group_id])
+        conn.execute("BEGIN TRANSACTION")
+        conn.execute(
+            "DELETE FROM user_group_members WHERE group_id = ?", [group_id]
+        )
+        conn.execute(
+            "DELETE FROM resource_grants WHERE group_id = ?", [group_id]
+        )
         repo.delete(group_id)
         conn.execute("COMMIT")
     except SystemGroupProtected:
@@ -562,6 +566,20 @@ async def create_grant(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     rt = _validate_resource_type(payload.resource_type)
+    # Feature gate: refuse to mint grants for resource types whose runtime
+    # enforcement is not wired up yet (e.g. ResourceType.TABLE without
+    # AGNES_ENABLE_TABLE_GRANTS). Listing + deleting existing rows still
+    # works so operators can clean up legacy data.
+    from app.resource_types import is_resource_type_enabled
+    if not is_resource_type_enabled(rt):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"resource_type {rt.value!r} is not currently enabled. "
+                "Set AGNES_ENABLE_TABLE_GRANTS=1 to opt in once the runtime "
+                "enforcement is in place (see docs/TODO-rbac-data-enforcement.md)."
+            ),
+        )
     if not payload.resource_id.strip():
         raise HTTPException(status_code=400, detail="resource_id is required")
     if not UserGroupsRepository(conn).get(payload.group_id):

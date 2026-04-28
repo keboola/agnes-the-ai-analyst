@@ -115,13 +115,19 @@ class UserGroupsRepository:
         name: Optional[str] = None,
         description: Optional[str] = None,
     ) -> None:
-        # Block mutation of system groups — name/description are seeded and
-        # callers must not be able to rename "Admin" / "Everyone" out from
-        # under the marketplace filter.
+        # Block rename of system groups — the canonical names "Admin" /
+        # "Everyone" are referenced from `app.auth.access` and the
+        # marketplace filter and must not move. Description edits are
+        # cosmetic and allowed (admins curate them in /admin/access).
         existing = self.get(group_id)
-        if existing and existing.get("is_system"):
+        if (
+            existing
+            and existing.get("is_system")
+            and name is not None
+            and name != existing["name"]
+        ):
             raise SystemGroupProtected(
-                f"group {existing.get('name')!r} is a system group and cannot be modified"
+                f"group {existing.get('name')!r} is a system group and cannot be renamed"
             )
         sets: List[str] = []
         params: List[Any] = []

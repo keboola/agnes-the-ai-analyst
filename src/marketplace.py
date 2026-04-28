@@ -278,6 +278,16 @@ def sync_marketplaces() -> Dict[str, Any]:
                 finally:
                     conn.close()
 
+    # Drop cached etags so the next /marketplace.zip request re-hashes against
+    # the freshly-synced content rather than waiting for TTL expiry. Late
+    # import: keeps src.marketplace decoupled from the FastAPI app surface.
+    if synced:
+        try:
+            from app.marketplace_server import packager as _packager
+            _packager.invalidate_etag_cache()
+        except ImportError:
+            pass
+
     return {"synced": synced, "errors": errors}
 
 

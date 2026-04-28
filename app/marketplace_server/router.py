@@ -41,16 +41,14 @@ async def marketplace_zip(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ) -> Response:
     if_none_match = request.headers.get("if-none-match", "").strip().strip('"')
-
-    # Compute the ETag cheaply (DB query + file hash scan) before doing the
-    # expensive ZIP build (file reads + compression).  The common case — a
-    # Claude Code SessionStart hook with a matching ETag — returns 304
-    # without any file IO or ZIP work.
-    etag = packager.compute_zip_etag(conn, user)
+    # Resolve the etag first — this lets a 304 short-circuit before we read
+    # every plugin file off disk and run ZIP_DEFLATED. Hot path on every
+    # Claude Code SessionStart.
+    etag, plugins = packager.compute_etag_for_user(conn, user)
     if if_none_match and if_none_match == etag:
         return Response(status_code=304, headers={"ETag": f'"{etag}"'})
 
-    data, etag = packager.build_zip(conn, user)
+    data, _ = packager.build_zip(conn, user, plugins=plugins, etag=etag)
     return Response(
         content=data,
         media_type="application/zip",
