@@ -67,7 +67,7 @@ def _build_bq_sql(table_row: dict, project_id: str, req: ScanRequest) -> str:
     return sql
 
 
-def estimate(conn, user, raw_request: dict, *, project_id: str) -> dict:
+def estimate(conn, user, raw_request: dict, *, project_id: str, billing_project: str | None = None) -> dict:
     req = ScanRequest(**raw_request)
     repo = TableRegistryRepository(conn)
     row = repo.get(req.table_id)
@@ -97,7 +97,7 @@ def estimate(conn, user, raw_request: dict, *, project_id: str) -> dict:
         }
 
     bq_sql = _build_bq_sql(row, project_id, req)
-    scan_bytes = _bq_dry_run_bytes(project_id, bq_sql)
+    scan_bytes = _bq_dry_run_bytes(billing_project or project_id, bq_sql)
 
     cost_per_tb = float(get_value("api", "scan", "bq_cost_per_tb_usd", default=5.0) or 5.0)
     cost = (scan_bytes / 1_099_511_627_776) * cost_per_tb  # 1 TiB = 2^40
@@ -137,8 +137,9 @@ async def scan_estimate_endpoint(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     project_id = get_value("data_source", "bigquery", "project", default="") or ""
+    billing_project = get_value("data_source", "bigquery", "billing_project", default="") or project_id
     try:
-        return estimate(conn, user, raw, project_id=project_id)
+        return estimate(conn, user, raw, project_id=project_id, billing_project=billing_project)
     except WhereValidationError as e:
         raise HTTPException(status_code=400, detail={"error": "validator_rejected", "kind": e.kind, "details": e.detail or {}})
     except PermissionError:
@@ -198,6 +199,7 @@ def run_scan(
     *,
     project_id: str,
     quota: QuotaTracker,
+    billing_project: str | None = None,
 ) -> bytes:
     """Validate → quota → execute → serialize. Returns Arrow IPC bytes.
 
@@ -247,7 +249,7 @@ def run_scan(
                 local.close()
         else:
             bq_sql = _build_bq_sql(row, project_id, req)
-            table = _run_bq_scan(project_id, bq_sql)
+            table = _run_bq_scan(billing_project or project_id, bq_sql)
 
         ipc = arrow_table_to_ipc_bytes(table)
 
@@ -273,9 +275,10 @@ async def scan_endpoint(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     project_id = get_value("data_source", "bigquery", "project", default="") or ""
+    billing_project = get_value("data_source", "bigquery", "billing_project", default="") or project_id
     quota = _build_quota_tracker()
     try:
-        ipc = run_scan(conn, user, raw, project_id=project_id, quota=quota)
+        ipc = run_scan(conn, user, raw, project_id=project_id, quota=quota, billing_project=billing_project)
         return Response(content=ipc, media_type=CONTENT_TYPE)
     except WhereValidationError as e:
         raise HTTPException(
