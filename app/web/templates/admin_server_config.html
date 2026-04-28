@@ -1,0 +1,434 @@
+{% extends "base.html" %}
+{% block title %}Server config — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block content %}
+{# Server configuration editor — instance.yaml fields grouped by section.
+
+   Page-shell only: GET /api/admin/server-config feeds the form (with
+   secrets redacted), POST /api/admin/server-config saves a section. The
+   "danger-zone" sections (auth, server) get a confirmation dialog before
+   the request is sent. Saves trigger the restart banner — hot-reload is
+   out of scope for #91. #}
+<style>
+  .container:has(.cfg-page) { max-width: none; padding: 24px 16px; }
+  .cfg-page { max-width: 1100px; margin: 0 auto; padding: 0; }
+  .cfg-toolbar {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 16px; margin-bottom: 16px; flex-wrap: wrap;
+  }
+  .cfg-title { margin: 0; font-size: 22px; font-weight: 600; }
+  .cfg-subtitle { color: var(--text-secondary, #6b7280); font-size: 13px; margin-top: 4px; }
+
+  .cfg-banner {
+    padding: 12px 16px; border-radius: 8px;
+    background: #fffbeb; border: 1px solid #fcd34d; color: #92400e;
+    font-size: 13px; margin-bottom: 16px; display: none;
+  }
+  .cfg-banner.is-visible { display: block; }
+  .cfg-banner.success { background: #ecfdf5; border-color: #34d399; color: #065f46; }
+  .cfg-banner.error { background: #fef2f2; border-color: #fca5a5; color: #991b1b; }
+
+  .cfg-section {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+    margin-bottom: 16px;
+    overflow: hidden;
+  }
+  .cfg-section.is-danger { border-color: #fca5a5; }
+  .cfg-section header {
+    padding: 14px 18px;
+    background: var(--border-light, #f9fafb);
+    border-bottom: 1px solid var(--border, #e5e7eb);
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px;
+  }
+  .cfg-section.is-danger header { background: #fef2f2; }
+  .cfg-section h3 {
+    margin: 0; font-size: 15px; font-weight: 600;
+  }
+  .cfg-section h3 .danger-pill {
+    display: inline-block; margin-left: 10px;
+    padding: 2px 8px; border-radius: 999px;
+    background: #b91c1c; color: #fff;
+    font-size: 10px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.6px; vertical-align: 2px;
+  }
+  .cfg-section .section-help {
+    font-size: 12px; color: var(--text-secondary, #6b7280); margin-top: 4px;
+  }
+  .cfg-section .section-body { padding: 18px; }
+  .cfg-section .section-actions {
+    padding: 12px 18px;
+    background: var(--border-light, #fafafa);
+    border-top: 1px solid var(--border, #e5e7eb);
+    display: flex; justify-content: flex-end; gap: 8px;
+  }
+
+  .cfg-field { display: grid; grid-template-columns: 220px 1fr; gap: 12px; align-items: start; margin-bottom: 14px; }
+  .cfg-field:last-child { margin-bottom: 0; }
+  .cfg-field label { font-size: 13px; color: var(--text-primary, #111827); font-weight: 500; padding-top: 8px; }
+  .cfg-field .field-help { font-size: 11px; color: var(--text-secondary, #6b7280); margin-top: 4px; }
+  .cfg-field input[type="text"],
+  .cfg-field input[type="password"],
+  .cfg-field input[type="email"],
+  .cfg-field input[type="number"],
+  .cfg-field input[type="url"],
+  .cfg-field select,
+  .cfg-field textarea {
+    width: 100%; padding: 8px 12px;
+    border: 1px solid var(--border, #e5e7eb); border-radius: 8px;
+    font-size: 13px; box-sizing: border-box;
+    background: var(--surface, #fff); color: var(--text-primary, #111827);
+    font-family: inherit;
+  }
+  .cfg-field textarea { resize: vertical; min-height: 80px; font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace); font-size: 12px; }
+  .cfg-field input:focus, .cfg-field select:focus, .cfg-field textarea:focus {
+    outline: 2px solid var(--primary, #6366f1); outline-offset: -1px;
+  }
+  .cfg-field input.is-secret { font-family: var(--font-mono, ui-monospace, monospace); }
+  .cfg-field .secret-pill {
+    display: inline-block; margin-left: 8px;
+    padding: 1px 6px; border-radius: 4px;
+    background: #f3f4f6; color: #6b7280;
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
+  }
+
+  .cfg-btn {
+    padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 500;
+    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
+    cursor: pointer; transition: all 0.15s;
+  }
+  .cfg-btn:hover { background: var(--border-light, #f9fafb); }
+  .cfg-btn.primary { background: var(--primary, #6366f1); color: #fff; border-color: var(--primary, #6366f1); }
+  .cfg-btn.primary:hover { filter: brightness(1.05); }
+  .cfg-btn.danger { background: #dc2626; color: #fff; border-color: #dc2626; }
+  .cfg-btn.danger:hover { filter: brightness(1.05); }
+  .cfg-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .cfg-loading { padding: 32px 16px; text-align: center; color: var(--text-secondary, #6b7280); font-size: 13px; }
+
+  /* Confirmation modal — danger-zone gate */
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55);
+    display: none; align-items: center; justify-content: center; z-index: 1000;
+    padding: 16px;
+  }
+  .modal-backdrop.is-open { display: flex; }
+  .modal-card {
+    background: var(--surface, #fff); border-radius: 12px;
+    padding: 24px; width: 100%; max-width: 520px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+  }
+  .modal-card h3 { margin: 0 0 6px; font-size: 17px; font-weight: 600; }
+  .modal-card p.sub { margin: 0 0 12px; font-size: 13px; color: var(--text-secondary, #6b7280); }
+  .modal-card .diff-list {
+    background: var(--border-light, #f9fafb); border-radius: 8px;
+    padding: 10px 14px; font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 12px; max-height: 240px; overflow: auto; margin: 12px 0;
+  }
+  .modal-card .diff-row { padding: 4px 0; border-bottom: 1px dashed var(--border, #e5e7eb); }
+  .modal-card .diff-row:last-child { border-bottom: none; }
+  .modal-card .diff-row .path { color: #b91c1c; font-weight: 600; }
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
+</style>
+
+<div class="cfg-page" data-page="server-config">
+  <div class="cfg-toolbar">
+    <div>
+      <h2 class="cfg-title">Server configuration</h2>
+      <div class="cfg-subtitle">Edits land in <code>instance.yaml</code>. Save triggers an app restart (~10s downtime). Secret values are masked here — re-enter them to change.</div>
+    </div>
+  </div>
+
+  <div id="cfg-banner" class="cfg-banner" role="status" aria-live="polite"></div>
+
+  <div id="cfg-loading" class="cfg-loading">Loading current configuration…</div>
+  <div id="cfg-sections" hidden></div>
+</div>
+
+<!-- Danger-zone confirmation modal -->
+<div class="modal-backdrop" id="danger-modal" role="dialog" aria-modal="true" aria-labelledby="danger-title">
+  <div class="modal-card">
+    <h3 id="danger-title">Confirm danger-zone change</h3>
+    <p class="sub" id="danger-sub"></p>
+    <div class="diff-list" id="danger-diff"></div>
+    <p class="sub"><strong>Save anyway?</strong> An app restart is required for the change to take effect.</p>
+    <div class="modal-actions">
+      <button class="cfg-btn" data-close-modal="danger-modal">Cancel</button>
+      <button class="cfg-btn danger" id="danger-confirm-btn">Yes, save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const CFG_API = "/api/admin/server-config";
+
+// Secret-key heuristic — must match the server's _is_secret_key() patterns
+// so the UI redacts the same fields the API would mask. Re-defined here
+// instead of fetched so a render with the pre-loaded redacted payload
+// still labels every secret field correctly even before the GET resolves.
+const SECRET_PATTERNS = ["secret", "token", "password", "api_key"];
+function isSecretKey(key) {
+  const k = (key || "").toLowerCase();
+  return SECRET_PATTERNS.some(p => k.includes(p));
+}
+
+// Section copy — kept short; the issue's Scope section explains the rest.
+const SECTION_META = {
+  instance: { title: "Instance", help: "Branding shown in the header and emails." },
+  data_source: { title: "Data source", help: "Switch source type or update connection details." },
+  email: { title: "Email (SMTP)", help: "SMTP relay for magic-link login. Leave blank to disable." },
+  telegram: { title: "Telegram", help: "Bot credentials for notifications." },
+  jira: { title: "Jira", help: "Jira webhook + REST credentials." },
+  theme: { title: "Theme", help: "Brand colors and typography." },
+  server: { title: "Server", help: "Hostname and host. Changing these can break OAuth callbacks." },
+  auth: { title: "Authentication", help: "Allowed sign-in domain and Google OAuth keys. Misconfiguration can lock everyone out." },
+};
+const DANGER_SECTIONS = new Set(["auth", "server"]);
+
+// ── Banner ─────────────────────────────────────────────────────────────
+function showBanner(msg, kind) {
+  const el = document.getElementById("cfg-banner");
+  el.textContent = msg;
+  el.className = "cfg-banner is-visible" + (kind ? " " + kind : "");
+}
+function hideBanner() {
+  document.getElementById("cfg-banner").className = "cfg-banner";
+}
+
+// ── Modal helpers ─────────────────────────────────────────────────────
+function openModal(id) { document.getElementById(id).classList.add("is-open"); }
+function closeModal(id) { document.getElementById(id).classList.remove("is-open"); }
+document.querySelectorAll("[data-close-modal]").forEach(el =>
+  el.addEventListener("click", () => closeModal(el.dataset.closeModal)));
+document.querySelectorAll(".modal-backdrop").forEach(el => {
+  el.addEventListener("click", e => { if (e.target === el) el.classList.remove("is-open"); });
+});
+
+// ── State ─────────────────────────────────────────────────────────────
+// `original` keeps the redacted payload from GET — used for the diff
+// preview in the danger-zone confirmation. Don't mutate it after load.
+let original = {};
+
+// ── Render ────────────────────────────────────────────────────────────
+function escHtml(s) {
+  const d = document.createElement("div");
+  d.textContent = s == null ? "" : String(s);
+  return d.innerHTML;
+}
+
+function renderField(section, key, value) {
+  const fieldId = `f_${section}_${key.replace(/\W/g, "_")}`;
+  const isSecret = isSecretKey(key);
+  // Determine input type — secrets render as password, ports as number,
+  // long strings (>120 chars) as textarea, the rest as text.
+  let input;
+  if (isSecret) {
+    input = `<input id="${fieldId}" type="password" class="is-secret" data-section="${section}" data-key="${escHtml(key)}" placeholder="${value === '<empty>' ? 'unset — type to set' : '*** — type to overwrite'}" autocomplete="off">`;
+  } else if (typeof value === "number") {
+    input = `<input id="${fieldId}" type="number" data-section="${section}" data-key="${escHtml(key)}" value="${escHtml(value)}">`;
+  } else if (typeof value === "boolean") {
+    input = `<select id="${fieldId}" data-section="${section}" data-key="${escHtml(key)}" data-cast="bool">
+      <option value="true" ${value ? "selected" : ""}>true</option>
+      <option value="false" ${!value ? "selected" : ""}>false</option>
+    </select>`;
+  } else if (value && typeof value === "object") {
+    // Nested object (e.g. data_source.keboola.{...}) — render the JSON
+    // for now and let the operator edit it as a blob. Keeps the UI simple
+    // while still allowing every field to be reachable.
+    input = `<textarea id="${fieldId}" data-section="${section}" data-key="${escHtml(key)}" data-cast="json">${escHtml(JSON.stringify(value, null, 2))}</textarea>`;
+  } else {
+    const v = value == null ? "" : value;
+    input = `<input id="${fieldId}" type="text" data-section="${section}" data-key="${escHtml(key)}" value="${escHtml(v)}">`;
+  }
+  const secretPill = isSecret ? '<span class="secret-pill">secret</span>' : "";
+  return `
+    <div class="cfg-field">
+      <label for="${fieldId}">${escHtml(key)}${secretPill}</label>
+      <div>${input}</div>
+    </div>`;
+}
+
+function renderSection(section, payload) {
+  const meta = SECTION_META[section] || { title: section, help: "" };
+  const isDanger = DANGER_SECTIONS.has(section);
+  const danger = isDanger ? '<span class="danger-pill">danger</span>' : "";
+  const keys = Object.keys(payload || {}).sort();
+  const fieldsHtml = keys.length
+    ? keys.map(k => renderField(section, k, payload[k])).join("")
+    : `<div class="section-help">No fields populated yet — type below to add common keys, or edit the YAML directly via the API.</div>`;
+  // For empty sections, give the operator a textarea so they can paste a
+  // YAML/JSON blob to bootstrap the section. We persist it via the JSON
+  // cast so non-trivial structures still merge correctly.
+  const bootstrap = keys.length === 0
+    ? `<div class="cfg-field">
+        <label for="bootstrap_${section}">JSON patch</label>
+        <div>
+          <textarea id="bootstrap_${section}" data-section="${section}" data-key="__bootstrap__" data-cast="json" placeholder='{"name": "Acme Analyst", ...}'></textarea>
+          <div class="field-help">Paste a JSON object to populate this section.</div>
+        </div>
+      </div>`
+    : "";
+  return `
+    <section class="cfg-section ${isDanger ? "is-danger" : ""}" data-section="${section}">
+      <header>
+        <div>
+          <h3>${escHtml(meta.title)}${danger}</h3>
+          <div class="section-help">${escHtml(meta.help)}</div>
+        </div>
+      </header>
+      <div class="section-body">
+        ${fieldsHtml}
+        ${bootstrap}
+      </div>
+      <div class="section-actions">
+        <button class="cfg-btn primary" data-action="save-section" data-section="${section}">Save ${escHtml(meta.title.toLowerCase())}</button>
+      </div>
+    </section>`;
+}
+
+function renderAll(data) {
+  const wrap = document.getElementById("cfg-sections");
+  const sections = data.editable_sections || Object.keys(data.sections || {});
+  wrap.innerHTML = sections.map(s => renderSection(s, data.sections[s] || {})).join("");
+  document.getElementById("cfg-loading").style.display = "none";
+  wrap.hidden = false;
+
+  wrap.querySelectorAll('[data-action="save-section"]').forEach(btn =>
+    btn.addEventListener("click", () => onSaveSection(btn.dataset.section)));
+}
+
+// ── Collect form values for one section ───────────────────────────────
+function collectSection(section) {
+  const inputs = document.querySelectorAll(`[data-section="${section}"]`);
+  const patch = {};
+  for (const el of inputs) {
+    if (el.dataset.action) continue; // skip buttons
+    const key = el.dataset.key;
+    if (!key) continue;
+    let raw = el.value;
+    // Skip empty secret fields — operator left them blank to preserve the
+    // existing value. Sending "" would overwrite the secret with empty.
+    if (el.classList.contains("is-secret") && raw === "") continue;
+
+    let value;
+    if (key === "__bootstrap__") {
+      // Bootstrap textarea — parse the entire blob and merge it as the
+      // section patch. Skip empty input entirely.
+      if (!raw.trim()) continue;
+      try { Object.assign(patch, JSON.parse(raw)); }
+      catch (e) { throw new Error(`Bootstrap JSON for "${section}" is not valid JSON: ${e.message}`); }
+      continue;
+    }
+    if (el.dataset.cast === "bool") {
+      value = raw === "true";
+    } else if (el.dataset.cast === "json") {
+      if (!raw.trim()) { value = null; }
+      else { try { value = JSON.parse(raw); } catch (e) { throw new Error(`Field ${section}.${key} is not valid JSON: ${e.message}`); } }
+    } else if (el.type === "number") {
+      value = raw === "" ? null : Number(raw);
+    } else {
+      value = raw;
+    }
+    patch[key] = value;
+  }
+  return patch;
+}
+
+// ── Save flow ─────────────────────────────────────────────────────────
+async function onSaveSection(section) {
+  hideBanner();
+  let patch;
+  try { patch = collectSection(section); }
+  catch (e) { showBanner(e.message, "error"); return; }
+
+  if (Object.keys(patch).length === 0) {
+    showBanner(`No changes to save in "${section}".`);
+    return;
+  }
+
+  const isDanger = DANGER_SECTIONS.has(section);
+  if (isDanger) {
+    const confirmed = await confirmDanger(section, patch);
+    if (!confirmed) return;
+  }
+
+  await postPatch(section, patch, isDanger);
+}
+
+function diffPreview(section, patch) {
+  // Compare patch fields against the redacted original snapshot. Shows the
+  // operator exactly which keys they're about to change before they
+  // confirm a danger-zone save.
+  const before = (original.sections && original.sections[section]) || {};
+  const rows = [];
+  for (const [k, v] of Object.entries(patch)) {
+    const b = before[k];
+    if (JSON.stringify(b) !== JSON.stringify(v)) {
+      rows.push({ path: `${section}.${k}`, before: b, after: v });
+    }
+  }
+  return rows;
+}
+
+function confirmDanger(section, patch) {
+  return new Promise(resolve => {
+    const rows = diffPreview(section, patch);
+    const sub = `You're about to change the <strong>${escHtml(section)}</strong> section. ` +
+      `This is flagged as danger-zone — a typo here can lock you out or break OAuth callbacks.`;
+    document.getElementById("danger-sub").innerHTML = sub;
+    document.getElementById("danger-diff").innerHTML = rows.length
+      ? rows.map(r => `<div class="diff-row"><span class="path">${escHtml(r.path)}</span> &mdash; ${escHtml(JSON.stringify(r.before))} &rarr; <strong>${escHtml(JSON.stringify(r.after))}</strong></div>`).join("")
+      : `<em>No visible diff (secret fields are masked in this preview).</em>`;
+    const btn = document.getElementById("danger-confirm-btn");
+    const onOk = () => { closeModal("danger-modal"); cleanup(); resolve(true); };
+    const onCancel = () => { cleanup(); resolve(false); };
+    function cleanup() {
+      btn.removeEventListener("click", onOk);
+      document.querySelectorAll('#danger-modal [data-close-modal]').forEach(b => b.removeEventListener("click", onCancel));
+    }
+    btn.addEventListener("click", onOk, { once: true });
+    document.querySelectorAll('#danger-modal [data-close-modal]').forEach(b => b.addEventListener("click", onCancel, { once: true }));
+    openModal("danger-modal");
+  });
+}
+
+async function postPatch(section, patch, confirmDanger) {
+  try {
+    const r = await fetch(CFG_API, {
+      method: "POST", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sections: { [section]: patch }, confirm_danger: confirmDanger }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      showBanner(`Save failed: ${data.detail || r.statusText}`, "error");
+      return;
+    }
+    showBanner(
+      `Saved "${section}" (${data.diff_count} field(s) changed). Restart the app for the change to take effect.`,
+      "success",
+    );
+    // Re-fetch so the form reflects the new (still-redacted) state.
+    await loadConfig();
+  } catch (e) {
+    showBanner(`Save failed: ${e.message}`, "error");
+  }
+}
+
+// ── Init ──────────────────────────────────────────────────────────────
+async function loadConfig() {
+  try {
+    const r = await fetch(CFG_API, { credentials: "include" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    original = await r.json();
+    renderAll(original);
+  } catch (e) {
+    document.getElementById("cfg-loading").textContent = "Failed to load config: " + e.message;
+  }
+}
+
+loadConfig();
+</script>
+{% endblock %}

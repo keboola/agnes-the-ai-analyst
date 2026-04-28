@@ -15,6 +15,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+- **Admin UI: server configuration editor** at `/admin/server-config`
+  (issue #91). Admin-only page for editing the live `instance.yaml`
+  without shell access — sections covered: `instance.*`, `data_source.*`,
+  `email.*`, `telegram.*`, `jira.*`, `theme.*`, plus the danger-zone
+  `auth.*` and `server.*` (require an explicit confirmation dialog
+  before save). Saves go through new endpoints `GET /api/admin/server-config`
+  (returns the current file with secret-looking fields redacted) and
+  `POST /api/admin/server-config` (deep-merges a section patch into
+  `DATA_DIR/state/instance.yaml`, the same writable overlay
+  `/api/admin/configure` already uses). Each save writes one
+  `audit_log` entry tagged `instance_config.update` with a sanitized
+  diff — secret fields (any key matching `secret`, `token`, `password`,
+  `api_key`) are masked to `***` before the diff lands in the audit row.
+  Response carries `restart_required: true`; the UI shows a banner
+  reminding the operator to bounce the app for the change to take
+  effect (hot-reload is intentionally deferred).
 - **Schema v10** introduces `view_ownership` to detect cross-connector
   view-name collisions in the master analytics DB (issue #81 Group C).
   When two connectors register the same `_meta.table_name`, the
