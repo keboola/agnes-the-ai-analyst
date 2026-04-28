@@ -10,9 +10,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-04-29
+
 ### Added
 
 - **Windows/PowerShell wrapper for local dev.** New `scripts/run-local-dev.ps1` mirrors `scripts/run-local-dev.sh` for operators on Windows where GNU Make / bash aren't available — same compose stack (`docker-compose.yml` + `docker-compose.dev.yml` + `docker-compose.local-dev.yml`), same `LOCAL_DEV_GROUPS` default seeding, same `up` / `down` / `logs` actions. Run `.\scripts\run-local-dev.ps1` for the fast path (reuses existing image) or `.\scripts\run-local-dev.ps1 -Build` to force `--build` after `pyproject.toml` / `Dockerfile` changes. Verified on Docker Desktop for Windows. See `docs/local-development.md`.
+- **Admin server configuration editor** at `/admin/server-config` — admins can now view and edit `instance.yaml` from the web UI without SSHing into the host. Two new endpoints (`GET /api/admin/server-config` returns the current config with secret-looking values masked; `POST /api/admin/server-config` deep-merges a section patch into `DATA_DIR/state/instance.yaml`). The page lists the editable sections (`instance`, `data_source`, `email`, `telegram`, `jira`, `theme`, `server`, `auth`) and renders a per-field form. Saves touching `auth.*` or `server.*` ("danger zone" — can lock operators out) require an explicit confirmation step. Every save writes an `instance_config.update` row to `audit_log` with a per-field diff (secret values masked as `***`, field paths preserved so a rotation is recorded as `email.smtp_password: *** → ***`). Issue #91.
+
+### Fixed
+
+- `app/instance_config.py:load_instance_config` now deep-merges the static `CONFIG_DIR/instance.yaml` with the writable overlay at `DATA_DIR/state/instance.yaml` instead of returning the overlay verbatim when present. Pre-fix, the first save through the new server-config editor (which writes only the section the operator actually touched) caused every consumer of static-only sections (corporate memory, dataset list, OpenMetadata client) to fall through to empty defaults until the overlay was deleted. Issue #91.
+- `POST /api/admin/configure` now uses the same narrow-overlay write strategy as the new server-config editor: it reads the overlay verbatim (no static fallback), patches only `instance` / `auth` / `data_source`, and writes atomically via tmp + `os.replace`. Pre-fix it seeded `existing` from the env-resolved merged config when no overlay file was present and dumped the whole thing back, persisting cleartext `${ENV_VAR}` values (e.g. `smtp_password`) into the writable overlay even though the wizard never touched those sections. Issue #91.
+- `POST /api/admin/server-config` now strips redaction sentinels (`***` / `<empty>`) out of every secret-keyed leaf in the incoming patch before the deep-merge. The companion GET endpoint masks secret-keyed children inside nested objects (e.g. `data_source.keboola.token_env`), and the form renders those nested objects as JSON textareas — without the scrub, a no-op save would round-trip the masked JSON back and overwrite the real overlay value (`token_env: "KEBOOLA_STORAGE_TOKEN"` → `"***"`), silently breaking the next sync. Defense-in-depth on both sides: the client form scrubs before posting, and the server scrubs before merge so an API caller (CLI / script) can't corrupt secrets either. Issue #91.
 
 ## [0.12.1] — 2026-04-28
 
