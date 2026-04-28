@@ -105,6 +105,14 @@ Patch release. Hotfixes the pre-migration snapshot-integrity bug shipped in [v0.
   with a unique `CONSUMED:` marker prevents two concurrent verifies from
   both succeeding. DuckDB concurrent-write conflicts are caught and
   converted to 401. See issue #82/M10.
+- Password reset confirm (`POST /auth/password/reset/confirm`) now uses
+  the same compare-and-swap pattern as the magic-link flow — closes the
+  remaining asymmetry on `users.reset_token` consumption. Lower severity
+  than the magic-link race because the reset flow ends with a new
+  password (an attacker would need the reset token *and* to race the
+  legitimate user) but the consistency closes a polish gap. New
+  regression `test_concurrent_reset_only_one_wins` in
+  `tests/test_password_flows.py::TestResetConfirm`.
 - Upload endpoints (`/sessions`, `/artifacts`) now stream to a temp file with
   cumulative size check instead of buffering the entire body in memory before
   the size cap — prevents OOM from oversized uploads. Temp file handle is
