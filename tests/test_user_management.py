@@ -94,14 +94,21 @@ def test_repository_update_accepts_active(fresh_db):
 
 
 def test_repository_count_admins(fresh_db):
+    """v12: count_admins counts users in the Admin system group, not users.role."""
     import uuid
-    from src.db import get_system_db, close_system_db
+    from src.db import SYSTEM_ADMIN_GROUP, get_system_db, close_system_db
+    from src.repositories.user_group_members import UserGroupMembersRepository
     from src.repositories.users import UserRepository
     conn = get_system_db()
     try:
         repo = UserRepository(conn)
         assert repo.count_admins() == 0
-        repo.create(id=str(uuid.uuid4()), email="a@b.c", name="A", role="admin")
+        admin_gid = conn.execute(
+            "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
+        ).fetchone()[0]
+        admin_id = str(uuid.uuid4())
+        repo.create(id=admin_id, email="a@b.c", name="A", role="admin")
+        UserGroupMembersRepository(conn).add_member(admin_id, admin_gid, source="system_seed")
         repo.create(id=str(uuid.uuid4()), email="b@b.c", name="B", role="analyst")
         assert repo.count_admins() == 1
     finally:
@@ -121,15 +128,20 @@ def app_client(fresh_db, monkeypatch):
 
 
 def _seed_admin(fresh_db):
-    """Create an admin user and return (id, bearer_token)."""
+    """Create an admin user (in Admin user_group) and return (id, bearer_token)."""
     import uuid
-    from src.db import get_system_db
+    from src.db import SYSTEM_ADMIN_GROUP, get_system_db
+    from src.repositories.user_group_members import UserGroupMembersRepository
     from src.repositories.users import UserRepository
     from app.auth.jwt import create_access_token
     conn = get_system_db()
     try:
         uid = str(uuid.uuid4())
         UserRepository(conn).create(id=uid, email="admin@test", name="Admin", role="admin")
+        admin_gid = conn.execute(
+            "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
+        ).fetchone()[0]
+        UserGroupMembersRepository(conn).add_member(uid, admin_gid, source="system_seed")
         token = create_access_token(user_id=uid, email="admin@test", role="admin")
         return uid, token
     finally:
@@ -155,7 +167,9 @@ def test_patch_user_updates_role(app_client, fresh_db):
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert data["role"] == "analyst"
+    # v12: role response is admin/user based on Admin group membership.
+    # Patching role="analyst" is a no-op for the admin group → still "user".
+    assert data["role"] == "user"
     assert data["name"] == "X2"
 
 

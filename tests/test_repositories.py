@@ -364,3 +364,106 @@ class TestProfileRepository:
         repo.save("t2", {"row_count": 200})
         all_profiles = repo.get_all()
         assert len(all_profiles) == 2
+
+
+# ---- UserGroups (with system-group protection) ----
+
+class TestUserGroupsRepository:
+    def test_create_non_system_by_default(self, db_conn):
+        from src.repositories.user_groups import UserGroupsRepository
+        repo = UserGroupsRepository(db_conn)
+        row = repo.create(name="Analysts", description="data folks")
+        assert row["is_system"] is False
+
+    def test_create_system_flag(self, db_conn):
+        from src.repositories.user_groups import UserGroupsRepository
+        repo = UserGroupsRepository(db_conn)
+        row = repo.create(name="SysGroup", description="seeded", is_system=True)
+        assert row["is_system"] is True
+
+    def test_update_system_group_blocked(self, db_conn):
+        from src.repositories.user_groups import (
+            UserGroupsRepository, SystemGroupProtected,
+        )
+        repo = UserGroupsRepository(db_conn)
+        row = repo.create(name="Admin2", description="sys", is_system=True)
+        with pytest.raises(SystemGroupProtected):
+            repo.update(row["id"], name="Renamed")
+
+    def test_delete_system_group_blocked(self, db_conn):
+        from src.repositories.user_groups import (
+            UserGroupsRepository, SystemGroupProtected,
+        )
+        repo = UserGroupsRepository(db_conn)
+        row = repo.create(name="Everyone2", description="sys", is_system=True)
+        with pytest.raises(SystemGroupProtected):
+            repo.delete(row["id"])
+        assert repo.get(row["id"]) is not None
+
+    def test_update_delete_non_system_ok(self, db_conn):
+        from src.repositories.user_groups import UserGroupsRepository
+        repo = UserGroupsRepository(db_conn)
+        row = repo.create(name="Analysts2", description="normal")
+        repo.update(row["id"], description="updated")
+        assert repo.get(row["id"])["description"] == "updated"
+        repo.delete(row["id"])
+        assert repo.get(row["id"]) is None
+
+    def test_ensure_system_promotes_existing(self, db_conn):
+        from src.repositories.user_groups import UserGroupsRepository
+        repo = UserGroupsRepository(db_conn)
+        row = repo.create(name="LaterPromoted", description="manual")
+        assert row["is_system"] is False
+        promoted = repo.ensure_system("LaterPromoted", "now system")
+        assert promoted["id"] == row["id"]
+        assert promoted["is_system"] is True
+
+    def test_ensure_creates_missing(self, db_conn):
+        from src.repositories.user_groups import UserGroupsRepository
+        repo = UserGroupsRepository(db_conn)
+        created = repo.ensure("grp_from_claim@groupon.com")
+        assert created["name"] == "grp_from_claim@groupon.com"
+        assert created["is_system"] is False
+        assert created["created_by"] == "system:google-sync"
+        assert "Auto-created" in (created["description"] or "")
+
+    def test_ensure_returns_existing_unchanged(self, db_conn):
+        """A second ensure() must return the existing row verbatim.
+           Must not overwrite a description an admin may have edited."""
+        from src.repositories.user_groups import UserGroupsRepository
+        repo = UserGroupsRepository(db_conn)
+        first = repo.create(
+            name="grp_existing@groupon.com",
+            description="Edited by admin later",
+            created_by="admin:alice",
+        )
+        returned = repo.ensure("grp_existing@groupon.com", description="ignored")
+        assert returned["id"] == first["id"]
+        assert returned["description"] == "Edited by admin later"
+        assert returned["created_by"] == "admin:alice"
+
+    def test_ensure_preserves_is_system_flag(self, db_conn):
+        """System groups stay system even when fetched via ensure()."""
+        from src.repositories.user_groups import UserGroupsRepository
+        repo = UserGroupsRepository(db_conn)
+        sys_row = repo.create(name="Admin-x", description="seeded", is_system=True)
+        returned = repo.ensure("Admin-x")
+        assert returned["id"] == sys_row["id"]
+        assert returned["is_system"] is True
+
+
+class TestUserRepositoryEveryoneAutoMember:
+    """v12: UserRepository.create adds new users to the Everyone group."""
+
+    def test_create_adds_everyone_membership(self, db_conn):
+        from src.repositories.users import UserRepository
+        from src.repositories.user_group_members import UserGroupMembersRepository
+        repo = UserRepository(db_conn)
+        repo.create(id="u1", email="u1@test", name="U1")
+        groups = UserGroupMembersRepository(db_conn).list_groups_for_user("u1")
+        assert len(groups) >= 1
+        # Find the Everyone group ID
+        everyone = db_conn.execute(
+            "SELECT id FROM user_groups WHERE name='Everyone'"
+        ).fetchone()
+        assert everyone is not None and everyone[0] in groups

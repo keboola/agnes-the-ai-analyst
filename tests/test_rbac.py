@@ -1,84 +1,69 @@
-"""Tests for src/rbac.py — role-based access control."""
+"""Tests for src/rbac.py — dataset access checks (v12).
 
-import os
+The v9 hierarchy/role helpers (`Role`, `has_role`, `is_admin`, etc.) are
+gone; admin authorization is now ``app.auth.access.is_user_admin``. What
+remains in ``src.rbac`` is dataset-level table access.
+"""
+
+from __future__ import annotations
+
 import pytest
 
 
 @pytest.fixture
 def setup_db(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    from src.db import get_system_db
+    from src.db import SYSTEM_ADMIN_GROUP, get_system_db
+    from src.repositories.user_group_members import UserGroupMembersRepository
     from src.repositories.users import UserRepository
 
     conn = get_system_db()
     repo = UserRepository(conn)
-    repo.create(id="admin1", email="admin@test.com", name="Admin", role="admin")
-    repo.create(id="analyst1", email="analyst@test.com", name="Analyst", role="analyst")
-    repo.create(id="km1", email="km@test.com", name="KM Admin", role="km_admin")
-    repo.create(id="viewer1", email="viewer@test.com", name="Viewer", role="viewer")
+    repo.create(id="admin1", email="admin@test.com", name="Admin")
+    repo.create(id="user1", email="user@test.com", name="User")
+
+    admin_gid = conn.execute(
+        "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
+    ).fetchone()[0]
+    UserGroupMembersRepository(conn).add_member("admin1", admin_gid, source="system_seed")
+
     conn.close()
     yield
 
 
-class TestGetUserRole:
-    def test_admin(self, setup_db):
-        from src.rbac import get_user_role, Role
-        assert get_user_role("admin@test.com") == Role.ADMIN
+class TestIsUserAdmin:
+    def test_admin_membership_makes_user_admin(self, setup_db):
+        from src.rbac import _is_admin_user_dict
+        from src.repositories.users import UserRepository
+        from src.db import get_system_db
+        conn = get_system_db()
+        try:
+            admin = UserRepository(conn).get_by_email("admin@test.com")
+            assert _is_admin_user_dict(admin, conn=conn) is True
+        finally:
+            conn.close()
 
-    def test_analyst(self, setup_db):
-        from src.rbac import get_user_role, Role
-        assert get_user_role("analyst@test.com") == Role.ANALYST
-
-    def test_unknown_user(self, setup_db):
-        from src.rbac import get_user_role, Role
-        assert get_user_role("nobody@test.com") == Role.VIEWER
-
-
-class TestHasRole:
-    def test_admin_has_all_roles(self, setup_db):
-        from src.rbac import has_role, Role
-        assert has_role("admin@test.com", Role.VIEWER)
-        assert has_role("admin@test.com", Role.ANALYST)
-        assert has_role("admin@test.com", Role.KM_ADMIN)
-        assert has_role("admin@test.com", Role.ADMIN)
-
-    def test_analyst_cant_admin(self, setup_db):
-        from src.rbac import has_role, Role
-        assert has_role("analyst@test.com", Role.ANALYST)
-        assert not has_role("analyst@test.com", Role.ADMIN)
-
-    def test_viewer_is_minimal(self, setup_db):
-        from src.rbac import has_role, Role
-        assert has_role("viewer@test.com", Role.VIEWER)
-        assert not has_role("viewer@test.com", Role.ANALYST)
+    def test_non_admin_user(self, setup_db):
+        from src.rbac import _is_admin_user_dict
+        from src.repositories.users import UserRepository
+        from src.db import get_system_db
+        conn = get_system_db()
+        try:
+            user = UserRepository(conn).get_by_email("user@test.com")
+            assert _is_admin_user_dict(user, conn=conn) is False
+        finally:
+            conn.close()
 
 
-class TestConvenienceFunctions:
-    def test_is_admin(self, setup_db):
-        from src.rbac import is_admin
-        assert is_admin("admin@test.com")
-        assert not is_admin("analyst@test.com")
+class TestHasDatasetAccess:
+    def test_admin_has_all_datasets(self, setup_db):
+        from src.rbac import has_dataset_access
+        assert has_dataset_access("admin@test.com", "any-dataset")
 
-    def test_is_km_admin(self, setup_db):
-        from src.rbac import is_km_admin
-        assert is_km_admin("km@test.com")
-        assert is_km_admin("admin@test.com")  # admin >= km_admin
-        assert not is_km_admin("analyst@test.com")
+    def test_unknown_user_has_no_access(self, setup_db):
+        from src.rbac import has_dataset_access
+        assert not has_dataset_access("nobody@test.com", "any-dataset")
 
-    def test_is_analyst(self, setup_db):
-        from src.rbac import is_analyst
-        assert is_analyst("analyst@test.com")
-        assert is_analyst("admin@test.com")
-        assert not is_analyst("viewer@test.com")
-
-
-class TestSetUserRole:
-    def test_set_role(self, setup_db):
-        from src.rbac import set_user_role, get_user_role, Role
-        assert get_user_role("viewer@test.com") == Role.VIEWER
-        assert set_user_role("viewer@test.com", Role.ADMIN)
-        assert get_user_role("viewer@test.com") == Role.ADMIN
-
-    def test_set_role_nonexistent(self, setup_db):
-        from src.rbac import set_user_role, Role
-        assert not set_user_role("nobody@test.com", Role.ADMIN)
+    def test_user_without_explicit_grant_has_no_access(self, setup_db):
+        from src.rbac import has_dataset_access
+        assert not has_dataset_access("user@test.com", "private-data")

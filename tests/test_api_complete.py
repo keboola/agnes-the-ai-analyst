@@ -17,11 +17,20 @@ def client(tmp_path, monkeypatch):
     from src.repositories.knowledge import KnowledgeRepository
     from app.auth.jwt import create_access_token
 
+    from tests.helpers.auth import grant_admin
+
     conn = get_system_db()
     ur = UserRepository(conn)
     ur.create(id="admin1", email="admin@test.com", name="Admin", role="admin")
     ur.create(id="analyst1", email="analyst@test.com", name="Analyst", role="analyst")
     ur.create(id="km1", email="km@test.com", name="KM Admin", role="km_admin")
+    # v12: memory governance endpoints (/api/memory/admin/...) are gated by
+    # require_admin — km_admin role is no longer a thing. Putting km1 in the
+    # Admin group keeps the existing TestGovernance fixture pattern working
+    # (the role/group distinction is irrelevant for these tests; they only
+    # exercise the admin path of the governance flow).
+    grant_admin(conn, "admin1")
+    grant_admin(conn, "km1")
 
     DatasetPermissionRepository(conn).grant("analyst1", "sales", "read")
 

@@ -1,0 +1,390 @@
+{% extends "base.html" %}
+{% block title %}{{ target_group.name }} — Group detail — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block content %}
+<style>
+  .container:has(.gd-page) { max-width: none; padding: 24px 16px; }
+  .gd-page { max-width: 1100px; margin: 0 auto; padding: 0; }
+
+  .gd-header {
+    display: flex; align-items: center; gap: 16px;
+    margin-bottom: 24px;
+  }
+  .gd-back {
+    display: inline-flex; align-items: center; gap: 6px;
+    text-decoration: none; color: var(--text-secondary, #6b7280);
+    font-size: 13px;
+  }
+  .gd-back:hover { color: var(--text-primary, #111827); }
+  .gd-title-block { flex: 1; }
+  .gd-title { font-size: 22px; font-weight: 600; margin: 0; }
+  .gd-subtitle { font-size: 13px; color: var(--text-secondary, #6b7280); margin-top: 2px; }
+  .origin-chip {
+    display: inline-block; padding: 3px 10px; border-radius: 999px;
+    font-size: 10px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.4px;
+    vertical-align: middle; margin-left: 8px;
+  }
+  .origin-system     { background: #fef3c7; color: #92400e; }
+  .origin-admin      { background: #ede9fe; color: #6d28d9; }
+  .origin-google_sync { background: #dcfce7; color: #166534; }
+
+  .gd-section {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+    margin-bottom: 16px;
+    overflow: hidden;
+  }
+  .gd-section-head {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border, #e5e7eb);
+    background: var(--border-light, #f9fafb);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .gd-section-head h2 { margin: 0; font-size: 14px; font-weight: 600; }
+  .gd-section-head .sub { font-size: 11px; color: var(--text-secondary, #6b7280); }
+
+  /* Members table */
+  .members-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .members-table thead th {
+    text-align: left; padding: 10px 18px;
+    background: var(--border-light, #f9fafb);
+    border-bottom: 1px solid var(--border, #e5e7eb);
+    font-weight: 600; color: var(--text-secondary, #6b7280);
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .members-table tbody td {
+    padding: 10px 18px;
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+  }
+  .members-table tbody tr:last-child td { border-bottom: none; }
+  .members-table tbody tr:hover { background: var(--border-light, #fafafa); }
+  .source-meta {
+    font-size: 12px; color: var(--text-secondary, #9ca3af); font-weight: 400;
+  }
+  .source-meta .label { font-style: italic; }
+  .source-meta .added { color: #9ca3af; font-size: 11px; margin-left: 6px; }
+  .user-link { color: var(--text-primary, #111827); font-weight: 500; text-decoration: none; }
+  .user-link:hover { color: var(--primary, #4338ca); text-decoration: underline; }
+
+  .add-row {
+    padding: 12px 18px;
+    background: var(--border-light, #f9fafb);
+    border-top: 1px solid var(--border-light, #f3f4f6);
+    display: flex; gap: 8px; align-items: center;
+  }
+  .add-row input {
+    flex: 1; padding: 7px 10px;
+    border: 1px solid var(--border, #e5e7eb); border-radius: 6px;
+    font-size: 13px; background: var(--surface, #fff);
+  }
+  .add-row button {
+    padding: 7px 14px; border-radius: 6px; font-size: 12px; font-weight: 500;
+    background: var(--primary, #6366f1); color: #fff;
+    border: 1px solid var(--primary, #6366f1); cursor: pointer;
+  }
+  .add-row button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .icon-btn {
+    padding: 5px 10px; border-radius: 6px; font-size: 12px;
+    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
+    cursor: pointer; color: var(--text-primary, #111827);
+    text-decoration: none;
+  }
+  .icon-btn:hover { background: var(--border-light, #f9fafb); }
+  .icon-btn.danger { color: #b91c1c; border-color: #fecaca; }
+  .icon-btn.danger:hover { background: #fef2f2; }
+
+  .gd-loading, .gd-empty {
+    padding: 24px 18px; text-align: center;
+    color: var(--text-secondary, #6b7280); font-size: 13px;
+  }
+
+  /* Resources summary */
+  .res-summary {
+    padding: 16px 18px;
+    display: flex; align-items: center; gap: 14px;
+  }
+  .res-count {
+    font-size: 32px; font-weight: 600; color: var(--text-primary, #111827);
+    line-height: 1; min-width: 60px;
+  }
+  .res-text { flex: 1; font-size: 13px; color: var(--text-secondary, #6b7280); }
+  .res-link {
+    padding: 8px 14px; border-radius: 8px; font-size: 13px; font-weight: 500;
+    background: var(--primary, #6366f1); color: #fff !important;
+    border: 1px solid var(--primary, #6366f1); text-decoration: none;
+  }
+  .res-link:hover { filter: brightness(1.05); }
+
+  .toast-stack {
+    position: fixed; bottom: 24px; right: 24px; z-index: 2000;
+    display: flex; flex-direction: column; gap: 8px; pointer-events: none;
+  }
+  .toast {
+    background: #111827; color: #fff; padding: 10px 16px;
+    border-radius: 8px; font-size: 13px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+    opacity: 0; transform: translateY(8px); transition: opacity 0.2s, transform 0.2s;
+    pointer-events: auto; max-width: 380px;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast.success { background: #047857; }
+  .toast.error { background: #b91c1c; }
+</style>
+
+<div class="gd-page" data-group-id="{{ target_group.id }}" data-group-name="{{ target_group.name }}" data-is-system="{{ 'true' if target_group.is_system else 'false' }}">
+  <div class="gd-header">
+    <a href="/admin/groups" class="gd-back">← Back to groups</a>
+    <div class="gd-title-block">
+      <h1 class="gd-title">
+        {{ target_group.name }}
+        <span id="origin-chip" class="origin-chip" style="display:none;"></span>
+      </h1>
+      <div class="gd-subtitle" id="header-sub">
+        {{ target_group.description or "—" }}
+      </div>
+    </div>
+    {% if not target_group.is_system %}
+    <div style="display:flex; gap:6px;">
+      <button class="icon-btn" id="edit-group-btn">Edit</button>
+      <button class="icon-btn danger" id="delete-group-btn">Delete</button>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Members section -->
+  <section class="gd-section">
+    <div class="gd-section-head">
+      <h2>Members</h2>
+      <span class="sub" id="members-sub">Loading…</span>
+    </div>
+    <div id="members-loading" class="gd-loading">Loading members…</div>
+    <table class="members-table" id="members-table" style="display:none;">
+      <thead><tr>
+        <th>Email</th><th>Name</th><th>Origin</th>
+        <th style="text-align:right">Actions</th>
+      </tr></thead>
+      <tbody id="members-tbody"></tbody>
+    </table>
+    <div class="gd-empty" id="members-empty" style="display:none;">No members yet.</div>
+    <div class="add-row">
+      <input id="add-email" type="email" autocomplete="off" placeholder="Add user by email…">
+      <button id="add-btn" disabled>Add member</button>
+    </div>
+  </section>
+
+  <!-- Resource grants summary -->
+  <section class="gd-section">
+    <div class="gd-section-head">
+      <h2>Resource grants</h2>
+      <span class="sub">Manage on the dedicated page.</span>
+    </div>
+    <div class="res-summary">
+      <div class="res-count" id="res-count">—</div>
+      <div class="res-text" id="res-text">
+        Resources this group has been granted access to. Click through to
+        the matrix view to add or remove grants.
+      </div>
+      <a class="res-link" href="/admin/access?group={{ target_group.id }}">Manage access →</a>
+    </div>
+  </section>
+</div>
+
+<!-- Edit group modal -->
+<div class="modal-backdrop" id="edit-modal" role="dialog" aria-modal="true" style="position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55); display: none; align-items: center; justify-content: center; z-index: 1000; padding: 16px;">
+  <div style="background: #fff; border-radius: 12px; padding: 24px; width: 100%; max-width: 480px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);">
+    <h3 style="margin:0 0 12px;">Edit group</h3>
+    <label style="display:block; font-size:12px; color:#6b7280; margin: 12px 0 6px;">Name</label>
+    <input id="edit-name" type="text" style="width:100%; padding:9px 12px; border:1px solid #e5e7eb; border-radius:8px; font-size:13px; box-sizing:border-box;">
+    <label style="display:block; font-size:12px; color:#6b7280; margin: 12px 0 6px;">Description</label>
+    <textarea id="edit-desc" style="width:100%; padding:9px 12px; border:1px solid #e5e7eb; border-radius:8px; font-size:13px; box-sizing:border-box; min-height:60px;"></textarea>
+    <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:18px;">
+      <button class="icon-btn" id="edit-cancel-btn">Cancel</button>
+      <button class="icon-btn" style="background:#6366f1;color:#fff;border-color:#6366f1;" id="edit-save-btn">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+
+<script>
+const root = document.querySelector(".gd-page");
+const GROUP_ID = root.dataset.groupId;
+const IS_SYSTEM = root.dataset.isSystem === "true";
+const GROUP_API = `/api/admin/groups/${encodeURIComponent(GROUP_ID)}`;
+const MEMBERS_API = `${GROUP_API}/members`;
+
+function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+function fmtDate(s) { return s ? String(s).slice(0, 16).replace("T", " ") : "-"; }
+function toast(msg, kind = "") {
+  const el = document.createElement("div");
+  el.className = "toast " + kind;
+  el.textContent = msg;
+  document.getElementById("toast-stack").appendChild(el);
+  requestAnimationFrame(() => el.classList.add("show"));
+  setTimeout(() => { el.classList.remove("show"); setTimeout(() => el.remove(), 250); }, 3500);
+}
+
+let groupState = null;
+let members = [];
+
+async function loadGroup() {
+  const r = await fetch(GROUP_API, { credentials: "include" });
+  if (!r.ok) return;
+  groupState = await r.json();
+  const chip = document.getElementById("origin-chip");
+  chip.textContent = (groupState.origin || "admin").replace("_", " ");
+  chip.className = "origin-chip origin-" + (groupState.origin || "admin");
+  chip.style.display = "inline-block";
+  document.getElementById("res-count").textContent = groupState.grant_count || 0;
+  if (!groupState.grant_count) {
+    document.getElementById("res-text").textContent =
+      "No resources granted yet. Open the Grants page to assign access.";
+  }
+}
+
+async function loadMembers() {
+  const r = await fetch(MEMBERS_API, { credentials: "include" });
+  document.getElementById("members-loading").style.display = "none";
+  if (!r.ok) {
+    toast("Failed to load members", "error");
+    return;
+  }
+  members = await r.json();
+  renderMembers();
+}
+
+function renderMembers() {
+  const table = document.getElementById("members-table");
+  const empty = document.getElementById("members-empty");
+  const tbody = document.getElementById("members-tbody");
+  const sub = document.getElementById("members-sub");
+
+  sub.textContent = `${members.length} member${members.length === 1 ? "" : "s"}`;
+
+  if (members.length === 0) {
+    table.style.display = "none";
+    empty.style.display = "block";
+    return;
+  }
+  table.style.display = "table";
+  empty.style.display = "none";
+  tbody.innerHTML = "";
+  for (const m of members) {
+    const tr = document.createElement("tr");
+    const removable = m.source === "admin"
+      ? `<button class="icon-btn danger" data-action="remove" data-user-id="${esc(m.user_id)}">Remove</button>`
+      : `<span style="color:#9ca3af;font-size:11px">managed by ${esc(m.source)}</span>`;
+    const sourceLabel = ({
+      admin: "added by admin",
+      google_sync: "synced from Google",
+      system_seed: "system-managed",
+    })[m.source] || m.source;
+    const addedFragment = m.added_at
+      ? `<span class="added">· ${esc(fmtDate(m.added_at))}</span>` : "";
+    tr.innerHTML = `
+      <td><a class="user-link" href="/admin/users/${encodeURIComponent(m.user_id)}">${esc(m.email)}</a></td>
+      <td>${esc(m.name || "")}</td>
+      <td><span class="source-meta"><span class="label">${esc(sourceLabel)}</span>${addedFragment}</span></td>
+      <td style="text-align:right">${removable}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+  tbody.querySelectorAll('[data-action="remove"]').forEach(btn => {
+    btn.addEventListener("click", () => removeMember(btn.dataset.userId, btn.closest("tr").querySelector(".user-link").textContent));
+  });
+}
+
+async function addMember() {
+  const input = document.getElementById("add-email");
+  const email = input.value.trim();
+  if (!email) return;
+  const r = await fetch(MEMBERS_API, {
+    method: "POST", credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    toast("Add failed: " + (err.detail || r.status), "error");
+    return;
+  }
+  input.value = "";
+  document.getElementById("add-btn").disabled = true;
+  toast("Member added", "success");
+  loadMembers();
+}
+
+document.getElementById("add-btn").addEventListener("click", addMember);
+document.getElementById("add-email").addEventListener("input", e => {
+  document.getElementById("add-btn").disabled = !e.target.value.trim();
+});
+document.getElementById("add-email").addEventListener("keydown", e => {
+  if (e.key === "Enter") { e.preventDefault(); if (e.target.value.trim()) addMember(); }
+});
+
+async function removeMember(userId, label) {
+  if (!confirm(`Remove ${label} from this group?`)) return;
+  const r = await fetch(`${MEMBERS_API}/${encodeURIComponent(userId)}`, {
+    method: "DELETE", credentials: "include",
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    toast("Remove failed: " + (err.detail || r.status), "error");
+    return;
+  }
+  toast("Member removed", "success");
+  loadMembers();
+}
+
+// Edit group modal (only present for non-system groups)
+const editBtn = document.getElementById("edit-group-btn");
+if (editBtn) {
+  editBtn.addEventListener("click", () => {
+    document.getElementById("edit-name").value = groupState ? groupState.name : root.dataset.groupName;
+    document.getElementById("edit-desc").value = groupState ? (groupState.description || "") : "";
+    document.getElementById("edit-modal").style.display = "flex";
+  });
+  document.getElementById("edit-cancel-btn").addEventListener("click", () => {
+    document.getElementById("edit-modal").style.display = "none";
+  });
+  document.getElementById("edit-save-btn").addEventListener("click", async () => {
+    const name = document.getElementById("edit-name").value.trim();
+    const description = document.getElementById("edit-desc").value.trim();
+    if (!name) { toast("Name required", "error"); return; }
+    const r = await fetch(GROUP_API, {
+      method: "PATCH", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, description: description || null }),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      toast("Save failed: " + (err.detail || r.status), "error");
+      return;
+    }
+    toast("Group updated", "success");
+    document.getElementById("edit-modal").style.display = "none";
+    setTimeout(() => window.location.reload(), 600);
+  });
+}
+
+const delBtn = document.getElementById("delete-group-btn");
+if (delBtn) {
+  delBtn.addEventListener("click", async () => {
+    if (!confirm(`Delete group "${root.dataset.groupName}" and all its members + grants?`)) return;
+    const r = await fetch(GROUP_API, { method: "DELETE", credentials: "include" });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      toast("Delete failed: " + (err.detail || r.status), "error");
+      return;
+    }
+    toast("Group deleted", "success");
+    setTimeout(() => { window.location.href = "/admin/groups"; }, 800);
+  });
+}
+
+loadGroup();
+loadMembers();
+</script>
+{% endblock %}
