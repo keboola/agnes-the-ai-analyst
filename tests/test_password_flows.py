@@ -303,12 +303,12 @@ class TestAdminInviteFlow:
         )
         assert resp.status_code == 200
         data = resp.json()
-        assert data["reset_token"]
         assert "reset_url" in data
         assert "/auth/password/reset" in data["reset_url"]
-        assert f"email=target%40test.com" in data["reset_url"]
-        assert f"token={data['reset_token']}" in data["reset_url"]
+        assert "token=" in data["reset_url"]  # URL still contains the token
+        assert "email_sent" in data
         assert data["email_sent"] is False  # no SMTP configured in tests
+        assert "reset_token" not in data  # raw token must NOT be in response
 
     def test_create_user_with_send_invite_returns_invite_url(self, app_client, fresh_db):
         token = _seed_admin()

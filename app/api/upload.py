@@ -1,5 +1,8 @@
 """Upload endpoints — sessions, artifacts, CLAUDE.local.md."""
 
+import hashlib
+import shutil
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +16,40 @@ from app.utils import get_data_dir as _get_data_dir
 router = APIRouter(prefix="/api/upload", tags=["upload"])
 
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50 MB
+_CHUNK_SIZE = 64 * 1024  # 64 KB read chunks for streaming size check
+
+
+async def _stream_to_temp(file: UploadFile) -> tuple[tempfile.NamedTemporaryFile, int]:
+    """Stream-upload with cumulative size check. Returns (tempfile, size).
+
+    Aborts once total > MAX_UPLOAD_SIZE — avoids buffering the entire
+    body in memory before the size cap rejects it (OOM prevention).
+    """
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".tmp")
+    total = 0
+    try:
+        while True:
+            chunk = await file.read(_CHUNK_SIZE)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_UPLOAD_SIZE:
+                tmp.close()
+                Path(tmp.name).unlink(missing_ok=True)
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"File too large (max {MAX_UPLOAD_SIZE // 1024 // 1024}MB)",
+                )
+            tmp.write(chunk)
+        tmp.flush()
+    except HTTPException:
+        raise
+    except Exception:
+        tmp.close()
+        Path(tmp.name).unlink(missing_ok=True)
+        raise
+    tmp.seek(0)
+    return tmp, total
 
 
 @router.post("/sessions")
@@ -30,11 +67,14 @@ async def upload_session(
     if not filename or filename.startswith("."):
         filename = f"upload_{uuid.uuid4().hex[:8]}"
     target = sessions_dir / filename
-    content = await file.read()
-    if len(content) > MAX_UPLOAD_SIZE:
-        raise HTTPException(status_code=413, detail=f"File too large (max {MAX_UPLOAD_SIZE // 1024 // 1024}MB)")
-    target.write_bytes(content)
-    return {"status": "ok", "filename": filename, "size": len(content)}
+
+    tmp, size = await _stream_to_temp(file)
+    try:
+        shutil.move(tmp.name, str(target))
+    except Exception:
+        Path(tmp.name).unlink(missing_ok=True)
+        raise
+    return {"status": "ok", "filename": filename, "size": size}
 
 
 @router.post("/artifacts")
@@ -52,11 +92,14 @@ async def upload_artifact(
     if not filename or filename.startswith("."):
         filename = f"upload_{uuid.uuid4().hex[:8]}"
     target = artifacts_dir / filename
-    content = await file.read()
-    if len(content) > MAX_UPLOAD_SIZE:
-        raise HTTPException(status_code=413, detail=f"File too large (max {MAX_UPLOAD_SIZE // 1024 // 1024}MB)")
-    target.write_bytes(content)
-    return {"status": "ok", "filename": filename, "size": len(content)}
+
+    tmp, size = await _stream_to_temp(file)
+    try:
+        shutil.move(tmp.name, str(target))
+    except Exception:
+        Path(tmp.name).unlink(missing_ok=True)
+        raise
+    return {"status": "ok", "filename": filename, "size": size}
 
 
 class LocalMdRequest(BaseModel):
@@ -69,12 +112,13 @@ async def upload_local_md(
     user: dict = Depends(get_current_user),
 ):
     """Upload CLAUDE.local.md content for corporate memory processing."""
-    user_id = user["id"]
     user_email = user["email"]
     md_dir = _get_data_dir() / "user_local_md"
     md_dir.mkdir(parents=True, exist_ok=True)
 
-    target = md_dir / f"{user_email}.md"
+    # Hashed filename — stable per user, no charset surprises from email
+    safe_name = hashlib.sha256(user_email.encode()).hexdigest()[:24] + ".md"
+    target = md_dir / safe_name
     target.write_text(request.content, encoding="utf-8")
     return {
         "status": "ok",

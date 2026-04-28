@@ -637,3 +637,38 @@ class TestUnauthenticatedAccess:
             "user_id": "analyst1", "dataset": "anything",
         })
         assert resp.status_code in (401, 403)
+
+
+class TestDownloadPathTraversal:
+    """Path-traversal protection: unsafe table_id values are rejected with 404."""
+
+    def test_download_rejects_traversal_id(self, seeded_app):
+        """URL-encoded path traversal in table_id returns 404."""
+        c = seeded_app["client"]
+        # ..%2F..%2Fstate%2Fsystem decodes to ../../state/system
+        resp = c.get("/api/data/..%2F..%2Fstate%2Fsystem/download",
+                      headers=_auth(seeded_app["admin_token"]))
+        assert resp.status_code == 404
+
+    def test_download_rejects_dotdot(self, seeded_app):
+        """Literal ../../etc/passwd in table_id returns 404."""
+        c = seeded_app["client"]
+        resp = c.get('/api/data/../../etc/passwd/download',
+                      headers=_auth(seeded_app["admin_token"]))
+        assert resp.status_code == 404
+
+    def test_download_rejects_special_chars(self, seeded_app):
+        """table_id with spaces, slashes, or other special chars returns 404."""
+        c = seeded_app["client"]
+        # Spaces
+        resp = c.get("/api/data/my%20table/download",
+                      headers=_auth(seeded_app["admin_token"]))
+        assert resp.status_code == 404
+        # Slashes
+        resp = c.get("/api/data/foo/bar/download",
+                      headers=_auth(seeded_app["admin_token"]))
+        assert resp.status_code == 404
+        # Dots
+        resp = c.get("/api/data/table.v2/download",
+                      headers=_auth(seeded_app["admin_token"]))
+        assert resp.status_code == 404

@@ -34,6 +34,23 @@ SETUP_TOKEN_TTL = timedelta(days=7)
 MIN_PASSWORD_LEN = 8
 
 
+def _audit(user_id: str, action: str, result: str | None = None) -> None:
+    """Fire-and-forget audit log entry. Swallows all errors."""
+    try:
+        from src.db import get_system_db
+        from src.repositories.audit import AuditRepository
+        audit_conn = get_system_db()
+        AuditRepository(audit_conn).log(
+            user_id=user_id,
+            action=action,
+            resource="auth",
+            result=result,
+        )
+        audit_conn.close()
+    except Exception:
+        pass  # Audit failure must not block auth
+
+
 class PasswordLoginRequest(BaseModel):
     email: str
     password: str
@@ -225,6 +242,8 @@ async def password_login_web(
         ph = PasswordHasher()
         ph.verify(user["password_hash"], password)
     except VerifyMismatchError:
+        # M9: audit failed form-login attempts (mirrors /auth/token endpoint)
+        _audit(user["id"], "login_failed", result="invalid_password")
         return RedirectResponse(url="/login/password?error=invalid", status_code=302)
     except Exception:
         logger.exception("Unexpected error during web password verification for %s", email)

@@ -307,7 +307,6 @@ async def reset_password(
     reset_url = build_reset_url(request, target["email"], token)
     email_sent = send_reset_email(request, target["email"], token)
     return {
-        "reset_token": token,
         "reset_url": reset_url,
         "email_sent": email_sent,
     }

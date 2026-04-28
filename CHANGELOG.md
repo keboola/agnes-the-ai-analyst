@@ -112,6 +112,73 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+- Path-traversal validation on `/api/data/{table_id}/download` — `table_id` is
+  now checked against `_SAFE_IDENTIFIER` regex before any filesystem or DB
+  operation; unsafe values return 404 (no info leakage). See issue #85/C2.
+- SSRF protection on `POST /api/admin/configure` — `keboola_url` is validated
+  against private/reserved networks (127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12,
+  192.168.0.0/16, localhost, IPv6 loopback/link-local/unique-local). See
+  issue #46.
+- Caddyfile security headers: `X-Frame-Options DENY`,
+  `X-Content-Type-Options nosniff`,
+  `Referrer-Policy strict-origin-when-cross-origin`, `-Server` (strip).
+  See issue #87/M22.
+- Container runs as non-root user `agnes` — `USER` directive added to
+  Dockerfile with `useradd` + `chown`. See issue #87/C13.
+- Docker resource limits: `mem_limit: 4g`, `mem_reservation: 1g`,
+  `cpus: 2.0` on `app`; `mem_limit: 2g`, `cpus: 1.0` on `scheduler`.
+  See issue #87/M21.
+- Startup warning when no user has `password_hash` — alerts operators that
+  `/auth/bootstrap` is reachable. See issue #82/C8.
+- Audit logging for failed web form login attempts (`/auth/password/login/web`)
+  — mirrors the existing `/auth/token` audit trail. See issue #82/M9.
+- `/api/health/detailed` endpoint (authenticated) — returns full diagnostics
+  (version, schema, sync state, user count). Minimal `/api/health` (unauth)
+  returns only `{"status": "ok"}` for load balancers. See issue #87/M17.
+- `test_no_override_file` regression test — asserts `docker-compose.override.yml`
+  does not exist post-rename. See issue #87/M23.
+
+### Fixed
+
+- `reset_token` no longer leaks in the JSON response body of
+  `POST /api/users/{id}/reset-password`. The `reset_url` still contains the
+  token (as intended), but the raw secret is no longer exposed to DevTools,
+  proxy logs, or CLI stdout. CLI `admin reset-password` now prints the URL
+  instead of the bare token. See issue #82/C5.
+- `/api/memory/stats` no longer blocks the async event loop — replaced
+  `repo.list_items(limit=10000)` + Python loop with a single SQL
+  `GROUP BY` aggregation. See issue #90.
+- Magic-link token consumption is now atomic — compare-and-swap pattern
+  with a unique `CONSUMED:` marker prevents two concurrent verifies from
+  both succeeding. DuckDB concurrent-write conflicts are caught and
+  converted to 401. See issue #82/M10.
+- Upload endpoints (`/sessions`, `/artifacts`) now stream to a temp file with
+  cumulative size check instead of buffering the entire body in memory before
+  the size cap — prevents OOM from oversized uploads. See issue #85/M4.
+- `/api/upload/local-md` uses a SHA-256 hashed filename instead of raw
+  `user_email` — stable per user, no charset surprises from email addresses.
+  See issue #85/M4.
+- `/auth/bootstrap` 403 message no longer leaks user count. See issue #82/n1.
+
+### Changed
+
+- **BREAKING** `docker-compose.override.yml` renamed to `docker-compose.dev.yml`.
+  Docker Compose auto-merges `docker-compose.override.yml` on every host with
+  the repo, silently enabling dev mode (source mount + `--reload`) on
+  production. The new name requires explicit `-f docker-compose.dev.yml`,
+  eliminating the foot-gun. Update any scripts or workflows that relied on
+  auto-merge. `scripts/run-local-dev.sh` and `Makefile` updated accordingly.
+  See issue #87/M23.
+- **BREAKING** `/api/health` now returns a minimal `{"status": "ok"}` payload
+  (unauthenticated, for load balancers). Full diagnostics moved to
+  `/api/health/detailed` (requires authentication). Scripts that parsed
+  `/api/health` for version, sync state, or user count must switch to
+  `/api/health/detailed` with an `Authorization` header. See issue #87/M17.
+- `release.yml` CI workflow: `build-and-push` job now only runs on `main`
+  pushes or manual `workflow_dispatch` triggers. Non-main branch pushes run
+  tests only. Added `paths-ignore` for `docs/**`, `*.md`, `LICENSE`.
+  See issue #87/M26.
+
 - **Schema v10** introduces `view_ownership` to detect cross-connector
   view-name collisions in the master analytics DB (issue #81 Group C).
   When two connectors register the same `_meta.table_name`, the

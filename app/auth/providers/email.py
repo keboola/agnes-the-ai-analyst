@@ -111,27 +111,69 @@ async def send_magic_link(
 
 
 def _consume_token(conn: duckdb.DuckDBPyConnection, email: str, token: str) -> dict:
-    """Validate & consume a magic-link token. Returns the user dict or raises 401."""
+    """Validate & consume a magic-link token atomically. Returns the user dict or raises 401.
+
+    Uses a "compare-and-swap" pattern: instead of setting reset_token to NULL
+    directly, we first set it to a unique CONSUMED marker that identifies THIS
+    consumption attempt, then verify that OUR marker was written. Two concurrent
+    verifies will both try to write their marker, but only one will succeed
+    (the WHERE clause checks the original token value); the loser's UPDATE is
+    a no-op, and the loser sees the winner's marker and fails.
+
+    DuckDB doesn't expose affected-row count, so the marker is the only way
+    to distinguish "I won the race" from "someone else won."
+    """
+    # Compute the TTL cutoff in Python — DuckDB doesn't support
+    # parameterized INTERVAL arithmetic (?, INTERVAL) in all builds.
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=MAGIC_LINK_EXPIRY)
+
+    # Unique marker for this consumption attempt — lets us detect who won
+    # the race without relying on DuckDB rowcount (which returns -1).
+    consume_id = f"CONSUMED:{secrets.token_hex(16)}"
+
+    # Step 1: Atomic compare-and-swap. Only succeeds if the token still
+    # matches the original value and hasn't expired. On success, writes
+    # OUR consume_id instead of NULL so we can verify ownership.
+    # DuckDB raises TransactionContext Error on concurrent row conflicts —
+    # catch and treat as "someone else won the race."
+    try:
+        conn.execute(
+            "UPDATE users SET reset_token = ?, reset_token_created = NULL "
+            "WHERE email = ? AND reset_token = ? AND reset_token_created IS NOT NULL "
+            "AND reset_token_created >= ?",
+            [consume_id, email, token, cutoff],
+        )
+    except Exception as exc:
+        err = str(exc).lower()
+        if "conflict" in err or "transaction" in err:
+            raise HTTPException(status_code=401, detail="Invalid or expired link")
+        raise
+
+    # Step 2: Verify that OUR consume_id was written. If a concurrent
+    # request won the race, we'll see THEIR consume_id (or NULL if they
+    # already cleared it in step 3) — either way, we fail.
+    row = conn.execute(
+        "SELECT reset_token FROM users WHERE email = ?",
+        [email],
+    ).fetchone()
+    if not row or row[0] != consume_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired link")
+
+    # Step 3: Clear the consumed marker. Safe to do unconditionally —
+    # only the winner reaches here, and the marker is transient.
+    conn.execute(
+        "UPDATE users SET reset_token = NULL WHERE email = ? AND reset_token = ?",
+        [email, consume_id],
+    )
+
+    # Fetch the user (token is now cleared, but we need the rest of the fields).
+    # CAS already validated token + expiry atomically, so no further checks
+    # needed — re-running them now would always fail because reset_token was
+    # NULL'd in step 3.
     repo = UserRepository(conn)
     user = repo.get_by_email(email)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid link")
-
-    if user.get("reset_token") != token:
-        raise HTTPException(status_code=401, detail="Invalid or expired link")
-
-    created = user.get("reset_token_created")
-    if created:
-        if isinstance(created, str):
-            created = datetime.fromisoformat(created)
-        # DuckDB returns TIMESTAMP as offset-naive; we stored it as UTC, so assume UTC.
-        if created.tzinfo is None:
-            created = created.replace(tzinfo=timezone.utc)
-        if (datetime.now(timezone.utc) - created).total_seconds() > MAGIC_LINK_EXPIRY:
-            raise HTTPException(status_code=401, detail="Link expired")
-
-    # Clear token (one-time use)
-    repo.update(id=user["id"], reset_token=None, reset_token_created=None)
     return user
 
 

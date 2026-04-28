@@ -83,6 +83,64 @@ class TestAdminConfigure:
         assert resp.status_code == 422
 
 
+class TestAdminConfigureSSRF:
+    """SSRF protection: keboola_url must not point to private/reserved networks."""
+
+    def test_configure_rejects_localhost_url(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/configure",
+            json={"data_source": "keboola", "keboola_token": "tok", "keboola_url": "http://localhost:8080"},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400
+        assert "private" in resp.json()["detail"].lower() or "reserved" in resp.json()["detail"].lower()
+
+    def test_configure_rejects_127_0_0_1_url(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/configure",
+            json={"data_source": "keboola", "keboola_token": "tok", "keboola_url": "https://127.0.0.1"},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400
+
+    def test_configure_rejects_10_0_0_1_url(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/configure",
+            json={"data_source": "keboola", "keboola_token": "tok", "keboola_url": "https://10.0.0.1"},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400
+
+    def test_configure_rejects_192_168_url(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/configure",
+            json={"data_source": "keboola", "keboola_token": "tok", "keboola_url": "https://192.168.1.1"},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400
+
+    def test_configure_accepts_public_url(self, seeded_app):
+        """A public URL should pass SSRF validation (connection test may still fail)."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/configure",
+            json={"data_source": "keboola", "keboola_token": "tok", "keboola_url": "https://connection.keboola.com"},
+            headers=_auth(token),
+        )
+        # Should NOT be 400 with SSRF message — may be 400 from failed connection test, or 200
+        if resp.status_code == 400:
+            assert "private" not in resp.json()["detail"].lower()
+
+
 class TestAdminRegistry:
     def test_list_registry_empty(self, seeded_app):
         c = seeded_app["client"]

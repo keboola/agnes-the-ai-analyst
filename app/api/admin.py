@@ -22,6 +22,38 @@ from src.repositories.table_registry import TableRegistryRepository
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
+# SSRF protection: reject private/internal URLs for keboola_url
+import re as _re
+from urllib.parse import urlparse as _urlparse
+
+_PRIVATE_HOST_RE = _re.compile(
+    r"^(?:"
+    r"127\.\d+\.\d+\.\d+"           # 127.0.0.0/8  (loopback)
+    r"|10\.\d+\.\d+\.\d+"            # 10.0.0.0/8
+    r"|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+"  # 172.16.0.0/12
+    r"|192\.168\.\d+\.\d+"           # 192.168.0.0/16
+    r"|0\.\d+\.\d+\.\d+"             # 0.0.0.0/8
+    r"|localhost"                     # localhost
+    r"|::1"                           # IPv6 loopback
+    r"|fe80:"                         # link-local
+    r"|fc00:"                         # unique-local
+    r")$", _re.IGNORECASE
+)
+
+
+def _validate_url_not_private(url: str, field_name: str = "url") -> None:
+    """Raise 400 if the URL host points to a private/reserved network."""
+    try:
+        parsed = _urlparse(url)
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"Invalid {field_name}: not a valid URL")
+    host = parsed.hostname or ""
+    if _PRIVATE_HOST_RE.match(host):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid {field_name}: must not point to a private or reserved network",
+        )
+
 
 class RegisterTableRequest(BaseModel):
     name: str
@@ -185,6 +217,7 @@ async def configure_instance(
     if request.data_source == "keboola":
         if not request.keboola_token or not request.keboola_url:
             raise HTTPException(status_code=400, detail="keboola_token and keboola_url are required for Keboola data source")
+        _validate_url_not_private(request.keboola_url, field_name="keboola_url")
         try:
             from connectors.keboola.client import KeboolaClient
             client = KeboolaClient(token=request.keboola_token, url=request.keboola_url)
