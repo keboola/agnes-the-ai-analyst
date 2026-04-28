@@ -135,6 +135,43 @@ class TestEmailAuth:
         })
         assert resp.status_code == 401
 
+    def test_concurrent_verify_only_one_wins(self, client):
+        """Two concurrent magic-link verifies — exactly one must succeed (M10)."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+
+        # Create a user and set a magic-link token
+        conn = get_system_db()
+        repo = UserRepository(conn)
+        repo.create(id="ml-user-1", email="concurrent@test.com", name="Test", role="viewer")
+        token = "tok_concurrent_test_12345"
+        from datetime import datetime, timezone
+        repo.update(id="ml-user-1", reset_token=token, reset_token_created=datetime.now(timezone.utc))
+        conn.close()
+
+        results = []
+        barrier = __import__("threading").Barrier(2, timeout=5)
+
+        def verify():
+            barrier.wait()  # ensure both threads hit the endpoint simultaneously
+            resp = client.post("/auth/email/verify", json={
+                "email": "concurrent@test.com", "token": token,
+            })
+            results.append(resp.status_code)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(verify) for _ in range(2)]
+            # Collect results (re-raise any exceptions)
+            for f in as_completed(futures):
+                f.result()
+
+        # Exactly one must succeed (200), the other must fail (401)
+        successes = results.count(200)
+        failures = results.count(401)
+        assert successes == 1, f"Expected exactly 1 success, got {successes} (results: {results})"
+        assert failures == 1, f"Expected exactly 1 failure, got {failures} (results: {results})"
+
 
 class TestGoogleOAuth:
     def test_google_login_not_configured(self, client):

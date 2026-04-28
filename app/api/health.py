@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends
 import duckdb
 
-from app.auth.dependencies import _get_db
+from app.auth.dependencies import _get_db, get_current_user
 from src.db import SCHEMA_VERSION
 from src.repositories.sync_state import SyncStateRepository
 
@@ -19,8 +19,17 @@ _DEPLOYED_AT = datetime.now(timezone.utc).isoformat()
 
 
 @router.get("/api/health")
-async def health_check(conn: duckdb.DuckDBPyConnection = Depends(_get_db)):
-    """Structured health check. No auth required."""
+async def health_check():
+    """Minimal health check for load balancers / compose healthcheck. No auth required."""
+    return {"status": "ok"}
+
+
+@router.get("/api/health/detailed")
+async def health_check_detailed(
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+    _user: dict = Depends(get_current_user),
+):
+    """Structured health check with deployment metadata. Requires authentication."""
     checks = {}
 
     # DuckDB state

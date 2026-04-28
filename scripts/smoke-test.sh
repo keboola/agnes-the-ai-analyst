@@ -23,21 +23,15 @@ check() {
 echo "Smoke test: $HOST"
 echo "---"
 
-# 1. Health check
+# 1. Health check (minimal, unauthenticated)
 HEALTH=$(curl -sf "$HOST/api/health" | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])" 2>/dev/null || echo "unreachable")
-if [ "$HEALTH" = "unhealthy" ] || [ "$HEALTH" = "unreachable" ]; then
+if [ "$HEALTH" = "unreachable" ]; then
     echo "  FATAL: health=$HEALTH"
     exit 1
 fi
 check "health ($HEALTH)" "true"
 
-# 2. Health has version fields
-HAS_VERSION=$(curl -sf "$HOST/api/health" | python3 -c "
-import sys,json
-d=json.load(sys.stdin)
-print('true' if 'version' in d and 'channel' in d and 'schema_version' in d else 'false')
-" 2>/dev/null || echo "false")
-check "health version fields" "$HAS_VERSION"
+# 2. Health detailed has version fields (requires auth, checked after bootstrap)
 
 # 3. Bootstrap (only works on fresh DB; 403 means users exist)
 BOOT_HTTP=$(curl -s -o /tmp/smoke_boot.json -w "%{http_code}" -X POST "$HOST/auth/bootstrap" \
@@ -52,6 +46,17 @@ elif [ "$BOOT_HTTP" = "403" ]; then
     echo "  SKIP bootstrap (users exist)"
 else
     check "bootstrap (HTTP $BOOT_HTTP)" "false"
+fi
+
+# 2b. Health detailed (authenticated) — version fields
+if [ -n "$TOKEN" ]; then
+    HAS_VERSION=$(curl -sf "$HOST/api/health/detailed" \
+      -H "Authorization: Bearer $TOKEN" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+print('true' if 'version' in d and 'channel' in d and 'schema_version' in d else 'false')
+" 2>/dev/null || echo "false")
+    check "health detailed version fields" "$HAS_VERSION"
 fi
 
 # 4. Query SELECT 1 (requires auth)
@@ -84,7 +89,12 @@ fi
 
 # 6. Post-sync health (wait briefly)
 sleep 5
-HEALTH2=$(curl -sf "$HOST/api/health" | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])" 2>/dev/null || echo "unreachable")
+if [ -n "$TOKEN" ]; then
+    HEALTH2=$(curl -sf "$HOST/api/health/detailed" \
+      -H "Authorization: Bearer $TOKEN" | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])" 2>/dev/null || echo "unreachable")
+else
+    HEALTH2=$(curl -sf "$HOST/api/health" | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])" 2>/dev/null || echo "unreachable")
+fi
 if [ "$HEALTH2" = "unhealthy" ] || [ "$HEALTH2" = "unreachable" ]; then
     check "post-sync health ($HEALTH2)" "false"
 else

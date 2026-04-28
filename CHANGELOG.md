@@ -10,6 +10,67 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+<!-- Add bullets here. Group: Added / Changed / Fixed / Removed / Internal.
+     Mark breaking changes with **BREAKING** at the start of the bullet. -->
+
+## [0.12.1] — 2026-04-28
+
+Patch release. Hotfixes the pre-migration snapshot-integrity bug shipped in [v0.12.0](https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.12.0) and bundles the security/ops hardening from issue groups #82 (auth hardening), #85 (API validation), #87 (deploy posture), plus #46 (SSRF) and #90 (memory stats blocking).
+
+### Added
+
+- Path-traversal validation on `/api/data/{table_id}/download` — `table_id` is
+  now checked against `_SAFE_QUOTED_IDENTIFIER` regex (allows dots and hyphens
+  for Keboola-style IDs like `in.c-crm.orders`) before any filesystem or DB
+  operation; unsafe values return 404 (no info leakage). See issue #85/C2.
+- SSRF protection on `POST /api/admin/configure` — `keboola_url` is validated
+  against private/reserved networks (127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12,
+  192.168.0.0/16, localhost, IPv6 loopback/link-local/unique-local). Uses
+  DNS resolution + `ipaddress` module for robust IPv6 handling (catches
+  abbreviated forms like `fe80::1`, `fc00::1`). See issue #46.
+- Caddyfile security headers: `X-Frame-Options DENY`,
+  `X-Content-Type-Options nosniff`,
+  `Referrer-Policy strict-origin-when-cross-origin`, `-Server` (strip).
+  See issue #87/M22.
+- Container runs as non-root user `agnes` — `USER` directive added to
+  Dockerfile with `useradd` + `chown`. See issue #87/C13.
+- Docker resource limits: `mem_limit: 4g`, `mem_reservation: 1g`,
+  `cpus: 2.0` on `app`; `mem_limit: 2g`, `cpus: 1.0` on `scheduler`.
+  See issue #87/M21.
+- Startup warning when no user has `password_hash` — alerts operators that
+  `/auth/bootstrap` is reachable. See issue #82/C8.
+- Audit logging for failed web form login attempts (`/auth/password/login/web`)
+  — mirrors the existing `/auth/token` audit trail. See issue #82/M9.
+- `/api/health/detailed` endpoint (authenticated) — returns full diagnostics
+  (version, schema, sync state, user count). Minimal `/api/health` (unauth)
+  returns only `{"status": "ok"}` for load balancers. See issue #87/M17.
+- Health endpoint monitoring guide in `docs/DEPLOYMENT.md` — documents both
+  endpoints and how to wire external monitoring tools (Datadog, Prometheus,
+  UptimeRobot) to `/api/health/detailed` with a PAT.
+
+### Changed
+
+- **BREAKING** `docker-compose.override.yml` renamed to `docker-compose.dev.yml`.
+  Docker Compose auto-merges `docker-compose.override.yml` on every host with
+  the repo, silently enabling dev mode (source mount + `--reload`) on
+  production. The new name requires explicit `-f docker-compose.dev.yml`,
+  eliminating the foot-gun. Update any scripts or workflows that relied on
+  auto-merge. `scripts/run-local-dev.sh` and `Makefile` updated accordingly.
+  See issue #87/M23.
+- **BREAKING** `/api/health` now returns a minimal `{"status": "ok"}` payload
+  (unauthenticated, for load balancers). Full diagnostics moved to
+  `/api/health/detailed` (requires authentication). Scripts that parsed
+  `/api/health` for version, sync state, or user count must switch to
+  `/api/health/detailed` with an `Authorization` header. CLI commands
+  (`da setup test-connection`, `da setup verify`, `da diagnose`, `da status`)
+  updated to call `/api/health/detailed` for service-level checks, with
+  graceful fallback to the minimal endpoint when auth is not configured.
+  See issue #87/M17.
+- `release.yml` CI workflow: `build-and-push` job now only runs on `main`
+  pushes or manual `workflow_dispatch` triggers. Non-main branch pushes run
+  tests only. Added `paths-ignore` for `docs/**`, `*.md`, `LICENSE`.
+  See issue #87/M26.
+
 ### Fixed
 
 - **Pre-migration snapshot integrity** — the snapshot file written
@@ -32,31 +93,53 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   path (`current < SCHEMA_VERSION`) takes its snapshot first and
   then runs `_SYSTEM_SCHEMA` from inside the existing migration
   block.
-- **Split-brain self-heal regression test for a shared dev-VM
-  split-brain incident** (2026-04-27). Pins the contract that the
-  gated `_SYSTEM_SCHEMA`
-  self-heal pass keeps working when a binary lands on a
-  future-version DB that's missing tables it expects: every query
-  against the missing table would otherwise crash at runtime
-  (`_duckdb.CatalogException`). New
-  `test_split_brain_future_version_with_missing_tables_self_heals`
-  in `tests/test_db.py::TestMigrationSafety` synthesizes a v99 DB
-  whose only table is `schema_version`, runs `_ensure_schema`, and
-  asserts that the v13-era core tables (`users`, `user_groups`,
-  `user_group_members`, `resource_grants`) now exist *and* that
-  `schema_version` stays at 99 (self-heal without falsely
-  advertising a downgrade). Plus
-  `test_pre_migration_snapshot_excludes_post_self_heal_tables`
-  pins the snapshot-integrity contract: a v2→vN migration's
-  snapshot must not contain any post-v2 table from the modern
-  binary.
+- `reset_token` no longer leaks in the JSON response body of
+  `POST /api/users/{id}/reset-password`. The `reset_url` still contains the
+  token (as intended), but the raw secret is no longer exposed to DevTools,
+  proxy logs, or CLI stdout. CLI `admin reset-password` now prints the URL
+  instead of the bare token. See issue #82/C5.
+- `/api/memory/stats` no longer blocks the async event loop — replaced
+  `repo.list_items(limit=10000)` + Python loop with a single SQL
+  `GROUP BY` aggregation. See issue #90.
+- Magic-link token consumption is now atomic — compare-and-swap pattern
+  with a unique `CONSUMED:` marker prevents two concurrent verifies from
+  both succeeding. DuckDB concurrent-write conflicts are caught and
+  converted to 401. See issue #82/M10.
+- Password reset confirm (`POST /auth/password/reset/confirm`) now uses
+  the same compare-and-swap pattern as the magic-link flow — closes the
+  remaining asymmetry on `users.reset_token` consumption. Lower severity
+  than the magic-link race because the reset flow ends with a new
+  password (an attacker would need the reset token *and* to race the
+  legitimate user) but the consistency closes a polish gap. New
+  regression `test_concurrent_reset_only_one_wins` in
+  `tests/test_password_flows.py::TestResetConfirm`.
+- Upload endpoints (`/sessions`, `/artifacts`) now stream to a temp file with
+  cumulative size check instead of buffering the entire body in memory before
+  the size cap — prevents OOM from oversized uploads. Temp file handle is
+  properly closed before `shutil.move` to avoid FD leaks. See issue #85/M4.
+- `/api/upload/local-md` uses a SHA-256 hashed filename instead of raw
+  `user_email` — stable per user, no charset surprises from email addresses.
+  See issue #85/M4.
+- `/auth/bootstrap` 403 message no longer leaks user count. See issue #82/n1.
 
 ### Internal
 
-- `test_future_version_is_noop` docstring updated to reflect that
-  the self-heal pass *does* run on a future-version DB, just
-  doesn't touch the version row. The test still passes unchanged —
-  its only assertion was the version-row contract, which holds.
+- New regression `test_split_brain_future_version_with_missing_tables_self_heals`
+  in `tests/test_db.py::TestMigrationSafety` — synthesizes a v99 DB whose only
+  table is `schema_version`, runs `_ensure_schema`, asserts that the v13-era
+  core tables (`users`, `user_groups`, `user_group_members`, `resource_grants`)
+  get materialized *and* that `schema_version` stays at 99 (self-heal without
+  falsely advertising a downgrade).
+- New regression `test_pre_migration_snapshot_excludes_post_self_heal_tables`
+  pins the snapshot-integrity contract: a v2→vN migration's snapshot must not
+  contain any post-v2 table from the modern binary. Sanity-checked against the
+  pre-fix unconditional hoist — fails with 6 leaked tables.
+- `test_future_version_is_noop` docstring updated to reflect that the
+  self-heal pass *does* run on a future-version DB, just doesn't touch the
+  version row. The test still passes unchanged — its only assertion was the
+  version-row contract, which holds.
+- `test_no_override_file` regression test asserts `docker-compose.override.yml`
+  does not exist post-rename. See issue #87/M23.
 
 ## [0.12.0] — 2026-04-28
 

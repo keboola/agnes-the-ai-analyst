@@ -24,11 +24,17 @@ def diagnose(
         health = resp.json()
         checks.append({"name": "api", "status": "ok", "latency_ms": resp.elapsed.total_seconds() * 1000})
 
-        # Extract service checks
-        for svc_name, svc_data in health.get("services", {}).items():
-            check = {"name": svc_name, "status": svc_data.get("status", "unknown")}
-            check.update({k: v for k, v in svc_data.items() if k != "status"})
-            checks.append(check)
+        # Detailed health (auth required) for service-level checks
+        try:
+            resp_d = api_get("/api/health/detailed")
+            detailed = resp_d.json()
+            for svc_name, svc_data in detailed.get("services", {}).items():
+                check = {"name": svc_name, "status": svc_data.get("status", "unknown")}
+                check.update({k: v for k, v in svc_data.items() if k != "status"})
+                checks.append(check)
+        except Exception:
+            # Auth may not be configured — minimal reachability is sufficient
+            pass
     except Exception as e:
         checks.append({"name": "api", "status": "error", "detail": str(e)})
 

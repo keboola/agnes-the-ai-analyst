@@ -5,6 +5,11 @@ on:
     branches:
       - main
       - "**"  # build :dev-<slug> image for any branch push (e.g. feature/x, zs/edit, fix/y)
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
+      - "LICENSE"
+  workflow_dispatch:  # manual trigger for explicit dev-<slug> builds
 
 permissions:
   contents: write
@@ -33,6 +38,10 @@ jobs:
 
   build-and-push:
     needs: test
+    # Only publish images from main pushes or manual triggers.
+    # Non-main branch pushes run tests only; use workflow_dispatch
+    # for explicit dev-<slug> image builds when needed.
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     outputs:
       image_tag: ${{ steps.meta.outputs.versioned_tag }}

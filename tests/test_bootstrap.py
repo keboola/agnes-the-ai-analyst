@@ -99,7 +99,7 @@ class TestBootstrap:
             "password": "should-not-work",
         })
         assert resp.status_code == 403
-        assert "already have passwords" in resp.json()["detail"]
+        assert "password already exists" in resp.json()["detail"]
 
     def test_bootstrap_then_login(self, fresh_client):
         """After bootstrap with password, /auth/token login works; without password it requires OAuth."""
@@ -145,10 +145,10 @@ class TestBootstrap:
 
     def test_full_agent_flow(self, fresh_client):
         """Simulate full AI agent deployment flow."""
-        # 1. Health check (no auth)
+        # 1. Health check (no auth — minimal endpoint)
         resp = fresh_client.get("/api/health")
         assert resp.status_code == 200
-        assert resp.json()["status"] == "healthy"
+        assert resp.json()["status"] == "ok"
 
         # 2. Bootstrap admin
         resp = fresh_client.post("/auth/bootstrap", json={
@@ -174,6 +174,6 @@ class TestBootstrap:
         }, headers=headers)
         assert resp.status_code == 201
 
-        # 6. Verify
-        resp = fresh_client.get("/api/health")
+        # 6. Verify via detailed health (requires auth)
+        resp = fresh_client.get("/api/health/detailed", headers=headers)
         assert resp.json()["services"]["users"]["count"] == 2
