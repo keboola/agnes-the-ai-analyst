@@ -90,63 +90,91 @@ async def google_callback(request: Request):
                 return RedirectResponse(url="/login?error=domain_not_allowed")
 
         # Find or create user, sync Workspace group memberships into
-        # user_group_members.
+        # user_group_members. Prefix filter and login gate are driven by
+        # AGNES_GOOGLE_GROUP_PREFIX — empty value preserves legacy behavior
+        # (mirror everything, no gate).
         from src.db import get_system_db
         from src.repositories.users import UserRepository
-        from src.repositories.user_groups import UserGroupsRepository
+        from src.repositories.user_groups import (
+            UserGroupsRepository, ExternalIdConflict,
+        )
         from src.repositories.user_group_members import UserGroupMembersRepository
         from app.auth.group_sync import fetch_user_groups
         import uuid
+
+        prefix = os.environ.get("AGNES_GOOGLE_GROUP_PREFIX", "").strip().lower()
 
         conn = get_system_db()
         try:
             repo = UserRepository(conn)
             user = repo.get_by_email(email)
-            if not user:
+            user_is_new = user is None
+            if user_is_new:
                 user_id = str(uuid.uuid4())
                 repo.create(id=user_id, email=email, name=name)
                 user = repo.get_by_email(email)
             if not bool(user.get("active", True)):
                 return RedirectResponse(url="/login?error=deactivated")
 
-            # Sync Workspace groups → user_group_members (source='google_sync').
-            # Fail-soft: any error leaves the previous membership snapshot in
-            # place; admin-added rows survive regardless.
-            try:
-                group_names = fetch_user_groups(email)
-                # `fetch_user_groups` is fail-soft and returns [] for both
-                # "user genuinely has no groups" and "transient API failure".
-                # We can't distinguish, so empty is treated as "no change":
-                # don't call replace_google_sync_groups (which would
-                # DELETE...source='google_sync' then INSERT zero, wiping
-                # all of the user's Workspace-synced memberships on a
-                # transient hiccup). Trade-off: a user whose Workspace
-                # groups were genuinely cleared keeps stale memberships
-                # until the next non-empty sync. Admin-added rows
-                # (source='admin') are unaffected either way.
-                if group_names:
-                    ug_repo = UserGroupsRepository(conn)
-                    members_repo = UserGroupMembersRepository(conn)
-                    group_ids: list[str] = []
-                    for group_name in group_names:
-                        g = ug_repo.ensure(group_name)
-                        group_ids.append(g["id"])
-                    members_repo.replace_google_sync_groups(
-                        user["id"], group_ids, added_by="system:google-sync",
-                    )
-                    logger.info(
-                        "Google group sync for %s: %d group(s) [%s]",
-                        email, len(group_ids), ", ".join(group_names),
-                    )
-                else:
-                    logger.info(
-                        "Google group sync for %s: empty result, "
-                        "preserving existing memberships",
+            ug_repo = UserGroupsRepository(conn)
+            members_repo = UserGroupMembersRepository(conn)
+
+            fetched = fetch_user_groups(email)
+            if fetched is None:
+                # Soft fail — pass-through if user has prior google_sync rows.
+                # First-timers can't be verified so they're denied; this also
+                # means a misconfigured Google client on a fresh deploy fails
+                # closed.
+                if not members_repo.has_any_google_sync_membership(user["id"]):
+                    logger.warning(
+                        "Google group fetch soft-failed for %s and no cached "
+                        "google_sync membership exists; denying login.",
                         email,
                     )
-            except Exception as sync_err:  # noqa: BLE001 - fail-soft by design
+                    return RedirectResponse(
+                        url="/login?error=group_check_unavailable",
+                        status_code=302,
+                    )
                 logger.warning(
-                    "Google group sync failed for %s: %s", email, sync_err
+                    "Google group fetch soft-failed for %s; passing through "
+                    "on cached membership snapshot.",
+                    email,
+                )
+            else:
+                if prefix:
+                    relevant = [g.lower() for g in fetched if g.lower().startswith(prefix)]
+                else:
+                    relevant = [g.lower() for g in fetched]
+                if prefix and not relevant:
+                    logger.info(
+                        "Login denied for %s: no membership in any group "
+                        "starting with %r (fetched %d non-matching groups).",
+                        email, prefix, len(fetched),
+                    )
+                    return RedirectResponse(
+                        url="/login?error=not_in_foundryai_group",
+                        status_code=302,
+                    )
+
+                group_ids: list[str] = []
+                for email_addr in relevant:
+                    try:
+                        grp = ug_repo.resolve_or_create_for_external(
+                            email_addr, prefix
+                        )
+                        group_ids.append(grp["id"])
+                    except ExternalIdConflict as e:
+                        logger.warning(
+                            "Skipping group %s due to external_id collision: %s",
+                            email_addr, e,
+                        )
+                members_repo.replace_google_sync_groups(
+                    user["id"], group_ids, added_by="system:google-sync",
+                )
+                logger.info(
+                    "Google group sync for %s: fetched=%d, prefix-matched=%d, "
+                    "applied=%d",
+                    email, len(fetched), len(relevant), len(group_ids),
                 )
         finally:
             conn.close()

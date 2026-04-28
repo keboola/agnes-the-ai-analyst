@@ -31,6 +31,24 @@ Agnes therefore queries with `security` (in `app/auth/providers/google.py`):
 
 Switching to `discussion_forum` will silently break for everyone but Workspace admins.
 
+The fetch is **three-state** so soft-fail and "API said zero groups" are
+distinguishable:
+
+- `[...]` — the API returned this list.
+- `[]`   — the API answered with zero groups for this user.
+- `None` — soft fail (missing config, API 4xx/5xx, metadata server unreachable).
+
+The OAuth callback uses the distinction:
+
+- `None` + cached `google_sync` rows → pass-through (returning user during
+  a transient outage).
+- `None` + no cached rows → deny login (`/login?error=group_check_unavailable`),
+  because we can't verify a first-timer's eligibility.
+- `[]` or list with no prefix matches under a non-empty
+  `AGNES_GOOGLE_GROUP_PREFIX` → deny login
+  (`/login?error=not_in_foundryai_group`).
+- list with at least one prefix match → sync as usual.
+
 ## Storage + use
 
 `app/auth/providers/google.py:google_callback` runs on every Google sign-in:
@@ -68,3 +86,79 @@ python3 scripts/debug/probe_google_groups.py "ya29.…" user@keboola.com
 ```
 
 Token via [OAuth 2.0 Playground](https://developers.google.com/oauthplayground/) → gear icon → own credentials → request the three scopes (`cloud-identity.groups.readonly`, `cloud-identity.groups`, `admin.directory.group.readonly`) → exchange code → copy access token.
+
+## Group prefix filter and external linking (v15)
+
+Production deployments typically curate a small set of "Agnes-relevant"
+Workspace groups under a common naming prefix (e.g. `grp_foundryai_admin@`,
+`grp_foundryai_finance@`). The `AGNES_GOOGLE_GROUP_PREFIX` env var teaches
+Agnes that convention and turns it into two behaviors:
+
+1. **Filter** — only Workspace groups whose email starts with the prefix
+   are mirrored into Agnes's `user_groups` table. Other Workspace groups
+   the user belongs to are ignored entirely; they don't pollute the admin
+   UI and don't grant any access.
+2. **Gate** — Google logins by users with no membership in any prefix-matching
+   group are denied at the OAuth callback with
+   `?error=not_in_foundryai_group`. Set the prefix and you get a strict
+   "must be in an Agnes Workspace group to use Agnes" policy.
+
+Set the var empty (the OSS default) to disable both behaviors and preserve
+legacy "mirror everything, no gate" semantics for non-Workspace deployments.
+
+### Group derivation and the `external_id` link
+
+Each prefix-matching Workspace group becomes an Agnes `user_groups` row
+with two fields tied to it:
+
+- **`name`** — derived from the group's email by stripping the prefix from
+  the local part and capitalizing the first letter. Example: prefix
+  `grp_foundryai_`, Workspace group `grp_foundryai_finance@groupon.com` →
+  Agnes group `Finance`. Admins can rename the display name later via
+  `/admin/groups/<id>` for non-system rows; system rows (`Admin`,
+  `Everyone`) are name-locked.
+- **`external_id`** — the full Workspace group email. This is the durable
+  link: it is set once at creation (or via the promote path below) and
+  cannot be edited afterward. The Google sync re-uses the link to find the
+  same Agnes row on every login, even after a display-name rename.
+
+The system `Admin` and `Everyone` rows are seeded at startup with
+`external_id IS NULL`. The first time a user signs in who is a member of
+`<prefix>admin@<domain>` or `<prefix>everyone@<domain>`, the sync's
+*promote* path attaches that email to the existing system row instead of
+creating a duplicate.
+
+### Admin UI is read-only on bound groups
+
+Once an Agnes group has a non-NULL `external_id`, its membership is
+sourced authoritatively from Google. The admin UI on `/admin/groups/<id>`
+hides the "Add member" form, banners *"Members are synced from Google
+Workspace — read-only here. Edit at admin.google.com"*, and the membership
+API endpoints return `409 Conflict { "code": "external_group_readonly" }`
+if anyone bypasses the UI to attempt an admin-source mutation. The
+google-sync writer (`replace_google_sync_groups`) and the SEED_ADMIN_EMAIL
+bootstrap (`source='system_seed'`) bypass the guard intentionally — only
+admin-source writes are blocked.
+
+### Auto-Everyone removed
+
+Pre-v15 every new user was implicitly placed in the `Everyone` group via a
+`source='system_seed'` row. v15 removes that — Everyone membership now
+comes from being in `<prefix>everyone@` (Google logins) or from explicit
+admin assignment to `Everyone` while it has not yet been bound (which the
+admin UI guard prevents once the binding is in place).
+
+The v15 cleanup migration deletes the stale `system_seed` Everyone rows
+the v13 backfill produced (`added_by='system:v13-backfill'`) and removes
+orphan email-named google-synced groups that the pre-v15 sync inserted
+unconditionally — protected against accidental data loss by skipping any
+group already referenced from `resource_grants`.
+
+### Customer-specific configuration
+
+The OSS `agnes-the-ai-analyst-infra` Terraform module exposes a
+`google_group_prefix` variable (default `""`). Set it to your prefix in
+the consumer infra (private repo) and `terraform apply` — the value lands
+in the VM's `.env` as `AGNES_GOOGLE_GROUP_PREFIX`, and the next user login
+exercises the filter and gate. App image versions before v15 ignore the
+env var, so the infra change can land first or after the app rollout.

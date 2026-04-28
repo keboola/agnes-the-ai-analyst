@@ -482,18 +482,19 @@ class TestUserGroupsRepository:
         assert returned["is_system"] is True
 
 
-class TestUserRepositoryEveryoneAutoMember:
-    """v12: UserRepository.create adds new users to the Everyone group."""
+class TestUserRepositoryNoAutoMembership:
+    """v14: UserRepository.create no longer adds any implicit memberships.
 
-    def test_create_adds_everyone_membership(self, db_conn):
+    Everyone membership now flows from the configured Google Workspace
+    prefix mapping (``<prefix>everyone@``) or from explicit admin
+    assignment. A bare ``create()`` call leaves the user with zero rows in
+    user_group_members.
+    """
+
+    def test_create_adds_no_implicit_memberships(self, db_conn):
         from src.repositories.users import UserRepository
         from src.repositories.user_group_members import UserGroupMembersRepository
         repo = UserRepository(db_conn)
         repo.create(id="u1", email="u1@test", name="U1")
         groups = UserGroupMembersRepository(db_conn).list_groups_for_user("u1")
-        assert len(groups) >= 1
-        # Find the Everyone group ID
-        everyone = db_conn.execute(
-            "SELECT id FROM user_groups WHERE name='Everyone'"
-        ).fetchone()
-        assert everyone is not None and everyone[0] in groups
+        assert groups == []

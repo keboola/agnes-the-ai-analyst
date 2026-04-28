@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import List
+from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +40,22 @@ _GROUP_LABEL_DISCUSSION = "cloudidentity.googleapis.com/groups.discussion_forum"
 MOCK_ENV = "GOOGLE_ADMIN_SDK_MOCK_GROUPS"
 
 
-def fetch_user_groups(email: str) -> List[str]:
+def fetch_user_groups(email: str) -> Optional[List[str]]:
     """Return the list of group names (emails) the user belongs to.
 
-    Fail-soft: returns [] on any error. Caller must treat this as a soft
-    signal (login proceeds, users.groups stays whatever it was before).
+    Three-state return so the caller can distinguish between "Google said
+    zero groups" and "we couldn't ask Google":
+
+      * ``[...]`` — API answered with this list (possibly empty after
+        filtering, but the call itself succeeded).
+      * ``[]``   — API answered, user has zero groups.
+      * ``None`` — soft fail: missing config, metadata server unreachable,
+        API 4xx/5xx, network outage. The caller decides whether to
+        deny login or pass-through on cached membership.
+
+    The mock env (``GOOGLE_ADMIN_SDK_MOCK_GROUPS``) always returns a list
+    — never ``None`` — because tests use the empty-string value as the
+    explicit "API succeeded with zero groups" signal.
     """
     mock = os.environ.get(MOCK_ENV)
     if mock is not None:
@@ -52,7 +63,7 @@ def fetch_user_groups(email: str) -> List[str]:
     return _fetch_real(email)
 
 
-def _fetch_real(email: str) -> List[str]:
+def _fetch_real(email: str) -> Optional[List[str]]:
     try:
         from google.auth import default
         from googleapiclient.discovery import build
@@ -60,7 +71,7 @@ def _fetch_real(email: str) -> List[str]:
         logger.warning(
             "google-api-python-client not installed; skipping group fetch"
         )
-        return []
+        return None
 
     try:
         creds, _ = default(scopes=[SCOPE])
@@ -69,7 +80,7 @@ def _fetch_real(email: str) -> List[str]:
         )
     except Exception as e:  # noqa: BLE001 - fail-soft by design
         logger.warning("Google client init failed: %s", e)
-        return []
+        return None
 
     # Escape single quotes in the email to keep the CEL query well-formed even
     # if a user has a quote in their login (rare, but defensive).
@@ -102,6 +113,6 @@ def _fetch_real(email: str) -> List[str]:
                 break
     except Exception as e:  # noqa: BLE001 - fail-soft by design
         logger.warning("Group fetch failed for %s: %s", email, e)
-        return []
+        return None
 
     return groups

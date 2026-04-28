@@ -39,40 +39,25 @@ class UserRepository:
         role: str = "analyst",
         password_hash: Optional[str] = None,
     ) -> None:
-        """Create a user and add them to the Everyone system group.
+        """Insert a user row.
 
         ``role`` is accepted for legacy API compatibility (some callers still
         pass it) but the value is written to the deprecated ``users.role``
-        column only — authorization no longer reads it. New users are
-        automatically members of Everyone via ``user_group_members``;
-        explicit Admin grants are issued separately by SEED_ADMIN_EMAIL or
-        admin UI.
+        column only — authorization no longer reads it. The user starts with
+        zero group memberships: Google logins receive their group memberships
+        via OAuth callback (``source='google_sync'``); admin invitations grant
+        custom groups via ``source='admin'``; the SEED_ADMIN_EMAIL bootstrap
+        adds Admin via ``source='system_seed'``. There is no implicit
+        Everyone — membership in the Everyone group now comes from being a
+        member of ``<AGNES_GOOGLE_GROUP_PREFIX>everyone@`` in Google
+        Workspace, or from explicit admin assignment.
         """
-        from src.db import SYSTEM_EVERYONE_GROUP
-
         now = datetime.now(timezone.utc)
         self.conn.execute(
             """INSERT INTO users (id, email, name, role, password_hash, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)""",
             [id, email, name, role, password_hash, now, now],
         )
-
-        # Auto-add to Everyone. Skip silently if Everyone is missing — that's
-        # only possible during fresh-install bootstrap before the seed runs;
-        # _seed_system_groups makes the row idempotently on next connect.
-        everyone = self.conn.execute(
-            "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_EVERYONE_GROUP],
-        ).fetchone()
-        if everyone:
-            try:
-                self.conn.execute(
-                    """INSERT INTO user_group_members
-                       (user_id, group_id, source, added_by)
-                       VALUES (?, ?, 'system_seed', 'user_repo.create')""",
-                    [id, everyone[0]],
-                )
-            except duckdb.ConstraintException:
-                pass  # already a member (re-create after delete?)
 
     def update(self, id: str, **kwargs) -> None:
         allowed = {

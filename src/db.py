@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -278,6 +278,7 @@ CREATE TABLE IF NOT EXISTS user_groups (
     name        VARCHAR NOT NULL UNIQUE,
     description TEXT,
     is_system   BOOLEAN DEFAULT FALSE,
+    external_id VARCHAR UNIQUE,  -- v15: link to an external identity-provider group (e.g. Google Workspace email)
     created_at  TIMESTAMP DEFAULT current_timestamp,
     created_by  VARCHAR
 );
@@ -740,6 +741,22 @@ _V12_TO_V13_MIGRATIONS = [
     """,
 ]
 
+# v15: link Agnes user_groups to an external identity-provider group via
+# `external_id` (e.g. a Google Workspace group email like
+# `grp_foundryai_admin@groupon.com`). UNIQUE enforcement is added separately
+# as an index — DuckDB rejects `ALTER TABLE ... ADD COLUMN ... UNIQUE`
+# (Parser Error: "Adding columns with constraints not yet supported"), so
+# the constraint lives as a UNIQUE INDEX instead, which has the same
+# semantics for our INSERT/UPDATE callers. NULL allowed for purely-internal
+# groups admins create in the UI; multiple NULLs are tolerated by DuckDB's
+# UNIQUE index. Cleanup of legacy email-named google-sync rows + stale
+# system_seed Everyone backfill rows happens in `_v14_to_v15_finalize`.
+_V14_TO_V15_MIGRATIONS = [
+    "ALTER TABLE user_groups ADD COLUMN IF NOT EXISTS external_id VARCHAR",
+    "CREATE UNIQUE INDEX IF NOT EXISTS user_groups_external_id_uniq "
+    "ON user_groups(external_id)",
+]
+
 
 # Core role seed data — single source of truth. Used by both _seed_core_roles
 # (idempotent insert) and the v8→v9 backfill. Order matters: lowest privilege
@@ -777,7 +794,9 @@ _SYSTEM_GROUPS_SEED = [
     (SYSTEM_ADMIN_GROUP,
      "System: full access to all data and admin actions"),
     (SYSTEM_EVERYONE_GROUP,
-     "System: default group every user is implicitly a member of"),
+     "System: marker group; membership is sourced from the configured "
+     "Google Workspace prefix (<prefix>everyone) or from explicit admin "
+     "assignment — there is no implicit auto-membership"),
 ]
 
 
@@ -1116,6 +1135,87 @@ def _v13_to_v14_finalize(conn: duckdb.DuckDBPyConnection) -> None:
         raise
 
 
+def _v14_to_v15_finalize(conn: duckdb.DuckDBPyConnection) -> None:
+    """Clean up legacy artefacts created by pre-v15 group sync and the v13
+    backfill's auto-Everyone seeding.
+
+    Runs after _V14_TO_V15_MIGRATIONS adds the ``external_id`` column. Two
+    deletions, both surgical:
+
+    1. **Orphan email-named google-synced groups.** Pre-v15 the OAuth callback
+       called ``ensure(group_name=email)`` for every Workspace group, leaving
+       rows with ``created_by='system:google-sync'``, no ``external_id``, and
+       a name like ``some-group@example.com``. v15 sources these groups by
+       prefix + ``external_id``, so the legacy email-named rows are stale.
+       Deleted only when no ``resource_grants`` reference them — if an admin
+       already wired such a group into a grant, we leave it alone (rename
+       can be done in the UI; deletion would silently revoke access).
+
+    2. **Stale auto-Everyone rows from v13 backfill.** The v12→v13 backfill
+       inserted ``system_seed`` Everyone membership for every existing user
+       (added_by='system:v13-backfill'). v15 removes auto-Everyone — Everyone
+       membership now flows from the `<prefix>everyone` Google group or from
+       explicit admin assignment. Surgical match on ``added_by`` so this
+       does NOT remove future intentional ``system_seed`` rows.
+
+    Wrapped in BEGIN/COMMIT so a mid-flight failure rolls the DB back to a
+    clean v14 state. The outer caller in _ensure_schema then skips the
+    schema_version bump and the next start retries the whole step.
+    """
+    conn.execute("BEGIN TRANSACTION")
+    try:
+        # 1. Orphan email-named google-synced groups (preserve those used in grants).
+        orphan_rows = conn.execute(
+            """SELECT id, name FROM user_groups
+               WHERE created_by = 'system:google-sync'
+                 AND external_id IS NULL
+                 AND name LIKE '%@%'
+                 AND id NOT IN (SELECT group_id FROM resource_grants)"""
+        ).fetchall()
+        if orphan_rows:
+            orphan_ids = [r[0] for r in orphan_rows]
+            placeholders = ",".join(["?"] * len(orphan_ids))
+            conn.execute(
+                f"DELETE FROM user_group_members WHERE group_id IN ({placeholders})",
+                orphan_ids,
+            )
+            conn.execute(
+                f"DELETE FROM user_groups WHERE id IN ({placeholders})",
+                orphan_ids,
+            )
+            logger.info(
+                "v15 cleanup: removed %d orphan google-synced group(s): %s",
+                len(orphan_rows),
+                ", ".join(r[1] for r in orphan_rows[:20])
+                + ("…" if len(orphan_rows) > 20 else ""),
+            )
+
+        # 2. Stale auto-Everyone rows from the v13 backfill.
+        everyone_row = conn.execute(
+            "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_EVERYONE_GROUP]
+        ).fetchone()
+        if everyone_row:
+            removed = conn.execute(
+                """DELETE FROM user_group_members
+                   WHERE source = 'system_seed'
+                     AND added_by = 'system:v13-backfill'
+                     AND group_id = ?
+                   RETURNING 1""",
+                [everyone_row[0]],
+            ).fetchall()
+            if removed:
+                logger.info(
+                    "v15 cleanup: removed %d stale system_seed Everyone row(s) "
+                    "(added_by='system:v13-backfill')",
+                    len(removed),
+                )
+
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
 def _seed_core_roles(conn: duckdb.DuckDBPyConnection) -> None:
     """Idempotently insert/refresh the four core.* hierarchy roles.
 
@@ -1363,6 +1463,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v12_to_v13_finalize(conn)
             if current < 14:
                 _v13_to_v14_finalize(conn)
+            if current < 15:
+                for sql in _V14_TO_V15_MIGRATIONS:
+                    conn.execute(sql)
+                _v14_to_v15_finalize(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

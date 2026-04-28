@@ -31,7 +31,10 @@ from src.repositories.user_groups import (
     UserGroupsRepository,
 )
 from src.repositories.resource_grants import ResourceGrantsRepository
-from src.repositories.user_group_members import UserGroupMembersRepository
+from src.repositories.user_group_members import (
+    ExternalGroupReadOnly,
+    UserGroupMembersRepository,
+)
 from src.repositories.users import UserRepository
 
 logger = logging.getLogger(__name__)
@@ -167,6 +170,7 @@ async def access_overview(
             "name": g["name"],
             "description": g.get("description"),
             "is_system": bool(g.get("is_system", False)),
+            "external_id": g.get("external_id"),
             "member_count": members_repo.count_members(g["id"]),
             "grant_count": grants_repo.count_for_group(g["id"]),
         })
@@ -210,6 +214,7 @@ class GroupResponse(BaseModel):
     description: Optional[str] = None
     is_system: bool = False
     origin: str = "admin"  # 'system' | 'admin' | 'google_sync'
+    external_id: Optional[str] = None  # bound external IdP group (e.g. Google Workspace email)
     created_at: Optional[str] = None
     created_by: Optional[str] = None
     member_count: int = 0
@@ -258,6 +263,7 @@ def _group_to_response(
         description=g.get("description"),
         is_system=bool(g.get("is_system", False)),
         origin=_derive_origin(g),
+        external_id=g.get("external_id"),
         created_at=str(g["created_at"]) if g.get("created_at") else None,
         created_by=g.get("created_by"),
         member_count=members_repo.count_members(g["id"]),
@@ -453,12 +459,18 @@ async def add_member(
     members = UserGroupMembersRepository(conn)
     if members.has_membership(target["id"], group_id):
         raise HTTPException(status_code=409, detail="User already a member")
-    members.add_member(
-        user_id=target["id"],
-        group_id=group_id,
-        source="admin",
-        added_by=user.get("email"),
-    )
+    try:
+        members.add_member(
+            user_id=target["id"],
+            group_id=group_id,
+            source="admin",
+            added_by=user.get("email"),
+        )
+    except ExternalGroupReadOnly as e:
+        raise HTTPException(
+            status_code=409,
+            detail={"detail": str(e), "code": "external_group_readonly"},
+        )
     _audit(
         conn, user["id"], "user_group.member_added",
         f"group:{group_id}",
@@ -496,7 +508,13 @@ async def remove_member(
             )
     # Only delete admin-source rows from this endpoint. Google-sync rows
     # rebuild themselves on next login; system_seed rows survive deploys.
-    removed = members.remove_member(user_id, group_id, require_source="admin")
+    try:
+        removed = members.remove_member(user_id, group_id, require_source="admin")
+    except ExternalGroupReadOnly as e:
+        raise HTTPException(
+            status_code=409,
+            detail={"detail": str(e), "code": "external_group_readonly"},
+        )
     if not removed:
         raise HTTPException(
             status_code=404,
@@ -714,12 +732,18 @@ async def add_user_to_group(
     members = UserGroupMembersRepository(conn)
     if members.has_membership(user_id, payload.group_id):
         raise HTTPException(status_code=409, detail="Already a member")
-    members.add_member(
-        user_id=user_id,
-        group_id=payload.group_id,
-        source="admin",
-        added_by=user.get("email"),
-    )
+    try:
+        members.add_member(
+            user_id=user_id,
+            group_id=payload.group_id,
+            source="admin",
+            added_by=user.get("email"),
+        )
+    except ExternalGroupReadOnly as e:
+        raise HTTPException(
+            status_code=409,
+            detail={"detail": str(e), "code": "external_group_readonly"},
+        )
     _audit(
         conn, user["id"], "user_group.member_added",
         f"user:{user_id}",
@@ -761,7 +785,13 @@ async def remove_user_from_group(
                 detail="Cannot remove yourself from Admin — you are the last admin",
             )
     members = UserGroupMembersRepository(conn)
-    removed = members.remove_member(user_id, group_id, require_source="admin")
+    try:
+        removed = members.remove_member(user_id, group_id, require_source="admin")
+    except ExternalGroupReadOnly as e:
+        raise HTTPException(
+            status_code=409,
+            detail={"detail": str(e), "code": "external_group_readonly"},
+        )
     if not removed:
         raise HTTPException(
             status_code=404,

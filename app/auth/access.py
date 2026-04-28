@@ -52,24 +52,20 @@ def _get_group_id_by_name(name: str, conn: duckdb.DuckDBPyConnection) -> Optiona
 
 
 def _user_group_ids(user_id: str, conn: duckdb.DuckDBPyConnection) -> set[str]:
-    """Set of group_ids the user is in. Always includes Everyone.
+    """Set of group_ids the user is in.
 
-    Membership rows live in ``user_group_members``; Everyone is added
-    unconditionally so callers don't have to special-case it. If the
-    Everyone group is missing (impossible in healthy installs but seen in
-    fresh-test scenarios), the helper logs once and proceeds with the
-    explicit memberships.
+    Returns only real ``user_group_members`` rows — there is no implicit
+    Everyone. Membership in the Everyone group now comes from being a
+    member of ``<AGNES_GOOGLE_GROUP_PREFIX>everyone@`` in Google Workspace
+    (via ``source='google_sync'``) or from explicit admin assignment.
+    Email-only users with no admin-assigned membership see zero groups,
+    which means zero resource grants — correct fail-closed default.
     """
     rows = conn.execute(
         "SELECT group_id FROM user_group_members WHERE user_id = ?",
         [user_id],
     ).fetchall()
-    group_ids: set[str] = {r[0] for r in rows}
-
-    everyone_id = _get_group_id_by_name(SYSTEM_EVERYONE_GROUP, conn)
-    if everyone_id is not None:
-        group_ids.add(everyone_id)
-    return group_ids
+    return {r[0] for r in rows}
 
 
 def is_user_admin(user_id: str, conn: duckdb.DuckDBPyConnection) -> bool:
