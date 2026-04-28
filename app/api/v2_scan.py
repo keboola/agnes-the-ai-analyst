@@ -16,7 +16,7 @@ from app.instance_config import get_value
 from src.rbac import can_access_table
 from src.repositories.table_registry import TableRegistryRepository
 from app.api.where_validator import (
-    validate_where, WhereValidationError,
+    validate_where, safe_where_predicate, WhereValidationError,
 )
 from app.api.v2_schema import build_schema  # reused for column resolution
 from app.api.v2_arrow import arrow_table_to_ipc_bytes, CONTENT_TYPE
@@ -73,12 +73,18 @@ def _validate_order_by(order_by: list[str] | None, schema: dict) -> None:
             raise ValueError(f"unknown order_by column: {entry!r}")
 
 
-def _build_bq_sql(table_row: dict, project_id: str, req: ScanRequest) -> str:
+def _build_bq_sql(
+    table_row: dict, project_id: str, req: ScanRequest, *, safe_where: str | None = None,
+) -> str:
+    """Build the BQ SQL string. ``safe_where`` MUST be the comment-stripped
+    fragment from ``safe_where_predicate`` — splicing ``req.where`` raw lets a
+    `1=1 --` predicate comment out everything that follows (LIMIT/ORDER BY).
+    """
     select_sql = ", ".join(req.select) if req.select else "*"
     table_ref = f"`{project_id}.{table_row.get('bucket') or ''}.{table_row.get('source_table') or req.table_id}`"
     sql = f"SELECT {select_sql} FROM {table_ref}"
-    if req.where:
-        sql += f" WHERE {req.where}"
+    if safe_where:
+        sql += f" WHERE {safe_where}"
     if req.order_by:
         sql += f" ORDER BY {', '.join(req.order_by)}"
     if req.limit:
@@ -98,9 +104,11 @@ def estimate(conn, user, raw_request: dict, *, project_id: str, billing_project:
     schema = _resolve_schema(conn, user, req.table_id, project_id)
     dialect = "bigquery" if (row.get("source_type") or "") == "bigquery" else "duckdb"
 
-    # Validate WHERE first
-    if req.where:
-        validate_where(req.where, req.table_id, schema, dialect=dialect)
+    # Validate WHERE and capture the comment-stripped fragment for splicing.
+    safe_where = (
+        safe_where_predicate(req.where, req.table_id, schema, dialect=dialect)
+        if req.where else None
+    )
     # Validate select columns exist
     if req.select:
         unknown = [c for c in req.select if c not in schema]
@@ -117,7 +125,7 @@ def estimate(conn, user, raw_request: dict, *, project_id: str, billing_project:
             "bq_cost_estimate_usd": 0.0,
         }
 
-    bq_sql = _build_bq_sql(row, project_id, req)
+    bq_sql = _build_bq_sql(row, project_id, req, safe_where=safe_where)
     scan_bytes = _bq_dry_run_bytes(billing_project or project_id, bq_sql)
 
     cost_per_tb = float(get_value("api", "scan", "bq_cost_per_tb_usd", default=5.0) or 5.0)
@@ -252,8 +260,11 @@ def run_scan(
 
     schema = _resolve_schema(conn, user, req.table_id, project_id)
     dialect = "bigquery" if (row.get("source_type") or "") == "bigquery" else "duckdb"
-    if req.where:
-        validate_where(req.where, req.table_id, schema, dialect=dialect)
+    # Validate WHERE and capture the comment-stripped fragment for splicing.
+    safe_where = (
+        safe_where_predicate(req.where, req.table_id, schema, dialect=dialect)
+        if req.where else None
+    )
     if req.select:
         unknown = [c for c in req.select if c not in schema]
         if unknown:
@@ -273,8 +284,8 @@ def run_scan(
             try:
                 projection = ", ".join(req.select) if req.select else "*"
                 sql = f"SELECT {projection} FROM read_parquet(?)"
-                if req.where:
-                    sql += f" WHERE {req.where}"
+                if safe_where:
+                    sql += f" WHERE {safe_where}"
                 if req.order_by:
                     sql += f" ORDER BY {', '.join(req.order_by)}"
                 if req.limit:
@@ -283,7 +294,7 @@ def run_scan(
             finally:
                 local.close()
         else:
-            bq_sql = _build_bq_sql(row, project_id, req)
+            bq_sql = _build_bq_sql(row, project_id, req, safe_where=safe_where)
             table = _run_bq_scan(billing_project or project_id, bq_sql)
 
         ipc = arrow_table_to_ipc_bytes(table)

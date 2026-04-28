@@ -129,6 +129,30 @@ def validate_where(
     return where
 
 
+def safe_where_predicate(
+    predicate: str,
+    table_id: str,
+    schema: Mapping[str, str],
+    *,
+    dialect: str = "bigquery",
+) -> str:
+    """Validate `predicate` and return the canonical comment-stripped SQL fragment.
+
+    Use this everywhere a validated predicate is concatenated into final SQL.
+    Splicing the raw input string is unsafe: sqlglot strips ``-- ...`` line
+    comments and ``/* ... */`` block comments during parsing, so a predicate
+    like ``1=1 --`` validates clean (AST sees just ``1=1``) but the raw
+    string commented out everything after it in the final SQL — bypassing
+    LIMIT, ORDER BY, and the server-enforced row caps.
+    """
+    where = validate_where(predicate, table_id, schema, dialect=dialect)
+    # `where.this` is the expression inside WHERE (without the WHERE keyword).
+    # `.sql(comments=False)` re-renders the parsed AST and explicitly drops
+    # `/* ... */` block comments that sqlglot otherwise attaches to nodes
+    # as metadata (line `--` comments are already lost during parsing).
+    return where.this.sql(dialect=dialect, comments=False)
+
+
 def _walk_structural(node: exp.Expression, table_id: str, schema: Mapping[str, str]) -> None:
     """Walk the WHERE AST and reject disallowed structures."""
     for sub in node.walk():

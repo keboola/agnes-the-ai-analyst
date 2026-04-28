@@ -84,6 +84,24 @@ class TestStructural:
             )
         assert e.value.kind == REJECT_DISALLOWED_NODE
 
+    def test_safe_where_predicate_strips_line_comments(self):
+        """Regression: '1=1 --' validated cleanly (sqlglot strips the comment)
+        but the raw predicate spliced into final SQL would comment out
+        LIMIT/ORDER BY. safe_where_predicate must return the canonical
+        comment-stripped fragment for downstream splicing."""
+        from app.api.where_validator import safe_where_predicate
+        out = safe_where_predicate("country_code = 'CZ' --", TABLE_ID, SCHEMA)
+        assert "--" not in out
+        assert "country_code" in out.lower()
+
+    def test_safe_where_predicate_strips_block_comments(self):
+        from app.api.where_validator import safe_where_predicate
+        out = safe_where_predicate(
+            "country_code = 'CZ' /* hidden */ ", TABLE_ID, SCHEMA,
+        )
+        assert "/*" not in out and "*/" not in out
+        assert "country_code" in out.lower()
+
 
 class TestFunctionAllowList:
     @pytest.mark.parametrize(
