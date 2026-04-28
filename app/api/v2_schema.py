@@ -104,11 +104,8 @@ def build_schema(
     *,
     project_id: str,
 ) -> dict:
-    cache_key = f"{table_id}"
-    cached = _schema_cache.get(cache_key)
-    if cached is not None:
-        return cached
-
+    # RBAC + existence check MUST run before cache lookup — otherwise an
+    # unauthorized user can read cached schema fetched by an authorized one.
     repo = TableRegistryRepository(conn)
     row = repo.get(table_id)
     if not row:
@@ -116,6 +113,11 @@ def build_schema(
 
     if user.get("role") != "admin" and not can_access_table(user, table_id, conn):
         raise PermissionError(table_id)
+
+    cache_key = f"{table_id}"
+    cached = _schema_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     source_type = row.get("source_type") or ""
     if source_type == "bigquery":

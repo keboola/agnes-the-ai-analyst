@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import logging
+import re
 from typing import Optional
 
 import pyarrow as pa
@@ -54,6 +55,24 @@ def _bq_dry_run_bytes(project: str, sql: str) -> int:
     return int(job.total_bytes_processed or 0)
 
 
+_ORDER_BY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\s+(ASC|DESC))?$", re.IGNORECASE)
+
+
+def _validate_order_by(order_by: list[str] | None, schema: dict) -> None:
+    """Reject anything other than `<column>` or `<column> ASC|DESC` against the schema.
+    Without this, `order_by` is concatenated raw into the FROM clause SQL — exploitable."""
+    if not order_by:
+        return
+    known = {c.lower() for c in schema}
+    for entry in order_by:
+        s = (entry or "").strip()
+        if not _ORDER_BY_RE.match(s):
+            raise ValueError(f"invalid order_by entry: {entry!r}")
+        col = s.split()[0].lower()
+        if col not in known:
+            raise ValueError(f"unknown order_by column: {entry!r}")
+
+
 def _build_bq_sql(table_row: dict, project_id: str, req: ScanRequest) -> str:
     select_sql = ", ".join(req.select) if req.select else "*"
     table_ref = f"`{project_id}.{table_row.get('bucket') or ''}.{table_row.get('source_table') or req.table_id}`"
@@ -86,6 +105,7 @@ def estimate(conn, user, raw_request: dict, *, project_id: str, billing_project:
         unknown = [c for c in req.select if c not in schema]
         if unknown:
             raise ValueError(f"unknown columns: {unknown}")
+    _validate_order_by(req.order_by, schema)
 
     if (row.get("source_type") or "") != "bigquery":
         return {
@@ -224,6 +244,7 @@ def run_scan(
         unknown = [c for c in req.select if c not in schema]
         if unknown:
             raise ValueError(f"unknown columns: {unknown}")
+    _validate_order_by(req.order_by, schema)
 
     user_id = user.get("email") or "anon"
 

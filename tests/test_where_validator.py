@@ -10,6 +10,7 @@ from app.api.where_validator import (
     REJECT_PARSE,
     REJECT_CROSS_TABLE,
     REJECT_UNKNOWN_COLUMN,
+    REJECT_DISALLOWED_NODE,
 )
 
 
@@ -62,6 +63,26 @@ class TestStructural:
                 TABLE_ID, SCHEMA,
             )
         assert e.value.kind == REJECT_CROSS_TABLE
+
+    def test_union_injection_rejected(self):
+        """UNION attached to the predicate makes the parsed top-level a Union, not Select.
+        Without this rejection, the original raw predicate would be concatenated into
+        the final SQL even though only the left-side WHERE was validated."""
+        with pytest.raises(WhereValidationError) as e:
+            validate_where(
+                "1=1 UNION ALL SELECT country_code FROM other_table",
+                TABLE_ID, SCHEMA,
+            )
+        assert e.value.kind == REJECT_DISALLOWED_NODE
+        assert "select" in str(e.value).lower() or "union" in str(e.value).lower()
+
+    def test_union_distinct_injection_rejected(self):
+        with pytest.raises(WhereValidationError) as e:
+            validate_where(
+                "1=1 UNION DISTINCT SELECT 1",
+                TABLE_ID, SCHEMA,
+            )
+        assert e.value.kind == REJECT_DISALLOWED_NODE
 
 
 class TestFunctionAllowList:

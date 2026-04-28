@@ -12,12 +12,12 @@ def reload_db(tmp_path, monkeypatch):
     yield db_module
 
 
-def _seed_bq_table(conn):
+def _seed_bq_table(conn, *, is_public=True):
     from src.repositories.table_registry import TableRegistryRepository
     TableRegistryRepository(conn).register(
         id="bq_view", name="bq_view", source_type="bigquery",
         bucket="ds", source_table="bq_view", query_mode="remote",
-        is_public=True,
+        is_public=is_public,
     )
 
 
@@ -54,5 +54,35 @@ class TestSchemaEndpoint:
             user = {"role": "admin", "email": "a@x.com"}
             with pytest.raises(NotFound):
                 build_schema(conn, user, "missing", project_id="my-proj")
+        finally:
+            conn.close()
+
+    def test_rbac_check_runs_before_cache(self, reload_db, monkeypatch):
+        """Regression: cache lookup used to happen before the RBAC check, and the
+        cache key had no user component — so an unauthorized user could read
+        cached schema fetched by an authorized one. The fix moves RBAC ahead."""
+        from app.api import v2_schema
+        monkeypatch.setattr(
+            v2_schema, "_fetch_bq_schema",
+            lambda *a, **kw: [{"name": "x", "type": "STRING", "nullable": True, "description": ""}],
+        )
+        monkeypatch.setattr(v2_schema, "_fetch_bq_table_options", lambda *a: {})
+        # Stub can_access_table to deny non-admins
+        monkeypatch.setattr(
+            "app.api.v2_schema.can_access_table",
+            lambda user, tid, conn: False,
+        )
+
+        conn = reload_db.get_system_db()
+        try:
+            # Register the table NOT public so RBAC has to gate it.
+            _seed_bq_table(conn, is_public=False)
+            # Admin warms the cache.
+            admin = {"role": "admin", "email": "admin@x.com"}
+            v2_schema.build_schema(conn, admin, "bq_view", project_id="p")
+            # Non-admin must hit RBAC denial — cache must NOT short-circuit.
+            other = {"role": "viewer", "email": "viewer@x.com"}
+            with pytest.raises(PermissionError):
+                v2_schema.build_schema(conn, other, "bq_view", project_id="p")
         finally:
             conn.close()

@@ -85,11 +85,20 @@ class QuotaTracker:
                 s["concurrent"] = max(0, s["concurrent"] - 1)
 
     def record_bytes(self, user: str, n: int) -> None:
+        """Record bytes consumed by a request that already executed.
+
+        Always commits the new total — even if it pushes the user past the
+        daily cap — so the next request sees the cumulative usage and gets
+        rejected. Recording AFTER raising would leave the counter unchanged
+        and let the caller repeat over-cap requests indefinitely (each one
+        executes the BQ scan, gets rejected, and counter never moves).
+        """
         if n <= 0:
             return
         with self._lock:
             s = self._ensure_bucket(user)
             new_total = s["bytes"] + n
+            s["bytes"] = new_total
             if new_total > self._max_daily_bytes:
                 raise QuotaExceededError(
                     kind=KIND_DAILY_BYTES,
@@ -97,7 +106,6 @@ class QuotaTracker:
                     limit=self._max_daily_bytes,
                     retry_after_seconds=_seconds_until_utc_midnight(),
                 )
-            s["bytes"] = new_total
 
     def bytes_used_today(self, user: str) -> int:
         with self._lock:

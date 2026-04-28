@@ -11,12 +11,12 @@ def reload_db(tmp_path, monkeypatch):
     yield db_module
 
 
-def _seed(conn):
+def _seed(conn, *, is_public=True):
     from src.repositories.table_registry import TableRegistryRepository
     TableRegistryRepository(conn).register(
         id="bq_view", name="bq_view", source_type="bigquery",
         bucket="ds", source_table="bq_view", query_mode="remote",
-        is_public=True,
+        is_public=is_public,
     )
 
 
@@ -55,3 +55,26 @@ class TestSampleEndpoint:
         finally:
             conn.close()
         assert captured["n"] == 100
+
+    def test_rbac_check_runs_before_cache(self, reload_db, monkeypatch):
+        """Regression: cache check used to come before RBAC, leaking sample rows
+        cached by an authorized user to subsequent unauthorized callers."""
+        from app.api import v2_sample
+        monkeypatch.setattr(
+            v2_sample, "_fetch_bq_sample",
+            lambda *a, **kw: [{"col": "secret"}],
+        )
+        monkeypatch.setattr(
+            "app.api.v2_sample.can_access_table",
+            lambda user, tid, conn: False,
+        )
+        conn = reload_db.get_system_db()
+        try:
+            _seed(conn, is_public=False)
+            admin = {"role": "admin", "email": "admin@x.com"}
+            v2_sample.build_sample(conn, admin, "bq_view", n=2, project_id="p")
+            other = {"role": "viewer", "email": "viewer@x.com"}
+            with pytest.raises(PermissionError):
+                v2_sample.build_sample(conn, other, "bq_view", n=2, project_id="p")
+        finally:
+            conn.close()

@@ -103,3 +103,65 @@ class TestScan:
             assert e.value.kind == REJECT_UNKNOWN_FUNCTION
         finally:
             conn.close()
+
+
+class TestOrderByValidation:
+    """Regression: order_by was concatenated raw into FROM clause SQL — exploitable."""
+
+    def test_unknown_column_rejected(self, reload_db, monkeypatch):
+        from app.api import v2_scan
+        monkeypatch.setattr(
+            v2_scan, "_resolve_schema",
+            lambda *a, **kw: {"event_date": "DATE"},
+        )
+        tracker = v2_scan._build_quota_tracker()
+        conn = reload_db.get_system_db()
+        try:
+            _seed(conn)
+            user = {"role": "admin", "email": "a@x.com"}
+            req = {"table_id": "bq_view", "select": ["event_date"], "order_by": ["bogus_col"], "limit": 1}
+            with pytest.raises(ValueError, match="unknown order_by"):
+                v2_scan.run_scan(conn, user, req, project_id="proj", quota=tracker)
+        finally:
+            conn.close()
+
+    def test_subquery_injection_rejected(self, reload_db, monkeypatch):
+        from app.api import v2_scan
+        monkeypatch.setattr(
+            v2_scan, "_resolve_schema",
+            lambda *a, **kw: {"event_date": "DATE"},
+        )
+        tracker = v2_scan._build_quota_tracker()
+        conn = reload_db.get_system_db()
+        try:
+            _seed(conn)
+            user = {"role": "admin", "email": "a@x.com"}
+            req = {
+                "table_id": "bq_view",
+                "select": ["event_date"],
+                "order_by": ["(SELECT secret FROM read_csv('/etc/passwd') LIMIT 1)"],
+                "limit": 1,
+            }
+            with pytest.raises(ValueError, match="invalid order_by"):
+                v2_scan.run_scan(conn, user, req, project_id="proj", quota=tracker)
+        finally:
+            conn.close()
+
+    def test_known_column_with_direction_accepted(self, reload_db, monkeypatch):
+        from app.api import v2_scan
+        monkeypatch.setattr(
+            v2_scan, "_resolve_schema",
+            lambda *a, **kw: {"event_date": "DATE"},
+        )
+        fake_table = pa.table({"event_date": ["2026-04-27"]})
+        monkeypatch.setattr(v2_scan, "_run_bq_scan", lambda *a, **kw: fake_table)
+        tracker = v2_scan._build_quota_tracker()
+        conn = reload_db.get_system_db()
+        try:
+            _seed(conn)
+            user = {"role": "admin", "email": "a@x.com"}
+            req = {"table_id": "bq_view", "select": ["event_date"], "order_by": ["event_date DESC"], "limit": 1}
+            # No exception
+            v2_scan.run_scan(conn, user, req, project_id="proj", quota=tracker)
+        finally:
+            conn.close()

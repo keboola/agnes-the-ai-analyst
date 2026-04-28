@@ -78,6 +78,21 @@ class TestDailyBytes:
         assert e.value.current == 1100  # would-be total
         assert e.value.limit == 1000
 
+    def test_record_above_cap_increments_counter_so_repeats_keep_failing(self):
+        """Regression: prior code raised BEFORE updating bytes, so an over-cap
+        request could be repeated indefinitely (each one ran the BQ scan, got
+        rejected, counter never moved). Counter must commit unconditionally."""
+        q = make_tracker(max_daily_bytes=1000)
+        q.record_bytes(user="alice", n=600)
+        with pytest.raises(QuotaExceededError):
+            q.record_bytes(user="alice", n=500)
+        # After the rejection, the counter MUST reflect the over-cap state.
+        assert q.bytes_used_today(user="alice") == 1100
+        # And a follow-up request stays rejected without further side effects.
+        with pytest.raises(QuotaExceededError):
+            q.record_bytes(user="alice", n=10)
+        assert q.bytes_used_today(user="alice") == 1110
+
     def test_per_user_isolation(self):
         q = make_tracker(max_daily_bytes=100)
         q.record_bytes(user="alice", n=80)

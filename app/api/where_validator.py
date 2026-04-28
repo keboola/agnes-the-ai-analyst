@@ -107,6 +107,15 @@ def validate_where(
         raise WhereValidationError(REJECT_MULTI_STATEMENT, "multi-statement input not allowed")
 
     select = statements[0]
+    # A predicate like `1=1 UNION ALL SELECT secret FROM x` parses as a single
+    # `exp.Union` (not `exp.Select`), and `find(exp.Where)` would return only
+    # the left side's `1=1` — passing structural checks while the raw predicate
+    # string still gets concatenated into the final SQL. Reject here.
+    if not isinstance(select, exp.Select):
+        raise WhereValidationError(
+            REJECT_DISALLOWED_NODE,
+            f"top-level statement must be SELECT, got {type(select).__name__}",
+        )
     where = select.find(exp.Where)
     if where is None:
         raise WhereValidationError(REJECT_PARSE, "no WHERE expression found in parsed input")

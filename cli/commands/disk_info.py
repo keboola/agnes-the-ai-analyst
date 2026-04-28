@@ -14,11 +14,12 @@ def _local_dir() -> Path:
 
 
 def _format_size(n: int) -> str:
+    size = float(n)
     for unit in ("B", "KB", "MB", "GB", "TB"):
-        if n < 1024 or unit == "TB":
-            return f"{n:.1f} {unit}"
-        n //= 1024
-    return f"{n} TB"
+        if size < 1024 or unit == "TB":
+            return f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TB"
 
 
 @disk_info_app.callback(invoke_without_command=True)
