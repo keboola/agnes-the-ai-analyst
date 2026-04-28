@@ -13,6 +13,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 <!-- Add bullets here. Group: Added / Changed / Fixed / Removed / Internal.
      Mark breaking changes with **BREAKING** at the start of the bullet. -->
 
+## [0.12.0] — 2026-04-28
+
+Security and OSS-readiness release. Closes the issue #81 connector → orchestrator trust boundary on both the rebuild path and the read-only query path (Group A) plus extractor-side identifier validation (Group D); adds view-name collision detection with schema v10 (Group C); surfaces Keboola partial-failure as exit code 2 (Group B). Closes the Jira webhook fail-open + path-traversal hole (#83). Gates the entire Script API on the admin role (#44). Wave 1 of the OSS vendor-neutralization moves generic ops scripts out of `scripts/grpn/` into `scripts/ops/` and replaces customer identifiers across code, tests, and planning docs with placeholders (#88). Multiple **BREAKING** changes — operators should grep this section for `BREAKING` before bumping their pin.
+
 ### Added
 
 - **Schema v10** introduces `view_ownership` to detect cross-connector
