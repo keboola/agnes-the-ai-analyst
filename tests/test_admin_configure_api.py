@@ -141,6 +141,29 @@ class TestAdminConfigure:
         assert overlay["instance"]["name"] == "New"
         assert overlay["data_source"]["type"] == "local"
 
+    def test_corrupt_overlay_refused_with_500_not_silently_overwritten(
+        self, seeded_app, tmp_path, monkeypatch
+    ):
+        """Symmetric to the server-config editor: /configure must refuse to
+        overwrite a corrupt overlay so the operator can investigate, instead
+        of silently dropping every previously-saved section."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        state = tmp_path / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        overlay_path = state / "instance.yaml"
+        overlay_path.write_text("instance: {name: 'good'\nauth:\n\tallowed_domain: bad")
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/configure",
+            json={"data_source": "local", "instance_name": "New"},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 500, resp.text
+        assert "corrupt overlay" in resp.json()["detail"]
+        assert overlay_path.read_text().startswith("instance: {name: 'good'")
+
 
 class TestAdminConfigureSSRF:
     """SSRF protection: keboola_url must not point to private/reserved networks.

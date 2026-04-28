@@ -311,6 +311,34 @@ class TestPostServerConfigAPI:
         # Either 422 (Pydantic validation) or 422-equivalent — both valid.
         assert resp.status_code in (400, 422)
 
+    def test_corrupt_overlay_refused_with_500_not_silently_overwritten(
+        self, seeded_app, tmp_path, monkeypatch
+    ):
+        """A malformed overlay used to be silently replaced — that masked
+        disk corruption / partial writes / hand-edits and dropped every
+        previously-saved section on the next save. The endpoint must now
+        refuse with 500 so the operator can investigate."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        state = tmp_path / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        # Plant a deliberately broken YAML — unclosed brace + tab indent —
+        # so PyYAML raises rather than yielding a dict.
+        overlay_path = state / "instance.yaml"
+        overlay_path.write_text("instance: {name: 'good'\nauth:\n\tallowed_domain: bad")
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"instance": {"name": "New Name"}}},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 500, resp.text
+        assert "corrupt overlay" in resp.json()["detail"]
+        # Critical: the corrupt file is NOT replaced. Operator gets a chance
+        # to back it up.
+        assert overlay_path.read_text().startswith("instance: {name: 'good'")
+
 
 class TestPostServerConfigAuditLog:
     def test_save_writes_audit_entry_with_sanitized_diff(self, seeded_app, tmp_path, monkeypatch):

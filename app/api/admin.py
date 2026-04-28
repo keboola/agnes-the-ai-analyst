@@ -7,6 +7,7 @@ callers via the same ``_user_group_ids`` lookup.
 
 import logging
 import os
+import threading
 import uuid
 from pathlib import Path
 
@@ -22,6 +23,14 @@ from src.repositories.audit import AuditRepository
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+# Serializes the read-modify-write of state/instance.yaml across the two
+# endpoints that mutate the overlay (POST /server-config and POST /configure).
+# Without it, two admins saving concurrently would each read the same overlay
+# snapshot, merge their disjoint patches, and the second os.replace would silently
+# drop the first patch. Single-process FastAPI workers; multi-worker deployments
+# would need an OS-level file lock — documented limitation.
+_overlay_write_lock = threading.Lock()
 
 # SSRF protection: reject private/internal URLs for keboola_url
 import ipaddress as _ipaddress
@@ -229,19 +238,16 @@ def _deep_merge(base: dict, patch: dict) -> dict:
 
 
 def _load_current_instance_yaml() -> dict:
-    """Return the editor's view of instance.yaml — fresh deep-merge of
-    static + overlay. Delegates to ``app.instance_config.load_instance_config``
-    after invalidating its cache so a save from another worker / a cron
-    that just landed shows up immediately. The shared helper is the
-    authoritative source so the editor never sees a different view than
-    the rest of the running app (issue surfaced post-rebase: the prior
-    duplicate read path returned overlay-OR-static while
-    ``load_instance_config`` did overlay-only — first save through the
-    new editor would silently delete static-only sections from every
-    runtime read).
+    """Return the editor's view of instance.yaml — deep-merge of static +
+    overlay via ``app.instance_config.load_instance_config``.
+
+    Readers (GET /server-config) hit the cache and trust that writers
+    invalidate. Writers must call ``reset_cache()`` explicitly *before*
+    the read so they see the latest disk state in the read-modify-write
+    sequence. The shared helper is the authoritative source so the editor
+    never sees a different view than the rest of the running app.
     """
-    from app.instance_config import load_instance_config, reset_cache
-    reset_cache()
+    from app.instance_config import load_instance_config
     return load_instance_config()
 
 
@@ -340,72 +346,93 @@ async def update_server_config(
             detail=f"section(s) {', '.join(danger_touched)} require confirm_danger=true",
         )
 
-    before = _load_current_instance_yaml()
-
-    # Deep merge — section-by-section so we never accidentally delete a
-    # sibling section the patch didn't touch.
-    after = dict(before)
-    for section, patch in request.sections.items():
-        if not isinstance(patch, dict):
-            raise HTTPException(
-                status_code=422,
-                detail=f"section '{section}' must be an object, got {type(patch).__name__}",
-            )
-        if isinstance(after.get(section), dict):
-            after[section] = _deep_merge(after[section], patch)
-        else:
-            after[section] = patch
-
-    # Write only the sections the user actually patched in this request.
-    # Two reasons:
-    #   1. Persisting the full merged config (or every editable section)
-    #      would snapshot non-editable static sections into the overlay,
-    #      shadowing later operator updates to those sections in the
-    #      static file (`_load_current_instance_yaml` merges static + overlay,
-    #      overlay wins per leaf).
-    #   2. The merged config has `${ENV_VAR}` placeholders RESOLVED to the
-    #      runtime values by config.loader. Writing every editable section
-    #      back would persist real cleartext secrets where the static file
-    #      had only env-var references — turning `smtp_password:
-    #      ${SMTP_PASSWORD}` into `smtp_password: hunter2` in the overlay.
-    # By writing only the sections in `request.sections` we keep both the
-    # static-evolution and the env-var-placeholder properties intact.
+    # Serialize read-modify-write across concurrent admin saves. Without the
+    # lock, two saves would each read the same overlay snapshot, merge their
+    # disjoint patches, and the second os.replace would silently drop the
+    # first patch. The lock spans the cache-invalidate → load → merge →
+    # atomic-write sequence; the audit log sits outside since it operates on
+    # local snapshots.
+    from app.instance_config import reset_cache
     data_dir = Path(os.environ.get("DATA_DIR", "./data"))
     config_path = data_dir / "state" / "instance.yaml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    overlay_payload: Dict[str, Any] = {}
-    if config_path.exists():
-        try:
-            overlay_payload = yaml.safe_load(config_path.read_text()) or {}
-        except Exception:
-            overlay_payload = {}
-    for section, patch in request.sections.items():
-        if section not in _EDITABLE_SECTIONS:
-            continue
-        # Deep-merge the patch into the existing overlay slot (or static-
-        # backed `before` if overlay had nothing for this section). This
-        # preserves any unrelated keys the operator didn't touch in this
-        # request — e.g. patching `email.smtp_host` doesn't blow away the
-        # `email.smtp_password: ${SMTP_PASSWORD}` reference.
-        existing = overlay_payload.get(section)
-        if not isinstance(existing, dict):
-            existing = {}
-        overlay_payload[section] = _deep_merge(existing, patch)
 
-    # Atomic via tmp + os.replace so two concurrent admin saves can't
-    # interleave bytes and produce corrupt YAML (especially harmful since
-    # auth.* is editable here — half-written file → operator lockout).
-    tmp_path = config_path.with_suffix(config_path.suffix + ".tmp")
-    tmp_path.write_text(yaml.dump(overlay_payload, default_flow_style=False, sort_keys=False))
-    os.replace(tmp_path, config_path)
-    logger.info("server-config: wrote %d section(s) to %s",
-                len(request.sections), config_path)
+    with _overlay_write_lock:
+        # Drop the in-process cache so we read the latest on-disk state,
+        # including any update that landed from a concurrent caller before
+        # we acquired the lock.
+        reset_cache()
+        before = _load_current_instance_yaml()
 
-    # Invalidate cached instance config so subsequent reads pick up the
-    # change. Hot-reload of running modules (auth providers, SMTP client)
-    # is out of scope — the restart banner tells the operator to bounce.
-    from app.instance_config import reset_cache
-    reset_cache()
+        # Deep merge — section-by-section so we never accidentally delete a
+        # sibling section the patch didn't touch.
+        after = dict(before)
+        for section, patch in request.sections.items():
+            if not isinstance(patch, dict):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"section '{section}' must be an object, got {type(patch).__name__}",
+                )
+            if isinstance(after.get(section), dict):
+                after[section] = _deep_merge(after[section], patch)
+            else:
+                after[section] = patch
+
+        # Write only the sections the user actually patched in this request.
+        # Two reasons:
+        #   1. Persisting the full merged config (or every editable section)
+        #      would snapshot non-editable static sections into the overlay,
+        #      shadowing later operator updates to those sections in the
+        #      static file (`_load_current_instance_yaml` merges static + overlay,
+        #      overlay wins per leaf).
+        #   2. The merged config has `${ENV_VAR}` placeholders RESOLVED to the
+        #      runtime values by config.loader. Writing every editable section
+        #      back would persist real cleartext secrets where the static file
+        #      had only env-var references — turning `smtp_password:
+        #      ${SMTP_PASSWORD}` into `smtp_password: hunter2` in the overlay.
+        # By writing only the sections in `request.sections` we keep both the
+        # static-evolution and the env-var-placeholder properties intact.
+        overlay_payload: Dict[str, Any] = {}
+        if config_path.exists():
+            try:
+                overlay_payload = yaml.safe_load(config_path.read_text()) or {}
+            except Exception as e:
+                # A corrupt overlay used to be silently replaced — that masked
+                # disk corruption / partial writes / hand-edits and dropped
+                # every previously-saved section on the next save. Refuse and
+                # surface so the operator can investigate.
+                logger.exception("server-config: refusing to overwrite corrupt overlay at %s", config_path)
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"refusing to overwrite corrupt overlay at {config_path} ({e}); "
+                           "back up and remove the file, or fix it by hand",
+                ) from e
+        for section, patch in request.sections.items():
+            if section not in _EDITABLE_SECTIONS:
+                continue
+            # Deep-merge the patch into the existing overlay slot (or static-
+            # backed `before` if overlay had nothing for this section). This
+            # preserves any unrelated keys the operator didn't touch in this
+            # request — e.g. patching `email.smtp_host` doesn't blow away the
+            # `email.smtp_password: ${SMTP_PASSWORD}` reference.
+            existing = overlay_payload.get(section)
+            if not isinstance(existing, dict):
+                existing = {}
+            overlay_payload[section] = _deep_merge(existing, patch)
+
+        # Atomic via tmp + os.replace so two concurrent admin saves can't
+        # interleave bytes and produce corrupt YAML (especially harmful since
+        # auth.* is editable here — half-written file → operator lockout).
+        tmp_path = config_path.with_suffix(config_path.suffix + ".tmp")
+        tmp_path.write_text(yaml.dump(overlay_payload, default_flow_style=False, sort_keys=False))
+        os.replace(tmp_path, config_path)
+        logger.info("server-config: wrote %d section(s) to %s",
+                    len(request.sections), config_path)
+
+        # Invalidate cached instance config so subsequent reads pick up the
+        # change. Hot-reload of running modules (auth providers, SMTP client)
+        # is out of scope — the restart banner tells the operator to bounce.
+        reset_cache()
 
     # Audit entry — diff is computed on RAW values then `_diff_dicts`
     # redacts each row whose leaf key matches `_is_secret_key`. Pre-
@@ -629,41 +656,48 @@ async def configure_instance(
     data_dir = Path(os.environ.get("DATA_DIR", "./data"))
     config_path = data_dir / "state" / "instance.yaml"
 
-    overlay: dict = {}
-    if config_path.exists():
-        try:
-            overlay = yaml.safe_load(config_path.read_text()) or {}
-        except Exception:
-            overlay = {}
+    # Same serialization + corrupt-overlay handling as POST /server-config.
+    with _overlay_write_lock:
+        overlay: dict = {}
+        if config_path.exists():
+            try:
+                overlay = yaml.safe_load(config_path.read_text()) or {}
+            except Exception as e:
+                logger.exception("configure: refusing to overwrite corrupt overlay at %s", config_path)
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"refusing to overwrite corrupt overlay at {config_path} ({e}); "
+                           "back up and remove the file, or fix it by hand",
+                ) from e
 
-    # Merge instance settings into the overlay only — never seed from the
-    # env-resolved merged config.
-    if request.instance_name:
-        overlay.setdefault("instance", {})["name"] = request.instance_name
+        # Merge instance settings into the overlay only — never seed from the
+        # env-resolved merged config.
+        if request.instance_name:
+            overlay.setdefault("instance", {})["name"] = request.instance_name
 
-    if request.allowed_domain:
-        overlay.setdefault("auth", {})["allowed_domain"] = request.allowed_domain
+        if request.allowed_domain:
+            overlay.setdefault("auth", {})["allowed_domain"] = request.allowed_domain
 
-    # data_source is fully owned by this endpoint — replace wholesale.
-    overlay["data_source"] = {"type": request.data_source}
-    if request.data_source == "keboola":
-        overlay["data_source"]["keboola"] = {
-            "stack_url": request.keboola_url,
-            "token_env": "KEBOOLA_STORAGE_TOKEN",
-        }
-    elif request.data_source == "bigquery":
-        overlay["data_source"]["bigquery"] = {
-            "project": request.bigquery_project,
-            "location": request.bigquery_location or "us",
-        }
+        # data_source is fully owned by this endpoint — replace wholesale.
+        overlay["data_source"] = {"type": request.data_source}
+        if request.data_source == "keboola":
+            overlay["data_source"]["keboola"] = {
+                "stack_url": request.keboola_url,
+                "token_env": "KEBOOLA_STORAGE_TOKEN",
+            }
+        elif request.data_source == "bigquery":
+            overlay["data_source"]["bigquery"] = {
+                "project": request.bigquery_project,
+                "location": request.bigquery_location or "us",
+            }
 
-    # Atomic write to writable data volume — same tmp + os.replace pattern
-    # as the server-config editor so a concurrent save can't tear the file.
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = config_path.with_suffix(config_path.suffix + ".tmp")
-    tmp_path.write_text(yaml.dump(overlay, default_flow_style=False, sort_keys=False))
-    os.replace(tmp_path, config_path)
-    logger.info("Wrote instance config to %s", config_path)
+        # Atomic write to writable data volume — same tmp + os.replace pattern
+        # as the server-config editor so a concurrent save can't tear the file.
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = config_path.with_suffix(config_path.suffix + ".tmp")
+        tmp_path.write_text(yaml.dump(overlay, default_flow_style=False, sort_keys=False))
+        os.replace(tmp_path, config_path)
+        logger.info("Wrote instance config to %s", config_path)
 
     # Persist secrets to .env_overlay (in data volume, never in git)
     secrets_to_persist = {}
