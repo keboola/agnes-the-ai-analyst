@@ -105,6 +105,14 @@ For `source_type=keboola` / `source_type=jira` (local), use **DuckDB SQL** in yo
 | Throwaway exploration with raw BQ syntax | `da query --remote` — one-shot, no snapshot |
 | Cross-table JOIN with both remote | Use `da fetch` for one side + `da query --remote` for the other; full cross-remote JOIN needs design (see #101) |
 
+## When the table you need isn't in `da catalog`
+
+The catalog reads from `system.duckdb::table_registry` — entries land there only via admin registration, not auto-discovery. If `da catalog` doesn't show what the user is asking about:
+
+1. Tell the user the table isn't registered
+2. Hand off to an admin (or, if you have admin role yourself, follow the **agnes-table-registration** skill)
+3. Don't `da query --remote` your way around it — the catalog gap means the registry doesn't track this dataset, RBAC can't gate it, and quotas don't apply
+
 ## Protocol summary
 
 1. **Discover**: `da catalog`, `da schema`, `da describe`
