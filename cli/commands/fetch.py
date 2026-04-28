@@ -55,6 +55,19 @@ def fetch(
         return
 
     name = as_name or table_id
+    # Snapshot name lands in DuckDB CREATE VIEW as a quoted identifier; a `"`
+    # in the name would break out and enable arbitrary SQL execution against
+    # the user's local analytics.duckdb. Validate up-front with the same
+    # regex used elsewhere for safe identifiers.
+    import re as _re
+    if not _re.match(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$", name):
+        typer.echo(
+            f"Error: snapshot name {name!r} is not a safe identifier. "
+            f"Use letters, digits, and underscores; must start with a letter "
+            f"or underscore; max 64 characters.",
+            err=True,
+        )
+        raise typer.Exit(2)
     snap_dir = _local_dir() / "user" / "snapshots"
     snap_dir.mkdir(parents=True, exist_ok=True)
 
@@ -69,7 +82,11 @@ def fetch(
     if order_by:
         req["order_by"] = [c.strip() for c in order_by.split(",") if c.strip()]
 
-    # Estimate (always shown unless --no-estimate)
+    # Estimate (always shown unless --no-estimate). The `--estimate` early
+    # exit is OUTSIDE this block — `--estimate` is a cost-safety mechanism
+    # ("dry-run only, do not fetch") whose guarantee must hold even when
+    # the user also passes `--no-estimate` (silly combo; treat as dry-run
+    # because the fetch-blocking semantics dominate).
     est = None
     if not no_estimate:
         try:
@@ -79,8 +96,8 @@ def fetch(
             raise typer.Exit(_exit_code_for(e))
         typer.echo(f"Estimate for {table_id}:")
         _print_estimate(est)
-        if estimate:
-            return
+    if estimate:
+        return
 
     # Snapshot existence check
     if not force and read_meta(snap_dir, name) is not None:

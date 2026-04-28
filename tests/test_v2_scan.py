@@ -147,6 +147,20 @@ class TestOrderByValidation:
         finally:
             conn.close()
 
+    def test_reserved_word_columns_get_quoted_in_bq_sql(self):
+        """Regression: a column literally named `order` (a SQL reserved word)
+        must be backtick-quoted in BQ SQL, otherwise the generated query
+        would be `SELECT order FROM ...` which doesn't parse."""
+        from app.api.v2_scan import _build_bq_sql, ScanRequest
+        sql = _build_bq_sql(
+            {"bucket": "ds", "source_table": "t"},
+            "p",
+            ScanRequest(table_id="t", select=["order", "group"], order_by=["order DESC"], limit=10),
+        )
+        assert "`order`" in sql
+        assert "`group`" in sql
+        assert "SELECT order " not in sql.lower().replace("`", "")  # not unquoted
+
     def test_known_column_with_direction_accepted(self, reload_db, monkeypatch):
         from app.api import v2_scan
         monkeypatch.setattr(

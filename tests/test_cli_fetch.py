@@ -33,6 +33,34 @@ def test_print_estimate_handles_none_values():
     })
 
 
+class TestDaFetchSafety:
+    def test_unsafe_snapshot_name_rejected(self, cli_env):
+        """Regression: --as 'evil"; DROP ...' would inject into the local
+        DuckDB CREATE VIEW. Validate identifier early, exit 2."""
+        from cli.commands.fetch import fetch_app
+        runner = CliRunner()
+        result = runner.invoke(fetch_app, [
+            "bq_view", "--as", 'evil"; DROP TABLE x; --',
+            "--no-estimate",
+        ])
+        assert result.exit_code == 2, result.stdout
+        assert "not a safe identifier" in (result.stdout + (result.stderr or ""))
+
+    def test_estimate_overrides_no_estimate(self, cli_env):
+        """Regression: --estimate is a 'do-not-fetch' guarantee. When combined
+        with --no-estimate it must still bail out without calling the scan
+        endpoint — otherwise --estimate's cost-safety promise is silently
+        defeated."""
+        from cli.commands.fetch import fetch_app
+        with patch("cli.commands.fetch.api_post_arrow") as m_scan:
+            runner = CliRunner()
+            result = runner.invoke(fetch_app, [
+                "bq_view", "--estimate", "--no-estimate",
+            ])
+            assert result.exit_code == 0, result.stdout
+            assert not m_scan.called, "api_post_arrow MUST NOT be called when --estimate is set"
+
+
 class TestDaFetch:
     def test_estimate_only_does_not_create_snapshot(self, cli_env, monkeypatch):
         from cli.commands.fetch import fetch_app

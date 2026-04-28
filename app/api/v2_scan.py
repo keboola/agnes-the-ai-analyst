@@ -73,20 +73,35 @@ def _validate_order_by(order_by: list[str] | None, schema: dict) -> None:
             raise ValueError(f"unknown order_by column: {entry!r}")
 
 
+def _quote_order_by_bq(entry: str) -> str:
+    """Backtick-quote the column part of an order_by entry, preserve direction."""
+    parts = entry.strip().split()
+    return f"`{parts[0]}`" + ("" if len(parts) == 1 else " " + " ".join(parts[1:]))
+
+
+def _quote_order_by_duckdb(entry: str) -> str:
+    parts = entry.strip().split()
+    return f'"{parts[0]}"' + ("" if len(parts) == 1 else " " + " ".join(parts[1:]))
+
+
 def _build_bq_sql(
     table_row: dict, project_id: str, req: ScanRequest, *, safe_where: str | None = None,
 ) -> str:
     """Build the BQ SQL string. ``safe_where`` MUST be the comment-stripped
     fragment from ``safe_where_predicate`` — splicing ``req.where`` raw lets a
     `1=1 --` predicate comment out everything that follows (LIMIT/ORDER BY).
+
+    Identifier quoting: column names are validated against the schema before
+    we get here, but reserved words (`order`, `group`, `timestamp`, …) still
+    need backticks to parse as identifiers in BQ.
     """
-    select_sql = ", ".join(req.select) if req.select else "*"
+    select_sql = ", ".join(f"`{c}`" for c in req.select) if req.select else "*"
     table_ref = f"`{project_id}.{table_row.get('bucket') or ''}.{table_row.get('source_table') or req.table_id}`"
     sql = f"SELECT {select_sql} FROM {table_ref}"
     if safe_where:
         sql += f" WHERE {safe_where}"
     if req.order_by:
-        sql += f" ORDER BY {', '.join(req.order_by)}"
+        sql += f" ORDER BY {', '.join(_quote_order_by_bq(e) for e in req.order_by)}"
     if req.limit:
         sql += f" LIMIT {int(req.limit)}"
     return sql
@@ -290,12 +305,12 @@ def run_scan(
             )
             local = duckdb.connect(":memory:")
             try:
-                projection = ", ".join(req.select) if req.select else "*"
+                projection = ", ".join(f'"{c}"' for c in req.select) if req.select else "*"
                 sql = f"SELECT {projection} FROM read_parquet(?)"
                 if safe_where:
                     sql += f" WHERE {safe_where}"
                 if req.order_by:
-                    sql += f" ORDER BY {', '.join(req.order_by)}"
+                    sql += f" ORDER BY {', '.join(_quote_order_by_duckdb(e) for e in req.order_by)}"
                 if req.limit:
                     sql += f" LIMIT {int(req.limit)}"
                 table = local.execute(sql, [str(parquet)]).arrow()
