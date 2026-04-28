@@ -73,7 +73,12 @@ def load_instance_config() -> dict:
         logger.warning(f"Could not load static instance.yaml: {e}")
 
     # Overlay patch from the writable volume. Best-effort — a corrupt
-    # overlay shouldn't take the app offline; log and proceed with base.
+    # overlay shouldn't take the app offline (we'd rather serve stale/base
+    # config than 500 every request), but log loudly with a traceback so
+    # the corruption surfaces in the operator's logs immediately. The
+    # write-side endpoints (POST /api/admin/server-config and /configure)
+    # refuse to overwrite a corrupt overlay with HTTP 500, so an admin
+    # noticing the saves break is the second line of defence.
     data_dir = Path(os.environ.get("DATA_DIR", "./data"))
     overlay_path = data_dir / "state" / "instance.yaml"
     if overlay_path.exists():
@@ -81,8 +86,12 @@ def load_instance_config() -> dict:
             overlay = yaml.safe_load(overlay_path.read_text()) or {}
             base = _deep_merge(base, overlay)
             logger.info("Merged overlay from %s", overlay_path)
-        except Exception as e:
-            logger.warning(f"Could not parse overlay instance.yaml at {overlay_path}: {e}")
+        except Exception:
+            logger.exception(
+                "instance.yaml overlay at %s is corrupt — falling back to "
+                "static base config; saves through the editor will refuse "
+                "until the file is repaired", overlay_path,
+            )
 
     _instance_config = base
     return _instance_config

@@ -339,6 +339,35 @@ class TestPostServerConfigAPI:
         # to back it up.
         assert overlay_path.read_text().startswith("instance: {name: 'good'")
 
+    @pytest.mark.parametrize("private_url", [
+        "http://169.254.169.254/latest/meta-data/",
+        "http://127.0.0.1:8080/",
+        "http://10.0.0.1/",
+        "http://localhost/",
+    ])
+    def test_post_rejects_private_url_in_keboola_stack_url(
+        self, seeded_app, tmp_path, monkeypatch, private_url
+    ):
+        """SSRF gate symmetric with /configure: data_source.keboola.stack_url
+        must not point to private/loopback/link-local networks. Without this
+        check, the editor would let an admin sneak the GCE/EC2 metadata
+        endpoint or an internal service into the overlay and trigger SSRF on
+        the next sync."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        (tmp_path / "state").mkdir(parents=True, exist_ok=True)
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"data_source": {"keboola": {"stack_url": private_url}}}},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400, resp.text
+        assert "private or reserved network" in resp.json()["detail"] \
+            or "could not resolve hostname" in resp.json()["detail"]
+        # Overlay must not have been written.
+        assert not (tmp_path / "state" / "instance.yaml").exists()
+
 
 class TestPostServerConfigAuditLog:
     def test_save_writes_audit_entry_with_sanitized_diff(self, seeded_app, tmp_path, monkeypatch):
@@ -422,6 +451,38 @@ class TestPostServerConfigAuditLog:
         assert len(keboola_rows) == 1
         assert keboola_rows[0]["before"] == "disabled"
         assert keboola_rows[0]["after"] == {"stack_url": "https://x"}
+
+    def test_diff_shape_change_redacts_secret_keyed_children(self):
+        """Regression: when a section's shape flips between dict and scalar,
+        the dict side may carry secret-keyed children (token_env →
+        env-resolved cleartext). The shape-change branch used to log the
+        raw dict verbatim because the parent key wasn't itself secret-named,
+        so a wholesale replacement of `data_source.keboola: {...}` ->
+        `data_source.keboola: "disabled"` would dump every cleartext token
+        / password the dict contained into audit_log.params. The branch now
+        runs `_redact` over the dict side so secret-keyed children are
+        masked even when the parent isn't."""
+        from app.api.admin import _diff_dicts
+        # dict-with-secret-child → scalar
+        diff = _diff_dicts(
+            {"keboola": {"stack_url": "https://x", "token_env": "hunter2-cleartext"}},
+            {"keboola": "disabled"},
+        )
+        row = next(d for d in diff if d["path"] == "keboola")
+        assert row["before"]["stack_url"] == "https://x"  # non-secret stays
+        assert row["before"]["token_env"] == "***"        # secret masked
+        assert "hunter2-cleartext" not in str(row), \
+            f"cleartext leaked into audit row: {row}"
+
+        # scalar → dict-with-secret-child (symmetric)
+        diff = _diff_dicts(
+            {"email": "disabled"},
+            {"email": {"smtp_host": "smtp.example.com", "smtp_password": "supersecret"}},
+        )
+        row = next(d for d in diff if d["path"] == "email")
+        assert row["after"]["smtp_host"] == "smtp.example.com"
+        assert row["after"]["smtp_password"] == "***"
+        assert "supersecret" not in str(row)
 
     def test_overlay_does_not_resolve_env_var_placeholders(self, seeded_app, tmp_path, monkeypatch):
         """Regression: prior fix wrote every editable section from the merged

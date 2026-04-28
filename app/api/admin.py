@@ -82,6 +82,39 @@ def _validate_url_not_private(url: str, field_name: str = "url") -> None:
             )
 
 
+# Patches to these section paths must pass _validate_url_not_private. The
+# tuple is `(section, *intermediate_keys, leaf_key)` — same SSRF gate the
+# /configure wizard applies to keboola_url, so an admin can't sneak
+# http://169.254.169.254/ in via the server-config editor's data_source patch.
+_URL_BEARING_FIELDS: tuple[tuple[str, ...], ...] = (
+    ("data_source", "keboola", "stack_url"),
+)
+
+
+def _validate_urls_in_patch(sections: Dict[str, Dict[str, Any]]) -> None:
+    """Apply SSRF protection to every URL-bearing field present in the patch.
+
+    Walks each registered ``(section, *path, leaf)`` against the incoming
+    patch and runs ``_validate_url_not_private`` on any string value found.
+    Missing intermediate keys / non-dict nodes are silently skipped — the
+    patch hasn't touched that field, no validation needed.
+    """
+    for path in _URL_BEARING_FIELDS:
+        section = path[0]
+        if section not in sections:
+            continue
+        node: Any = sections[section]
+        for key in path[1:-1]:
+            if not isinstance(node, dict) or key not in node:
+                node = None
+                break
+            node = node[key]
+        if isinstance(node, dict):
+            value = node.get(path[-1])
+            if isinstance(value, str) and value:
+                _validate_url_not_private(value, field_name=".".join(path))
+
+
 # --- Server-config (instance.yaml) editor -----------------------------------
 #
 # The /admin/server-config UI POSTs a partial dict here keyed by section
@@ -200,6 +233,11 @@ def _diff_dicts(before: dict, after: dict, path: str = "") -> List[Dict[str, Any
         # the parent path. Recursing with `{}` would lose the scalar side
         # entirely (admin sets `keboola: {…}` to `keboola: "disabled"` —
         # auditor would see members removed but never the new value).
+        # The dict side may itself contain secret-keyed children (e.g.
+        # `keboola: {token_env: ${KEBOOLA_TOKEN}}` resolved to cleartext);
+        # `_redact` masks those children even when the parent key isn't
+        # secret-named, so the audit log doesn't leak ${ENV_VAR}-resolved
+        # values when a section is replaced wholesale.
         elif b_is_dict != a_is_dict:
             if _is_secret_key(key):
                 changes.append({
@@ -208,7 +246,11 @@ def _diff_dicts(before: dict, after: dict, path: str = "") -> List[Dict[str, Any
                     "after": _mask(a_val),
                 })
             else:
-                changes.append({"path": new_path, "before": b_val, "after": a_val})
+                changes.append({
+                    "path": new_path,
+                    "before": _redact(b_val, key) if b_is_dict else b_val,
+                    "after": _redact(a_val, key) if a_is_dict else a_val,
+                })
         elif b_val != a_val:
             if _is_secret_key(key):
                 changes.append({
@@ -345,6 +387,11 @@ async def update_server_config(
             status_code=400,
             detail=f"section(s) {', '.join(danger_touched)} require confirm_danger=true",
         )
+
+    # SSRF protection — same gate the /configure wizard applies to
+    # keboola_url, but here it covers any URL-bearing field reachable via
+    # the per-section patch (e.g. data_source.keboola.stack_url).
+    _validate_urls_in_patch(request.sections)
 
     # Serialize read-modify-write across concurrent admin saves. Without the
     # lock, two saves would each read the same overlay snapshot, merge their
