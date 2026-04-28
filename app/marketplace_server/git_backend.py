@@ -74,12 +74,26 @@ def _merged_manifest_bytes(plugins: list[dict], etag: str) -> bytes:
     return json.dumps(manifest, indent=2, sort_keys=False).encode("utf-8")
 
 
-def file_set_for_user(conn: duckdb.DuckDBPyConnection, user: dict) -> Dict[str, bytes]:
+def file_set_for_user(
+    conn: duckdb.DuckDBPyConnection,
+    user: dict,
+    *,
+    plugins: list[dict] | None = None,
+    etag: str | None = None,
+) -> Dict[str, bytes]:
     """Files that go into the bare repo tree, in the same layout as the ZIP
     but without `.agnes/version.json` (which contains `generated_at` and
-    would force a different commit SHA on every rebuild)."""
-    plugins = marketplace_filter.resolve_allowed_plugins(conn, user)
-    etag = marketplace_filter.compute_etag(plugins)
+    would force a different commit SHA on every rebuild).
+
+    When *plugins* and *etag* are supplied the expensive
+    ``resolve_allowed_plugins`` / ``compute_etag`` round-trip is skipped
+    (callers that already resolved them — e.g. ``ensure_repo_for_user`` —
+    pass them through to avoid doubling the DB + disk-hash work).
+    """
+    if plugins is None:
+        plugins = marketplace_filter.resolve_allowed_plugins(conn, user)
+    if etag is None:
+        etag = marketplace_filter.compute_etag(plugins)
 
     files: Dict[str, bytes] = {}
     files[".claude-plugin/marketplace.json"] = _merged_manifest_bytes(plugins, etag)
@@ -142,7 +156,7 @@ def ensure_repo_for_user(conn: duckdb.DuckDBPyConnection, user: dict) -> Path:
     if target.is_dir():
         return target
 
-    files = file_set_for_user(conn, user)
+    files = file_set_for_user(conn, user, plugins=plugins, etag=etag)
     tmp = root / f".tmp-{etag}.{uuid.uuid4().hex}.git"
     try:
         build_bare_repo(files, tmp)
