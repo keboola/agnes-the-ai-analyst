@@ -132,6 +132,16 @@ def _write_zip_entry(zf: zipfile.ZipFile, arcname: str, data: bytes) -> None:
     zf.writestr(info, data)
 
 
+def compute_etag_for_user(
+    conn: duckdb.DuckDBPyConnection, user: dict
+) -> str:
+    """Resolve plugins and compute the content-addressed ETag without building
+    the ZIP.  Used by the router to short-circuit 304 responses before paying
+    the cost of file collection + ZIP compression."""
+    plugins = marketplace_filter.resolve_allowed_plugins(conn, user)
+    return marketplace_filter.compute_etag(plugins)
+
+
 def build_zip(conn: duckdb.DuckDBPyConnection, user: dict) -> Tuple[bytes, str]:
     """Build the deterministic ZIP for this user. Returns (bytes, etag).
 

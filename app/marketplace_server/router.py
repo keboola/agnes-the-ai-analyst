@@ -41,11 +41,14 @@ async def marketplace_zip(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ) -> Response:
     if_none_match = request.headers.get("if-none-match", "").strip().strip('"')
-    data, etag = packager.build_zip(conn, user)
 
+    # Compute the ETag first (DB query + file hashes) so we can short-circuit
+    # with 304 before paying for file collection + ZIP compression.
+    etag = packager.compute_etag_for_user(conn, user)
     if if_none_match and if_none_match == etag:
         return Response(status_code=304, headers={"ETag": f'"{etag}"'})
 
+    data, etag = packager.build_zip(conn, user)
     return Response(
         content=data,
         media_type="application/zip",

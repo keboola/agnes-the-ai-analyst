@@ -92,10 +92,10 @@ class UserGroupsRepository:
         )
 
     def ensure_system(self, name: str, description: str) -> Dict[str, Any]:
-        """Idempotentně zajistí existenci systémové skupiny.
+        """Idempotently ensure a system group exists.
 
-        Pokud skupina s daným jménem existuje (manuálně vytvořená adminem),
-        povýší ji na systémovou (is_system=TRUE). Jinak vytvoří novou.
+        If a group with the given name exists (manually created by an admin),
+        promote it to system (is_system=TRUE). Otherwise create a new one.
         """
         existing = self.get_by_name(name)
         if existing:
