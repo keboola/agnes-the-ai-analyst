@@ -55,6 +55,9 @@
                 </div>
                 <a class="app-user-menu-item {% if _path.startswith('/profile') %}is-active{% endif %}" role="menuitem" href="/profile">Profile</a>
                 <a class="app-user-menu-item {% if _path == '/tokens' %}is-active{% endif %}" role="menuitem" href="/tokens">My tokens</a>
+                {% if config.DEBUG_AUTH_ENABLED %}
+                <a class="app-user-menu-item {% if _path.startswith('/me/debug') %}is-active{% endif %}" role="menuitem" href="/me/debug">Auth debug</a>
+                {% endif %}
                 <a class="app-user-menu-item" role="menuitem" href="{{ url_for('auth.logout') }}">Logout</a>
             </div>
         </div>
