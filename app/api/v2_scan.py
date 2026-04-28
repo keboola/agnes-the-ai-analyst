@@ -158,7 +158,14 @@ def estimate(conn, user, raw_request: dict, *, project_id: str, billing_project:
     # Heuristic for result row/byte estimate. A row contains all selected
     # columns, so per-row bytes = sum of per-column estimates (NOT average).
     # If req.select is set, narrow to those columns; otherwise use full schema.
-    cols_for_estimate = [schema[c] for c in (req.select or []) if c in schema] or list(schema.values())
+    # Case-insensitive lookup matches the SELECT-validation policy — analysts
+    # often write a lowercased column name where INFORMATION_SCHEMA returned
+    # mixed-case; the schema lookup must follow.
+    schema_lower = {k.lower(): v for k, v in schema.items()}
+    cols_for_estimate = (
+        [schema_lower[c.lower()] for c in (req.select or []) if c.lower() in schema_lower]
+        or list(schema.values())
+    )
     avg_row_bytes = max(1, sum(_avg_bytes_for_type(t) for t in cols_for_estimate))
     rows_est = scan_bytes // max(avg_row_bytes, 1)
     if req.limit:
