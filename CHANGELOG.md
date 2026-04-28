@@ -10,8 +10,56 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-<!-- Add bullets here. Group: Added / Changed / Fixed / Removed / Internal.
-     Mark breaking changes with **BREAKING** at the start of the bullet. -->
+## [0.12.0] — 2026-04-28
+
+### Changed
+
+- `/admin/access` resource tree now visually separates the three-level hierarchy (resource type → block/bucket → item). Each resource-type section gets a colored left stripe and a faint tinted banner; sections are separated by an 8px neutral gap. Stripe colors cycle 4-wide via `nth-child` so adding new resource types to `app/resource_types.py` works without touching CSS. The first-position color is the project primary blue (`#0073D1`), avoiding the violet (`#6366f1`) reserved for granted items.
+
+### Added
+
+- `ResourceType.TABLE` — admins can grant table-level access per `user_group` via the `/admin/access` page. Tables registered in `table_registry` are listed grouped by `bucket`, with the existing per-block "Grant all" / "Revoke all" bulk actions. Listing and grant storage only — runtime enforcement still flows through legacy `dataset_permissions`; the migration plan lives in `docs/TODO-rbac-data-enforcement.md`.
+- `AGNES_ENABLE_TABLE_GRANTS` env var (default off) gates the half-built `ResourceType.TABLE` chip. While disabled the chip is hidden from `/admin/access` and `POST /api/admin/grants` returns **422** with the env-var name in `detail` on a TABLE grant attempt. Existing TABLE rows in `resource_grants` stay listable and deletable — the flag controls UI exposure and new-grant acceptance only, never blocks cleanup.
+- `da admin break-glass <user>` CLI — recovery path when the operator has locked themselves out of `/admin/access`. Adds the user to the Admin user_group with `source='system_seed'` regardless of RBAC state. Bypasses authentication; relies on filesystem access to `${DATA_DIR}/state/system.duckdb` implying host-level trust. Document this in deployment runbooks alongside `SEED_ADMIN_EMAIL`.
+
+### Internal
+
+- `scripts/seed_dummy_tables.py` — populates `table_registry` with 12 dummy tables across 3 buckets (`in.c-finance`, `in.c-marketing`, `in.c-product`), each with `is_public=False`, for exercising the new `/admin/access` Tables section without a configured data source.
+- `/marketplace.zip` short-circuits to `304` before any file IO or ZIP compression on a matching `If-None-Match`. Hot path on every Claude Code SessionStart hook. Backed by an in-process `cachetools.TTLCache` over the resolved-plugins → ETag map (default 120s, env-tunable via `AGNES_MARKETPLACE_ETAG_TTL`, set `0` to disable). `invalidate_etag_cache()` is called by marketplace sync after refresh so the next request re-hashes against new on-disk content instead of waiting for TTL expiry. New explicit dependency: `cachetools>=5.3.0`.
+
+### Fixed
+
+- `/admin/access` group sidebar grant-count badges no longer revert to a stale value when switching between groups. The badge was reading `state.groups[i].grant_count`, a snapshot populated once at `/access-overview` load; toggling a grant only updated the DOM (via `refreshCounts`), not that field, so the next `renderGroups` call (triggered by `selectGroup`) would clobber the live count with the original snapshot. `renderGroups` now derives the count live from `state.grants`, the array that `toggleGrant`/`bulkSet` keep in sync. Server data was always correct — only the in-page badge drifted until refresh.
+- `/catalog`, `/admin/tables`, and `/admin/permissions` pages now render the shared top header correctly. The pages include `_app_header.html` (which uses `.app-*` CSS classes) but were not linking `style-custom.css` where those classes are defined; only `dashboard.html` and `base.html` did. Without the stylesheet the nav links, dropdowns, and user menu rendered as unstyled inline text. Added the missing `<link>` to all three templates.
+- `PATCH /api/admin/groups/{id}` on a system group now correctly accepts description-only updates while still rejecting renames. Earlier the repo guard rejected any mutation on `is_system=TRUE` rows and the endpoint surfaced a misleading `409 "Cannot rename a system group"` on a description-only payload.
+- `docker-compose.host-mount.yml` now uses `o: bind,rbind` instead of `o: bind` for the `data` volume. With a plain bind, sub-mounts under `/data` on the host (e.g. the dual-disk layout where sdc is mounted on `/data/state`) are silently shadowed inside the container by an empty subdirectory on the parent disk. The container then writes `system.duckdb` and other state to the wrong disk; the dedicated state disk receives no writes and accumulates only the snapshot left by the migration script. Recursive bind propagates existing sub-mounts at container start, so the container sees the same filesystem the host does. Operators on dual-disk VMs need to copy the live DB from `/var/lib/docker/volumes/agnes_data/_data/state/` (sdb's empty subdir) onto `/data/state/` (sdc) **before** redeploying with the fix, or the next start will surface the stale snapshot.
+
+### Changed
+
+- **BREAKING** Marketplace endpoint (`/marketplace.zip`, `/marketplace.git/*`) no longer god-modes for Admin members. `src.marketplace_filter.resolve_allowed_plugins` now filters every caller — admins included — through `resource_grants`. Admins curate their own marketplace view by granting plugins to the Admin group (or any group they belong to). Existing installs where the only membership on Admin is the admin themselves will see an empty marketplace until grants are added in `/admin/access`. App-level authorization (`require_admin`, `can_access` for non-marketplace types) is unaffected — Admin is still god mode there.
+- **BREAKING** RBAC redesigned around two layers: app-level access via the `Admin` user-group (god mode short-circuit) and resource-level access via a generic `(group, resource_type, resource_id)` grant model. The four-value `core.viewer/analyst/km_admin/admin` hierarchy with `implies` BFS expansion is gone — every protected endpoint now uses either `require_admin` or `require_resource_access(ResourceType.X, "{path}")` from the new `app.auth.access` module. Authorization is decided per-request via a single DB lookup; no session cache, no dual-path resolver, no `_hydrate_legacy_role` shim. See `docs/RBAC.md`.
+- **BREAKING** `internal_roles`, `group_mappings`, `user_role_grants`, and `plugin_access` tables removed. Replaced by `user_group_members` (binds users to user_groups with a `source` enum: `admin` / `google_sync` / `system_seed`) and `resource_grants` (group → `(resource_type, resource_id)`). Schema v13; the migration backfills from v12 atomically — `users.groups` JSON is converted into `user_group_members` rows with `source='google_sync'`, `core.admin` grants become Admin-group memberships with `source='system_seed'`, and `plugin_access` rows become `resource_grants` of type `marketplace_plugin`. The `users.groups` JSON column is dropped; the deprecated `users.role` column is kept NULL as a legacy artifact.
+- **BREAKING** Schema v14 — `user_group_members` and `resource_grants` now declare DuckDB foreign-key constraints on `group_id` (referencing `user_groups.id`). Cascade deletes can no longer leave orphaned member / grant rows pointing at a deleted group. Migration is RENAME → CREATE-with-FK → INSERT → DROP, wrapped in `BEGIN TRANSACTION` so a partial failure rolls back without leaving the DB at a half-applied schema. Forks that touched these tables outside the documented repository APIs need to verify the FK direction matches their writes.
+- **BREAKING** Admin REST surface unified under `/api/admin/groups`, `/api/admin/groups/{id}/members`, `/api/admin/grants`, `/api/admin/resource-types`. `app.api.role_management` and `app.api.plugin_access` removed. The web UI route `/admin/role-mapping` and `/admin/plugin-access` are replaced by a single `/admin/access` page; the `_app_header.html` link is renamed to "Access".
+- **BREAKING** CLI subcommands `da admin role *`, `da admin mapping *`, `da admin grant-role`, `da admin revoke-role`, `da admin effective-roles` removed. New subcommands: `da admin group {list,create,delete,members,add-member,remove-member}` and `da admin grant {list,create,delete,resource-types}`. `da admin set-role <user> admin` still works as a thin wrapper that toggles Admin-group membership.
+- Module authors no longer call `register_internal_role(...)`. Resource types are an `app.resource_types.ResourceType` `StrEnum` paired with a `ResourceTypeSpec` registered in `RESOURCE_TYPES`; adding a new resource type means adding one enum member, one `list_blocks(conn)` projection delegate, and one spec entry — all in `app/resource_types.py`. The registry drives both `/api/admin/resource-types` and `/api/admin/access-overview`, so there's no second wiring step. No DB migration, no startup hook.
+- Google OAuth callback writes Cloud Identity group memberships into `user_group_members` (source='google_sync') instead of `users.groups` JSON. Manual admin-added memberships (source='admin') survive subsequent logins.
+
+### Removed
+
+- `app/auth/role_resolver.py`, `app/api/role_management.py`, `app/api/plugin_access.py`.
+- `src/repositories/internal_roles.py`, `src/repositories/group_mappings.py`, `src/repositories/user_role_grants.py`.
+- `app/web/templates/admin_role_mapping.html`, `app/web/templates/admin_plugin_access.html`.
+- `Role` enum + `has_role`, `is_admin`, `is_km_admin`, `is_analyst`, `_is_admin_user_dict`, `set_user_role`, `get_user_role` from `src/rbac.py`. Dataset-access helpers (`can_access_table`, `get_accessible_tables`, `has_dataset_access`) preserved.
+- Test files: `test_role_resolver.py`, `test_api_role_management.py`, `test_admin_role_mapping_ui.py`, `test_cli_admin_role.py`, `test_schema_v9_migration.py`, `test_plugin_access_api.py`.
+
+### Internal
+
+- `src/db.py` schema bumped to v13. New helpers `_seed_system_groups` (idempotent Admin/Everyone seed, runs on every connect) and `_v12_to_v13_finalize` (one-shot backfill + DROP cascade) replace `_seed_core_roles` and `_backfill_users_role_to_grants`.
+- `app.auth.access` is the new authorization vocabulary: `_user_group_ids`, `is_user_admin`, `can_access`, `require_admin`, `require_resource_access`. Lives in its own module to avoid the circular import that would happen if it sat in `app.auth.dependencies` (the dependency factory needs `get_current_user` from there).
+- New `tests/helpers/auth.py::grant_admin(conn, user_id)` — adds a user to the Admin system group so `require_admin` resolves to True. Updated test fixtures across `test_admin_tokens_ui`, `test_password_flows`, `test_pat`, `test_api`, `test_api_complete`, `test_api_scripts`, `test_web_ui` to call it after `UserRepository.create(role="admin")`. The legacy `users.role` column alone is no longer the admin marker.
+- Skipped at module level (rewrite required for v13): `test_admin_user_capabilities_ui` (asserts the gone v9 capabilities UI), `test_marketplace_server_zip` and `test_marketplace_server_git` (depend on the removed `PluginAccessRepository`).
+- Skipped individually as v13 behavior changes: `TestScriptRBAC` in `test_security` (scripts are now any-signed-in-user, not analyst+), profile-page tests in `test_web_ui` that asserted `core.analyst` / `Direct grants` / `Effective roles` markers from the dropped role hierarchy.
 
 ### Added
 
@@ -60,7 +108,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   deploy a malicious script and wait for an admin to run it. Operators who
   need scripted workflows for non-admin users should run them on the user's
   behalf or expose the relevant data via the read-only `/api/data` surface
-  instead.
+  instead. **Migration for cron / scheduler PATs:** if a non-admin PAT is
+  wired into a scheduler that hits `/api/scripts/{id}/run` or
+  `/api/scripts/run`, the request now returns 403. Add the PAT user to the
+  Admin group via `/admin/access` or
+  `da admin group add-member Admin <pat-user-email>`. PATs themselves do not
+  need re-issuing — group membership is read at request time.
 - **BREAKING (ops)**: Generic ops scripts moved out of the customer-named
   `scripts/grpn/` directory into `scripts/ops/` as part of the OSS
   vendor-neutralization (issue #88):
