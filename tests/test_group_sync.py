@@ -131,7 +131,9 @@ class TestRealPath:
         # Second call should have pageToken=tok1
         assert search.call_args_list[1].kwargs["pageToken"] == "tok1"
 
-    def test_api_exception_returns_empty(self, monkeypatch):
+    def test_api_exception_returns_none(self, monkeypatch):
+        """API failure returns None so callers can distinguish soft-fail
+        from a successful call that returned zero groups."""
         monkeypatch.delenv("GOOGLE_ADMIN_SDK_MOCK_GROUPS", raising=False)
 
         def raise_boom(*a, **kw):
@@ -149,16 +151,35 @@ class TestRealPath:
         )
 
         from app.auth.group_sync import fetch_user_groups
-        assert fetch_user_groups("user@x") == []
+        assert fetch_user_groups("user@x") is None
 
-    def test_client_init_exception_returns_empty(self, monkeypatch):
-        """Errors before the API call (ADC, discovery.build) also fail-soft."""
+    def test_client_init_exception_returns_none(self, monkeypatch):
+        """Errors before the API call (ADC, discovery.build) also fail-soft —
+        return None to distinguish from a successful empty response."""
         monkeypatch.delenv("GOOGLE_ADMIN_SDK_MOCK_GROUPS", raising=False)
 
         def boom(*a, **kw):
             raise RuntimeError("no metadata server")
 
         monkeypatch.setattr("google.auth.default", boom)
+
+        from app.auth.group_sync import fetch_user_groups
+        assert fetch_user_groups("user@x") is None
+
+    def test_legit_zero_groups_returns_empty_list(self, monkeypatch):
+        """API answered with no groups → empty list (NOT None). The OAuth
+        callback uses this distinction to decide whether to deny login or
+        pass-through on cached membership."""
+        monkeypatch.delenv("GOOGLE_ADMIN_SDK_MOCK_GROUPS", raising=False)
+        service, _ = _make_service_mock([{"memberships": []}])
+        monkeypatch.setattr(
+            "google.auth.default",
+            lambda scopes=None: (mock.Mock(), "test-project"),
+        )
+        monkeypatch.setattr(
+            "googleapiclient.discovery.build",
+            lambda *a, **kw: service,
+        )
 
         from app.auth.group_sync import fetch_user_groups
         assert fetch_user_groups("user@x") == []

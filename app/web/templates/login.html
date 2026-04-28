@@ -3,7 +3,28 @@
 {% block title %}Login - Data Analyst Portal{% endblock %}
 
 {% block content %}
+{# Map ?error= codes (raised by auth providers) to user-facing text. Codes
+   not listed here render the generic fallback. #}
+{% set _login_errors = {
+    "not_in_foundryai_group": "Your Google account isn't a member of any group permitted to use this Agnes instance. Ask your Agnes administrator to grant you access.",
+    "group_check_unavailable": "We couldn't verify your group membership with Google right now. Please try signing in again in a moment.",
+    "deactivated": "This account has been deactivated. Contact your Agnes administrator if you believe this is a mistake.",
+    "domain_not_allowed": "Your email domain isn't permitted to sign in to this Agnes instance.",
+    "no_email": "Google did not return an email address for this account.",
+    "oauth_failed": "Sign-in with Google failed. Please try again.",
+    "google_not_configured": "Google sign-in is not configured on this Agnes instance.",
+} %}
+{% set _err_code = request.query_params.get("error") %}
+{% set _err_text = _login_errors.get(_err_code) %}
 <div class="login-page">
+{% if _err_code %}
+<div class="login-error-banner" role="alert" style="
+    max-width: 720px; margin: 16px auto 0; padding: 12px 16px;
+    background: #fef2f2; border: 1px solid #fecaca; color: #991b1b;
+    border-radius: 8px; font-size: 14px; line-height: 1.4;">
+  {{ _err_text or "Sign-in failed. Please try again or contact your administrator." }}
+</div>
+{% endif %}
     <div class="login-split">
         <!-- Left: Features & Value Proposition -->
         <div class="login-features">

@@ -65,6 +65,23 @@
   .origin-admin      { background: #ede9fe; color: #6d28d9; }
   .origin-google_sync { background: #dcfce7; color: #166534; }
 
+  /* Chip showing the bound external identity-provider group (e.g. Google
+     Workspace email). Click copies value to clipboard for quick paste into
+     admin.google.com. */
+  .ext-chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    max-width: 280px;
+    padding: 3px 8px; border-radius: 6px;
+    background: #dcfce7; color: #166534;
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-size: 11px; line-height: 1.4;
+    border: 1px solid #bbf7d0;
+    cursor: copy;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .ext-chip:hover { background: #bbf7d0; }
+  .ext-chip-empty { color: #9ca3af; font-size: 11px; }
+
   .gp-actions { display: flex; gap: 6px; justify-content: flex-end; }
   .icon-btn {
     padding: 5px 10px; border-radius: 6px; font-size: 12px;
@@ -188,6 +205,7 @@
           <th>Name</th>
           <th>Description</th>
           <th>Origin</th>
+          <th>Linked to</th>
           <th class="count-cell">Members</th>
           <th class="count-cell">Resources</th>
           <th>Created</th>
@@ -308,14 +326,21 @@ function render() {
     tr.dataset.id = g.id;
     tr.style.cursor = "pointer";
     const origin = g.origin || "admin";
-    const actions = g.is_system
+    // Externally-bound groups (Google sync) are read-only for admin even
+    // if they're not is_system — the link is the single source of truth.
+    const isExternal = !!g.external_id;
+    const actions = (g.is_system || isExternal)
       ? `<span style="color:#9ca3af;font-size:11px">read-only</span>`
       : `<button class="icon-btn" data-action="edit">Edit</button>
          <button class="icon-btn danger" data-action="delete">Delete</button>`;
+    const extCell = g.external_id
+      ? `<span class="ext-chip" title="Click to copy" data-copy="${esc(g.external_id)}">${esc(g.external_id)}</span>`
+      : `<span class="ext-chip-empty">—</span>`;
     tr.innerHTML = `
       <td><a class="gp-name" href="/admin/groups/${encodeURIComponent(g.id)}">${esc(g.name)}</a></td>
       <td><span class="gp-desc">${esc(g.description || "")}</span></td>
       <td><span class="origin-chip origin-${esc(origin)}">${esc(origin.replace("_"," "))}</span></td>
+      <td>${extCell}</td>
       <td class="count-cell">${g.member_count || 0}</td>
       <td class="count-cell">
         ${g.grant_count || 0}
@@ -324,6 +349,15 @@ function render() {
       <td class="date-cell">${fmtDate(g.created_at)}</td>
       <td><div class="gp-actions">${actions}</div></td>
     `;
+    const extEl = tr.querySelector(".ext-chip[data-copy]");
+    if (extEl) {
+      extEl.addEventListener("click", e => {
+        e.stopPropagation();
+        navigator.clipboard?.writeText(extEl.dataset.copy || "")
+          .then(() => toast("Copied to clipboard", "success"))
+          .catch(() => {});
+      });
+    }
     // Row click → detail (unless action button)
     tr.addEventListener("click", e => {
       if (e.target.closest("[data-action]")) return;

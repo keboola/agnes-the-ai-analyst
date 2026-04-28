@@ -905,12 +905,17 @@ class TestSchemaV12:
             [eng_id, 'foundry-ai', 'metrics'])
         conn.close()
 
-        # Trigger upgrade.
+        # Trigger upgrade — runs the full ladder up to SCHEMA_VERSION.
         conn = get_system_db()
         try:
             assert get_schema_version(conn) == SCHEMA_VERSION
 
-            # admin → Admin + Engineering + Everyone
+            # admin → Admin + Engineering. Everyone is no longer present
+            # post-v14: the v13 backfill added an Everyone row for every
+            # user with source='system_seed' / added_by='system:v13-backfill',
+            # and the v14 cleanup removes exactly those rows. Real Everyone
+            # membership now comes from the configured Workspace prefix sync
+            # (or explicit admin assignment) — neither happens in this test.
             admin_groups = {
                 r[0] for r in conn.execute(
                     """SELECT g.name FROM user_group_members m
@@ -918,9 +923,13 @@ class TestSchemaV12:
                        WHERE m.user_id = ?""", [admin_uid]
                 ).fetchall()
             }
-            assert {"Admin", "Engineering", "Everyone"} <= admin_groups
+            assert {"Admin", "Engineering"} <= admin_groups
+            assert "Everyone" not in admin_groups, (
+                "v14 cleanup should have removed the v13-backfill "
+                "system_seed Everyone row"
+            )
 
-            # bob → only Everyone
+            # bob → no memberships (Everyone removed by v14, no other source)
             bob_groups = {
                 r[0] for r in conn.execute(
                     """SELECT g.name FROM user_group_members m
@@ -928,7 +937,7 @@ class TestSchemaV12:
                        WHERE m.user_id = ?""", [bob_uid]
                 ).fetchall()
             }
-            assert bob_groups == {"Everyone"}
+            assert bob_groups == set()
 
             # plugin_access → resource_grants
             grants = conn.execute(
@@ -936,6 +945,126 @@ class TestSchemaV12:
                    WHERE group_id = ?""", [eng_id]
             ).fetchall()
             assert grants == [("marketplace_plugin", "foundry-ai/metrics")]
+
+            # v14: external_id column exists on user_groups
+            col = conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'user_groups' AND column_name = 'external_id'"
+            ).fetchone()
+            assert col is not None
+        finally:
+            conn.close()
+
+
+class TestSchemaV15Cleanup:
+    """v14 finalize removes orphan email-named google-synced groups (those
+    not referenced from resource_grants) and the v13-backfill Everyone rows.
+    Both deletions are surgical — protected groups (with grants) and other
+    system_seed sources survive."""
+
+    def test_v15_removes_orphan_google_synced_groups_but_preserves_referenced(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        import uuid
+        import duckdb as _duckdb
+        from src.db import get_system_db, _v14_to_v15_finalize
+
+        db_path = tmp_path / "state" / "system.duckdb"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Spin up a normal system DB (creates v14 schema fresh).
+        conn = get_system_db()
+        try:
+            # Insert two pre-v14 google-synced groups (email as name, no
+            # external_id). One is wired into resource_grants; one isn't.
+            referenced_id = str(uuid.uuid4())
+            orphan_id = str(uuid.uuid4())
+            conn.execute(
+                "INSERT INTO user_groups (id, name, description, is_system, "
+                "external_id, created_by) VALUES (?, ?, ?, FALSE, NULL, "
+                "'system:google-sync')",
+                [referenced_id, "wired@example.com", "pre-v14 wired"],
+            )
+            conn.execute(
+                "INSERT INTO user_groups (id, name, description, is_system, "
+                "external_id, created_by) VALUES (?, ?, ?, FALSE, NULL, "
+                "'system:google-sync')",
+                [orphan_id, "orphan@example.com", "pre-v14 orphan"],
+            )
+            conn.execute(
+                "INSERT INTO resource_grants (id, group_id, resource_type, "
+                "resource_id) VALUES (?, ?, ?, ?)",
+                [str(uuid.uuid4()), referenced_id, "marketplace_plugin",
+                 "foo/bar"],
+            )
+
+            # Re-run the finalize step (idempotent — DELETEs hit zero rows
+            # the second time).
+            _v14_to_v15_finalize(conn)
+
+            # Orphan gone.
+            assert conn.execute(
+                "SELECT id FROM user_groups WHERE id = ?", [orphan_id]
+            ).fetchone() is None
+            # Referenced survived.
+            assert conn.execute(
+                "SELECT id FROM user_groups WHERE id = ?", [referenced_id]
+            ).fetchone() is not None
+        finally:
+            conn.close()
+
+    def test_v15_removes_v13_backfill_everyone_rows_only(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        import uuid
+        from src.db import (
+            get_system_db, _v14_to_v15_finalize, SYSTEM_EVERYONE_GROUP,
+        )
+
+        conn = get_system_db()
+        try:
+            everyone_id = conn.execute(
+                "SELECT id FROM user_groups WHERE name = ?",
+                [SYSTEM_EVERYONE_GROUP],
+            ).fetchone()[0]
+
+            # Two seed users so we can compare.
+            uid_v13 = str(uuid.uuid4())
+            uid_other = str(uuid.uuid4())
+            conn.execute(
+                "INSERT INTO users (id, email, name) VALUES (?, ?, ?), (?, ?, ?)",
+                [uid_v13, "v13@x", "V", uid_other, "other@x", "O"],
+            )
+            # Pre-v14 backfill row (target of cleanup).
+            conn.execute(
+                "INSERT INTO user_group_members (user_id, group_id, source, "
+                "added_by) VALUES (?, ?, 'system_seed', 'system:v13-backfill')",
+                [uid_v13, everyone_id],
+            )
+            # Different system_seed row (e.g. SEED_ADMIN_EMAIL bootstrap) —
+            # must survive cleanup.
+            conn.execute(
+                "INSERT INTO user_group_members (user_id, group_id, source, "
+                "added_by) VALUES (?, ?, 'system_seed', 'seed_admin_bootstrap')",
+                [uid_other, everyone_id],
+            )
+
+            _v14_to_v15_finalize(conn)
+
+            # v13-backfill row gone.
+            assert conn.execute(
+                "SELECT 1 FROM user_group_members "
+                "WHERE user_id = ? AND group_id = ?",
+                [uid_v13, everyone_id],
+            ).fetchone() is None
+            # Other system_seed row preserved.
+            assert conn.execute(
+                "SELECT 1 FROM user_group_members "
+                "WHERE user_id = ? AND group_id = ?",
+                [uid_other, everyone_id],
+            ).fetchone() is not None
         finally:
             conn.close()
 

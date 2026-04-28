@@ -133,7 +133,11 @@
   .toast.error { background: #b91c1c; }
 </style>
 
-<div class="gd-page" data-group-id="{{ target_group.id }}" data-group-name="{{ target_group.name }}" data-is-system="{{ 'true' if target_group.is_system else 'false' }}">
+<div class="gd-page"
+     data-group-id="{{ target_group.id }}"
+     data-group-name="{{ target_group.name }}"
+     data-is-system="{{ 'true' if target_group.is_system else 'false' }}"
+     data-external-id="{{ target_group.external_id or '' }}">
   <div class="gd-header">
     <a href="/admin/groups" class="gd-back">← Back to groups</a>
     <div class="gd-title-block">
@@ -145,13 +149,38 @@
         {{ target_group.description or "—" }}
       </div>
     </div>
-    {% if not target_group.is_system %}
+    {% if not target_group.is_system and not target_group.external_id %}
     <div style="display:flex; gap:6px;">
       <button class="icon-btn" id="edit-group-btn">Edit</button>
       <button class="icon-btn danger" id="delete-group-btn">Delete</button>
     </div>
+    {% elif target_group.external_id and not target_group.is_system %}
+    {# Bound non-system group: rename of display name still allowed. Delete is not. #}
+    <div style="display:flex; gap:6px;">
+      <button class="icon-btn" id="edit-group-btn">Edit name</button>
+    </div>
     {% endif %}
   </div>
+
+  {% if target_group.external_id %}
+  <div role="status" style="
+       margin-bottom: 16px; padding: 12px 16px;
+       background: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46;
+       border-radius: 10px; font-size: 13px; line-height: 1.5;">
+    <strong>Members are synced from Google Workspace.</strong>
+    Bound to
+    <code style="background: rgba(6,95,70,0.12); padding: 1px 6px; border-radius: 4px;">
+      {{ target_group.external_id }}
+    </code>
+    — membership here is read-only. Add or remove members in
+    <a href="https://admin.google.com" target="_blank" rel="noopener"
+       style="color: #047857; font-weight: 500;">admin.google.com</a>;
+    changes apply on each user's next sign-in.
+    {% if not target_group.is_system %}
+    The display name (currently <em>{{ target_group.name }}</em>) can still be edited via the button above.
+    {% endif %}
+  </div>
+  {% endif %}
 
   <!-- Members section -->
   <section class="gd-section">
@@ -168,10 +197,12 @@
       <tbody id="members-tbody"></tbody>
     </table>
     <div class="gd-empty" id="members-empty" style="display:none;">No members yet.</div>
+    {% if not target_group.external_id %}
     <div class="add-row">
       <input id="add-email" type="email" autocomplete="off" placeholder="Add user by email…">
       <button id="add-btn" disabled>Add member</button>
     </div>
+    {% endif %}
   </section>
 
   <!-- Resource grants summary -->
@@ -316,13 +347,19 @@ async function addMember() {
   loadMembers();
 }
 
-document.getElementById("add-btn").addEventListener("click", addMember);
-document.getElementById("add-email").addEventListener("input", e => {
-  document.getElementById("add-btn").disabled = !e.target.value.trim();
-});
-document.getElementById("add-email").addEventListener("keydown", e => {
-  if (e.key === "Enter") { e.preventDefault(); if (e.target.value.trim()) addMember(); }
-});
+// Externally-bound groups don't render the add-row form (server-side); these
+// handlers are no-op when the elements are absent.
+const _addBtn = document.getElementById("add-btn");
+const _addInput = document.getElementById("add-email");
+if (_addBtn && _addInput) {
+  _addBtn.addEventListener("click", addMember);
+  _addInput.addEventListener("input", e => {
+    _addBtn.disabled = !e.target.value.trim();
+  });
+  _addInput.addEventListener("keydown", e => {
+    if (e.key === "Enter") { e.preventDefault(); if (e.target.value.trim()) addMember(); }
+  });
+}
 
 async function removeMember(userId, label) {
   if (!confirm(`Remove ${label} from this group?`)) return;
