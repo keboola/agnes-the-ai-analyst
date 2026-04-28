@@ -86,6 +86,84 @@ class TestAdminConfigure:
         )
         assert resp.status_code == 422
 
+    def test_configure_overlay_does_not_resolve_env_var_placeholders(
+        self, seeded_app, tmp_path, monkeypatch
+    ):
+        """Regression: pre-fix `/api/admin/configure` seeded `existing` from
+        the static config when no overlay existed, then wrote the whole
+        thing back. Static `${SMTP_PASSWORD}` placeholders got resolved
+        by `config.loader` along the way, so the cleartext secret landed
+        in the writable overlay file even though the wizard only sets
+        `instance` / `auth` / `data_source`. The narrow-overlay rewrite
+        must read the overlay verbatim (or empty) and write only those
+        three sections — same contract as `/api/admin/server-config`.
+        """
+        import yaml as _yaml
+        static_dir = tmp_path / "static"
+        static_dir.mkdir()
+        (static_dir / "instance.yaml").write_text(_yaml.dump({
+            "instance": {"name": "Old"},
+            "auth": {"allowed_domain": "example.com", "webapp_secret_key": "x"},
+            "server": {"host": "1.2.3.4", "hostname": "example.com"},
+            "email": {
+                "smtp_host": "smtp.example.com",
+                "smtp_password": "${SMTP_PASSWORD}",
+            },
+        }))
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("CONFIG_DIR", str(static_dir))
+        monkeypatch.setenv("SMTP_PASSWORD", "hunter2-cleartext-secret")
+        (tmp_path / "state").mkdir(parents=True, exist_ok=True)
+        from pathlib import Path as _Path
+        import config.loader as _loader_mod
+        monkeypatch.setattr(_loader_mod, "CONFIG_DIR", _Path(static_dir))
+        from app.instance_config import reset_cache
+        reset_cache()
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/configure",
+            json={"data_source": "local", "instance_name": "New"},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+
+        overlay_text = (tmp_path / "state" / "instance.yaml").read_text()
+        assert "hunter2-cleartext-secret" not in overlay_text, \
+            f"env-resolved secret leaked into overlay:\n{overlay_text}"
+        overlay = _yaml.safe_load(overlay_text)
+        # email/server/auth.webapp_secret_key are static-only here — wizard
+        # never touches them, so they must not appear in the overlay.
+        assert "email" not in overlay
+        assert "server" not in overlay
+        # The wizard's three sections DO land:
+        assert overlay["instance"]["name"] == "New"
+        assert overlay["data_source"]["type"] == "local"
+
+    def test_corrupt_overlay_refused_with_500_not_silently_overwritten(
+        self, seeded_app, tmp_path, monkeypatch
+    ):
+        """Symmetric to the server-config editor: /configure must refuse to
+        overwrite a corrupt overlay so the operator can investigate, instead
+        of silently dropping every previously-saved section."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        state = tmp_path / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        overlay_path = state / "instance.yaml"
+        overlay_path.write_text("instance: {name: 'good'\nauth:\n\tallowed_domain: bad")
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/configure",
+            json={"data_source": "local", "instance_name": "New"},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 500, resp.text
+        assert "corrupt overlay" in resp.json()["detail"]
+        assert overlay_path.read_text().startswith("instance: {name: 'good'")
+
 
 class TestAdminConfigureSSRF:
     """SSRF protection: keboola_url must not point to private/reserved networks.
