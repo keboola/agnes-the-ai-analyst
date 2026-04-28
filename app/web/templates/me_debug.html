@@ -1,0 +1,310 @@
+{% extends "base.html" %}
+{% block title %}Auth debug — {{ session.user.email }}{% endblock %}
+
+{% block content %}
+<style>
+  .container:has(.md-page) { max-width: none; padding: 24px 16px; }
+  .md-page { max-width: 1100px; margin: 0 auto; padding: 0; }
+
+  .md-header {
+    display: flex; align-items: center; gap: 16px;
+    margin-bottom: 18px;
+  }
+  .md-title { font-size: 22px; font-weight: 600; margin: 0; }
+  .md-subtitle {
+    font-size: 13px; color: var(--text-secondary, #6b7280);
+    margin-top: 2px;
+  }
+
+  .md-warning {
+    margin-bottom: 18px; padding: 10px 14px;
+    background: #fff7ed; border: 1px solid #fed7aa; color: #9a3412;
+    border-radius: 8px; font-size: 12px; line-height: 1.45;
+  }
+
+  .md-section {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+    margin-bottom: 14px;
+    overflow: hidden;
+  }
+  .md-section-head {
+    padding: 12px 16px;
+    background: var(--border-light, #f9fafb);
+    border-bottom: 1px solid var(--border, #e5e7eb);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .md-section-head h2 { margin: 0; font-size: 13px; font-weight: 600; }
+  .md-section-head .sub { font-size: 11px; color: var(--text-secondary, #6b7280); }
+  .md-section-body { padding: 14px 16px; }
+
+  .kv { display: grid; grid-template-columns: 200px 1fr; gap: 6px 14px; font-size: 13px; }
+  .kv .k { color: var(--text-secondary, #6b7280); font-weight: 500; }
+  .kv .v {
+    color: var(--text-primary, #111827);
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    word-break: break-all;
+  }
+  .kv .v.muted { color: #9ca3af; font-style: italic; }
+
+  .md-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .md-table th, .md-table td {
+    padding: 8px 14px; text-align: left;
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+  }
+  .md-table thead th {
+    background: var(--border-light, #f9fafb);
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
+    color: var(--text-secondary, #6b7280); font-weight: 600;
+  }
+  .md-table tbody tr:last-child td { border-bottom: none; }
+
+  .src-chip {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    font-size: 10px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .src-google_sync { background: #dcfce7; color: #166534; }
+  .src-admin       { background: #ede9fe; color: #6d28d9; }
+  .src-system_seed { background: #fef3c7; color: #92400e; }
+
+  .ext-chip {
+    display: inline-block; padding: 2px 6px; border-radius: 4px;
+    background: #f0fdf4; color: #166534;
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-size: 11px;
+    border: 1px solid #bbf7d0;
+  }
+
+  .md-empty { color: #9ca3af; font-style: italic; font-size: 12px; }
+
+  .refetch-btn {
+    padding: 7px 12px; border-radius: 6px; font-size: 12px; font-weight: 500;
+    background: var(--primary, #6366f1); color: #fff;
+    border: 1px solid var(--primary, #6366f1); cursor: pointer;
+  }
+  .refetch-btn:disabled { opacity: 0.6; cursor: progress; }
+
+  .refetch-result { margin-top: 14px; }
+  .diff-add { color: #166534; }
+  .diff-remove { color: #991b1b; }
+  .pre-block {
+    background: #0b1220; color: #d1d5db;
+    padding: 10px 14px; border-radius: 8px;
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-size: 12px; line-height: 1.5;
+    overflow: auto; max-height: 320px;
+  }
+</style>
+
+<div class="md-page">
+  <div class="md-header">
+    <div>
+      <h1 class="md-title">Auth debug — your session</h1>
+      <p class="md-subtitle">
+        Self-service diagnostic. This page is gated by
+        <code>AGNES_DEBUG_AUTH</code>; visible only on dev/staging instances.
+      </p>
+    </div>
+  </div>
+
+  <div class="md-warning">
+    <strong>What you see is your own data only.</strong>
+    No raw JWT, no password hash, no full PAT. The "Refetch" button below
+    asks Google what your current group membership looks like and shows a
+    diff against what Agnes has cached — it does <strong>not</strong> apply
+    the result. Your real next sync runs at next sign-in.
+  </div>
+
+  <!-- User -->
+  <section class="md-section">
+    <div class="md-section-head"><h2>User record</h2></div>
+    <div class="md-section-body">
+      <div class="kv">
+        <div class="k">id</div>          <div class="v">{{ user_record.id }}</div>
+        <div class="k">email</div>       <div class="v">{{ user_record.email }}</div>
+        <div class="k">name</div>        <div class="v">{{ user_record.name or "—" }}</div>
+        <div class="k">active</div>      <div class="v">{{ "yes" if user_record.active else "no" }}</div>
+        <div class="k">created_at</div>  <div class="v">{{ user_record.created_at or "—" }}</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Session JWT -->
+  <section class="md-section">
+    <div class="md-section-head">
+      <h2>Session JWT (decoded)</h2>
+      <span class="sub">Raw token never displayed; fingerprint correlates with logs.</span>
+    </div>
+    <div class="md-section-body">
+      {% if claims %}
+      <div class="kv">
+        <div class="k">fingerprint</div>
+        <div class="v">{{ token_fingerprint }}…</div>
+        <div class="k">subject (sub)</div>
+        <div class="v">{{ claims.sub }}</div>
+        <div class="k">email</div>
+        <div class="v">{{ claims.email }}</div>
+        <div class="k">type (typ)</div>
+        <div class="v">{{ claims.typ or "session" }}</div>
+        <div class="k">issued (iat)</div>
+        <div class="v">{{ claims.iat or "—" }}</div>
+        <div class="k">expires (exp)</div>
+        <div class="v">{{ claims.exp or "—" }}</div>
+        <div class="k">jti</div>
+        <div class="v">{{ claims.jti or "—" }}</div>
+      </div>
+      {% else %}
+      <div class="md-empty">No session token in the request — are you signed in via cookie?</div>
+      {% endif %}
+    </div>
+  </section>
+
+  <!-- Memberships -->
+  <section class="md-section">
+    <div class="md-section-head">
+      <h2>Group memberships</h2>
+      <span class="sub">{{ memberships|length }} row(s)</span>
+    </div>
+    {% if memberships %}
+    <table class="md-table">
+      <thead><tr>
+        <th>Group</th><th>Linked to</th><th>Source</th><th>Added</th><th>Added by</th>
+      </tr></thead>
+      <tbody>
+        {% for m in memberships %}
+        <tr>
+          <td>{{ m.name }}{% if m.is_system %} <em style="font-size:10px;color:#92400e;">(system)</em>{% endif %}</td>
+          <td>
+            {% if m.external_id %}
+              <span class="ext-chip">{{ m.external_id }}</span>
+            {% else %}
+              <span class="md-empty">—</span>
+            {% endif %}
+          </td>
+          <td><span class="src-chip src-{{ m.source }}">{{ m.source }}</span></td>
+          <td>{{ m.added_at or "—" }}</td>
+          <td>{{ m.added_by or "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="md-section-body"><div class="md-empty">No group memberships.</div></div>
+    {% endif %}
+  </section>
+
+  <!-- Resource grants -->
+  <section class="md-section">
+    <div class="md-section-head">
+      <h2>Resource grants (effective)</h2>
+      <span class="sub">Distinct {{ grants|length }} grant(s) reachable via your groups.</span>
+    </div>
+    {% if grants %}
+    <table class="md-table">
+      <thead><tr>
+        <th>Resource type</th><th>Resource id</th><th>Via group</th>
+      </tr></thead>
+      <tbody>
+        {% for g in grants %}
+        <tr>
+          <td><code>{{ g.resource_type }}</code></td>
+          <td><code>{{ g.resource_id }}</code></td>
+          <td>{{ g.via_group }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="md-section-body"><div class="md-empty">No resource grants reachable.</div></div>
+    {% endif %}
+  </section>
+
+  <!-- Last Google sync -->
+  <section class="md-section">
+    <div class="md-section-head">
+      <h2>Last Google sync snapshot</h2>
+      <span class="sub">Read from <code>user_group_members</code>.</span>
+    </div>
+    <div class="md-section-body">
+      <div class="kv">
+        <div class="k">prefix in effect</div>
+        <div class="v">{{ google_group_prefix or "(none)" }}</div>
+        <div class="k">google_sync rows</div>
+        <div class="v">{{ sync_summary.google_sync_count }}</div>
+        <div class="k">last added_at</div>
+        <div class="v">{{ sync_summary.last_added_at or "—" }}</div>
+      </div>
+
+      <div style="margin-top:14px;">
+        <button id="refetch-btn" class="refetch-btn" type="button">
+          Refetch from Google (dry-run)
+        </button>
+        <span id="refetch-status" style="margin-left:10px; font-size:12px; color:#6b7280;"></span>
+      </div>
+
+      <div id="refetch-result" class="refetch-result" hidden>
+        <div class="kv" style="margin-top:10px;">
+          <div class="k">soft-failed?</div>
+          <div class="v" id="rf-soft"></div>
+          <div class="k">prefix</div>
+          <div class="v" id="rf-prefix"></div>
+        </div>
+
+        <h3 style="font-size:12px; margin:14px 0 6px; color:#6b7280; font-weight:600; text-transform:uppercase; letter-spacing:0.4px;">
+          Fetched from Google (post-prefix-filter)
+        </h3>
+        <div class="pre-block" id="rf-fetched-relevant"></div>
+
+        <h3 style="font-size:12px; margin:14px 0 6px; color:#6b7280; font-weight:600; text-transform:uppercase; letter-spacing:0.4px;">
+          Diff vs. cached membership
+        </h3>
+        <div class="pre-block" id="rf-diff"></div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+const refetchBtn = document.getElementById("refetch-btn");
+const refetchStatus = document.getElementById("refetch-status");
+const refetchResult = document.getElementById("refetch-result");
+
+refetchBtn.addEventListener("click", async () => {
+  refetchBtn.disabled = true;
+  refetchStatus.textContent = "Asking Google…";
+  refetchResult.hidden = true;
+  try {
+    const r = await fetch("/me/debug/refetch-groups", {
+      method: "POST", credentials: "include",
+    });
+    if (!r.ok) {
+      refetchStatus.textContent = `Failed: HTTP ${r.status}`;
+      return;
+    }
+    const data = await r.json();
+    document.getElementById("rf-soft").textContent =
+      data.soft_failed ? "yes — Google API didn't answer" : "no";
+    document.getElementById("rf-prefix").textContent = data.prefix || "(none)";
+    document.getElementById("rf-fetched-relevant").textContent =
+      (data.fetched_relevant || []).join("\n") || "(empty)";
+
+    const lines = [];
+    (data.would_add || []).forEach(g => lines.push(`+ ${g}`));
+    (data.would_remove || []).forEach(g => lines.push(`- ${g}`));
+    if (lines.length === 0) {
+      lines.push("(no changes — cached membership matches Google)");
+    }
+    document.getElementById("rf-diff").textContent = lines.join("\n");
+
+    refetchResult.hidden = false;
+    refetchStatus.textContent = "Done — nothing was applied to the database.";
+  } catch (e) {
+    refetchStatus.textContent = "Network error: " + (e.message || e);
+  } finally {
+    refetchBtn.disabled = false;
+  }
+});
+</script>
+{% endblock %}
