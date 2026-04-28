@@ -113,7 +113,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Added
 
 - Path-traversal validation on `/api/data/{table_id}/download` — `table_id` is
-  now checked against `_SAFE_IDENTIFIER` regex before any filesystem or DB
+  now checked against `_SAFE_QUOTED_IDENTIFIER` regex (allows dots and hyphens
+  for Keboola-style IDs like `in.c-crm.orders`) before any filesystem or DB
   operation; unsafe values return 404 (no info leakage). See issue #85/C2.
 - SSRF protection on `POST /api/admin/configure` — `keboola_url` is validated
   against private/reserved networks (127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12,
@@ -136,6 +137,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - `/api/health/detailed` endpoint (authenticated) — returns full diagnostics
   (version, schema, sync state, user count). Minimal `/api/health` (unauth)
   returns only `{"status": "ok"}` for load balancers. See issue #87/M17.
+- Health endpoint monitoring guide in `docs/DEPLOYMENT.md` — documents both
+  endpoints and how to wire external monitoring tools (Datadog, Prometheus,
+  UptimeRobot) to `/api/health/detailed` with a PAT.
 - `test_no_override_file` regression test — asserts `docker-compose.override.yml`
   does not exist post-rename. See issue #87/M23.
 

@@ -6,7 +6,7 @@ import duckdb
 
 from app.auth.dependencies import get_current_user, _get_db
 from app.utils import get_data_dir as _get_data_dir
-from src.db import _SAFE_IDENTIFIER
+from src.identifier_validation import _SAFE_QUOTED_IDENTIFIER
 from src.rbac import can_access_table
 
 router = APIRouter(prefix="/api/data", tags=["data"])
@@ -20,8 +20,11 @@ async def download_table(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Stream a parquet file for download. Supports ETag for caching."""
-    # Reject unsafe table_id before any filesystem or DB operations
-    if not _SAFE_IDENTIFIER.match(table_id):
+    # Reject unsafe table_id before any filesystem or DB operations.
+    # Use the relaxed quoted-identifier check that allows dots and hyphens
+    # (Keboola table IDs like "in.c-crm.orders") while still blocking
+    # path-traversal characters (/, .., \) and quote/control chars.
+    if not _SAFE_QUOTED_IDENTIFIER.match(table_id):
         raise HTTPException(status_code=404, detail="Table not found")
     # Check access FIRST
     if not can_access_table(user, table_id, conn):

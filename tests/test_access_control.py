@@ -658,7 +658,7 @@ class TestDownloadPathTraversal:
         assert resp.status_code == 404
 
     def test_download_rejects_special_chars(self, seeded_app):
-        """table_id with spaces, slashes, or other special chars returns 404."""
+        """table_id with spaces, slashes, or other dangerous chars returns 404."""
         c = seeded_app["client"]
         # Spaces
         resp = c.get("/api/data/my%20table/download",
@@ -668,7 +668,14 @@ class TestDownloadPathTraversal:
         resp = c.get("/api/data/foo/bar/download",
                       headers=_auth(seeded_app["admin_token"]))
         assert resp.status_code == 404
-        # Dots
-        resp = c.get("/api/data/table.v2/download",
+
+    def test_download_accepts_hyphenated_dotted_id(self, seeded_app):
+        """Keboola-style table IDs with dots and hyphens (e.g. in.c-crm.orders)
+        pass validation — they are safe for filesystem lookup and DB query."""
+        c = seeded_app["client"]
+        # No parquet file exists, so we expect 404 from "not found on disk",
+        # NOT 404 from identifier validation rejection.
+        resp = c.get("/api/data/in.c-crm.orders/download",
                       headers=_auth(seeded_app["admin_token"]))
         assert resp.status_code == 404
+        assert "not found" in resp.json()["detail"].lower()
