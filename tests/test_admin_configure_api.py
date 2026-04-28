@@ -1,5 +1,9 @@
 """Tests for admin configure and registry API endpoints."""
 
+import ipaddress
+import socket
+from unittest.mock import patch
+
 import pytest
 
 
@@ -81,6 +85,142 @@ class TestAdminConfigure:
             headers=_auth(token),
         )
         assert resp.status_code == 422
+
+
+class TestAdminConfigureSSRF:
+    """SSRF protection: keboola_url must not point to private/reserved networks.
+
+    Uses socket.getaddrinfo + ipaddress checks — tests mock DNS resolution
+    so they work regardless of the test runner's network/IPv6 config.
+    """
+
+    @staticmethod
+    def _mock_getaddrinfo(host, port, **kwargs):
+        """Predictable DNS resolution for tests — returns the IP literal as-is."""
+        try:
+            ip = ipaddress.ip_address(host)
+            family = socket.AF_INET6 if ip.version == 6 else socket.AF_INET
+            return [(family, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (str(ip), port))]
+        except ValueError:
+            # Not an IP literal — let real DNS resolve (for public URL test)
+            return socket.getaddrinfo(host, port, **kwargs)
+
+    def test_configure_rejects_localhost_url(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/configure",
+            json={"data_source": "keboola", "keboola_token": "tok", "keboola_url": "http://localhost:8080"},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400
+        assert "private" in resp.json()["detail"].lower() or "reserved" in resp.json()["detail"].lower()
+
+    def test_configure_rejects_127_0_0_1_url(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        with patch("app.api.admin._socket.getaddrinfo", self._mock_getaddrinfo):
+            resp = c.post(
+                "/api/admin/configure",
+                json={"data_source": "keboola", "keboola_token": "tok", "keboola_url": "https://127.0.0.1"},
+                headers=_auth(token),
+            )
+        assert resp.status_code == 400
+
+    def test_configure_rejects_10_0_0_1_url(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        with patch("app.api.admin._socket.getaddrinfo", self._mock_getaddrinfo):
+            resp = c.post(
+                "/api/admin/configure",
+                json={"data_source": "keboola", "keboola_token": "tok", "keboola_url": "https://10.0.0.1"},
+                headers=_auth(token),
+            )
+        assert resp.status_code == 400
+
+    def test_configure_rejects_192_168_url(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        with patch("app.api.admin._socket.getaddrinfo", self._mock_getaddrinfo):
+            resp = c.post(
+                "/api/admin/configure",
+                json={"data_source": "keboola", "keboola_token": "tok", "keboola_url": "https://192.168.1.1"},
+                headers=_auth(token),
+            )
+        assert resp.status_code == 400
+
+    def test_configure_rejects_169_254_metadata_url(self, seeded_app):
+        """169.254.x.x (link-local) must be rejected — cloud metadata endpoint."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        with patch("app.api.admin._socket.getaddrinfo", self._mock_getaddrinfo):
+            resp = c.post(
+                "/api/admin/configure",
+                json={"data_source": "keboola", "keboola_token": "tok", "keboola_url": "http://169.254.169.254"},
+                headers=_auth(token),
+            )
+        assert resp.status_code == 400
+
+    def test_configure_rejects_ipv6_loopback(self, seeded_app):
+        """IPv6 loopback ::1 must be rejected."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        with patch("app.api.admin._socket.getaddrinfo", self._mock_getaddrinfo):
+            resp = c.post(
+                "/api/admin/configure",
+                json={"data_source": "keboola", "keboola_token": "tok", "keboola_url": "http://[::1]:8080"},
+                headers=_auth(token),
+            )
+        assert resp.status_code == 400
+
+    def test_configure_rejects_ipv6_link_local(self, seeded_app):
+        """IPv6 link-local fe80::1 must be rejected."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        with patch("app.api.admin._socket.getaddrinfo", self._mock_getaddrinfo):
+            resp = c.post(
+                "/api/admin/configure",
+                json={"data_source": "keboola", "keboola_token": "tok", "keboola_url": "http://[fe80::1]:8080"},
+                headers=_auth(token),
+            )
+        assert resp.status_code == 400
+
+    def test_configure_rejects_ipv6_unique_local(self, seeded_app):
+        """IPv6 unique-local fc00::1 must be rejected."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        with patch("app.api.admin._socket.getaddrinfo", self._mock_getaddrinfo):
+            resp = c.post(
+                "/api/admin/configure",
+                json={"data_source": "keboola", "keboola_token": "tok", "keboola_url": "http://[fc00::1]:8080"},
+                headers=_auth(token),
+            )
+        assert resp.status_code == 400
+
+    def test_configure_rejects_ipv6_multicast(self, seeded_app):
+        """IPv6 multicast ff02::1 must be rejected."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        with patch("app.api.admin._socket.getaddrinfo", self._mock_getaddrinfo):
+            resp = c.post(
+                "/api/admin/configure",
+                json={"data_source": "keboola", "keboola_token": "tok", "keboola_url": "http://[ff02::1]:8080"},
+                headers=_auth(token),
+            )
+        assert resp.status_code == 400
+
+    def test_configure_accepts_public_url(self, seeded_app):
+        """A public URL should pass SSRF validation (connection test may still fail)."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/configure",
+            json={"data_source": "keboola", "keboola_token": "tok", "keboola_url": "https://connection.keboola.com"},
+            headers=_auth(token),
+        )
+        # Should NOT be 400 with SSRF message — may be 400 from failed connection test, or 200
+        if resp.status_code == 400:
+            assert "private" not in resp.json()["detail"].lower()
 
 
 class TestAdminRegistry:

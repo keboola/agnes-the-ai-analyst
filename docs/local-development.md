@@ -12,7 +12,7 @@ Then open <http://localhost:8000>. You land on `/dashboard` already logged in as
 
 What `make local-dev` actually does:
 
-- Stacks three Compose files: `docker-compose.yml` (base) + `docker-compose.override.yml` (hot-reload + source bind mount) + `docker-compose.local-dev.yml` (LOCAL_DEV_MODE overlay).
+- Stacks three Compose files: `docker-compose.yml` (base) + `docker-compose.dev.yml` (hot-reload + source bind mount) + `docker-compose.local-dev.yml` (LOCAL_DEV_MODE overlay).
 - Seeds `LOCAL_DEV_GROUPS` with a sensible default (engineers + admins on `example.com`) so `/profile` is non-empty on first boot.
 - Touches an empty `.env` if missing — Compose validates `env_file:` paths even for services that never start, and the local-dev overlay drops the env-file requirement for the services that do.
 

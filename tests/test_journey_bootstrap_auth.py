@@ -63,11 +63,10 @@ class TestBootstrapAuth:
         assert resp.status_code == 403
 
     def test_health_endpoint_requires_no_auth(self, seeded_app):
-        """Health check is always accessible without any token."""
+        """Minimal health check is always accessible without any token."""
         c = seeded_app["client"]
 
         resp = c.get("/api/health")
         assert resp.status_code == 200
         body = resp.json()
-        assert "status" in body
-        assert body["status"] in ("healthy", "degraded", "unhealthy")
+        assert body["status"] == "ok"

@@ -1,6 +1,7 @@
 """Tests for corporate memory API — knowledge items, voting, governance."""
 
 import pytest
+from src.repositories.knowledge import KnowledgeRepository
 
 
 def _auth(token):
@@ -122,20 +123,33 @@ class TestMemoryList:
 
 
 class TestMemoryStats:
-    def test_get_stats(self, seeded_app):
+    def test_get_stats_returns_counts(self, seeded_app):
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
         resp = c.get("/api/memory/stats", headers=_auth(token))
         assert resp.status_code == 200
         data = resp.json()
         assert "total" in data
+        assert isinstance(data["total"], int)
+        assert data["total"] >= 0
         assert "by_status" in data
+        assert isinstance(data["by_status"], dict)
         assert "categories" in data
+        assert isinstance(data["categories"], list)
 
     def test_get_stats_requires_auth(self, seeded_app):
         c = seeded_app["client"]
         resp = c.get("/api/memory/stats")
         assert resp.status_code == 401
+
+    def test_get_stats_does_not_load_all_items(self, seeded_app):
+        """Stats endpoint uses SQL aggregation, not list_items()."""
+        from unittest.mock import patch
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        with patch.object(KnowledgeRepository, "list_items", side_effect=AssertionError("list_items should not be called")):
+            resp = c.get("/api/memory/stats", headers=_auth(token))
+            assert resp.status_code == 200
 
 
 class TestMemoryVote:

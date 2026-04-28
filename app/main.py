@@ -280,6 +280,26 @@ def create_app() -> FastAPI:
         except Exception as e:
             logger.warning(f"Could not seed admin: {e}")
 
+    # C8: Warn when no user has a password_hash — bootstrap endpoint is open.
+    # This is intentional UX (operator can claim seed admin), but the open
+    # window should be visible in startup logs so it's not forgotten.
+    if not is_local_dev_mode():
+        try:
+            from src.db import get_system_db
+            from src.repositories.users import UserRepository
+            conn = get_system_db()
+            repo = UserRepository(conn)
+            all_users = repo.list_all()
+            has_password = any(u.get("password_hash") for u in all_users)
+            if not has_password:
+                logger.warning(
+                    "No user has a password set — /auth/bootstrap is reachable. "
+                    "Claim the seed admin (or set SEED_ADMIN_PASSWORD) to close this window."
+                )
+            conn.close()
+        except Exception:
+            pass  # never block startup on a logging convenience
+
     # Static files
     static_dir = Path(__file__).parent / "web" / "static"
     if static_dir.exists():

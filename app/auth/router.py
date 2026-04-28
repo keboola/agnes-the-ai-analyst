@@ -134,7 +134,7 @@ async def bootstrap(
     if users_with_password:
         raise HTTPException(
             status_code=403,
-            detail=f"Bootstrap disabled — {len(users_with_password)} user(s) already have passwords set. Use /auth/password/login.",
+            detail="Bootstrap disabled — a user with a password already exists. Use /auth/password/login.",
         )
 
     password_hash = PasswordHasher().hash(request.password) if request.password else None

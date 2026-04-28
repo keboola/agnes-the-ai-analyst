@@ -83,20 +83,19 @@ async def get_stats(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Get corporate memory statistics."""
-    repo = KnowledgeRepository(conn)
-    all_items = repo.list_items(limit=10000)
-    status_counts = {}
-    categories = set()
-    for item in all_items:
-        s = item.get("status", "unknown")
-        status_counts[s] = status_counts.get(s, 0) + 1
-        if item.get("category"):
-            categories.add(item["category"])
-    return {
-        "total": len(all_items),
-        "by_status": status_counts,
-        "categories": sorted(categories),
-    }
+    rows = conn.execute(
+        "SELECT status, category, COUNT(*) as n FROM knowledge_items GROUP BY status, category"
+    ).fetchall()
+
+    status_counts: dict[str, int] = {}
+    categories: set[str] = set()
+    total = 0
+    for status, category, n in rows:
+        status_counts[status] = status_counts.get(status, 0) + n
+        if category:
+            categories.add(category)
+        total += n
+    return {"total": total, "by_status": status_counts, "categories": sorted(categories)}
 
 
 @router.post("", status_code=201)

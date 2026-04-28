@@ -309,7 +309,7 @@ def reset_password(user_ref: str = typer.Argument(..., help="User id or email"))
     resp = api_post(f"/api/users/{uid}/reset-password")
     if resp.status_code == 200:
         data = resp.json()
-        typer.echo(f"Reset token: {data['reset_token']}")
+        typer.echo(f"Reset URL: {data['reset_url']}")
         typer.echo(f"Email sent: {data['email_sent']}")
     else:
         typer.echo(f"Failed: {resp.json().get('detail', resp.text)}", err=True)

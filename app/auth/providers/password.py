@@ -34,6 +34,23 @@ SETUP_TOKEN_TTL = timedelta(days=7)
 MIN_PASSWORD_LEN = 8
 
 
+def _audit(user_id: str, action: str, result: str | None = None) -> None:
+    """Fire-and-forget audit log entry. Swallows all errors."""
+    try:
+        from src.db import get_system_db
+        from src.repositories.audit import AuditRepository
+        audit_conn = get_system_db()
+        AuditRepository(audit_conn).log(
+            user_id=user_id,
+            action=action,
+            resource="auth",
+            result=result,
+        )
+        audit_conn.close()
+    except Exception:
+        pass  # Audit failure must not block auth
+
+
 class PasswordLoginRequest(BaseModel):
     email: str
     password: str
@@ -225,6 +242,8 @@ async def password_login_web(
         ph = PasswordHasher()
         ph.verify(user["password_hash"], password)
     except VerifyMismatchError:
+        # M9: audit failed form-login attempts (mirrors /auth/token endpoint)
+        _audit(user["id"], "login_failed", result="invalid_password")
         return RedirectResponse(url="/login/password?error=invalid", status_code=302)
     except Exception:
         logger.exception("Unexpected error during web password verification for %s", email)
@@ -329,14 +348,46 @@ async def reset_confirm(
             error=f"Password must be at least {MIN_PASSWORD_LEN} characters.",
         )
 
+    # Atomic compare-and-swap to consume the reset token. Mirrors the
+    # magic-link CAS in app/auth/providers/email.py::_consume_token (issue
+    # #82/M10) — without it, two concurrent POSTs with the same valid token
+    # could both succeed in setting different new passwords. Lower
+    # severity than the magic-link race (attacker would need the reset
+    # token AND to race the legitimate user) but closes the asymmetry.
+    cutoff = datetime.now(timezone.utc) - RESET_TOKEN_TTL
+    consume_id = f"CONSUMED:{secrets.token_hex(16)}"
+    try:
+        conn.execute(
+            "UPDATE users SET reset_token = ?, reset_token_created = NULL "
+            "WHERE email = ? AND reset_token = ? AND reset_token_created IS NOT NULL "
+            "AND reset_token_created >= ? AND active = TRUE",
+            [consume_id, email, token, cutoff],
+        )
+    except Exception as exc:
+        err = str(exc).lower()
+        if "conflict" in err or "transaction" in err:
+            return _render_reset_form(request, email=email, token=token, error="Invalid or expired reset link.")
+        raise
+
+    # Verify OUR marker won the race. A concurrent winner will have a
+    # different consume_id (or NULL if they already cleared it).
+    row = conn.execute(
+        "SELECT reset_token FROM users WHERE email = ?",
+        [email],
+    ).fetchone()
+    if not row or row[0] != consume_id:
+        # Could be: token never matched, expired, account deactivated, or
+        # the race was lost. Single error keeps the UX simple and avoids
+        # leaking which condition tripped.
+        return _render_reset_form(request, email=email, token=token, error="Invalid or expired reset link.")
+
+    # Won the race — fetch the user (we need id/email for the response)
+    # and apply the password change. Clearing the marker happens as part
+    # of the same UPDATE.
     repo = UserRepository(conn)
     user = repo.get_by_email(email)
-    if not user or user.get("reset_token") != token:
+    if not user:
         return _render_reset_form(request, email=email, token=token, error="Invalid or expired reset link.")
-    if not _token_is_fresh(user.get("reset_token_created"), RESET_TOKEN_TTL):
-        return _render_reset_form(request, email=email, token=token, error="Reset link has expired. Please request a new one.")
-    if not bool(user.get("active", True)):
-        return _render_reset_form(request, email=email, token=token, error="This account is deactivated.")
 
     ph = PasswordHasher()
     repo.update(
