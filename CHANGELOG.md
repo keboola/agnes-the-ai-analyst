@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.12.1] — 2026-04-28
+
+Hotfix release for the snapshot-integrity bug shipped in 0.12.0. The unconditional `_SYSTEM_SCHEMA` self-heal pass that landed with #106 ran before the pre-migration snapshot was taken, contaminating the snapshot with the modern binary's full table set instead of capturing the true on-disk pre-migration state. Functionally rollback still worked (extra empty tables are harmless), but operators inspecting `system.duckdb.pre-migrate` for rollback debugging saw a misleading view. Fix: gate the self-heal call on `current >= SCHEMA_VERSION`, so the migration path takes its snapshot before any DDL touches the DB. Plus two regression tests pinning both the split-brain self-heal contract and the snapshot-integrity contract.
+
 ### Fixed
 
 - **Pre-migration snapshot integrity** — the snapshot file written
