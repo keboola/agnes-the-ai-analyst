@@ -70,6 +70,7 @@ async def upload_session(
 
     tmp, size = await _stream_to_temp(file)
     try:
+        tmp.close()
         shutil.move(tmp.name, str(target))
     except Exception:
         Path(tmp.name).unlink(missing_ok=True)
@@ -95,6 +96,7 @@ async def upload_artifact(
 
     tmp, size = await _stream_to_temp(file)
     try:
+        tmp.close()
         shutil.move(tmp.name, str(target))
     except Exception:
         Path(tmp.name).unlink(missing_ok=True)

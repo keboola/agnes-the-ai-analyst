@@ -76,16 +76,29 @@ def test_connection():
     """Test connection to the server and data source."""
     typer.echo("Testing server connection...")
     try:
+        # Quick unauth ping first
         resp = api_get("/api/health")
         health = resp.json()
-        typer.echo(f"  Server: {health.get('status', 'unknown')}")
-        for svc, info in health.get("services", {}).items():
-            typer.echo(f"  {svc}: {info.get('status', '?')}")
+        if health.get("status") != "ok":
+            typer.echo(f"  Server: unexpected status {health.get('status')}")
+            raise typer.Exit(1)
+        typer.echo("  Server: reachable")
 
-        if health.get("status") == "healthy":
-            typer.echo("\nServer is healthy.")
-        else:
-            typer.echo("\nServer has issues. Check: da diagnose --json")
+        # Detailed health (auth required) for service-level checks
+        try:
+            resp = api_get("/api/health/detailed")
+            detailed = resp.json()
+            typer.echo(f"  Health: {detailed.get('status', 'unknown')}")
+            for svc, info in detailed.get("services", {}).items():
+                typer.echo(f"  {svc}: {info.get('status', '?')}")
+            if detailed.get("status") == "healthy":
+                typer.echo("\nServer is healthy.")
+            else:
+                typer.echo("\nServer has issues. Check: da diagnose --json")
+        except Exception:
+            # Auth may not be configured yet — minimal check is sufficient
+            typer.echo("\nServer is reachable (detailed check requires auth).")
+
     except Exception as e:
         typer.echo(f"  FAILED: {e}", err=True)
         raise typer.Exit(1)
@@ -130,11 +143,22 @@ def verify(as_json: bool = typer.Option(False, "--json", help="Output as JSON"))
     try:
         resp = api_get("/api/health")
         h = resp.json()
-        checks.append({
-            "name": "server",
-            "status": "pass" if h.get("status") == "healthy" else "warn",
-            "detail": h.get("status"),
-        })
+        # Minimal health returns {"status": "ok"} — try detailed for richer check
+        try:
+            resp_d = api_get("/api/health/detailed")
+            hd = resp_d.json()
+            checks.append({
+                "name": "server",
+                "status": "pass" if hd.get("status") == "healthy" else "warn",
+                "detail": hd.get("status"),
+            })
+        except Exception:
+            # Auth not configured yet — minimal reachability is enough
+            checks.append({
+                "name": "server",
+                "status": "pass" if h.get("status") == "ok" else "warn",
+                "detail": h.get("status"),
+            })
     except Exception as e:
         checks.append({"name": "server", "status": "fail", "detail": str(e)})
         _report(checks, as_json)

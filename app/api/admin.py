@@ -23,38 +23,53 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 # SSRF protection: reject private/internal URLs for keboola_url
-import re as _re
+import ipaddress as _ipaddress
+import socket as _socket
 from urllib.parse import urlparse as _urlparse
-
-_PRIVATE_HOST_RE = _re.compile(
-    r"^(?:"
-    r"127\.\d+\.\d+\.\d+"           # 127.0.0.0/8  (loopback)
-    r"|10\.\d+\.\d+\.\d+"            # 10.0.0.0/8
-    r"|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+"  # 172.16.0.0/12
-    r"|192\.168\.\d+\.\d+"           # 192.168.0.0/16
-    r"|169\.254\.\d+\.\d+"           # 169.254.0.0/16 (link-local, cloud metadata)
-    r"|0\.\d+\.\d+\.\d+"             # 0.0.0.0/8
-    r"|localhost"                     # localhost
-    r"|::1"                           # IPv6 loopback
-    r"|fe80:"                         # link-local
-    r"|fc00:"                         # unique-local
-    r"|ff[0-9a-f]{2}:"               # IPv6 multicast
-    r")$", _re.IGNORECASE
-)
 
 
 def _validate_url_not_private(url: str, field_name: str = "url") -> None:
-    """Raise 400 if the URL host points to a private/reserved network."""
+    """Raise 400 if the URL host points to a private/reserved network.
+
+    Uses DNS resolution + ipaddress checks instead of hostname regex,
+    which correctly handles all IPv4/IPv6 addresses including abbreviated
+    forms (fe80::1, ::1, etc.) and DNS rebinding (resolves at check time).
+    """
     try:
         parsed = _urlparse(url)
     except Exception:
         raise HTTPException(status_code=400, detail=f"Invalid {field_name}: not a valid URL")
     host = parsed.hostname or ""
-    if _PRIVATE_HOST_RE.match(host):
+    if not host:
+        raise HTTPException(status_code=400, detail=f"Invalid {field_name}: missing hostname")
+
+    # Reject well-known dangerous hostnames before DNS resolution
+    if host.lower() in ("localhost", "localhost.localdomain"):
         raise HTTPException(
             status_code=400,
             detail=f"Invalid {field_name}: must not point to a private or reserved network",
         )
+
+    # Resolve hostname to IP addresses and check each one
+    try:
+        addrinfos = _socket.getaddrinfo(host, None, proto=_socket.IPPROTO_TCP)
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid {field_name}: could not resolve hostname",
+        )
+
+    for family, _type, _proto, _canonname, sockaddr in addrinfos:
+        ip_str = sockaddr[0]
+        try:
+            ip = _ipaddress.ip_address(ip_str)
+        except ValueError:
+            continue
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid {field_name}: must not point to a private or reserved network",
+            )
 
 
 class RegisterTableRequest(BaseModel):

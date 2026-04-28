@@ -117,8 +117,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   operation; unsafe values return 404 (no info leakage). See issue #85/C2.
 - SSRF protection on `POST /api/admin/configure` — `keboola_url` is validated
   against private/reserved networks (127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12,
-  192.168.0.0/16, localhost, IPv6 loopback/link-local/unique-local). See
-  issue #46.
+  192.168.0.0/16, localhost, IPv6 loopback/link-local/unique-local). Uses
+  DNS resolution + `ipaddress` module for robust IPv6 handling (catches
+  abbreviated forms like `fe80::1`, `fc00::1`). See issue #46.
 - Caddyfile security headers: `X-Frame-Options DENY`,
   `X-Content-Type-Options nosniff`,
   `Referrer-Policy strict-origin-when-cross-origin`, `-Server` (strip).
@@ -154,7 +155,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   converted to 401. See issue #82/M10.
 - Upload endpoints (`/sessions`, `/artifacts`) now stream to a temp file with
   cumulative size check instead of buffering the entire body in memory before
-  the size cap — prevents OOM from oversized uploads. See issue #85/M4.
+  the size cap — prevents OOM from oversized uploads. Temp file handle is
+  properly closed before `shutil.move` to avoid FD leaks. See issue #85/M4.
 - `/api/upload/local-md` uses a SHA-256 hashed filename instead of raw
   `user_email` — stable per user, no charset surprises from email addresses.
   See issue #85/M4.
@@ -173,7 +175,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   (unauthenticated, for load balancers). Full diagnostics moved to
   `/api/health/detailed` (requires authentication). Scripts that parsed
   `/api/health` for version, sync state, or user count must switch to
-  `/api/health/detailed` with an `Authorization` header. See issue #87/M17.
+  `/api/health/detailed` with an `Authorization` header. CLI commands
+  (`da setup test-connection`, `da setup verify`, `da diagnose`, `da status`)
+  updated to call `/api/health/detailed` for service-level checks, with
+  graceful fallback to the minimal endpoint when auth is not configured.
+  See issue #87/M17.
 - `release.yml` CI workflow: `build-and-push` job now only runs on `main`
   pushes or manual `workflow_dispatch` triggers. Non-main branch pushes run
   tests only. Added `paths-ignore` for `docs/**`, `*.md`, `LICENSE`.
