@@ -67,48 +67,63 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# Run from the repo root regardless of where the user invoked from. Script lives
-# at scripts/run-local-dev.ps1, so the repo root is the parent of $PSScriptRoot.
-Set-Location (Split-Path -Parent $PSScriptRoot)
+# PowerShell scripts execute in the caller's runspace (unlike bash, which forks
+# a child process), so Set-Location and $env:* assignments leak back into the
+# user's shell after the script exits. Wrap the body in Push-Location /
+# Pop-Location with try/finally and snapshot the LOCAL_DEV_GROUPS env-var so
+# the operator's session is restored on any exit path (success, error, Ctrl+C
+# during `up`/`logs`).
+Push-Location (Split-Path -Parent $PSScriptRoot)
+$localDevGroupsWasSet = Test-Path Env:LOCAL_DEV_GROUPS
+$localDevGroupsOriginal = if ($localDevGroupsWasSet) { $env:LOCAL_DEV_GROUPS } else { $null }
+try {
+    # docker-compose.yml declares env_file: .env on several services. Compose
+    # validates that path even for profiled services that never start, so make
+    # sure it exists.
+    if (-not (Test-Path .env)) {
+        New-Item -ItemType File -Path .env -Force | Out-Null
+    }
 
-# docker-compose.yml declares env_file: .env on several services. Compose
-# validates that path even for profiled services that never start, so make
-# sure it exists.
-if (-not (Test-Path .env)) {
-    New-Item -ItemType File -Path .env -Force | Out-Null
+    # Default LOCAL_DEV_GROUPS so /profile and group-aware code see *something* on
+    # first boot. Mirrors scripts/run-local-dev.sh. Override/disable:
+    #   $env:LOCAL_DEV_GROUPS = '[...]'; .\scripts\run-local-dev.ps1
+    #   $env:LOCAL_DEV_GROUPS = '';      .\scripts\run-local-dev.ps1   # exercise no-groups path
+    # Test-Path on Env: distinguishes unset (apply default) from set-to-empty
+    # (honor operator intent) — same contract as the bash sibling.
+    if (-not $localDevGroupsWasSet) {
+        $env:LOCAL_DEV_GROUPS = '[{"id":"local-dev-engineers@example.com","name":"Local Dev Engineers"},{"id":"local-dev-admins@example.com","name":"Local Dev Admins"}]'
+    }
+
+    $composeFiles = @(
+        '-f', 'docker-compose.yml',
+        '-f', 'docker-compose.dev.yml',
+        '-f', 'docker-compose.local-dev.yml'
+    )
+
+    switch ($Action) {
+        'up' {
+            $cmd = @('up')
+            if ($Build) { $cmd += '--build' }
+        }
+        'down' {
+            $cmd = @('down')
+        }
+        'logs' {
+            $cmd = @('logs', '-f')
+        }
+    }
+
+    if ($ExtraArgs) { $cmd += $ExtraArgs }
+
+    Write-Host "> docker compose $($composeFiles + $cmd -join ' ')" -ForegroundColor Cyan
+    & docker compose @composeFiles @cmd
+} finally {
+    Pop-Location
+    if ($localDevGroupsWasSet) {
+        $env:LOCAL_DEV_GROUPS = $localDevGroupsOriginal
+    } else {
+        Remove-Item Env:LOCAL_DEV_GROUPS -ErrorAction SilentlyContinue
+    }
 }
 
-# Default LOCAL_DEV_GROUPS so /profile and group-aware code see *something* on
-# first boot. Mirrors scripts/run-local-dev.sh. Override/disable:
-#   $env:LOCAL_DEV_GROUPS = '[...]'; .\scripts\run-local-dev.ps1
-#   $env:LOCAL_DEV_GROUPS = '';      .\scripts\run-local-dev.ps1   # exercise no-groups path
-# Test-Path on Env: distinguishes unset (apply default) from set-to-empty
-# (honor operator intent) — same contract as the bash sibling.
-if (-not (Test-Path Env:LOCAL_DEV_GROUPS)) {
-    $env:LOCAL_DEV_GROUPS = '[{"id":"local-dev-engineers@example.com","name":"Local Dev Engineers"},{"id":"local-dev-admins@example.com","name":"Local Dev Admins"}]'
-}
-
-$composeFiles = @(
-    '-f', 'docker-compose.yml',
-    '-f', 'docker-compose.dev.yml',
-    '-f', 'docker-compose.local-dev.yml'
-)
-
-switch ($Action) {
-    'up' {
-        $cmd = @('up')
-        if ($Build) { $cmd += '--build' }
-    }
-    'down' {
-        $cmd = @('down')
-    }
-    'logs' {
-        $cmd = @('logs', '-f')
-    }
-}
-
-if ($ExtraArgs) { $cmd += $ExtraArgs }
-
-Write-Host "> docker compose $($composeFiles + $cmd -join ' ')" -ForegroundColor Cyan
-& docker compose @composeFiles @cmd
 exit $LASTEXITCODE
