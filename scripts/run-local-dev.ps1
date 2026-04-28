@@ -24,8 +24,9 @@
     Force --build on `up`. Use after pulling changes that touch pyproject.toml or
     Dockerfile, or when you hit ModuleNotFoundError from a stale cached image.
 
-.PARAMETER ExtraArgs
-    Anything else (e.g. -d, --remove-orphans) passes through to docker compose.
+.NOTES
+    Anything else on the command line (e.g. -d, --remove-orphans) lands in
+    PowerShell's automatic $args variable and is forwarded to docker compose.
 
 .EXAMPLE
     .\scripts\run-local-dev.ps1
@@ -47,22 +48,20 @@
     .\scripts\run-local-dev.ps1 logs
     # tail logs from the running stack
 #>
-# Deliberately NOT [CmdletBinding()]: that auto-injects common parameters
-# (-Debug, -Verbose, -ErrorAction, etc.) which PowerShell binds via prefix
-# match BEFORE ValueFromRemainingArguments. Documented examples like
-# `up -d` (detached) and `down -v` (remove volumes) would silently get
-# eaten by `-Debug` / `-Verbose` instead of reaching docker compose.
-# Plain `param()` keeps the binder honest — anything unrecognized falls
-# through to $ExtraArgs and on to docker compose.
+# Deliberately keep this a SIMPLE (non-advanced) script — no [CmdletBinding()]
+# and no [Parameter(...)] attributes. Both promote the script to an advanced
+# function, which auto-injects the common parameters (-Debug, -Verbose,
+# -ErrorAction, ...) that PowerShell binds via prefix match. Documented
+# examples like `up -d` (detached) and `down -v` (remove volumes) would
+# silently have `-d` / `-v` eaten by `-Debug` / `-Verbose` instead of reaching
+# docker compose. [ValidateSet(...)] and [switch] do NOT promote and stay.
+# Unbound positional args land in PowerShell's automatic $args variable in a
+# non-advanced script; we forward them to docker compose.
 param(
-    [Parameter(Position = 0)]
     [ValidateSet('up', 'down', 'logs')]
     [string]$Action = 'up',
 
-    [switch]$Build,
-
-    [Parameter(ValueFromRemainingArguments = $true)]
-    [string[]]$ExtraArgs
+    [switch]$Build
 )
 
 $ErrorActionPreference = 'Stop'
@@ -113,7 +112,7 @@ try {
         }
     }
 
-    if ($ExtraArgs) { $cmd += $ExtraArgs }
+    if ($args) { $cmd += $args }
 
     Write-Host "> docker compose $($composeFiles + $cmd -join ' ')" -ForegroundColor Cyan
     & docker compose @composeFiles @cmd
