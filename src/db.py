@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -64,6 +64,19 @@ CREATE TABLE IF NOT EXISTS sync_state (
     hash VARCHAR,
     status VARCHAR DEFAULT 'ok',
     error TEXT
+);
+
+-- v10: view-name collision detection across connectors. The orchestrator
+-- writes views into the master analytics.duckdb under a flat namespace; two
+-- connectors with the same `_meta.table_name` would otherwise silently
+-- overwrite each other (last-write-wins). This table records the FIRST
+-- source to register a given view name; subsequent attempts from a different
+-- source are refused with a `name_collision` log line until the operator
+-- renames one side. Issue #81 Group C.
+CREATE TABLE IF NOT EXISTS view_ownership (
+    view_name     VARCHAR PRIMARY KEY,
+    source_name   VARCHAR NOT NULL,
+    registered_at TIMESTAMP NOT NULL DEFAULT current_timestamp
 );
 
 CREATE TABLE IF NOT EXISTS sync_history (
@@ -345,14 +358,8 @@ def _reattach_remote_extensions(
     """Re-LOAD DuckDB extensions listed in _remote_attach tables of each extract.duckdb.
 
     Called from get_analytics_db_readonly() after ATTACHing extract.duckdb files so
-    that remote views (e.g. BigQuery, Keboola) resolve correctly. Uses LOAD only — no
-    INSTALL — so the community-extension network call doesn't run on the read path.
-
-    However, BigQuery sources DO touch the GCE metadata server on every readonly-conn
-    open: the secret created by the orchestrator at rebuild time is session-scoped and
-    must be re-created with a fresh access token here. This is a per-conn-open cost
-    (~ms typical, up to 5s timeout — see ``connectors.bigquery.auth``). Non-BQ
-    sources stay network-free.
+    that remote views (e.g. BigQuery) resolve correctly.  Uses LOAD only — no INSTALL —
+    to avoid touching the network in read-only query paths.
     """
     if not extracts_dir.exists():
         return
@@ -403,6 +410,18 @@ def _reattach_remote_extensions(
         except Exception:
             pass
 
+        # Issue #81 Group A — apply the same allowlist policy on the
+        # query path that the orchestrator's rebuild path uses. Without
+        # this, a malicious connector's _remote_attach row exfiltrates
+        # JWT_SECRET_KEY / SESSION_SECRET / OPENAI_API_KEY on every
+        # query, defeating the rebuild-path hardening entirely.
+        from src.orchestrator_security import (
+            escape_sql_string_literal,
+            is_builtin_extension,
+            is_extension_allowed,
+            is_token_env_allowed,
+        )
+
         for alias, extension, url, token_env in rows:
             if not _SAFE_IDENTIFIER.match(alias or ""):
                 logger.debug("Skipping unsafe remote_attach alias: %r", alias)
@@ -410,18 +429,44 @@ def _reattach_remote_extensions(
             if not _SAFE_IDENTIFIER.match(extension or ""):
                 logger.debug("Skipping unsafe remote_attach extension: %r", extension)
                 continue
+            if not is_extension_allowed(extension):
+                logger.error(
+                    "query-path remote_attach: extension %r not in allowlist; "
+                    "refusing to LOAD/ATTACH for source %s. Override via "
+                    "AGNES_REMOTE_ATTACH_EXTENSIONS if intended.",
+                    extension, alias,
+                )
+                continue
+            if token_env and not is_token_env_allowed(token_env):
+                logger.error(
+                    "query-path remote_attach: token_env %r not in allowlist; "
+                    "refusing for source %s. Override via "
+                    "AGNES_REMOTE_ATTACH_TOKEN_ENVS if intended.",
+                    token_env, alias,
+                )
+                continue
             if alias in attached_dbs:
                 logger.debug("Remote source %s already attached, skipping", alias)
                 continue
             try:
+                # LOAD only on the read-only query path — no INSTALL.
+                # Per the function docstring, this path runs on every
+                # query request and must not touch the network. The
+                # rebuild path (orchestrator) is responsible for INSTALL;
+                # by the time a query lands here, any community extension
+                # we'll see is already on disk. If LOAD fails because the
+                # extension isn't installed, log + skip (caller will see
+                # missing remote views and the operator will trigger a
+                # rebuild).
                 conn.execute(f"LOAD {extension};")
-                safe_url = url.replace("'", "''")
+                token = os.environ.get(token_env, "") if token_env else ""
+                safe_url = escape_sql_string_literal(url)
 
                 # BQ-specific: refresh token from GCE metadata, create session-scoped
-                # secret before ATTACH. The empty token_env (set by the BQ extractor) is
-                # the contract that signals "use built-in metadata path". The secret is
-                # created here on every readonly-connection open because secrets are
-                # session-scoped and don't persist with the analytics.duckdb file.
+                # secret before ATTACH. Empty token_env (set by the BQ extractor)
+                # is the contract that signals "use built-in metadata path". The
+                # secret is created here on every readonly-connection open because
+                # secrets are session-scoped and don't persist with analytics.duckdb.
                 if extension == "bigquery":
                     try:
                         bq_token = get_metadata_token()
@@ -431,7 +476,7 @@ def _reattach_remote_extensions(
                             alias, e,
                         )
                         continue
-                    escaped = bq_token.replace("'", "''")
+                    escaped = escape_sql_string_literal(bq_token)
                     secret_name = f"bq_secret_{alias}"
                     conn.execute(
                         f"CREATE OR REPLACE SECRET {secret_name} "
@@ -440,20 +485,12 @@ def _reattach_remote_extensions(
                     conn.execute(
                         f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)"
                     )
-                elif token_env:
-                    # Generic env-var token path (e.g. Keboola)
-                    token = os.environ.get(token_env, "")
-                    if token:
-                        escaped_token = token.replace("'", "''")
-                        conn.execute(
-                            f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, TOKEN '{escaped_token}')"
-                        )
-                    else:
-                        conn.execute(
-                            f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)"
-                        )
+                elif token:
+                    escaped_token = escape_sql_string_literal(token)
+                    conn.execute(
+                        f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, TOKEN '{escaped_token}')"
+                    )
                 else:
-                    # No auth required (or extension handles it via env automatically)
                     conn.execute(
                         f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)"
                     )
@@ -583,6 +620,18 @@ _V8_TO_V9_MIGRATIONS = [
         granted_by        VARCHAR,
         source            VARCHAR DEFAULT 'direct',
         UNIQUE (user_id, internal_role_id)
+    )
+    """,
+]
+
+# Issue #81 Group C — view-name collision detection. New table records the
+# first source to register a given view name in the master analytics DB.
+_V9_TO_V10_MIGRATIONS = [
+    """
+    CREATE TABLE IF NOT EXISTS view_ownership (
+        view_name     VARCHAR PRIMARY KEY,
+        source_name   VARCHAR NOT NULL,
+        registered_at TIMESTAMP NOT NULL DEFAULT current_timestamp
     )
     """,
 ]
@@ -800,6 +849,13 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             if current < 9:
                 for sql in _V8_TO_V9_MIGRATIONS:
                     conn.execute(sql)
+                _did_v9_finalize = True
+            else:
+                _did_v9_finalize = False
+            if current < 10:
+                for sql in _V9_TO_V10_MIGRATIONS:
+                    conn.execute(sql)
+            if _did_v9_finalize:
                 # v9 finalize: seed core.* roles, backfill grants from
                 # legacy users.role, then drop the column. Order matters —
                 # backfill needs the seed rows to exist; drop must be last.
