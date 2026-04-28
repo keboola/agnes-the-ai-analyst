@@ -42,7 +42,7 @@ def _fetch_bq_schema(project: str, dataset: str, table: str) -> list[dict]:
         escaped = token.replace("'", "''")
         conn.execute(f"CREATE OR REPLACE SECRET bq_s (TYPE bigquery, ACCESS_TOKEN '{escaped}')")
         bq_sql = (
-            f"SELECT column_name, data_type, is_nullable, description "
+            f"SELECT column_name, data_type, is_nullable "
             f"FROM `{project}.{dataset}.INFORMATION_SCHEMA.COLUMNS` "
             f"WHERE table_name = ? ORDER BY ordinal_position"
         )
@@ -55,7 +55,7 @@ def _fetch_bq_schema(project: str, dataset: str, table: str) -> list[dict]:
                 "name": r[0],
                 "type": r[1],
                 "nullable": r[2] == "YES",
-                "description": r[3] or "",
+                "description": "",
             }
             for r in rows
         ]
