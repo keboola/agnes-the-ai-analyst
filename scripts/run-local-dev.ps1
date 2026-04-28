@@ -47,7 +47,13 @@
     .\scripts\run-local-dev.ps1 logs
     # tail logs from the running stack
 #>
-[CmdletBinding()]
+# Deliberately NOT [CmdletBinding()]: that auto-injects common parameters
+# (-Debug, -Verbose, -ErrorAction, etc.) which PowerShell binds via prefix
+# match BEFORE ValueFromRemainingArguments. Documented examples like
+# `up -d` (detached) and `down -v` (remove volumes) would silently get
+# eaten by `-Debug` / `-Verbose` instead of reaching docker compose.
+# Plain `param()` keeps the binder honest — anything unrecognized falls
+# through to $ExtraArgs and on to docker compose.
 param(
     [Parameter(Position = 0)]
     [ValidateSet('up', 'down', 'logs')]
