@@ -844,7 +844,11 @@ def _v12_to_v13_finalize(conn: duckdb.DuckDBPyConnection) -> None:
                             [user_id, group_row[0]],
                         )
                     except duckdb.ConstraintException:
-                        pass  # already present (re-run safety)
+                        logger.debug(
+                            "v13 backfill step 2 (google_sync): skipped "
+                            "insert for user=%s group=%s — already present",
+                            user_id, name,
+                        )
 
         # 3. core.admin grants → Admin membership. Tolerant of either table being
         # absent (e.g. fresh install path that skipped v8→v9).
@@ -870,7 +874,13 @@ def _v12_to_v13_finalize(conn: duckdb.DuckDBPyConnection) -> None:
                         [user_id, admin_group_id],
                     )
                 except duckdb.ConstraintException:
-                    pass
+                    logger.debug(
+                        "v13 backfill step 3 (admin system_seed): skipped "
+                        "insert for user=%s — already in Admin group "
+                        "(possibly from step 2 google_sync of 'Admin' "
+                        "Workspace group; system_seed intent is dropped)",
+                        user_id,
+                    )
 
         # 4. Everyone for every user (idempotent via UNIQUE PK).
         user_rows = conn.execute("SELECT id FROM users").fetchall()
@@ -883,7 +893,13 @@ def _v12_to_v13_finalize(conn: duckdb.DuckDBPyConnection) -> None:
                     [user_id, everyone_group_id],
                 )
             except duckdb.ConstraintException:
-                pass
+                logger.debug(
+                    "v13 backfill step 4 (everyone system_seed): skipped "
+                    "insert for user=%s — already in Everyone group "
+                    "(possibly from step 2 google_sync of 'Everyone' "
+                    "Workspace group; system_seed intent is dropped)",
+                    user_id,
+                )
 
         # 5. plugin_access → resource_grants
         has_plugin_access = conn.execute(
@@ -904,7 +920,36 @@ def _v12_to_v13_finalize(conn: duckdb.DuckDBPyConnection) -> None:
                         [str(_uuid.uuid4()), group_id, resource_id, granted_at, granted_by],
                     )
                 except duckdb.ConstraintException:
-                    pass  # already migrated (re-run safety)
+                    logger.debug(
+                        "v13 backfill step 5 (resource_grants): skipped "
+                        "insert for group=%s resource=%s — already migrated",
+                        group_id, resource_id,
+                    )
+
+        # Audit: log any non-core capability grants before dropping the
+        # legacy tables. No production caller in this repo ever registered
+        # non-core roles via register_internal_role (verified across git
+        # history) — this is a safety net for forked installs that may
+        # have added custom rows. Operators see a warning naming each
+        # affected role + count, so they can re-issue the equivalent
+        # grants in the v13 group-based model.
+        if has_internal_roles and has_user_role_grants:
+            non_core_rows = conn.execute(
+                """SELECT r.key, COUNT(*) AS cnt
+                   FROM user_role_grants g
+                   JOIN internal_roles r ON r.id = g.internal_role_id
+                   WHERE r.key NOT LIKE 'core.%'
+                   GROUP BY r.key"""
+            ).fetchall()
+            for role_key, cnt in non_core_rows:
+                logger.warning(
+                    "v13 migration: dropping %d grant(s) for non-core role "
+                    "'%s' (no equivalent in the v13 group-based model). "
+                    "If this role was registered via register_internal_role(), "
+                    "the affected users need to be re-added to an "
+                    "appropriate user_group post-upgrade.",
+                    cnt, role_key,
+                )
 
         # 6. Drop legacy tables in FK-correct order: dependent tables first.
         for stmt in [

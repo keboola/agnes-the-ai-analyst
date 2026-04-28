@@ -138,3 +138,17 @@ plugins to groups; tables are the last holdout.
   Identity calls silently return `[]`. The asymmetry flagged in PR
   #106 (Devin review on `_set_admin_membership`) falls under this
   cleanup and will be resolved together with the rest.
+- **v9 admins via group_mapping not carried to v13.** The v12→v13
+  finalize backfill at `src/db.py:851` matches `core.admin` grants
+  in `user_role_grants` only — direct grants. Any v9 admin who held
+  `core.admin` exclusively via a `group_mappings` row (Google group →
+  internal role mapping) is silently dropped on upgrade and gets 403
+  on admin-gated endpoints post-deploy. In this deploy the set is
+  empty (Google Workspace group sync was never functional →
+  `group_mappings` table was never populated → no admin promotions
+  came through that path), so the loss is theoretical here. For
+  forked installs that wired up Workspace groups under v9, those
+  admins need to be re-promoted via `/admin/access` post-upgrade.
+  Falls under the broader role-based cleanup pass once Workspace
+  sync is verified end-to-end. Flagged in PR #106 (cvrysanek review
+  on `src/db.py:851`).

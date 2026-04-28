@@ -101,7 +101,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   deploy a malicious script and wait for an admin to run it. Operators who
   need scripted workflows for non-admin users should run them on the user's
   behalf or expose the relevant data via the read-only `/api/data` surface
-  instead.
+  instead. **Migration for cron / scheduler PATs:** if a non-admin PAT is
+  wired into a scheduler that hits `/api/scripts/{id}/run` or
+  `/api/scripts/run`, the request now returns 403. Add the PAT user to the
+  Admin group via `/admin/access` or
+  `da admin group add-member Admin <pat-user-email>`. PATs themselves do not
+  need re-issuing — group membership is read at request time.
 - **BREAKING (ops)**: Generic ops scripts moved out of the customer-named
   `scripts/grpn/` directory into `scripts/ops/` as part of the OSS
   vendor-neutralization (issue #88):
