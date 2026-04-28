@@ -109,9 +109,10 @@ def estimate(conn, user, raw_request: dict, *, project_id: str, billing_project:
         safe_where_predicate(req.where, req.table_id, schema, dialect=dialect)
         if req.where else None
     )
-    # Validate select columns exist
+    # Validate select columns exist (case-insensitive, matching order_by).
     if req.select:
-        unknown = [c for c in req.select if c not in schema]
+        known = {c.lower() for c in schema}
+        unknown = [c for c in req.select if c.lower() not in known]
         if unknown:
             raise ValueError(f"unknown columns: {unknown}")
     _validate_order_by(req.order_by, schema)
@@ -266,19 +267,26 @@ def run_scan(
         if req.where else None
     )
     if req.select:
-        unknown = [c for c in req.select if c not in schema]
+        # Case-insensitive (BQ identifiers are case-insensitive; mixed-case
+        # names from INFORMATION_SCHEMA.COLUMNS shouldn't 400-reject the
+        # lowercased form a typical analyst writes).
+        known = {c.lower() for c in schema}
+        unknown = [c for c in req.select if c.lower() not in known]
         if unknown:
             raise ValueError(f"unknown columns: {unknown}")
     _validate_order_by(req.order_by, schema)
 
+    source_type = row.get("source_type") or ""
     user_id = user.get("email") or "anon"
 
     with quota.acquire(user=user_id):
-        if (row.get("source_type") or "") != "bigquery":
-            # Local source: query parquet directly
+        if source_type != "bigquery":
+            # Local source: query parquet directly. `source_type` extracted above
+            # because `row["source_type"]` could be NULL for legacy registry rows
+            # and `Path(...) / None` raises TypeError.
             from app.utils import get_data_dir
             parquet = (
-                get_data_dir() / "extracts" / row["source_type"] / "data" / f"{req.table_id}.parquet"
+                get_data_dir() / "extracts" / source_type / "data" / f"{req.table_id}.parquet"
             )
             local = duckdb.connect(":memory:")
             try:

@@ -239,9 +239,15 @@ def _build_manifest_for_user(conn, user: dict) -> dict:
     # `query_mode=local`, causing the CLI to try downloading remote tables.
     registry_by_name = {t["name"]: t for t in table_repo.list_all()}
 
-    # Filter by user's accessible tables (admin sees all)
+    # Filter by user's accessible tables (admin sees all). `can_access_table`
+    # internally does a registry lookup BY ID, but `s["table_id"]` is sourced
+    # from `_meta.table_name` = registry `name`. When id != name we need to
+    # translate name→id first, or the RBAC lookup misses and falls through.
     if user.get("role") != "admin":
-        all_states = [s for s in all_states if can_access_table(user, s["table_id"], conn)]
+        def _id_for(state):
+            reg = registry_by_name.get(state["table_id"])
+            return reg["id"] if reg else state["table_id"]
+        all_states = [s for s in all_states if can_access_table(user, _id_for(s), conn)]
 
     data_dir = _get_data_dir()
     tables = {}
