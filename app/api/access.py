@@ -326,13 +326,18 @@ async def update_group(
     if not g:
         raise HTTPException(status_code=404, detail="Group not found")
     if g.get("is_system"):
-        # Allow description edits but not rename — the canonical names
-        # 'Admin' / 'Everyone' are referenced from the codebase.
-        if payload.name is not None and payload.name != g["name"]:
-            raise HTTPException(
-                status_code=409,
-                detail="Cannot rename a system group",
-            )
+        # System groups are immutable end-to-end: the canonical names
+        # 'Admin' / 'Everyone' are referenced from the codebase, and the
+        # admin UI hides the Edit button entirely (admin_group_detail.html).
+        # Reject any modification at the API layer with a clear message
+        # rather than the misleading repository error that surfaced when
+        # the previous "rename rejected, description allowed" contract
+        # diverged from the repository's "all mutations rejected"
+        # behavior.
+        raise HTTPException(
+            status_code=409,
+            detail="System groups are immutable",
+        )
     updates: dict = {}
     if payload.name is not None:
         updates["name"] = payload.name.strip()
@@ -343,7 +348,7 @@ async def update_group(
             repo.update(group_id, **updates)
         except SystemGroupProtected:
             raise HTTPException(
-                status_code=409, detail="Cannot rename a system group",
+                status_code=409, detail="System groups are immutable",
             )
         _audit(conn, user["id"], "user_group.updated", f"group:{group_id}", updates)
     g = repo.get(group_id)
@@ -364,13 +369,25 @@ async def delete_group(
         raise HTTPException(status_code=404, detail="Group not found")
     if g.get("is_system"):
         raise HTTPException(status_code=409, detail="Cannot delete a system group")
+    # Atomic delete: cascade child rows then the group itself, all in one
+    # transaction. group_id has no FK constraints in the schema — the
+    # cascade is application-level — so an unhandled mid-flight failure
+    # without the BEGIN/COMMIT wrap could leave orphaned member / grant
+    # rows that the admin UI cannot clean up (the parent group_id is
+    # gone). With the transaction, either all three deletes commit or
+    # none do.
+    conn.execute("BEGIN TRANSACTION")
     try:
+        conn.execute("DELETE FROM user_group_members WHERE group_id = ?", [group_id])
+        conn.execute("DELETE FROM resource_grants WHERE group_id = ?", [group_id])
         repo.delete(group_id)
+        conn.execute("COMMIT")
     except SystemGroupProtected:
+        conn.execute("ROLLBACK")
         raise HTTPException(status_code=409, detail="Cannot delete a system group")
-    # Cascade members + grants for this group so dangling references go away.
-    conn.execute("DELETE FROM user_group_members WHERE group_id = ?", [group_id])
-    conn.execute("DELETE FROM resource_grants WHERE group_id = ?", [group_id])
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
     _audit(
         conn, user["id"], "user_group.deleted", f"group:{group_id}",
         {"name": g["name"]},
