@@ -12,7 +12,14 @@ from app.api.v2_cache import TTLCache
 
 router = APIRouter(prefix="/api/v2", tags=["v2"])
 
-_catalog_cache = TTLCache(maxsize=1024, ttl_seconds=300)  # per-user, 5 min
+# Global cache of the raw table_registry rows. RBAC is enforced PER REQUEST
+# against this list, mirroring v2_schema.py:139 / v2_sample.py — caching the
+# RBAC-filtered payload per user used to leave revoked users seeing tables for
+# up to TTL after a permission flip. Cache is single-keyed; a short TTL is
+# enough to keep the hot path off table_registry without turning the
+# authorization check into a stale read.
+_table_rows_cache = TTLCache(maxsize=1, ttl_seconds=60)
+_TABLE_ROWS_KEY = "all"
 
 
 def _flavor_for(source_type: str) -> str:
@@ -35,14 +42,15 @@ def _fetch_hint(table_id: str, source_type: str) -> str:
 
 
 def build_catalog(conn: duckdb.DuckDBPyConnection, user: dict) -> dict:
-    cache_key = f"{user.get('email', '?')}|catalog"
-    cached = _catalog_cache.get(cache_key)
-    if cached is not None:
-        return cached
+    rows = _table_rows_cache.get(_TABLE_ROWS_KEY)
+    if rows is None:
+        repo = TableRegistryRepository(conn)
+        rows = repo.list_all()
+        _table_rows_cache.set(_TABLE_ROWS_KEY, rows)
 
-    repo = TableRegistryRepository(conn)
-    rows = repo.list_all()
-
+    # RBAC is enforced fresh per request. Revoking a user's access to a
+    # table takes effect on their next call to this endpoint, not after the
+    # cache TTL expires.
     visible = []
     for r in rows:
         if user.get("role") != "admin" and not can_access_table(user, r["id"], conn):
@@ -59,12 +67,10 @@ def build_catalog(conn: duckdb.DuckDBPyConnection, user: dict) -> dict:
             "rough_size_hint": None,  # populated by Task 8 schema endpoint when called
         })
 
-    payload = {
+    return {
         "tables": visible,
         "server_time": datetime.now(timezone.utc).isoformat(),
     }
-    _catalog_cache.set(cache_key, payload)
-    return payload
 
 
 @router.get("/catalog")

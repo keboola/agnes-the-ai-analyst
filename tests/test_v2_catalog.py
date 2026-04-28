@@ -65,3 +65,51 @@ class TestCatalogShape:
             assert "fetch_via" in row
         finally:
             conn.close()
+
+
+class TestCatalogCacheRbac:
+    """Regression: the per-user payload cache used to leave revoked users
+    seeing tables for up to TTL. Cache the underlying rows globally; enforce
+    RBAC fresh per request. Same pattern as v2_schema.py / v2_sample.py."""
+
+    def test_rbac_decision_is_fresh_per_call_not_cached(self, reload_db, monkeypatch):
+        from app.api import v2_catalog
+
+        conn = reload_db.get_system_db()
+        try:
+            _seed_two_tables(conn)
+            user = {"role": "analyst", "email": "u@x.com"}
+
+            # First call: a fake can_access_table that grants both tables.
+            calls = []
+
+            def grant_all(_user, table_id, _conn):
+                calls.append(("grant", table_id))
+                return True
+
+            monkeypatch.setattr(v2_catalog, "can_access_table", grant_all)
+            data1 = v2_catalog.build_catalog(conn, user)
+            ids1 = {t["id"] for t in data1["tables"]}
+            assert {"orders", "bq_view"} <= ids1
+
+            # Second call (cache HIT on raw rows): can_access_table now denies
+            # `orders`. The user must NOT see it any more — RBAC re-evaluates.
+            def deny_orders(_user, table_id, _conn):
+                calls.append(("eval", table_id))
+                return table_id != "orders"
+
+            monkeypatch.setattr(v2_catalog, "can_access_table", deny_orders)
+            data2 = v2_catalog.build_catalog(conn, user)
+            ids2 = {t["id"] for t in data2["tables"]}
+            assert "orders" not in ids2, \
+                f"revoked table 'orders' still visible — cache leaked stale RBAC: {ids2}"
+            assert "bq_view" in ids2
+
+            # And RBAC ran on the second call (the eval calls are present).
+            assert any(kind == "eval" for kind, _ in calls), \
+                "RBAC was not re-evaluated on cached call"
+        finally:
+            conn.close()
+            v2_catalog._table_rows_cache.clear() if hasattr(
+                v2_catalog._table_rows_cache, "clear"
+            ) else None
