@@ -108,7 +108,13 @@ class TestResourceTypeRegistration:
 
 
 class TestAccessOverviewIncludesTables:
-    def test_tables_section_present(self, seeded_app):
+    """Table grants are gated behind AGNES_ENABLE_TABLE_GRANTS until runtime
+    enforcement lands (see docs/TODO-rbac-data-enforcement.md). These tests
+    opt in via the env var so they exercise the behavior the feature actually
+    targets — see TestTableGrantsFeatureFlag below for the disabled path."""
+
+    def test_tables_section_present(self, seeded_app, monkeypatch):
+        monkeypatch.setenv("AGNES_ENABLE_TABLE_GRANTS", "1")
         c = seeded_app["client"]
         resp = c.get(
             "/api/admin/access-overview",
@@ -119,7 +125,8 @@ class TestAccessOverviewIncludesTables:
         assert "table" in type_keys
         assert "marketplace_plugin" in type_keys  # regression — still there
 
-    def test_seeded_tables_appear_in_overview(self, seeded_app):
+    def test_seeded_tables_appear_in_overview(self, seeded_app, monkeypatch):
+        monkeypatch.setenv("AGNES_ENABLE_TABLE_GRANTS", "1")
         conn = get_system_db()
         try:
             TableRegistryRepository(conn).register(
@@ -144,3 +151,94 @@ class TestAccessOverviewIncludesTables:
             for it in block["items"]
         }
         assert "overview_test" in all_resource_ids
+
+
+class TestTableGrantsFeatureFlag:
+    """ResourceType.TABLE is hidden from the admin UI + grant API by default.
+    Until docs/TODO-rbac-data-enforcement.md step 1 lands, the runtime check
+    still consults legacy dataset_permissions, so granting a TABLE chip
+    in /admin/access would appear to work but produce 403s downstream."""
+
+    def test_resource_types_endpoint_excludes_table_by_default(
+        self, seeded_app, monkeypatch
+    ):
+        monkeypatch.delenv("AGNES_ENABLE_TABLE_GRANTS", raising=False)
+        c = seeded_app["client"]
+        resp = c.get(
+            "/api/admin/resource-types",
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert resp.status_code == 200
+        keys = {r["key"] for r in resp.json()}
+        assert "table" not in keys
+        assert "marketplace_plugin" in keys
+
+    def test_resource_types_endpoint_includes_table_when_enabled(
+        self, seeded_app, monkeypatch
+    ):
+        monkeypatch.setenv("AGNES_ENABLE_TABLE_GRANTS", "1")
+        c = seeded_app["client"]
+        resp = c.get(
+            "/api/admin/resource-types",
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        keys = {r["key"] for r in resp.json()}
+        assert "table" in keys
+
+    def test_create_table_grant_rejected_when_disabled(
+        self, seeded_app, monkeypatch
+    ):
+        monkeypatch.delenv("AGNES_ENABLE_TABLE_GRANTS", raising=False)
+        # Need a non-system group to grant against; use the seed Engineering
+        # / Everyone path via /admin/groups.
+        c = seeded_app["client"]
+        admin = _auth(seeded_app["admin_token"])
+        gresp = c.post(
+            "/api/admin/groups",
+            headers=admin,
+            json={"name": "table-grant-test"},
+        )
+        assert gresp.status_code == 201
+        gid = gresp.json()["id"]
+        resp = c.post(
+            "/api/admin/grants",
+            headers=admin,
+            json={
+                "group_id": gid,
+                "resource_type": "table",
+                "resource_id": "some.table",
+            },
+        )
+        assert resp.status_code == 422
+        assert "AGNES_ENABLE_TABLE_GRANTS" in resp.json()["detail"]
+
+    def test_create_table_grant_accepted_when_enabled(
+        self, seeded_app, monkeypatch
+    ):
+        monkeypatch.setenv("AGNES_ENABLE_TABLE_GRANTS", "1")
+        conn = get_system_db()
+        try:
+            TableRegistryRepository(conn).register(
+                id="ff_table", name="ff_table",
+                bucket="in.c-ff", source_type="dummy", is_public=False,
+            )
+        finally:
+            conn.close()
+        c = seeded_app["client"]
+        admin = _auth(seeded_app["admin_token"])
+        gresp = c.post(
+            "/api/admin/groups",
+            headers=admin,
+            json={"name": "table-grant-on"},
+        )
+        gid = gresp.json()["id"]
+        resp = c.post(
+            "/api/admin/grants",
+            headers=admin,
+            json={
+                "group_id": gid,
+                "resource_type": "table",
+                "resource_id": "ff_table",
+            },
+        )
+        assert resp.status_code == 201

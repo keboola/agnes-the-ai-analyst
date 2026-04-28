@@ -25,6 +25,7 @@ value verbatim.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Callable, List
@@ -187,12 +188,40 @@ RESOURCE_TYPES: dict[ResourceType, ResourceTypeSpec] = {
 }
 
 
+def is_resource_type_enabled(rt: ResourceType) -> bool:
+    """Whether a resource type is exposed to the admin UI + grant API.
+
+    ``ResourceType.TABLE`` is gated behind ``AGNES_ENABLE_TABLE_GRANTS=1``
+    (default off) until the data-plane runtime check delegates to
+    ``app.auth.access.can_access`` (currently still flows through legacy
+    ``dataset_permissions``). Without runtime enforcement, exposing the chip
+    is misleading: admins grant access through /admin/access, but the user
+    still gets filtered out at /api/catalog. See
+    ``docs/TODO-rbac-data-enforcement.md`` step 1.
+
+    Existing TABLE grants in ``resource_grants`` remain in the DB regardless
+    — this flag controls UI exposure + new-grant acceptance, not data.
+    """
+    if rt is ResourceType.TABLE:
+        return os.environ.get("AGNES_ENABLE_TABLE_GRANTS", "").lower() in {
+            "1", "true", "yes", "on",
+        }
+    return True
+
+
+def enabled_resource_types() -> list[ResourceTypeSpec]:
+    """The subset of RESOURCE_TYPES currently surfaced to admins."""
+    return [spec for rt, spec in RESOURCE_TYPES.items() if is_resource_type_enabled(rt)]
+
+
 def list_resource_types() -> list[dict[str, str]]:
     """Flat projection for /api/admin/resource-types.
 
     Shape: ``[{key, display_name, description, id_format}]``. The
     ``list_blocks`` delegate is intentionally omitted — the UI consumes
-    blocks via ``/api/admin/access-overview`` instead.
+    blocks via ``/api/admin/access-overview`` instead. Disabled types
+    (e.g. TABLE without ``AGNES_ENABLE_TABLE_GRANTS``) are filtered out so
+    the admin UI does not advertise grants the runtime cannot enforce.
     """
     return [
         {
@@ -201,5 +230,5 @@ def list_resource_types() -> list[dict[str, str]]:
             "description": spec.description,
             "id_format": spec.id_format,
         }
-        for spec in RESOURCE_TYPES.values()
+        for spec in enabled_resource_types()
     ]

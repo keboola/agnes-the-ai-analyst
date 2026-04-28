@@ -531,3 +531,104 @@ def grant_resource_types(as_json: bool = typer.Option(False, "--json")):
         ("display_name", "DISPLAY NAME", 28),
         ("id_format", "ID FORMAT", 36),
     ])
+
+
+# ---------------------------------------------------------------------------
+# Break-glass: out-of-band admin grant.
+#
+# Talks directly to system.duckdb — no HTTP, no auth dependency. The whole
+# point is recovery for the case where the running server's authorization
+# layer is broken or there is no admin left to authenticate as. Requires
+# filesystem access to ${DATA_DIR}/state/system.duckdb and is therefore
+# restricted to operators with shell access on the host.
+# ---------------------------------------------------------------------------
+
+
+breakglass_app = typer.Typer(
+    help="Out-of-band recovery (talks directly to system.duckdb)",
+)
+admin_app.add_typer(breakglass_app, name="break-glass")
+
+
+@breakglass_app.command("grant-admin")
+def break_glass_grant_admin(
+    email: str = typer.Argument(..., help="Email of the user to promote"),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Skip confirmation prompt"
+    ),
+) -> None:
+    """Grant Admin-group membership to a user without going through the API.
+
+    Operates directly on system.duckdb. Use when the server is up but the
+    Admin group has no live members (race, mistake, accidental DELETE) or
+    when bootstrapping a brand-new install before any admin exists. Membership
+    is recorded with source='cli_break_glass' so it's distinguishable from
+    google_sync / admin / system_seed in audits.
+
+    The DuckDB file must not be locked by a running app process — stop the
+    app or use a separate replica before running this.
+    """
+    import uuid as _uuid
+
+    from src.db import SYSTEM_ADMIN_GROUP, get_system_db
+    from src.repositories.user_groups import UserGroupsRepository
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    from src.repositories.users import UserRepository
+
+    if not yes:
+        confirm = typer.confirm(
+            f"Grant Admin-group membership to {email!r} (break-glass)?",
+            default=False,
+        )
+        if not confirm:
+            typer.echo("Aborted.")
+            raise typer.Exit(1)
+
+    conn = get_system_db()
+    try:
+        users = UserRepository(conn)
+        groups = UserGroupsRepository(conn)
+        members = UserGroupMembersRepository(conn)
+
+        admin_group = groups.get_by_name(SYSTEM_ADMIN_GROUP)
+        if admin_group is None:
+            typer.echo(
+                f"FATAL: '{SYSTEM_ADMIN_GROUP}' group missing. Start the app "
+                "once so _seed_system_groups can recreate it, then retry.",
+                err=True,
+            )
+            raise typer.Exit(2)
+
+        existing = users.get_by_email(email)
+        if existing is None:
+            user_id = _uuid.uuid4().hex
+            users.create(
+                id=user_id,
+                email=email,
+                name=email.split("@", 1)[0],
+                role="admin",
+            )
+            typer.echo(f"Created user {email} (id={user_id[:8]}…)")
+        else:
+            user_id = existing["id"]
+
+        if members.has_membership(user_id, admin_group["id"]):
+            typer.echo(
+                f"{email} is already a member of '{SYSTEM_ADMIN_GROUP}'."
+            )
+            return
+
+        members.add_member(
+            user_id=user_id,
+            group_id=admin_group["id"],
+            source="cli_break_glass",
+            added_by="cli:break-glass",
+        )
+        typer.echo(
+            f"Granted Admin to {email}. Audit source='cli_break_glass'."
+        )
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass

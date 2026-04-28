@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -284,9 +284,16 @@ CREATE TABLE IF NOT EXISTS user_groups (
 -- The `source` column tracks who created the row so each source only mutates
 -- its own rows — Google sync's nightly DELETE+INSERT does NOT clobber
 -- admin-added members, and admin UI deletions don't fight the sync loop.
+--
+-- v14: group_id now FK→user_groups(id). DuckDB FK enforcement blocks the
+-- parent DELETE while children exist, so the application must delete
+-- members + resource_grants BEFORE the user_groups row (see
+-- app/api/access.py:delete_group). DuckDB does NOT support ON DELETE
+-- CASCADE, so we rely on explicit transactional cleanup at the call site
+-- and let the FK serve as a defense-in-depth invariant.
 CREATE TABLE IF NOT EXISTS user_group_members (
     user_id   VARCHAR NOT NULL,
-    group_id  VARCHAR NOT NULL,
+    group_id  VARCHAR NOT NULL REFERENCES user_groups(id),
     source    VARCHAR NOT NULL,  -- 'admin' | 'google_sync' | 'system_seed'
     added_at  TIMESTAMP DEFAULT current_timestamp,
     added_by  VARCHAR,
@@ -298,9 +305,11 @@ CREATE TABLE IF NOT EXISTS user_group_members (
 -- app.resource_types.ResourceType enum (e.g. 'marketplace_plugin').
 -- resource_id is a path string whose format is owned by the module that
 -- registered the resource type (e.g. '<marketplace_slug>/<plugin_name>').
+--
+-- v14: group_id FK→user_groups(id), same rationale as user_group_members.
 CREATE TABLE IF NOT EXISTS resource_grants (
     id            VARCHAR PRIMARY KEY,
-    group_id      VARCHAR NOT NULL,
+    group_id      VARCHAR NOT NULL REFERENCES user_groups(id),
     resource_type VARCHAR NOT NULL,
     resource_id   VARCHAR NOT NULL,
     assigned_at   TIMESTAMP DEFAULT current_timestamp,
@@ -977,6 +986,110 @@ def _v12_to_v13_finalize(conn: duckdb.DuckDBPyConnection) -> None:
         raise
 
 
+def _v13_to_v14_finalize(conn: duckdb.DuckDBPyConnection) -> None:
+    """Add FOREIGN KEY (group_id) → user_groups(id) on user_group_members
+    and resource_grants.
+
+    DuckDB does not support ALTER TABLE ADD CONSTRAINT for foreign keys, so
+    the migration recreates each table:
+
+        1. Pre-clean orphan rows (group_id no longer in user_groups).
+           These should not exist on a clean v13 DB but the app-layer
+           cascade was best-effort before this PR (see #3).
+        2. RENAME old table to *_v13_pre.
+        3. CREATE TABLE with the FK (matches the v14 _SYSTEM_SCHEMA).
+        4. INSERT … SELECT from *_v13_pre.
+        5. DROP *_v13_pre.
+
+    Wrapped in BEGIN TRANSACTION so a mid-flight failure rolls back to
+    a clean v13 state and the outer caller skips the schema_version bump.
+    DuckDB does NOT support ON DELETE CASCADE — see _SYSTEM_SCHEMA above
+    and app/api/access.py:delete_group for the explicit cascade.
+    """
+    orphan_members = conn.execute(
+        """SELECT COUNT(*) FROM user_group_members
+           WHERE group_id NOT IN (SELECT id FROM user_groups)"""
+    ).fetchone()[0]
+    orphan_grants = conn.execute(
+        """SELECT COUNT(*) FROM resource_grants
+           WHERE group_id NOT IN (SELECT id FROM user_groups)"""
+    ).fetchone()[0]
+    if orphan_members:
+        logger.warning(
+            "v14 migration: dropping %d orphan user_group_members rows "
+            "(group_id pointed at a deleted user_groups.id)",
+            orphan_members,
+        )
+    if orphan_grants:
+        logger.warning(
+            "v14 migration: dropping %d orphan resource_grants rows",
+            orphan_grants,
+        )
+
+    conn.execute("BEGIN TRANSACTION")
+    try:
+        # Orphan cleanup must happen inside the transaction so it rolls
+        # back together with the table swap on any failure.
+        conn.execute(
+            """DELETE FROM user_group_members
+               WHERE group_id NOT IN (SELECT id FROM user_groups)"""
+        )
+        conn.execute(
+            """DELETE FROM resource_grants
+               WHERE group_id NOT IN (SELECT id FROM user_groups)"""
+        )
+
+        # user_group_members rebuild
+        conn.execute(
+            "ALTER TABLE user_group_members RENAME TO user_group_members_v13_pre"
+        )
+        conn.execute(
+            """CREATE TABLE user_group_members (
+                user_id   VARCHAR NOT NULL,
+                group_id  VARCHAR NOT NULL REFERENCES user_groups(id),
+                source    VARCHAR NOT NULL,
+                added_at  TIMESTAMP DEFAULT current_timestamp,
+                added_by  VARCHAR,
+                PRIMARY KEY (user_id, group_id)
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO user_group_members
+               (user_id, group_id, source, added_at, added_by)
+               SELECT user_id, group_id, source, added_at, added_by
+               FROM user_group_members_v13_pre"""
+        )
+        conn.execute("DROP TABLE user_group_members_v13_pre")
+
+        # resource_grants rebuild
+        conn.execute(
+            "ALTER TABLE resource_grants RENAME TO resource_grants_v13_pre"
+        )
+        conn.execute(
+            """CREATE TABLE resource_grants (
+                id            VARCHAR PRIMARY KEY,
+                group_id      VARCHAR NOT NULL REFERENCES user_groups(id),
+                resource_type VARCHAR NOT NULL,
+                resource_id   VARCHAR NOT NULL,
+                assigned_at   TIMESTAMP DEFAULT current_timestamp,
+                assigned_by   VARCHAR,
+                UNIQUE (group_id, resource_type, resource_id)
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO resource_grants
+               (id, group_id, resource_type, resource_id, assigned_at, assigned_by)
+               SELECT id, group_id, resource_type, resource_id, assigned_at, assigned_by
+               FROM resource_grants_v13_pre"""
+        )
+        conn.execute("DROP TABLE resource_grants_v13_pre")
+
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
 def _seed_core_roles(conn: duckdb.DuckDBPyConnection) -> None:
     """Idempotently insert/refresh the four core.* hierarchy roles.
 
@@ -1210,6 +1323,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 for sql in _V12_TO_V13_MIGRATIONS:
                     conn.execute(sql)
                 _v12_to_v13_finalize(conn)
+            if current < 14:
+                _v13_to_v14_finalize(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

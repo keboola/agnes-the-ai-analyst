@@ -41,11 +41,14 @@ async def marketplace_zip(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ) -> Response:
     if_none_match = request.headers.get("if-none-match", "").strip().strip('"')
-    data, etag = packager.build_zip(conn, user)
-
+    # Resolve the etag first — this lets a 304 short-circuit before we read
+    # every plugin file off disk and run ZIP_DEFLATED. Hot path on every
+    # Claude Code SessionStart.
+    etag, plugins = packager.compute_etag_for_user(conn, user)
     if if_none_match and if_none_match == etag:
         return Response(status_code=304, headers={"ETag": f'"{etag}"'})
 
+    data, _ = packager.build_zip(conn, user, plugins=plugins, etag=etag)
     return Response(
         content=data,
         media_type="application/zip",
