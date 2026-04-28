@@ -42,6 +42,7 @@ class ResourceType(StrEnum):
     """
 
     MARKETPLACE_PLUGIN = "marketplace_plugin"
+    TABLE = "table"
 
 
 # Shape returned by ``list_blocks`` delegates. Kept as plain ``dict`` to keep
@@ -122,6 +123,48 @@ def _marketplace_plugin_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]
 
 
 # ---------------------------------------------------------------------------
+# Table projection
+# ---------------------------------------------------------------------------
+
+
+def _table_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
+    """Project table_registry into the (block → items) shape the admin UI
+    renders.
+
+    One block per ``bucket`` value, ordered by bucket then table name.
+    Items inside are tables; ``resource_id`` is the ``table_registry.id``
+    primary key — that is the path string that ``resource_grants.resource_id``
+    matches against when enforcement lands. Bucket is purely a UI grouping
+    and does not enter the resource_id (mirrors the marketplace/plugin
+    pattern, where the marketplace itself is not a grantable resource).
+
+    Tables with NULL/empty bucket fall into a synthetic ``"(no bucket)"``
+    block so they are still grantable.
+    """
+    rows = conn.execute(
+        """SELECT id, name, bucket, source_type, query_mode, description
+           FROM table_registry
+           ORDER BY COALESCE(bucket, ''), name"""
+    ).fetchall()
+    blocks: dict[str, Block] = {}
+    for tbl_id, name, bucket, source_type, query_mode, description in rows:
+        block_key = bucket if bucket else "(no bucket)"
+        block = blocks.setdefault(block_key, {
+            "id": block_key,
+            "name": block_key,
+            "items": [],
+        })
+        block["items"].append({
+            "resource_id": tbl_id,
+            "name": name,
+            "category": query_mode,
+            "source_type": source_type,
+            "description": description,
+        })
+    return list(blocks.values())
+
+
+# ---------------------------------------------------------------------------
 # Registry — the one place that gets edited when adding a new resource type
 # ---------------------------------------------------------------------------
 
@@ -133,6 +176,13 @@ RESOURCE_TYPES: dict[ResourceType, ResourceTypeSpec] = {
         description="A plugin from a registered marketplace.",
         id_format="<marketplace_slug>/<plugin_name>",
         list_blocks=_marketplace_plugin_blocks,
+    ),
+    ResourceType.TABLE: ResourceTypeSpec(
+        key=ResourceType.TABLE,
+        display_name="Tables",
+        description="A registered data table.",
+        id_format="<table_id>",
+        list_blocks=_table_blocks,
     ),
 }
 
