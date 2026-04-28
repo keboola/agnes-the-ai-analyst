@@ -12,12 +12,17 @@ import pyarrow as pa
 CONTENT_TYPE = "application/vnd.apache.arrow.stream"
 
 
-def arrow_table_to_ipc_bytes(table: pa.Table) -> bytes:
-    """Serialize a pyarrow.Table to Arrow IPC stream bytes."""
+def arrow_table_to_ipc_bytes(source: pa.Table | pa.RecordBatchReader) -> bytes:
+    """Serialize a pyarrow.Table or RecordBatchReader to Arrow IPC stream bytes."""
     sink = io.BytesIO()
-    with pa.ipc.new_stream(sink, table.schema) as writer:
-        for batch in table.to_batches():
-            writer.write_batch(batch)
+    if isinstance(source, pa.RecordBatchReader):
+        with pa.ipc.new_stream(sink, source.schema) as writer:
+            for batch in source:
+                writer.write_batch(batch)
+    else:
+        with pa.ipc.new_stream(sink, source.schema) as writer:
+            for batch in source.to_batches():
+                writer.write_batch(batch)
     return sink.getvalue()
 
 

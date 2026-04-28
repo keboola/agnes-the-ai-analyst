@@ -19,3 +19,11 @@ def test_empty_table_round_trip():
     got = parse_ipc_bytes(body)
     assert got.num_rows == 0
     assert got.schema.equals(src.schema)
+
+
+def test_round_trip_record_batch_reader():
+    src = pa.table({"a": [1, 2, 3], "b": ["x", "y", "z"]})
+    reader = pa.RecordBatchReader.from_batches(src.schema, src.to_batches())
+    body = arrow_table_to_ipc_bytes(reader)
+    got = parse_ipc_bytes(body)
+    assert got.equals(src)
