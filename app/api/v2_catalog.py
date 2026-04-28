@@ -13,12 +13,14 @@ from app.api.v2_cache import TTLCache
 router = APIRouter(prefix="/api/v2", tags=["v2"])
 
 # Global cache of the raw table_registry rows. RBAC is enforced PER REQUEST
-# against this list, mirroring v2_schema.py:139 / v2_sample.py — caching the
-# RBAC-filtered payload per user used to leave revoked users seeing tables for
-# up to TTL after a permission flip. Cache is single-keyed; a short TTL is
-# enough to keep the hot path off table_registry without turning the
-# authorization check into a stale read.
-_table_rows_cache = TTLCache(maxsize=1, ttl_seconds=60)
+# against this list, mirroring v2_schema.py / v2_sample.py — caching the
+# RBAC-filtered payload per user used to leave revoked users seeing tables
+# for up to TTL after a permission flip. Cache is single-keyed; the TTL
+# matches the documented `api.catalog_cache_ttl_seconds` default at
+# `config/instance.yaml.example`. The config knob isn't wired through yet
+# (same status as schema/sample caches), so changing it in instance.yaml is
+# a no-op — tracked separately.
+_table_rows_cache = TTLCache(maxsize=1, ttl_seconds=300)
 _TABLE_ROWS_KEY = "all"
 
 
