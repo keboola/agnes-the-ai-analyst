@@ -18,6 +18,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - `/api/v2/{catalog,schema,sample,scan,scan/estimate}` — discovery + scoped fetch primitives for remote-mode tables. See `docs/superpowers/specs/2026-04-27-claude-fetch-primitives-design.md`.
 - `da catalog`, `da schema`, `da describe`, `da fetch`, `da snapshot {list,refresh,drop,prune}`, `da disk-info` — CLI primitives backed by the v2 API.
 - `cli/skills/agnes-data-querying.md` — Claude rails skill loaded for Agnes-flavored projects; covers discovery-first protocol, `da fetch` workflow, BigQuery SQL flavor cheat-sheet, and snapshot hygiene.
+- `cli/skills/agnes-table-registration.md` — admin-side companion skill: when to register single vs. bulk-discover, source-side verification before registration, idempotence rules, update/delete via REST (no CLI today), and confirmation flow.
 - `instance.yaml: api.scan.*` knobs — `max_limit`, `max_result_bytes`, `max_concurrent_per_user`, `max_daily_bytes_per_user`, `bq_cost_per_tb_usd`, `request_timeout_seconds`. All optional; defaults applied if absent.
 - `instance.yaml: api.catalog_cache_ttl_seconds`, `api.schema_cache_ttl_seconds`, `api.sample_cache_ttl_seconds` — TTL knobs for server-side discovery caches.
 - `instance.yaml: data_source.bigquery.legacy_wrap_views` — opt-in toggle to restore the pre-v2 behavior of exposing BigQuery VIEW/MATERIALIZED_VIEW tables as DuckDB master views in `analytics.duckdb`. Default `false`. Set `true` for one release cycle when migrating existing scripts (see **BREAKING** note below).
