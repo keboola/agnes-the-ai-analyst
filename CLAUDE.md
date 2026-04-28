@@ -81,13 +81,17 @@ CREATE TABLE _remote_attach (
     alias     VARCHAR,  -- DuckDB alias used in views, e.g. 'kbc'
     extension VARCHAR,  -- Extension name, e.g. 'keboola'
     url       VARCHAR,  -- Connection URL
-    token_env VARCHAR   -- Env-var name holding the auth token (NOT the token itself)
+    token_env VARCHAR   -- Env-var name holding the auth token, OR empty for
+                        -- extensions with built-in auth (e.g. BigQuery uses the
+                        -- GCE metadata server — see `connectors/bigquery/auth.py`).
 );
 ```
 
-The orchestrator reads this table, installs/loads the extension, reads the token from the
-environment, and ATTACHes the external source. Views referencing `kbc."bucket"."table"` then
-resolve correctly. This mechanism is generic — any connector can use it.
+The orchestrator reads this table, installs/loads the extension, fetches the token
+(via `token_env` lookup, or via the extension-specific auth path when `token_env=''`),
+creates a session-scoped DuckDB SECRET when the extension requires one (BigQuery), and
+ATTACHes the external source. Views referencing `kbc."bucket"."table"` then resolve correctly.
+This mechanism is generic — any connector can plug in.
 
 The SyncOrchestrator scans `/data/extracts/*/extract.duckdb`, ATTACHes each into master `analytics.duckdb`, and creates views.
 

@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 import contextlib
-import fcntl
 import json
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Optional
+
+# `fcntl` is POSIX-only. The CLI is primarily targeted at Mac/Linux laptops, but
+# import-time failure on Windows would make the whole module (incl. read_meta /
+# list_snapshots) unusable. Make the import lazy so non-locking helpers still
+# work; `snapshot_lock` raises a clear error if anything tries to acquire it.
+try:
+    import fcntl as _fcntl  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover — exercised only on Windows
+    _fcntl = None  # type: ignore[assignment]
 
 
 @dataclass
@@ -74,13 +82,18 @@ def snapshot_lock(snap_dir: Path):
 
     Concurrent `da fetch` invocations queue here.
     """
+    if _fcntl is None:
+        raise RuntimeError(
+            "snapshot_lock requires POSIX fcntl — Windows is not supported. "
+            "Run `da` from a Mac or Linux machine, or use a WSL shell."
+        )
     snap_dir.mkdir(parents=True, exist_ok=True)
     lock_file = snap_dir / ".lock"
     lock_file.touch(exist_ok=True)
     fd = open(lock_file, "r+")
     try:
-        fcntl.flock(fd.fileno(), fcntl.LOCK_EX)
+        _fcntl.flock(fd.fileno(), _fcntl.LOCK_EX)
         yield
     finally:
-        fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
+        _fcntl.flock(fd.fileno(), _fcntl.LOCK_UN)
         fd.close()

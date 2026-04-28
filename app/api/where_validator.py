@@ -79,6 +79,8 @@ def validate_where(
     predicate: str,
     table_id: str,
     schema: Mapping[str, str],
+    *,
+    dialect: str = "bigquery",
 ) -> exp.Expression:
     """Validate a WHERE-clause fragment.
 
@@ -86,6 +88,9 @@ def validate_where(
         predicate: SQL fragment (without leading 'WHERE').
         table_id: target table id; cross-table references rejected.
         schema: {column_name: type} for the target table.
+        dialect: sqlglot dialect to parse with. Default 'bigquery'. Pass 'duckdb'
+            (or anything sqlglot supports) when the predicate will be executed
+            against a local DuckDB scan, so DuckDB-specific syntax parses.
 
     Returns:
         Parsed sqlglot expression tree (caller may re-stringify or inspect).
@@ -99,7 +104,7 @@ def validate_where(
     # Multi-statement detection: BQ statements separated by ';' would parse
     # as multiple expressions in sqlglot.parse() (returns a list).
     try:
-        statements = sqlglot.parse(f"SELECT 1 FROM t WHERE {predicate}", dialect="bigquery")
+        statements = sqlglot.parse(f"SELECT 1 FROM t WHERE {predicate}", dialect=dialect)
     except ParseError as e:
         raise WhereValidationError(REJECT_PARSE, f"parse failed: {e}")
 
@@ -196,11 +201,16 @@ def _walk_functions(node: exp.Expression) -> None:
             except Exception:
                 name = ""
 
-        # Skip nodes we cannot resolve to a SQL function name (operators-as-nodes,
-        # casts already covered by typed sql_name(), etc.). If sql_name() returns
-        # empty for a typed Func, it is not a callable form — leave it alone.
+        # If sql_name() returns empty for a typed Func, we can't tell whether
+        # it's a benign operator wrapper or a future dangerous construct.
+        # Reject (defense in depth) — if a legitimate case appears, add the
+        # specific subclass to the explicit-skip list above (Connector, etc.).
         if not name:
-            continue
+            raise WhereValidationError(
+                REJECT_UNKNOWN_FUNCTION,
+                f"unrecognized function-like node: {type(func).__name__}",
+                detail={"function": type(func).__name__},
+            )
 
         if name not in ALLOWED_FUNCTIONS:
             raise WhereValidationError(

@@ -217,7 +217,12 @@ def _build_manifest_for_user(conn, user: dict) -> dict:
     sync_repo = SyncStateRepository(conn)
     table_repo = TableRegistryRepository(conn)
     all_states = sync_repo.get_all_states()
-    registry_by_id = {t["id"]: t for t in table_repo.list_all()}
+    # `sync_state.table_id` is sourced from `_meta.table_name` which equals
+    # `table_registry.name`, NOT `table_registry.id`. Auto-discovered Keboola
+    # tables and manually-registered ones with mixed-case/spaced names produce
+    # id != name; an id-keyed lookup would miss them and silently default to
+    # `query_mode=local`, causing the CLI to try downloading remote tables.
+    registry_by_name = {t["name"]: t for t in table_repo.list_all()}
 
     # Filter by user's accessible tables (admin sees all)
     if user.get("role") != "admin":
@@ -227,7 +232,7 @@ def _build_manifest_for_user(conn, user: dict) -> dict:
     tables = {}
     for state in all_states:
         table_id = state["table_id"]
-        reg = registry_by_id.get(table_id, {})
+        reg = registry_by_name.get(table_id, {})
         tables[table_id] = {
             "hash": state.get("hash", ""),
             "updated": state.get("last_sync").isoformat() if state.get("last_sync") else None,

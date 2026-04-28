@@ -96,10 +96,11 @@ def estimate(conn, user, raw_request: dict, *, project_id: str, billing_project:
         raise PermissionError(req.table_id)
 
     schema = _resolve_schema(conn, user, req.table_id, project_id)
+    dialect = "bigquery" if (row.get("source_type") or "") == "bigquery" else "duckdb"
 
     # Validate WHERE first
     if req.where:
-        validate_where(req.where, req.table_id, schema)
+        validate_where(req.where, req.table_id, schema, dialect=dialect)
     # Validate select columns exist
     if req.select:
         unknown = [c for c in req.select if c not in schema]
@@ -122,8 +123,11 @@ def estimate(conn, user, raw_request: dict, *, project_id: str, billing_project:
     cost_per_tb = float(get_value("api", "scan", "bq_cost_per_tb_usd", default=5.0) or 5.0)
     cost = (scan_bytes / 1_099_511_627_776) * cost_per_tb  # 1 TiB = 2^40
 
-    # Heuristic for result row/byte estimate
-    avg_row_bytes = max(1, sum(_avg_bytes_for_type(t) for t in schema.values()) // max(1, len(schema)))
+    # Heuristic for result row/byte estimate. A row contains all selected
+    # columns, so per-row bytes = sum of per-column estimates (NOT average).
+    # If req.select is set, narrow to those columns; otherwise use full schema.
+    cols_for_estimate = [schema[c] for c in (req.select or []) if c in schema] or list(schema.values())
+    avg_row_bytes = max(1, sum(_avg_bytes_for_type(t) for t in cols_for_estimate))
     rows_est = scan_bytes // max(avg_row_bytes, 1)
     if req.limit:
         rows_est = min(rows_est, req.limit)
@@ -238,8 +242,9 @@ def run_scan(
         raise ValueError(f"limit {req.limit} exceeds max {_max_limit()}")
 
     schema = _resolve_schema(conn, user, req.table_id, project_id)
+    dialect = "bigquery" if (row.get("source_type") or "") == "bigquery" else "duckdb"
     if req.where:
-        validate_where(req.where, req.table_id, schema)
+        validate_where(req.where, req.table_id, schema, dialect=dialect)
     if req.select:
         unknown = [c for c in req.select if c not in schema]
         if unknown:

@@ -182,14 +182,45 @@ class SyncOrchestrator:
                 f"FROM {source_name}._meta"
             ).fetchall()
 
+            # Pre-fetch the set of names that actually exist as views/tables in
+            # the attached extract.duckdb. The BQ connector with
+            # legacy_wrap_views=False inserts _meta rows for VIEW entities
+            # without creating inner views — those need a different code path.
+            inner_objects = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT table_name FROM information_schema.tables "
+                    f"WHERE table_catalog='{source_name}'"
+                ).fetchall()
+            }
+
             for table_name, rows, size_bytes, query_mode in meta_rows:
                 if not _validate_identifier(table_name, "table_name"):
                     continue
-                conn.execute(
-                    f"CREATE OR REPLACE VIEW \"{table_name}\" AS "
-                    f"SELECT * FROM {source_name}.\"{table_name}\""
-                )
-                tables.append(table_name)
+                if table_name not in inner_objects:
+                    # `_meta` row without an inner object — typically a BQ
+                    # VIEW entity in the v2 fetch-primitives flow. Skip the
+                    # master-view creation (use `da fetch` to materialize),
+                    # but still process subsequent rows.
+                    logger.info(
+                        "Skipping master view for %s.%s — no inner object "
+                        "(use `da fetch` for BQ views)",
+                        source_name, table_name,
+                    )
+                    continue
+                try:
+                    conn.execute(
+                        f"CREATE OR REPLACE VIEW \"{table_name}\" AS "
+                        f"SELECT * FROM {source_name}.\"{table_name}\""
+                    )
+                    tables.append(table_name)
+                except Exception as e:
+                    # Per-row catch so one bad row doesn't drop the rest of
+                    # the source's master views from the rebuild.
+                    logger.error(
+                        "Failed to create master view for %s.%s: %s",
+                        source_name, table_name, e,
+                    )
 
             # Update sync_state in system DB
             self._update_sync_state(meta_rows, source_name)
@@ -254,8 +285,9 @@ class SyncOrchestrator:
                         f"CREATE OR REPLACE SECRET {secret_name} "
                         f"(TYPE bigquery, ACCESS_TOKEN '{escaped}')"
                     )
+                    safe_url = url.replace("'", "''")
                     conn.execute(
-                        f"ATTACH '{url}' AS {alias} (TYPE {extension}, READ_ONLY)"
+                        f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)"
                     )
                 elif token_env:
                     # Generic env-var token path (e.g. Keboola)
@@ -267,13 +299,15 @@ class SyncOrchestrator:
                         )
                         continue
                     escaped_token = token.replace("'", "''")
+                    safe_url = url.replace("'", "''")
                     conn.execute(
-                        f"ATTACH '{url}' AS {alias} (TYPE {extension}, TOKEN '{escaped_token}')"
+                        f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, TOKEN '{escaped_token}')"
                     )
                 else:
                     # No auth required (or extension handles it via env automatically)
+                    safe_url = url.replace("'", "''")
                     conn.execute(
-                        f"ATTACH '{url}' AS {alias} (TYPE {extension}, READ_ONLY)"
+                        f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)"
                     )
 
                 logger.info("Attached remote source %s via %s extension", alias, extension)
