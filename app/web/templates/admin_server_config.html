@@ -387,14 +387,22 @@ function confirmDanger(section, patch) {
       ? rows.map(r => `<div class="diff-row"><span class="path">${escHtml(r.path)}</span> &mdash; ${escHtml(JSON.stringify(r.before))} &rarr; <strong>${escHtml(JSON.stringify(r.after))}</strong></div>`).join("")
       : `<em>No visible diff (secret fields are masked in this preview).</em>`;
     const btn = document.getElementById("danger-confirm-btn");
+    const modalEl = document.getElementById("danger-modal");
+    const cancelBtns = document.querySelectorAll('#danger-modal [data-close-modal]');
     const onOk = () => { closeModal("danger-modal"); cleanup(); resolve(true); };
     const onCancel = () => { cleanup(); resolve(false); };
+    // Backdrop click visually closes via the global handler at the top of the
+    // file, but that handler doesn't know about the Promise — without this
+    // listener the await would hang and stack listeners on the next save.
+    const onBackdrop = (e) => { if (e.target === modalEl) { cleanup(); resolve(false); } };
     function cleanup() {
       btn.removeEventListener("click", onOk);
-      document.querySelectorAll('#danger-modal [data-close-modal]').forEach(b => b.removeEventListener("click", onCancel));
+      modalEl.removeEventListener("click", onBackdrop);
+      cancelBtns.forEach(b => b.removeEventListener("click", onCancel));
     }
     btn.addEventListener("click", onOk, { once: true });
-    document.querySelectorAll('#danger-modal [data-close-modal]').forEach(b => b.addEventListener("click", onCancel, { once: true }));
+    modalEl.addEventListener("click", onBackdrop);
+    cancelBtns.forEach(b => b.addEventListener("click", onCancel, { once: true }));
     openModal("danger-modal");
   });
 }
