@@ -55,7 +55,24 @@ def _bq_dry_run_bytes(project: str, sql: str) -> int:
     return int(job.total_bytes_processed or 0)
 
 
+_COLUMN_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 _ORDER_BY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\s+(ASC|DESC))?$", re.IGNORECASE)
+
+
+def _validate_select_columns(select: list[str] | None, schema: dict) -> None:
+    """Reject SELECT column names that don't fit the safe-identifier shape.
+
+    Schema-existence is checked separately; this guard is defense-in-depth
+    so a backtick / double-quote in a column name can't break out of the
+    `…` (BQ) or "…" (DuckDB) identifier wrapper in `_build_bq_sql` and the
+    local-scan path. Today, schema names from BQ INFORMATION_SCHEMA never
+    contain those characters — but Devin called this out as relying on an
+    implicit upstream constraint. Make it explicit."""
+    if not select:
+        return
+    for entry in select:
+        if not _COLUMN_NAME_RE.match(entry or ""):
+            raise ValueError(f"invalid column name: {entry!r}")
 
 
 def _validate_order_by(order_by: list[str] | None, schema: dict) -> None:
@@ -134,6 +151,7 @@ def estimate(conn, user, raw_request: dict, *, project_id: str, billing_project:
     )
     # Validate select columns exist (case-insensitive, matching order_by).
     if req.select:
+        _validate_select_columns(req.select, schema)
         known = {c.lower() for c in schema}
         unknown = [c for c in req.select if c.lower() not in known]
         if unknown:
@@ -300,6 +318,7 @@ def run_scan(
         # Case-insensitive (BQ identifiers are case-insensitive; mixed-case
         # names from INFORMATION_SCHEMA.COLUMNS shouldn't 400-reject the
         # lowercased form a typical analyst writes).
+        _validate_select_columns(req.select, schema)
         known = {c.lower() for c in schema}
         unknown = [c for c in req.select if c.lower() not in known]
         if unknown:

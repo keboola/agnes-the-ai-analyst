@@ -147,6 +147,58 @@ class TestOrderByValidation:
         finally:
             conn.close()
 
+    def test_backtick_in_column_name_rejected(self, reload_db, monkeypatch):
+        """Defense in depth: even though BQ INFORMATION_SCHEMA never returns
+        backticks in column names, an analyst-supplied select entry containing
+        one must be rejected at the validator. Otherwise it would break out
+        of the `…` quoted identifier in _build_bq_sql."""
+        from app.api import v2_scan
+        monkeypatch.setattr(
+            v2_scan, "_resolve_schema",
+            lambda *a, **kw: {"event_date": "DATE"},
+        )
+        tracker = v2_scan._build_quota_tracker()
+        conn = reload_db.get_system_db()
+        try:
+            _seed(conn)
+            user = {"role": "admin", "email": "a@x.com"}
+            req = {
+                "table_id": "bq_view",
+                "select": ["event_date`+ INJECTED --"],
+                "limit": 1,
+            }
+            with pytest.raises(ValueError, match="invalid column name"):
+                v2_scan.run_scan(conn, user, req, project_id="proj", quota=tracker)
+        finally:
+            conn.close()
+
+    def test_double_quote_in_column_name_rejected(self, reload_db, monkeypatch):
+        """Same defense for the local DuckDB path which uses `\"…\"` quoting."""
+        from app.api import v2_scan
+        monkeypatch.setattr(
+            v2_scan, "_resolve_schema",
+            lambda *a, **kw: {"id": "INTEGER"},
+        )
+        tracker = v2_scan._build_quota_tracker()
+        conn = reload_db.get_system_db()
+        try:
+            from src.repositories.table_registry import TableRegistryRepository
+            TableRegistryRepository(conn).register(
+                id="local_t", name="local_t", source_type="keboola",
+                bucket="b", source_table="local_t", query_mode="local",
+                is_public=True,
+            )
+            user = {"role": "admin", "email": "a@x.com"}
+            req = {
+                "table_id": "local_t",
+                "select": ['id"; DROP TABLE x; --'],
+                "limit": 1,
+            }
+            with pytest.raises(ValueError, match="invalid column name"):
+                v2_scan.run_scan(conn, user, req, project_id="", quota=tracker)
+        finally:
+            conn.close()
+
     def test_reserved_word_columns_get_quoted_in_bq_sql(self):
         """Regression: a column literally named `order` (a SQL reserved word)
         must be backtick-quoted in BQ SQL, otherwise the generated query
