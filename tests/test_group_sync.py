@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import sys
-from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -45,184 +43,209 @@ class TestMockFlag:
 
 
 # ---------------------------------------------------------------------------
-# Real path (monkeypatched Google client)
+# Real path (monkeypatched Google client) — keyless-DWD + Admin SDK shape
 # ---------------------------------------------------------------------------
 
 
-def _make_service_mock(pages: list[dict]) -> mock.Mock:
-    """Build a mock for `service.groups().memberships().searchTransitiveGroups(...).execute()`
-    that returns the given pages in order."""
+def _make_admin_service_mock(pages: list[dict]):
+    """Mock for ``service.groups().list(...).execute()`` that yields ``pages``
+    in order. Returns ``(service, list_call)`` so tests can assert on the
+    call kwargs."""
     page_iter = iter(pages)
 
     def execute_side_effect(*_a, **_kw):
         return next(page_iter)
 
-    search = mock.Mock()
-    search.return_value.execute.side_effect = execute_side_effect
-    memberships = mock.Mock()
-    memberships.return_value.searchTransitiveGroups = search
+    list_call = mock.Mock()
+    list_call.return_value.execute.side_effect = execute_side_effect
     groups = mock.Mock()
-    groups.return_value.memberships = memberships
+    groups.return_value.list = list_call
     service = mock.Mock()
     service.groups = groups
-    return service, search
+    return service, list_call
+
+
+@pytest.fixture
+def real_path_env(monkeypatch):
+    """Common setup: ensure mock-env is unset, subject + SA explicit (no
+    metadata-server call), and stub `google.auth.default` + `iam.Signer` +
+    `service_account.Credentials` so the SDK init never reaches Google."""
+    monkeypatch.delenv("GOOGLE_ADMIN_SDK_MOCK_GROUPS", raising=False)
+    monkeypatch.setenv("GOOGLE_ADMIN_SDK_SUBJECT", "admin@example.com")
+    monkeypatch.setenv("GOOGLE_ADMIN_SDK_SA_EMAIL", "sa@example.iam.gserviceaccount.com")
+    monkeypatch.setattr(
+        "google.auth.default", lambda *a, **kw: (mock.Mock(), "test-project")
+    )
+    monkeypatch.setattr(
+        "google.auth.iam.Signer", lambda *a, **kw: mock.Mock()
+    )
+    monkeypatch.setattr(
+        "google.oauth2.service_account.Credentials",
+        lambda **kw: mock.Mock(),
+    )
 
 
 class TestRealPath:
-    def test_success_single_page(self, monkeypatch):
-        monkeypatch.delenv("GOOGLE_ADMIN_SDK_MOCK_GROUPS", raising=False)
-        service, search = _make_service_mock(
+    def test_success_single_page(self, monkeypatch, real_path_env):
+        service, list_call = _make_admin_service_mock(
             [
                 {
-                    "memberships": [
-                        {"groupKey": {"id": "grp_a@groupon.com"}},
-                        {"groupKey": {"id": "grp_b@groupon.com"}},
+                    "groups": [
+                        {"email": "grp_a@groupon.com", "name": "A"},
+                        {"email": "grp_b@groupon.com", "name": "B"},
                     ]
                     # no nextPageToken
                 }
             ]
         )
         monkeypatch.setattr(
-            "google.auth.default",
-            lambda scopes=None: (mock.Mock(), "test-project"),
-        )
-        monkeypatch.setattr(
-            "googleapiclient.discovery.build",
-            lambda *a, **kw: service,
+            "googleapiclient.discovery.build", lambda *a, **kw: service
         )
 
         from app.auth.group_sync import fetch_user_groups
         result = fetch_user_groups("user@groupon.com")
         assert result == ["grp_a@groupon.com", "grp_b@groupon.com"]
 
-        # CEL query contains email + discussion_forum label filter
-        call_kwargs = search.call_args.kwargs
-        assert call_kwargs["parent"] == "groups/-"
-        assert "member_key_id == 'user@groupon.com'" in call_kwargs["query"]
-        assert "discussion_forum" in call_kwargs["query"]
+        call_kwargs = list_call.call_args.kwargs
+        assert call_kwargs["userKey"] == "user@groupon.com"
+        assert call_kwargs["pageToken"] is None
 
-    def test_success_paginated(self, monkeypatch):
-        monkeypatch.delenv("GOOGLE_ADMIN_SDK_MOCK_GROUPS", raising=False)
-        service, search = _make_service_mock(
+    def test_success_paginated(self, monkeypatch, real_path_env):
+        service, list_call = _make_admin_service_mock(
             [
                 {
-                    "memberships": [{"groupKey": {"id": "page1@x"}}],
+                    "groups": [{"email": "page1@x"}],
                     "nextPageToken": "tok1",
                 },
                 {
-                    "memberships": [{"groupKey": {"id": "page2@x"}}],
+                    "groups": [{"email": "page2@x"}],
                     # terminal
                 },
             ]
         )
         monkeypatch.setattr(
-            "google.auth.default",
-            lambda scopes=None: (mock.Mock(), "test-project"),
-        )
-        monkeypatch.setattr(
-            "googleapiclient.discovery.build",
-            lambda *a, **kw: service,
+            "googleapiclient.discovery.build", lambda *a, **kw: service
         )
 
         from app.auth.group_sync import fetch_user_groups
         result = fetch_user_groups("u@x")
         assert result == ["page1@x", "page2@x"]
+        assert list_call.call_args_list[1].kwargs["pageToken"] == "tok1"
 
-        # Second call should have pageToken=tok1
-        assert search.call_args_list[1].kwargs["pageToken"] == "tok1"
-
-    def test_api_exception_returns_none(self, monkeypatch):
-        """API failure returns None so callers can distinguish soft-fail
-        from a successful call that returned zero groups."""
-        monkeypatch.delenv("GOOGLE_ADMIN_SDK_MOCK_GROUPS", raising=False)
-
-        def raise_boom(*a, **kw):
-            raise RuntimeError("boom")
-
+    def test_api_exception_returns_none(self, monkeypatch, real_path_env):
+        """API failure → None (soft-fail) so caller can distinguish from
+        a successful zero-group response."""
         service = mock.Mock()
-        service.groups.return_value.memberships.return_value.searchTransitiveGroups.return_value.execute.side_effect = raise_boom
-        monkeypatch.setattr(
-            "google.auth.default",
-            lambda scopes=None: (mock.Mock(), "test-project"),
+        service.groups.return_value.list.return_value.execute.side_effect = (
+            RuntimeError("boom")
         )
         monkeypatch.setattr(
-            "googleapiclient.discovery.build",
-            lambda *a, **kw: service,
+            "googleapiclient.discovery.build", lambda *a, **kw: service
         )
 
         from app.auth.group_sync import fetch_user_groups
         assert fetch_user_groups("user@x") is None
 
-    def test_client_init_exception_returns_none(self, monkeypatch):
-        """Errors before the API call (ADC, discovery.build) also fail-soft —
-        return None to distinguish from a successful empty response."""
-        monkeypatch.delenv("GOOGLE_ADMIN_SDK_MOCK_GROUPS", raising=False)
-
+    def test_client_init_exception_returns_none(self, monkeypatch, real_path_env):
+        """Errors before the API call (ADC, signer, build) also fail-soft."""
         def boom(*a, **kw):
-            raise RuntimeError("no metadata server")
+            raise RuntimeError("adc unavailable")
 
         monkeypatch.setattr("google.auth.default", boom)
 
         from app.auth.group_sync import fetch_user_groups
         assert fetch_user_groups("user@x") is None
 
-    def test_legit_zero_groups_returns_empty_list(self, monkeypatch):
-        """API answered with no groups → empty list (NOT None). The OAuth
-        callback uses this distinction to decide whether to deny login or
-        pass-through on cached membership."""
-        monkeypatch.delenv("GOOGLE_ADMIN_SDK_MOCK_GROUPS", raising=False)
-        service, _ = _make_service_mock([{"memberships": []}])
+    def test_legit_zero_groups_returns_empty_list(self, monkeypatch, real_path_env):
+        """API answered with no groups → empty list (NOT None)."""
+        service, _ = _make_admin_service_mock([{"groups": []}])
         monkeypatch.setattr(
-            "google.auth.default",
-            lambda scopes=None: (mock.Mock(), "test-project"),
-        )
-        monkeypatch.setattr(
-            "googleapiclient.discovery.build",
-            lambda *a, **kw: service,
+            "googleapiclient.discovery.build", lambda *a, **kw: service
         )
 
         from app.auth.group_sync import fetch_user_groups
         assert fetch_user_groups("user@x") == []
 
-    def test_memberships_without_groupkey_are_skipped(self, monkeypatch):
-        """Defensive: a malformed membership missing groupKey.id must not crash."""
-        monkeypatch.delenv("GOOGLE_ADMIN_SDK_MOCK_GROUPS", raising=False)
-        service, _ = _make_service_mock(
+    def test_groups_without_email_are_skipped(self, monkeypatch, real_path_env):
+        """Defensive: a malformed group entry missing 'email' must not crash."""
+        service, _ = _make_admin_service_mock(
             [
                 {
-                    "memberships": [
-                        {"groupKey": {"id": "good@x"}},
-                        {"groupKey": {}},  # missing id
-                        {},  # missing groupKey
+                    "groups": [
+                        {"email": "good@x", "name": "Good"},
+                        {"name": "no email"},
+                        {},
                     ]
                 }
             ]
         )
         monkeypatch.setattr(
-            "google.auth.default",
-            lambda scopes=None: (mock.Mock(), "test-project"),
-        )
-        monkeypatch.setattr(
-            "googleapiclient.discovery.build",
-            lambda *a, **kw: service,
+            "googleapiclient.discovery.build", lambda *a, **kw: service
         )
 
         from app.auth.group_sync import fetch_user_groups
         assert fetch_user_groups("u@x") == ["good@x"]
 
-    def test_email_with_quote_is_escaped(self, monkeypatch):
-        """A single quote in the email must not break the CEL query."""
+
+# ---------------------------------------------------------------------------
+# Pre-flight env / metadata checks (fail-soft when config is missing)
+# ---------------------------------------------------------------------------
+
+
+class TestPreflightFailSoft:
+    def test_missing_subject_returns_none(self, monkeypatch):
+        """Without GOOGLE_ADMIN_SDK_SUBJECT we cannot impersonate — soft-fail."""
         monkeypatch.delenv("GOOGLE_ADMIN_SDK_MOCK_GROUPS", raising=False)
-        service, search = _make_service_mock([{"memberships": []}])
-        monkeypatch.setattr(
-            "google.auth.default",
-            lambda scopes=None: (mock.Mock(), "test-project"),
+        monkeypatch.delenv("GOOGLE_ADMIN_SDK_SUBJECT", raising=False)
+        monkeypatch.setenv("GOOGLE_ADMIN_SDK_SA_EMAIL", "sa@x.iam")
+
+        from app.auth.group_sync import fetch_user_groups
+        assert fetch_user_groups("u@x") is None
+
+    def test_missing_sa_and_no_metadata_returns_none(self, monkeypatch):
+        """No explicit SA + metadata server unreachable → soft-fail."""
+        monkeypatch.delenv("GOOGLE_ADMIN_SDK_MOCK_GROUPS", raising=False)
+        monkeypatch.delenv("GOOGLE_ADMIN_SDK_SA_EMAIL", raising=False)
+        monkeypatch.setenv("GOOGLE_ADMIN_SDK_SUBJECT", "admin@example.com")
+
+        # Force the metadata fetch to fail.
+        def boom(*a, **kw):
+            raise OSError("no route to metadata")
+
+        monkeypatch.setattr("urllib.request.urlopen", boom)
+
+        from app.auth.group_sync import fetch_user_groups
+        assert fetch_user_groups("u@x") is None
+
+    def test_explicit_sa_email_used(self, monkeypatch):
+        """When GOOGLE_ADMIN_SDK_SA_EMAIL is set, metadata server is bypassed."""
+        monkeypatch.delenv("GOOGLE_ADMIN_SDK_MOCK_GROUPS", raising=False)
+        monkeypatch.setenv("GOOGLE_ADMIN_SDK_SUBJECT", "admin@example.com")
+        monkeypatch.setenv(
+            "GOOGLE_ADMIN_SDK_SA_EMAIL", "explicit@x.iam.gserviceaccount.com"
         )
+
+        # Capture what email Signer is called with.
+        captured: dict[str, str] = {}
+
+        def fake_signer(_request, _source, sa_email):
+            captured["sa"] = sa_email
+            return mock.Mock()
+
         monkeypatch.setattr(
-            "googleapiclient.discovery.build",
-            lambda *a, **kw: service,
+            "google.auth.default", lambda *a, **kw: (mock.Mock(), "p")
+        )
+        monkeypatch.setattr("google.auth.iam.Signer", fake_signer)
+        monkeypatch.setattr(
+            "google.oauth2.service_account.Credentials",
+            lambda **kw: mock.Mock(),
+        )
+
+        service, _ = _make_admin_service_mock([{"groups": []}])
+        monkeypatch.setattr(
+            "googleapiclient.discovery.build", lambda *a, **kw: service
         )
 
         from app.auth.group_sync import fetch_user_groups
-        fetch_user_groups("o'reilly@x")
-        assert "\\'" in search.call_args.kwargs["query"]
+        fetch_user_groups("u@x")
+        assert captured["sa"] == "explicit@x.iam.gserviceaccount.com"
