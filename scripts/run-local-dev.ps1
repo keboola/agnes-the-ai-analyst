@@ -5,7 +5,7 @@
 .DESCRIPTION
     Runs Agnes locally with auth bypass + dev-mode magic links. Stacks three compose files:
       1. docker-compose.yml          - base services
-      2. docker-compose.override.yml - hot-reload + source bind mount
+      2. docker-compose.dev.yml - hot-reload + source bind mount
       3. docker-compose.local-dev.yml - LOCAL_DEV_MODE=1, drops .env requirement
 
     After startup visit http://localhost:8000 - you'll land on /dashboard logged in as
@@ -84,7 +84,7 @@ if (-not (Test-Path Env:LOCAL_DEV_GROUPS)) {
 
 $composeFiles = @(
     '-f', 'docker-compose.yml',
-    '-f', 'docker-compose.override.yml',
+    '-f', 'docker-compose.dev.yml',
     '-f', 'docker-compose.local-dev.yml'
 )
 
