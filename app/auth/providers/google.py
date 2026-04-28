@@ -114,19 +114,36 @@ async def google_callback(request: Request):
             # place; admin-added rows survive regardless.
             try:
                 group_names = fetch_user_groups(email)
-                ug_repo = UserGroupsRepository(conn)
-                members_repo = UserGroupMembersRepository(conn)
-                group_ids: list[str] = []
-                for group_name in group_names:
-                    g = ug_repo.ensure(group_name)
-                    group_ids.append(g["id"])
-                members_repo.replace_google_sync_groups(
-                    user["id"], group_ids, added_by="system:google-sync",
-                )
-                logger.info(
-                    "Google group sync for %s: %d group(s) [%s]",
-                    email, len(group_ids), ", ".join(group_names) or "<none>",
-                )
+                # `fetch_user_groups` is fail-soft and returns [] for both
+                # "user genuinely has no groups" and "transient API failure".
+                # We can't distinguish, so empty is treated as "no change":
+                # don't call replace_google_sync_groups (which would
+                # DELETE...source='google_sync' then INSERT zero, wiping
+                # all of the user's Workspace-synced memberships on a
+                # transient hiccup). Trade-off: a user whose Workspace
+                # groups were genuinely cleared keeps stale memberships
+                # until the next non-empty sync. Admin-added rows
+                # (source='admin') are unaffected either way.
+                if group_names:
+                    ug_repo = UserGroupsRepository(conn)
+                    members_repo = UserGroupMembersRepository(conn)
+                    group_ids: list[str] = []
+                    for group_name in group_names:
+                        g = ug_repo.ensure(group_name)
+                        group_ids.append(g["id"])
+                    members_repo.replace_google_sync_groups(
+                        user["id"], group_ids, added_by="system:google-sync",
+                    )
+                    logger.info(
+                        "Google group sync for %s: %d group(s) [%s]",
+                        email, len(group_ids), ", ".join(group_names),
+                    )
+                else:
+                    logger.info(
+                        "Google group sync for %s: empty result, "
+                        "preserving existing memberships",
+                        email,
+                    )
             except Exception as sync_err:  # noqa: BLE001 - fail-soft by design
                 logger.warning(
                     "Google group sync failed for %s: %s", email, sync_err

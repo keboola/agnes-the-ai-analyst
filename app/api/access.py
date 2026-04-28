@@ -328,21 +328,19 @@ async def update_group(
     g = repo.get(group_id)
     if not g:
         raise HTTPException(status_code=404, detail="Group not found")
-    if g.get("is_system"):
-        # System groups are immutable end-to-end: the canonical names
-        # 'Admin' / 'Everyone' are referenced from the codebase, and the
-        # admin UI hides the Edit button entirely (admin_group_detail.html).
-        # Reject any modification at the API layer with a clear message
-        # rather than the misleading repository error that surfaced when
-        # the previous "rename rejected, description allowed" contract
-        # diverged from the repository's "all mutations rejected"
-        # behavior.
+    if g.get("is_system") and payload.name is not None and payload.name.strip() != g["name"]:
+        # System groups: block renames (the canonical names "Admin" /
+        # "Everyone" are referenced from app.auth.access and the
+        # marketplace filter), but description edits are cosmetic and
+        # allowed (admins curate them in /admin/access). The repo
+        # layer's narrowed guard (src/repositories/user_groups.py) is
+        # the second line of defense.
         raise HTTPException(
             status_code=409,
-            detail="System groups are immutable",
+            detail="System groups cannot be renamed",
         )
     updates: dict = {}
-    if payload.name is not None:
+    if payload.name is not None and payload.name.strip() != g["name"]:
         updates["name"] = payload.name.strip()
     if payload.description is not None:
         updates["description"] = payload.description
@@ -351,7 +349,7 @@ async def update_group(
             repo.update(group_id, **updates)
         except SystemGroupProtected:
             raise HTTPException(
-                status_code=409, detail="System groups are immutable",
+                status_code=409, detail="System groups cannot be renamed",
             )
         _audit(conn, user["id"], "user_group.updated", f"group:{group_id}", updates)
     g = repo.get(group_id)
