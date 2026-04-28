@@ -45,20 +45,28 @@ class TestGetMetadataToken:
             assert "metadata.google.internal" in req.full_url
 
     def test_raises_on_unreachable_metadata(self):
+        """Metadata unreachable + ADC also unavailable → raise with both reasons.
+        Issue #112 added an ADC fallback; the test mocks both paths to fail
+        so the original 'metadata-only failure' contract is exercised."""
         from urllib.error import URLError
-        with patch("connectors.bigquery.auth.urllib.request.urlopen", side_effect=URLError("no route")):
+        with patch("connectors.bigquery.auth.urllib.request.urlopen", side_effect=URLError("no route")), \
+             patch("connectors.bigquery.auth._fetch_adc_token",
+                   side_effect=BQMetadataAuthError("no ADC creds")):
             with pytest.raises(BQMetadataAuthError, match="metadata server unreachable"):
                 get_metadata_token()
 
     def test_raises_on_missing_access_token_field(self):
-        with patch("connectors.bigquery.auth.urllib.request.urlopen") as m:
+        with patch("connectors.bigquery.auth.urllib.request.urlopen") as m, \
+             patch("connectors.bigquery.auth._fetch_adc_token",
+                   side_effect=BQMetadataAuthError("no ADC creds")):
             m.return_value = _mock_urlopen({"error": "bad"})
             with pytest.raises(BQMetadataAuthError, match="no access_token in response"):
                 get_metadata_token()
 
     def test_raises_on_http_error(self):
-        """When metadata server returns 4xx/5xx (e.g. SA misconfiguration → 403),
-        raise BQMetadataAuthError. urllib.error.HTTPError is a subclass of URLError."""
+        """When metadata server returns 4xx/5xx (e.g. SA misconfiguration → 403)
+        AND ADC is also unavailable, raise BQMetadataAuthError. ADC fallback
+        is mocked to fail so this asserts the metadata-error branch."""
         from urllib.error import HTTPError
         err = HTTPError(
             url=_METADATA_TOKEN_URL_FOR_TEST,
@@ -67,9 +75,21 @@ class TestGetMetadataToken:
             hdrs=None,
             fp=None,
         )
-        with patch("connectors.bigquery.auth.urllib.request.urlopen", side_effect=err):
+        with patch("connectors.bigquery.auth.urllib.request.urlopen", side_effect=err), \
+             patch("connectors.bigquery.auth._fetch_adc_token",
+                   side_effect=BQMetadataAuthError("no ADC creds")):
             with pytest.raises(BQMetadataAuthError):
                 get_metadata_token()
+
+    def test_falls_back_to_adc_when_metadata_unreachable(self):
+        """Issue #112 — when GCE metadata is unreachable (laptop dev), fall
+        through to ADC. The combined wrapper must return a token from ADC."""
+        from urllib.error import URLError
+        with patch("connectors.bigquery.auth.urllib.request.urlopen",
+                   side_effect=URLError("no route")), \
+             patch("connectors.bigquery.auth._fetch_adc_token",
+                   return_value=("adc-token", 3600)):
+            assert get_metadata_token() == "adc-token"
 
 
 class TestTokenCache:

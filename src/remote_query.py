@@ -138,7 +138,8 @@ def _validate_sql(sql: str) -> None:
                 details={"blocked_keyword": keyword},
             )
 
-    if not sql_lower.startswith("select ") and not sql_lower.startswith("with "):
+    import re as _re
+    if not _re.match(r"^(select|with)\s", sql_lower):
         raise RemoteQueryError(
             "Query must start with SELECT or WITH",
             error_type="query_error",
@@ -168,7 +169,8 @@ def _validate_bq_sql(sql: str) -> None:
                 f"Blocked BQ SQL keyword: {keyword.strip()}",
                 error_type="query_error",
             )
-    if not sql_lower.startswith("select ") and not sql_lower.startswith("with "):
+    import re as _re
+    if not _re.match(r"^(select|with)\s", sql_lower):
         raise RemoteQueryError(
             "BQ query must start with SELECT or WITH",
             error_type="query_error",
@@ -422,10 +424,27 @@ class RemoteQueryEngine:
                 error_type="bq_error",
             )
 
-        project = os.environ.get("BIGQUERY_PROJECT")
+        # Project resolution order: BIGQUERY_PROJECT env var (legacy override)
+        # → instance.yaml `data_source.bigquery.billing_project` →
+        # `data_source.bigquery.project`. Without falling back to instance.yaml
+        # operators had to duplicate the project in `.env` even though
+        # everywhere else in the codebase reads it from instance.yaml.
+        project = os.environ.get("BIGQUERY_PROJECT") or ""
+        if not project:
+            try:
+                from app.instance_config import get_value as _get_value
+                project = (
+                    _get_value("data_source", "bigquery", "billing_project", default="")
+                    or _get_value("data_source", "bigquery", "project", default="")
+                    or ""
+                )
+            except Exception:
+                project = ""
         if not project:
             raise RemoteQueryError(
-                "BIGQUERY_PROJECT env var is not set.",
+                "BigQuery project not configured. Set "
+                "`data_source.bigquery.project` in instance.yaml "
+                "(or BIGQUERY_PROJECT env var as legacy override).",
                 error_type="bq_error",
             )
         return _bq_module.Client(project=project)

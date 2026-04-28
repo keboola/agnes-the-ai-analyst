@@ -27,7 +27,10 @@ class RegisterTableRequest(BaseModel):
     name: str
     folder: Optional[str] = None
     sync_strategy: str = "full_refresh"
-    primary_key: Optional[str] = None
+    # Composite primary keys are real (session-grain MSA tables key on
+    # `(session_id, event_date)`, browse rows on more). The frontend sends +
+    # reads this as a list; backend stores it JSON-serialized in VARCHAR.
+    primary_key: Optional[List[str]] = None
     description: Optional[str] = None
     source_type: Optional[str] = None
     bucket: Optional[str] = None
@@ -40,7 +43,7 @@ class RegisterTableRequest(BaseModel):
 class UpdateTableRequest(BaseModel):
     name: Optional[str] = None
     sync_strategy: Optional[str] = None
-    primary_key: Optional[str] = None
+    primary_key: Optional[List[str]] = None
     description: Optional[str] = None
     source_type: Optional[str] = None
     bucket: Optional[str] = None
