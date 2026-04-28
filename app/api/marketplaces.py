@@ -355,7 +355,11 @@ async def delete_marketplace(
     repo.unregister(marketplace_id)
     # Drop cached plugin rows and any resource grants that reference plugins
     # from this marketplace. resource_grants stores resource_id as
-    # "<marketplace_slug>/<plugin_name>" — match the slash-prefix.
+    # "<marketplace_slug>/<plugin_name>" — match the slash-prefix via
+    # starts_with(), not LIKE: marketplace slugs may contain '_' (validated
+    # by [a-z0-9][a-z0-9_-]{0,63}) and LIKE would interpret it as a
+    # single-char wildcard, silently dropping grants from sibling
+    # marketplaces whose slug differs by exactly one character.
     try:
         conn.execute(
             "DELETE FROM marketplace_plugins WHERE marketplace_id = ?",
@@ -363,7 +367,7 @@ async def delete_marketplace(
         )
         conn.execute(
             "DELETE FROM resource_grants "
-            "WHERE resource_type = ? AND resource_id LIKE ? || '/%'",
+            "WHERE resource_type = ? AND starts_with(resource_id, ? || '/')",
             [ResourceType.MARKETPLACE_PLUGIN.value, marketplace_id],
         )
     except Exception as e:
