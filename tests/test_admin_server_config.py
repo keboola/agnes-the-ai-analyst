@@ -339,6 +339,55 @@ class TestPostServerConfigAPI:
         # to back it up.
         assert overlay_path.read_text().startswith("instance: {name: 'good'")
 
+    def test_round_tripped_redacted_secret_does_not_corrupt_overlay(
+        self, seeded_app, tmp_path, monkeypatch
+    ):
+        """Regression: GET redacts secret-keyed children in nested objects to
+        ``"***"`` so the form never displays cleartext. The data_source
+        section renders as a JSON textarea, so a no-op save would otherwise
+        send the masked JSON back verbatim. Without scrub, the deep-merge
+        would persist ``token_env: "***"`` on top of the real
+        ``"KEBOOLA_STORAGE_TOKEN"``, silently breaking the next sync. The
+        server-side scrub must drop the sentinel so the overlay value
+        survives a round-trip."""
+        import yaml as _yaml
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        state = tmp_path / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        # Plant a real overlay with the actual env-var name in token_env.
+        (state / "instance.yaml").write_text(_yaml.dump({
+            "data_source": {
+                "type": "keboola",
+                "keboola": {
+                    "stack_url": "https://connection.keboola.com",
+                    "token_env": "KEBOOLA_STORAGE_TOKEN",
+                },
+            },
+        }))
+        # Bust the in-process cache so the next read sees the planted overlay.
+        import app.instance_config as ic
+        ic._instance_config = None
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+
+        # Simulate a UI round-trip: send back the redacted payload verbatim.
+        # The sentinel matches the string `_mask` produces.
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"data_source": {"keboola": {
+                "stack_url": "https://connection.keboola.com",
+                "token_env": "***",  # redaction sentinel — must not persist
+            }}}},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+
+        # Real env-var name must survive on disk.
+        overlay = _yaml.safe_load((state / "instance.yaml").read_text())
+        assert overlay["data_source"]["keboola"]["token_env"] == "KEBOOLA_STORAGE_TOKEN", \
+            f"overlay corrupted by round-tripped sentinel: {overlay}"
+
     @pytest.mark.parametrize("private_url", [
         "http://169.254.169.254/latest/meta-data/",
         "http://127.0.0.1:8080/",

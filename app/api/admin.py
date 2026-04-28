@@ -180,6 +180,38 @@ def _mask(value: Any) -> str:
     return "***"
 
 
+# Sentinel values produced by `_mask`. Any patch leaf that arrives at a
+# secret-keyed slot still bearing one of these strings means the caller
+# round-tripped the GET payload (which redacts secret-keyed children inside
+# nested objects) without changing the value — `_strip_redacted_sentinels`
+# drops the leaf so deep-merge preserves whatever the overlay already had,
+# rather than persisting the placeholder on top of the real secret.
+_REDACTED_SENTINELS: frozenset = frozenset({"***", "<empty>"})
+
+
+def _strip_redacted_sentinels(value: Any, key_hint: str = "") -> Any:
+    """Recursively drop secret-keyed leaves whose value is a redaction sentinel.
+
+    Symmetric with `_redact`: the GET handler masks secret-keyed children
+    inside nested objects so the form never shows cleartext, and this
+    function is the write-side counterpart that ensures the placeholder
+    doesn't make a round-trip back into the overlay. Defense-in-depth
+    alongside the client-side `scrubRedactedSecrets` in
+    `admin_server_config.html` — an API caller (CLI / script) that forgets
+    to scrub still can't corrupt secrets via this endpoint.
+    """
+    if isinstance(value, dict):
+        out: Dict[str, Any] = {}
+        for k, v in value.items():
+            if _is_secret_key(k) and isinstance(v, str) and v in _REDACTED_SENTINELS:
+                continue
+            out[k] = _strip_redacted_sentinels(v, k)
+        return out
+    if isinstance(value, list):
+        return [_strip_redacted_sentinels(item, key_hint) for item in value]
+    return value
+
+
 def _redact(value: Any, key_hint: str = "") -> Any:
     """Recursively mask secret-looking fields in a config subtree.
 
@@ -393,6 +425,16 @@ async def update_server_config(
     # the per-section patch (e.g. data_source.keboola.stack_url).
     _validate_urls_in_patch(request.sections)
 
+    # Defense-in-depth: scrub redaction sentinels (`***` / `<empty>`) out of
+    # secret-keyed leaves in the patch before they reach the deep-merge.
+    # The client form does the same scrub, but an API caller round-tripping
+    # the GET payload could otherwise overwrite real overlay secrets with
+    # the placeholder shown in the form.
+    scrubbed_sections: Dict[str, Dict[str, Any]] = {
+        section: _strip_redacted_sentinels(patch, section)
+        for section, patch in request.sections.items()
+    }
+
     # Serialize read-modify-write across concurrent admin saves. Without the
     # lock, two saves would each read the same overlay snapshot, merge their
     # disjoint patches, and the second os.replace would silently drop the
@@ -412,9 +454,11 @@ async def update_server_config(
         before = _load_current_instance_yaml()
 
         # Deep merge — section-by-section so we never accidentally delete a
-        # sibling section the patch didn't touch.
+        # sibling section the patch didn't touch. Use the redaction-scrubbed
+        # patch so a round-tripped GET payload can't overwrite real secrets
+        # with the `***` placeholder.
         after = dict(before)
-        for section, patch in request.sections.items():
+        for section, patch in scrubbed_sections.items():
             if not isinstance(patch, dict):
                 raise HTTPException(
                     status_code=422,
@@ -454,7 +498,7 @@ async def update_server_config(
                     detail=f"refusing to overwrite corrupt overlay at {config_path} ({e}); "
                            "back up and remove the file, or fix it by hand",
                 ) from e
-        for section, patch in request.sections.items():
+        for section, patch in scrubbed_sections.items():
             if section not in _EDITABLE_SECTIONS:
                 continue
             # Deep-merge the patch into the existing overlay slot (or static-

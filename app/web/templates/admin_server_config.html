@@ -304,6 +304,27 @@ function renderAll(data) {
     btn.addEventListener("click", () => onSaveSection(btn.dataset.section)));
 }
 
+// Recursively strip secret-keyed leaves whose value is the redaction sentinel
+// (`***` or `<empty>`) so a JSON-textarea round-trip can't overwrite real
+// overlay secrets with the placeholder shown in the form. The GET handler
+// redacts secret-keyed children inside nested objects (token_env contains
+// "token", so it gets masked alongside actual credentials), and the textarea
+// renders the masked JSON verbatim — without this scrub a no-op save of e.g.
+// `data_source.keboola` would persist `token_env: "***"` on top of the real
+// value `"KEBOOLA_STORAGE_TOKEN"` and silently break the next sync.
+function scrubRedactedSecrets(value) {
+  if (Array.isArray(value)) return value.map(scrubRedactedSecrets);
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      if (isSecretKey(k) && (v === "***" || v === "<empty>")) continue;
+      out[k] = scrubRedactedSecrets(v);
+    }
+    return out;
+  }
+  return value;
+}
+
 // ── Collect form values for one section ───────────────────────────────
 function collectSection(section) {
   const inputs = document.querySelectorAll(`[data-section="${section}"]`);
@@ -320,9 +341,11 @@ function collectSection(section) {
     let value;
     if (key === "__bootstrap__") {
       // Bootstrap textarea — parse the entire blob and merge it as the
-      // section patch. Skip empty input entirely.
+      // section patch. Skip empty input entirely. Scrub redacted sentinels
+      // out of the parsed object so a round-trip can't overwrite real
+      // secrets with `"***"`.
       if (!raw.trim()) continue;
-      try { Object.assign(patch, JSON.parse(raw)); }
+      try { Object.assign(patch, scrubRedactedSecrets(JSON.parse(raw))); }
       catch (e) { throw new Error(`Bootstrap JSON for "${section}" is not valid JSON: ${e.message}`); }
       continue;
     }
@@ -330,12 +353,19 @@ function collectSection(section) {
       value = raw === "true";
     } else if (el.dataset.cast === "json") {
       if (!raw.trim()) { value = null; }
-      else { try { value = JSON.parse(raw); } catch (e) { throw new Error(`Field ${section}.${key} is not valid JSON: ${e.message}`); } }
+      else {
+        try { value = scrubRedactedSecrets(JSON.parse(raw)); }
+        catch (e) { throw new Error(`Field ${section}.${key} is not valid JSON: ${e.message}`); }
+      }
     } else if (el.type === "number") {
       value = raw === "" ? null : Number(raw);
     } else {
       value = raw;
     }
+    // If the operator left a secret-keyed scalar at the redaction sentinel
+    // — e.g. typed nothing into a `token_env` text input that already shows
+    // `"***"` — drop it rather than persisting the placeholder.
+    if (isSecretKey(key) && (value === "***" || value === "<empty>")) continue;
     patch[key] = value;
   }
   return patch;
