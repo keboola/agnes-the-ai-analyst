@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-04-29
+
 ### Added
 
 - **Windows/PowerShell wrapper for local dev.** New `scripts/run-local-dev.ps1` mirrors `scripts/run-local-dev.sh` for operators on Windows where GNU Make / bash aren't available — same compose stack (`docker-compose.yml` + `docker-compose.dev.yml` + `docker-compose.local-dev.yml`), same `LOCAL_DEV_GROUPS` default seeding, same `up` / `down` / `logs` actions. Run `.\scripts\run-local-dev.ps1` for the fast path (reuses existing image) or `.\scripts\run-local-dev.ps1 -Build` to force `--build` after `pyproject.toml` / `Dockerfile` changes. Verified on Docker Desktop for Windows. See `docs/local-development.md`.
