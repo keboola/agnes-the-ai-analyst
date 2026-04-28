@@ -10,39 +10,81 @@ logger = logging.getLogger(__name__)
 _instance_config: Optional[dict] = None
 
 
-def load_instance_config() -> dict:
-    """Load instance.yaml — checks API-generated config first, then static config.
+def reset_cache() -> None:
+    """Drop the in-process instance.yaml cache; the next ``load_instance_config``
+    call re-reads from disk. Used by `/api/admin/server-config` after a save.
+    Public alias so callers don't have to reach into the private global."""
+    global _instance_config
+    _instance_config = None
 
-    Search order:
-    1. DATA_DIR/state/instance.yaml (written by /api/admin/configure, writable)
-    2. CONFIG_DIR/instance.yaml (static, read-only in Docker)
-    3. Empty dict with defaults (if neither exists)
+
+def _deep_merge(base: dict, patch: dict) -> dict:
+    """Deep-merge `patch` into `base`, returning a new dict.
+
+    Dict-into-dict recurses; everything else (scalars, lists, None) is
+    replaced wholesale. Used so the writable overlay can hold only the
+    sections an operator has touched, while everything else flows from
+    the static file unchanged. Same semantics as the helper in
+    `/api/admin/server-config`'s POST handler.
+    """
+    out = dict(base)
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def load_instance_config() -> dict:
+    """Load instance.yaml as a deep-merge of the static file and the
+    writable overlay.
+
+    Resolution:
+    1. Static base: ``CONFIG_DIR/instance.yaml`` via ``config.loader``
+       (the source of truth for sections the editor doesn't expose —
+       ``datasets``, ``corporate_memory``, ``openmetadata``, etc.).
+    2. Overlay patch: ``DATA_DIR/state/instance.yaml`` (written by
+       ``/api/admin/configure`` and ``/api/admin/server-config``;
+       contains only the sections those endpoints accept).
+    3. Overlay wins per-leaf via deep-merge — operator edits persist,
+       static-only sections still flow through.
+
+    Pre-2026-04-28 this function returned the overlay verbatim when it
+    existed and only fell back to static when it didn't. That was a
+    silent footgun: the moment someone saved any section through the
+    new editor (which writes a narrow overlay by design), every
+    consumer of static-only sections (corporate memory page, dataset
+    list, OpenMetadata client) saw empty defaults. See PR #107.
     """
     global _instance_config
     if _instance_config is not None:
         return _instance_config
 
-    # First, try API-generated config in writable data volume
     import yaml
-    data_dir = Path(os.environ.get("DATA_DIR", "./data"))
-    api_config_path = data_dir / "state" / "instance.yaml"
-    if api_config_path.exists():
-        try:
-            _instance_config = yaml.safe_load(api_config_path.read_text()) or {}
-            logger.info("Loaded instance.yaml from %s", api_config_path)
-            return _instance_config
-        except Exception as e:
-            logger.warning(f"Could not load API-generated instance.yaml: {e}")
 
-    # Fall back to static config (may have strict validation)
+    # Static base — strict validation lives in config.loader.
+    base: dict = {}
     try:
         from config.loader import load_instance_config as _load
-        _instance_config = _load()
-        logger.info("Loaded instance.yaml from config/")
+        base = _load() or {}
+        logger.info("Loaded instance.yaml base from config/")
     except Exception as e:
-        logger.warning(f"Could not load instance.yaml: {e}. Using defaults.")
-        _instance_config = {}
+        logger.warning(f"Could not load static instance.yaml: {e}")
 
+    # Overlay patch from the writable volume. Best-effort — a corrupt
+    # overlay shouldn't take the app offline; log and proceed with base.
+    data_dir = Path(os.environ.get("DATA_DIR", "./data"))
+    overlay_path = data_dir / "state" / "instance.yaml"
+    if overlay_path.exists():
+        try:
+            overlay = yaml.safe_load(overlay_path.read_text()) or {}
+            base = _deep_merge(base, overlay)
+            logger.info("Merged overlay from %s", overlay_path)
+        except Exception as e:
+            logger.warning(f"Could not parse overlay instance.yaml at {overlay_path}: {e}")
+
+    _instance_config = base
     return _instance_config
 
 
