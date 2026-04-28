@@ -99,7 +99,10 @@ def fetch(
     if estimate:
         return
 
-    # Snapshot existence check
+    # Cheap existence pre-check (outside the lock) so we don't waste a BQ
+    # scan on an obviously-redundant fetch. Authoritative re-check happens
+    # under the lock below — necessary because between this check and the
+    # write a concurrent `da fetch --as same_name` could create the file.
     if not force and read_meta(snap_dir, name) is not None:
         existing = read_meta(snap_dir, name)
         typer.echo(
@@ -117,9 +120,19 @@ def fetch(
         typer.echo(f"Error: fetch failed: {e}", err=True)
         raise typer.Exit(_exit_code_for(e))
 
-    # Install under flock
+    # Install under flock — re-check existence here to close the TOCTOU
+    # window between the early check above and this write.
     parquet_path = snap_dir / f"{name}.parquet"
     with snapshot_lock(snap_dir):
+        if not force and read_meta(snap_dir, name) is not None:
+            existing = read_meta(snap_dir, name)
+            typer.echo(
+                f"Error: snapshot {name!r} was created by a concurrent "
+                f"`da fetch` (fetched {existing.fetched_at}, "
+                f"{existing.rows:,} rows). Pass --force to overwrite.",
+                err=True,
+            )
+            raise typer.Exit(6)
         pq.write_table(table, parquet_path)
         # Register view in user analytics.duckdb
         local_db = _local_dir() / "user" / "duckdb" / "analytics.duckdb"

@@ -88,21 +88,29 @@ class QuotaTracker:
         """Record bytes consumed by a request that already executed.
 
         Always commits the new total — even if it pushes the user past the
-        daily cap — so the next request sees the cumulative usage and gets
-        rejected. Recording AFTER raising would leave the counter unchanged
-        and let the caller repeat over-cap requests indefinitely (each one
-        executes the BQ scan, gets rejected, and counter never moves).
+        daily cap — so subsequent ``check_daily_budget`` calls see the
+        cumulative usage and reject pre-flight. This method NEVER raises
+        anymore — the post-scan recording shouldn't strand a fetch the
+        user already paid for. Pre-flight enforcement lives in
+        ``check_daily_budget``.
         """
         if n <= 0:
             return
         with self._lock:
             s = self._ensure_bucket(user)
-            new_total = s["bytes"] + n
-            s["bytes"] = new_total
-            if new_total > self._max_daily_bytes:
+            s["bytes"] = s["bytes"] + n
+
+    def check_daily_budget(self, user: str) -> None:
+        """Pre-flight check: raise QuotaExceededError if the user is already
+        AT or OVER the daily cap. Call this BEFORE running the BQ scan, so
+        the user doesn't pay for a query whose result we'd then have to
+        block on response."""
+        with self._lock:
+            current = self._ensure_bucket(user)["bytes"]
+            if current >= self._max_daily_bytes:
                 raise QuotaExceededError(
                     kind=KIND_DAILY_BYTES,
-                    current=new_total,
+                    current=current,
                     limit=self._max_daily_bytes,
                     retry_after_seconds=_seconds_until_utc_midnight(),
                 )

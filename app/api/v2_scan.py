@@ -95,8 +95,16 @@ def _build_bq_sql(
     we get here, but reserved words (`order`, `group`, `timestamp`, …) still
     need backticks to parse as identifiers in BQ.
     """
+    from src.identifier_validation import validate_quoted_identifier
+    bucket = table_row.get('bucket') or ''
+    src_table = table_row.get('source_table') or req.table_id
+    if not (validate_quoted_identifier(project_id, "BQ project")
+            and validate_quoted_identifier(bucket, "BQ dataset")
+            and validate_quoted_identifier(src_table, "BQ source_table")):
+        raise ValueError("unsafe BQ identifier in registry — refusing to build SQL")
+
     select_sql = ", ".join(f"`{c}`" for c in req.select) if req.select else "*"
-    table_ref = f"`{project_id}.{table_row.get('bucket') or ''}.{table_row.get('source_table') or req.table_id}`"
+    table_ref = f"`{project_id}.{bucket}.{src_table}`"
     sql = f"SELECT {select_sql} FROM {table_ref}"
     if safe_where:
         sql += f" WHERE {safe_where}"
@@ -293,6 +301,10 @@ def run_scan(
 
     source_type = row.get("source_type") or ""
     user_id = user.get("email") or "anon"
+
+    # Pre-flight quota check — fail BEFORE running the BQ scan so the user
+    # doesn't pay for a query whose result we'd then refuse to return.
+    quota.check_daily_budget(user=user_id)
 
     with quota.acquire(user=user_id):
         if source_type != "bigquery":

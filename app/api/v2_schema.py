@@ -34,6 +34,16 @@ def _fetch_bq_schema(project: str, dataset: str, table: str) -> list[dict]:
     """Fetch column list via INFORMATION_SCHEMA.COLUMNS using DuckDB BQ extension."""
     import duckdb
     from connectors.bigquery.auth import get_metadata_token
+    from src.identifier_validation import validate_quoted_identifier
+
+    # Defense in depth (cf. v2_sample) — registry already validates these,
+    # but the v2 endpoints are downstream of admin REST writes that could
+    # bypass that gate. A backtick in `dataset` would otherwise break out
+    # of `…` quoting and execute arbitrary BQ SQL.
+    if not (validate_quoted_identifier(project, "BQ project")
+            and validate_quoted_identifier(dataset, "BQ dataset")
+            and validate_quoted_identifier(table, "BQ source_table")):
+        raise ValueError("unsafe BQ identifier in registry — refusing to query")
 
     token = get_metadata_token()
     conn = duckdb.connect(":memory:")
@@ -80,6 +90,12 @@ def _fetch_bq_table_options(project: str, dataset: str, table: str) -> dict:
     """
     import duckdb
     from connectors.bigquery.auth import get_metadata_token
+    from src.identifier_validation import validate_quoted_identifier
+
+    if not (validate_quoted_identifier(project, "BQ project")
+            and validate_quoted_identifier(dataset, "BQ dataset")
+            and validate_quoted_identifier(table, "BQ source_table")):
+        return {}  # Best-effort; refuse to query unsafe identifiers.
 
     try:
         token = get_metadata_token()

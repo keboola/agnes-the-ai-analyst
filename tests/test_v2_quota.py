@@ -69,36 +69,43 @@ class TestDailyBytes:
         q.record_bytes(user="alice", n=400)
         assert q.bytes_used_today(user="alice") == 700
 
-    def test_record_above_cap_raises(self):
+    def test_record_above_cap_no_longer_raises(self):
+        """Post-scan recording NEVER raises — the user already paid for the
+        BQ scan, refusing to return the bytes they fetched would be perverse.
+        Pre-flight enforcement lives in check_daily_budget (called before
+        the scan runs)."""
         q = make_tracker(max_daily_bytes=1000)
         q.record_bytes(user="alice", n=600)
-        with pytest.raises(QuotaExceededError) as e:
-            q.record_bytes(user="alice", n=500)
-        assert e.value.kind == KIND_DAILY_BYTES
-        assert e.value.current == 1100  # would-be total
-        assert e.value.limit == 1000
-
-    def test_record_above_cap_increments_counter_so_repeats_keep_failing(self):
-        """Regression: prior code raised BEFORE updating bytes, so an over-cap
-        request could be repeated indefinitely (each one ran the BQ scan, got
-        rejected, counter never moved). Counter must commit unconditionally."""
-        q = make_tracker(max_daily_bytes=1000)
-        q.record_bytes(user="alice", n=600)
-        with pytest.raises(QuotaExceededError):
-            q.record_bytes(user="alice", n=500)
-        # After the rejection, the counter MUST reflect the over-cap state.
+        # Push over cap — record completes without raising.
+        q.record_bytes(user="alice", n=500)
         assert q.bytes_used_today(user="alice") == 1100
-        # And a follow-up request stays rejected without further side effects.
+
+    def test_check_daily_budget_blocks_when_over_cap(self):
+        """Once recorded bytes push past the cap, check_daily_budget refuses
+        the next request pre-flight — server doesn't run the BQ scan."""
+        q = make_tracker(max_daily_bytes=1000)
+        q.record_bytes(user="alice", n=600)
+        q.check_daily_budget(user="alice")  # 600 < 1000 → ok
+        q.record_bytes(user="alice", n=500)  # now at 1100
+        with pytest.raises(QuotaExceededError) as e:
+            q.check_daily_budget(user="alice")
+        assert e.value.kind == KIND_DAILY_BYTES
+
+    def test_check_daily_budget_at_exact_cap_rejects(self):
+        q = make_tracker(max_daily_bytes=1000)
+        q.record_bytes(user="alice", n=1000)
         with pytest.raises(QuotaExceededError):
-            q.record_bytes(user="alice", n=10)
-        assert q.bytes_used_today(user="alice") == 1110
+            q.check_daily_budget(user="alice")
 
     def test_per_user_isolation(self):
         q = make_tracker(max_daily_bytes=100)
         q.record_bytes(user="alice", n=80)
         q.record_bytes(user="bob", n=80)  # bob's bucket independent
+        # alice's check fails when over cap; bob's check still passes.
+        q.record_bytes(user="alice", n=30)  # alice now at 110
         with pytest.raises(QuotaExceededError):
-            q.record_bytes(user="alice", n=30)
+            q.check_daily_budget(user="alice")
+        q.check_daily_budget(user="bob")  # bob still under
 
     def test_reset_on_utc_midnight(self, monkeypatch):
         q = make_tracker(max_daily_bytes=100)

@@ -21,6 +21,16 @@ _MAX_N = 100
 def _fetch_bq_sample(project: str, dataset: str, table: str, n: int) -> list[dict]:
     import duckdb
     from connectors.bigquery.auth import get_metadata_token
+    from src.identifier_validation import validate_quoted_identifier
+
+    # Defense in depth: registry already validates these, but the v2 API
+    # endpoints are downstream of admin REST writes that might bypass that
+    # gate. A `source_table` containing a backtick would otherwise break
+    # out of the `…` quoted identifier and execute arbitrary BQ SQL.
+    if not (validate_quoted_identifier(project, "BQ project")
+            and validate_quoted_identifier(dataset, "BQ dataset")
+            and validate_quoted_identifier(table, "BQ source_table")):
+        raise ValueError("unsafe BQ identifier in registry — refusing to query")
 
     token = get_metadata_token()
     conn = duckdb.connect(":memory:")
