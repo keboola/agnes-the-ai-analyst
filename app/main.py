@@ -30,6 +30,12 @@ from urllib.parse import quote
 
 import os
 
+# Initialise structured logging BEFORE any module that emits logs at import
+# time. setup_logging is idempotent and safe to call once at process start.
+from app.logging_config import setup_logging
+
+setup_logging("app")
+
 
 def _app_version() -> str:
     """Product version for FastAPI title / OpenAPI schema.
@@ -51,6 +57,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.types import ASGIApp, Receive, Scope, Send
+
+from app.middleware.request_id import RequestIdMiddleware
 
 
 class _SelectiveGZipMiddleware:
@@ -173,6 +181,13 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # RequestIdMiddleware mounted LAST — Starlette inserts middleware at
+    # index 0, so the last add_middleware call ends up OUTERMOST and runs
+    # FIRST per request. The request_id ContextVar is set before any
+    # downstream middleware or handler runs, and every response gets the
+    # x-request-id header.
+    app.add_middleware(RequestIdMiddleware)
 
     # Load .env_overlay (persisted by /api/admin/configure)
     _overlay = Path(os.environ.get("DATA_DIR", "./data")) / "state" / ".env_overlay"
