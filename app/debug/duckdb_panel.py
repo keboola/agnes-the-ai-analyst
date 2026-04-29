@@ -29,6 +29,8 @@ class Query:
     error: str | None = None
 
 
+# Per-request query buffer. Intentionally unbounded — dev-only, request-scoped,
+# garbage-collected with the asyncio Task that owns the contextvar.
 _request_store: contextvars.ContextVar[list[Query] | None] = contextvars.ContextVar("duckdb_panel_store", default=None)
 
 
@@ -94,3 +96,49 @@ class InstrumentedConnection:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._real, name)
+
+
+# Toolbar Panel — only available when fastapi-debug-toolbar is installed
+# (dev dependency). The try/except keeps src/db.py import-safe in prod where
+# the toolbar isn't on the import path.
+try:
+    from fastapi import Request, Response
+    from debug_toolbar.panels import Panel
+
+    class DuckDBPanel(Panel):
+        """fastapi-debug-toolbar panel rendering captured DuckDB queries."""
+
+        title = "DuckDB"
+        template = "panels/duckdb.html"
+
+        @property
+        def nav_subtitle(self) -> str:
+            stats = self.get_stats()
+            queries = stats.get("queries", []) if stats else []
+            total_ms = stats.get("total_ms", 0.0) if stats else 0.0
+            return f"{len(queries)} queries · {total_ms:.1f} ms"
+
+        async def process_request(self, request: Request) -> Response:
+            # Initialise the per-request store in this request's context. Any
+            # InstrumentedConnection.execute() calls during the request will
+            # append to this buffer.
+            _request_store.set([])
+            return await super().process_request(request)
+
+        async def generate_stats(self, request: Request, response: Response) -> dict:
+            store = _request_store.get() or []
+            queries = [q.__dict__ for q in store]
+            total_ms = sum(q.ms for q in store)
+            db_tags = {q.db for q in store}
+            by_db = {db: sum(q.ms for q in store if q.db == db) for db in db_tags}
+            return {
+                "queries": queries,
+                "total_ms": total_ms,
+                "by_db": by_db,
+            }
+
+        async def generate_server_timing(self, request: Request, response: Response) -> list[tuple[str, str, float]]:
+            store = _request_store.get() or []
+            return [("DuckDB", "DuckDB queries", sum(q.ms for q in store))]
+except ImportError:
+    DuckDBPanel = None  # type: ignore[assignment, misc]
