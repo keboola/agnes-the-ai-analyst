@@ -47,6 +47,12 @@
     text-decoration: none;
   }
   .gp-name:hover { color: var(--primary, #4338ca); text-decoration: underline; }
+  .gp-name-sub {
+    display: block;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+    font-size: 11px; font-weight: 400; color: var(--text-secondary, #6b7280);
+    margin-top: 2px;
+  }
   .gp-desc {
     color: var(--text-secondary, #6b7280); font-size: 12px;
     max-width: 380px;
@@ -245,9 +251,27 @@
 
 <script>
 const API = "/api/admin/groups";
+// Server-injected env: empty string = no prefix configured. Used to derive a
+// friendly display name from the full Workspace email stored as the group's
+// `name` (e.g. "grp_foundryai_finance@groupon.com" → "Finance").
+const GOOGLE_GROUP_PREFIX = {{ config.AGNES_GOOGLE_GROUP_PREFIX | tojson }};
 
 function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
 function fmtDate(s) { return s ? String(s).slice(0, 16).replace("T", " ") : "-"; }
+
+function deriveDisplayName(fullEmail) {
+  // Strip @domain, then strip the configured prefix (case-insensitive),
+  // then capitalize the first letter. Fallback to the raw local-part if
+  // anything looks off — better to show the email than render an empty cell.
+  if (!fullEmail) return "";
+  const local = String(fullEmail).split("@")[0] || String(fullEmail);
+  const px = (GOOGLE_GROUP_PREFIX || "").toLowerCase();
+  let s = local;
+  if (px && s.toLowerCase().startsWith(px)) s = s.slice(px.length);
+  s = s.replace(/^[_\-\s]+/, "");
+  if (!s) return local;
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
 
 function toast(msg, kind = "") {
   const el = document.createElement("div");
@@ -308,12 +332,26 @@ function render() {
     tr.dataset.id = g.id;
     tr.style.cursor = "pointer";
     const origin = g.origin || "admin";
-    const actions = g.is_system
+    // Read-only when the row is owned by Google sync OR a non-mapped system
+    // group (Admin/Everyone canonical name without the env mapping — those
+    // still cannot be renamed/deleted, but they accept admin-managed members).
+    // The `is_google_managed` flag from the API is the union we care about for
+    // hiding Edit/Delete in the list.
+    const isGoogleManaged = !!g.is_google_managed;
+    const isReadOnly = g.is_system || isGoogleManaged;
+    const actions = isReadOnly
       ? `<span style="color:#9ca3af;font-size:11px">read-only</span>`
       : `<button class="icon-btn" data-action="edit">Edit</button>
          <button class="icon-btn danger" data-action="delete">Delete</button>`;
+    // For Google-managed rows, the canonical `name` is the full Workspace
+    // email — render a derived "Finance" big label with the email as a
+    // monospace subtitle. For everything else, name stays one line.
+    const nameCell = isGoogleManaged
+      ? `<a class="gp-name" href="/admin/groups/${encodeURIComponent(g.id)}">${esc(deriveDisplayName(g.name))}</a>
+         <span class="gp-name-sub">${esc(g.name)}</span>`
+      : `<a class="gp-name" href="/admin/groups/${encodeURIComponent(g.id)}">${esc(g.name)}</a>`;
     tr.innerHTML = `
-      <td><a class="gp-name" href="/admin/groups/${encodeURIComponent(g.id)}">${esc(g.name)}</a></td>
+      <td>${nameCell}</td>
       <td><span class="gp-desc">${esc(g.description || "")}</span></td>
       <td><span class="origin-chip origin-${esc(origin)}">${esc(origin.replace("_"," "))}</span></td>
       <td class="count-cell">${g.member_count || 0}</td>

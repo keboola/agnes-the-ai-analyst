@@ -39,40 +39,24 @@ class UserRepository:
         role: str = "analyst",
         password_hash: Optional[str] = None,
     ) -> None:
-        """Create a user and add them to the Everyone system group.
+        """Create a user. Group memberships are populated separately.
 
         ``role`` is accepted for legacy API compatibility (some callers still
         pass it) but the value is written to the deprecated ``users.role``
-        column only — authorization no longer reads it. New users are
-        automatically members of Everyone via ``user_group_members``;
-        explicit Admin grants are issued separately by SEED_ADMIN_EMAIL or
-        admin UI.
+        column only — authorization no longer reads it. New users are NOT
+        auto-added to Everyone — the implicit membership was removed when
+        Google-prefix mapping landed because access deployments need every
+        membership to be traceable to a real source (admin grant, Google
+        sync, or explicit system seed). If you need the previous "every
+        new user is in Everyone" behavior, add a `system_seed` row in the
+        caller after `create`.
         """
-        from src.db import SYSTEM_EVERYONE_GROUP
-
         now = datetime.now(timezone.utc)
         self.conn.execute(
             """INSERT INTO users (id, email, name, role, password_hash, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)""",
             [id, email, name, role, password_hash, now, now],
         )
-
-        # Auto-add to Everyone. Skip silently if Everyone is missing — that's
-        # only possible during fresh-install bootstrap before the seed runs;
-        # _seed_system_groups makes the row idempotently on next connect.
-        everyone = self.conn.execute(
-            "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_EVERYONE_GROUP],
-        ).fetchone()
-        if everyone:
-            try:
-                self.conn.execute(
-                    """INSERT INTO user_group_members
-                       (user_id, group_id, source, added_by)
-                       VALUES (?, ?, 'system_seed', 'user_repo.create')""",
-                    [id, everyone[0]],
-                )
-            except duckdb.ConstraintException:
-                pass  # already a member (re-create after delete?)
 
     def update(self, id: str, **kwargs) -> None:
         # `groups` was a v12-era column dropped in v13; fresh installs run

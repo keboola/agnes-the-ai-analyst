@@ -36,7 +36,7 @@ from fastapi import Depends, HTTPException, Request, status
 
 from app.auth.dependencies import _get_db, get_current_user
 from app.resource_types import ResourceType
-from src.db import SYSTEM_ADMIN_GROUP, SYSTEM_EVERYONE_GROUP
+from src.db import SYSTEM_ADMIN_GROUP
 
 logger = logging.getLogger(__name__)
 
@@ -52,24 +52,21 @@ def _get_group_id_by_name(name: str, conn: duckdb.DuckDBPyConnection) -> Optiona
 
 
 def _user_group_ids(user_id: str, conn: duckdb.DuckDBPyConnection) -> set[str]:
-    """Set of group_ids the user is in. Always includes Everyone.
+    """Set of group_ids the user is in.
 
-    Membership rows live in ``user_group_members``; Everyone is added
-    unconditionally so callers don't have to special-case it. If the
-    Everyone group is missing (impossible in healthy installs but seen in
-    fresh-test scenarios), the helper logs once and proceeds with the
-    explicit memberships.
+    Returns only the rows present in ``user_group_members``. The implicit
+    "every user is in Everyone" virtual row was removed when Google-prefix
+    mapping landed — every membership is now sourced from a concrete row
+    (``admin``, ``google_sync``, or ``system_seed``) so an operator
+    auditing /admin/access sees the same set the authorization layer
+    enforces. Callers that want Everyone-style "always granted" plugins
+    must grant them to a real group the user is a member of.
     """
     rows = conn.execute(
         "SELECT group_id FROM user_group_members WHERE user_id = ?",
         [user_id],
     ).fetchall()
-    group_ids: set[str] = {r[0] for r in rows}
-
-    everyone_id = _get_group_id_by_name(SYSTEM_EVERYONE_GROUP, conn)
-    if everyone_id is not None:
-        group_ids.add(everyone_id)
-    return group_ids
+    return {r[0] for r in rows}
 
 
 def is_user_admin(user_id: str, conn: duckdb.DuckDBPyConnection) -> bool:

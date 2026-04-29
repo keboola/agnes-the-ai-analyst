@@ -179,8 +179,8 @@ async def create_user(
     import secrets
     user_id = str(uuid.uuid4())
     repo.create(id=user_id, email=payload.email, name=payload.name, role=payload.role)
-    # If the requested role is admin, add to Admin group. Anything else is just
-    # a member of Everyone (added implicitly by repo.create).
+    # If the requested role is admin, add to Admin group. Non-admin users start
+    # with no group memberships — admin-managed grants must be explicit.
     if (payload.role or "").lower() == "admin":
         _set_admin_membership(user_id, True, user.get("email"), conn)
     _audit(conn, user["id"], "user.create", user_id, {"email": payload.email, "role": payload.role})

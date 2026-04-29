@@ -8,9 +8,11 @@ table:
                        memberships on every login (DELETE+INSERT scoped to
                        this source).
   - ``admin``        — admin UI/CLI manual additions; survives Google sync.
-  - ``system_seed``  — deploy-time seeds (Admin grant for SEED_ADMIN_EMAIL,
-                       Everyone for every new user); survives Google sync
-                       and refuses removal via the admin path.
+  - ``system_seed``  — deploy-time seeds (Admin grant for SEED_ADMIN_EMAIL);
+                       survives Google sync and refuses removal via the
+                       admin path. The auto-Everyone seed for every new
+                       user was removed when Google-prefix mapping landed
+                       — explicit grants only.
 
 The ``replace_google_sync_groups`` method is the bulk operation called from
 the OAuth callback; ``add_member`` / ``remove_member`` cover admin actions.
@@ -157,3 +159,23 @@ class UserGroupMembersRepository:
             [group_id],
         ).fetchone()
         return int(row[0]) if row else 0
+
+    def has_any_google_sync_membership(self, user_id: str) -> bool:
+        """Whether the user has any prior `source='google_sync'` row.
+
+        Used by the OAuth callback to distinguish a brand-new login (where
+        an empty fetch from Cloud Identity might mean the user genuinely
+        has no Workspace groups) from a returning user with a previously
+        cached membership snapshot. Returning users get a pass-through on
+        empty fetch (transient API failures must not lock them out); a
+        fresh-login no-cache empty fetch is treated identically by the
+        current callback (pass-through), so this helper is presently
+        diagnostic — kept here so a future tightening of the gate can
+        flip the branch without a new query path.
+        """
+        row = self.conn.execute(
+            "SELECT 1 FROM user_group_members "
+            "WHERE user_id = ? AND source = 'google_sync' LIMIT 1",
+            [user_id],
+        ).fetchone()
+        return row is not None

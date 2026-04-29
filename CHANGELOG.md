@@ -10,6 +10,27 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **Google Workspace group prefix filter + system-group mapping.** Three new env vars wire the OAuth callback's group sync to a configurable Workspace prefix and route the admin/everyone Workspace groups into the seeded system rows.
+  - `AGNES_GOOGLE_GROUP_PREFIX` — when set (e.g. `grp_foundryai_`), only Workspace groups whose email local part starts with the prefix are mirrored into `user_group_members`. Empty = legacy behavior (mirror every fetched group).
+  - `AGNES_GROUP_ADMIN_EMAIL` — Workspace group email that maps onto the seeded `Admin` system row instead of creating a fresh `user_groups` entry. Members of that Workspace group land in `Admin` directly.
+  - `AGNES_GROUP_EVERYONE_EMAIL` — same mechanism for `Everyone`.
+- **Login gate.** When `AGNES_GOOGLE_GROUP_PREFIX` is set and the user's Workspace fetch returned a non-empty list with zero prefix matches, the callback redirects to `/login?error=not_in_foundryai_group` with a friendly inline banner. Empty fetch results (transient Cloud Identity failures) preserve the cached membership and let the login proceed — fail-soft only the soft-fail path; an explicit no-match still blocks. New error code `group_check_unavailable` is wired through the login banner for future use.
+- **Admin UI subtitle for synced groups.** The `/admin/groups` table and the `/admin/groups/{id}` detail page render a derived display name (prefix stripped, `@domain` removed, capitalized) above a small monospace subtitle showing the full Workspace email. Edit / Delete affordances are hidden on Google-managed rows, and a "managed by Google Workspace — read-only here" banner appears on the detail page.
+
+### Changed
+
+- **BREAKING** Auto-`Everyone` membership for new users was removed. `UserRepository.create` no longer writes a `user_group_members` row, and `app.auth.access._user_group_ids` no longer adds a virtual `Everyone` id to the result. Every membership now traces to a real source row (`admin`, `google_sync`, or an explicit `system_seed`). If you relied on the implicit-Everyone behavior for plugin visibility, grant the plugin to a real group (e.g. an `everyone@example.com` Workspace group mapped via `AGNES_GROUP_EVERYONE_EMAIL`).
+- **Admin UI / API are read-only on Google-managed groups.** `created_by='system:google-sync'` rows, plus the seeded `Admin` / `Everyone` rows when the matching email-mapping env var is set, return `409` with body `{"detail": {"code": "google_managed_readonly", ...}}` from `PATCH /api/admin/groups/{id}`, `DELETE /api/admin/groups/{id}`, `POST /api/admin/groups/{id}/members`, `DELETE /api/admin/groups/{id}/members/{user_id}`, `POST /api/admin/users/{id}/memberships`, `DELETE /api/admin/users/{id}/memberships/{group_id}`. Edit through admin.google.com, then sign in again to refresh.
+
+### Internal
+
+- New env vars surfaced into `ConfigProxy` so templates can derive the friendly display name client-side.
+- New `is_google_managed: bool` field on `GroupResponse` (the API surface for the admin UI's group list/detail).
+- New `UserGroupMembersRepository.has_any_google_sync_membership` helper (currently diagnostic; kept for a future tightening of the gate).
+- New tests in `tests/test_google_group_prefix_sync.py`; `tests/test_repositories.py::TestUserRepositoryEveryoneAutoMember` renamed to `TestUserRepositoryNoAutoMembership` with inverted assertion; two `tests/test_marketplace_filter.py` tests adapted to the no-implicit-Everyone semantics. See `docs/auth-groups.md` for the full reference.
+
 ### Fixed
 
 - **Non-root container couldn't write to host-bind-mounted `/data` after the v0.12.1 USER-agnes flip.** `infra/modules/customer-instance/startup-script.sh.tpl` now `chown -R 999:999 /data` after creating the persistent-disk subdirs (`state`, `analytics`, `extracts`). Without this, a freshly-attached PD is root-owned by default and `USER agnes` (uid 999) cannot open `/data/state/system.duckdb` for write — every authed request 500s with `IOException: Cannot open file ... Permission denied` while `/api/health` (which doesn't open the system DB) keeps returning 200, masking the failure from health-only monitoring. Regression first observed on `agnes-development` on 2026-04-29 after the auto-upgrade picked up `:stable` from the 0.12.1 release. **Existing VMs with PD-backed `/data` need a one-time host-side `sudo chown -R 999:999 /var/lib/docker/volumes/agnes_data/_data && sudo docker restart agnes-app-1 agnes-scheduler-1` to recover** — Terraform `metadata_startup_script` only runs on boot, so an apply alone does not retro-fix running VMs.
