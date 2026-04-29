@@ -1,0 +1,41 @@
+name: Prune dev tags
+
+# Weekly: prune dev-YYYY.MM.N and stable-YYYY.MM.N legacy CalVer tags.
+# Default retention: current month + the previous KEEP_MONTHS months
+# (KEEP_MONTHS=1 → current + previous month). Manual trigger supports
+# dry-run and KEEP_MONTHS override.
+
+on:
+  schedule:
+    - cron: '0 4 * * 0'  # Sundays 04:00 UTC
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry-run only — list tags that would be pruned, do not delete'
+        type: boolean
+        default: true
+      keep_months:
+        description: 'Additional months beyond current to keep'
+        type: string
+        default: '1'
+
+permissions:
+  contents: write   # delete git tags
+  packages: write   # delete GHCR image versions
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Run prune
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KEEP_MONTHS: ${{ inputs.keep_months || '1' }}
+          PRUNE_DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+        run: bash scripts/ops/prune-dev-tags.sh
