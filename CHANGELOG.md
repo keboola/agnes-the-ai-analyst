@@ -70,6 +70,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `FastAPI debug=True` — that flag is intentionally NOT toggled (Starlette's
   `ServerErrorMiddleware` would intercept unhandled exceptions before the
   custom error handler runs). (Devin BUG_0001.)
+- **Security**: HTML error page (500) no longer leaks `str(exc)` in
+  production. The JSON branch already guarded that string behind `debug_on`
+  but the HTML branch did not — browser users could see raw exception
+  messages containing DB paths, SQL fragments, internal hostnames, or
+  credentials embedded in connection strings. The HTML branch now mirrors
+  the JSON branch's `debug_on` check; production users see only
+  `"Internal server error"` plus the request id. (Devin BUG on b1c6ee9 review.)
 
 ### Internal
 - `pyproject.toml`: added `fastapi-debug-toolbar>=0.6.3` to dev optional deps.

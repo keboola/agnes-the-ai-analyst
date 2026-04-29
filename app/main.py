@@ -660,7 +660,13 @@ def create_app() -> FastAPI:
         tb_str = _tb.format_exc() if debug_on else None
 
         if not path_is_api and _wants_html(request):
-            return await _render_error(request, 500, str(exc) or "Internal server error", tb_str)
+            # In production (DEBUG unset), never leak str(exc) to the
+            # rendered page — exception messages routinely contain DB paths,
+            # SQL fragments, internal hostnames, or credentials embedded in
+            # connection strings. Match the JSON branch's debug_on guard.
+            # Devin BUG_0001 on PR #136 (b1c6ee9 review).
+            visible_message = str(exc) if debug_on else "Internal server error"
+            return await _render_error(request, 500, visible_message, tb_str)
 
         from app.logging_config import request_id_var
         from fastapi.responses import JSONResponse
