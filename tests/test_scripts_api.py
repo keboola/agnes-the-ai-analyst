@@ -53,12 +53,12 @@ class TestScriptsDeploy:
         token = seeded_app["admin_token"]
         resp = c.post(
             "/api/scripts/deploy",
-            json={"name": "scheduled", "source": "print('scheduled')", "schedule": "0 8 * * MON"},
+            json={"name": "scheduled", "source": "print('scheduled')", "schedule": "daily 08:00"},
             headers=_auth(token),
         )
         assert resp.status_code == 201
         data = resp.json()
-        assert data["schedule"] == "0 8 * * MON"
+        assert data["schedule"] == "daily 08:00"
 
     def test_deploy_script_with_blocked_import_deploys_ok_but_run_fails(self, seeded_app):
         """Deploy stores scripts as-is; safety validation happens at run time, not deploy time."""

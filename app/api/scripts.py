@@ -5,8 +5,9 @@ import subprocess
 import sys
 import tempfile
 import uuid
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from datetime import datetime, timezone
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from pydantic import BaseModel, field_validator
 from typing import Optional
 
 import duckdb
@@ -14,6 +15,7 @@ import duckdb
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
 from src.repositories.notifications import ScriptRepository
+from src.scheduler import is_valid_schedule, is_table_due
 
 router = APIRouter(prefix="/api/scripts", tags=["scripts"])
 
@@ -25,6 +27,18 @@ class DeployScriptRequest(BaseModel):
     name: str
     source: str
     schedule: Optional[str] = None
+
+    @field_validator("schedule", mode="before")
+    @classmethod
+    def _validate_schedule(cls, v):
+        if v in (None, ""):
+            return None
+        if not is_valid_schedule(v):
+            raise ValueError(
+                f"schedule must be 'every Nm' / 'every Nh' / "
+                f"'daily HH:MM[,HH:MM,...]', got {v!r}"
+            )
+        return v
 
 
 class RunScriptRequest(BaseModel):
@@ -107,6 +121,76 @@ async def undeploy_script(
     if not repo.get(script_id):
         raise HTTPException(status_code=404, detail="Script not found")
     repo.undeploy(script_id)
+
+
+@router.post("/run-due")
+async def run_due_scripts(
+    background_tasks: BackgroundTasks,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Run every deployed script whose ``schedule`` says it is due.
+
+    Iterates ``script_registry``, skips rows without a schedule (those run
+    only via explicit POST /{id}/run), evaluates ``is_table_due(schedule,
+    last_run)``, and atomically claims each due row via
+    ``ScriptRepository.claim_for_run``. Execution is queued as a
+    ``BackgroundTask`` so the response returns immediately — the sidecar
+    must not block waiting on a long-running script.
+
+    Concurrency: ``claim_for_run`` flips ``last_status`` to ``'running'``
+    inside the same UPDATE; a script already in that state is skipped on
+    subsequent ticks until the BackgroundTask writes a terminal status via
+    ``record_run_result``. There is no max-runtime detection in this PR —
+    if a BackgroundTask crashes without writing a terminal status, the
+    script stays stuck in ``'running'`` until an operator clears it
+    manually (``UPDATE script_registry SET last_status = NULL WHERE id =
+    ?``). Documenting this as an accepted v0 limitation; revisit if it
+    bites in practice.
+    """
+    repo = ScriptRepository(conn)
+    claimed: list[str] = []
+    for script in repo.list_all():
+        schedule = script.get("schedule")
+        if not schedule:
+            continue
+        last_run = script.get("last_run")
+        last_run_iso = last_run.isoformat() if last_run else None
+        if not is_table_due(schedule, last_run_iso):
+            continue
+        if not repo.claim_for_run(script["id"]):
+            # Lost the race / already running — next tick will retry.
+            continue
+        claimed.append(script["id"])
+        background_tasks.add_task(
+            _run_claimed_script,
+            script_id=script["id"],
+            source=script["source"],
+            name=script["name"],
+        )
+    return {"claimed": claimed, "count": len(claimed)}
+
+
+def _run_claimed_script(script_id: str, source: str, name: str) -> None:
+    """Execute a previously-claimed script and write the terminal status.
+
+    Runs in a FastAPI BackgroundTask, so it owns its own DB connection
+    (the request-scoped conn is already gone by the time this fires).
+    Any exception writes 'failure' and re-raises so the BG handler still
+    surfaces the traceback in logs.
+    """
+    from src.db import get_system_db
+    bg_conn = get_system_db()
+    try:
+        bg_repo = ScriptRepository(bg_conn)
+        try:
+            _execute_script(source, name)
+            bg_repo.record_run_result(script_id, status="success")
+        except Exception:
+            bg_repo.record_run_result(script_id, status="failure")
+            raise
+    finally:
+        bg_conn.close()
 
 
 def _execute_script(source: str, name: str) -> dict:
