@@ -168,3 +168,84 @@ def _parse_timestamp(iso_string: str) -> Optional[datetime]:
             continue
 
     return None
+
+
+def is_valid_schedule(schedule: Optional[str]) -> bool:
+    """Return True iff ``schedule`` parses as a documented schedule string.
+
+    Accepted forms (mirroring the rest of this module):
+      - ``"every Nm"`` / ``"every Nh"`` with N a positive integer
+      - ``"daily HH:MM"`` (24-h, UTC) optionally comma-separated:
+        ``"daily 07:00,13:00"``
+
+    Anything else — including ``None``, empty string, or a parseable-looking
+    but out-of-range value (``"daily 25:00"``) — returns False. Pydantic
+    validators on the admin API call this to reject malformed input with
+    422 instead of accepting it and silently no-op'ing later.
+    """
+    if not schedule or not isinstance(schedule, str):
+        return False
+    interval = parse_interval_minutes(schedule)
+    if interval is not None:
+        return interval > 0
+    match = DAILY_PATTERN.match(schedule)
+    if not match:
+        return False
+    return bool(_parse_daily_times(match.group(1)))
+
+
+def filter_due_tables(
+    table_configs: list[dict],
+    sync_state_repo,
+    now: Optional[datetime] = None,
+) -> list[dict]:
+    """Drop table configs whose ``sync_schedule`` says they are not due.
+
+    Behaviour:
+      - ``sync_schedule`` is None / empty / not a valid string → table passes
+        through (no schedule = "sync on every tick", existing behaviour).
+      - Valid schedule + last_sync within the cadence → drop.
+      - Valid schedule + last_sync past cadence (or never) → keep.
+      - Invalid schedule string → log a warning and let the table through
+        (do NOT silently skip — operator surprise is worse than a redundant
+        sync).
+
+    ``sync_state_repo`` is duck-typed: only ``get_last_sync(table_id)`` is
+    called, returning a ``datetime`` (tz-aware preferred, naive treated as
+    UTC) or ``None``.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+    out: list[dict] = []
+    for tc in table_configs:
+        schedule = tc.get("sync_schedule")
+        if not schedule:
+            out.append(tc)
+            continue
+        if not is_valid_schedule(schedule):
+            logger.warning(
+                "Table %s has malformed sync_schedule %r — syncing anyway "
+                "(fix the schedule string to suppress this message)",
+                tc.get("id") or tc.get("name"),
+                schedule,
+            )
+            out.append(tc)
+            continue
+        last_sync = sync_state_repo.get_last_sync(tc.get("id") or tc.get("name"))
+        last_sync_iso: Optional[str]
+        if last_sync is None:
+            last_sync_iso = None
+        else:
+            if last_sync.tzinfo is None:
+                last_sync = last_sync.replace(tzinfo=timezone.utc)
+            last_sync_iso = last_sync.isoformat()
+        if is_table_due(schedule, last_sync_iso, now=now):
+            out.append(tc)
+        else:
+            logger.info(
+                "Table %s skipped: schedule=%r, last_sync=%s, not due yet",
+                tc.get("id") or tc.get("name"),
+                schedule,
+                last_sync_iso,
+            )
+    return out
