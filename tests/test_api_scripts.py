@@ -86,7 +86,7 @@ class TestScriptsAPI:
         admin_headers = {"Authorization": f"Bearer {admin_token}"}
 
         resp = c.post("/api/scripts/deploy", json={
-            "name": "calc", "source": "print(2+2)", "schedule": "0 8 * * MON",
+            "name": "calc", "source": "print(2+2)", "schedule": "daily 08:00",
         }, headers=admin_headers)
         script_id = resp.json()["id"]
 
