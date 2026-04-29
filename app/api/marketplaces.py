@@ -22,6 +22,7 @@ from src.marketplace import (
     MarketplaceNotFound,
     delete_marketplace_dir,
     is_valid_slug,
+    sync_marketplaces,
     sync_one,
 )
 from src.repositories.audit import AuditRepository
@@ -407,5 +408,48 @@ async def trigger_sync(
         "marketplace.sync",
         marketplace_id,
         {"commit": result["commit"], "action": result["action"]},
+    )
+    return result
+
+
+@router.post("/sync-all")
+def trigger_sync_all(
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Sync every registered marketplace.
+
+    Wired up so the scheduler service can drive the nightly refresh over
+    HTTP. The previous implementation called ``src.marketplace.sync_marketplaces``
+    in-process from the scheduler container, which conflicted with the app's
+    long-lived ``system.duckdb`` handle (DuckDB allows only one writer per
+    file across processes). Routing through the app inherits the existing
+    connection without contention.
+
+    Declared ``def`` (not ``async def``) so FastAPI runs it in a thread
+    pool — :func:`sync_marketplaces` does blocking I/O (subprocess git
+    clones with ``GIT_TIMEOUT_SEC=300`` per repo, DuckDB writes, a
+    process-wide threading.Lock) and would freeze the event loop for the
+    duration of a bulk sync if it ran on the asyncio thread. Health
+    checks, login redirects, and every other concurrent request keep
+    serving while the bulk sync churns through the registry.
+
+    One audit row per call summarises the outcome — per-marketplace details
+    live in ``marketplace_registry`` and the per-call result payload below.
+    """
+    result = sync_marketplaces()
+    # _audit appends "marketplace:" to the target id when writing the
+    # resource column. "_all" produces "marketplace:_all" — a stable,
+    # greppable sentinel for bulk-sync rows; the real per-marketplace
+    # commit/error breakdown is in the params payload.
+    _audit(
+        conn,
+        user["id"],
+        "marketplace.sync_all",
+        "_all",
+        {
+            "synced": [r.get("id") for r in result.get("synced", [])],
+            "errors": [{"id": e.get("id"), "error": e.get("error")} for e in result.get("errors", [])],
+        },
     )
     return result
