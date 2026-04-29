@@ -41,18 +41,53 @@ def _resolve_schema(conn, user, table_id: str, project_id: str) -> dict:
 
 
 def _bq_dry_run_bytes(project: str, sql: str) -> int:
-    """Run a BQ dry-run via the google-cloud-bigquery client and return totalBytesProcessed."""
+    """Run a BQ dry-run via the google-cloud-bigquery client and return totalBytesProcessed.
+
+    Errors translated to HTTPException with the structured-body shape used across
+    all v2 endpoints. SQL here is user-derived (built from req.select/where/order_by),
+    so BadRequest → 400.
+    """
     from google.cloud import bigquery
+    from google.api_core import exceptions as gax
     from google.api_core.client_options import ClientOptions
+
     client = bigquery.Client(
         project=project,
         client_options=ClientOptions(quota_project_id=project),
     )
-    job = client.query(
-        sql,
-        job_config=bigquery.QueryJobConfig(dry_run=True, use_query_cache=False),
-    )
-    return int(job.total_bytes_processed or 0)
+    try:
+        job = client.query(
+            sql,
+            job_config=bigquery.QueryJobConfig(dry_run=True, use_query_cache=False),
+        )
+        return int(job.total_bytes_processed or 0)
+    except gax.Forbidden as e:
+        kind = "cross_project_forbidden" if "serviceusage" in str(e).lower() else "bq_forbidden"
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": kind,
+                "message": str(e),
+                "details": {
+                    "billing_project": project,
+                    "hint": (
+                        "Set data_source.bigquery.billing_project in instance.yaml to a project "
+                        "where the SA has serviceusage.services.use, or grant the SA that role "
+                        "on the data project."
+                    ) if kind == "cross_project_forbidden" else "",
+                },
+            },
+        )
+    except gax.BadRequest as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "bq_bad_request", "message": str(e), "details": {}},
+        )
+    except gax.GoogleAPICallError as e:
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "bq_upstream_error", "message": str(e), "details": {}},
+        )
 
 
 _COLUMN_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
@@ -229,6 +264,43 @@ async def scan_estimate_endpoint(
         raise HTTPException(status_code=404, detail="table not found")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        # Already-translated upstream error from _bq_dry_run_bytes — propagate.
+        raise
+    except Exception as e:
+        # TODO(#134 Phase 2): outer wrap exists because tests monkeypatch
+        # _bq_dry_run_bytes whole, replacing the inner translation. Will be
+        # removed when BqAccess facade centralizes translation in Phase 2.
+        # Inner block in _bq_dry_run_bytes is the source of truth for production.
+        from google.api_core import exceptions as gax
+        if isinstance(e, gax.Forbidden):
+            kind = "cross_project_forbidden" if "serviceusage" in str(e).lower() else "bq_forbidden"
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": kind,
+                    "message": str(e),
+                    "details": {
+                        "billing_project": billing_project or project_id,
+                        "hint": (
+                            "Set data_source.bigquery.billing_project in instance.yaml to a project "
+                            "where the SA has serviceusage.services.use, or grant the SA that role "
+                            "on the data project."
+                        ) if kind == "cross_project_forbidden" else "",
+                    },
+                },
+            )
+        if isinstance(e, gax.BadRequest):
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "bq_bad_request", "message": str(e), "details": {}},
+            )
+        if isinstance(e, gax.GoogleAPICallError):
+            raise HTTPException(
+                status_code=502,
+                detail={"error": "bq_upstream_error", "message": str(e), "details": {}},
+            )
+        raise
 
 
 # Module-level singleton (process-local quota state per spec §3.8). FastAPI
@@ -264,7 +336,12 @@ def _max_limit() -> int:
 
 
 def _run_bq_scan(project: str, sql: str) -> pa.Table:
-    """Execute SQL via DuckDB BQ extension, return pyarrow Table."""
+    """Run a BQ query via DuckDB BQ extension. Returns Arrow table.
+
+    Errors translated to HTTPException with the structured-body shape used across
+    all v2 endpoints. SQL here is user-derived → BadRequest → 400.
+    """
+    from google.api_core import exceptions as gax
     from connectors.bigquery.auth import get_metadata_token
 
     token = get_metadata_token()
@@ -273,11 +350,38 @@ def _run_bq_scan(project: str, sql: str) -> pa.Table:
         conn.execute("INSTALL bigquery FROM community; LOAD bigquery;")
         escaped = token.replace("'", "''")
         conn.execute(f"CREATE OR REPLACE SECRET bq_s (TYPE bigquery, ACCESS_TOKEN '{escaped}')")
-        # Use bigquery_query() since the SQL is already authored against the BQ jobs API
-        return conn.execute(
-            "SELECT * FROM bigquery_query(?, ?)",
-            [project, sql],
-        ).arrow()
+        try:
+            return conn.execute(
+                "SELECT * FROM bigquery_query(?, ?)",
+                [project, sql],
+            ).arrow()
+        except gax.Forbidden as e:
+            kind = "cross_project_forbidden" if "serviceusage" in str(e).lower() else "bq_forbidden"
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": kind,
+                    "message": str(e),
+                    "details": {
+                        "billing_project": project,
+                        "hint": (
+                            "Set data_source.bigquery.billing_project in instance.yaml to a project "
+                            "where the SA has serviceusage.services.use, or grant the SA that role "
+                            "on the data project."
+                        ) if kind == "cross_project_forbidden" else "",
+                    },
+                },
+            )
+        except gax.BadRequest as e:
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "bq_bad_request", "message": str(e), "details": {}},
+            )
+        except gax.GoogleAPICallError as e:
+            raise HTTPException(
+                status_code=502,
+                detail={"error": "bq_upstream_error", "message": str(e), "details": {}},
+            )
     finally:
         conn.close()
 
@@ -409,3 +513,40 @@ async def scan_endpoint(
         raise HTTPException(status_code=403, detail="not authorized")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        # Already-translated upstream error from _run_bq_scan — propagate.
+        raise
+    except Exception as e:
+        # TODO(#134 Phase 2): outer wrap exists because tests monkeypatch
+        # _run_bq_scan whole, replacing the inner translation. Will be
+        # removed when BqAccess facade centralizes translation in Phase 2.
+        # Inner block in _run_bq_scan is the source of truth for production.
+        from google.api_core import exceptions as gax
+        if isinstance(e, gax.Forbidden):
+            kind = "cross_project_forbidden" if "serviceusage" in str(e).lower() else "bq_forbidden"
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": kind,
+                    "message": str(e),
+                    "details": {
+                        "billing_project": billing_project or project_id,
+                        "hint": (
+                            "Set data_source.bigquery.billing_project in instance.yaml to a project "
+                            "where the SA has serviceusage.services.use, or grant the SA that role "
+                            "on the data project."
+                        ) if kind == "cross_project_forbidden" else "",
+                    },
+                },
+            )
+        if isinstance(e, gax.BadRequest):
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "bq_bad_request", "message": str(e), "details": {}},
+            )
+        if isinstance(e, gax.GoogleAPICallError):
+            raise HTTPException(
+                status_code=502,
+                detail={"error": "bq_upstream_error", "message": str(e), "details": {}},
+            )
+        raise
