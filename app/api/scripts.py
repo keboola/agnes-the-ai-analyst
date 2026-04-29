@@ -14,6 +14,7 @@ import duckdb
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
+from src.db import get_system_db
 from src.repositories.notifications import ScriptRepository
 from src.scheduler import is_valid_schedule, is_table_due
 
@@ -33,6 +34,10 @@ class DeployScriptRequest(BaseModel):
     def _validate_schedule(cls, v):
         if v in (None, ""):
             return None
+        # Pure-whitespace strings ("   ") fall through to is_valid_schedule
+        # and reject — same convention as RegisterTableRequest.sync_schedule.
+        # We do NOT silently normalise whitespace to None; surfacing the
+        # caller's mistake at register time beats persisting an unusable value.
         if not is_valid_schedule(v):
             raise ValueError(
                 f"schedule must be 'every Nm' / 'every Nh' / "
@@ -179,7 +184,8 @@ def _run_claimed_script(script_id: str, source: str, name: str) -> None:
     Any exception writes 'failure' and re-raises so the BG handler still
     surfaces the traceback in logs.
     """
-    from src.db import get_system_db
+    # Fresh connection for the background task — the request-scoped conn
+    # was returned to FastAPI by the time this fires.
     bg_conn = get_system_db()
     try:
         bg_repo = ScriptRepository(bg_conn)
