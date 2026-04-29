@@ -6,7 +6,7 @@
 
 ## Problem
 
-Issue #134 reports that v2 BigQuery endpoints on `agnes-development` (0.18.0) return HTTP 500 with no body:
+Issue #134 reports that v2 BigQuery endpoints on `<your-dev-instance>` (0.18.0) return HTTP 500 with no body:
 
 - `POST /api/v2/scan/estimate`
 - `POST /api/v2/scan`
@@ -24,7 +24,7 @@ Commit `33a9964` added the `billing_project` parameter to `app/api/v2_scan.py`. 
 
 **However, `_bq_dry_run_bytes` (lines 43-55) and `_run_bq_scan` (lines 266-282) have no `try/except` at all.** The endpoint-level handlers in `scan_endpoint` and `scan_estimate_endpoint` catch `WhereValidationError`, `QuotaExceededError`, `FileNotFoundError`, `PermissionError`, `ValueError` — but `google.api_core.exceptions.Forbidden` and `BadRequest` propagate as bare HTTP 500 with no body.
 
-**This is the headline cause of the v2_scan/estimate 500s.** When the SA on `agnes-development` lacks `serviceusage.services.use` on whatever project resolves to billing, BQ raises `Forbidden`, which propagates uncaught. The config fix landed in `33a9964`; the error translation didn't.
+**This is the headline cause of the v2_scan/estimate 500s.** When the SA on `<your-dev-instance>` lacks `serviceusage.services.use` on whatever project resolves to billing, BQ raises `Forbidden`, which propagates uncaught. The config fix landed in `33a9964`; the error translation didn't.
 
 #### Bug B — `v2_sample.py` is missing the billing_project split entirely
 
@@ -43,7 +43,7 @@ Schema reportedly works for Pavel today because both queries hit `INFORMATION_SC
 
 #### Operator-config dimension (out of scope for code fix)
 
-If `instance.yaml` on `agnes-development` does not set `data_source.bigquery.billing_project`, the fallback `or project_id` puts the call right back in the broken state. The fix surfaces this to the operator via a structured error body containing a `hint` pointing at the missing config key.
+If `instance.yaml` on `<your-dev-instance>` does not set `data_source.bigquery.billing_project`, the fallback `or project_id` puts the call right back in the broken state. The fix surfaces this to the operator via a structured error body containing a `hint` pointing at the missing config key.
 
 ### Five+ duplicate code paths today
 
@@ -497,7 +497,7 @@ def bq_access():
 | `test_v2_schema_returns_200_with_empty_partition_on_bq_failure` | best-effort block (`_fetch_bq_table_options`) failure → 200, schema returned, partition_by/clustered_by absent. Regression guard for the swallow-all preservation. |
 | `test_v2_schema_returns_200_on_success` | regression guard (the existing happy path) |
 
-#### E2E manual verification (post-deploy on `agnes-development`)
+#### E2E manual verification (post-deploy on `<your-dev-instance>`)
 
 For each of `/sample`, `/scan/estimate`, `/scan`, `/schema`:
 
@@ -506,18 +506,18 @@ PAT=...
 
 # Pre-deploy reference (current production behavior — bare 500 with no body for /sample/scan*)
 curl -k -i -H "Authorization: Bearer $PAT" \
-  https://agnes-development.groupondev.com/api/v2/sample/s1_session_landings?n=2
+  https://<your-agnes-host>/api/v2/sample/<bq_table_id>?n=2
 
 curl -k -i -X POST -H "Authorization: Bearer $PAT" -H "Content-Type: application/json" \
-  https://agnes-development.groupondev.com/api/v2/scan/estimate \
-  -d '{"table_id":"s1_session_landings","select":["event_date"],"where":"event_date = DATE \"2026-04-21\""}'
+  https://<your-agnes-host>/api/v2/scan/estimate \
+  -d '{"table_id":"<bq_table_id>","select":["event_date"],"where":"event_date = DATE \"2026-04-21\""}'
 
 curl -k -i -X POST -H "Authorization: Bearer $PAT" -H "Content-Type: application/json" \
-  https://agnes-development.groupondev.com/api/v2/scan \
-  -d '{"table_id":"s1_session_landings","select":["event_date"],"where":"event_date = DATE \"2026-04-21\"","limit":50}'
+  https://<your-agnes-host>/api/v2/scan \
+  -d '{"table_id":"<bq_table_id>","select":["event_date"],"where":"event_date = DATE \"2026-04-21\"","limit":50}'
 
 curl -k -i -H "Authorization: Bearer $PAT" \
-  https://agnes-development.groupondev.com/api/v2/schema/s1_session_landings
+  https://<your-agnes-host>/api/v2/schema/<bq_table_id>
 
 # Post-deploy, BEFORE fixing instance.yaml — expect:
 #   /sample, /scan, /scan/estimate: 502 + structured JSON body with

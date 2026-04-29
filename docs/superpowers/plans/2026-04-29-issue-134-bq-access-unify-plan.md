@@ -595,7 +595,7 @@ block only) with try/except for google.api_core exceptions, translating to
 HTTPException with a structured body shape: {error, message, details}.
 
 Fixes Pavel's report (#134) where these endpoints returned bare HTTP 500
-with no body when the SA on agnes-development hit cross-project Forbidden
+with no body when the SA on <your-dev-instance> hit cross-project Forbidden
 on serviceusage.services.use.
 
 Also fixes /sample's missing billing_project fallback (the bug 33a9964
@@ -2083,11 +2083,11 @@ Expected: top two commits are exactly the two intended for the PR (one fix(v2), 
 
 ---
 
-### Task 3.3: E2E verification on `agnes-development`
+### Task 3.3: E2E verification on `<your-dev-instance>`
 
-This task happens AFTER the PR is merged and deployed to `agnes-development`. Per the spec, this is the success criterion for closing #134 — without it, "fixed" is unverifiable.
+This task happens AFTER the PR is merged and deployed to `<your-dev-instance>`. Per the spec, this is the success criterion for closing #134 — without it, "fixed" is unverifiable.
 
-**Prerequisite:** `agnes-development` is running the PR's image; reproduce the PAT used in Pavel's report.
+**Prerequisite:** `<your-dev-instance>` is running the PR's image; reproduce the PAT used in Pavel's report.
 
 - [ ] **Step 1: Pre-config baseline (BEFORE setting `billing_project`)**
 
@@ -2095,18 +2095,18 @@ This task happens AFTER the PR is merged and deployed to `agnes-development`. Pe
 PAT=...
 
 curl -k -i -H "Authorization: Bearer $PAT" \
-  https://agnes-development.groupondev.com/api/v2/sample/s1_session_landings?n=2
+  https://<your-agnes-host>/api/v2/sample/<bq_table_id>?n=2
 
 curl -k -i -X POST -H "Authorization: Bearer $PAT" -H "Content-Type: application/json" \
-  https://agnes-development.groupondev.com/api/v2/scan/estimate \
-  -d '{"table_id":"s1_session_landings","select":["event_date"],"where":"event_date = DATE \"2026-04-21\""}'
+  https://<your-agnes-host>/api/v2/scan/estimate \
+  -d '{"table_id":"<bq_table_id>","select":["event_date"],"where":"event_date = DATE \"2026-04-21\""}'
 
 curl -k -i -X POST -H "Authorization: Bearer $PAT" -H "Content-Type: application/json" \
-  https://agnes-development.groupondev.com/api/v2/scan \
-  -d '{"table_id":"s1_session_landings","select":["event_date"],"where":"event_date = DATE \"2026-04-21\"","limit":50}'
+  https://<your-agnes-host>/api/v2/scan \
+  -d '{"table_id":"<bq_table_id>","select":["event_date"],"where":"event_date = DATE \"2026-04-21\"","limit":50}'
 
 curl -k -i -H "Authorization: Bearer $PAT" \
-  https://agnes-development.groupondev.com/api/v2/schema/s1_session_landings
+  https://<your-agnes-host>/api/v2/schema/<bq_table_id>
 ```
 
 Expected (per spec § E2E manual verification):
@@ -2120,7 +2120,7 @@ In `instance.yaml` on the VM:
 ```yaml
 data_source:
   bigquery:
-    project: prj-grp-dataview-prod-1ff9        # data project, unchanged
+    project: <your-data-project>        # data project, unchanged
     billing_project: <project-where-SA-can-bill>   # NEW
 ```
 
