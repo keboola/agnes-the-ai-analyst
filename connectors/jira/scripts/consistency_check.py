@@ -38,7 +38,6 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterator
 
 import httpx
 from dotenv import load_dotenv
@@ -46,17 +45,15 @@ from dotenv import load_dotenv
 # Try to import DuckDB for Parquet queries
 try:
     import duckdb
+
     HAS_DUCKDB = True
 except ImportError:
     HAS_DUCKDB = False
     logging.warning("DuckDB not available, Parquet validation will be skipped")
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='{"time": "%(asctime)s", "level": "%(levelname)s", "message": "%(message)s"}',
-    datefmt="%Y-%m-%dT%H:%M:%SZ",
-)
+from app.logging_config import setup_logging
+
+setup_logging(__name__)
 logger = logging.getLogger(__name__)
 
 
@@ -117,7 +114,7 @@ class JiraConsistencyChecker:
 
     # Thresholds for auto-backfill
     AUTO_FIX_THRESHOLD = 10  # Auto-fix if ≤10 issues missing
-    WARNING_THRESHOLD = 5    # Log WARNING if >5 issues
+    WARNING_THRESHOLD = 5  # Log WARNING if >5 issues
 
     # Jira API limits
     MAX_RESULTS_PER_PAGE = 100
@@ -158,7 +155,7 @@ class JiraConsistencyChecker:
         jira_project = os.environ.get("JIRA_PROJECT", "")
         project_clause = f'project = "{jira_project}" AND ' if jira_project else ""
         jql = (
-            f'{project_clause}'
+            f"{project_clause}"
             f'created >= "{cutoff.strftime("%Y-%m-%d")}" '
             f'AND created <= "{grace_cutoff.strftime("%Y-%m-%d %H:%M")}"'
         )
@@ -324,7 +321,7 @@ class JiraConsistencyChecker:
         self.stats["missing_in_parquet"] = missing_in_parquet
         self.stats["deleted_in_jira"] = deleted_in_jira
 
-        logger.info(f"Discrepancies detected:")
+        logger.info("Discrepancies detected:")
         logger.info(f"  Missing in JSON (webhook loss): {len(missing_in_json)}")
         logger.info(f"  Missing in Parquet (transform lag): {len(missing_in_parquet)}")
         logger.info(f"  Deleted in Jira (expected): {deleted_in_jira}")
@@ -376,7 +373,7 @@ class JiraConsistencyChecker:
                 return [], issue_keys
 
         except subprocess.TimeoutExpired:
-            logger.error(f"Backfill timed out after 10 minutes")
+            logger.error("Backfill timed out after 10 minutes")
             return [], issue_keys
         except Exception as e:
             logger.error(f"Error running backfill: {e}")
@@ -408,8 +405,10 @@ class JiraConsistencyChecker:
                     "-m",
                     "connectors.jira.incremental_transform",
                     issue_key,
-                    "--raw-dir", str(self.config.raw_dir),
-                    "--output-dir", str(self.config.parquet_dir),
+                    "--raw-dir",
+                    str(self.config.raw_dir),
+                    "--output-dir",
+                    str(self.config.parquet_dir),
                 ]
 
                 result = subprocess.run(
@@ -469,12 +468,12 @@ class JiraConsistencyChecker:
             Statistics dict with results
         """
         start_time = time.time()
-        logger.info("="*60)
+        logger.info("=" * 60)
         logger.info("Starting Jira consistency check")
         logger.info(f"Max age: {max_age_days} days")
         logger.info(f"Auto-fix: {auto_fix}")
         logger.info(f"Dry run: {dry_run}")
-        logger.info("="*60)
+        logger.info("=" * 60)
 
         # Fetch data from all three sources
         try:
@@ -493,10 +492,7 @@ class JiraConsistencyChecker:
 
         # Determine if auto-fix should run
         should_fix = (
-            auto_fix
-            and not dry_run
-            and len(missing_in_json) > 0
-            and len(missing_in_json) <= self.AUTO_FIX_THRESHOLD
+            auto_fix and not dry_run and len(missing_in_json) > 0 and len(missing_in_json) <= self.AUTO_FIX_THRESHOLD
         )
 
         # Apply fixes if needed
@@ -574,7 +570,7 @@ class JiraConsistencyChecker:
             logger.error(f"Failed to save report: {e}")
 
         # Log summary
-        logger.info("="*60)
+        logger.info("=" * 60)
         logger.info("Consistency check completed")
         logger.info(f"Status: {status}")
         logger.info(f"Alert level: {alert_level}")
@@ -585,7 +581,7 @@ class JiraConsistencyChecker:
             logger.info(f"Auto-backfilled: {len(self.stats['auto_backfilled'])}")
         if self.stats["backfill_failed"]:
             logger.error(f"Backfill failed: {len(self.stats['backfill_failed'])}")
-        logger.info("="*60)
+        logger.info("=" * 60)
 
         return report
 

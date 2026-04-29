@@ -9,10 +9,11 @@ Idempotent -- safe to run multiple times. Uses UPSERT to avoid duplicates.
 import json
 import logging
 import os
-import sys
 from pathlib import Path
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+from app.logging_config import setup_logging
+
+setup_logging(__name__)
 logger = logging.getLogger(__name__)
 
 
@@ -33,7 +34,7 @@ def migrate_all(data_dir: str = None) -> dict:
     from src.db import get_system_db
     from src.repositories.sync_state import SyncStateRepository
     from src.repositories.knowledge import KnowledgeRepository
-    from src.repositories.notifications import TelegramRepository, PendingCodeRepository
+    from src.repositories.notifications import TelegramRepository
     from src.repositories.users import UserRepository
     from src.repositories.table_registry import TableRegistryRepository
     from src.repositories.profiles import ProfileRepository
@@ -122,6 +123,7 @@ def migrate_all(data_dir: str = None) -> dict:
             if existing:
                 continue
             import uuid
+
             user_repo.create(
                 id=str(uuid.uuid4()),
                 email=email,
@@ -183,6 +185,7 @@ def migrate_all(data_dir: str = None) -> dict:
 
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser(description="Migrate JSON state to DuckDB")
     parser.add_argument("--data-dir", default=None)
     args = parser.parse_args()
