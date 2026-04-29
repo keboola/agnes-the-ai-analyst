@@ -811,6 +811,9 @@ class UpdateTableRequest(BaseModel):
     def _coerce_primary_key(cls, v):
         return _normalize_primary_key(v)
 
+    # Duplicated from RegisterTableRequest — Pydantic v2 validators don't
+    # inherit cleanly across unrelated BaseModel classes; a shared mixin
+    # would be overkill for two fields.
     @field_validator("sync_schedule", mode="before")
     @classmethod
     def _validate_sync_schedule(cls, v):

@@ -17,6 +17,9 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pydantic import ValidationError
+
+from app.api.admin import RegisterTableRequest, UpdateTableRequest
 
 
 def _auth(token):
@@ -2045,10 +2048,6 @@ class TestRegisterTablePrecheckHandlerIsSync:
 
 
 # --- sync_schedule format validation (#79) ----------------------------------
-
-from pydantic import ValidationError
-
-from app.api.admin import RegisterTableRequest, UpdateTableRequest
 
 
 @pytest.mark.parametrize("schedule", [
