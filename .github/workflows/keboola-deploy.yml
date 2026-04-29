@@ -37,6 +37,9 @@ jobs:
       image_tag: ${{ steps.meta.outputs.tag }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Resolve tag + version
         id: meta
@@ -48,12 +51,12 @@ jobs:
             keboola-deploy-*) ;;
             *) echo "::error::Tag $TAG does not match keboola-deploy-* — refusing to build"; exit 1 ;;
           esac
-          # Package version: source of truth is pyproject.toml (same convention as
-          # release.yml). The git tag is the *deploy identifier*, package version
-          # is the *product identifier*.
-          PKG_VERSION=$(grep '^version' pyproject.toml | head -1 | sed -E 's/^version\s*=\s*"([^"]+)".*/\1/')
-          if [ -z "$PKG_VERSION" ]; then
-            echo "::error::Could not extract version from pyproject.toml"; exit 1
+          # Package version: source of truth is pyproject.toml + git tags via setuptools_scm.
+          python3 -m pip install --quiet setuptools_scm
+          PKG_VERSION=$(python3 -c "from setuptools_scm import get_version; print(get_version(root='.'))")
+          if [ -z "$PKG_VERSION" ] || [ "$PKG_VERSION" = "0.0.0+unknown" ]; then
+            echo "::error::setuptools_scm could not resolve a version"
+            exit 1
           fi
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "pkg_version=${PKG_VERSION}" >> "$GITHUB_OUTPUT"

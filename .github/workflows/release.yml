@@ -146,17 +146,16 @@ jobs:
           echo "Version: ${VERSION}"
           echo "Versioned tag: ${TAG}"
 
-      - name: Extract package version from pyproject.toml
+      - name: Resolve package version from git
         id: pkgver
         run: |
-          # Single source of truth for the product version: the
-          # pyproject.toml [project] table. The CalVer "${YEAR_MONTH}.${N}"
-          # claimed above stays as the git / image tag (release identity),
-          # but AGNES_VERSION — what /api/version, /cli/latest, and `da
-          # --version` all expose — tracks the package version.
-          VERSION=$(grep '^version' pyproject.toml | head -1 | sed -E 's/^version\s*=\s*"([^"]+)".*/\1/')
-          if [ -z "$VERSION" ]; then
-            echo "::error::Could not extract version from pyproject.toml"
+          # Source of truth: git tags via setuptools_scm. Read it the same
+          # way the package itself does at runtime so the build arg matches
+          # what `da --version` and `/api/version` will report.
+          python3 -m pip install --quiet setuptools_scm
+          VERSION=$(python3 -c "from setuptools_scm import get_version; print(get_version(root='.'))")
+          if [ -z "$VERSION" ] || [ "$VERSION" = "0.0.0+unknown" ]; then
+            echo "::error::setuptools_scm could not resolve a version (shallow checkout? missing v* tag?)"
             exit 1
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
