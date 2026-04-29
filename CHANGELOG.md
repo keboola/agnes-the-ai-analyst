@@ -27,9 +27,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   and CLI scripts under `scripts/` and `connectors/jira/scripts/` now call
   `setup_logging(__name__)` instead of inline `basicConfig`. Library modules no
   longer configure root logger at import time.
-- Telegram bot no longer writes to `/data/notifications/bot.log`. All bot logs
-  go to stdout, captured by Docker. Use `docker compose logs -f notify-bot` to
-  read them.
+- **BREAKING** Telegram bot no longer writes to `/data/notifications/bot.log`.
+  All bot logs go to stdout, captured by Docker. Use
+  `docker compose logs -f notify-bot` to read them. Operators tail-ing the file
+  must update their runbooks; see `dev_docs/telegram_bot.md` for the new
+  procedure (including `journalctl` fallback for non-Docker hosts).
 - Toolbar middleware is mounted INSIDE the GZip middleware (innermost on
   response) so the toolbar can decode HTML before compression. RequestIdMiddleware
   remains outermost; production behavior (DEBUG unset) is byte-identical to
