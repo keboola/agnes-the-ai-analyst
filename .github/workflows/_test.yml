@@ -1,0 +1,60 @@
+# .github/workflows/_test.yml
+name: _Test (reusable)
+
+# Single source of truth for the test job. Called from ci.yml,
+# release.yml, and keboola-deploy.yml so the install/lint/typecheck/pytest
+# recipe lives in exactly one place.
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        type: string
+        default: "3.13"
+      run-lint:
+        type: boolean
+        default: true
+      run-typecheck:
+        type: boolean
+        default: true
+      pytest-args:
+        type: string
+        default: "-v --tb=short -n auto"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0          # setuptools_scm needs full history
+          fetch-tags: true
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install dependencies
+        run: uv pip install --system ".[dev]"
+
+      - name: Lint with ruff
+        if: inputs.run-lint
+        run: |
+          pip install ruff
+          ruff check . || true
+        continue-on-error: true
+
+      - name: Type check with mypy
+        if: inputs.run-typecheck
+        run: |
+          pip install mypy
+          mypy src/ app/ cli/ connectors/ --ignore-missing-imports --no-error-summary || true
+        continue-on-error: true
+
+      - name: Run tests
+        run: pytest tests/ ${{ inputs.pytest-args }}
+        env:
+          TESTING: "1"
