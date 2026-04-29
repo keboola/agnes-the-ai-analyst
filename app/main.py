@@ -503,16 +503,51 @@ def create_app() -> FastAPI:
         accept = request.headers.get("accept", "")
         return "text/html" in accept or "*/*" in accept or accept == ""
 
-    def _render_error(request, code: int, message: str, traceback_str: str | None = None):
-        from app.web.router import templates as _web_templates
+    async def _resolve_error_user(request) -> dict | None:
+        """Best-effort user resolution for the error page header.
+
+        Mirrors ``app.auth.dependencies.get_optional_user`` precedence
+        (LOCAL_DEV_MODE → seeded dev user, else verify JWT from
+        Authorization header or ``access_token`` cookie). Returns None on
+        any failure — error page still renders, just without the user menu.
+        """
+        try:
+            from app.auth.dependencies import get_current_user
+            from src.db import get_system_db
+
+            conn = get_system_db()
+            try:
+                authorization = request.headers.get("authorization")
+                return await get_current_user(
+                    request=request, authorization=authorization, conn=conn
+                )
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        except Exception:
+            return None
+
+    async def _render_error(request, code: int, message: str, traceback_str: str | None = None):
+        """Render error.html with the same chrome (header, theme, static_url)
+        as any other web route. Reuses ``_build_context`` so the page picks up
+        ConfigProxy, theme overrides, session user, and ``static_url`` /
+        ``url_for`` helpers — without these, base.html + _app_header.html
+        silently render empty header/stylesheets."""
+        from app.web.router import templates as _web_templates, _build_context
+
         title = _ERROR_TITLES.get(code, "Error")
-        ctx = {
-            "code": code,
-            "title": title,
-            "message": message,
-            "path": request.url.path,
-            "traceback": traceback_str,
-        }
+        user = await _resolve_error_user(request)
+        ctx = _build_context(
+            request,
+            user=user,
+            code=code,
+            title=title,
+            message=message,
+            path=request.url.path,
+            traceback=traceback_str,
+        )
         return _web_templates.TemplateResponse(request, "error.html", ctx, status_code=code)
 
     @app.exception_handler(StarletteHTTPException)
@@ -539,7 +574,7 @@ def create_app() -> FastAPI:
             return RedirectResponse(url=f"/login?next={next_param}", status_code=302)
 
         if not path_is_api and _wants_html(request):
-            return _render_error(request, exc.status_code, exc.detail or "")
+            return await _render_error(request, exc.status_code, exc.detail or "")
 
         from fastapi.exception_handlers import http_exception_handler
         return await http_exception_handler(request, exc)
@@ -556,7 +591,7 @@ def create_app() -> FastAPI:
         tb_str = _tb.format_exc() if debug_on else None
 
         if not path_is_api and _wants_html(request):
-            return _render_error(request, 500, str(exc) or "Internal server error", tb_str)
+            return await _render_error(request, 500, str(exc) or "Internal server error", tb_str)
 
         from fastapi.responses import JSONResponse
         body = {"detail": "Internal server error"}
