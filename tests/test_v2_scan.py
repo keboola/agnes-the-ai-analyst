@@ -1,8 +1,10 @@
 # tests/test_v2_scan.py
+import asyncio
 import importlib
 from unittest.mock import MagicMock
 import pyarrow as pa
 import pytest
+from fastapi import HTTPException
 
 from app.api.v2_arrow import parse_ipc_bytes
 
@@ -231,3 +233,142 @@ class TestOrderByValidation:
             v2_scan.run_scan(conn, user, req, project_id="proj", quota=tracker)
         finally:
             conn.close()
+
+
+class TestBqAccessErrors:
+    """Issue #134: structured 502/400 translation on BQ errors in scan path."""
+
+    def test_scan_returns_502_on_bq_forbidden_serviceusage(self, reload_db, monkeypatch):
+        """When _run_bq_scan raises Forbidden mentioning serviceusage, the
+        endpoint must translate to HTTP 502 with `cross_project_forbidden`
+        and a hint that mentions billing_project."""
+        from app.api import v2_scan
+        from google.api_core.exceptions import Forbidden
+
+        def _raise(project, sql):
+            raise Forbidden("Permission denied: serviceusage.services.use on project foo")
+
+        monkeypatch.setattr(v2_scan, "_run_bq_scan", _raise)
+        monkeypatch.setattr(
+            v2_scan, "_resolve_schema",
+            lambda *a, **kw: {"event_date": "DATE", "country_code": "STRING"},
+        )
+        # get_value patch needed so _build_bq_sql gets a non-empty project
+        # (validate_quoted_identifier rejects empty identifiers first).
+        cfg = {
+            ("data_source", "bigquery", "project"): "data-proj",
+            ("data_source", "bigquery", "billing_project"): "billing-proj",
+        }
+        monkeypatch.setattr(
+            "app.api.v2_scan.get_value",
+            lambda *keys, **kw: cfg.get(keys, kw.get("default", "")),
+        )
+
+        conn = reload_db.get_system_db()
+        try:
+            _seed(conn)
+            user = {"role": "admin", "email": "a@x.com"}
+            req = {
+                "table_id": "bq_view",
+                "select": ["event_date", "country_code"],
+                "where": "event_date > DATE '2026-01-01'",
+                "limit": 1000,
+            }
+            with pytest.raises(HTTPException) as exc_info:
+                asyncio.run(v2_scan.scan_endpoint(raw=req, user=user, conn=conn))
+        finally:
+            conn.close()
+
+        assert exc_info.value.status_code == 502
+        detail = exc_info.value.detail
+        assert isinstance(detail, dict)
+        assert detail["error"] == "cross_project_forbidden"
+        assert "hint" in detail["details"]
+        assert "billing_project" in detail["details"]["hint"].lower()
+
+    def test_scan_returns_502_on_bq_forbidden_non_serviceusage(self, reload_db, monkeypatch):
+        """A Forbidden that is NOT about serviceusage (e.g. dataset-level ACL)
+        still becomes a 502, but with `bq_forbidden` and an empty hint."""
+        from app.api import v2_scan
+        from google.api_core.exceptions import Forbidden
+
+        def _raise(project, sql):
+            raise Forbidden("Access Denied: Table foo.bar.baz: User does not have permission")
+
+        monkeypatch.setattr(v2_scan, "_run_bq_scan", _raise)
+        monkeypatch.setattr(
+            v2_scan, "_resolve_schema",
+            lambda *a, **kw: {"event_date": "DATE", "country_code": "STRING"},
+        )
+        # get_value patch needed so _build_bq_sql gets a non-empty project
+        # (validate_quoted_identifier rejects empty identifiers first).
+        cfg = {
+            ("data_source", "bigquery", "project"): "data-proj",
+            ("data_source", "bigquery", "billing_project"): "billing-proj",
+        }
+        monkeypatch.setattr(
+            "app.api.v2_scan.get_value",
+            lambda *keys, **kw: cfg.get(keys, kw.get("default", "")),
+        )
+
+        conn = reload_db.get_system_db()
+        try:
+            _seed(conn)
+            user = {"role": "admin", "email": "a@x.com"}
+            req = {
+                "table_id": "bq_view",
+                "select": ["event_date"],
+                "limit": 1,
+            }
+            with pytest.raises(HTTPException) as exc_info:
+                asyncio.run(v2_scan.scan_endpoint(raw=req, user=user, conn=conn))
+        finally:
+            conn.close()
+
+        assert exc_info.value.status_code == 502
+        assert exc_info.value.detail["error"] == "bq_forbidden"
+
+    def test_scan_returns_400_on_bq_bad_request(self, reload_db, monkeypatch):
+        """`/scan` SQL is user-derived (built from req.select/where/order_by),
+        so a BQ BadRequest must surface as HTTP 400 with `bq_bad_request`."""
+        from app.api import v2_scan
+        from google.api_core.exceptions import BadRequest
+
+        def _raise(project, sql):
+            raise BadRequest("Syntax error: unexpected token at line 1, column 5")
+
+        monkeypatch.setattr(v2_scan, "_run_bq_scan", _raise)
+        monkeypatch.setattr(
+            v2_scan, "_resolve_schema",
+            lambda *a, **kw: {"event_date": "DATE", "country_code": "STRING"},
+        )
+        # get_value patch needed so _build_bq_sql gets a non-empty project
+        # (validate_quoted_identifier rejects empty identifiers first).
+        cfg = {
+            ("data_source", "bigquery", "project"): "data-proj",
+            ("data_source", "bigquery", "billing_project"): "billing-proj",
+        }
+        monkeypatch.setattr(
+            "app.api.v2_scan.get_value",
+            lambda *keys, **kw: cfg.get(keys, kw.get("default", "")),
+        )
+
+        conn = reload_db.get_system_db()
+        try:
+            _seed(conn)
+            user = {"role": "admin", "email": "a@x.com"}
+            req = {
+                "table_id": "bq_view",
+                "select": ["event_date"],
+                "limit": 1,
+            }
+            with pytest.raises(HTTPException) as exc_info:
+                asyncio.run(v2_scan.scan_endpoint(raw=req, user=user, conn=conn))
+        finally:
+            conn.close()
+
+        assert exc_info.value.status_code == 400
+        detail = exc_info.value.detail
+        assert isinstance(detail, dict)
+        assert detail["error"] == "bq_bad_request"
+        assert "Syntax error" in detail["message"]
