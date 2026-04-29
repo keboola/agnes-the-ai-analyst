@@ -808,3 +808,17 @@ async def profile_page(
         is_admin=is_user_admin(user["id"], conn),
     )
     return templates.TemplateResponse(request, "profile.html", ctx)
+
+
+@router.get("/{full_path:path}", response_class=HTMLResponse, include_in_schema=False)
+async def _catch_all_404(request: Request, full_path: str):
+    """Catch-all 404 for unmatched routes.
+
+    Provides a matched route so fastapi-debug-toolbar can inject its panels —
+    the toolbar bails out of injection when ``matched_route(request)`` is None
+    (the case on truly unrouted paths). The actual rendering is delegated to
+    ``app.main._html_auth_redirect_handler`` via the raised ``HTTPException``,
+    which routes API paths to JSON and HTML paths to the ``error.html``
+    template.
+    """
+    raise HTTPException(status_code=404, detail="Page not found")

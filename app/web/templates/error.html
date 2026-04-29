@@ -1,13 +1,112 @@
 {% extends "base.html" %}
 
-{% block title %}Error {{ code }} - Data Analyst Portal{% endblock %}
+{% block title %}Error {{ code }} — Data Analyst Portal{% endblock %}
 
 {% block content %}
 <div class="error-container">
     <div class="error-card">
-        <h2>Error {{ code }}</h2>
-        <p>{{ error }}</p>
-        <a href="{{ url_for('index') }}" class="btn btn-primary">Go Home</a>
+        <div class="error-code">{{ code }}</div>
+        <h2 class="error-title">{{ title }}</h2>
+        {% if message %}
+        <p class="error-message">{{ message }}</p>
+        {% endif %}
+        {% if path %}
+        <p class="error-path">
+            <span class="error-path-label">Path:</span>
+            <code>{{ path }}</code>
+        </p>
+        {% endif %}
+        {% if traceback %}
+        <details class="error-traceback">
+            <summary>Traceback (DEBUG=1)</summary>
+            <pre>{{ traceback }}</pre>
+        </details>
+        {% endif %}
+        <div class="error-actions">
+            <a href="{{ url_for('index') }}" class="btn btn-primary">Go home</a>
+            <a href="javascript:history.back()" class="btn btn-secondary">Back</a>
+        </div>
     </div>
 </div>
+
+<style>
+.error-container {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 60vh;
+    padding: 2rem 1rem;
+}
+.error-card {
+    max-width: 36rem;
+    width: 100%;
+    padding: 2.5rem 2rem;
+    background: var(--card-bg, #fff);
+    border: 1px solid var(--border-color, #e0e0e0);
+    border-radius: 12px;
+    box-shadow: 0 4px 12px rgba(0,0,0,.05);
+    text-align: center;
+}
+.error-code {
+    font-size: 4rem;
+    font-weight: 700;
+    line-height: 1;
+    color: var(--accent-color, #d04a4a);
+    margin-bottom: .5rem;
+    letter-spacing: -.02em;
+}
+.error-title {
+    margin: 0 0 1rem;
+    font-size: 1.5rem;
+    font-weight: 600;
+}
+.error-message {
+    color: var(--text-muted, #555);
+    margin: 0 0 1.25rem;
+    line-height: 1.5;
+}
+.error-path {
+    margin: 0 0 1.5rem;
+    font-size: .9rem;
+}
+.error-path-label {
+    color: var(--text-muted, #777);
+    margin-right: .25rem;
+}
+.error-path code {
+    background: var(--code-bg, #f5f5f5);
+    padding: .15rem .4rem;
+    border-radius: 4px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: .85em;
+}
+.error-traceback {
+    text-align: left;
+    margin: 0 0 1.5rem;
+    padding: .75rem 1rem;
+    background: var(--code-bg, #f5f5f5);
+    border-radius: 6px;
+    border: 1px solid var(--border-color, #e0e0e0);
+}
+.error-traceback summary {
+    cursor: pointer;
+    font-size: .85rem;
+    color: var(--text-muted, #555);
+    user-select: none;
+}
+.error-traceback pre {
+    margin: .75rem 0 0;
+    font-size: .75rem;
+    line-height: 1.4;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.error-actions {
+    display: flex;
+    gap: .75rem;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+</style>
 {% endblock %}
