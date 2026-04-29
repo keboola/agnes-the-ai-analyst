@@ -66,6 +66,36 @@ class TestMemoryCreate:
         )
         assert resp.status_code == 401
 
+    def test_create_invalid_domain_returns_400(self, seeded_app):
+        """POST validates ``domain`` against VALID_DOMAINS, mirroring PATCH —
+        otherwise an item lands in the DB with a domain it can't be PATCHed
+        to (PR #126 review). Empty / missing domain stays valid."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/memory",
+            json={
+                "title": "Bad domain",
+                "content": "x",
+                "category": "engineering",
+                "domain": "totally_made_up_domain",
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400
+        # Sanity: a valid domain is still accepted.
+        ok = c.post(
+            "/api/memory",
+            json={
+                "title": "Good domain",
+                "content": "x",
+                "category": "engineering",
+                "domain": "finance",
+            },
+            headers=_auth(token),
+        )
+        assert ok.status_code == 201
+
 
 class TestMemoryList:
     def _create_item(self, c, token, title="Test Item", category="engineering"):
@@ -1319,6 +1349,53 @@ class TestTreeEndpoint:
         assert b in ids_in_groups
         assert c_id not in ids_in_groups
 
+    def test_tree_audience_chip_includes_null_when_filtering_all(self, seeded_app):
+        """``audience='all'`` chip must include NULL-audience items, matching
+        the SQL filter / count_by_audience COALESCE / _bucket_key behavior.
+        Pre-fix the in-memory chip filter compared raw audience to 'all' and
+        dropped NULLs. PR #126 review."""
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        self._seed_item_direct(
+            conn, "tree_aud_null_chip", "Null aud item",
+            audience=None, domain="data",
+        )
+        self._seed_item_direct(
+            conn, "tree_aud_all_chip", "All aud item",
+            audience="all", domain="data",
+        )
+        self._seed_item_direct(
+            conn, "tree_aud_fin_chip", "Finance aud item",
+            audience="group:finance", domain="data",
+        )
+        conn.close()
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+
+        # audience=all chip → both NULL and explicit-'all' surface; group:* drops out.
+        resp = c.get(
+            "/api/memory/tree?axis=domain&audience=all",
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+        ids_all = {item["id"] for g in resp.json()["groups"] for item in g.get("items", [])}
+        assert "tree_aud_null_chip" in ids_all
+        assert "tree_aud_all_chip" in ids_all
+        assert "tree_aud_fin_chip" not in ids_all
+
+        # audience=group:finance chip → NULL must NOT slip into a group bucket.
+        resp = c.get(
+            "/api/memory/tree?axis=domain&audience=group:finance",
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+        ids_fin = {item["id"] for g in resp.json()["groups"] for item in g.get("items", [])}
+        assert "tree_aud_null_chip" not in ids_fin
+        assert "tree_aud_all_chip" not in ids_fin
+        assert "tree_aud_fin_chip" in ids_fin
+
     def test_tree_chip_filter_composition(self, seeded_app):
         """``status_filter`` + ``source_type`` apply together — only items
         matching both end up in the response."""
@@ -1414,6 +1491,50 @@ class TestPatchAndBulkUpdate:
         assert set(body["updated"]) == {a, b}
         assert "missing_id" in body["not_found"]
 
+    def test_bulk_update_rejects_governance_fields(self, seeded_app):
+        """Governance-sensitive fields (status / sensitivity / is_personal /
+        confidence) must not slip through bulk-update — those have dedicated
+        governance endpoints with their own audit rows. PR #126 review."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        a = self._create(c, token, title="gov a")
+
+        # status: clear blocker the review called out — would silently flip
+        # an item to mandatory bypassing /admin/mandate.
+        resp = c.post(
+            "/api/memory/admin/bulk-update",
+            json={"item_ids": [a], "updates": {"status": "mandatory"}},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400
+        assert "status" in resp.json()["detail"]
+
+        # is_personal: same blast radius — would bypass /{id}/personal's
+        # contributor-only check.
+        resp = c.post(
+            "/api/memory/admin/bulk-update",
+            json={"item_ids": [a], "updates": {"is_personal": False}},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400
+
+        # sensitivity / confidence: same allowlist gate.
+        resp = c.post(
+            "/api/memory/admin/bulk-update",
+            json={"item_ids": [a], "updates": {"sensitivity": "secret"}},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400
+
+        # Confirm a clean call still works post-fix.
+        ok = c.post(
+            "/api/memory/admin/bulk-update",
+            json={"item_ids": [a], "updates": {"category": "engineering"}},
+            headers=_auth(token),
+        )
+        assert ok.status_code == 200, ok.text
+        assert a in ok.json()["updated"]
+
 
 class TestStatsExtensionsAPI:
     def test_stats_includes_by_tag_and_by_audience(self, seeded_app):
@@ -1465,3 +1586,62 @@ class TestAuditPrefixBackCompat:
         audit = c.get("/api/memory/admin/audit", headers=_auth(token))
         actions = {e.get("action") for e in audit.json()["entries"]}
         assert "corporate_memory.approve" in actions
+
+    def test_audit_pagination_returns_distinct_pages(self, seeded_app):
+        """page=2 must return rows distinct from page=1. Pre-fix the SQL
+        ignored page entirely and returned page 1 for every page param.
+        PR #126 review."""
+        from src.db import get_system_db
+        from src.repositories.audit import AuditRepository
+
+        conn = get_system_db()
+        audit = AuditRepository(conn)
+        # Seed enough rows that per_page=2 spans at least three pages.
+        for i in range(6):
+            audit.log(
+                user_id=f"pagetest{i}@x",
+                action="corporate_memory.approve",
+                resource=f"audit_page_resource_{i}",
+                params={"i": i},
+            )
+        conn.close()
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+
+        page1 = c.get("/api/memory/admin/audit?page=1&per_page=2", headers=_auth(token))
+        page2 = c.get("/api/memory/admin/audit?page=2&per_page=2", headers=_auth(token))
+        assert page1.status_code == 200
+        assert page2.status_code == 200
+
+        ids_page1 = [
+            (e.get("resource"), e.get("timestamp")) for e in page1.json()["entries"]
+        ]
+        ids_page2 = [
+            (e.get("resource"), e.get("timestamp")) for e in page2.json()["entries"]
+        ]
+        assert len(ids_page1) == 2
+        assert len(ids_page2) == 2
+        # The two pages must not overlap row-for-row (offset is honored).
+        assert set(ids_page1).isdisjoint(set(ids_page2)), (
+            f"page 1 and page 2 returned the same rows: {ids_page1} vs {ids_page2}"
+        )
+
+        # And the same with the action filter branch — which had the same bug.
+        page1_f = c.get(
+            "/api/memory/admin/audit?action=approve&page=1&per_page=2",
+            headers=_auth(token),
+        )
+        page2_f = c.get(
+            "/api/memory/admin/audit?action=approve&page=2&per_page=2",
+            headers=_auth(token),
+        )
+        assert page1_f.status_code == 200
+        assert page2_f.status_code == 200
+        ids_page1_f = [
+            (e.get("resource"), e.get("timestamp")) for e in page1_f.json()["entries"]
+        ]
+        ids_page2_f = [
+            (e.get("resource"), e.get("timestamp")) for e in page2_f.json()["entries"]
+        ]
+        assert set(ids_page1_f).isdisjoint(set(ids_page2_f))

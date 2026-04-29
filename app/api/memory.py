@@ -26,6 +26,19 @@ BUNDLE_TOKEN_BUDGET = 6000
 _CHARS_PER_TOKEN = 4
 VALID_DOMAINS = ["finance", "engineering", "product", "data", "operations", "infrastructure"]
 
+# API-layer allowlist for ``POST /api/memory/admin/bulk-update``. The repo's
+# ``_UPDATABLE_FIELDS`` is intentionally broader (``status``, ``sensitivity``,
+# ``is_personal``, ``confidence``, valid_from/until, supersedes, etc.) so the
+# narrow per-item ``update`` path can still touch them; bulk-edit must NOT,
+# because changing status / personal-flag / sensitivity in bulk bypasses the
+# proper governance flow (``/admin/mandate``, ``/admin/revoke``,
+# ``/{id}/personal``) and its dedicated audit rows. Callers that need those
+# fields in bulk should use the per-item endpoints. See PR #126 review.
+_BULK_UPDATE_ALLOWED = frozenset({
+    "category", "domain", "tags", "tags_add", "tags_remove",
+    "audience", "title", "content",
+})
+
 
 def _is_privileged_viewer(user: dict, conn: duckdb.DuckDBPyConnection) -> bool:
     """Admins (members of the Admin system group, per RBAC v13) are the
@@ -346,6 +359,15 @@ async def create_knowledge(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
+    # Mirror the validation already enforced by PATCH /admin/{id} and bulk-update
+    # so an item can't be created with a domain it can't be patched to. Empty /
+    # missing domain is fine — only reject non-empty values outside the allowlist.
+    # See PR #126 review.
+    if request.domain and request.domain not in VALID_DOMAINS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"domain must be one of: {VALID_DOMAINS}",
+        )
     repo = KnowledgeRepository(conn)
     item_id = str(uuid.uuid4())
 
@@ -655,21 +677,25 @@ async def admin_audit(
     they are write-once); new rows use the ``corporate_memory.*`` namespace.
     See issue #62 decision E.
     """
+    # Pagination: page is 1-indexed; offset must apply to BOTH branches so the
+    # UI's per-page navigation actually returns subsequent rows. Pre-fix, both
+    # SQL paths had LIMIT only and silently returned page 1 for every page.
+    offset = (max(page, 1) - 1) * per_page
     if action:
         # Match the action across both prefixes so the per-action filter still
         # surfaces historical rows.
         rows = conn.execute(
             """SELECT * FROM audit_log
                 WHERE action IN (?, ?)
-                ORDER BY timestamp DESC LIMIT ?""",
-            [f"corporate_memory.{action}", f"km_{action}", per_page],
+                ORDER BY timestamp DESC LIMIT ? OFFSET ?""",
+            [f"corporate_memory.{action}", f"km_{action}", per_page, offset],
         ).fetchall()
     else:
         rows = conn.execute(
             """SELECT * FROM audit_log
                 WHERE action LIKE 'corporate_memory.%' OR action LIKE 'km_%'
-                ORDER BY timestamp DESC LIMIT ?""",
-            [per_page],
+                ORDER BY timestamp DESC LIMIT ? OFFSET ?""",
+            [per_page, offset],
         ).fetchall()
     if rows:
         columns = [desc[0] for desc in conn.description]
@@ -931,6 +957,19 @@ async def admin_bulk_update(
     """
     repo = KnowledgeRepository(conn)
     updates = dict(request.updates or {})
+    # Reject governance-sensitive fields BEFORE hitting the repo. _UPDATABLE_FIELDS
+    # in the repo is broad on purpose; this endpoint is the narrow path. Callers
+    # that need to flip status/sensitivity/is_personal must use the dedicated
+    # governance endpoints so the right audit row is written. See PR #126 review.
+    disallowed = sorted(k for k in updates.keys() if k not in _BULK_UPDATE_ALLOWED)
+    if disallowed:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"updates contains disallowed field(s): {disallowed}. "
+                f"Allowed: {sorted(_BULK_UPDATE_ALLOWED)}"
+            ),
+        )
     if "domain" in updates and updates["domain"] not in VALID_DOMAINS:
         raise HTTPException(
             status_code=400,
@@ -941,9 +980,8 @@ async def admin_bulk_update(
 
     statuses = repo.bulk_update(request.item_ids, updates)
 
-    audited_fields = sorted(k for k in updates.keys()
-                             if k in {"category", "domain", "tags", "tags_add",
-                                       "tags_remove", "audience", "title", "content"})
+    # Allowlist already enforced above, so every key in updates is auditable.
+    audited_fields = sorted(updates.keys())
     updated: List[str] = []
     not_found: List[str] = []
     errors: dict = {}
@@ -999,8 +1037,15 @@ def _matches_chip_filters(
         return False
     if source_type and item.get("source_type") != source_type:
         return False
-    if audience and item.get("audience") != audience:
-        return False
+    if audience:
+        # Treat NULL audience as 'all' so chip-filter behavior matches the
+        # SQL audience filter, ``count_by_audience`` (COALESCE→'all'), and the
+        # tree's ``_bucket_key`` (NULL → 'all'). Without this coalesce,
+        # NULL-audience items disappear from the ``audience=all`` chip even
+        # though the rest of the system treats them as visible-to-everyone.
+        item_audience = item.get("audience") or "all"
+        if item_audience != audience:
+            return False
     if has_duplicate_ids is not None and item.get("id") not in has_duplicate_ids:
         return False
     if q:
