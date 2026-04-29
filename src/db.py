@@ -288,15 +288,15 @@ CREATE TABLE IF NOT EXISTS user_groups (
 -- its own rows — Google sync's nightly DELETE+INSERT does NOT clobber
 -- admin-added members, and admin UI deletions don't fight the sync loop.
 --
--- v14: group_id now FK→user_groups(id). DuckDB FK enforcement blocks the
--- parent DELETE while children exist, so the application must delete
--- members + resource_grants BEFORE the user_groups row (see
--- app/api/access.py:delete_group). DuckDB does NOT support ON DELETE
--- CASCADE, so we rely on explicit transactional cleanup at the call site
--- and let the FK serve as a defense-in-depth invariant.
+-- v14 added group_id FK→user_groups(id), but v15 attach_external_id needs
+-- to UPDATE user_groups rows that have child rows here, which DuckDB
+-- blocks even when the UPDATE doesn't change the referenced PK column.
+-- For donotmerge-combined-testing the FKs are dropped — the application
+-- continues to do explicit cascade cleanup at call sites
+-- (app/api/access.py:delete_group, _v14_to_v15_finalize).
 CREATE TABLE IF NOT EXISTS user_group_members (
     user_id   VARCHAR NOT NULL,
-    group_id  VARCHAR NOT NULL REFERENCES user_groups(id),
+    group_id  VARCHAR NOT NULL,
     source    VARCHAR NOT NULL,  -- 'admin' | 'google_sync' | 'system_seed'
     added_at  TIMESTAMP DEFAULT current_timestamp,
     added_by  VARCHAR,
@@ -308,11 +308,11 @@ CREATE TABLE IF NOT EXISTS user_group_members (
 -- app.resource_types.ResourceType enum (e.g. 'marketplace_plugin').
 -- resource_id is a path string whose format is owned by the module that
 -- registered the resource type (e.g. '<marketplace_slug>/<plugin_name>').
---
--- v14: group_id FK→user_groups(id), same rationale as user_group_members.
+-- v14 added the FK; v15 (donotmerge-combined-testing) drops it for the
+-- same reason as user_group_members above.
 CREATE TABLE IF NOT EXISTS resource_grants (
     id            VARCHAR PRIMARY KEY,
-    group_id      VARCHAR NOT NULL REFERENCES user_groups(id),
+    group_id      VARCHAR NOT NULL,
     resource_type VARCHAR NOT NULL,
     resource_id   VARCHAR NOT NULL,
     assigned_at   TIMESTAMP DEFAULT current_timestamp,
@@ -1161,9 +1161,71 @@ def _v14_to_v15_finalize(conn: duckdb.DuckDBPyConnection) -> None:
     Wrapped in BEGIN/COMMIT so a mid-flight failure rolls the DB back to a
     clean v14 state. The outer caller in _ensure_schema then skips the
     schema_version bump and the next start retries the whole step.
+
+    **DuckDB FK workaround for combined-testing**: v14 added FK constraints
+    on ``user_group_members.group_id`` and ``resource_grants.group_id``
+    referencing ``user_groups(id)``. DuckDB blocks **any** UPDATE on a parent
+    row that has children — even when the UPDATE doesn't touch the
+    referenced PK. This breaks ``attach_external_id`` which UPDATEs the
+    ``external_id`` column on the existing Admin / Everyone rows. The
+    finalize step rebuilds the two child tables WITHOUT FKs, restoring v13
+    semantics — application-layer cascade in ``access.py:delete_group``
+    plus the orphan-cleanup migrations cover the integrity gap. This is a
+    test-only revert; the proper fix for prefix-mapping is a side table or
+    coordinated v14+v15 redesign.
     """
     conn.execute("BEGIN TRANSACTION")
     try:
+        # 0. Drop v14 FK constraints by RENAME-rebuild without FK.
+        # Required because v15 attach_external_id does UPDATE user_groups,
+        # which DuckDB blocks when the parent row has FK children. Schema
+        # is otherwise unchanged from v14.
+        conn.execute(
+            "ALTER TABLE user_group_members RENAME TO user_group_members_v14_pre"
+        )
+        conn.execute(
+            """CREATE TABLE user_group_members (
+                user_id   VARCHAR NOT NULL,
+                group_id  VARCHAR NOT NULL,
+                source    VARCHAR NOT NULL,
+                added_at  TIMESTAMP DEFAULT current_timestamp,
+                added_by  VARCHAR,
+                PRIMARY KEY (user_id, group_id)
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO user_group_members
+                   (user_id, group_id, source, added_at, added_by)
+               SELECT user_id, group_id, source, added_at, added_by
+               FROM user_group_members_v14_pre"""
+        )
+        conn.execute("DROP TABLE user_group_members_v14_pre")
+
+        conn.execute(
+            "ALTER TABLE resource_grants RENAME TO resource_grants_v14_pre"
+        )
+        conn.execute(
+            """CREATE TABLE resource_grants (
+                id            VARCHAR PRIMARY KEY,
+                group_id      VARCHAR NOT NULL,
+                resource_type VARCHAR NOT NULL,
+                resource_id   VARCHAR NOT NULL,
+                assigned_at   TIMESTAMP DEFAULT current_timestamp,
+                assigned_by   VARCHAR,
+                UNIQUE (group_id, resource_type, resource_id)
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO resource_grants
+                   (id, group_id, resource_type, resource_id, assigned_at, assigned_by)
+               SELECT id, group_id, resource_type, resource_id, assigned_at, assigned_by
+               FROM resource_grants_v14_pre"""
+        )
+        conn.execute("DROP TABLE resource_grants_v14_pre")
+        logger.info("v15 cleanup: dropped v14 FK constraints from "
+                    "user_group_members + resource_grants (DuckDB FK blocks "
+                    "UPDATE on parent rows with children)")
+
         # 1. Orphan email-named google-synced groups (preserve those used in grants).
         orphan_rows = conn.execute(
             """SELECT id, name FROM user_groups
