@@ -480,26 +480,89 @@ def create_app() -> FastAPI:
         "/marketplace/",
     )
 
+    _ERROR_TITLES = {
+        400: "Bad request",
+        401: "Sign-in required",
+        403: "Forbidden",
+        404: "Page not found",
+        405: "Method not allowed",
+        408: "Request timeout",
+        413: "Payload too large",
+        422: "Unprocessable entity",
+        429: "Too many requests",
+        500: "Server error",
+        502: "Bad gateway",
+        503: "Service unavailable",
+        504: "Gateway timeout",
+    }
+
+    def _wants_html(request) -> bool:
+        """True when the client looks like a browser (non-API path, html in Accept)."""
+        if request.url.path.startswith(_API_PATH_PREFIXES):
+            return False
+        accept = request.headers.get("accept", "")
+        return "text/html" in accept or "*/*" in accept or accept == ""
+
+    def _render_error(request, code: int, message: str, traceback_str: str | None = None):
+        from app.web.router import templates as _web_templates
+        title = _ERROR_TITLES.get(code, "Error")
+        ctx = {
+            "code": code,
+            "title": title,
+            "message": message,
+            "path": request.url.path,
+            "traceback": traceback_str,
+        }
+        return _web_templates.TemplateResponse(request, "error.html", ctx, status_code=code)
+
     @app.exception_handler(StarletteHTTPException)
     async def _html_auth_redirect_handler(request, exc: StarletteHTTPException):
-        """Redirect unauthenticated HTML page loads (GET) to /login.
+        """Browser-friendly error rendering for HTML routes; JSON for API routes.
 
-        Only GET requests outside the API prefixes are redirected — that
-        targets browser navigations to HTML pages. POSTs, API prefixes, and
-        non-401 errors fall through to Starlette's default JSON response so
-        JSON clients (including `/auth/tokens` for PAT CRUD and
-        `/marketplace.zip` consumed by Claude Code) keep their existing
-        contract.
+        - 401 GET on a non-API path → redirect to ``/login`` (existing contract).
+        - Any other status code on a non-API path with HTML-accepting client →
+          render ``error.html`` (toolbar middleware injects panels because the
+          ``_catch_all_404`` route at the end of ``app.web.router`` provides a
+          matched route for unrouted paths).
+        - API prefixes (``/api/``, ``/auth/``, ``/marketplace.zip``,
+          ``/marketplace.git``, ``/marketplace/``) and non-HTML clients → JSON
+          ``{"detail": "..."}`` per the existing contract.
         """
+        path_is_api = request.url.path.startswith(_API_PATH_PREFIXES)
+
         if (
             exc.status_code == 401
             and request.method == "GET"
-            and not request.url.path.startswith(_API_PATH_PREFIXES)
+            and not path_is_api
         ):
             next_param = quote(request.url.path, safe="")
             return RedirectResponse(url=f"/login?next={next_param}", status_code=302)
+
+        if not path_is_api and _wants_html(request):
+            return _render_error(request, exc.status_code, exc.detail or "")
+
         from fastapi.exception_handlers import http_exception_handler
         return await http_exception_handler(request, exc)
+
+    @app.exception_handler(Exception)
+    async def _unhandled_exception_handler(request, exc: Exception):
+        """Catch-all 500 handler — HTML for browsers, JSON for API clients."""
+        import os as _os
+        import traceback as _tb
+        logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
+
+        path_is_api = request.url.path.startswith(_API_PATH_PREFIXES)
+        debug_on = _os.environ.get("DEBUG", "").lower() in ("1", "true", "yes")
+        tb_str = _tb.format_exc() if debug_on else None
+
+        if not path_is_api and _wants_html(request):
+            return _render_error(request, 500, str(exc) or "Internal server error", tb_str)
+
+        from fastapi.responses import JSONResponse
+        body = {"detail": "Internal server error"}
+        if debug_on:
+            body["error"] = str(exc)
+        return JSONResponse(body, status_code=500)
 
     return app
 
