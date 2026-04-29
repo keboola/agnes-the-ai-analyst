@@ -220,6 +220,8 @@ class TestMarketplaceZip:
         assert second.content == b""
 
     def test_etag_changes_when_content_changes(self, marketplace_env):
+        from app.marketplace_server.packager import invalidate_etag_cache
+
         c = marketplace_env["client"]
         headers = _auth(marketplace_env["admin_token"])
         first = c.get("/marketplace.zip", headers=headers)
@@ -228,6 +230,10 @@ class TestMarketplaceZip:
         # Mutate a plugin file on disk → etag must change.
         target = marketplace_env["data_dir"] / "marketplaces" / "mkt-a" / "plugins" / "plug-x" / "CLAUDE.md"
         target.write_text("# plug-x\nMUTATED\n", encoding="utf-8")
+
+        # Invalidate the in-process ETag cache so the next request
+        # re-hashes from disk instead of returning the stale cached value.
+        invalidate_etag_cache()
 
         second = c.get("/marketplace.zip", headers=headers)
         etag2 = second.headers["etag"]

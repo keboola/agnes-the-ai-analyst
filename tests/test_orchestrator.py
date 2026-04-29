@@ -471,9 +471,8 @@ class TestOrchestratorFailureModes:
         orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
         result = orch.rebuild()
 
-        # Empty source appears but with no tables
-        assert "empty_source" in result
-        assert result["empty_source"] == []
+        # Empty source is omitted from result (no valid tables to expose)
+        assert "empty_source" not in result
 
     def test_extract_duckdb_with_only_failed_tables(self, setup_env):
         """An extract.duckdb where all tables have unsafe names should produce
@@ -499,9 +498,8 @@ class TestOrchestratorFailureModes:
         orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
         result = orch.rebuild()
 
-        # Source appears but with no valid tables
-        assert "bad_names" in result
-        assert result["bad_names"] == []
+        # Source is omitted from result (all table names failed validation)
+        assert "bad_names" not in result
 
     def test_mid_write_extract_duckdb_handled_gracefully(self, setup_env):
         """If an extractor is mid-write (tmp file exists but hasn't been
