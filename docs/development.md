@@ -37,31 +37,96 @@ same id.
 
 ## Debug toolbar
 
-Set `DEBUG=1` to mount `fastapi-debug-toolbar`. Visit any HTML page (e.g.
-`/setup`, `/login`, `/dashboard`, `/admin/access`) and click the small toolbar tab
-on the right edge.
+### What it is
 
-Panels:
+Per-request HTML overlay that surfaces what the server did to produce the
+page in front of you — headers, routes matched, every DuckDB query, log
+records, timing — without leaving the browser. Powered by
+[`fastapi-debug-toolbar`](https://github.com/mongkok/fastapi-debug-toolbar)
+plus a custom `DuckDBPanel` (see `app/debug_panels/duckdb_panel.py`) that
+intercepts every `con.execute(sql, params)` from `src/db.py`.
 
-- **Headers** — request/response headers
-- **Routes** — registered FastAPI routes
-- **Settings** — Pydantic / instance-config values
-- **Versions** — installed package versions
-- **Timer** — request duration
-- **Logging** — log records emitted during the request
-- **DuckDB** — every `con.execute(sql, params)` from `src/db.py`, tagged
-  by `system` / `analytics` / `analytics_ro`, with timing and row count
+The toolbar is mounted innermost so it sees raw HTML before
+`_SelectiveGZipMiddleware` compresses the body, and gated by `DEBUG=1` —
+**never imported in production**. The dev dependency group
+(`uv pip install ".[dev]"`) is the only place `fastapi-debug-toolbar` lives.
 
-Note: Profiling panel (pyinstrument) is intentionally omitted because it
-clashes with uvicorn's async task context. Re-enable in `app/main.py` if
-you set `PROFILER_OPTIONS={"async_mode": "disabled"}` or swap profilers.
+### Enabling it
 
-JSON-only endpoints (Swagger UI at `/docs`) replay the most recent request's
-panels via a cookie-based mechanism.
+```bash
+DEBUG=1 uv run uvicorn app.main:app --reload --port 8011
+```
 
-The toolbar is **never imported in production**: the import is gated by
-`if DEBUG: ...` in `app/main.py`, and `fastapi-debug-toolbar` lives only in
-the dev optional-dependency group.
+Or persist in `.env` at repo root (auto-loaded by uvicorn):
+
+```env
+DEBUG=1
+LOG_LEVEL=DEBUG
+SESSION_SECRET=<32+ chars>
+```
+
+Visit any HTML page (`/setup`, `/login`, `/dashboard`, `/admin/access`) →
+small collapsed handle on the right edge of the viewport → click to expand.
+
+### Panels
+
+| Panel | Shows |
+|-------|-------|
+| **Headers** | Request + response headers (incl. `x-request-id`) |
+| **Routes** | All registered FastAPI routes; matched route highlighted |
+| **Settings** | Pydantic settings, `instance_config` values |
+| **Versions** | Installed package versions (Python, FastAPI, deps) |
+| **Timer** | Wall-clock + CPU time for the request |
+| **Logging** | Every `logger.*` call during the request, with rid prefix |
+| **DuckDB** | Every SQL via `src/db.py` — DB tag (`system`/`analytics`/`analytics_ro`), parameters, duration, row count |
+
+Profiling panel (pyinstrument) intentionally omitted — clashes with
+uvicorn's async task context. Re-enable in `app/main.py` if you set
+`PROFILER_OPTIONS={"async_mode": "disabled"}` or swap profilers.
+
+JSON-only endpoints (Swagger UI at `/docs`) replay the most recent
+request's panels via a cookie mechanism — open `/docs`, fire a request,
+then navigate to any HTML page to inspect it.
+
+### When to reach for it
+
+| Symptom | Panel |
+|---------|-------|
+| "Why is this page slow?" | Timer + DuckDB (look for N+1 or unindexed scans) |
+| "Which route handler ran?" | Routes |
+| "Which user / session did the server see?" | Headers + Logging |
+| "Why is this query returning N rows?" | DuckDB (full SQL + params + tag) |
+| "Did this log line fire?" | Logging |
+| "Is rid propagating end-to-end?" | Headers (`x-request-id`) + Logging (rid prefix on every line) |
+
+### Forcing an error page (for testing)
+
+Two dev-only routes (mounted only when `DEBUG=1`, otherwise 404):
+
+| URL | Behavior |
+|-----|----------|
+| `/_debug/throw/http/{code}` | Raises `HTTPException(code)` → goes through `StarletteHTTPException` handler → renders `error.html` for any code (`/_debug/throw/http/404`, `/_debug/throw/http/418`, `/_debug/throw/http/500`, …). Matched route, so the toolbar mounts. |
+| `/_debug/throw/exc` | Raises unhandled `KeyError` → goes through `_unhandled_exception_handler` → renders the **5xx path**, including the `<details>Traceback</details>` block (DEBUG-only). **Toolbar NOT injected on this page** — see note below. |
+
+Both echo the active `x-request-id` in response header and `Reference: <rid>`
+on the rendered error page.
+
+**Toolbar gap on unhandled exceptions.** `fastapi-debug-toolbar` uses
+`BaseHTTPMiddleware`, which composes poorly with Starlette's
+`ServerErrorMiddleware`: when the route raises a bare `Exception` (not
+`HTTPException`), the exception propagates past the toolbar's
+`call_next` boundary before any response is sent, so the toolbar dispatch
+never sees a response body to inject into. The 500 page is produced
+*outside* the toolbar. Use `/_debug/throw/http/500` instead to eyeball
+the 500 chrome WITH toolbar panels. Use `/_debug/throw/exc` only to
+verify the unhandled-exception code path itself (traceback `<details>`
+block, JSON 500 body).
+
+### Source
+
+- Mount + show-callback: `app/main.py` (search for `DebugToolbarMiddleware`)
+- DuckDB panel: `app/debug_panels/duckdb_panel.py`
+- Dev throw routes: `app/web/router.py` (`/_debug/throw/...`)
 
 ## Running locally
 

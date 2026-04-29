@@ -17,6 +17,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `system` / `analytics` / `analytics_ro`). See `docs/development.md`.
 - `X-Request-ID` request header / response header on every FastAPI response, plus
   a `request_id` field in JSON logs for cross-process correlation.
+- Request-ID surfaced end-to-end on error responses: `Reference: <rid>` block on
+  the rendered `error.html` page (with `user-select: all` for one-click copy)
+  and a `"request_id": "<rid>"` field in the JSON 5xx body. The same id appears
+  in the `x-request-id` response header, so a support ticket can be traced from
+  a single value the user sees on the page.
+- Dev log lines now carry the request id via `_RequestIdFilter` — `RichHandler`
+  format is `[<rid>] [<logger>] <msg>` (or `[-]` outside of a request scope).
+  JSON formatter already included `request_id`; this closes the gap for
+  `DEBUG=1` development.
 - Centralized `app.logging_config.setup_logging()` — replaces 23 scattered
   `logging.basicConfig(...)` calls. Uses `rich.logging.RichHandler` in dev
   (`DEBUG=1`) and JSON to stderr in prod.
@@ -40,6 +49,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Fixed
 - Removed rogue module-level `logging.basicConfig` from `app/api/sync.py` that
   was reconfiguring root logger every time the api module was imported.
+- `RequestIdMiddleware` rewritten as a pure ASGI middleware (was
+  `BaseHTTPMiddleware`). Removes the early `request_id_var.reset` in `finally`
+  that fired BEFORE BackgroundTasks ran, causing them to lose the id. Also
+  side-steps the known `BaseHTTPMiddleware` ContextVar-cross-task issue.
+- Incoming `X-Request-ID` headers are now sanitized (alnum + `-` / `_`,
+  truncated to 64 chars; falls back to a fresh uuid if nothing legal remains).
+  Closes a CRLF log-forging vector when log handlers don't escape newlines.
 
 ### Internal
 - `pyproject.toml`: added `fastapi-debug-toolbar>=0.6.3` to dev optional deps.
