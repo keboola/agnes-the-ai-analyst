@@ -1,9 +1,12 @@
 name: Prune dev tags
 
-# Weekly: prune dev-YYYY.MM.N and stable-YYYY.MM.N legacy CalVer tags.
-# Default retention: current month + the previous KEEP_MONTHS months
-# (KEEP_MONTHS=1 → current + previous month). Manual trigger supports
-# dry-run and KEEP_MONTHS override.
+# Weekly housekeeping for two kinds of dev/stable image identity:
+#   1. Legacy CalVer git tags + GHCR images (dev-YYYY.MM.N / stable-YYYY.MM.N)
+#      — KEEP_MONTHS retention (current + previous month by default).
+#   2. New run-number GHCR images (dev-N / stable-N) — KEEP_RECENT retention
+#      (newest 50 per channel by default), skips floating-alias-bearing
+#      versions (:stable, :dev, *-latest). Manual trigger supports dry-run
+#      + KEEP_MONTHS / KEEP_RECENT overrides.
 
 on:
   schedule:
@@ -18,9 +21,13 @@ on:
         description: 'Keep current month + this many previous months (e.g. 1 = 2 months total)'
         type: string
         default: '1'
+      keep_recent:
+        description: 'Keep newest N per-channel run-number GHCR versions (dev-N / stable-N)'
+        type: string
+        default: '50'
 
 permissions:
-  contents: write   # delete git tags
+  contents: write   # delete git tags (legacy CalVer)
   packages: write   # delete GHCR image versions
 
 jobs:
@@ -37,5 +44,6 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           KEEP_MONTHS: ${{ inputs.keep_months || '1' }}
+          KEEP_RECENT: ${{ inputs.keep_recent || '50' }}
           PRUNE_DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
         run: bash scripts/ops/prune-dev-tags.sh
