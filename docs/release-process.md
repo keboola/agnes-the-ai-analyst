@@ -46,12 +46,12 @@ The build inherits all the per-branch tag aliases (so a VM pinned to `:dev-zs-la
 
 ## Rollback
 
-Auto-rollback fires if the smoke-test job on a fresh `:stable` push fails. Currently inline in `release.yml`'s smoke-test job; Task 11 of the release-cleanup plan extracts it into `.github/workflows/rollback.yml` so it's also manually triggerable:
+Auto-rollback fires if the smoke-test job on a fresh `:stable` push fails. The `rollback-on-smoke-fail` job in `release.yml` calls `.github/workflows/rollback.yml`, which is also triggerable manually:
 
 ```bash
-# Manual rollback (after Task 11 lands)
+# Manual rollback — uses default heuristic (stable-<N-1>)
 gh workflow run rollback.yml -f failed_image_tag=stable-475
-# or with explicit target
+# or with an explicit target
 gh workflow run rollback.yml -f failed_image_tag=stable-475 -f target_image_tag=stable-470
 ```
 

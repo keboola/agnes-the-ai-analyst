@@ -48,7 +48,6 @@ jobs:
       - name: Resolve target image
         id: target
         run: |
-          REPO="ghcr.io/${{ github.repository }}"
           if [ -n "${{ inputs.target_image_tag }}" ]; then
             TARGET="${{ inputs.target_image_tag }}"
           else
