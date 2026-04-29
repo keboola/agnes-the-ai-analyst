@@ -189,9 +189,15 @@ def discover_and_register(
             "description": f"Auto-discovered from {source_type}",
         })
 
-        if resp.status_code == 201:
+        # 200 (BQ synchronous materialize), 201 (legacy non-BQ insert),
+        # and 202 (BQ background materialize) are all success — mirrors
+        # the matrix in the single-table register-table command. Pre-fix
+        # this only accepted 201, so every successful BQ row counted as
+        # an error (review NIT 6 in #119).
+        if resp.status_code in (200, 201, 202):
             registered += 1
-            typer.echo(f"  ✓ {name}")
+            suffix = " (materializing in background)" if resp.status_code == 202 else ""
+            typer.echo(f"  ✓ {name}{suffix}")
         elif resp.status_code == 409:
             skipped += 1
         else:

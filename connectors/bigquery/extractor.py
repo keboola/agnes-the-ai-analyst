@@ -279,6 +279,33 @@ def _init_extract_locked(
     return stats
 
 
+def _resolve_bq_project_id() -> str:
+    """Resolve ``data_source.bigquery.project`` honoring the overlay.
+
+    Tries ``app.instance_config.get_value`` first (deep-merge of the static
+    ``CONFIG_DIR/instance.yaml`` and the writable
+    ``DATA_DIR/state/instance.yaml``); the writable overlay is what the
+    admin UI / API writes to. Falls back to a direct read of the static
+    config so the standalone ``__main__`` entry point still works in
+    environments where the FastAPI app isn't importable (e.g. a one-shot
+    scheduler container that only ships connector code).
+    """
+    try:
+        from app.instance_config import get_value as _get_value  # noqa: PLC0415
+        project_id = _get_value("data_source", "bigquery", "project", default="") or ""
+        if project_id:
+            return project_id
+    except Exception:
+        # The fallback below covers this path — keep going.
+        pass
+    try:
+        from config.loader import load_instance_config as _load  # noqa: PLC0415
+        cfg = _load() or {}
+        return ((cfg.get("data_source") or {}).get("bigquery") or {}).get("project", "") or ""
+    except Exception:
+        return ""
+
+
 def rebuild_from_registry(
     conn: duckdb.DuckDBPyConnection | None = None,
     output_dir: str | None = None,
@@ -306,14 +333,21 @@ def rebuild_from_registry(
         Dict with ``project_id``, ``tables_registered``, ``errors``, and
         ``skipped`` (set to True when there are no BQ rows in the registry,
         in which case the extract is left untouched).
+
+    Project resolution: reads ``data_source.bigquery.project`` via
+    ``app.instance_config.get_value`` so the writable overlay
+    (``DATA_DIR/state/instance.yaml``, populated by ``POST /api/admin/
+    configure`` and ``/server-config``) is honored. Pre-2026-04-28 this
+    used ``config.loader.load_instance_config`` directly, which only sees
+    the static ``CONFIG_DIR/instance.yaml`` — operators who configured BQ
+    through the admin UI got a silent rebuild failure ("project missing")
+    while validation passed (the validator already used the merged view).
+    See review BLOCKER 2 in PR #119.
     """
-    from config.loader import load_instance_config
     from src.db import get_system_db
     from src.repositories.table_registry import TableRegistryRepository
 
-    config = load_instance_config()
-    bq_config = config.get("data_source", {}).get("bigquery", {}) or {}
-    project_id = bq_config.get("project", "")
+    project_id = _resolve_bq_project_id()
 
     if not project_id:
         msg = "data_source.bigquery.project missing from instance.yaml"

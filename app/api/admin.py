@@ -829,7 +829,7 @@ async def list_registry(
 _BQ_SYNC_REGISTER_TIMEOUT_S: float = 5.0
 
 
-def _materialize_bigquery_extract() -> None:
+def _materialize_bigquery_extract() -> Dict[str, Any]:
     """Re-build the BigQuery extract.duckdb + master views.
 
     Wrapper used by both the synchronous (in-band) and async (BackgroundTask)
@@ -842,6 +842,11 @@ def _materialize_bigquery_extract() -> None:
     both outlive that close — they would then operate on a closed handle (or
     one being torn down concurrently). A fresh handle is cheap (DuckDB is an
     embedded engine) and isolates the worker's lifetime from the request's.
+
+    Returns the rebuild result dict (``{"errors": [...], "tables_registered":
+    N, ...}``) so the synchronous caller can propagate failures to the
+    operator. Background-task callers ignore the return value, but the loud
+    log inside ``_run_bigquery_materialize_with_timeout`` covers that path.
     """
     from connectors.bigquery import extractor as _bq_extractor
     from src.db import get_system_db
@@ -849,8 +854,9 @@ def _materialize_bigquery_extract() -> None:
 
     fresh_conn = get_system_db()
     try:
-        _bq_extractor.rebuild_from_registry(conn=fresh_conn)
+        result = _bq_extractor.rebuild_from_registry(conn=fresh_conn)
         SyncOrchestrator().rebuild()
+        return result or {}
     finally:
         try:
             fresh_conn.close()
@@ -858,29 +864,62 @@ def _materialize_bigquery_extract() -> None:
             pass
 
 
+def _materialize_bigquery_extract_bg() -> None:
+    """BackgroundTask wrapper around `_materialize_bigquery_extract`.
+
+    BackgroundTasks discard return values, but `rebuild_from_registry` can
+    surface auth / config / identifier errors via the ``errors`` list. Log
+    those at ERROR level so the failure is loud in the operator's logs even
+    though the 202 response can't carry the detail (Decision 3 in #108: a
+    202 is documented as "accepted, may not be queryable yet" — we don't
+    block on it but we shouldn't swallow it either).
+    """
+    try:
+        result = _materialize_bigquery_extract()
+    except Exception:
+        logger.exception("BQ post-register background materialize crashed")
+        return
+    errors = (result or {}).get("errors") or []
+    if errors:
+        logger.error(
+            "BQ post-register background materialize completed with %d error(s): %s",
+            len(errors), errors,
+        )
+
+
 def _run_bigquery_materialize_with_timeout(
     background: BackgroundTasks,
-) -> bool:
+) -> Dict[str, Any]:
     """Try to materialize synchronously within the wall-clock budget.
 
-    Returns True on success (caller returns 200), False on timeout
-    (caller returns 202 and the rebuild continues on a BackgroundTask).
-    Any non-timeout exception is logged and the BG task takes over so the
-    register call still returns success — the row is in the registry, the
-    view will appear when the rebuild finishes.
+    Returns a dict with:
+      - ``status`` ∈ {"ok", "errors", "timeout"} — caller maps to HTTP code
+      - ``errors``: list of {table, error} surfaced by ``rebuild_from_registry``
+        (only present on ``status="errors"``)
 
-    The worker runs on a daemon thread that opens its OWN system DB
-    connection (see `_materialize_bigquery_extract`) — never the request-
-    scoped one, which the dependency layer closes after the response.
+    Mapping by caller (`register_table`):
+      - "ok"       → 200 (synchronous success)
+      - "errors"   → 500 (rebuild ran but reported errors — propagate so
+                     the operator knows the registry row exists but the
+                     view wasn't created)
+      - "timeout"  → 202 (rebuild still running on a BackgroundTask)
+
+    The synchronous worker runs on a daemon thread (so a hung GCE call
+    can't park the request) that opens its OWN system DB connection (see
+    `_materialize_bigquery_extract`). Even though FastAPI now invokes the
+    sync route in a threadpool — and `done.wait()` no longer blocks the
+    event loop — we still off-load to a daemon so the wait is bounded
+    even if `rebuild_from_registry` ignores its own timeouts.
     """
     import threading
 
     done = threading.Event()
     err_holder: Dict[str, Any] = {}
+    result_holder: Dict[str, Any] = {}
 
     def _worker():
         try:
-            _materialize_bigquery_extract()
+            result_holder["result"] = _materialize_bigquery_extract()
         except Exception as e:  # pragma: no cover — logged below
             err_holder["error"] = e
         finally:
@@ -898,9 +937,22 @@ def _run_bigquery_materialize_with_timeout(
             )
             # Schedule a fresh attempt in the background — the synchronous
             # one failed, but the row is already in the registry.
-            background.add_task(_materialize_bigquery_extract)
-            return False
-        return True
+            background.add_task(_materialize_bigquery_extract_bg)
+            return {"status": "timeout"}
+        # Synchronous worker finished cleanly — but check whether
+        # `rebuild_from_registry` itself surfaced any errors (auth fail,
+        # missing project from the overlay, unsafe identifier slipping the
+        # validator, etc.). Without this, those errors got silently logged
+        # and the API claimed success.
+        result = result_holder.get("result") or {}
+        errors = result.get("errors") or []
+        if errors:
+            logger.error(
+                "BQ post-register rebuild reported %d error(s): %s",
+                len(errors), errors,
+            )
+            return {"status": "errors", "errors": errors}
+        return {"status": "ok"}
 
     # Timed out — let the worker keep running on its thread (already daemon)
     # and also schedule a BackgroundTask so the orchestrator gets called via
@@ -912,8 +964,8 @@ def _run_bigquery_materialize_with_timeout(
         "BQ post-register rebuild exceeded %ss budget — handing off to BackgroundTask",
         _BQ_SYNC_REGISTER_TIMEOUT_S,
     )
-    background.add_task(_materialize_bigquery_extract)
-    return False
+    background.add_task(_materialize_bigquery_extract_bg)
+    return {"status": "timeout"}
 
 
 @router.post(
@@ -923,9 +975,10 @@ def _run_bigquery_materialize_with_timeout(
         201: {"description": "Non-BigQuery row registered (no post-insert materialize)"},
         202: {"description": "BigQuery row registered; materialize continues in background"},
         409: {"description": "Table id or view name already in use"},
+        500: {"description": "BigQuery row registered but post-insert rebuild failed"},
     },
 )
-async def register_table(
+def register_table(
     request: RegisterTableRequest,
     background: BackgroundTasks,
     user: dict = Depends(require_admin),
@@ -938,9 +991,18 @@ async def register_table(
       identifier safety / project_id format), forces query_mode='remote' and
       profile_after_sync=False, then synchronously rebuilds extract.duckdb +
       master views with a wall-clock budget. Returns 200 with the view name
-      on success or 202 on budget overrun (rebuild continues in a
-      BackgroundTask).
+      on success, 202 on budget overrun (rebuild continues in a
+      BackgroundTask), or 500 if the synchronous rebuild ran but reported
+      an error (e.g. auth failure, missing project, unsafe identifier).
     - other source types: insert-only, no post-register hook. Returns 201.
+
+    Defined as a plain ``def`` (not ``async def``) so FastAPI runs it in a
+    threadpool — the synchronous-materialize path waits on
+    ``threading.Event.wait()``, which would otherwise block the asyncio
+    event loop and stall every other request for up to ``_BQ_SYNC_REGISTER_
+    TIMEOUT_S``. ``Depends(...)``, ``BackgroundTasks``, and
+    ``JSONResponse`` all work the same in sync handlers; the rest of the
+    admin module mixes both styles already.
 
     The route does NOT carry a default ``status_code`` — each branch returns
     its own JSONResponse with the right code. A blanket ``status_code=201``
@@ -1016,10 +1078,12 @@ async def register_table(
         )
 
     # BQ post-register: rebuild extract + master views, with timeout fallback.
-    # Decision 1: 200 on synchronous success, 202 on timeout — distinct from
-    # the 201 Keboola path above, so the BQ branch builds its own response.
-    materialized = _run_bigquery_materialize_with_timeout(background)
-    if materialized:
+    # Decision 1: 200 on synchronous success, 202 on timeout, 500 if the
+    # synchronous rebuild surfaced errors. Distinct from the 201 Keboola
+    # path above, so the BQ branch builds its own response.
+    outcome = _run_bigquery_materialize_with_timeout(background)
+    status = outcome.get("status")
+    if status == "ok":
         return JSONResponse(
             status_code=200,
             content={
@@ -1029,6 +1093,31 @@ async def register_table(
                 "view_name": table_id,
             },
         )
+    if status == "errors":
+        # Registry insert succeeded but the post-insert rebuild reported
+        # errors — the row is in the registry but the master view was NOT
+        # created. Surface the failure verbatim so the operator can fix
+        # the underlying config (typically a missing
+        # `data_source.bigquery.project` in the overlay or auth that lacks
+        # bigquery.metadata.get on the dataset). The row stays in the
+        # registry; a re-run after fixing the config picks up the existing
+        # row and creates the view on the next register/update or
+        # scheduler tick.
+        return JSONResponse(
+            status_code=500,
+            content={
+                "id": table_id,
+                "name": request.name,
+                "status": "rebuild_failed",
+                "view_name": table_id,
+                "errors": outcome.get("errors") or [],
+                "message": (
+                    "Registry row created but post-insert rebuild failed; "
+                    "view is not queryable. See `errors` for details."
+                ),
+            },
+        )
+    # Default: timeout — rebuild continues on a BackgroundTask.
     return JSONResponse(
         status_code=202,
         content={
@@ -1215,9 +1304,12 @@ async def update_table(
 
     # If we updated a BQ row (or one that's now BQ), refresh the extract in
     # the background so the view picks up renames / column-list changes.
+    # Use the BG wrapper so any rebuild errors are logged at ERROR level
+    # instead of being silently dropped by BackgroundTasks (which discards
+    # return values).
     after = repo.get(table_id) or {}
     if after.get("source_type") == "bigquery":
-        background.add_task(_materialize_bigquery_extract)
+        background.add_task(_materialize_bigquery_extract_bg)
 
     return {"id": table_id, "updated": list(updates.keys())}
 
@@ -1256,7 +1348,7 @@ async def unregister_table(
     )
 
     if was_bigquery:
-        background.add_task(_materialize_bigquery_extract)
+        background.add_task(_materialize_bigquery_extract_bg)
 
 
 @router.post("/configure")

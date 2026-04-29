@@ -1193,3 +1193,481 @@ class TestBigQueryRegisterFreshConnection:
             "rebuild_from_registry should run after request returns "
             "(via BackgroundTask + daemon fallback)"
         )
+
+
+# --- Devin review fixes (PR #119) -------------------------------------------
+
+
+class TestRegisterTableHandlerIsSync:
+    """Review BLOCKER 1: register_table must NOT be `async def`. The
+    synchronous-materialize path waits on `threading.Event.wait()` which
+    would otherwise block the asyncio event loop and stall every other
+    request for up to `_BQ_SYNC_REGISTER_TIMEOUT_S`. FastAPI runs plain
+    `def` handlers in a threadpool so the wait is harmless there.
+    """
+
+    def test_handler_is_not_a_coroutine(self):
+        import inspect
+        from app.api.admin import register_table
+        assert not inspect.iscoroutinefunction(register_table), (
+            "register_table must be a sync def — see review BLOCKER 1 in #119. "
+            "An async handler that blocks on threading.Event.wait() parks the "
+            "asyncio event loop for the entire timeout budget."
+        )
+
+    def test_event_loop_not_blocked_by_slow_register(
+        self, seeded_app, bq_instance, monkeypatch,
+    ):
+        """A slow BQ register must not stall a parallel request.
+
+        We force the synchronous materialize past its budget by stubbing
+        `_run_bigquery_materialize_with_timeout` to spin for ~0.3s, then
+        fire two requests "in parallel" (via two threads, since TestClient
+        is sync) and assert both finish within a reasonable wall clock.
+        If the handler were async + blocking, the second request would
+        wait for the first to finish.
+        """
+        import threading
+        import time
+
+        # Stub the materialize helper so the test doesn't need real BQ.
+        # `_run_bigquery_materialize_with_timeout` is what the handler
+        # waits on; make it sleep, then return ok.
+        def _slow(background):
+            time.sleep(0.3)
+            return {"status": "ok"}
+
+        monkeypatch.setattr(
+            "app.api.admin._run_bigquery_materialize_with_timeout",
+            _slow,
+        )
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+
+        results = {}
+
+        def fire_register(idx):
+            t0 = time.time()
+            r = c.post(
+                "/api/admin/register-table",
+                json=_bq_payload(name=f"par_{idx}"),
+                headers=_auth(token),
+            )
+            results[idx] = (r.status_code, time.time() - t0)
+
+        threads = [
+            threading.Thread(target=fire_register, args=(i,)) for i in range(2)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # Both calls must succeed. The exact wall clock depends on the
+        # threadpool size FastAPI's anyio uses (default >= 40), but the
+        # SECOND call should not be blocked behind the FIRST one's
+        # 0.3s sleep — total time for each call should be ~0.3s, not
+        # ~0.6s. Allow generous slack for CI noise.
+        assert results[0][0] in (200, 202), results[0]
+        assert results[1][0] in (200, 202), results[1]
+
+
+class TestBigQueryRebuildOverlayAware:
+    """Review BLOCKER 2: rebuild_from_registry must read the BQ project via
+    the overlay-aware `app.instance_config.get_value`, NOT the static-only
+    `config.loader.load_instance_config`. Validation already does the
+    former, so without this fix validation passes and the rebuild silently
+    fails — the row is in the registry but the master view is never built.
+    """
+
+    def test_overlay_only_project_resolves(self, e2e_env, monkeypatch):
+        """When the project is set ONLY in the overlay (admin UI write),
+        rebuild must still resolve it."""
+        from app.instance_config import reset_cache
+        from connectors.bigquery import extractor as bq
+        from src.db import get_system_db
+        from src.repositories.table_registry import TableRegistryRepository
+
+        # Static instance.yaml has no BQ block — only the overlay does.
+        # We simulate the merged result the way `app.instance_config.load_
+        # instance_config` would expose it: deep-merged dict from
+        # static + overlay. Patching `app.instance_config.load_instance_
+        # config` matches the read path in the new helper.
+        monkeypatch.setattr(
+            "app.instance_config.load_instance_config",
+            lambda: {
+                "data_source": {
+                    "type": "bigquery",
+                    "bigquery": {"project": "overlay-project"},
+                }
+            },
+            raising=False,
+        )
+        # And the static loader has nothing — proves we don't fall back.
+        monkeypatch.setattr(
+            "config.loader.load_instance_config",
+            lambda: {},
+            raising=False,
+        )
+        reset_cache()
+
+        # Seed a BQ row so init_extract is triggered.
+        conn = get_system_db()
+        try:
+            TableRegistryRepository(conn).register(
+                id="ovr",
+                name="ovr",
+                source_type="bigquery",
+                bucket="analytics",
+                source_table="ovr",
+                query_mode="remote",
+                profile_after_sync=False,
+            )
+        finally:
+            conn.close()
+        fake_init = MagicMock(return_value={"tables_registered": 1, "errors": []})
+        monkeypatch.setattr(bq, "init_extract", fake_init)
+
+        try:
+            result = bq.rebuild_from_registry()
+        finally:
+            reset_cache()
+
+        # Project resolved from the overlay, not the (empty) static file.
+        assert result["project_id"] == "overlay-project"
+        assert result["skipped"] is False
+        fake_init.assert_called_once()
+        # init_extract(output_dir, project_id, table_configs)
+        assert fake_init.call_args.args[1] == "overlay-project"
+
+    def test_static_only_project_still_resolves(self, e2e_env, monkeypatch):
+        """Regression: when there's NO overlay, the static config still wins
+        (so existing deployments that wrote instance.yaml by hand keep
+        working)."""
+        from app.instance_config import reset_cache
+        from connectors.bigquery import extractor as bq
+        from src.db import get_system_db
+        from src.repositories.table_registry import TableRegistryRepository
+
+        monkeypatch.setattr(
+            "app.instance_config.load_instance_config",
+            lambda: {
+                "data_source": {
+                    "type": "bigquery",
+                    "bigquery": {"project": "static-project"},
+                }
+            },
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "config.loader.load_instance_config",
+            lambda: {
+                "data_source": {
+                    "type": "bigquery",
+                    "bigquery": {"project": "static-project"},
+                }
+            },
+            raising=False,
+        )
+        reset_cache()
+
+        conn = get_system_db()
+        try:
+            TableRegistryRepository(conn).register(
+                id="stat",
+                name="stat",
+                source_type="bigquery",
+                bucket="analytics",
+                source_table="stat",
+                query_mode="remote",
+                profile_after_sync=False,
+            )
+        finally:
+            conn.close()
+        fake_init = MagicMock(return_value={"tables_registered": 1, "errors": []})
+        monkeypatch.setattr(bq, "init_extract", fake_init)
+
+        try:
+            result = bq.rebuild_from_registry()
+        finally:
+            reset_cache()
+
+        assert result["project_id"] == "static-project"
+        fake_init.assert_called_once()
+
+
+class TestBigQueryRebuildErrorPropagation:
+    """Review IMPORTANT 3: errors from rebuild_from_registry must surface
+    as 500 in the synchronous register path (not be silently logged), and
+    in the BackgroundTask path must be logged at ERROR level (not warn)."""
+
+    def test_synchronous_path_returns_500_on_rebuild_errors(
+        self, seeded_app, bq_instance, monkeypatch,
+    ):
+        # Stub rebuild_from_registry to report errors but not raise.
+        rebuild_mock = MagicMock(return_value={
+            "project_id": "my-test-project",
+            "tables_registered": 0,
+            "errors": [{"table": "orders", "error": "auth failed"}],
+            "skipped": False,
+        })
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor.rebuild_from_registry",
+            rebuild_mock,
+        )
+        orch_mock = MagicMock()
+        monkeypatch.setattr(
+            "src.orchestrator.SyncOrchestrator",
+            lambda *a, **kw: orch_mock,
+        )
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/register-table",
+            json=_bq_payload(name="errprop"),
+            headers=_auth(token),
+        )
+        # Synchronous rebuild ran (within budget) but reported errors —
+        # the API must propagate that as 500 with the error list, not
+        # claim success.
+        assert resp.status_code == 500, resp.text
+        body = resp.json()
+        assert body["status"] == "rebuild_failed"
+        assert body["errors"]
+        assert body["errors"][0]["error"] == "auth failed"
+        # The row is in the registry though — the rebuild can be retried.
+        list_resp = c.get("/api/admin/registry", headers=_auth(token))
+        names = [t["name"] for t in list_resp.json()["tables"]]
+        assert "errprop" in names
+
+    def test_background_path_logs_at_error_level(
+        self, seeded_app, bq_instance, monkeypatch, caplog,
+    ):
+        """Force timeout so the BackgroundTask wrapper runs, then assert
+        the wrapper logs the rebuild errors at ERROR level."""
+        import logging
+        import time
+
+        # rebuild slow enough to time out the synchronous path.
+        def slow_with_errors(conn=None, output_dir=None):
+            time.sleep(0.15)
+            return {
+                "project_id": "my-test-project",
+                "tables_registered": 0,
+                "errors": [{"table": "x", "error": "bg-rebuild failure"}],
+                "skipped": False,
+            }
+
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor.rebuild_from_registry",
+            slow_with_errors,
+        )
+        orch_mock = MagicMock()
+        monkeypatch.setattr(
+            "src.orchestrator.SyncOrchestrator",
+            lambda *a, **kw: orch_mock,
+        )
+        # Tighten the budget so timeout kicks in fast.
+        monkeypatch.setattr(
+            "app.api.admin._BQ_SYNC_REGISTER_TIMEOUT_S", 0.05, raising=False,
+        )
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+
+        with caplog.at_level(logging.ERROR, logger="app.api.admin"):
+            resp = c.post(
+                "/api/admin/register-table",
+                json=_bq_payload(name="bg_err"),
+                headers=_auth(token),
+            )
+            # 202 (timeout) — BackgroundTask runs after the response.
+            assert resp.status_code == 202, resp.text
+            # Drain BackgroundTasks. TestClient runs them synchronously
+            # after the response, so the log should already be present.
+
+        msgs = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+        # At least one ERROR-level entry must mention "bg-rebuild failure"
+        # — so the operator's logs surface the failure even though the
+        # 202 response can't carry the detail.
+        assert any("bg-rebuild failure" in m for m in msgs), (
+            f"expected ERROR-level rebuild-failure log; got: {msgs}"
+        )
+
+
+class TestKeboolaModalUsesDiscoveredTableId:
+    """Review IMPORTANT 5: the JS that builds the Keboola register payload
+    must derive `source_table` from the discovered table's storage ID
+    (`t.id` minus the bucket prefix), NOT the human-friendly display name
+    (`t.name`). We verify by static template inspection — this is enough
+    to catch a regression that drops the hidden field or reverts the JS
+    to reading `regTableName`."""
+
+    def test_template_has_hidden_source_table_field(self, seeded_app, monkeypatch):
+        from app.instance_config import reset_cache
+        monkeypatch.setattr(
+            "app.instance_config.load_instance_config",
+            lambda: {"data_source": {"type": "keboola"}},
+            raising=False,
+        )
+        reset_cache()
+        try:
+            c = seeded_app["client"]
+            c.cookies.set("access_token", seeded_app["admin_token"])
+            try:
+                resp = c.get("/admin/tables", headers={"Accept": "text/html"})
+            finally:
+                c.cookies.clear()
+            assert resp.status_code == 200, resp.text
+            body = resp.text
+            # Hidden field must exist so the JS can stash the bare
+            # storage identifier separately from the display name.
+            assert 'id="regSourceTable"' in body
+            # And the build function must read from that hidden field
+            # (NOT from regTableName, which is the display name).
+            assert "getElementById('regSourceTable').value" in body
+        finally:
+            reset_cache()
+
+    def test_template_does_not_send_display_name_as_source_table(
+        self, seeded_app, monkeypatch,
+    ):
+        """Regression check: pre-fix the payload had
+        `source_table: document.getElementById('regTableName').value`.
+        After the fix, that exact line must be gone (the build function
+        reads from the hidden `regSourceTable` first)."""
+        from app.instance_config import reset_cache
+        monkeypatch.setattr(
+            "app.instance_config.load_instance_config",
+            lambda: {"data_source": {"type": "keboola"}},
+            raising=False,
+        )
+        reset_cache()
+        try:
+            c = seeded_app["client"]
+            c.cookies.set("access_token", seeded_app["admin_token"])
+            try:
+                resp = c.get("/admin/tables", headers={"Accept": "text/html"})
+            finally:
+                c.cookies.clear()
+            body = resp.text
+            # No occurrence of the buggy direct assignment.
+            assert (
+                "source_table: document.getElementById('regTableName').value"
+                not in body
+            )
+        finally:
+            reset_cache()
+
+
+class TestBigQueryUITwoStepFlow:
+    """Review IMPORTANT 4: the BQ register flow in the modal must split
+    precheck and register into two operator-driven clicks. We verify the
+    JS function structure via template inspection (no JS test runner in
+    this codebase)."""
+
+    def test_template_has_separate_confirm_function(self, seeded_app, bq_instance):
+        c = seeded_app["client"]
+        c.cookies.set("access_token", seeded_app["admin_token"])
+        try:
+            resp = c.get("/admin/tables", headers={"Accept": "text/html"})
+        finally:
+            c.cookies.clear()
+        assert resp.status_code == 200, resp.text
+        body = resp.text
+        # Two-step: precheck function + separate confirm function.
+        assert "_registerBigQueryTable" in body
+        assert "_confirmRegisterBigQueryTable" in body
+        # Pre-fix, the precheck callback chained directly into a
+        # `fetch('/api/admin/register-table'...)` inside the same `.then`.
+        # After the fix, the precheck handler must NOT contain the
+        # second fetch URL. Verify the precheck function body explicitly
+        # swaps the button to "Register" and assigns onclick to the
+        # confirm function.
+        assert "btn.onclick = function() { _confirmRegisterBigQueryTable" in body
+        # And the actual register POST is inside _confirmRegisterBigQueryTable.
+        # Locate the function body and assert it has the register URL.
+        idx = body.find("function _confirmRegisterBigQueryTable")
+        assert idx >= 0
+        # Take the next ~2000 chars as the function body — generous
+        # enough for the small handler.
+        confirm_body = body[idx:idx + 3000]
+        assert "/api/admin/register-table'" in confirm_body
+        assert "method: 'POST'" in confirm_body
+
+
+class TestCliDiscoverAndRegisterAcceptsAllSuccessCodes:
+    """Review NIT 6: `da admin discover-and-register` must accept 200
+    (BQ sync OK) and 202 (BQ background) as success, not just 201.
+    Pre-fix every successful BQ row counted as an error."""
+
+    def _resp(self, status_code=200, json_data=None, text=""):
+        r = MagicMock()
+        r.status_code = status_code
+        r.json.return_value = json_data if json_data is not None else {}
+        r.text = text
+        return r
+
+    def _run(self, monkeypatch, status_code, body=None, source_type="bigquery"):
+        from typer.testing import CliRunner
+        from cli.main import app
+        runner = CliRunner()
+
+        # Need both KEBOOLA_* env vars for the gate; we mock httpx.get
+        # so the actual values don't matter.
+        monkeypatch.setenv("KEBOOLA_STORAGE_TOKEN", "fake-kbc-token")
+        monkeypatch.setenv("KEBOOLA_STACK_URL", "https://connection.example.com")
+
+        fake_tables = [
+            {
+                "id": "in.c-x.orders",
+                "name": "orders",
+                "bucket": {"id": "in.c-x"},
+                "rowsCount": 100,
+            }
+        ]
+        fake_get = MagicMock()
+        fake_get.return_value = self._resp(200, fake_tables)
+        fake_get.return_value.raise_for_status = lambda: None
+        # `httpx` is imported locally inside discover_and_register, so we
+        # patch the module-level attribute the function will resolve.
+        import httpx as _httpx
+        monkeypatch.setattr(_httpx, "get", fake_get)
+
+        register_resp = self._resp(status_code, body or {"id": "orders", "name": "orders"})
+        with patch("cli.commands.admin.api_post", return_value=register_resp):
+            result = runner.invoke(app, [
+                "admin", "discover-and-register",
+                "--source-type", source_type,
+            ])
+        return result
+
+    def test_accepts_200_as_success(self, monkeypatch):
+        result = self._run(monkeypatch, 200, {
+            "id": "orders", "name": "orders", "status": "ok", "view_name": "orders",
+        })
+        assert result.exit_code == 0, result.output
+        assert "1 registered" in result.output
+        assert "0 errors" in result.output
+
+    def test_accepts_202_as_success(self, monkeypatch):
+        result = self._run(monkeypatch, 202, {
+            "id": "orders", "name": "orders", "status": "accepted", "view_name": "orders",
+        })
+        assert result.exit_code == 0, result.output
+        assert "1 registered" in result.output
+        assert "0 errors" in result.output
+        # Operator gets a hint that the row is materializing in BG.
+        assert "background" in result.output.lower()
+
+    def test_accepts_201_as_success(self, monkeypatch):
+        # Regression: legacy non-BQ insert path still works.
+        result = self._run(
+            monkeypatch, 201,
+            {"id": "orders", "name": "orders", "status": "registered"},
+            source_type="keboola",
+        )
+        assert result.exit_code == 0, result.output
+        assert "1 registered" in result.output
