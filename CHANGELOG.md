@@ -10,6 +10,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-04-29
+
+### Added
+- `table_registry.sync_schedule` is now honored at runtime. `POST /api/sync/trigger` (called by the scheduler sidecar every 15 min by default) drops local tables whose schedule says they are not due. Tables without a schedule continue to sync on every tick (opt-in feature). Manual `POST /api/sync/trigger {"tables":[...]}` bypasses the schedule filter — operator override always wins. (#79)
+- `script_registry.schedule` is now honored at runtime via the new endpoint `POST /api/scripts/run-due` (admin-only). The scheduler sidecar fires this every 60 s by default. Each due script is claimed atomically (`last_status='running'`), executed in a BackgroundTask, and the outcome written to `last_run` / `last_status`. Scripts already in `running` state are skipped — no concurrent runs of the same script. (#78)
+- Four new env vars on the scheduler sidecar: `SCHEDULER_DATA_REFRESH_INTERVAL`, `SCHEDULER_HEALTH_CHECK_INTERVAL`, `SCHEDULER_SCRIPT_RUN_INTERVAL`, `SCHEDULER_TICK_SECONDS`. All accept positive integers (seconds); tick must be ≤ smallest job interval. Documented in `docs/DEPLOYMENT.md` → Scheduler tuning. (#77)
+- `RegisterTableRequest.sync_schedule`, `UpdateTableRequest.sync_schedule`, and `DeployScriptRequest.schedule` now reject malformed strings with a Pydantic 422 (e.g. `"hourly"`, `"daily 25:00"`). The accepted forms are unchanged: `every Nm`, `every Nh`, `daily HH:MM[,HH:MM,...]`. (#78, #79)
+- New `verify_ssl` knob in the `openmetadata:` section of `instance.yaml` (default `true`). Operators on internal CAs / self-signed catalogs must set it explicitly. (#89)
+
+### Changed
+- **BREAKING** `OpenMetadataClient` now defaults to `verify=True` for TLS. The previous version hardcoded `verify=False` and suppressed urllib3's "Unverified HTTPS request" warning at import time (which leaked to every other httpx client in the process). Existing deployments on self-signed certificates without an explicit opt-out will start failing TLS verification — set `verify_ssl: false` in the `openmetadata:` block of `instance.yaml`, or supply a CA bundle path, before upgrading. Both production call sites (`connectors/openmetadata/enricher.py`, `src/catalog_export.py`) read the new `verify_ssl` config knob and pass it through. (#89)
+
+### Internal
+- `src/scheduler.py` now exports `is_valid_schedule(s)` and `filter_due_tables(configs, sync_state_repo)` for reuse across the sync filter, the script runner, and Pydantic validators.
+- `ScriptRepository` gains `claim_for_run(script_id)` and `record_run_result(script_id, status)` — the atomic primitives for the scheduled-script execution path. `claim_for_run` uses `UPDATE … WHERE last_status IS DISTINCT FROM 'running' RETURNING id` for race-free claim.
+- `services/scheduler/__main__.py` JOBS list refactored to a `build_jobs()` factory that reads + validates env at startup.
+
 ## [0.18.0] — 2026-04-29
 
 ### Added
