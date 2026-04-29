@@ -99,6 +99,8 @@ dev-dependencies = [
 # Read version from semver release tags only (vX.Y.Z), ignoring CalVer
 # build tags (stable-YYYY.MM.N, dev-YYYY.MM.N) and infra-vX.Y.Z module
 # tags. Untagged commits get a `0.X.Y.devN+gSHA` post-release suffix.
-git_describe_command = ["git", "describe", "--tags", "--match", "v*", "--dirty"]
 write_to = "src/_version.py"
 fallback_version = "0.0.0+unknown"
+
+[tool.setuptools_scm.scm.git]
+describe_command = ["git", "describe", "--tags", "--match", "v*", "--dirty"]

@@ -31,10 +31,17 @@ if [ "$HEALTH" = "unreachable" ]; then
 fi
 check "health ($HEALTH)" "true"
 
-# 1a. Version endpoint — verifies setuptools_scm resolved a real version at build time.
-# Empty, "0.0.0+unknown", or "unknown" signals a failed/shallow build.
+# 1a. Version endpoint — verifies setuptools_scm resolved a real semver at
+# build time. Failure modes that this catches:
+#   - empty / "0.0.0+unknown" / "unknown" → shallow checkout or no v* tag
+#   - CalVer-shape (^YYYY.MM.N) → setuptools_scm `--match v*` filter did not
+#     apply (e.g. someone called get_version(root='.') without the
+#     git_describe_command kwarg). Healthy semver: 0.18.0, 0.18.1.dev3+gSHA.
 VERSION=$(curl -sf "$HOST/api/version" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('version',''))" 2>/dev/null || echo "")
-if [ -z "$VERSION" ] || [ "$VERSION" = "0.0.0+unknown" ] || [ "$VERSION" = "unknown" ]; then
+if [ -z "$VERSION" ] \
+   || [ "$VERSION" = "0.0.0+unknown" ] \
+   || [ "$VERSION" = "unknown" ] \
+   || echo "$VERSION" | grep -qE '^[0-9]{4}\.'; then
     check "api/version resolved ($VERSION)" "false"
 else
     check "api/version resolved ($VERSION)" "true"

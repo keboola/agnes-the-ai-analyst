@@ -99,13 +99,18 @@ jobs:
       - name: Resolve package version from git
         id: pkgver
         run: |
-          # Source of truth: git tags via setuptools_scm. Read it the same
-          # way the package itself does at runtime so the build arg matches
-          # what `da --version` and `/api/version` will report.
+          # Source of truth: git tags via setuptools_scm. Pyproject's
+          # [tool.setuptools_scm.scm.git] describe_command is honored at
+          # `pip install` build time, but the runtime get_version() API
+          # used here does NOT auto-read pyproject — the filter must be
+          # passed explicitly. Keep both in sync (filter `--match v*` to
+          # ignore CalVer build tags + infra-v* module tags).
           python3 -m pip install --quiet setuptools_scm
-          VERSION=$(python3 -c "from setuptools_scm import get_version; print(get_version(root='.'))")
-          if [ -z "$VERSION" ] || [ "$VERSION" = "0.0.0+unknown" ]; then
-            echo "::error::setuptools_scm could not resolve a version (shallow checkout? missing v* tag?)"
+          VERSION=$(python3 -c "from setuptools_scm import get_version; print(get_version(root='.', git_describe_command=['git','describe','--tags','--match','v*','--dirty']))")
+          # Reject CalVer-shape leakage (YYYY.MM.N) — signals the filter
+          # didn't apply. Healthy semver: e.g. 0.18.0 or 0.18.1.dev3+gSHA.
+          if [ -z "$VERSION" ] || [ "$VERSION" = "0.0.0+unknown" ] || echo "$VERSION" | grep -qE '^[0-9]{4}\.'; then
+            echo "::error::setuptools_scm did not resolve a semver version (got '$VERSION'). Likely shallow checkout or missing v* tag."
             exit 1
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"

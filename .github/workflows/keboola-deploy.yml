@@ -51,11 +51,13 @@ jobs:
             keboola-deploy-*) ;;
             *) echo "::error::Tag $TAG does not match keboola-deploy-* — refusing to build"; exit 1 ;;
           esac
-          # Package version: source of truth is pyproject.toml + git tags via setuptools_scm.
+          # Package version: source of truth is pyproject.toml + git tags via
+          # setuptools_scm. Runtime get_version() doesn't auto-read pyproject,
+          # so the `--match v*` filter is passed explicitly (mirrors release.yml).
           python3 -m pip install --quiet setuptools_scm
-          PKG_VERSION=$(python3 -c "from setuptools_scm import get_version; print(get_version(root='.'))")
-          if [ -z "$PKG_VERSION" ] || [ "$PKG_VERSION" = "0.0.0+unknown" ]; then
-            echo "::error::setuptools_scm could not resolve a version"
+          PKG_VERSION=$(python3 -c "from setuptools_scm import get_version; print(get_version(root='.', git_describe_command=['git','describe','--tags','--match','v*','--dirty']))")
+          if [ -z "$PKG_VERSION" ] || [ "$PKG_VERSION" = "0.0.0+unknown" ] || echo "$PKG_VERSION" | grep -qE '^[0-9]{4}\.'; then
+            echo "::error::setuptools_scm did not resolve a semver version (got '$PKG_VERSION')"
             exit 1
           fi
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
