@@ -120,9 +120,8 @@ def _run_sync(tables: Optional[List[str]] = None):
         # Subprocess does NOT open system.duckdb — no lock conflict
         env = {**os.environ}
         cmd = [sys.executable, "-c", """
-import json, sys, os, logging
+import json, sys, os
 from pathlib import Path
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 configs = json.load(sys.stdin)
 url = os.environ.get("KEBOOLA_STACK_URL", "")
