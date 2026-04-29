@@ -68,6 +68,10 @@ dev = [
     # under tests/test_corporate_memory_v1.py (extraction.json, correction.json,
     # confidence_calibration.json). Production code does not depend on it.
     "jsonschema>=4.0.0",
+    # FastAPI debug toolbar — gated behind DEBUG=1 env var in app/main.py.
+    # Provides per-request panels (headers, routes, timer, profiling, etc.)
+    # for local development. Never loaded in production (no DEBUG=1 there).
+    "fastapi-debug-toolbar>=0.6.3",
 ]
 
 [project.scripts]
@@ -92,4 +96,5 @@ dev-dependencies = [
     "faker>=24.0.0",
     "anthropic>=0.30.0",
     "openai>=1.30.0",
+    "fastapi-debug-toolbar>=0.6.3",
 ]
