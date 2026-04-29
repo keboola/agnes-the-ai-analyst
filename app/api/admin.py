@@ -703,17 +703,24 @@ def _validate_bigquery_register_payload(req: "RegisterTableRequest") -> None:
             status_code=400,
             detail="bigquery: wildcard / sharded tables are not supported (see #108 M3+)",
         )
-    # Strict identifier on the DuckDB view name (extractor uses the strict
-    # validator there too — accept the same constraint upstream so a name
-    # with `-` / `.` fails fast at register time rather than getting silently
-    # dropped at the next rebuild).
-    view_name = (req.name or "").strip().lower().replace(" ", "_")
-    if not _is_safe_identifier(view_name):
+    # Strict identifier on the DuckDB view name. CRITICAL: validate the RAW
+    # name (the value that ``register_table`` actually persists to
+    # ``table_registry.name`` and which the BQ extractor reads back as the
+    # DuckDB view name at next rebuild). Earlier revisions normalized first
+    # (``strip().lower().replace(" ", "_")``) and then checked, which let
+    # names like ``"my table"`` pass here, get stored verbatim, and then
+    # blow up inside ``_init_extract`` at view-create time — defeating the
+    # whole point of fast-fail-at-register. We do NOT silently rewrite the
+    # operator's name; if they typed ``"my table"``, return 400 with a
+    # clear message and let them retype with a corrected name.
+    raw_name = req.name or ""
+    if raw_name.strip() != raw_name or not _is_safe_identifier(raw_name):
         raise HTTPException(
             status_code=400,
             detail=(
-                f"bigquery: view name {view_name!r} is unsafe — must match "
-                f"^[a-zA-Z_][a-zA-Z0-9_]{{0,63}}$ (DuckDB identifier rules)"
+                f"bigquery: view name {raw_name!r} is unsafe — must match "
+                f"^[a-zA-Z_][a-zA-Z0-9_]{{0,63}}$ (DuckDB identifier rules) "
+                "with no leading/trailing whitespace"
             ),
         )
     if not _is_safe_quoted_identifier(req.bucket.strip()):
@@ -931,14 +938,24 @@ def _run_bigquery_materialize_with_timeout(
 
     if finished:
         if "error" in err_holder:
-            logger.warning(
-                "BQ post-register rebuild raised %r; falling back to background retry",
-                err_holder["error"],
+            # Worker finished within the wall-clock budget but raised. This
+            # is a HARD ERROR, not a timeout — surface it as such so the
+            # operator gets the actual exception in the 500 body instead
+            # of a misleading 202 + "still working in the background".
+            # Earlier revisions returned ``{"status": "timeout"}`` here,
+            # which the register handler then mapped to 202 + a retry
+            # BackgroundTask; that hid the real failure for `_BQ_SYNC_
+            # REGISTER_TIMEOUT_S` seconds before the BG retry surfaced
+            # the same exception in the logs.
+            exc = err_holder["error"]
+            logger.error(
+                "BQ post-register rebuild raised within budget: %r",
+                exc,
             )
-            # Schedule a fresh attempt in the background — the synchronous
-            # one failed, but the row is already in the registry.
-            background.add_task(_materialize_bigquery_extract_bg)
-            return {"status": "timeout"}
+            return {
+                "status": "errors",
+                "errors": [{"error": f"{type(exc).__name__}: {exc}"}],
+            }
         # Synchronous worker finished cleanly — but check whether
         # `rebuild_from_registry` itself surfaced any errors (auth fail,
         # missing project from the overlay, unsafe identifier slipping the
@@ -1142,7 +1159,7 @@ class PrecheckResponse(BaseModel):
 
 
 @router.post("/register-table/precheck")
-async def register_table_precheck(
+def register_table_precheck(
     request: RegisterTableRequest,
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
@@ -1155,6 +1172,14 @@ async def register_table_precheck(
     state. Identical Pydantic validation to register-table; for BQ rows we
     additionally make a ``bigquery.Client(project).get_table(...)`` call
     and surface the GCP error verbatim.
+
+    Defined as a plain ``def`` (not ``async def``) so FastAPI runs it in a
+    threadpool — the BQ branch makes synchronous ``bigquery.Client(...)``
+    /``client.get_table(...)`` calls, which would otherwise block the
+    asyncio event loop and stall every other request for the duration of
+    the GCE round-trip. Mirrors the same conversion done for
+    ``register_table`` (see comment on that route). ``Depends(...)`` works
+    identically in sync handlers.
     """
     if not request.name or not request.name.strip():
         raise HTTPException(status_code=422, detail="Table name cannot be empty")

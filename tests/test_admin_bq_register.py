@@ -1671,3 +1671,202 @@ class TestCliDiscoverAndRegisterAcceptsAllSuccessCodes:
         )
         assert result.exit_code == 0, result.output
         assert "1 registered" in result.output
+
+
+class TestBigQueryRegisterRawNameValidation:
+    """Round-3 review BLOCKER 1: ``_validate_bigquery_register_payload`` must
+    validate the RAW name (the value persisted to ``table_registry.name``
+    and used by the BQ extractor as the DuckDB view name), NOT a normalized
+    form. Pre-fix a name like ``"my table"`` would pass validation
+    (normalized ``"my_table"`` is safe), get stored verbatim, then 500 at
+    the post-insert rebuild — defeating fast-fail-at-register."""
+
+    def test_register_rejects_name_with_space(
+        self, seeded_app, bq_instance, stub_bq_extractor,
+    ):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/register-table",
+            json=_bq_payload(name="my table"),
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400, resp.text
+        body = resp.json()
+        # Operator-friendly: surface the offending raw value verbatim.
+        assert "my table" in body["detail"]
+        assert "view name" in body["detail"].lower()
+
+    def test_register_rejects_name_with_leading_whitespace(
+        self, seeded_app, bq_instance, stub_bq_extractor,
+    ):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/register-table",
+            json=_bq_payload(name="  orders"),
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400, resp.text
+
+    def test_register_rejects_name_with_trailing_whitespace(
+        self, seeded_app, bq_instance, stub_bq_extractor,
+    ):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/register-table",
+            json=_bq_payload(name="orders  "),
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400, resp.text
+
+    def test_register_accepts_safe_name(
+        self, seeded_app, bq_instance, stub_bq_extractor,
+    ):
+        """Sanity check: the strict check still admits well-formed names."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/register-table",
+            json=_bq_payload(name="my_table"),
+            headers=_auth(token),
+        )
+        assert resp.status_code in (200, 202), resp.text
+
+    def test_precheck_rejects_name_with_space(self, seeded_app, bq_instance):
+        """Validation runs identically in /precheck — and it does so BEFORE
+        the BQ round-trip, so a bad raw name short-circuits without touching
+        the network."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        with patch("google.cloud.bigquery.Client") as cls:
+            resp = c.post(
+                "/api/admin/register-table/precheck",
+                json=_bq_payload(name="my table"),
+                headers=_auth(token),
+            )
+        assert resp.status_code == 400, resp.text
+        assert "my table" in resp.json()["detail"]
+        cls.assert_not_called()
+
+    def test_precheck_accepts_safe_name(self, seeded_app, bq_instance):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        fake_client = MagicMock()
+        fake_client.get_table.return_value = _FakeBQTable()
+        with patch("google.cloud.bigquery.Client", return_value=fake_client):
+            resp = c.post(
+                "/api/admin/register-table/precheck",
+                json=_bq_payload(name="my_table"),
+                headers=_auth(token),
+            )
+        assert resp.status_code == 200, resp.text
+
+
+class TestBigQueryWorkerExceptionVsTimeout:
+    """Round-3 review IMPORTANT 2: when the synchronous worker raises
+    *within* the wall-clock budget, the API must surface that as a 500
+    (hard error) — NOT 202 (timeout/retry). Earlier revisions mapped both
+    outcomes to "timeout", which hid real failures behind a misleading
+    "still working in the background" response for a budget-window worth
+    of seconds, then the BG retry surfaced the same exception in the logs."""
+
+    def test_worker_raises_within_budget_returns_500(
+        self, seeded_app, bq_instance, monkeypatch,
+    ):
+        # Stub rebuild_from_registry to RAISE (not return errors). Worker
+        # finishes within budget but the exception lands in err_holder.
+        def boom(conn=None, output_dir=None):
+            raise RuntimeError("simulated GCE auth failure")
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor.rebuild_from_registry",
+            boom,
+        )
+        orch_mock = MagicMock()
+        monkeypatch.setattr(
+            "src.orchestrator.SyncOrchestrator",
+            lambda *a, **kw: orch_mock,
+        )
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/register-table",
+            json=_bq_payload(name="boomtable"),
+            headers=_auth(token),
+        )
+        assert resp.status_code == 500, resp.text
+        body = resp.json()
+        assert body["status"] == "rebuild_failed"
+        # The exception message must show up in the body so the operator
+        # gets the actual root cause, not a "timeout" red herring.
+        assert body["errors"], body
+        assert any(
+            "simulated GCE auth failure" in (e.get("error") or "")
+            for e in body["errors"]
+        ), body["errors"]
+        # The row was still inserted before the rebuild ran — re-running
+        # after fixing the underlying issue picks it up.
+        list_resp = c.get("/api/admin/registry", headers=_auth(token))
+        assert "boomtable" in [t["name"] for t in list_resp.json()["tables"]]
+
+    def test_worker_still_running_at_timeout_returns_202(
+        self, seeded_app, bq_instance, monkeypatch,
+    ):
+        """Counterpart: if the worker is genuinely still running when the
+        budget expires, 202 + BackgroundTask is correct."""
+        import time
+
+        def slow_ok(conn=None, output_dir=None):
+            time.sleep(0.15)
+            return {
+                "project_id": "my-test-project",
+                "tables_registered": 1,
+                "errors": [],
+                "skipped": False,
+            }
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor.rebuild_from_registry",
+            slow_ok,
+        )
+        orch_mock = MagicMock()
+        monkeypatch.setattr(
+            "src.orchestrator.SyncOrchestrator",
+            lambda *a, **kw: orch_mock,
+        )
+        # Force a short budget so the worker is still running when wait()
+        # returns False.
+        monkeypatch.setattr(
+            "app.api.admin._BQ_SYNC_REGISTER_TIMEOUT_S", 0.05, raising=False,
+        )
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/register-table",
+            json=_bq_payload(name="slowtable"),
+            headers=_auth(token),
+        )
+        assert resp.status_code == 202, resp.text
+        body = resp.json()
+        assert body["status"] == "accepted"
+
+
+class TestRegisterTablePrecheckHandlerIsSync:
+    """Round-3 review NIT 3: ``register_table_precheck`` must be a plain
+    ``def`` (not ``async def``) — the BQ branch makes synchronous
+    ``bigquery.Client(...)`` / ``client.get_table(...)`` calls that would
+    otherwise block the asyncio event loop. Mirrors the same conversion
+    already done for ``register_table``."""
+
+    def test_precheck_handler_is_sync(self):
+        import inspect
+        from app.api import admin as admin_mod
+        assert not inspect.iscoroutinefunction(
+            admin_mod.register_table_precheck
+        ), (
+            "register_table_precheck must be a plain `def` so FastAPI runs "
+            "it in a threadpool; otherwise the synchronous bigquery.Client "
+            "calls block the asyncio event loop."
+        )
