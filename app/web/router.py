@@ -628,9 +628,18 @@ async def admin_tables(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     from src.repositories.table_registry import TableRegistryRepository
+    from app.instance_config import get_data_source_type
     repo = TableRegistryRepository(conn)
     tables = repo.list_all()
-    ctx = _build_context(request, user=user, registered_tables=tables)
+    # Branch the register-modal layout server-side so the JS doesn't have
+    # to round-trip /api/admin/server-config to learn the source type.
+    data_source_type = get_data_source_type() or "keboola"
+    ctx = _build_context(
+        request,
+        user=user,
+        registered_tables=tables,
+        data_source_type=data_source_type,
+    )
     return templates.TemplateResponse(request, "admin_tables.html", ctx)
 
 

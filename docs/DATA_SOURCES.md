@@ -8,7 +8,7 @@ Configure the data source type in `config/instance.yaml`:
 
 ```yaml
 data_source:
-  type: "keboola"  # Options: keboola, bigquery
+  type: "keboola"  # Options: keboola, bigquery, csv
 ```
 
 Table definitions are stored in the DuckDB `table_registry` table (not in config files). Register tables via the admin API, CLI, or web UI.
@@ -70,26 +70,76 @@ bigquery:
   project_id: "your-gcp-project"
 ```
 
-Or via the admin UI or CLI:
-```bash
-da admin register-table --source-type bigquery --bucket "dataset" --table "table" --query-mode remote
+## BigQuery Adapter
+
+Registers BigQuery tables and views as remote DuckDB views (no data download). Queries
+issued through the master `analytics.duckdb` are forwarded to BigQuery via the DuckDB
+BigQuery extension. See also `da fetch` for the analytical workflow that materializes
+filtered subsets locally.
+
+### Requirements
+
+- DuckDB BigQuery extension (auto-installed by the extractor on first run).
+- A GCP service account with `bigquery.metadata.get` on the dataset and
+  `bigquery.data.viewer` (or finer) on the table; `bigquery.jobs.create` on the
+  billing project for views and `da fetch` queries.
+- Credentials resolution: GCE metadata server first, then Application Default
+  Credentials (`gcloud auth application-default login` or
+  `GOOGLE_APPLICATION_CREDENTIALS`). See `connectors/bigquery/auth.py`.
+
+### Configuration
+
+In `config/instance.yaml`:
+
+```yaml
+data_source:
+  type: bigquery
+  bigquery:
+    project: my-data-project              # data + default billing project
+    billing_project: my-billing-project   # optional override; needed when SA
+                                          # lacks serviceusage.services.use on
+                                          # the data project
+    location: us
 ```
 
-### Authentication
+### Registering BigQuery tables
 
-Uses Application Default Credentials (ADC) — the standard Google auth fallback chain:
-1. `GOOGLE_APPLICATION_CREDENTIALS` env var (service account key JSON)
-2. gcloud user credentials (`gcloud auth application-default login`)
-3. GCE metadata server (automatic on Compute Engine)
+Two ways, both API-first (no manual `table_registry` SQL).
 
-No explicit key file configuration needed — ADC handles it.
+**Web UI** — go to `/admin/tables`. With `data_source.type: bigquery` the page
+swaps the discovery panel for a "Register BigQuery table" button that opens a
+manual-entry modal: dataset, source table, view name, description, folder,
+optional sync schedule. Submit runs `/api/admin/register-table/precheck` first
+(round-trips `bigquery.Client.get_table` to confirm the table exists and the SA
+can see it), surfaces the row count + size + column count, then commits.
 
-### How it works
+**CLI** — `da admin register-table`:
 
-1. The extractor (`connectors/bigquery/extractor.py`) creates `extract.duckdb` with remote views
-2. `_remote_attach` table tells the orchestrator how to ATTACH the BigQuery extension at query time
-3. Queries go directly to BigQuery — no data is downloaded to local storage
-4. Identifier validation (`validate_identifier`, `validate_quoted_identifier`) protects against injection
+```bash
+# Dry-run: validate + check the source exists, no DB write.
+da admin register-table orders \
+    --source-type bigquery \
+    --bucket analytics \
+    --source-table orders \
+    --dry-run
+
+# Commit
+da admin register-table orders \
+    --source-type bigquery \
+    --bucket analytics \
+    --source-table orders \
+    --description "Order data from BQ"
+```
+
+The server forces `query_mode=remote` and `profile_after_sync=false` for BQ
+rows. Sync schedule (`--sync-schedule`) is accepted and stored but not yet
+evaluated by the scheduler — see issue #79; addressed in Milestone 3 of the
+admin-BQ-registration epic (#108).
+
+### Wildcard / sharded tables
+
+Not supported in M1. The register endpoint rejects any `source_table` containing
+`*`. Tracked in #108 M3+.
 
 ### Hybrid Queries
 
