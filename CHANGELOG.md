@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING** `GET /marketplace/info` (admin-only debug endpoint) `name` field now returns the plugin's authoritative name from its `plugin.json` (e.g. `plug-x`) instead of the slug-prefixed form (`<slug>-<plug-x>`). The slug-prefixed form moved to a new `prefixed_name` field next to it; `original_name` is unchanged. Side-effect of the `/plugin` UI fix below — the synth marketplace.json's `name` field had to switch over for Claude Code's catalog lookup to work, and `/marketplace/info` mirrors that surface for consistency. Any downstream tooling that parsed the `name` field expecting the slug-prefixed format must now read `prefixed_name`.
+
 ### Fixed
 
 - **`/plugin` UI in Claude Code rendered "Plugin <X> not found in marketplace" in the Components panel** for every plugin Agnes served, even though agents/skills/commands loaded correctly under the plugin's own namespace. Root cause: the synthetic `.claude-plugin/marketplace.json` listed each plugin under a slug-prefixed `name` (`<slug>-<plugin>`) while the plugin's authoritative `.claude-plugin/plugin.json` kept the original name. Claude Code resolves the loaded plugin back to its catalog entry by `plugin.json` name, so the lookup missed every entry. The synth manifest now reads the plugin's authoritative name from `<plugin_dir>/.claude-plugin/plugin.json` (falling back to the upstream marketplace.json's `name` when the plugin manifest is absent or unreadable). The directory layout under `plugins/<slug>-<plugin>/...` keeps the prefix so two upstream marketplaces that ship a same-named plugin still get distinct on-disk paths in the ZIP / git tree — their catalog entries will then collide under the same `name`, which is the correct surface (admin RBAC decides which upstream wins, same as if a user added both upstream marketplaces directly to Claude Code). `/marketplace/info` now exposes `prefixed_name` alongside `name` so operators can still disambiguate cross-marketplace shadowing.
