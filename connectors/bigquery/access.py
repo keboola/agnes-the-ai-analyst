@@ -271,16 +271,36 @@ def get_bq_access() -> BqAccess:
     data = (get_value("data_source", "bigquery", "project", default="") or "").strip()
 
     if not data:
-        raise BqAccessError(
-            "not_configured",
-            "BigQuery project not configured",
-            details={
-                "hint": (
-                    "Set data_source.bigquery.project in instance.yaml "
-                    "(and optionally data_source.bigquery.billing_project for cross-project "
-                    "deployments). BIGQUERY_PROJECT env var also accepted as legacy override."
-                ),
-            },
+        # Return a "not configured" sentinel BqAccess. Construction succeeds so FastAPI
+        # Depends(get_bq_access) resolves cleanly on non-BQ instances (Keboola-only,
+        # CSV-only) where every v2 endpoint would otherwise 500 during dep-injection
+        # — even for local-source tables that never touch BigQuery.
+        # The error is deferred to bq.client() / bq.duckdb_session() so the endpoint's
+        # try/except BqAccessError catches it normally if (and only if) the endpoint
+        # actually tries to query BQ. Devin BUG_0001 on PR #138 review.
+        def _raise_not_configured(_projects):
+            raise BqAccessError(
+                "not_configured",
+                "BigQuery project not configured",
+                details={
+                    "hint": (
+                        "Set data_source.bigquery.project in instance.yaml "
+                        "(and optionally data_source.bigquery.billing_project for "
+                        "cross-project deployments). BIGQUERY_PROJECT env var also "
+                        "accepted as legacy override."
+                    ),
+                },
+            )
+
+        @contextmanager
+        def _raise_not_configured_session(_projects):
+            _raise_not_configured(_projects)
+            yield  # unreachable; keeps generator protocol
+
+        return BqAccess(
+            BqProjects(billing="", data=""),
+            client_factory=_raise_not_configured,
+            duckdb_session_factory=_raise_not_configured_session,
         )
 
     if not billing:
