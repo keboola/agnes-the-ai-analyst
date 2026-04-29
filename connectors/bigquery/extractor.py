@@ -6,11 +6,20 @@ No data is downloaded. All queries go directly to BigQuery via DuckDB extension 
 import logging
 import os
 import shutil
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Dict, Any
 
 import duckdb
+
+# Serializes the body of `init_extract` across threads so two concurrent
+# materialize calls (e.g. the synchronous timeout-fallback BackgroundTask
+# kicking in while the original daemon thread is still running) can't both
+# reach the `shutil.move(tmp, db_path)` swap and corrupt the extract file.
+# `SyncOrchestrator._rebuild_lock` only protects the master-view rebuild,
+# not the per-source extract-file write, so we need a dedicated lock here.
+_INIT_EXTRACT_LOCK = threading.Lock()
 
 from connectors.bigquery.auth import get_metadata_token, BQMetadataAuthError
 from app.instance_config import get_value
@@ -103,6 +112,19 @@ def init_extract(
     Returns:
         Dict with stats: {tables_registered: int, errors: list}
     """
+    # Serialize concurrent calls to avoid a torn `shutil.move` swap when the
+    # admin route's timeout-fallback BackgroundTask runs alongside the still-
+    # alive daemon thread that exceeded the 5s budget.
+    with _INIT_EXTRACT_LOCK:
+        return _init_extract_locked(output_dir, project_id, table_configs)
+
+
+def _init_extract_locked(
+    output_dir: str,
+    project_id: str,
+    table_configs: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Inner body of init_extract executed under _INIT_EXTRACT_LOCK."""
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
@@ -257,38 +279,128 @@ def init_extract(
     return stats
 
 
-if __name__ == "__main__":
-    """Standalone: reads config from instance.yaml + table_registry, creates extract."""
-    import connectors.bigquery.extractor as _self
-    from config.loader import load_instance_config
+def _resolve_bq_project_id() -> str:
+    """Resolve ``data_source.bigquery.project`` honoring the overlay.
+
+    Tries ``app.instance_config.get_value`` first (deep-merge of the static
+    ``CONFIG_DIR/instance.yaml`` and the writable
+    ``DATA_DIR/state/instance.yaml``); the writable overlay is what the
+    admin UI / API writes to. Falls back to a direct read of the static
+    config so the standalone ``__main__`` entry point still works in
+    environments where the FastAPI app isn't importable (e.g. a one-shot
+    scheduler container that only ships connector code).
+    """
+    try:
+        from app.instance_config import get_value as _get_value  # noqa: PLC0415
+        project_id = _get_value("data_source", "bigquery", "project", default="") or ""
+        if project_id:
+            return project_id
+    except Exception:
+        # The fallback below covers this path — keep going.
+        pass
+    try:
+        from config.loader import load_instance_config as _load  # noqa: PLC0415
+        cfg = _load() or {}
+        return ((cfg.get("data_source") or {}).get("bigquery") or {}).get("project", "") or ""
+    except Exception:
+        return ""
+
+
+def rebuild_from_registry(
+    conn: duckdb.DuckDBPyConnection | None = None,
+    output_dir: str | None = None,
+) -> Dict[str, Any]:
+    """Re-materialize the BigQuery extract.duckdb from the current registry.
+
+    Reads ``data_source.bigquery.project`` from ``instance.yaml`` and the
+    BigQuery rows from ``table_registry``, then calls ``init_extract`` to
+    write ``extract.duckdb`` containing one DuckDB view per registered BQ
+    table. Used by the admin API immediately after a register / update /
+    unregister of a BigQuery row so the master view appears (or disappears)
+    in seconds without waiting for the next scheduled sync.
+
+    Args:
+        conn: System DuckDB connection (already open). If None, a new one
+            is opened and closed inside this call — convenient for the
+            standalone __main__ entrypoint, but the API path always passes
+            its request-scoped connection so we don't open a second handle
+            on the same file.
+        output_dir: Override for the extract directory. Defaults to
+            ``${DATA_DIR}/extracts/bigquery`` to match the orchestrator's
+            scan path.
+
+    Returns:
+        Dict with ``project_id``, ``tables_registered``, ``errors``, and
+        ``skipped`` (set to True when there are no BQ rows in the registry,
+        in which case the extract is left untouched).
+
+    Project resolution: reads ``data_source.bigquery.project`` via
+    ``app.instance_config.get_value`` so the writable overlay
+    (``DATA_DIR/state/instance.yaml``, populated by ``POST /api/admin/
+    configure`` and ``/server-config``) is honored. Pre-2026-04-28 this
+    used ``config.loader.load_instance_config`` directly, which only sees
+    the static ``CONFIG_DIR/instance.yaml`` — operators who configured BQ
+    through the admin UI got a silent rebuild failure ("project missing")
+    while validation passed (the validator already used the merged view).
+    See review BLOCKER 2 in PR #119.
+    """
     from src.db import get_system_db
     from src.repositories.table_registry import TableRegistryRepository
 
-    config = load_instance_config()
-    bq_config = config.get("data_source", {}).get("bigquery", {})
-    project_id = bq_config.get("project", "")
+    project_id = _resolve_bq_project_id()
 
     if not project_id:
-        logger.error(
-            "data_source.bigquery.project missing from instance.yaml — "
-            "cannot run extractor"
-        )
-        raise SystemExit(2)
+        msg = "data_source.bigquery.project missing from instance.yaml"
+        logger.error(msg)
+        return {
+            "project_id": "",
+            "tables_registered": 0,
+            "errors": [{"table": "<config>", "error": msg}],
+            "skipped": False,
+        }
 
-    sys_conn = get_system_db()
+    owns_conn = conn is None
+    sys_conn = conn if conn is not None else get_system_db()
     try:
         repo = TableRegistryRepository(sys_conn)
         tables = repo.list_by_source("bigquery")
     finally:
-        sys_conn.close()
+        if owns_conn:
+            try:
+                sys_conn.close()
+            except Exception:
+                pass
 
     if not tables:
         logger.warning("No BigQuery tables registered in table_registry")
-    else:
+        return {
+            "project_id": project_id,
+            "tables_registered": 0,
+            "errors": [],
+            "skipped": True,
+        }
+
+    if output_dir is None:
         data_dir = Path(os.environ.get("DATA_DIR", "./data"))
-        # Look up init_extract via the cached module (sys.modules) instead of
-        # the fresh runpy namespace, so tests can monkey-patch it.
-        result = _self.init_extract(
-            str(data_dir / "extracts" / "bigquery"), project_id, tables
-        )
-        logger.info("BigQuery extract init complete: %s", result)
+        output_dir = str(data_dir / "extracts" / "bigquery")
+
+    # Resolve init_extract via this module so tests that monkey-patch it
+    # (e.g. tests/test_admin_bq_register.py) see the patched callable.
+    import connectors.bigquery.extractor as _self
+    result = _self.init_extract(output_dir, project_id, tables)
+    out = dict(result)
+    out["project_id"] = project_id
+    out["skipped"] = False
+    return out
+
+
+if __name__ == "__main__":
+    """Standalone: reads config from instance.yaml + table_registry, creates extract."""
+    result = rebuild_from_registry()
+    if result.get("skipped"):
+        # No BQ rows registered — nothing to do, exit cleanly.
+        raise SystemExit(0)
+    if not result.get("project_id"):
+        # Missing project → already logged inside rebuild_from_registry.
+        raise SystemExit(2)
+    logger.info("BigQuery extract init complete: %s", result)

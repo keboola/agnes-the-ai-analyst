@@ -122,17 +122,33 @@ class TestPushMetadata:
         resp = c.post("/api/admin/metadata/nonexistent_table/push", headers=_auth(token))
         assert resp.status_code == 404
 
-    def test_push_metadata_non_keboola_returns_400(self, seeded_app):
-        """Push is only supported for keboola tables."""
+    def test_push_metadata_non_keboola_returns_400(self, seeded_app, monkeypatch):
+        """Push is only supported for keboola tables.
+
+        Registering a BQ row through the API now requires a configured
+        BQ project + dataset + source_table (issue #108 M1 added strict
+        validation), so we seed the row directly via the repository to
+        keep this test focused on the push-path behavior under test.
+        """
+        from src.db import get_system_db
+        from src.repositories.table_registry import TableRegistryRepository
+
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
 
-        # Register a bigquery table (non-keboola)
-        c.post(
-            "/api/admin/register-table",
-            json={"name": "bq_table", "source_type": "bigquery", "query_mode": "remote"},
-            headers=_auth(token),
-        )
+        conn = get_system_db()
+        try:
+            TableRegistryRepository(conn).register(
+                id="bq_table",
+                name="bq_table",
+                source_type="bigquery",
+                bucket="analytics",
+                source_table="bq_table",
+                query_mode="remote",
+                profile_after_sync=False,
+            )
+        finally:
+            conn.close()
 
         resp = c.post("/api/admin/metadata/bq_table/push", headers=_auth(token))
         assert resp.status_code == 400
