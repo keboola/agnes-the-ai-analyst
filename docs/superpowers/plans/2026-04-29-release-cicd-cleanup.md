@@ -8,7 +8,21 @@
 
 **Tech Stack:** GitHub Actions (reusable workflows + workflow_call + workflow_dispatch), `setuptools_scm`, Release Drafter (`release-drafter/release-drafter` action), Docker buildx, GHCR, `actionlint` for YAML validation.
 
-**Operator-impact note:** Phase 5 changes how dev VMs receive images. Anyone with a VM pinned to `:dev-<prefix>-latest` will need to either (a) re-pin to `:dev` (latest dev across all branches), or (b) use `workflow_dispatch` to publish a per-branch image when they want to deploy non-main code. Migration is documented in Task 11.
+**Operator-impact note:** Phase 5 changes how dev VMs receive images. The originally-planned "drop per-branch builds" was softened mid-execution (see *Revision note* below) — the per-branch + per-prefix-latest tag formats are preserved; only the auto-trigger on every-branch push is dropped. Operators wanting an image from a non-main branch run `gh workflow run release.yml -r <branch>` manually; the resulting build still publishes `:dev-<branch-slug>` and `:dev-<prefix>-latest` aliases identically to the pre-cleanup auto-build path. See `docs/release-process.md` for the full operator-facing reference.
+
+## Revision note (2026-04-29, mid-Phase-5)
+
+After Phase 4 completed, the user pushed back on the original Task 9 ("drop per-branch image builds entirely"). The justification I'd given for dropping them was the "footgun for shared dev VMs" line from `CLAUDE.md`, but the user confirmed nobody on the team currently has a VM pinned to `:dev-<prefix>-latest` — so that argument no longer applied.
+
+**Revised Task 9 scope:**
+- Drop the auto-trigger on every-branch push (`branches: ["**"]` + `create:` event removed)
+- Drop the CalVer claim-tag race loop, replace with `${{ github.run_number }}`
+- Drop `concurrency:` block (was a workaround for create+push race)
+- **Keep** all branch-slug + user-prefix tag computation
+- **Keep** `:dev-<branch-slug>` and `:dev-<prefix>-latest` floating-alias publishing
+- **Keep** Git Flow prefix skip-list
+
+Net: `gh workflow run release.yml -r zs/foo` publishes the same tags that pushing `zs/foo` used to publish, just gated on operator intent rather than automatic on every commit. Tasks 10–13 unchanged.
 
 ---
 
