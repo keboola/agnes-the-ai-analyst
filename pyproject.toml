@@ -80,6 +80,10 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["app", "src", "connectors", "cli", "services", "config"]
 
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+
 [tool.uv]
 dev-dependencies = [
     "pytest>=9.0.0",

@@ -1,4 +1,4 @@
-# Access control (v13)
+# Access control (v14)
 
 Two-layer authorization model:
 
@@ -14,8 +14,8 @@ There is no role hierarchy, no session cache, no implies expansion, no module-au
 | Table | Purpose |
 |---|---|
 | `user_groups` | Named groups. Two rows seeded as `is_system=TRUE`: **Admin** (god mode) and **Everyone** (auto-membership for all users). |
-| `user_group_members` | `(user_id, group_id, source)`. `source ∈ {admin, google_sync, system_seed}` so each writer only manipulates its own rows — Google sync's nightly DELETE+INSERT does not clobber admin-added members. |
-| `resource_grants` | `(group_id, resource_type, resource_id)`. The grant table the resolver hits when Admin short-circuit doesn't apply. |
+| `user_group_members` | `(user_id, group_id, source)`. `source ∈ {admin, google_sync, system_seed}` so each writer only manipulates its own rows — Google sync's nightly DELETE+INSERT does not clobber admin-added members. **v14**: FK constraint on `group_id` referencing `user_groups.id` (cascade delete). |
+| `resource_grants` | `(group_id, resource_type, resource_id)`. The grant table the resolver hits when Admin short-circuit doesn't apply. **v14**: FK constraint on `group_id` referencing `user_groups.id` (cascade delete). |
 
 `resource_type` is a string from the `app.resource_types.ResourceType` `StrEnum`. `resource_id` is a path string whose format is owned by the registering module — for `marketplace_plugin` it's `<marketplace_slug>/<plugin_name>`.
 
@@ -177,3 +177,16 @@ The v12→v13 migration is a single-step hard cutover. The Python helper `_v12_t
 7. Drops the `users.groups` JSON column. The legacy `users.role` column is kept NULL'd as an artifact (DuckDB historical FK constraints sometimes block DROP COLUMN; the field carries no semantic meaning post-v13).
 
 No dual-write window. Either the schema is on v12 (old code) or v13 (new code).
+
+---
+
+## Schema v14 — FK constraints
+
+The v13→v14 migration adds DuckDB foreign-key constraints to `user_group_members` and `resource_grants`:
+
+- `user_group_members.group_id` → `user_groups.id` (ON DELETE CASCADE)
+- `resource_grants.group_id` → `user_groups.id` (ON DELETE CASCADE)
+
+This prevents orphaned member/grant rows pointing at a deleted group. The migration uses RENAME → CREATE-with-FK → INSERT → DROP, wrapped in `BEGIN TRANSACTION` so a partial failure rolls back without leaving the DB at a half-applied schema.
+
+No semantic changes — v14 is backward compatible with v13 application code.

@@ -1270,3 +1270,198 @@ class TestSchemaV12:
             assert count_members > 0, "retry should backfill members"
         finally:
             conn.close()
+
+
+class TestV13ToV14Migration:
+    """Tests for v13→v14 finalize: orphan cleanup + FK constraints + rollback."""
+
+    def _create_v13_db(self, tmp_path, monkeypatch):
+        """Create a v13 database with some data including orphan records."""
+        import json
+        import uuid
+        import duckdb as _duckdb
+
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        db_path = tmp_path / "state" / "system.duckdb"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = _duckdb.connect(str(db_path))
+
+        # Build a minimal v13 schema
+        conn.execute("""
+            CREATE TABLE schema_version (version INTEGER, applied_at TIMESTAMP DEFAULT current_timestamp);
+            INSERT INTO schema_version (version) VALUES (13);
+            CREATE TABLE users (
+                id VARCHAR PRIMARY KEY, email VARCHAR UNIQUE NOT NULL, name VARCHAR, role VARCHAR,
+                password_hash VARCHAR, setup_token VARCHAR, setup_token_created TIMESTAMP,
+                reset_token VARCHAR, reset_token_created TIMESTAMP,
+                active BOOLEAN DEFAULT TRUE, deactivated_at TIMESTAMP, deactivated_by VARCHAR,
+                created_at TIMESTAMP, updated_at TIMESTAMP
+            );
+            CREATE TABLE user_groups (
+                id VARCHAR PRIMARY KEY, name VARCHAR UNIQUE,
+                description TEXT, is_system BOOLEAN, created_at TIMESTAMP, created_by VARCHAR
+            );
+            CREATE TABLE user_group_members (
+                id VARCHAR PRIMARY KEY, user_id VARCHAR, group_id VARCHAR,
+                source VARCHAR, added_at TIMESTAMP, added_by VARCHAR
+            );
+            CREATE TABLE resource_grants (
+                id VARCHAR PRIMARY KEY, group_id VARCHAR,
+                resource_type VARCHAR, resource_id VARCHAR,
+                assigned_at TIMESTAMP, assigned_by VARCHAR
+            );
+            CREATE TABLE table_registry (
+                id VARCHAR PRIMARY KEY, name VARCHAR, source_type VARCHAR, bucket VARCHAR,
+                source_table VARCHAR, query_mode VARCHAR, sync_schedule VARCHAR,
+                profile_after_sync BOOLEAN, is_public BOOLEAN, description TEXT,
+                created_at TIMESTAMP, updated_at TIMESTAMP
+            );
+            CREATE TABLE sync_state (table_id VARCHAR PRIMARY KEY, status VARCHAR,
+                last_sync TIMESTAMP, rows INTEGER, size_bytes INTEGER, error TEXT);
+            CREATE TABLE sync_history (id VARCHAR PRIMARY KEY, table_id VARCHAR,
+                status VARCHAR, started_at TIMESTAMP, finished_at TIMESTAMP,
+                rows INTEGER, size_bytes INTEGER, error TEXT);
+            CREATE TABLE personal_access_tokens (
+                id VARCHAR PRIMARY KEY, user_id VARCHAR, name VARCHAR,
+                token_hash VARCHAR, prefix VARCHAR, scopes VARCHAR,
+                created_at TIMESTAMP, expires_at TIMESTAMP,
+                last_used_at TIMESTAMP, last_used_ip VARCHAR, revoked_at TIMESTAMP
+            );
+            CREATE TABLE view_ownership (
+                source_name VARCHAR, table_name VARCHAR, owner_id VARCHAR,
+                claimed_at TIMESTAMP DEFAULT current_timestamp,
+                PRIMARY KEY (source_name, table_name)
+            );
+        """)
+
+        # Seed system groups
+        admin_gid = str(uuid.uuid4())
+        everyone_gid = str(uuid.uuid4())
+        conn.execute("INSERT INTO user_groups (id, name, is_system) VALUES (?, 'Admin', TRUE)", [admin_gid])
+        conn.execute("INSERT INTO user_groups (id, name, is_system) VALUES (?, 'Everyone', TRUE)", [everyone_gid])
+
+        # Seed a user
+        uid = str(uuid.uuid4())
+        conn.execute("INSERT INTO users (id, email, name, role) VALUES (?, 'test@x.com', 'Test', 'analyst')", [uid])
+
+        # Valid memberships
+        conn.execute(
+            "INSERT INTO user_group_members (id, user_id, group_id, source, added_at, added_by) VALUES (?, ?, ?, 'admin', current_timestamp, 'admin')",
+            [str(uuid.uuid4()), uid, everyone_gid],
+        )
+
+        # Orphan: membership referencing non-existent group (FK target missing)
+        orphan_mid = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO user_group_members (id, user_id, group_id, source, added_at, added_by) VALUES (?, ?, 'nonexistent-group', 'admin', current_timestamp, 'admin')",
+            [orphan_mid, uid],
+        )
+
+        # Orphan: grant referencing non-existent group
+        orphan_gid = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO resource_grants (id, group_id, resource_type, resource_id, assigned_at, assigned_by) VALUES (?, ?, 'plugin', 'test-plugin', current_timestamp, 'admin')",
+            [orphan_gid, 'nonexistent-group'],
+        )
+
+        # Valid grant
+        conn.execute(
+            "INSERT INTO resource_grants (id, group_id, resource_type, resource_id, assigned_at, assigned_by) VALUES (?, ?, 'plugin', 'valid-plugin', current_timestamp, 'admin')",
+            [str(uuid.uuid4()), everyone_gid],
+        )
+
+        conn.close()
+        return db_path, uid, admin_gid, everyone_gid, orphan_mid
+
+    def test_v13_to_v14_orphan_cleanup(self, tmp_path, monkeypatch):
+        """v13→v14 finalize must clean up orphan records before adding FK constraints."""
+        db_path, uid, admin_gid, everyone_gid, orphan_mid = self._create_v13_db(tmp_path, monkeypatch)
+        from src.db import get_system_db, get_schema_version, SCHEMA_VERSION
+
+        conn = get_system_db()
+        try:
+            assert get_schema_version(conn) == SCHEMA_VERSION
+
+            # Orphan membership should have been deleted
+            orphans = conn.execute(
+                "SELECT COUNT(*) FROM user_group_members WHERE group_id = 'nonexistent-group'"
+            ).fetchone()[0]
+            assert orphans == 0, "orphan user_group_members should be cleaned up"
+
+            # Orphan grant should have been deleted
+            orphan_grants = conn.execute(
+                "SELECT COUNT(*) FROM resource_grants WHERE group_id = 'nonexistent-group'"
+            ).fetchone()[0]
+            assert orphan_grants == 0, "orphan resource_grants should be cleaned up"
+
+            # Valid records should still exist
+            valid_members = conn.execute(
+                "SELECT COUNT(*) FROM user_group_members WHERE user_id = ?", [uid]
+            ).fetchone()[0]
+            assert valid_members > 0, "valid memberships should be preserved"
+
+            valid_grants = conn.execute(
+                "SELECT COUNT(*) FROM resource_grants WHERE group_id = ?", [everyone_gid]
+            ).fetchone()[0]
+            assert valid_grants > 0, "valid grants should be preserved"
+        finally:
+            conn.close()
+
+    def test_v13_to_v14_fk_constraints_added(self, tmp_path, monkeypatch):
+        """v13→v14 finalize must add FK constraints on user_group_members and resource_grants."""
+        db_path, *_ = self._create_v13_db(tmp_path, monkeypatch)
+        import duckdb as _duckdb
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        try:
+            # Check FK constraints exist on user_group_members
+            fks_members = conn.execute(
+                "SELECT constraint_text FROM duckdb_constraints() "
+                "WHERE table_name = 'user_group_members' AND constraint_type = 'FOREIGN KEY'"
+            ).fetchall()
+            fk_texts = [fk[0] for fk in fks_members]
+            assert any('user_groups' in t for t in fk_texts), "FK to user_groups should exist on user_group_members"
+
+            # Check FK constraints exist on resource_grants
+            fks_grants = conn.execute(
+                "SELECT constraint_text FROM duckdb_constraints() "
+                "WHERE table_name = 'resource_grants' AND constraint_type = 'FOREIGN KEY'"
+            ).fetchall()
+            fk_texts_g = [fk[0] for fk in fks_grants]
+            assert any('user_groups' in t for t in fk_texts_g), "FK to user_groups should exist on resource_grants"
+        finally:
+            conn.close()
+
+    def test_v13_to_v14_rollback_on_failure(self, tmp_path, monkeypatch):
+        """If v13→v14 finalize fails, schema_version must stay at 13 and rollback."""
+        db_path, *_ = self._create_v13_db(tmp_path, monkeypatch)
+        from src import db as _db
+        from src.db import get_system_db, get_schema_version
+
+        # Inject a failure inside the v13→v14 finalize
+        original_finalize = _db._v13_to_v14_finalize
+        def _boom(_conn):
+            raise RuntimeError("synthetic v14 finalize failure")
+        monkeypatch.setattr(_db, "_v13_to_v14_finalize", _boom)
+
+        with pytest.raises(RuntimeError, match="synthetic v14 finalize failure"):
+            get_system_db()
+        _db._system_db_conn = None
+
+        # Verify rollback: schema_version still 13
+        import duckdb as _duckdb
+        conn = _duckdb.connect(str(db_path))
+        try:
+            assert get_schema_version(conn) == 13, "schema_version must stay at 13 after rollback"
+        finally:
+            conn.close()
+
+        # Restore and retry — should succeed
+        monkeypatch.setattr(_db, "_v13_to_v14_finalize", original_finalize)
+        conn = get_system_db()
+        try:
+            from src.db import SCHEMA_VERSION
+            assert get_schema_version(conn) == SCHEMA_VERSION
+        finally:
+            conn.close()

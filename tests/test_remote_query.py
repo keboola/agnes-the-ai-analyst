@@ -288,3 +288,256 @@ class TestValidateBqSql:
         """Valid read-only BQ queries must pass."""
         # Should not raise
         _validate_bq_sql(sql)
+
+
+
+# ---------------------------------------------------------------------------
+# Hybrid Query BigQuery integration tests (mocked BQ client)
+# ---------------------------------------------------------------------------
+
+
+class TestHybridQueryBigQuery:
+    """Tests for the two-phase BQ registration + DuckDB execution flow.
+
+    These test the RemoteQueryEngine's register_bq + execute pipeline
+    with a mocked BQ client, simulating the /api/query/hybrid endpoint.
+    """
+
+    def test_register_bq_creates_temporary_view_in_duckdb(self, analytics_conn):
+        """register_bq parameter creates a temporary view in DuckDB that is
+        queryable via the registered alias."""
+        arrow_table = pa.table(
+            {
+                "date": pa.array(["2026-01-01", "2026-01-15"], type=pa.utf8()),
+                "views": pa.array([100, 200], type=pa.int64()),
+            }
+        )
+        mock_client = _make_bq_mock(arrow_table)
+
+        engine = RemoteQueryEngine(
+            analytics_conn,
+            _bq_client_factory=lambda project: mock_client,
+        )
+
+        result = engine.register_bq("traffic", "SELECT date, views FROM bq.traffic")
+        assert result["alias"] == "traffic"
+        assert result["rows"] == 2
+
+        # The alias is queryable from DuckDB as a view/table
+        rows = analytics_conn.execute("SELECT views FROM traffic ORDER BY views").fetchall()
+        assert rows[0][0] == 100
+        assert rows[1][0] == 200
+
+    def test_sql_query_can_join_local_table_with_registered_bq(self, analytics_conn):
+        """SQL query can JOIN local table with registered BQ result."""
+        # Local orders table already exists from fixture
+        bq_arrow = pa.table(
+            {
+                "date": pa.array(["2026-01-01", "2026-01-15"], type=pa.utf8()),
+                "views": pa.array([50, 75], type=pa.int64()),
+            }
+        )
+        mock_client = _make_bq_mock(bq_arrow)
+
+        engine = RemoteQueryEngine(
+            analytics_conn,
+            _bq_client_factory=lambda project: mock_client,
+        )
+        engine.register_bq("traffic", "SELECT date, views FROM bq.traffic")
+
+        result = engine.execute(
+            "SELECT o.id, o.amount, t.views "
+            "FROM orders o JOIN traffic t ON o.date = t.date "
+            "ORDER BY o.id"
+        )
+
+        assert result["row_count"] == 2
+        assert "views" in result["columns"]
+        assert "amount" in result["columns"]
+        # Verify the join produced correct data
+        assert result["rows"][0][2] == 50  # views for 2026-01-01
+        assert result["rows"][1][2] == 75  # views for 2026-01-15
+
+    def test_multiple_register_bq_parameters_simultaneously(self, analytics_conn):
+        """Multiple register_bq parameters work simultaneously — each creates
+        an independent view that can be joined together."""
+        traffic_arrow = pa.table(
+            {
+                "date": pa.array(["2026-01-01", "2026-01-15"], type=pa.utf8()),
+                "views": pa.array([100, 200], type=pa.int64()),
+            }
+        )
+        revenue_arrow = pa.table(
+            {
+                "date": pa.array(["2026-01-01", "2026-01-15"], type=pa.utf8()),
+                "revenue": pa.array([1000.0, 2000.0], type=pa.float64()),
+            }
+        )
+
+        # First call returns count + data for traffic, second for revenue
+        traffic_count = pa.table({"count": pa.array([2], type=pa.int64())})
+        revenue_count = pa.table({"count": pa.array([2], type=pa.int64())})
+
+        traffic_count_job = MagicMock()
+        traffic_count_job.to_arrow.return_value = traffic_count
+        traffic_data_job = MagicMock()
+        traffic_data_job.to_arrow.return_value = traffic_arrow
+
+        revenue_count_job = MagicMock()
+        revenue_count_job.to_arrow.return_value = revenue_count
+        revenue_data_job = MagicMock()
+        revenue_data_job.to_arrow.return_value = revenue_arrow
+
+        mock_client = MagicMock()
+        mock_client.query.side_effect = [
+            traffic_count_job, traffic_data_job,
+            revenue_count_job, revenue_data_job,
+        ]
+
+        engine = RemoteQueryEngine(
+            analytics_conn,
+            _bq_client_factory=lambda project: mock_client,
+        )
+
+        engine.register_bq("traffic", "SELECT date, views FROM bq.traffic")
+        engine.register_bq("revenue", "SELECT date, revenue FROM bq.revenue")
+
+        result = engine.execute(
+            "SELECT t.date, t.views, r.revenue "
+            "FROM traffic t JOIN revenue r ON t.date = r.date "
+            "ORDER BY t.views"
+        )
+
+        assert result["row_count"] == 2
+        assert set(result["columns"]) == {"date", "views", "revenue"}
+
+    def test_invalid_bq_sql_returns_meaningful_error(self, analytics_conn):
+        """Invalid BQ SQL (blocked keyword) returns RemoteQueryError with
+        error_type='query_error'."""
+        engine = RemoteQueryEngine(analytics_conn)
+
+        with pytest.raises(RemoteQueryError) as exc_info:
+            engine.register_bq("bad", "DROP TABLE important_data")
+
+        assert exc_info.value.error_type == "query_error"
+        assert "blocked" in str(exc_info.value).lower() or "drop" in str(exc_info.value).lower()
+
+    def test_missing_bigquery_credentials_returns_proper_error(self, analytics_conn):
+        """Missing BigQuery credentials (no BIGQUERY_PROJECT env var, no
+        google-cloud-bigquery installed) returns RemoteQueryError, not crash."""
+        engine = RemoteQueryEngine(
+            analytics_conn,
+            _bq_client_factory=None,  # No factory → tries default import
+        )
+
+        with patch.dict(sys.modules, {
+            "google": None, "google.cloud": None, "google.cloud.bigquery": None,
+        }):
+            with pytest.raises(RemoteQueryError) as exc_info:
+                engine.register_bq("bq_data", "SELECT 1")
+
+        assert exc_info.value.error_type == "bq_error"
+        # Should mention the missing package or config, not a raw traceback
+        detail = str(exc_info.value).lower()
+        assert "bigquery" in detail or "google" in detail
+
+    def test_bq_query_error_returns_meaningful_error(self, analytics_conn):
+        """When the BQ client raises an exception during query, the engine
+        wraps it in RemoteQueryError with error_type='bq_error'."""
+        mock_client = MagicMock()
+        mock_client.query.side_effect = Exception("Connection refused")
+
+        engine = RemoteQueryEngine(
+            analytics_conn,
+            _bq_client_factory=lambda project: mock_client,
+        )
+
+        with pytest.raises(RemoteQueryError) as exc_info:
+            engine.register_bq("bq_data", "SELECT 1 FROM dataset.table")
+
+        assert exc_info.value.error_type == "bq_error"
+        assert "connection refused" in str(exc_info.value).lower()
+
+    def test_bq_count_precheck_failure_returns_bq_error(self, analytics_conn):
+        """When the BQ COUNT(*) pre-check fails, the engine returns
+        RemoteQueryError with error_type='bq_error'."""
+        mock_client = MagicMock()
+        count_job = MagicMock()
+        count_job.to_arrow.side_effect = Exception("Permission denied")
+        mock_client.query.return_value = count_job
+
+        engine = RemoteQueryEngine(
+            analytics_conn,
+            _bq_client_factory=lambda project: mock_client,
+        )
+
+        with pytest.raises(RemoteQueryError) as exc_info:
+            engine.register_bq("bq_data", "SELECT 1 FROM dataset.table")
+
+        assert exc_info.value.error_type == "bq_error"
+
+    def test_bq_row_limit_exceeded_returns_row_limit_error(self, analytics_conn):
+        """When BQ result exceeds max_bq_registration_rows, returns
+        RemoteQueryError with error_type='row_limit'."""
+        arrow_table = pa.table({"x": pa.array([1], type=pa.int64())})
+        mock_client = _make_bq_mock(arrow_table, count_value=999_999)
+
+        engine = RemoteQueryEngine(
+            analytics_conn,
+            _bq_client_factory=lambda project: mock_client,
+            max_bq_registration_rows=500_000,
+        )
+
+        with pytest.raises(RemoteQueryError) as exc_info:
+            engine.register_bq("big_data", "SELECT * FROM huge_table")
+
+        assert exc_info.value.error_type == "row_limit"
+        assert exc_info.value.details["count"] == 999_999
+
+    def test_bq_memory_limit_exceeded_returns_memory_limit_error(self, analytics_conn):
+        """When the Arrow table exceeds max_memory_mb, returns
+        RemoteQueryError with error_type='memory_limit'."""
+        # Create a table that reports a large nbytes
+        big_arrow = pa.table(
+            {"x": pa.array([1] * 1000, type=pa.int64())}
+        )
+        mock_client = _make_bq_mock(big_arrow)
+
+        engine = RemoteQueryEngine(
+            analytics_conn,
+            _bq_client_factory=lambda project: mock_client,
+            max_memory_mb=0.001,  # tiny limit → guaranteed exceed
+        )
+
+        with pytest.raises(RemoteQueryError) as exc_info:
+            engine.register_bq("big_data", "SELECT * FROM wide_table")
+
+        assert exc_info.value.error_type == "memory_limit"
+
+    def test_hybrid_query_execute_error_returns_query_error(self, analytics_conn):
+        """When the final DuckDB SQL execution fails, returns
+        RemoteQueryError with error_type='query_error'."""
+        engine = RemoteQueryEngine(analytics_conn)
+
+        with pytest.raises(RemoteQueryError) as exc_info:
+            engine.execute("SELECT * FROM nonexistent_table")
+
+        assert exc_info.value.error_type == "query_error"
+
+    def test_reserved_alias_rejected(self, analytics_conn):
+        """Reserved aliases (information_schema, main, etc.) are rejected."""
+        engine = RemoteQueryEngine(analytics_conn)
+
+        with pytest.raises(RemoteQueryError) as exc_info:
+            engine.register_bq("information_schema", "SELECT 1")
+
+        assert exc_info.value.error_type == "query_error"
+
+    def test_invalid_alias_rejected(self, analytics_conn):
+        """Aliases that aren't valid SQL identifiers are rejected."""
+        engine = RemoteQueryEngine(analytics_conn)
+
+        with pytest.raises(RemoteQueryError) as exc_info:
+            engine.register_bq("bad alias!", "SELECT 1")
+
+        assert exc_info.value.error_type == "query_error"

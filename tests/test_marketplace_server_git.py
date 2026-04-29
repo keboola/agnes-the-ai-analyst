@@ -5,32 +5,21 @@ git smart-HTTP wire protocol (`GET /info/refs?service=git-upload-pack`)
 rather than spawning a real `git clone` subprocess — cheaper to run, no
 socket required, and avoids Windows/PATH git-binary flakiness on CI.
 
-A single realistic end-to-end clone test is parked under
-@pytest.mark.slow and only runs when the user opts in.
+v13: uses user_group_members + resource_grants (no PluginAccessRepository,
+no users.groups JSON). PAT auth via HTTP Basic where password = PAT.
 """
 
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
-import shutil
-import subprocess
-import threading
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Optional
 
 import pytest
 from fastapi.testclient import TestClient
-
-pytest.skip(
-    "v12: PluginAccessRepository was removed and users.role/users.groups are "
-    "no longer the authorization source. Rewrite this module against the "
-    "v12 model — seed user_group_members + resource_grants directly, drop "
-    "the role='analyst' fixture pattern, and use UserGroupMembersRepository "
-    "for group assignment.",
-    allow_module_level=True,
-)
 
 
 def _basic(username: str, password: str) -> str:
@@ -43,17 +32,16 @@ def git_env(e2e_env, monkeypatch):
     """Identical setup to the ZIP fixture but returns raw PAT strings usable
     as HTTP Basic passwords. A valid PAT requires a real row in
     personal_access_tokens (the PAT resolver does a DB round-trip), so we
-    create two: one admin, one analyst with groups=["TestGroup"]."""
+    create two: one admin, one analyst with group membership via
+    user_group_members + resource_grants."""
     from app.main import create_app
     from app.auth.jwt import create_access_token
     from src.db import get_system_db
     from src.repositories.users import UserRepository
     from src.repositories.access_tokens import AccessTokenRepository
-    from src.repositories.user_groups import (
-        UserGroupsRepository, PluginAccessRepository,
-    )
-    import hashlib
-    import uuid
+    from src.repositories.user_groups import UserGroupsRepository
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    from src.repositories.resource_grants import ResourceGrantsRepository
 
     data_dir = e2e_env["data_dir"]
 
@@ -88,18 +76,28 @@ def git_env(e2e_env, monkeypatch):
         users = UserRepository(conn)
         users.create(id="admin1", email="admin@test.local", name="Admin", role="admin")
         users.create(id="analyst1", email="analyst@test.local", name="Analyst", role="analyst")
-        conn.execute(
-            "UPDATE users SET groups = ? WHERE id = ?",
-            [json.dumps(["TestGroup"]), "analyst1"],
-        )
 
+        # System groups
         ug = UserGroupsRepository(conn)
-        tg = ug.create(name="TestGroup")
-        ug.ensure_system("Admin", "sys")
-        ug.ensure_system("Everyone", "sys")
+        ug.ensure_system("Admin", "system")
+        ug.ensure_system("Everyone", "system")
 
-        access = PluginAccessRepository(conn)
-        access.grant(tg["id"], "mkt-b", "plug-y")
+        admin_gid = conn.execute("SELECT id FROM user_groups WHERE name='Admin'").fetchone()[0]
+
+        # Create TestGroup for analyst
+        tg = ug.create(name="TestGroup", description="granted plug-y only")
+        test_group_gid = tg["id"]
+
+        # Assign memberships
+        ugm = UserGroupMembersRepository(conn)
+        ugm.add_member("admin1", admin_gid, source="system_seed")
+        ugm.add_member("analyst1", test_group_gid, source="admin")
+
+        # Grant plugins via resource_grants
+        rg = ResourceGrantsRepository(conn)
+        rg.create(group_id=admin_gid, resource_type="marketplace_plugin", resource_id="mkt-a/plug-x")
+        rg.create(group_id=admin_gid, resource_type="marketplace_plugin", resource_id="mkt-b/plug-y")
+        rg.create(group_id=test_group_gid, resource_type="marketplace_plugin", resource_id="mkt-b/plug-y")
 
         # Create real PAT rows so resolve_token_to_user passes.
         token_repo = AccessTokenRepository(conn)
@@ -199,60 +197,54 @@ class TestGitSmartHttp:
         entries = [p for p in cache.iterdir() if p.is_dir() and p.name.endswith(".git")]
         assert len(entries) == 2
 
+    # --- New tests for git smart HTTP protocol coverage ---
 
-# ---------------------------------------------------------------------------
-# Optional end-to-end: run a real git clone against a live uvicorn server.
-# Opt-in via `pytest -m slow`.
-# ---------------------------------------------------------------------------
+    def test_git_upload_pack_endpoint_requires_auth(self, git_env):
+        """POST /marketplace.git/git-upload-pack requires HTTP Basic auth."""
+        c = git_env["client"]
+        resp = c.post("/marketplace.git/git-upload-pack")
+        assert resp.status_code == 401
 
-
-def _have_git() -> bool:
-    return shutil.which("git") is not None
-
-
-@pytest.mark.slow
-@pytest.mark.skipif(not _have_git(), reason="git binary not on PATH")
-def test_real_git_clone_admin(git_env, tmp_path):
-    """Spawn the app under uvicorn and run `git clone` against it."""
-    import socket
-    import uvicorn
-
-    # Find a free port
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-
-    # Spin up uvicorn in a thread with the already-built app from the fixture
-    config = uvicorn.Config(
-        app=git_env["client"].app,
-        host="127.0.0.1",
-        port=port,
-        log_level="warning",
-    )
-    server = uvicorn.Server(config)
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-    try:
-        # Poll until ready
-        import time
-        for _ in range(50):
-            with socket.socket() as s:
-                try:
-                    s.connect(("127.0.0.1", port))
-                    break
-                except OSError:
-                    time.sleep(0.1)
-
-        dest = tmp_path / "clone"
-        pat = git_env["admin_pat"]
-        url = f"http://x:{pat}@127.0.0.1:{port}/marketplace.git/"
-        proc = subprocess.run(
-            ["git", "clone", url, str(dest)],
-            capture_output=True, text=True, timeout=60,
+    def test_git_endpoints_require_http_basic_with_pat(self, git_env):
+        """Git endpoints require HTTP Basic auth where password = PAT.
+        Bearer auth is not accepted for git endpoints."""
+        c = git_env["client"]
+        # Bearer auth should fail — git uses Basic
+        resp = c.get(
+            "/marketplace.git/info/refs?service=git-upload-pack",
+            headers={"Authorization": f"Bearer {git_env['admin_pat']}"},
         )
-        assert proc.returncode == 0, proc.stderr
-        assert (dest / ".claude-plugin" / "marketplace.json").is_file()
-        assert (dest / "plugins" / "mkt-a-plug-x" / "CLAUDE.md").is_file()
-    finally:
-        server.should_exit = True
-        thread.join(timeout=5)
+        assert resp.status_code == 401
+
+    def test_info_refs_with_valid_pat_returns_200(self, git_env):
+        """GET /marketplace.git/info/refs with valid PAT returns git protocol response."""
+        c = git_env["client"]
+        resp = c.get(
+            "/marketplace.git/info/refs?service=git-upload-pack",
+            headers={"Authorization": _basic("x", git_env["admin_pat"])},
+        )
+        assert resp.status_code == 200
+        assert "git-upload-pack" in resp.headers["content-type"]
+
+    def test_analyst_sees_filtered_content_via_git(self, git_env):
+        """Analyst with limited grants gets a different (smaller) repo than admin."""
+        c = git_env["client"]
+        cache = git_env["data_dir"] / "marketplaces" / "git-cache"
+
+        # Admin request
+        admin_resp = c.get(
+            "/marketplace.git/info/refs?service=git-upload-pack",
+            headers={"Authorization": _basic("x", git_env["admin_pat"])},
+        )
+        assert admin_resp.status_code == 200
+
+        # Analyst request
+        analyst_resp = c.get(
+            "/marketplace.git/info/refs?service=git-upload-pack",
+            headers={"Authorization": _basic("x", git_env["analyst_pat"])},
+        )
+        assert analyst_resp.status_code == 200
+
+        # Two different cache entries (different RBAC views)
+        entries = [p for p in cache.iterdir() if p.is_dir() and p.name.endswith(".git")]
+        assert len(entries) == 2

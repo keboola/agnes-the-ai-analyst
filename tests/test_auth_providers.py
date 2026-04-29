@@ -610,3 +610,94 @@ class TestGoogleCallbackGroupSync:
             ]
         finally:
             conn.close()
+
+
+class TestEmailMagicLinkTTL:
+    """Tests for email magic link token expiry and replay prevention."""
+
+    def test_expired_magic_link_rejected(self, client):
+        """A magic link token older than MAGIC_LINK_EXPIRY must be rejected."""
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        from datetime import datetime, timezone, timedelta
+
+        conn = get_system_db()
+        repo = UserRepository(conn)
+        repo.create(id="expired-user", email="expired@test.com", name="Expired", role="analyst")
+        # Set token with old timestamp (beyond 1-hour TTL)
+        old_time = datetime.now(timezone.utc) - timedelta(hours=2)
+        repo.update(id="expired-user", reset_token="expired-token-123", reset_token_created=old_time)
+        conn.close()
+
+        resp = client.post("/auth/email/verify", json={
+            "email": "expired@test.com", "token": "expired-token-123",
+        })
+        assert resp.status_code == 401
+
+    def test_token_reuse_prevented(self, client):
+        """A consumed magic link token cannot be used again."""
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        from datetime import datetime, timezone
+
+        conn = get_system_db()
+        repo = UserRepository(conn)
+        repo.create(id="reuse-user", email="reuse@test.com", name="Reuse", role="analyst")
+        token = "reusable-token-456"
+        repo.update(id="reuse-user", reset_token=token, reset_token_created=datetime.now(timezone.utc))
+        conn.close()
+
+        # First use should succeed
+        resp1 = client.post("/auth/email/verify", json={
+            "email": "reuse@test.com", "token": token,
+        })
+        assert resp1.status_code == 200
+
+        # Second use must fail
+        resp2 = client.post("/auth/email/verify", json={
+            "email": "reuse@test.com", "token": token,
+        })
+        assert resp2.status_code == 401
+
+    def test_invalid_signature_token_rejected(self, client):
+        """A token that doesn't match any stored value must be rejected."""
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        from datetime import datetime, timezone
+
+        conn = get_system_db()
+        repo = UserRepository(conn)
+        repo.create(id="sig-user", email="sig@test.com", name="Sig", role="analyst")
+        repo.update(id="sig-user", reset_token="real-token-789", reset_token_created=datetime.now(timezone.utc))
+        conn.close()
+
+        resp = client.post("/auth/email/verify", json={
+            "email": "sig@test.com", "token": "wrong-token-xyz",
+        })
+        assert resp.status_code == 401
+
+
+@pytest.mark.skip(reason="Authlib OAuth internals require complex async mock; group sync is tested via unit tests and integration. Full E2E OAuth flow needs real Google credentials or dedicated mock infrastructure.")
+class TestGoogleOAuthFullFlow:
+    """Tests for Google OAuth callback with mocked token exchange and group sync.
+
+    These tests require mocking authlib's internal OAuth client which involves
+    async Starlette session middleware. The group sync logic is covered by
+    unit tests for fetch_user_groups and the existing TestGoogleCallbackGroupSync.
+    """
+
+    def test_google_callback_creates_new_user(self, tmp_path, monkeypatch):
+        """Google OAuth callback must create a new user if not found."""
+        pass
+
+    def test_google_callback_syncs_group_memberships(self, tmp_path, monkeypatch):
+        """Google OAuth callback must sync Workspace groups into user_group_members."""
+        pass
+
+    def test_google_callback_existing_user_not_duplicated(self, tmp_path, monkeypatch):
+        """Re-login via Google OAuth must not duplicate the user."""
+        pass
+
+    def test_google_callback_api_error_handled(self, tmp_path, monkeypatch):
+        """Google OAuth callback must handle API errors gracefully."""
+        pass

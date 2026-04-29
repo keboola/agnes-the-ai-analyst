@@ -1,4 +1,4 @@
-# Google Workspace Groups in /profile
+# Google Workspace Groups in Agnes
 
 How Agnes pulls a user's group memberships at Google sign-in and where they end up.
 
@@ -35,27 +35,29 @@ Switching to `discussion_forum` will silently break for everyone but Workspace a
 
 `app/auth/providers/google.py:google_callback` runs on every Google sign-in:
 
-1. Fetch via `_fetch_google_groups(access_token, email)` → list of `{"id": "<email>", "name": "<displayName>"}`.
-2. Write to `request.session["google_groups"]` (Starlette signed-cookie session — per-user, not in DB).
-3. Failures (403, 401, network, 4xx) are swallowed and become `[]` so login never breaks.
+1. Fetch via `fetch_user_groups(access_token, email)` (in `app/auth/group_sync.py`) → list of `{"id": "<email>", "name": "<displayName>"}`.
+2. Write to `user_group_members` table with `source='google_sync'` (DuckDB-backed, persistent across sessions).
+3. The previous Google-sync set is wholesale replaced (DELETE + INSERT for `source='google_sync'` rows) so a removed Workspace membership disappears immediately.
+4. Admin-added memberships (`source='admin'`) are preserved — Google sync only touches its own rows.
+5. **Fail-soft**: If the Cloud Identity API returns an error (403, 401, network), the callback preserves existing memberships instead of wiping them. This prevents a transient API outage from silently dropping all Workspace-synced group memberships.
 
-Display: `app/web/templates/profile.html` reads `session.google_groups` and renders the list. Empty state explains "Groups are populated when you sign in with Google on a Workspace-enabled tenant."
+The `user_group_members` table is the single source of truth for group memberships, used by:
+- RBAC authorization (`app/auth/access.py`) — `require_resource_access` checks group grants
+- Admin UI (`/admin/access`) — member lists, grant counts
+- CLI (`da admin group members`) — group membership queries
+- Marketplace filtering (`src/marketplace_filter.py`) — plugin access based on group grants
 
-**Not in DB.** Admin views (e.g. `/admin/users`) can't see other users' groups today — adding a `users.groups` column + persisting on callback is the path forward when that's needed.
-
-**Refresh.** A user's stale session keeps stale groups. `Logout → sign in again` is the only refresh.
+**Refresh.** Memberships are refreshed on every Google sign-in. A user's stale memberships persist until their next login.
 
 ## Local-dev mock (no Google round-trip)
 
-When developing on `localhost` with `LOCAL_DEV_MODE=1`, Google OAuth never runs, so `session.google_groups` would normally stay empty and group-aware UI/code paths can't be exercised. Set `LOCAL_DEV_GROUPS` to inject a mocked membership list:
+When developing on `localhost` with `LOCAL_DEV_MODE=1`, Google OAuth never runs, so group memberships would normally stay empty. Set `LOCAL_DEV_GROUPS` to inject a mocked membership list:
 
 ```bash
 export LOCAL_DEV_GROUPS='[{"id":"engineers@example.com","name":"Engineering"},{"id":"admins@example.com","name":"Admins"}]'
 ```
 
-The value is a JSON array of objects matching the production shape (`{"id", "name"}`) so the mock and the real callback write the *same* structure into `session.google_groups`. Extra fields are preserved verbatim — handy for forward-compat testing of group attributes Google may return later.
-
-`get_current_user` in `app/auth/dependencies.py` writes the parsed list into the session on every dev-bypass request (compare-then-write — no spurious `Set-Cookie` when the value is unchanged). Malformed input (invalid JSON, non-list, items missing `id`) is logged at WARNING and falls back to `[]` — the dev mock must never break the dev flow.
+The value is a JSON array of objects matching the production shape (`{"id", "name"}`). `get_current_user` in `app/auth/dependencies.py` writes the parsed list into `user_group_members` on every dev-bypass request.
 
 `docker-compose.local-dev.yml` carries a commented example at the right escape level for Compose YAML. **Never set this in production** — the variable is only honored when `LOCAL_DEV_MODE=1`.
 

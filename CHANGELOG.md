@@ -12,9 +12,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- **Non-root container couldn't write to host-bind-mounted `/data` after the v0.12.1 USER-agnes flip.** `infra/modules/customer-instance/startup-script.sh.tpl` now `chown -R 999:999 /data` after creating the persistent-disk subdirs (`state`, `analytics`, `extracts`). Without this, a freshly-attached PD is root-owned by default and `USER agnes` (uid 999) cannot open `/data/state/system.duckdb` for write — every authed request 500s with `IOException: Cannot open file ... Permission denied` while `/api/health` (which doesn't open the system DB) keeps returning 200, masking the failure from health-only monitoring. Regression first observed on `agnes-development` on 2026-04-29 after the auto-upgrade picked up `:stable` from the 0.12.1 release. **Existing VMs with PD-backed `/data` need a one-time host-side `sudo chown -R 999:999 /var/lib/docker/volumes/agnes_data/_data && sudo docker restart agnes-app-1 agnes-scheduler-1` to recover** — Terraform `metadata_startup_script` only runs on boot, so an apply alone does not retro-fix running VMs.
+- `Dockerfile` pins the `agnes` user to `uid:gid 999:999` explicitly (`useradd --uid 999`). Previously the uid was whatever Debian's `useradd --system` assigned next — happened to be 999 today, but a future base-image change picking 998 or 1000 would silently desync from the startup-script's `chown 999:999`, reintroducing the same incident. Pinning makes the contract grep-able from both sides.
+- `scripts/smoke-test.sh` no longer silently SKIPs every authed check when `bootstrap` returns 403 (users exist) and `SMOKE_TOKEN` is not set — it now FAILs loudly. Also adds an unauthenticated DB-touching probe (`POST /auth/email/request`) before bootstrap, since `/api/health` deliberately doesn't open `system.duckdb` (kept cheap for LB probes) and so cannot detect filesystem/permission issues. The new probe catches the foundryai-development class of regression even on instances where bootstrap is closed.
 - Corporate memory pages (`/corporate-memory`, `/corporate-memory/admin`) now render the shared app header at full viewport width, matching the dashboard. Previously the `_app_header.html` include sat inside `.container-memory` (max-width: 1000px) and was cropped on wide viewports.
 - `release.yml` now publishes a `:dev-<slug>` + `:dev-<prefix>-latest` image when a fresh branch is pushed off `main` with no extra commits. Pre-fix, `paths-ignore` on the `push` event diffed the new ref against the default branch — a same-SHA branch had zero diff, every file matched paths-ignore, and the workflow was skipped, so a developer creating a personal branch off main to deploy main's exact state to their dev VM (which pins to `:dev-<user>-latest`) had to either commit something or trigger the workflow manually. The `build-and-push` job's `if` was also tightened to `main || workflow_dispatch` only, which prevented branch-push images regardless. Both fixed: added `create:` trigger (filtered to branch refs at the job level so tag creates don't double-build with `keboola-deploy.yml`), and broadened `build-and-push.if` to also publish on non-main branch pushes / branch creates.
 - Web header admin nav (All tokens, Marketplaces, Admin → Users / Groups / Resource access / Server config) is now visible to admin users again. Pre-fix, `_app_header.html` gated the admin block on `session.user.role == 'admin'`, but the v13 RBAC migration nulled `users.role` and moved admin authority onto `user_group_members` (Admin system group) — so the gate evaluated to false for everyone, including actual admins. `get_current_user` now injects `user["is_admin"]` (computed via `app.auth.access.is_user_admin`, the same call all server-side admin gates use), and the header reads `session.user.is_admin`. The role badge in the user-menu dropdown now reads "Admin" or hides — `users.role` is no longer surfaced in the UI.
+
+### Internal
+
+- `release.yml` adds an `e2e-bind-mount` job that boots the freshly built image against a host-bind-mounted `/data` directory (instead of the named volume the existing `smoke-test` job uses). Docker initializes a fresh named volume by copying from the image's `/data` — which the Dockerfile chowns to `agnes:agnes` before flipping USER — so the named-volume path always works. The bind-mount path mirrors what GCE VMs run via `docker-compose.host-mount.yml`, and includes a negative assertion (write must fail on root-owned `/data` before the operator chown) plus a positive assertion (smoke passes after the chown). Locks in the contract that broke `agnes-development`: removing `chown 999:999` from `startup-script.sh.tpl` or changing the Dockerfile uid pin breaks CI.
 
 ## [0.15.0] — 2026-04-29
 
@@ -65,6 +72,62 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - `app/instance_config.py:load_instance_config` now deep-merges the static `CONFIG_DIR/instance.yaml` with the writable overlay at `DATA_DIR/state/instance.yaml` instead of returning the overlay verbatim when present. Pre-fix, the first save through the new server-config editor (which writes only the section the operator actually touched) caused every consumer of static-only sections (corporate memory, dataset list, OpenMetadata client) to fall through to empty defaults until the overlay was deleted. Issue #91.
 - `POST /api/admin/configure` now uses the same narrow-overlay write strategy as the new server-config editor: it reads the overlay verbatim (no static fallback), patches only `instance` / `auth` / `data_source`, and writes atomically via tmp + `os.replace`. Pre-fix it seeded `existing` from the env-resolved merged config when no overlay file was present and dumped the whole thing back, persisting cleartext `${ENV_VAR}` values (e.g. `smtp_password`) into the writable overlay even though the wizard never touched those sections. Issue #91.
 - `POST /api/admin/server-config` now strips redaction sentinels (`***` / `<empty>`) out of every secret-keyed leaf in the incoming patch before the deep-merge. The companion GET endpoint masks secret-keyed children inside nested objects (e.g. `data_source.keboola.token_env`), and the form renders those nested objects as JSON textareas — without the scrub, a no-op save would round-trip the masked JSON back and overwrite the real overlay value (`token_env: "KEBOOLA_STORAGE_TOKEN"` → `"***"`), silently breaking the next sync. Defense-in-depth on both sides: the client form scrubs before posting, and the server scrubs before merge so an API caller (CLI / script) can't corrupt secrets either. Issue #91.
+
+## [0.16.0] — 2026-04-29
+
+Minor release. Comprehensive deploy safety audit — CI/CD pipeline hardening, 50+ new tests covering previously untested failure modes, DB schema health check, config versioning, and BigQuery ATTACH error resilience. Built on top of v0.15.0 / `2e1dfb7`.
+
+PR: [#120](https://github.com/keboola/agnes-the-ai-analyst/pull/120) (ci/deploy-safety-audit).
+
+### Added
+
+- **ruff lint + mypy type check** in `release.yml` and `keboola-deploy.yml` CI workflows (both `continue-on-error: true` initially — 257 pre-existing ruff errors, mypy has pre-existing issues; neither blocks CI yet).
+- **Automatic rollback** on smoke test failure in `release.yml` — tags the broken image as `:deprecated-<short-sha>`, reverts `:stable` to the previous good tag, opens a GitHub issue for investigation.
+- **Smoke test in `keboola-deploy.yml`** — was completely missing; now runs the same `smoke-test.sh` as `release.yml`.
+- **Expanded smoke-test.sh** — added `/api/catalog`, `/api/admin/tables`, `/marketplace.zip`, `/api/metrics` endpoint checks beyond the original `/api/health`.
+- **Post-deploy smoke test** (`scripts/ops/post-deploy-smoke-test.sh`) — validates health, DB schema version, query endpoint, catalog, and marketplace on a prod VM after deploy.
+- **DB schema version check** in `/api/health` — returns `db_schema: "ok" | "mismatch" | "unreachable"`; overall status becomes `"unhealthy"` on schema mismatch. Lets load balancers and monitoring detect half-migrated instances.
+- **Config versioning** — `config_version: 1` in `instance.yaml`, validated at startup by `_validate_config_version()` in `config/loader.py`. Prevents silent misconfiguration when the config schema evolves.
+- **`.github/settings.yml`** — required status checks on `main` branch.
+- **`.github/dependabot.yml`** — weekly pip + github-actions dependency updates.
+- **`.github/CODEOWNERS`** — default `@keboola/agnes-team`, special owners for `/infra/`, `/app/auth/`, `src/db.py`.
+- **`.pre-commit-config.yaml`** — detect-private-key, check-yaml/json/merge-conflict, ruff, mypy.
+- **`[tool.ruff]`** config in `pyproject.toml` — `line-length = 120`, `target-version = "py313"`.
+
+### Test Coverage (~50 new tests)
+
+- **v13→v14 migration** (`test_db.py`): orphan cleanup, FK constraints, rollback on failure.
+- **Email magic link TTL** (`test_auth_providers.py`): expired token, token reuse, wrong token.
+- **PAT** (`test_pat.py`): malformed JWT, empty bearer, `last_used_ip` tracking.
+- **Marketplace ZIP** (`test_marketplace_server_zip.py`): ETag/304, PAT auth, content-addressed caching, `invalidate_etag_cache()` on mutation.
+- **Marketplace Git** (`test_marketplace_server_git.py`): smart HTTP, Basic auth with PAT, RBAC filtering.
+- **Jira webhooks** (`test_jira_webhooks.py`): HMAC validation, missing signature, malformed JSON (10 tests).
+- **Hybrid Query BQ** (`test_remote_query.py`): `register_bq`, JOIN local+BQ, error handling (12 tests).
+- **Keboola extractor** (`test_keboola_extractor.py`): crash, partial write, timeout, extension fallback (9 tests).
+- **BigQuery extractor** (`test_bigquery_extractor.py`): corrupted DB, partial write, atomic swap, ATTACH timeout (6 tests).
+- **Orchestrator** (`test_orchestrator.py`): corrupted extract.duckdb, empty `_meta`, mid-write, unsafe identifiers (5 tests).
+
+### Fixed
+
+- **BigQuery extractor ATTACH error handling** — `init_extract()` now catches exceptions on `INSTALL`/`ATTACH` and records them in `stats["errors"]` instead of propagating up. A network timeout or auth failure no longer crashes the extractor; all configured tables are marked as skipped.
+- **ETag cache invalidation on disk mutation** — `invalidate_etag_cache()` is the documented way to force re-hash after marketplace sync. Tests now call it after mutating on-disk content.
+
+### Internal
+
+- `fetch-depth: 0` + `fetch-tags: true` in `release.yml` for rollback tag resolution.
+- Docs updated: `ARCHITECTURE.md`, `docs/DATA_SOURCES.md`, `docs/QUICKSTART.md`, `docs/RBAC.md`, `docs/auth-groups.md`.
+
+## [0.15.0] — 2026-04-29
+
+Minor release. Adds corporate memory v1+v1.5 and /me/debug self-only auth diagnostic. See [GitHub release](https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.15.0) for full notes.
+
+## [0.14.0] — 2026-04-28
+
+Minor release. Replaces BigQuery wrap-view pattern with Claude-driven fetch primitives. See [GitHub release](https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.14.0) for full notes.
+
+## [0.13.0] — 2026-04-28
+
+Minor release. Admin server-config editor + Windows PowerShell wrapper. See [GitHub release](https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.13.0) for full notes.
 
 ## [0.12.1] — 2026-04-28
 
@@ -660,6 +723,14 @@ First tagged semver release. The `version = "2.x"` strings that appeared in earl
 
 - Test suite expanded to 1357+ tests (4 layers — unit, integration, web smoke, journey).
 
+[0.16.0]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.16.0
+[0.15.0]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.15.0
+[0.14.0]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.14.0
+[0.13.0]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.13.0
+[0.12.1]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.12.1
+[0.12.0]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.12.0
+[0.11.5]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.11.5
+[0.11.4]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.11.4
 [0.11.3]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.11.3
 [0.11.2]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.11.2
 [0.11.1]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.11.1

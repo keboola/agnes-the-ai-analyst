@@ -132,16 +132,29 @@ def init_extract(
 
     conn = duckdb.connect(str(tmp_db_path))
     try:
-        conn.execute("INSTALL bigquery FROM community; LOAD bigquery;")
-        # session-scoped DuckDB secret with the metadata token
-        escaped_token = token.replace("'", "''")
-        conn.execute(
-            f"CREATE SECRET bq_session (TYPE bigquery, ACCESS_TOKEN '{escaped_token}')"
-        )
-        conn.execute(
-            f"ATTACH 'project={project_id}' AS bq (TYPE bigquery, READ_ONLY)"
-        )
-        logger.info("Attached BigQuery project: %s", project_id)
+        # Install and load BigQuery extension
+        try:
+            conn.execute("INSTALL bigquery FROM community; LOAD bigquery;")
+            # session-scoped DuckDB secret with the metadata token
+            escaped_token = token.replace("'", "''")
+            conn.execute(
+                f"CREATE SECRET bq_session (TYPE bigquery, ACCESS_TOKEN '{escaped_token}')"
+            )
+            conn.execute(
+                f"ATTACH 'project={project_id}' AS bq (TYPE bigquery, READ_ONLY)"
+            )
+            logger.info("Attached BigQuery project: %s", project_id)
+        except Exception as attach_err:
+            logger.error("Failed to attach BigQuery project %s: %s", project_id, attach_err)
+            stats["errors"].append(
+                {"table": "*", "error": f"BigQuery ATTACH failed: {attach_err}"}
+            )
+            # No tables can be registered without a working connection
+            for tc in table_configs:
+                stats["errors"].append(
+                    {"table": tc["name"], "error": "skipped: BigQuery ATTACH failed"}
+                )
+            return stats
 
         _create_meta_table(conn)
         _create_remote_attach_table(conn, project_id)

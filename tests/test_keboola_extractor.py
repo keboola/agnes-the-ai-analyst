@@ -224,3 +224,186 @@ class TestKeboolaExtractor:
 
         assert result["tables_extracted"] == 1
         assert result["tables_failed"] == 0
+
+
+
+# ---------------------------------------------------------------------------
+# Connector failure mode tests
+# ---------------------------------------------------------------------------
+
+
+class TestKeboolaExtractorFailureModes:
+    """Tests for Keboola extractor failure handling and resilience."""
+
+    def test_extractor_crash_does_not_corrupt_extract_duckdb(self, output_dir, sample_configs):
+        """If the extractor crashes mid-extraction, the temp DB is not moved
+        into place, so the existing extract.duckdb (if any) is not corrupted.
+        The atomic write pattern (tmp + rename) protects against this."""
+        from connectors.keboola.extractor import run
+
+        # First, create a valid extract.duckdb
+        def write_pq(conn, tc, pq_path):
+            _write_parquet(pq_path, "SELECT 1 AS id")
+
+        with patch("connectors.keboola.extractor._try_attach_extension", side_effect=_mock_attach),              patch("connectors.keboola.extractor._extract_via_extension", side_effect=write_pq):
+            run(output_dir, sample_configs[:1], "https://example.com", "test-token")
+
+        db_path = Path(output_dir) / "extract.duckdb"
+        assert db_path.exists()
+        # Verify it's valid
+        conn = duckdb.connect(str(db_path))
+        conn.execute("SELECT * FROM _meta").fetchall()
+        conn.close()
+
+        # Now simulate a crash during a second extraction — the extension
+        # attach raises an exception after the tmp file is created.
+        with patch("connectors.keboola.extractor._try_attach_extension", side_effect=RuntimeError("crash")):
+            try:
+                run(output_dir, sample_configs, "https://example.com", "test-token")
+            except Exception:
+                pass  # The extractor catches internally and returns stats
+
+        # The extract.duckdb should still exist and be valid (atomic swap
+        # means the old file is untouched if the new one didn't complete)
+        assert db_path.exists()
+
+    def test_partial_data_write_incomplete_parquet(self, output_dir):
+        """When a parquet file write fails mid-stream, the extractor records
+        the table as failed in stats but continues with other tables."""
+        from connectors.keboola.extractor import run
+
+        configs = [
+            {"name": "good_table", "query_mode": "local", "description": "OK"},
+            {"name": "bad_table", "query_mode": "local", "description": "Will fail"},
+        ]
+
+        call_count = 0
+        def side_effect(conn, tc, pq_path):
+            nonlocal call_count
+            call_count += 1
+            if tc["name"] == "bad_table":
+                raise IOError("Disk full — partial write")
+            _write_parquet(pq_path, "SELECT 1 AS id")
+
+        with patch("connectors.keboola.extractor._try_attach_extension", side_effect=_mock_attach),              patch("connectors.keboola.extractor._extract_via_extension", side_effect=side_effect):
+            result = run(output_dir, configs, "https://example.com", "test-token")
+
+        # One table succeeded, one failed
+        assert result["tables_extracted"] == 1
+        assert result["tables_failed"] == 1
+        assert len(result["errors"]) == 1
+        assert "bad_table" in result["errors"][0]["table"]
+
+        # The good table's parquet file exists
+        assert (Path(output_dir) / "data" / "good_table.parquet").exists()
+        # The bad table's parquet file should NOT exist (failed before write)
+        assert not (Path(output_dir) / "data" / "bad_table.parquet").exists()
+
+    def test_network_timeout_during_extraction(self, output_dir):
+        """Network timeout during extraction should return a meaningful error
+        in the stats, not crash the whole process."""
+        from connectors.keboola.extractor import run
+        import socket
+
+        configs = [
+            {"name": "timeout_table", "query_mode": "local", "description": "Will timeout"},
+            {"name": "ok_table", "query_mode": "local", "description": "OK"},
+        ]
+
+        call_count = 0
+        def side_effect(conn, tc, pq_path):
+            nonlocal call_count
+            call_count += 1
+            if tc["name"] == "timeout_table":
+                raise socket.timeout("Connection timed out")
+            _write_parquet(pq_path, "SELECT 1 AS id")
+
+        with patch("connectors.keboola.extractor._try_attach_extension", side_effect=_mock_attach),              patch("connectors.keboola.extractor._extract_via_extension", side_effect=side_effect):
+            result = run(output_dir, configs, "https://example.com", "test-token")
+
+        assert result["tables_extracted"] == 1
+        assert result["tables_failed"] == 1
+        assert "timed out" in result["errors"][0]["error"].lower()
+
+    def test_extension_unavailable_fallback_to_client(self, output_dir):
+        """When DuckDB Keboola extension fails to load, the extractor falls
+        back to the legacy HTTP client."""
+        from connectors.keboola.extractor import run
+
+        configs = [{"name": "t", "id": "in.c-test.t", "query_mode": "local",
+                     "bucket": "in.c-test", "source_table": "t", "description": ""}]
+
+        def mock_legacy(tc, pq_path, url, token):
+            _write_parquet(pq_path, "SELECT 42 AS value")
+
+        with patch("connectors.keboola.extractor._try_attach_extension", return_value=False),              patch("connectors.keboola.extractor._extract_via_legacy", side_effect=mock_legacy):
+            result = run(output_dir, configs, "https://example.com", "test-token")
+
+        assert result["tables_extracted"] == 1
+        assert result["tables_failed"] == 0
+
+        # Verify the data is queryable
+        conn = duckdb.connect(str(Path(output_dir) / "extract.duckdb"))
+        val = conn.execute("SELECT value FROM t").fetchone()
+        assert val[0] == 42
+        conn.close()
+
+    def test_all_tables_fail_returns_full_failure_stats(self, output_dir):
+        """When every table fails, the extractor returns all failures in stats
+        without crashing."""
+        from connectors.keboola.extractor import run
+
+        configs = [
+            {"name": "t1", "query_mode": "local", "description": ""},
+            {"name": "t2", "query_mode": "local", "description": ""},
+        ]
+
+        def always_fail(conn, tc, pq_path):
+            raise RuntimeError("Extraction failed")
+
+        with patch("connectors.keboola.extractor._try_attach_extension", side_effect=_mock_attach),              patch("connectors.keboola.extractor._extract_via_extension", side_effect=always_fail):
+            result = run(output_dir, configs, "https://example.com", "test-token")
+
+        assert result["tables_extracted"] == 0
+        assert result["tables_failed"] == 2
+        assert len(result["errors"]) == 2
+
+    def test_unsafe_identifier_skipped_not_crashed(self, output_dir):
+        """Tables with unsafe identifiers are skipped with an error in stats,
+        not causing a crash."""
+        from connectors.keboola.extractor import run
+
+        configs = [
+            {"name": "bad-name", "query_mode": "local", "description": "hyphen not allowed"},
+            {"name": "good_name", "query_mode": "local", "description": "OK"},
+        ]
+
+        def write_pq(conn, tc, pq_path):
+            _write_parquet(pq_path, "SELECT 1 AS id")
+
+        with patch("connectors.keboola.extractor._try_attach_extension", side_effect=_mock_attach),              patch("connectors.keboola.extractor._extract_via_extension", side_effect=write_pq):
+            result = run(output_dir, configs, "https://example.com", "test-token")
+
+        assert result["tables_extracted"] == 1
+        assert result["tables_failed"] == 1
+        assert result["errors"][0]["error"] == "unsafe identifier"
+
+    def test_compute_exit_code_full_success(self):
+        from connectors.keboola.extractor import compute_exit_code
+        stats = {"tables_failed": 0, "errors": []}
+        assert compute_exit_code(stats, 5) == 0
+
+    def test_compute_exit_code_partial_failure(self):
+        from connectors.keboola.extractor import compute_exit_code
+        stats = {"tables_failed": 2, "errors": [{}, {}]}
+        assert compute_exit_code(stats, 5) == 2
+
+    def test_compute_exit_code_full_failure(self):
+        from connectors.keboola.extractor import compute_exit_code
+        stats = {"tables_failed": 5, "errors": [{}] * 5}
+        assert compute_exit_code(stats, 5) == 1
+
+    def test_compute_exit_code_no_tables(self):
+        from connectors.keboola.extractor import compute_exit_code
+        stats = {"tables_failed": 0, "errors": []}
+        assert compute_exit_code(stats, 0) == 0

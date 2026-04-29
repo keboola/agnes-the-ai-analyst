@@ -31,6 +31,22 @@ if [ "$HEALTH" = "unreachable" ]; then
 fi
 check "health ($HEALTH)" "true"
 
+# 1b. Unauthenticated DB-touching probe — exercises the system-DB path before
+# any token is acquired. /api/health does NOT open system.duckdb (deliberate, so
+# the LB probe stays cheap), so it can return 200 while every authed request
+# 500s on permission/IO errors. /auth/email/request opens the users table to
+# look up the email, which catches the foundryai-development class of
+# regression (host-mounted /data root-owned, USER agnes can't open the DB).
+# Accept anything in 200-499 — including 4xx for "email auth disabled" — but
+# fail loudly on 5xx.
+DB_PROBE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$HOST/auth/email/request" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"smoke-probe@test.local"}' 2>/dev/null || echo "000")
+case "$DB_PROBE" in
+    5*|000) check "db-touching probe (HTTP $DB_PROBE — expected non-5xx)" "false" ;;
+    *)      check "db-touching probe (HTTP $DB_PROBE)" "true" ;;
+esac
+
 # 2. Health detailed has version fields (requires auth, checked after bootstrap)
 
 # 3. Bootstrap (only works on fresh DB; 403 means users exist)
@@ -42,8 +58,14 @@ if [ "$BOOT_HTTP" = "200" ]; then
     TOKEN=$(python3 -c "import json; print(json.load(open('/tmp/smoke_boot.json'))['access_token'])" 2>/dev/null || echo "")
     check "bootstrap (new admin)" "true"
 elif [ "$BOOT_HTTP" = "403" ]; then
+    # Users exist — operator must supply SMOKE_TOKEN to validate the authed
+    # paths, otherwise the script would silently SKIP every regression.
     TOKEN="${SMOKE_TOKEN:-}"
-    echo "  SKIP bootstrap (users exist)"
+    if [ -z "$TOKEN" ]; then
+        check "bootstrap (users exist; SMOKE_TOKEN required to continue)" "false"
+    else
+        echo "  SKIP bootstrap (users exist; using SMOKE_TOKEN)"
+    fi
 else
     check "bootstrap (HTTP $BOOT_HTTP)" "false"
 fi
@@ -99,6 +121,59 @@ if [ "$HEALTH2" = "unhealthy" ] || [ "$HEALTH2" = "unreachable" ]; then
     check "post-sync health ($HEALTH2)" "false"
 else
     check "post-sync health ($HEALTH2)" "true"
+fi
+
+# 7. Catalog endpoint (authenticated)
+if [ -n "$TOKEN" ]; then
+    CATALOG_HTTP=$(curl -s -o /tmp/smoke_catalog.json -w "%{http_code}" "$HOST/api/catalog" \
+      -H "Authorization: Bearer $TOKEN" 2>/dev/null || echo "000")
+    if [[ "$CATALOG_HTTP" =~ ^(200|404)$ ]]; then
+        check "catalog endpoint (HTTP $CATALOG_HTTP)" "true"
+    else
+        check "catalog endpoint (HTTP $CATALOG_HTTP)" "false"
+    fi
+else
+    echo "  SKIP catalog (no token)"
+fi
+
+# 8. Admin tables endpoint (authenticated)
+if [ -n "$TOKEN" ]; then
+    TABLES_HTTP=$(curl -s -o /tmp/smoke_tables.json -w "%{http_code}" "$HOST/api/admin/tables" \
+      -H "Authorization: Bearer $TOKEN" 2>/dev/null || echo "000")
+    if [[ "$TABLES_HTTP" =~ ^(200|403)$ ]]; then
+        check "admin tables endpoint (HTTP $TABLES_HTTP)" "true"
+    else
+        check "admin tables endpoint (HTTP $TABLES_HTTP)" "false"
+    fi
+else
+    echo "  SKIP admin tables (no token)"
+fi
+
+# 9. Marketplace.zip endpoint (with PAT auth if available)
+MARKETPLACE_PAT="${AGNES_PAT:-${SMOKE_PAT:-}}"
+if [ -n "$MARKETPLACE_PAT" ]; then
+    MARKET_HTTP=$(curl -s -o /tmp/smoke_marketplace.zip -w "%{http_code}" "$HOST/api/marketplace.zip" \
+      -H "Authorization: Bearer $MARKETPLACE_PAT" 2>/dev/null || echo "000")
+    if [[ "$MARKET_HTTP" =~ ^(200|304|404)$ ]]; then
+        check "marketplace.zip (HTTP $MARKET_HTTP)" "true"
+    else
+        check "marketplace.zip (HTTP $MARKET_HTTP)" "false"
+    fi
+else
+    echo "  SKIP marketplace.zip (no PAT — set AGNES_PAT or SMOKE_PAT to test)"
+fi
+
+# 10. Metrics endpoint (authenticated)
+if [ -n "$TOKEN" ]; then
+    METRICS_HTTP=$(curl -s -o /tmp/smoke_metrics.json -w "%{http_code}" "$HOST/api/metrics" \
+      -H "Authorization: Bearer $TOKEN" 2>/dev/null || echo "000")
+    if [[ "$METRICS_HTTP" =~ ^(200|404)$ ]]; then
+        check "metrics endpoint (HTTP $METRICS_HTTP)" "true"
+    else
+        check "metrics endpoint (HTTP $METRICS_HTTP)" "false"
+    fi
+else
+    echo "  SKIP metrics (no token)"
 fi
 
 # Results

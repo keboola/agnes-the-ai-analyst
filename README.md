@@ -141,7 +141,7 @@ See `config/instance.yaml.example` for all available options.
 - [Onboarding Guide](docs/ONBOARDING.md) — end-to-end Terraform deployment into a GCP project (recommended for production)
 - [Deployment Guide](docs/DEPLOYMENT.md) — chooses between Terraform and Docker Compose; covers OSS self-host
 - [Configuration Reference](docs/CONFIGURATION.md) — `instance.yaml`, env vars, per-instance options
-- [Architecture](docs/architecture.md) — orchestrator, extractors, DB layout
+- [Architecture](ARCHITECTURE.md) — orchestrator, extractors, DB layout
 - [Quickstart](docs/QUICKSTART.md) — local development
 
 ## Contributing

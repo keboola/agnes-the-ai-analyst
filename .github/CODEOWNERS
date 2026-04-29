@@ -1,0 +1,9 @@
+# Default reviewers for everything
+*       @keboola/agnes-team
+
+# Infrastructure changes require infra team
+/infra/  @keboola/agnes-team
+
+# Security-sensitive areas
+/app/auth/  @keboola/agnes-team
+/src/db.py  @keboola/agnes-team

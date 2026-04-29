@@ -23,8 +23,11 @@ RUN uv build --wheel --out-dir /app/dist
 # Install production dependencies from pyproject.toml
 RUN uv pip install --system --no-cache .
 
-# Run as non-root user for container hardening (C13)
-RUN useradd --system --create-home --shell /usr/sbin/nologin agnes && \
+# Run as non-root user for container hardening (C13).
+# uid/gid pinned to 999 so host-side chown in startup-script.sh.tpl can match
+# without parsing /etc/passwd inside the image. Changing this number breaks
+# every existing PD-backed deploy until the operator re-chowns /data.
+RUN useradd --system --uid 999 --create-home --shell /usr/sbin/nologin agnes && \
     mkdir -p /data && chown -R agnes:agnes /data && \
     chown -R agnes:agnes /app
 USER agnes
