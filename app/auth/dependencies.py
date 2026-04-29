@@ -179,6 +179,21 @@ async def get_current_user(
             detail="Missing or invalid Authorization header",
         )
 
+    # Shared-secret path for the in-cluster scheduler. Checked before
+    # pat_resolver because the scheduler token is not a JWT — feeding it to
+    # verify_token() would log a spurious decode warning every cron tick.
+    # See app/auth/scheduler_token.py for the threat model.
+    from app.auth.scheduler_token import get_scheduler_user, is_scheduler_token
+    if is_scheduler_token(token):
+        scheduler_user = get_scheduler_user(conn)
+        if scheduler_user:
+            _attach_admin_flag(scheduler_user, conn)
+            return scheduler_user
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Scheduler user not provisioned",
+        )
+
     from app.auth.pat_resolver import resolve_token_to_user
     user, reason = resolve_token_to_user(conn, token, request)
     if user:
@@ -226,8 +241,21 @@ async def get_optional_user(
 
 
 async def require_session_token(request: Request, user: dict = Depends(get_current_user)) -> dict:
-    """Like get_current_user but rejects PAT — for endpoints that must not
-    be callable via a long-lived CI token (e.g. creating new tokens, changing password)."""
+    """Like get_current_user but rejects every non-interactive token kind —
+    for endpoints that must not be callable via a long-lived service or CI
+    credential (e.g. creating new tokens, changing password).
+
+    Two non-interactive paths exist today:
+
+    1. **PAT** — JWT with ``typ="pat"``. Detected by decoding the JWT and
+       inspecting the claim.
+    2. **Scheduler shared secret** — opaque string equal to
+       ``SCHEDULER_API_TOKEN``. Not a JWT, so ``verify_token`` returns None
+       and the PAT-claim check would silently pass — meaning a caller
+       holding the scheduler secret could mint persistent PATs through
+       ``POST /auth/tokens`` that survive a secret rotation. Explicit
+       check here closes that bypass.
+    """
     auth = request.headers.get("authorization", "")
     token = None
     if auth.startswith("Bearer "):
@@ -235,6 +263,12 @@ async def require_session_token(request: Request, user: dict = Depends(get_curre
     if not token and request:
         token = request.cookies.get("access_token")
     if token:
+        from app.auth.scheduler_token import is_scheduler_token
+        if is_scheduler_token(token):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This endpoint requires an interactive session, not a service token",
+            )
         from app.auth.jwt import verify_token
         payload = verify_token(token) or {}
         if payload.get("typ") == "pat":

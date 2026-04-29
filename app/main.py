@@ -292,6 +292,35 @@ def create_app() -> FastAPI:
         except Exception as e:
             logger.warning(f"Could not seed admin: {e}")
 
+    # Seed the synthetic scheduler user when SCHEDULER_API_TOKEN is configured,
+    # so the very first cron tick after a fresh deploy already has a valid
+    # actor to attribute audit-log entries to. The lazy seed in
+    # `app.auth.scheduler_token.get_scheduler_user` covers the case where the
+    # secret is rotated mid-life, but doing it here keeps startup observable.
+    from app.auth.scheduler_token import get_scheduler_secret
+    if get_scheduler_secret():
+        try:
+            from app.auth.scheduler_token import (
+                SCHEDULER_TOKEN_MIN_LENGTH,
+                ensure_scheduler_user,
+            )
+            from src.db import get_system_db
+            secret = get_scheduler_secret()
+            if len(secret) < SCHEDULER_TOKEN_MIN_LENGTH:
+                logger.warning(
+                    "SCHEDULER_API_TOKEN is set but only %d chars — auth path"
+                    " disabled (minimum %d). Generate a longer secret in .env.",
+                    len(secret), SCHEDULER_TOKEN_MIN_LENGTH,
+                )
+            else:
+                conn = get_system_db()
+                try:
+                    ensure_scheduler_user(conn)
+                finally:
+                    conn.close()
+        except Exception as e:
+            logger.warning(f"Could not seed scheduler user: {e}")
+
     # C8: Warn when no user has a password_hash — bootstrap endpoint is open.
     # This is intentional UX (operator can claim seed admin), but the open
     # window should be visible in startup logs so it's not forgotten.

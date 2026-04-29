@@ -257,7 +257,7 @@ Admin-managed git repos cloned nightly to `${DATA_DIR}/marketplaces/<slug>/`
 so FastAPI can read their contents from disk.
 
 - Register via `/admin/marketplaces` (admin UI) or `POST /api/marketplaces`.
-- Scheduler calls `src.marketplace.sync_marketplaces()` in-process at `daily 03:00` UTC — no HTTP round-trip to the main app.
+- Scheduler calls `POST /api/marketplaces/sync-all` (admin-only, authed via `SCHEDULER_API_TOKEN`) at `daily 03:00` UTC. Routing through HTTP keeps the app the sole writer to `system.duckdb` — the previous in-process call from the scheduler container raced the app's long-lived DB handle and 500-ed on `Could not set lock on file`.
 - Manual re-sync from the UI ("Sync now") hits `POST /api/marketplaces/{id}/sync`.
 - PATs for private repos persist to `${DATA_DIR}/state/.env_overlay` (chmod 600) as `AGNES_MARKETPLACE_<SLUG>_TOKEN`. DuckDB stores only the env-var name (`token_env`), never the secret.
 - Registry lives in DuckDB table `marketplace_registry` (schema v9).
