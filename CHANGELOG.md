@@ -10,6 +10,40 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- Dev debug toolbar gated by `DEBUG=1`. Mounts `fastapi-debug-toolbar` with panels
+  for headers, routes, settings, versions, timer, logging, and a custom DuckDB
+  panel that captures every `con.execute()` from `src/db.py` (tagged by
+  `system` / `analytics` / `analytics_ro`). See `docs/development.md`.
+- `X-Request-ID` request header / response header on every FastAPI response, plus
+  a `request_id` field in JSON logs for cross-process correlation.
+- Centralized `app.logging_config.setup_logging()` — replaces 23 scattered
+  `logging.basicConfig(...)` calls. Uses `rich.logging.RichHandler` in dev
+  (`DEBUG=1`) and JSON to stderr in prod.
+
+### Changed
+- All service entrypoints (`services/scheduler/__main__.py`, `ws_gateway`,
+  `telegram_bot`, `corporate_memory`, `session_collector`, `verification_detector`)
+  and CLI scripts under `scripts/` and `connectors/jira/scripts/` now call
+  `setup_logging(__name__)` instead of inline `basicConfig`. Library modules no
+  longer configure root logger at import time.
+- Telegram bot no longer writes to `/data/notifications/bot.log`. All bot logs
+  go to stdout, captured by Docker. Use `docker compose logs -f notify-bot` to
+  read them.
+- Toolbar middleware is mounted INSIDE the GZip middleware (innermost on
+  response) so the toolbar can decode HTML before compression. RequestIdMiddleware
+  remains outermost; production behavior (DEBUG unset) is byte-identical to
+  before.
+
+### Fixed
+- Removed rogue module-level `logging.basicConfig` from `app/api/sync.py` that
+  was reconfiguring root logger every time the api module was imported.
+
+### Internal
+- `pyproject.toml`: added `fastapi-debug-toolbar>=0.6.3` to dev optional deps.
+- `services/telegram_bot/config.py`: removed unused `BOT_LOG_FILE` constant.
+- `tests/conftest.py`: removed stale comment about bot.py FileHandler.
+
 ## [0.19.0] — 2026-04-29
 
 ### Added

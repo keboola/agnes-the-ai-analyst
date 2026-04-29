@@ -107,9 +107,12 @@ All notification data lives on the `/data` disk (backupable):
 ```
 /data/notifications/           # owner: deploy, group: data-ops, mode: 770
 ├── telegram_users.json        # username -> {chat_id, linked_at}
-├── pending_codes.json         # code -> {chat_id, created_at}
-└── bot.log                    # bot service log
+└── pending_codes.json         # code -> {chat_id, created_at}
 ```
+
+Bot service logs go to stdout (captured by Docker / journald). Tail with
+`docker compose logs -f notify-bot` (or `journalctl -u notify-bot -f` on
+systemd hosts). The bot no longer writes to `/data/notifications/bot.log`.
 
 Per-user state:
 ```
@@ -211,8 +214,10 @@ New secret required:
 # Bot service status
 sudo systemctl status notify-bot
 
-# Bot logs
-tail -f /data/notifications/bot.log
+# Bot logs (stdout — Docker / journald)
+docker compose logs -f notify-bot
+# or on systemd hosts:
+# journalctl -u notify-bot -f
 
 # Runner logs (per user)
 tail -f ~/.notifications/logs/runner.log
@@ -227,7 +232,7 @@ cat /data/notifications/telegram_users.json | python3 -m json.tool
 **Bot not responding to /start:**
 - Check service: `sudo systemctl status notify-bot`
 - Check token: `grep TELEGRAM_BOT_TOKEN /opt/data-analyst/.env`
-- Check logs: `tail -50 /data/notifications/bot.log`
+- Check logs: `docker compose logs --tail=50 notify-bot` (or `journalctl -u notify-bot -n 50` on systemd hosts)
 
 **Verification code not working:**
 - Codes expire after 10 minutes

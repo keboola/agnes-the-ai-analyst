@@ -14,7 +14,6 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 NOTIFICATIONS_DIR = os.path.join(os.environ.get("DATA_DIR", "/data"), "notifications")
 TELEGRAM_USERS_FILE = os.path.join(NOTIFICATIONS_DIR, "telegram_users.json")
 PENDING_CODES_FILE = os.path.join(NOTIFICATIONS_DIR, "pending_codes.json")
-BOT_LOG_FILE = os.path.join(NOTIFICATIONS_DIR, "bot.log")
 
 # Unix socket for internal send API (in /run/notify-bot/, managed by systemd RuntimeDirectory)
 SOCKET_PATH = "/run/notify-bot/bot.sock"
