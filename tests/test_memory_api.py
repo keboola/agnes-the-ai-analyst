@@ -1476,6 +1476,21 @@ class TestPatchAndBulkUpdate:
         )
         assert resp.status_code == 403
 
+    def test_patch_rejects_null_title(self, seeded_app):
+        # ``title`` is NOT NULL in the schema; explicit null in PATCH body must
+        # be rejected at the boundary (400) instead of bubbling up as a 500
+        # constraint violation. PR #126 round-5 review.
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        item_id = self._create(c, token)
+        resp = c.patch(
+            f"/api/memory/admin/{item_id}",
+            json={"title": None},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400
+        assert "title" in resp.json()["detail"].lower()
+
     def test_bulk_update_partial_failure(self, seeded_app):
         c = seeded_app["client"]
         token = seeded_app["admin_token"]

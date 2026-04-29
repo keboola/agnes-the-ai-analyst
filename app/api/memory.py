@@ -930,6 +930,11 @@ async def admin_patch_item(
             status_code=400,
             detail=f"domain must be one of: {VALID_DOMAINS}",
         )
+    # ``title`` is NOT NULL in the schema. ``exclude_unset=True`` lets explicit
+    # ``null`` through, which would 500 on a DuckDB constraint violation. Reject
+    # at the boundary so the caller gets a 400 with a clear message instead.
+    if "title" in updates and updates["title"] is None:
+        raise HTTPException(status_code=400, detail="title cannot be null")
     if not updates:
         return {"id": item_id, "updated": []}
 
