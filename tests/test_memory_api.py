@@ -1535,6 +1535,115 @@ class TestPatchAndBulkUpdate:
         assert ok.status_code == 200, ok.text
         assert a in ok.json()["updated"]
 
+    # ---- exclude_unset=True regression tests (PR #126 round-4 review) ----
+    # Pre-fix the PATCH/bulk-update endpoints used model_dump(exclude_none=True),
+    # which silently dropped explicit ``null`` values. That left no path to
+    # clear ``audience`` (and only the empty-string short-circuit for
+    # ``domain``). Switching to exclude_unset=True preserves nulls so callers
+    # can reset Optional fields.
+
+    def _read(self, seeded_app, item_id):
+        from src.db import get_system_db
+        conn = get_system_db()
+        try:
+            return KnowledgeRepository(conn).get_by_id(item_id)
+        finally:
+            conn.close()
+
+    def test_patch_clears_audience_with_null(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        item_id = self._create(c, token, title="audience clear")
+        # First set an audience so we have something to clear.
+        set_resp = c.patch(
+            f"/api/memory/admin/{item_id}",
+            json={"audience": "group:finance"},
+            headers=_auth(token),
+        )
+        assert set_resp.status_code == 200, set_resp.text
+        assert self._read(seeded_app, item_id)["audience"] == "group:finance"
+        # Now clear via explicit null.
+        clear_resp = c.patch(
+            f"/api/memory/admin/{item_id}",
+            json={"audience": None},
+            headers=_auth(token),
+        )
+        assert clear_resp.status_code == 200, clear_resp.text
+        assert clear_resp.json()["updated"] == ["audience"]
+        assert self._read(seeded_app, item_id)["audience"] is None
+
+    def test_patch_clears_domain_with_null(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        item_id = self._create(c, token, title="domain clear")
+        # Set a domain first.
+        set_resp = c.patch(
+            f"/api/memory/admin/{item_id}",
+            json={"domain": "engineering"},
+            headers=_auth(token),
+        )
+        assert set_resp.status_code == 200, set_resp.text
+        assert self._read(seeded_app, item_id)["domain"] == "engineering"
+        # Clear via explicit null. None is falsy so it skips the
+        # VALID_DOMAINS validator (intentional — same as empty-string path).
+        clear_resp = c.patch(
+            f"/api/memory/admin/{item_id}",
+            json={"domain": None},
+            headers=_auth(token),
+        )
+        assert clear_resp.status_code == 200, clear_resp.text
+        assert clear_resp.json()["updated"] == ["domain"]
+        assert self._read(seeded_app, item_id)["domain"] is None
+
+    def test_bulk_update_clears_audience_with_null(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        item_id = self._create(c, token, title="bulk audience clear")
+        # Seed an audience via PATCH so the clear has something to undo.
+        c.patch(
+            f"/api/memory/admin/{item_id}",
+            json={"audience": "group:finance"},
+            headers=_auth(token),
+        )
+        assert self._read(seeded_app, item_id)["audience"] == "group:finance"
+        # Bulk-update with explicit null should clear it.
+        resp = c.post(
+            "/api/memory/admin/bulk-update",
+            json={"item_ids": [item_id], "updates": {"audience": None}},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+        assert item_id in resp.json()["updated"]
+        assert self._read(seeded_app, item_id)["audience"] is None
+
+    def test_patch_unset_field_left_alone(self, seeded_app):
+        """Regression for exclude_unset=True semantics: fields NOT sent in the
+        request body must not be touched (distinct from explicit-null clearing)."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        item_id = self._create(c, token, title="leave alone")
+        # Seed both audience + domain.
+        c.patch(
+            f"/api/memory/admin/{item_id}",
+            json={"audience": "group:finance", "domain": "engineering"},
+            headers=_auth(token),
+        )
+        before = self._read(seeded_app, item_id)
+        assert before["audience"] == "group:finance"
+        assert before["domain"] == "engineering"
+        # PATCH only category — audience/domain must be untouched.
+        resp = c.patch(
+            f"/api/memory/admin/{item_id}",
+            json={"category": "engineering"},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["updated"] == ["category"]
+        after = self._read(seeded_app, item_id)
+        assert after["audience"] == "group:finance"
+        assert after["domain"] == "engineering"
+        assert after["category"] == "engineering"
+
 
 class TestStatsExtensionsAPI:
     def test_stats_includes_by_tag_and_by_audience(self, seeded_app):

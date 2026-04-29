@@ -918,7 +918,13 @@ async def admin_patch_item(
     repo = KnowledgeRepository(conn)
     _get_item_or_404(repo, item_id)
 
-    updates = request.model_dump(exclude_none=True)
+    # ``exclude_unset=True`` preserves explicit ``null`` values from the request
+    # body so callers can clear previously-set Optional fields (e.g. PATCH
+    # ``{"audience": null}`` resets audience to NULL). With ``exclude_none=True``
+    # those nulls were silently dropped — the only path to clear was the
+    # empty-string short-circuit on ``domain``, and ``audience`` had no clearing
+    # path at all. See PR #126 round-4 review.
+    updates = request.model_dump(exclude_unset=True)
     if "domain" in updates and updates["domain"] and updates["domain"] not in VALID_DOMAINS:
         raise HTTPException(
             status_code=400,
