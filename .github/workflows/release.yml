@@ -138,6 +138,8 @@ jobs:
     needs: build-and-push
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    outputs:
+      failed: ${{ steps.smoke.outcome == 'failure' }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -155,39 +157,8 @@ jobs:
           timeout 60 bash -c 'until curl -sf http://localhost:8000/api/health | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d[\"status\"]!=\"unhealthy\" else 1)"; do sleep 3; done'
 
       - name: Run smoke tests
+        id: smoke
         run: bash scripts/smoke-test.sh http://localhost:8000
-
-      - name: Automatic rollback on failure
-        if: failure()
-        run: |
-          IMAGE_TAG="${{ needs.build-and-push.outputs.image_tag }}"
-          VERSION="${{ needs.build-and-push.outputs.version }}"
-          DEPRECATED_TAG="deprecated-${VERSION}"
-          REPO="ghcr.io/${{ github.repository }}"
-
-          echo "Smoke test failed — initiating rollback"
-
-          # Tag the current (failed) image as :deprecated-YYYY.MM.N
-          docker pull "${REPO}:${IMAGE_TAG}"
-          docker tag "${REPO}:${IMAGE_TAG}" "${REPO}:${DEPRECATED_TAG}"
-          docker push "${REPO}:${DEPRECATED_TAG}"
-          echo "Tagged failed image as ${REPO}:${DEPRECATED_TAG}"
-
-          # Revert :stable to the previous known-good image
-          PREV_TAG=$(git tag -l "stable-*" --sort=-version:refname | head -2 | tail -1)
-          if [ -n "$PREV_TAG" ]; then
-            docker pull "${REPO}:${PREV_TAG}"
-            docker tag "${REPO}:${PREV_TAG}" "${REPO}:stable"
-            docker push "${REPO}:stable"
-            echo "Reverted :stable to ${PREV_TAG}"
-          else
-            echo "WARNING: No previous stable tag found — cannot revert :stable automatically"
-          fi
-
-          # Create a GitHub issue alerting about the failure
-          ISSUE_TITLE="Smoke test failure — rollback to ${PREV_TAG:-unknown}"
-          ISSUE_BODY="## Automatic Rollback Report\n\nThe smoke test for image \`${IMAGE_TAG}\` failed.\n\n- **Failed image**: \`${REPO}:${IMAGE_TAG}\`\n- **Deprecated tag**: \`${REPO}:${DEPRECATED_TAG}\`\n- **Rolled back to**: \`${PREV_TAG:-N/A}\`\n- **Commit**: \`${{ github.sha }}\`\n- **Run**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\n\nPlease investigate and fix before re-deploying."
-          gh issue create --title "$ISSUE_TITLE" --body "$(echo -e "$ISSUE_BODY")" --label "bug" || echo "Failed to create GitHub issue (gh CLI may not be available)"
 
       - name: Collect logs on failure
         if: failure()
@@ -290,3 +261,14 @@ jobs:
             -f docker-compose.ci.yml -f docker-compose.bind-test.yml \
             down -v || true
           sudo rm -rf /tmp/agnes-data || true
+
+  rollback-on-smoke-fail:
+    needs: [build-and-push, smoke-test]
+    if: failure() && needs.smoke-test.outputs.failed == 'true'
+    uses: ./.github/workflows/rollback.yml
+    with:
+      failed_image_tag: ${{ needs.build-and-push.outputs.image_tag }}
+    permissions:
+      contents: read
+      packages: write
+      issues: write

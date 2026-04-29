@@ -1,0 +1,104 @@
+name: Rollback :stable
+
+# Re-tag :stable to a previous known-good build, deprecate the failing
+# image, and open a tracking issue. Callable from release.yml on
+# smoke-test failure (workflow_call) or manually by an operator
+# (workflow_dispatch) when something breaks post-deploy.
+
+on:
+  workflow_call:
+    inputs:
+      failed_image_tag:
+        description: 'The image_tag that failed (e.g. stable-475)'
+        type: string
+        required: true
+      target_image_tag:
+        description: 'Override the rollback target. Defaults to stable-<run-number minus 1>.'
+        type: string
+        required: false
+  workflow_dispatch:
+    inputs:
+      failed_image_tag:
+        description: 'The image_tag that failed (e.g. stable-475)'
+        type: string
+        required: true
+      target_image_tag:
+        description: 'Rollback target. Defaults to stable-<run-number minus 1>.'
+        type: string
+        required: false
+
+permissions:
+  contents: read
+  packages: write
+  issues: write
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve target image
+        id: target
+        run: |
+          REPO="ghcr.io/${{ github.repository }}"
+          if [ -n "${{ inputs.target_image_tag }}" ]; then
+            TARGET="${{ inputs.target_image_tag }}"
+          else
+            # Parse run number from `stable-<N>` and decrement.
+            FAILED="${{ inputs.failed_image_tag }}"
+            FAILED_NUM=$(echo "$FAILED" | sed -E 's/^stable-([0-9]+)$/\1/')
+            if [ -z "$FAILED_NUM" ] || [ "$FAILED_NUM" = "$FAILED" ]; then
+              echo "::error::failed_image_tag=$FAILED is not stable-<n> — supply target_image_tag explicitly"
+              exit 1
+            fi
+            PREV_NUM=$((FAILED_NUM - 1))
+            if [ "$PREV_NUM" -lt 1 ]; then
+              echo "::error::Cannot roll back from $FAILED — no prior run number"
+              exit 1
+            fi
+            TARGET="stable-${PREV_NUM}"
+          fi
+          echo "target=$TARGET" >> "$GITHUB_OUTPUT"
+          echo "Rollback target: $TARGET"
+
+      - name: Re-tag :stable to target + mark failed image deprecated
+        run: |
+          REPO="ghcr.io/${{ github.repository }}"
+          FAILED="${{ inputs.failed_image_tag }}"
+          TARGET="${{ steps.target.outputs.target }}"
+
+          docker pull "$REPO:$FAILED"
+          docker tag "$REPO:$FAILED" "$REPO:deprecated-${FAILED}"
+          docker push "$REPO:deprecated-${FAILED}"
+
+          docker pull "$REPO:$TARGET"
+          docker tag "$REPO:$TARGET" "$REPO:stable"
+          docker push "$REPO:stable"
+
+      - name: Open tracking issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create \
+            --title "Rollback: :stable reverted from ${{ inputs.failed_image_tag }} to ${{ steps.target.outputs.target }}" \
+            --body "$(cat <<EOF
+          ## Rollback report
+
+          - Failed image: \`ghcr.io/${{ github.repository }}:${{ inputs.failed_image_tag }}\`
+          - Deprecated tag: \`ghcr.io/${{ github.repository }}:deprecated-${{ inputs.failed_image_tag }}\`
+          - Rolled back to: \`ghcr.io/${{ github.repository }}:${{ steps.target.outputs.target }}\`
+          - Triggered by: ${{ github.event_name }}
+          - Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          Investigate before re-deploying.
+          EOF
+          )" \
+            --label "bug,rollback"
