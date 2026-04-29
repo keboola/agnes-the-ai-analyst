@@ -23,10 +23,7 @@ def get_notification_status(username: str) -> str:
         return "Failed to read notification scripts."
 
     if not scripts:
-        return (
-            "No notification scripts found.\n"
-            "Add `.py` scripts to `~/user/notifications/`."
-        )
+        return "No notification scripts found.\nAdd `.py` scripts to `~/user/notifications/`."
 
     lines = [f"*Notifications for {username}*\n"]
 
@@ -50,10 +47,14 @@ def get_script_buttons(username: str) -> list[list[dict]]:
 
     buttons = []
     for s in scripts:
-        buttons.append([{
-            "text": f"Run {s['stem']}",
-            "callback_data": f"run:{s['name']}",
-        }])
+        buttons.append(
+            [
+                {
+                    "text": f"Run {s['stem']}",
+                    "callback_data": f"run:{s['name']}",
+                }
+            ]
+        )
 
     return buttons
 
@@ -79,9 +80,7 @@ def _fetch_script_list(username: str) -> list[dict] | None:
             timeout=10,
         )
         if result.returncode != 0:
-            logger.warning(
-                f"notify-scripts list failed for {username}: {result.stderr[:300]}"
-            )
+            logger.warning(f"notify-scripts list failed for {username}: {result.stderr[:300]}")
             return None
         return json.loads(result.stdout)
     except subprocess.TimeoutExpired:

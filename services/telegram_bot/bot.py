@@ -15,9 +15,10 @@ import json
 import logging
 import os
 import sys
-from pathlib import Path
 
 from aiohttp import web
+
+from app.logging_config import setup_logging
 
 from . import config
 from .dispatch import dispatch_to_ws_gateway
@@ -36,6 +37,7 @@ from .test_report import generate_test_report
 # Load instance branding for bot messages
 try:
     from config.loader import load_instance_config, get_instance_value
+
     _bot_config = load_instance_config()
     _bot_instance_name = get_instance_value(_bot_config, "instance", "name", default="Data Analyst")
     _bot_server_hostname = get_instance_value(_bot_config, "server", "hostname", default="your-server")
@@ -46,21 +48,12 @@ except Exception:
     _bot_domain_suffix = ""
 
 # Configure logging
-_log_handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
-try:
-    os.makedirs(os.path.dirname(config.BOT_LOG_FILE), exist_ok=True)
-    _log_handlers.append(logging.FileHandler(config.BOT_LOG_FILE, mode="a"))
-except OSError:
-    pass  # File logging unavailable (e.g., read-only filesystem in CI)
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-    handlers=_log_handlers,
-)
+setup_logging(__name__)
 logger = logging.getLogger("notify-bot")
 
 
 # --- Telegram Polling ---
+
 
 async def handle_message(message: dict) -> None:
     """Handle an incoming Telegram message."""
@@ -75,8 +68,7 @@ async def handle_message(message: dict) -> None:
         if username:
             await send_message(
                 chat_id,
-                f"You are already linked as *{username}*.\n"
-                f"Use /help to see available commands.",
+                f"You are already linked as *{username}*.\nUse /help to see available commands.",
             )
             return
 
@@ -244,6 +236,7 @@ async def polling_loop() -> None:
 
 # --- HTTP Send API (unix socket) ---
 
+
 async def handle_send(request: web.Request) -> web.Response:
     """Handle POST /send - send text message."""
     try:
@@ -256,15 +249,11 @@ async def handle_send(request: web.Request) -> web.Response:
     parse_mode = data.get("parse_mode", "Markdown")
 
     if not username or not text:
-        return web.json_response(
-            {"error": "Missing required fields: user, text"}, status=400
-        )
+        return web.json_response({"error": "Missing required fields: user, text"}, status=400)
 
     chat_id = get_chat_id(username)
     if not chat_id:
-        return web.json_response(
-            {"error": f"User '{username}' has no linked Telegram"}, status=404
-        )
+        return web.json_response({"error": f"User '{username}' has no linked Telegram"}, status=404)
 
     success = await send_message(chat_id, text, parse_mode)
     if success:
@@ -285,20 +274,14 @@ async def handle_send_photo(request: web.Request) -> web.Response:
     parse_mode = data.get("parse_mode", "Markdown")
 
     if not username or not photo_path:
-        return web.json_response(
-            {"error": "Missing required fields: user, photo_path"}, status=400
-        )
+        return web.json_response({"error": "Missing required fields: user, photo_path"}, status=400)
 
     if not os.path.isfile(photo_path):
-        return web.json_response(
-            {"error": f"Photo file not found: {photo_path}"}, status=400
-        )
+        return web.json_response({"error": f"Photo file not found: {photo_path}"}, status=400)
 
     chat_id = get_chat_id(username)
     if not chat_id:
-        return web.json_response(
-            {"error": f"User '{username}' has no linked Telegram"}, status=404
-        )
+        return web.json_response({"error": f"User '{username}' has no linked Telegram"}, status=404)
 
     success = await send_photo(chat_id, photo_path, caption, parse_mode)
     if success:
@@ -337,12 +320,13 @@ async def start_http_server() -> None:
     # Socket lives in /run/notify-bot/ (systemd RuntimeDirectory, mode 0755)
     os.chmod(socket_path, 0o660)
     # Change group ownership to dataread (deploy user is member of dataread group)
-    os.chown(socket_path, -1, grp.getgrnam('dataread').gr_gid)
+    os.chown(socket_path, -1, grp.getgrnam("dataread").gr_gid)
 
     logger.info(f"HTTP server listening on {socket_path}")
 
 
 # --- Main ---
+
 
 async def main() -> None:
     """Run bot polling and HTTP server concurrently."""

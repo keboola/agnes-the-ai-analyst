@@ -23,7 +23,6 @@ disabled).
 """
 
 import logging
-from typing import Any
 
 from connectors.llm import StructuredExtractor
 from connectors.llm.exceptions import LLMError
@@ -191,7 +190,9 @@ def detect_and_record(
         contradiction_ids.append(cid)
         logger.info(
             "Contradiction recorded: %s vs %s (severity=%s)",
-            r["item_a_id"], r["item_b_id"], r.get("severity"),
+            r["item_a_id"],
+            r["item_b_id"],
+            r.get("severity"),
         )
     return contradiction_ids
 
@@ -201,6 +202,7 @@ def detect_and_record(
 # judgment (e.g. tests, ad-hoc tooling) can still use them. NOT used by the
 # detector pipeline.
 # ---------------------------------------------------------------------------
+
 
 def check_contradiction(
     extractor: StructuredExtractor,
