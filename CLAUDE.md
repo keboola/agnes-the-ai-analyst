@@ -312,8 +312,19 @@ joins `resource_grants ↔ marketplace_plugins` (matching
 caller's `user_group_members`. Admin is treated as a regular group here —
 no god-mode shortcut for the marketplace feed, so admins curate their own
 view by granting plugins to the Admin group (or any group they belong to).
-Plugin names are prefixed with marketplace slug (`<slug>-<plugin>`) so two
-marketplaces with the same plugin name don't collide in the aggregated view.
+On-disk layout in the served ZIP / git tree uses a slug-prefixed directory
+(`plugins/<slug>-<plugin>/`) so two marketplaces shipping a same-named
+plugin don't overwrite each other's files. The synth marketplace.json's
+`name` field, however, is the plugin's authoritative name from its own
+`.claude-plugin/plugin.json` (with a fallback to the upstream
+marketplace.json `name`) — Claude Code's `/plugin` UI resolves a loaded
+plugin back to its catalog entry by `plugin.json` name, so the catalog
+entry's `name` must match. Same-named plugins from two upstream
+marketplaces therefore collide in the catalog by design; admin RBAC
+(which grants survive the filter) decides which one wins, identical to
+how Claude Code behaves when a user adds two upstream marketplaces with
+overlapping plugin names directly. `/marketplace/info` exposes both
+`name` and `prefixed_name` so operators can disambiguate.
 
 Cache: content-addressed bare repos at `${DATA_DIR}/marketplaces/git-cache/`
 keyed by sha256(filtered content). Two users with the same RBAC view share
