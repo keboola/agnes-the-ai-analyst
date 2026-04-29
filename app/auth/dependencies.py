@@ -158,6 +158,7 @@ async def get_current_user(
     if is_local_dev_mode():
         user = _get_local_dev_user(conn)
         if user:
+            _attach_admin_flag(user, conn)
             return user
         # Fall through to normal auth if seed missing — surfaces the bug
         # instead of hiding it.
@@ -181,11 +182,35 @@ async def get_current_user(
     from app.auth.pat_resolver import resolve_token_to_user
     user, reason = resolve_token_to_user(conn, token, request)
     if user:
+        _attach_admin_flag(user, conn)
         return user
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail=_AUTH_DETAIL_BY_REASON.get(reason, "Invalid or expired token"),
     )
+
+
+def _attach_admin_flag(user: dict, conn: duckdb.DuckDBPyConnection) -> None:
+    """Inject ``user["is_admin"]`` so templates and route handlers can gate
+    admin-only UI without touching the legacy ``users.role`` column.
+
+    v13 nulled out ``users.role`` and moved admin authority onto
+    ``user_group_members`` (Admin system group). The web header used to
+    gate its admin nav on ``session.user.role == 'admin'``, which silently
+    became false for every user — so no admin saw any admin menu items
+    after the v13 migration. Computing the flag once per request here
+    keeps every consumer in sync with ``app.auth.access.is_user_admin``
+    (the same call all server-side admin gates use).
+    """
+    from app.auth.access import is_user_admin
+    user_id = user.get("id")
+    if user_id:
+        try:
+            user["is_admin"] = is_user_admin(user_id, conn)
+        except Exception:
+            user["is_admin"] = False
+    else:
+        user["is_admin"] = False
 
 
 async def get_optional_user(

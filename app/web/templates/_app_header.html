@@ -12,7 +12,7 @@
         {% set _path = request.url.path %}
         <a class="app-nav-link {% if _path == '/dashboard' or _path == '/' %}is-active{% endif %}" href="/dashboard">Dashboard</a>
         <a class="app-nav-link {% if _path.startswith('/install') %}is-active{% endif %}" href="/install">Install CLI</a>
-        {% if session.user.role == 'admin' %}
+        {% if session.user.is_admin %}
         <a class="app-nav-link {% if _path.startswith('/admin/tokens') %}is-active{% endif %}" href="/admin/tokens">All tokens</a>
         <a class="app-nav-link {% if _path.startswith('/admin/marketplaces') %}is-active{% endif %}" href="/admin/marketplaces">Marketplaces</a>
         {% set _admin_active = _path.startswith('/admin/users') or _path.startswith('/admin/groups') or _path.startswith('/admin/access') or _path.startswith('/admin/server-config') %}
@@ -50,8 +50,8 @@
             <div class="app-user-menu-panel" id="userMenuPanel" role="menu" hidden>
                 <div class="app-user-menu-header">
                     <div class="app-user-menu-email">{{ session.user.email }}</div>
-                    {% if session.user.role %}
-                    <div class="app-user-menu-role">{{ session.user.role | capitalize }}</div>
+                    {% if session.user.is_admin %}
+                    <div class="app-user-menu-role">Admin</div>
                     {% endif %}
                 </div>
                 <a class="app-user-menu-item {% if _path.startswith('/profile') %}is-active{% endif %}" role="menuitem" href="/profile">Profile</a>
