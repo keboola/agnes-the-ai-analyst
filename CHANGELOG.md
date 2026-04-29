@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- `/me/debug` — self-only auth diagnostic page. Shows the logged-in user their own decoded JWT claims (no raw token), group memberships with sources and bound `external_id` when present, resource grants effective via those memberships, and a "Refetch from Google (dry-run)" button that issues a fresh `fetch_user_groups` call and reports the diff against the cached `user_group_members` snapshot without writing anything. Gated by `AGNES_DEBUG_AUTH=true` env var (default off → route returns 404 and the navbar item is not rendered). Intended for dev / staging VMs; do not enable on customer-facing instances. The infra module exposes a `debug_auth_enabled` variable that propagates to the env.
+
 ## [0.14.0] — 2026-04-29
 
 ### Added
