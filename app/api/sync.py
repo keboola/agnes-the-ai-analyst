@@ -49,7 +49,6 @@ def _run_sync(tables: Optional[List[str]] = None):
     try:
         from app.instance_config import get_data_source_type, get_value
         from src.db import get_system_db
-        from src.repositories.table_registry import TableRegistryRepository
 
         source_type = get_data_source_type()
         data_dir = _get_data_dir()
@@ -65,8 +64,10 @@ def _run_sync(tables: Optional[List[str]] = None):
                 table_configs = [c for c in all_configs if c is not None]
             else:
                 table_configs = repo.list_local(source_type) if source_type else repo.list_local()
-                # #79: drop tables whose sync_schedule says they are not due.
-                # Tables without a schedule pass through (opt-in feature).
+                # Without this filter, every scheduler tick would re-sync
+                # every table regardless of its sync_schedule cadence,
+                # making the field a no-op at trigger time. Tables with
+                # no schedule pass through unchanged (opt-in feature).
                 state_repo = SyncStateRepository(sys_conn)
                 table_configs = filter_due_tables(table_configs, state_repo)
         finally:

@@ -155,10 +155,6 @@ def test_run_sync_filters_local_tables_by_schedule(monkeypatch, tmp_path):
         def get(self, table_id):
             return next((c for c in fake_configs if c["id"] == table_id), None)
 
-    monkeypatch.setattr(
-        "src.repositories.table_registry.TableRegistryRepository",
-        _StubRegistry,
-    )
     monkeypatch.setattr(sync_module, "TableRegistryRepository", _StubRegistry)
 
     # Stub get_system_db (imported locally inside _run_sync from src.db).
@@ -178,10 +174,6 @@ def test_run_sync_filters_local_tables_by_schedule(monkeypatch, tmp_path):
         def __init__(self, conn): pass
         def get_last_sync(self, table_id): return last_syncs.get(table_id)
 
-    monkeypatch.setattr(
-        "src.repositories.sync_state.SyncStateRepository",
-        _StubState,
-    )
     monkeypatch.setattr(sync_module, "SyncStateRepository", _StubState)
 
     # Freeze 'now' inside src.scheduler.filter_due_tables. We do this by
