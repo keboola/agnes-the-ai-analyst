@@ -318,16 +318,31 @@ class TestGetBqAccess:
         assert bq.projects.billing == "yaml-data"
         assert bq.projects.data == "yaml-data"
 
-    def test_raises_not_configured_when_neither_set(self, monkeypatch):
-        from connectors.bigquery.access import get_bq_access, BqAccessError
+    def test_returns_sentinel_when_neither_set(self, monkeypatch):
+        """get_bq_access() MUST NOT raise during dep-injection on non-BQ instances —
+        that would 500 every v2 endpoint request even for local-source tables.
+        Returns a sentinel BqAccess whose client() / duckdb_session() raise
+        BqAccessError(not_configured) only when actually called. The endpoint's
+        try/except BqAccessError catches that path normally. Devin BUG_0001 on
+        PR #138 review."""
+        from connectors.bigquery.access import get_bq_access, BqAccessError, BqAccess
         monkeypatch.delenv("BIGQUERY_PROJECT", raising=False)
         monkeypatch.setattr("app.instance_config.get_value", lambda *k, default="": default)
 
+        bq = get_bq_access()
+        assert isinstance(bq, BqAccess)
+
         with pytest.raises(BqAccessError) as exc_info:
-            get_bq_access()
+            bq.client()
         assert exc_info.value.kind == "not_configured"
         assert "billing_project" in exc_info.value.details["hint"].lower() or \
                "project" in exc_info.value.details["hint"].lower()
+
+        # duckdb_session() is a context manager; the BqAccessError must surface on __enter__
+        with pytest.raises(BqAccessError) as exc_info:
+            with bq.duckdb_session():
+                pass
+        assert exc_info.value.kind == "not_configured"
 
     def test_is_cached(self, monkeypatch):
         from connectors.bigquery.access import get_bq_access
@@ -336,16 +351,17 @@ class TestGetBqAccess:
         b = get_bq_access()
         assert a is b
 
-    def test_does_not_cache_exceptions(self, monkeypatch):
-        """functools.cache does not cache exceptions — config can be fixed and retried."""
-        from connectors.bigquery.access import get_bq_access, BqAccessError
+    def test_sentinel_is_cached_per_process(self, monkeypatch):
+        """The sentinel BqAccess is cached like any other return value. Operators
+        fixing instance.yaml at runtime must restart the container to pick up the
+        change — documented as expected behavior in the spec ('Hot-reload of
+        instance.yaml is out of scope')."""
+        from connectors.bigquery.access import get_bq_access, BqAccess
         monkeypatch.delenv("BIGQUERY_PROJECT", raising=False)
         monkeypatch.setattr("app.instance_config.get_value", lambda *k, default="": default)
 
-        with pytest.raises(BqAccessError):
-            get_bq_access()
-
-        # Now "fix" the config
-        monkeypatch.setenv("BIGQUERY_PROJECT", "p")
-        bq = get_bq_access()
-        assert bq.projects.billing == "p"
+        a = get_bq_access()
+        b = get_bq_access()
+        assert a is b
+        assert isinstance(a, BqAccess)
+        assert a.projects.billing == ""
