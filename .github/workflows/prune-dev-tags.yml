@@ -15,7 +15,7 @@ on:
         type: boolean
         default: true
       keep_months:
-        description: 'Additional months beyond current to keep'
+        description: 'Keep current month + this many previous months (e.g. 1 = 2 months total)'
         type: string
         default: '1'
 

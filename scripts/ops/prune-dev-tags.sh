@@ -111,7 +111,7 @@ if [ -n "${GH_TOKEN:-}" ]; then
       gh api -X DELETE \
         "/orgs/${ORG}/packages/container/${PKG_NAME}/versions/${VERSION_ID}" \
         2>/dev/null \
-        || echo "    (DELETE failed; may be referenced by :stable / :dev / similar floating tag — leaving)"
+        || echo "    (DELETE failed — check packages:write scope, GitHub API rate limits, or version already gone)"
     fi
   done
 else
