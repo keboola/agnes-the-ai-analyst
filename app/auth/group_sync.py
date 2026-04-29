@@ -1,50 +1,71 @@
-"""Sync a user's Google Workspace group membership into users.groups.
+"""Sync a user's Google Workspace group membership at OAuth callback.
 
-Called from `app/auth/providers/google.py` in the OAuth callback. Uses the
-Cloud Identity API (searchTransitiveGroups — returns nested group
-memberships too) with Application Default Credentials from the VM metadata
-server. No JSON key, no domain-wide delegation.
+Called from `app/auth/providers/google.py`. Uses keyless Domain-Wide
+Delegation: the VM service account signs the impersonation JWT via the IAM
+``signJwt`` API (no private key on disk), then exchanges that JWT for a
+short-lived OAuth token scoped to ``admin.directory.group.readonly``. The
+Admin SDK ``groups.list?userKey=`` endpoint returns the user's static AND
+dynamic group memberships in one call.
 
-Required one-off Workspace setup:
-  - Assign Groups Admin admin role to the VM service account.
-  - See docs/google-workspace-groups-request.md.
+Required GCP setup (one-off):
 
-Required VM config:
-  - `cloud-platform` access scope on the VM (already set on
-    grpn-sa-foundryai-execution) — covers `cloud-identity.groups.readonly`.
-  - Cloud Identity API enabled on the project.
+  - The VM SA grants itself ``roles/iam.serviceAccountTokenCreator`` so it
+    can call ``IAMCredentials.signJwt`` for its own identity.
+  - A Domain-Wide Delegation entry exists in admin.google.com → Security →
+    API controls → Domain-wide Delegation, mapping the VM SA's numeric
+    Unique ID to scope ``admin.directory.group.readonly``.
+
+Required env on the VM:
+
+  - ``GOOGLE_ADMIN_SDK_SUBJECT`` — the Workspace admin email the SA
+    impersonates. Must be a real Workspace user with directory read
+    privileges. When unset, this module fails soft and returns ``[]``.
+  - ``GOOGLE_ADMIN_SDK_SA_EMAIL`` (optional) — explicit SA email override.
+    When unset, the SA is auto-detected from the GCE metadata server, i.e.
+    whichever SA the VM is currently running as. Useful off-VM (CI, tests).
 
 Local dev / CI:
-  Set GOOGLE_ADMIN_SDK_MOCK_GROUPS to a comma-separated list. ADC from the
-  metadata server doesn't exist off-VM; without this flag local runs fall
-  through to the real-path and bail out with an empty list (fail-soft).
+
+  Set ``GOOGLE_ADMIN_SDK_MOCK_GROUPS`` to a comma-separated list of group
+  emails to bypass all Google calls. Empty value → empty list. Unset →
+  the real keyless-DWD path.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import urllib.error
+import urllib.request
 from typing import List
 
 logger = logging.getLogger(__name__)
 
-SCOPE = "https://www.googleapis.com/auth/cloud-identity.groups.readonly"
-
-# CEL label filter — regular Workspace email groups (grp_*, eng-team@..., etc).
-# Skips security groups, dynamic groups, POSIX groups, which we don't use for
-# plugin RBAC.
-_GROUP_LABEL_DISCUSSION = "cloudidentity.googleapis.com/groups.discussion_forum"
-
-# Env var that, when set, bypasses the real API entirely. Value is comma-
-# separated group names. Empty string → empty list. Unset → real API path.
+# Bypass real API entirely. Comma-separated group emails. Empty → []. Unset →
+# real keyless-DWD path.
 MOCK_ENV = "GOOGLE_ADMIN_SDK_MOCK_GROUPS"
+
+# Required: the Workspace admin email impersonated through DWD.
+SUBJECT_ENV = "GOOGLE_ADMIN_SDK_SUBJECT"
+
+# Optional: SA email override. When unset, auto-detect from GCE metadata.
+SA_EMAIL_ENV = "GOOGLE_ADMIN_SDK_SA_EMAIL"
+
+SCOPE = "https://www.googleapis.com/auth/admin.directory.group.readonly"
+
+_METADATA_SA_URL = (
+    "http://metadata.google.internal/computeMetadata/v1/instance/"
+    "service-accounts/default/email"
+)
 
 
 def fetch_user_groups(email: str) -> List[str]:
-    """Return the list of group names (emails) the user belongs to.
+    """Return the list of group emails ``email`` is a member of.
 
-    Fail-soft: returns [] on any error. Caller must treat this as a soft
-    signal (login proceeds, users.groups stays whatever it was before).
+    Fail-soft: returns ``[]`` on any error (missing config, metadata server
+    unreachable, API 4xx/5xx, network outage). The caller in the OAuth
+    callback treats ``[]`` as "no data" and leaves the previous membership
+    snapshot intact — so a transient outage does not wipe a user's groups.
     """
     mock = os.environ.get(MOCK_ENV)
     if mock is not None:
@@ -52,51 +73,93 @@ def fetch_user_groups(email: str) -> List[str]:
     return _fetch_real(email)
 
 
+def _detect_sa_email() -> str | None:
+    """Return the SA email this process should impersonate as.
+
+    Order of resolution:
+      1. ``GOOGLE_ADMIN_SDK_SA_EMAIL`` env var — explicit override.
+      2. GCE metadata server — the SA the VM is attached to.
+
+    Returns ``None`` when neither is available (off-VM with no override).
+    """
+    explicit = os.environ.get(SA_EMAIL_ENV, "").strip()
+    if explicit:
+        return explicit
+    try:
+        req = urllib.request.Request(
+            _METADATA_SA_URL,
+            headers={"Metadata-Flavor": "Google"},
+        )
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            return resp.read().decode("ascii").strip()
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError):
+        return None
+
+
 def _fetch_real(email: str) -> List[str]:
     try:
-        from google.auth import default
+        from google.auth import default, iam
+        from google.auth.transport.requests import Request
+        from google.oauth2 import service_account
         from googleapiclient.discovery import build
     except ImportError:
         logger.warning(
-            "google-api-python-client not installed; skipping group fetch"
+            "google-api-python-client / google-auth not installed; "
+            "skipping group fetch"
+        )
+        return []
+
+    subject = os.environ.get(SUBJECT_ENV, "").strip()
+    if not subject:
+        logger.warning(
+            "%s not set; skipping group fetch (keyless DWD requires an "
+            "admin email to impersonate)",
+            SUBJECT_ENV,
+        )
+        return []
+
+    sa_email = _detect_sa_email()
+    if not sa_email:
+        logger.warning(
+            "Could not determine VM service account email "
+            "(metadata server unreachable and %s not set); "
+            "skipping group fetch",
+            SA_EMAIL_ENV,
         )
         return []
 
     try:
-        creds, _ = default(scopes=[SCOPE])
+        source, _ = default()
+        signer = iam.Signer(Request(), source, sa_email)
+        creds = service_account.Credentials(
+            signer=signer,
+            service_account_email=sa_email,
+            token_uri="https://oauth2.googleapis.com/token",
+            scopes=[SCOPE],
+            subject=subject,
+        )
         service = build(
-            "cloudidentity", "v1", credentials=creds, cache_discovery=False
+            "admin", "directory_v1",
+            credentials=creds,
+            cache_discovery=False,
         )
     except Exception as e:  # noqa: BLE001 - fail-soft by design
-        logger.warning("Google client init failed: %s", e)
+        logger.warning("Admin SDK init failed: %s", e)
         return []
 
-    # Escape single quotes in the email to keep the CEL query well-formed even
-    # if a user has a quote in their login (rare, but defensive).
-    safe_email = email.replace("'", "\\'")
-    query = (
-        f"member_key_id == '{safe_email}' && "
-        f"'{_GROUP_LABEL_DISCUSSION}' in labels"
-    )
-
     groups: List[str] = []
-    page_token = None
+    page_token: str | None = None
     try:
         while True:
-            resp = (
-                service.groups()
-                .memberships()
-                .searchTransitiveGroups(
-                    parent="groups/-",
-                    query=query,
-                    pageToken=page_token,
-                )
-                .execute()
-            )
-            for m in resp.get("memberships", []):
-                gkey = m.get("groupKey", {}).get("id")
-                if gkey:
-                    groups.append(gkey)
+            resp = service.groups().list(
+                userKey=email,
+                maxResults=200,
+                pageToken=page_token,
+            ).execute()
+            for g in resp.get("groups", []):
+                gid = g.get("email")
+                if gid:
+                    groups.append(gid)
             page_token = resp.get("nextPageToken")
             if not page_token:
                 break

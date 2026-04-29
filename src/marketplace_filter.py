@@ -3,10 +3,10 @@
 The marketplace endpoint aggregates plugins from every registered marketplace
 and returns only those the caller is allowed to see. Access is resolved
 uniformly through ``resource_grants`` (resource_type='marketplace_plugin'):
-the caller sees the distinct plugins granted to any of their groups
-(Everyone is implicit; Admin is just one of those groups here — there is no
-god-mode shortcut for the marketplace feed, so admins curate their own
-view by granting plugins to the Admin group).
+the caller sees the distinct plugins granted to any of their groups. There
+is no implicit Everyone membership and no god-mode shortcut for the
+marketplace feed — admins curate their own view by granting plugins to a
+group they belong to (Admin or otherwise).
 
 Plugins from different marketplaces that happen to share a name are NOT the
 same plugin — the caller needs both. We therefore prefix every plugin name
@@ -75,10 +75,9 @@ def resolve_allowed_plugins(
     root = get_marketplaces_dir()
 
     # Distinct (marketplace_id, plugin_name) across all of the user's
-    # groups (Everyone is implicit via _user_group_ids). If two groups
-    # grant the same plugin, it still appears once. Admin is treated as
-    # a regular group — admins get only the plugins their groups have
-    # been granted.
+    # groups. If two groups grant the same plugin, it still appears
+    # once. Admin is treated as a regular group — admins get only the
+    # plugins their groups have been granted.
     group_ids = _user_group_ids(user_id, conn) if user_id else set()
     if not group_ids:
         return []
@@ -126,9 +125,8 @@ def resolve_user_groups(
     granted me visibility into this plugin set?" without opening the admin UI.
 
     Membership semantics mirror ``app.auth.access._user_group_ids``:
-    Everyone is implicit and is returned even if the explicit
-    ``user_group_members`` row is missing (fresh-install / mis-seeded
-    fixture safety).
+    only real ``user_group_members`` rows are surfaced; there is no
+    implicit Everyone membership.
     """
     user_id = user.get("id")
     if not user_id:

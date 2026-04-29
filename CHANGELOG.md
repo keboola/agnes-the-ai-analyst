@@ -23,12 +23,27 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - `POST /api/admin/register-table/precheck` — validation-only sibling of register-table. Returns `{"ok": true, "table": {rows, size_bytes, columns, …}}` for BQ rows after round-tripping `get_table`; surfaces NotFound → 404, Forbidden → 403, anything else → 400 with the GCP error verbatim. Also runs Pydantic validation for non-BQ source types so the CLI / UI gets a single endpoint shape.
 - `--dry-run` flag on `da admin register-table` — calls `/precheck` and pretty-prints rows / bytes / columns; exits 0 on `ok`, 1 on validation or source-side error.
 - Audit-log entries on every `register_table` / `update_table` / `unregister_table` mutation — closes the asymmetry where instance-config saves audited but registry mutations didn't (Decision 4 in #108). Secret-named fields in the request payload are masked as `***`; `description` is logged raw.
+- **Google Workspace group prefix filter + system-group mapping.** Three new env vars wire the OAuth callback's group sync to a configurable Workspace prefix and route the admin/everyone Workspace groups into the seeded system rows.
+  - `AGNES_GOOGLE_GROUP_PREFIX` — when set (e.g. `grp_acme_`), only Workspace groups whose email local part starts with the prefix are mirrored into `user_group_members`. Empty = legacy behavior (mirror every fetched group).
+  - `AGNES_GROUP_ADMIN_EMAIL` — Workspace group email that maps onto the seeded `Admin` system row instead of creating a fresh `user_groups` entry. Members of that Workspace group land in `Admin` directly.
+  - `AGNES_GROUP_EVERYONE_EMAIL` — same mechanism for `Everyone`.
+- **Login gate.** When `AGNES_GOOGLE_GROUP_PREFIX` is set and the user's Workspace fetch returned a non-empty list with zero prefix matches, the callback redirects to `/login?error=not_in_allowed_group` with a friendly inline banner. Empty fetch results (transient Cloud Identity failures) preserve the cached membership and let the login proceed — fail-soft only the soft-fail path; an explicit no-match still blocks. New error code `group_check_unavailable` is wired through the login banner for future use.
+- **Admin UI subtitle for synced groups.** The `/admin/groups` table and the `/admin/groups/{id}` detail page render a derived display name (prefix stripped, `@domain` removed, capitalized) above a small monospace subtitle showing the full Workspace email. Edit / Delete affordances are hidden on Google-managed rows, and a "managed by Google Workspace — read-only here" banner appears on the detail page.
 
 ### Changed
 
+- **BREAKING** Auto-`Everyone` membership for new users was removed. `UserRepository.create` no longer writes a `user_group_members` row, and `app.auth.access._user_group_ids` no longer adds a virtual `Everyone` id to the result. Every membership now traces to a real source row (`admin`, `google_sync`, or an explicit `system_seed`). If you relied on the implicit-Everyone behavior for plugin visibility, grant the plugin to a real group (e.g. an `everyone@example.com` Workspace group mapped via `AGNES_GROUP_EVERYONE_EMAIL`).
+- **Admin UI / API are read-only on Google-managed groups.** `created_by='system:google-sync'` rows, plus the seeded `Admin` / `Everyone` rows when the matching email-mapping env var is set, return `409` with body `{"detail": {"code": "google_managed_readonly", ...}}` from `PATCH /api/admin/groups/{id}`, `DELETE /api/admin/groups/{id}`, `POST /api/admin/groups/{id}/members`, `DELETE /api/admin/groups/{id}/members/{user_id}`, `POST /api/admin/users/{id}/memberships`, `DELETE /api/admin/users/{id}/memberships/{group_id}`. Edit through admin.google.com, then sign in again to refresh.
 - **Audit action names for corporate-memory operations renamed** from `km_<action>` to `corporate_memory.<action>` to match the 0.15.0 CHANGELOG documentation. The audit-tab filter accepts both prefixes for back-compat with rows already in the audit log (no historical-row rewrite). Issue #62.
 - **`onDomainChange()` UX bug fixed** on `/corporate-memory`: domain and category filters now compose instead of resetting each other when either changes. Issue #62.
 - `POST /api/memory/admin/edit` continues to accept title/content as before; the new `PATCH /api/memory/admin/{id}` is the recommended path for everything else (including title/content). The legacy endpoint is kept one release for back-compat.
+
+### Internal
+
+- New env vars surfaced into `ConfigProxy` so templates can derive the friendly display name client-side.
+- New `is_google_managed: bool` field on `GroupResponse` (the API surface for the admin UI's group list/detail).
+- New `UserGroupMembersRepository.has_any_google_sync_membership` helper (currently diagnostic; kept for a future tightening of the gate).
+- New tests in `tests/test_google_group_prefix_sync.py`; `tests/test_repositories.py::TestUserRepositoryEveryoneAutoMember` renamed to `TestUserRepositoryNoAutoMembership` with inverted assertion; two `tests/test_marketplace_filter.py` tests adapted to the no-implicit-Everyone semantics. See `docs/auth-groups.md` for the full reference.
 
 ### Fixed
 

@@ -15,6 +15,7 @@ for every mutation so an admin's group/grant changes are traceable.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime
 from typing import Any, List, Optional
 
@@ -64,6 +65,57 @@ def _audit(
     except Exception:
         # Audit failures must never break the mutation. Logged at WARN.
         logger.warning("audit log failed for %s/%s", action, resource)
+
+
+def _is_google_managed(g: dict) -> bool:
+    """Whether a group row is owned by Google sync — admin UI/API treat such
+    rows as read-only.
+
+    Two ways a group can be Google-managed:
+
+    1. ``created_by='system:google-sync'`` — auto-created by the OAuth
+       callback when the user belonged to a prefix-matching Workspace
+       group; ``name`` is the full Workspace email.
+    2. ``is_system=TRUE`` AND the group's name matches the env-configured
+       admin/everyone Workspace email — the OAuth callback routes
+       memberships from those Workspace groups into the seeded system
+       row instead of creating a separate user_groups row, so the system
+       row effectively *becomes* a Google-synced row in this deployment.
+       Without the env mapping, system groups stay regular admin-managed
+       rows (renaming Admin is still blocked separately by
+       ``UserGroupsRepository`` for code-reference safety).
+    """
+    if (g.get("created_by") or "") == "system:google-sync":
+        return True
+    if g.get("is_system"):
+        from src.db import SYSTEM_ADMIN_GROUP, SYSTEM_EVERYONE_GROUP
+        admin_email = os.environ.get(
+            "AGNES_GROUP_ADMIN_EMAIL", ""
+        ).strip().lower()
+        everyone_email = os.environ.get(
+            "AGNES_GROUP_EVERYONE_EMAIL", ""
+        ).strip().lower()
+        if admin_email and g.get("name") == SYSTEM_ADMIN_GROUP:
+            return True
+        if everyone_email and g.get("name") == SYSTEM_EVERYONE_GROUP:
+            return True
+    return False
+
+
+def _guard_google_managed(g: dict) -> None:
+    """Raise 409 google_managed_readonly when the group is Google-managed."""
+    if _is_google_managed(g):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "google_managed_readonly",
+                "message": (
+                    "This group is managed by Google Workspace and is "
+                    "read-only here. Add or remove members via "
+                    "admin.google.com, or sign in again to refresh."
+                ),
+            },
+        )
 
 
 def _validate_resource_type(value: str) -> ResourceType:
@@ -214,6 +266,9 @@ class GroupResponse(BaseModel):
     created_by: Optional[str] = None
     member_count: int = 0
     grant_count: int = 0
+    # True iff the row is owned by Google sync — admin UI hides edit/delete
+    # affordances and the API rejects mutations with 409 google_managed_readonly.
+    is_google_managed: bool = False
 
 
 class CreateGroupRequest(BaseModel):
@@ -262,6 +317,7 @@ def _group_to_response(
         created_by=g.get("created_by"),
         member_count=members_repo.count_members(g["id"]),
         grant_count=grants_repo.count_for_group(g["id"]),
+        is_google_managed=_is_google_managed(g),
     )
 
 
@@ -328,6 +384,7 @@ async def update_group(
     g = repo.get(group_id)
     if not g:
         raise HTTPException(status_code=404, detail="Group not found")
+    _guard_google_managed(g)
     if g.get("is_system") and payload.name is not None and payload.name.strip() != g["name"]:
         # System groups: block renames (the canonical names "Admin" /
         # "Everyone" are referenced from app.auth.access and the
@@ -368,6 +425,7 @@ async def delete_group(
     g = repo.get(group_id)
     if not g:
         raise HTTPException(status_code=404, detail="Group not found")
+    _guard_google_managed(g)
     if g.get("is_system"):
         raise HTTPException(status_code=409, detail="Cannot delete a system group")
     # Cascade members + grants atomically with the group row so a partial
@@ -445,8 +503,10 @@ async def add_member(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    if not UserGroupsRepository(conn).get(group_id):
+    g = UserGroupsRepository(conn).get(group_id)
+    if not g:
         raise HTTPException(status_code=404, detail="Group not found")
+    _guard_google_managed(g)
     target = UserRepository(conn).get_by_email(payload.email)
     if not target:
         raise HTTPException(status_code=404, detail=f"User {payload.email!r} not found")
@@ -488,6 +548,7 @@ async def remove_member(
     group = UserGroupsRepository(conn).get(group_id)
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
+    _guard_google_managed(group)
     if group["name"] == "Admin" and user_id == user["id"]:
         if UserRepository(conn).count_admins(active_only=True) <= 1:
             raise HTTPException(
@@ -711,6 +772,7 @@ async def add_user_to_group(
     group = UserGroupsRepository(conn).get(payload.group_id)
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
+    _guard_google_managed(group)
     members = UserGroupMembersRepository(conn)
     if members.has_membership(user_id, payload.group_id):
         raise HTTPException(status_code=409, detail="Already a member")
@@ -754,6 +816,7 @@ async def remove_user_from_group(
     group = UserGroupsRepository(conn).get(group_id)
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
+    _guard_google_managed(group)
     if group["name"] == "Admin" and user_id == user["id"]:
         if UserRepository(conn).count_admins(active_only=True) <= 1:
             raise HTTPException(

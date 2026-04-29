@@ -90,15 +90,25 @@ class TestResolveAllowedPlugins:
         prefixed = {p["prefixed_name"] for p in result}
         assert prefixed == {"mkt-a-p1", "mkt-b-p3"}
 
-    def test_everyone_grants_visible_to_all(self, db_conn):
+    def test_everyone_grants_require_explicit_membership(self, db_conn):
+        # Auto-Everyone removal: a freshly-created user is no longer
+        # implicitly a member of Everyone, so a grant on Everyone is
+        # invisible until the user is added as an explicit member.
         from src.marketplace_filter import resolve_allowed_plugins
         t = datetime.now(timezone.utc)
         _register_marketplace(db_conn, id="mkt", registered_at=t,
             plugins=[{"name": "public", "version": "1.0"}])
-        everyone_gid = db_conn.execute("SELECT id FROM user_groups WHERE name='Everyone'").fetchone()[0]
+        everyone_gid = db_conn.execute(
+            "SELECT id FROM user_groups WHERE name='Everyone'"
+        ).fetchone()[0]
         _grant(db_conn, group_id=everyone_gid, marketplace="mkt", plugin="public")
 
         _make_user(db_conn, user_id="u1", email="u1@x")
+        # No membership written → no plugin visible.
+        assert resolve_allowed_plugins(db_conn, {"id": "u1"}) == []
+
+        # After explicit membership the grant resolves.
+        _add_member(db_conn, user_id="u1", group_id=everyone_gid)
         result = resolve_allowed_plugins(db_conn, {"id": "u1"})
         assert [p["prefixed_name"] for p in result] == ["mkt-public"]
 
@@ -154,13 +164,14 @@ class TestResolveAllowedPlugins:
         order = [p["marketplace_id"] for p in result]
         assert order == ["earlier-mkt", "later-mkt"]
 
-    def test_user_with_unknown_group_sees_nothing(self, db_conn):
+    def test_user_with_no_groups_sees_nothing(self, db_conn):
         from src.marketplace_filter import resolve_allowed_plugins
         t = datetime.now(timezone.utc)
         _register_marketplace(db_conn, id="mkt", registered_at=t,
             plugins=[{"name": "p", "version": "1"}])
         _make_user(db_conn, user_id="u-nogroup", email="ng@x")
-        # Has only Everyone (auto-membership) but no grants on Everyone.
+        # Auto-Everyone removal: a brand-new user has zero memberships and
+        # therefore sees nothing regardless of what's granted on Everyone.
         result = resolve_allowed_plugins(db_conn, {"id": "u-nogroup"})
         assert result == []
 
