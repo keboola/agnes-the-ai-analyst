@@ -72,6 +72,11 @@ class _SelectiveGZipMiddleware:
     """
 
     def __init__(self, app: ASGIApp, minimum_size: int = 1024, skip_prefixes: tuple[str, ...] = ()) -> None:
+        # `self.app` is the Starlette middleware convention — outer middleware
+        # (e.g. fastapi-debug-toolbar's APIRouter walker) traverses the chain
+        # via `.app` to find the inner FastAPI app. Keep `_raw` as the public
+        # alias used by our own __call__ for the skip-path branch.
+        self.app = app
         self._raw = app
         self._gzip = GZipMiddleware(app, minimum_size=minimum_size)
         self._skip_prefixes = skip_prefixes
@@ -134,12 +139,16 @@ async def lifespan(app):
     close_system_db()
 
 
+DEBUG = os.environ.get("DEBUG", "").lower() in ("1", "true", "yes")
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="AI Data Analyst",
         description="Data distribution platform for AI analytical systems",
         version=_app_version(),
         lifespan=lifespan,
+        debug=DEBUG,
     )
 
     # Compress JSON / HTML responses on the wire. Parquet downloads are
@@ -188,6 +197,42 @@ def create_app() -> FastAPI:
     # downstream middleware or handler runs, and every response gets the
     # x-request-id header.
     app.add_middleware(RequestIdMiddleware)
+
+    # FastAPI debug toolbar — only when DEBUG=1 in env. Injects per-request
+    # HTML overlay (headers, routes, timer, profiling, logs) on any HTML
+    # response; harmless on JSON. Inner try/except is for the import only:
+    # if a developer sets DEBUG=1 without installing dev deps, log a warning
+    # instead of crashing. The middleware mount itself fails loud if broken.
+    if DEBUG:
+        try:
+            from debug_toolbar.middleware import DebugToolbarMiddleware
+            # debug_toolbar.middleware splats **kwargs into DebugToolbarSettings
+            # (a pydantic-settings model with case-insensitive UPPERCASE fields).
+            # Pass field names as kwargs to add_middleware — `panels` becomes
+            # `PANELS`, etc. Do NOT wrap them in a `settings={...}` dict —
+            # that hits the model's actual `SETTINGS` field (Sequence[BaseSettings])
+            # and fails validation. Field reference:
+            # https://github.com/mongkok/fastapi-debug-toolbar/blob/master/debug_toolbar/settings.py
+            # ProfilingPanel (pyinstrument) is intentionally omitted: it
+            # raises "There is already a profiler running" under uvicorn's
+            # async context because pyinstrument's stack sampler can't be
+            # nested per task. Re-enable per-developer if you really want it
+            # via env override; the rest of the panels are async-safe.
+            app.add_middleware(
+                DebugToolbarMiddleware,
+                panels=[
+                    "debug_toolbar.panels.headers.HeadersPanel",
+                    "debug_toolbar.panels.routes.RoutesPanel",
+                    "debug_toolbar.panels.settings.SettingsPanel",
+                    "debug_toolbar.panels.versions.VersionsPanel",
+                    "debug_toolbar.panels.timer.TimerPanel",
+                    "debug_toolbar.panels.logging.LoggingPanel",
+                ],
+            )
+        except ImportError:
+            logger.warning(
+                "DEBUG=1 but fastapi-debug-toolbar not installed; toolbar disabled",
+            )
 
     # Load .env_overlay (persisted by /api/admin/configure)
     _overlay = Path(os.environ.get("DATA_DIR", "./data")) / "state" / ".env_overlay"
