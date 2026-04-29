@@ -179,6 +179,21 @@ async def get_current_user(
             detail="Missing or invalid Authorization header",
         )
 
+    # Shared-secret path for the in-cluster scheduler. Checked before
+    # pat_resolver because the scheduler token is not a JWT — feeding it to
+    # verify_token() would log a spurious decode warning every cron tick.
+    # See app/auth/scheduler_token.py for the threat model.
+    from app.auth.scheduler_token import get_scheduler_user, is_scheduler_token
+    if is_scheduler_token(token):
+        scheduler_user = get_scheduler_user(conn)
+        if scheduler_user:
+            _attach_admin_flag(scheduler_user, conn)
+            return scheduler_user
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Scheduler user not provisioned",
+        )
+
     from app.auth.pat_resolver import resolve_token_to_user
     user, reason = resolve_token_to_user(conn, token, request)
     if user:

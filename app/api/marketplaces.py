@@ -22,6 +22,7 @@ from src.marketplace import (
     MarketplaceNotFound,
     delete_marketplace_dir,
     is_valid_slug,
+    sync_marketplaces,
     sync_one,
 )
 from src.repositories.audit import AuditRepository
@@ -407,5 +408,36 @@ async def trigger_sync(
         "marketplace.sync",
         marketplace_id,
         {"commit": result["commit"], "action": result["action"]},
+    )
+    return result
+
+
+@router.post("/sync-all")
+async def trigger_sync_all(
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Sync every registered marketplace.
+
+    Wired up so the scheduler service can drive the nightly refresh over
+    HTTP. The previous implementation called ``src.marketplace.sync_marketplaces``
+    in-process from the scheduler container, which conflicted with the app's
+    long-lived ``system.duckdb`` handle (DuckDB allows only one writer per
+    file across processes). Routing through the app inherits the existing
+    connection without contention.
+
+    One audit row per call summarises the outcome — per-marketplace details
+    live in ``marketplace_registry`` and the per-call result payload below.
+    """
+    result = sync_marketplaces()
+    _audit(
+        conn,
+        user["id"],
+        "marketplace.sync_all",
+        None,
+        {
+            "synced": [r.get("id") for r in result.get("synced", [])],
+            "errors": [{"id": e.get("id"), "error": e.get("error")} for e in result.get("errors", [])],
+        },
     )
     return result
