@@ -430,11 +430,15 @@ async def trigger_sync_all(
     live in ``marketplace_registry`` and the per-call result payload below.
     """
     result = sync_marketplaces()
+    # _audit appends "marketplace:" to the target id when writing the
+    # resource column. "_all" produces "marketplace:_all" — a stable,
+    # greppable sentinel for bulk-sync rows; the real per-marketplace
+    # commit/error breakdown is in the params payload.
     _audit(
         conn,
         user["id"],
         "marketplace.sync_all",
-        None,
+        "_all",
         {
             "synced": [r.get("id") for r in result.get("synced", [])],
             "errors": [{"id": e.get("id"), "error": e.get("error")} for e in result.get("errors", [])],
