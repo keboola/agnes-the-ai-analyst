@@ -12,11 +12,12 @@ import pytest
 os.environ.setdefault("TESTING", "1")
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-minimum-32-characters!!")
 
-# Ensure directories exist for modules with module-level FileHandlers.
-# bot.py creates FileHandler(config.BOT_LOG_FILE) at import time.
-# config.py reads DATA_DIR at import time. We must ensure the directory
-# exists for whatever DATA_DIR resolves to (default: /data in Docker).
+# Ensure DATA_DIR-derived directories exist for modules that read DATA_DIR
+# at import time (e.g. services/telegram_bot/config.py builds NOTIFICATIONS_DIR
+# eagerly). The bot itself logs to stdout — there is no FileHandler anymore —
+# but the directory still has to exist for the JSON state files.
 import tempfile as _tf
+
 if "DATA_DIR" not in os.environ:
     os.environ["DATA_DIR"] = os.path.join(_tf.gettempdir(), ".agnes-test-data")
 os.makedirs(os.path.join(os.environ["DATA_DIR"], "notifications"), exist_ok=True)
@@ -78,14 +79,18 @@ def create_mock_extract(extracts_dir: Path, source_name: str, tables: list[dict]
 
             rows = len(rows_data)
             size = os.path.getsize(pq_path)
-            conn.execute(f'CREATE OR REPLACE VIEW "{name}" AS SELECT * FROM read_parquet(\'{pq_path}\')')
-            conn.execute("INSERT INTO _meta VALUES (?, ?, ?, ?, current_timestamp, 'local')",
-                        [name, t.get("description", ""), rows, size])
+            conn.execute(f"CREATE OR REPLACE VIEW \"{name}\" AS SELECT * FROM read_parquet('{pq_path}')")
+            conn.execute(
+                "INSERT INTO _meta VALUES (?, ?, ?, ?, current_timestamp, 'local')",
+                [name, t.get("description", ""), rows, size],
+            )
         else:
             # Remote or empty table
             conn.execute(f'CREATE TABLE IF NOT EXISTS "{name}" (id VARCHAR)')
-            conn.execute("INSERT INTO _meta VALUES (?, ?, 0, 0, current_timestamp, ?)",
-                        [name, t.get("description", ""), query_mode])
+            conn.execute(
+                "INSERT INTO _meta VALUES (?, ?, 0, 0, current_timestamp, ?)",
+                [name, t.get("description", ""), query_mode],
+            )
 
     conn.close()
     return db_path
@@ -128,11 +133,11 @@ def seeded_app(e2e_env):
     repo.create(id="analyst1", email="analyst@test.com", name="Analyst", role="analyst")
     repo.create(id="viewer1", email="viewer@test.com", name="Viewer", role="viewer")
 
-    admin_gid = conn.execute(
-        "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
-    ).fetchone()[0]
+    admin_gid = conn.execute("SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]).fetchone()[0]
     UserGroupMembersRepository(conn).add_member(
-        "admin1", admin_gid, source="system_seed",
+        "admin1",
+        admin_gid,
+        source="system_seed",
     )
     conn.close()
 
@@ -163,6 +168,7 @@ def mock_extract_factory(e2e_env):
       - remote_attach: list[dict] | None — rows for _remote_attach table,
         each dict with keys: alias, extension, url, token_env
     """
+
     def _factory(source_name: str, tables: list[dict], remote_attach=None):
         db_path = create_mock_extract(e2e_env["extracts_dir"], source_name, tables)
         if remote_attach:

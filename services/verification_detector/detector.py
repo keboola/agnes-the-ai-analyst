@@ -8,7 +8,6 @@ import hashlib
 import json
 import logging
 import os
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +17,7 @@ from services.corporate_memory import contradiction as contradiction_module
 from services.corporate_memory.confidence import compute_confidence
 from src.repositories.knowledge import KnowledgeRepository
 
+from .duplicates import _record_duplicate_candidates
 from .prompts import VERIFICATION_EXTRACT_PROMPT
 from .schemas import VERIFICATION_SCHEMA
 
@@ -145,6 +145,7 @@ def run(
         "verifications_extracted": 0,
         "items_created": 0,
         "contradictions_recorded": 0,
+        "duplicate_candidates_recorded": 0,
         "errors": [],
     }
 
@@ -166,9 +167,7 @@ def run(
             if not turns:
                 logger.info("Empty session: %s", session_key)
                 if not dry_run:
-                    repo.mark_session_processed(
-                        session_key, username, 0, _compute_file_hash(jsonl_path)
-                    )
+                    repo.mark_session_processed(session_key, username, 0, _compute_file_hash(jsonl_path))
                 stats["sessions_skipped"] += 1
                 continue
 
@@ -209,9 +208,7 @@ def run(
                     # docs/pd-ps-comments.md and the ADR.
                     detection_type = v.get("detection_type")
                     try:
-                        confidence_value = compute_confidence(
-                            "user_verification", detection_type
-                        )
+                        confidence_value = compute_confidence("user_verification", detection_type)
                     except ValueError:
                         # Unknown detection_type from the LLM; fall back to a
                         # lookup-keyed default rather than the LLM-supplied value.
@@ -242,29 +239,40 @@ def run(
                         user_quote=v.get("user_quote"),
                     )
                     items_created += 1
+                    # Record duplicate-candidate hints inline. Heuristic-only
+                    # (no LLM call) so it stays cheap; failures must never
+                    # abort session processing — log and continue. Issue #62.
+                    try:
+                        new_item = repo.get_by_id(item_id)
+                        if new_item is not None:
+                            recorded_dup = _record_duplicate_candidates(
+                                repo, new_item
+                            )
+                            stats["duplicate_candidates_recorded"] += recorded_dup
+                    except Exception as e:
+                        logger.warning(
+                            "Duplicate-candidate detection failed for %s: %s",
+                            item_id, e,
+                        )
+
                     # Run contradiction detection inline. Failure of the LLM
                     # judge must not abort session processing — log and move on.
                     try:
                         new_item = repo.get_by_id(item_id)
                         if new_item is not None:
-                            recorded = contradiction_module.detect_and_record(
-                                extractor, new_item, repo
-                            )
+                            recorded = contradiction_module.detect_and_record(extractor, new_item, repo)
                             stats["contradictions_recorded"] += len(recorded)
                     except LLMError as e:
-                        logger.warning(
-                            "Contradiction check failed for %s: %s", item_id, e
-                        )
+                        logger.warning("Contradiction check failed for %s: %s", item_id, e)
                     except Exception as e:
                         logger.warning(
                             "Unexpected error during contradiction check for %s: %s",
-                            item_id, e,
+                            item_id,
+                            e,
                         )
 
             if not dry_run:
-                repo.mark_session_processed(
-                    session_key, username, items_created, _compute_file_hash(jsonl_path)
-                )
+                repo.mark_session_processed(session_key, username, items_created, _compute_file_hash(jsonl_path))
 
             stats["sessions_processed"] += 1
             stats["items_created"] += items_created

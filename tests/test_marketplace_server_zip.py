@@ -45,7 +45,10 @@ def marketplace_env(e2e_env, monkeypatch):
 
     data_dir = e2e_env["data_dir"]
 
-    # Plugin folders on disk
+    # Plugin folders on disk — each ships a real .claude-plugin/plugin.json
+    # so the synth marketplace.json picks up the plugin's authoritative name
+    # (matches what real upstream marketplaces do, and exercises the
+    # manifest_name resolution path).
     for slug, plug in [("mkt-a", "plug-x"), ("mkt-b", "plug-y"), ("mkt-b", "plug-z")]:
         d = data_dir / "marketplaces" / slug / "plugins" / plug
         d.mkdir(parents=True, exist_ok=True)
@@ -55,6 +58,10 @@ def marketplace_env(e2e_env, monkeypatch):
         skills = d / "skills"
         skills.mkdir()
         (skills / "hello.md").write_text(f"skill for {plug}", encoding="utf-8")
+        (d / ".claude-plugin").mkdir()
+        (d / ".claude-plugin" / "plugin.json").write_text(
+            json.dumps({"name": plug, "version": "1.0"}), encoding="utf-8",
+        )
 
     # DB setup
     conn = get_system_db()
@@ -141,8 +148,15 @@ class TestMarketplaceInfo:
         resp = c.get("/marketplace/info", headers=_auth(marketplace_env["admin_token"]))
         assert resp.status_code == 200
         info = resp.json()
+        # `name` in /marketplace/info mirrors what the synth manifest
+        # serves — the plugin's authoritative manifest_name (unprefixed
+        # in this fixture because plugin.json sets name=<plug>).
         names = {p["name"] for p in info["plugins"]}
-        assert names == {"mkt-a-plug-x", "mkt-b-plug-y", "mkt-b-plug-z"}
+        assert names == {"plug-x", "plug-y", "plug-z"}
+        # prefixed_name is exposed alongside so operators can still
+        # disambiguate a plugin's source marketplace.
+        prefixed = {p["prefixed_name"] for p in info["plugins"]}
+        assert prefixed == {"mkt-a-plug-x", "mkt-b-plug-y", "mkt-b-plug-z"}
         assert "Admin" in info["groups"]
         assert info["marketplace_name"] == "agnes"
         assert info["plugin_count"] == 3
@@ -153,16 +167,17 @@ class TestMarketplaceInfo:
         assert resp.status_code == 200
         info = resp.json()
         names = {p["name"] for p in info["plugins"]}
-        assert names == {"mkt-b-plug-y"}
+        assert names == {"plug-y"}
         assert "TestGroup" in info["groups"]
 
-    def test_user_with_no_groups_falls_back_to_everyone(self, marketplace_env):
-        """Everyone has no grants here, so the list is empty but call succeeds."""
+    def test_user_with_no_groups_sees_empty_payload(self, marketplace_env):
+        """Auto-Everyone removal: a user with zero memberships now sees an
+        empty groups list and zero plugins (no implicit Everyone fallback)."""
         c = marketplace_env["client"]
         resp = c.get("/marketplace/info", headers=_auth(marketplace_env["nogroups_token"]))
         assert resp.status_code == 200
         info = resp.json()
-        assert "Everyone" in info["groups"]
+        assert info["groups"] == []
         assert info["plugins"] == []
 
     def test_missing_auth_returns_401(self, marketplace_env):
@@ -184,9 +199,12 @@ class TestMarketplaceZip:
         assert ".claude-plugin/marketplace.json" in zip_contents
         manifest = json.loads(zip_contents[".claude-plugin/marketplace.json"])
         assert manifest["name"] == "agnes"
+        # `name` is the plugin's authoritative name from plugin.json — the
+        # fixture writes plugin.json with name=<plug>, so unprefixed.
         names = {p["name"] for p in manifest["plugins"]}
-        assert names == {"mkt-a-plug-x", "mkt-b-plug-y", "mkt-b-plug-z"}
-        # source paths flattened to prefixed names
+        assert names == {"plug-x", "plug-y", "plug-z"}
+        # source paths stay slug-prefixed so cross-marketplace dirs don't
+        # collide on disk in the flat ZIP / git tree layout.
         sources = {p["source"] for p in manifest["plugins"]}
         assert sources == {
             "./plugins/mkt-a-plug-x",
@@ -197,6 +215,9 @@ class TestMarketplaceZip:
         assert "plugins/mkt-a-plug-x/CLAUDE.md" in zip_contents
         assert "plugins/mkt-b-plug-y/CLAUDE.md" in zip_contents
         assert "plugins/mkt-b-plug-z/skills/hello.md" in zip_contents
+        # plugin.json is included in each plugin tree so Claude Code can
+        # resolve the loaded plugin's namespace from it.
+        assert "plugins/mkt-a-plug-x/.claude-plugin/plugin.json" in zip_contents
 
     def test_analyst_zip_contains_only_granted(self, marketplace_env):
         c = marketplace_env["client"]
@@ -299,3 +320,30 @@ class TestMarketplaceZip:
         )
         assert resp.status_code == 200
         assert resp.headers["content-type"] == "application/zip"
+
+    def test_manifest_falls_back_when_plugin_json_missing(self, marketplace_env):
+        """If a plugin's .claude-plugin/plugin.json is absent, the synth
+        manifest falls back to the upstream marketplace.json's plugin name
+        (= mp.name in DB)."""
+        from app.marketplace_server.packager import invalidate_etag_cache
+
+        c = marketplace_env["client"]
+        # Remove plug-x's plugin.json on disk
+        target = (
+            marketplace_env["data_dir"]
+            / "marketplaces"
+            / "mkt-a"
+            / "plugins"
+            / "plug-x"
+            / ".claude-plugin"
+            / "plugin.json"
+        )
+        target.unlink()
+        invalidate_etag_cache()
+
+        resp = c.get("/marketplace.zip", headers=_auth(marketplace_env["admin_token"]))
+        assert resp.status_code == 200
+        zip_contents = _read_zip(resp.content)
+        manifest = json.loads(zip_contents[".claude-plugin/marketplace.json"])
+        plug_x = next(p for p in manifest["plugins"] if p["source"] == "./plugins/mkt-a-plug-x")
+        assert plug_x["name"] == "plug-x"

@@ -19,7 +19,7 @@ import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 from urllib.parse import quote
 
 import yaml
@@ -27,23 +27,13 @@ import yaml
 from config.loader import load_instance_config
 from connectors.openmetadata.client import OpenMetadataClient
 from connectors.openmetadata.transformer import (
-    extract_category,
-    extract_grain,
     has_tag,
     metric_to_yaml_dict,
-    sanitize_filename,
     table_to_yaml_dict,
 )
 from src.db import get_system_db
 from src.repositories.table_registry import TableRegistryRepository
 
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -159,9 +149,7 @@ def export_metrics(
                 entity_type="metric",
                 limit=200,
             )
-            logger.info(
-                f"Data product '{data_product}': found {len(raw_metrics)} metrics"
-            )
+            logger.info(f"Data product '{data_product}': found {len(raw_metrics)} metrics")
         except Exception as e:
             logger.warning(f"Data product search failed, falling back to tag filter: {e}")
             raw_metrics = []
@@ -177,9 +165,7 @@ def export_metrics(
 
         if filter_tag:
             filtered = [m for m in raw_metrics if has_tag(m.get("tags", []), filter_tag)]
-            logger.info(
-                f"Tag filter '{filter_tag}': {len(filtered)}/{len(raw_metrics)} metrics matched"
-            )
+            logger.info(f"Tag filter '{filter_tag}': {len(filtered)}/{len(raw_metrics)} metrics matched")
             raw_metrics = filtered
 
     # Track which files we write (for cleanup)
@@ -215,13 +201,15 @@ def export_metrics(
             written_files.add(file_path)
 
             # Add to index
-            index_entries.append({
-                "name": metric_name,
-                "display_name": yaml_dict["display_name"],
-                "category": category,
-                "grain": yaml_dict["grain"],
-                "file": f"{category}/{metric_name}.yml",
-            })
+            index_entries.append(
+                {
+                    "name": metric_name,
+                    "display_name": yaml_dict["display_name"],
+                    "category": category,
+                    "grain": yaml_dict["grain"],
+                    "file": f"{category}/{metric_name}.yml",
+                }
+            )
 
             logger.debug(f"Wrote metric: {file_path}")
 
@@ -262,7 +250,7 @@ def _write_metrics_index(
         DO_NOT_EDIT_LINE,
         "#",
         "# Usage: Read specific metric file for full details before calculating.",
-        '# Example: cat server/docs/metrics/finance/m1.yml',
+        "# Example: cat server/docs/metrics/finance/m1.yml",
     ]
 
     index_data = {"metrics": entries}
@@ -418,6 +406,7 @@ def main() -> None:
     om_config = instance_config.get("openmetadata", {})
     catalog_url = om_config.get("url", "").strip()
     token = om_config.get("token", "").strip()
+    verify_ssl = om_config.get("verify_ssl", True)
 
     if not catalog_url or not token:
         logger.warning("OpenMetadata not configured (url or token missing) - skipping export")
@@ -428,7 +417,9 @@ def main() -> None:
 
     # Initialize client
     try:
-        client = OpenMetadataClient(base_url=catalog_url, token=token)
+        client = OpenMetadataClient(
+            base_url=catalog_url, token=token, verify=verify_ssl,
+        )
     except Exception as e:
         logger.warning(f"Failed to initialize OpenMetadata client: {e}")
         return
@@ -440,8 +431,11 @@ def main() -> None:
     try:
         # Export metrics
         metrics_count = export_metrics(
-            client, docs_dir, catalog_url,
-            filter_tag=filter_tag, data_product=data_product,
+            client,
+            docs_dir,
+            catalog_url,
+            filter_tag=filter_tag,
+            data_product=data_product,
         )
 
         # Export tables
@@ -457,9 +451,7 @@ def main() -> None:
         # Write sync state
         _write_sync_state(docs_dir, metrics_count, tables_count)
 
-        logger.info(
-            f"=== Catalog Export complete: {metrics_count} metrics, {tables_count} tables ==="
-        )
+        logger.info(f"=== Catalog Export complete: {metrics_count} metrics, {tables_count} tables ===")
 
     except Exception as e:
         logger.error(f"Catalog export failed: {e}")

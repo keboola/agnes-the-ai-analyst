@@ -51,7 +51,7 @@ jobs:
 
       - name: Checkout template repo
         if: steps.guard.outputs.proceed == 'true'
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           repository: keboola/agnes-infra-template
           token: ${{ secrets.TEMPLATE_REPO_TOKEN }}
@@ -70,7 +70,7 @@ jobs:
 
       - name: Create PR
         if: steps.guard.outputs.proceed == 'true'
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@v8
         with:
           path: template
           token: ${{ secrets.TEMPLATE_REPO_TOKEN }}

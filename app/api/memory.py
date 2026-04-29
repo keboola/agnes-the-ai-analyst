@@ -26,6 +26,19 @@ BUNDLE_TOKEN_BUDGET = 6000
 _CHARS_PER_TOKEN = 4
 VALID_DOMAINS = ["finance", "engineering", "product", "data", "operations", "infrastructure"]
 
+# API-layer allowlist for ``POST /api/memory/admin/bulk-update``. The repo's
+# ``_UPDATABLE_FIELDS`` is intentionally broader (``status``, ``sensitivity``,
+# ``is_personal``, ``confidence``, valid_from/until, supersedes, etc.) so the
+# narrow per-item ``update`` path can still touch them; bulk-edit must NOT,
+# because changing status / personal-flag / sensitivity in bulk bypasses the
+# proper governance flow (``/admin/mandate``, ``/admin/revoke``,
+# ``/{id}/personal``) and its dedicated audit rows. Callers that need those
+# fields in bulk should use the per-item endpoints. See PR #126 review.
+_BULK_UPDATE_ALLOWED = frozenset({
+    "category", "domain", "tags", "tags_add", "tags_remove",
+    "audience", "title", "content",
+})
+
 
 def _is_privileged_viewer(user: dict, conn: duckdb.DuckDBPyConnection) -> bool:
     """Admins (members of the Admin system group, per RBAC v13) are the
@@ -125,6 +138,37 @@ class CreateContradictionRequest(BaseModel):
     explanation: str
     severity: Optional[str] = None
     suggested_resolution: Optional[str] = None
+
+
+class PatchItemRequest(BaseModel):
+    """Partial update for a knowledge item via PATCH /api/memory/admin/{id}.
+
+    Replaces the narrow ``EditRequest`` (title + content only). Any field
+    left as ``None`` is unchanged. Domain is validated against
+    ``VALID_DOMAINS`` when supplied.
+    """
+    title: Optional[str] = None
+    content: Optional[str] = None
+    category: Optional[str] = None
+    domain: Optional[str] = None
+    tags: Optional[List[str]] = None
+    audience: Optional[str] = None
+
+
+class BulkUpdateRequest(BaseModel):
+    """Apply ``updates`` to every id in ``item_ids``. Issue #62."""
+    item_ids: List[str]
+    updates: dict
+
+
+class ResolveDuplicateRequest(BaseModel):
+    """Resolve a duplicate-candidate relation row.
+
+    ``resolution`` is one of ``duplicate`` / ``different`` / ``dismissed``
+    (decision 2 in issue #62 — no auto-merge action; merging is a separate
+    larger feature).
+    """
+    resolution: str
 
 
 # ---- User endpoints ----
@@ -284,12 +328,28 @@ async def get_stats(
     ).fetchall()
     by_source_type = {r[0]: r[1] for r in by_source_rows}
 
+    # by_tag + by_audience extend stats for the chip-filter UI (issue #62).
+    # The repo helpers honor the same audience + personal-item filters this
+    # endpoint applies above.
+    repo = KnowledgeRepository(conn)
+    exclude_personal_for_caller = not is_priv
+    by_tag = repo.count_by_tag(
+        exclude_personal=exclude_personal_for_caller,
+        user_groups=groups,
+    )
+    by_audience = repo.count_by_audience(
+        exclude_personal=exclude_personal_for_caller,
+        user_groups=groups,
+    )
+
     return {
         "total": total,
         "by_status": by_status,
         "categories": categories,
         "by_domain": by_domain,
         "by_source_type": by_source_type,
+        "by_tag": by_tag,
+        "by_audience": by_audience,
     }
 
 
@@ -299,6 +359,15 @@ async def create_knowledge(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
+    # Mirror the validation already enforced by PATCH /admin/{id} and bulk-update
+    # so an item can't be created with a domain it can't be patched to. Empty /
+    # missing domain is fine — only reject non-empty values outside the allowlist.
+    # See PR #126 review.
+    if request.domain and request.domain not in VALID_DOMAINS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"domain must be one of: {VALID_DOMAINS}",
+        )
     repo = KnowledgeRepository(conn)
     item_id = str(uuid.uuid4())
 
@@ -446,8 +515,20 @@ def _get_item_or_404(repo: KnowledgeRepository, item_id: str) -> dict:
 
 
 def _audit_action(conn, admin_email: str, action: str, item_id: str, details: dict = None):
+    """Write an admin governance audit row.
+
+    Action names use the ``corporate_memory.<action>`` namespace as advertised
+    in the 0.15.0 CHANGELOG. Pre-#62 the code wrote ``km_<action>`` — the
+    audit-tab filter (see ``admin_audit`` below) accepts both prefixes so
+    historical rows still surface.
+    """
     audit = AuditRepository(conn)
-    audit.log(user_id=admin_email, action=f"km_{action}", resource=item_id, params=details)
+    audit.log(
+        user_id=admin_email,
+        action=f"corporate_memory.{action}",
+        resource=item_id,
+        params=details,
+    )
 
 
 @router.post("/admin/approve")
@@ -588,22 +669,39 @@ async def admin_audit(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Get governance audit log."""
-    audit = AuditRepository(conn)
-    # Filter km_ prefixed actions
-    km_action = f"km_{action}" if action else None
-    entries = audit.query(action=km_action, limit=per_page)
-    if not km_action:
-        # Get all km_ actions
-        entries = conn.execute(
-            "SELECT * FROM audit_log WHERE action LIKE 'km_%' ORDER BY timestamp DESC LIMIT ?",
-            [per_page],
+    """Get governance audit log.
+
+    Filters ``corporate_memory.<action>`` rows AND legacy ``km_<action>``
+    rows. The dual prefix is here because rows already in the audit log keep
+    the legacy ``km_*`` action name (no migration of historical audit rows —
+    they are write-once); new rows use the ``corporate_memory.*`` namespace.
+    See issue #62 decision E.
+    """
+    # Pagination: page is 1-indexed; offset must apply to BOTH branches so the
+    # UI's per-page navigation actually returns subsequent rows. Pre-fix, both
+    # SQL paths had LIMIT only and silently returned page 1 for every page.
+    offset = (max(page, 1) - 1) * per_page
+    if action:
+        # Match the action across both prefixes so the per-action filter still
+        # surfaces historical rows.
+        rows = conn.execute(
+            """SELECT * FROM audit_log
+                WHERE action IN (?, ?)
+                ORDER BY timestamp DESC LIMIT ? OFFSET ?""",
+            [f"corporate_memory.{action}", f"km_{action}", per_page, offset],
         ).fetchall()
-        if entries:
-            columns = [desc[0] for desc in conn.description]
-            entries = [dict(zip(columns, row)) for row in entries]
-        else:
-            entries = []
+    else:
+        rows = conn.execute(
+            """SELECT * FROM audit_log
+                WHERE action LIKE 'corporate_memory.%' OR action LIKE 'km_%'
+                ORDER BY timestamp DESC LIMIT ? OFFSET ?""",
+            [per_page, offset],
+        ).fetchall()
+    if rows:
+        columns = [desc[0] for desc in conn.description]
+        entries = [dict(zip(columns, row)) for row in rows]
+    else:
+        entries = []
     return {"entries": entries, "count": len(entries)}
 
 
@@ -696,6 +794,420 @@ async def admin_resolve_contradiction(
         "item_b_id": contradiction["item_b_id"],
     })
     return {"id": contradiction_id, "resolved": True, "resolution": request.resolution}
+
+
+# ---- Admin duplicate-candidate endpoints (issue #62) ----
+
+VALID_DUPLICATE_RESOLUTIONS = ["duplicate", "different", "dismissed"]
+DUPLICATE_RELATION_TYPE = "likely_duplicate"
+
+
+def _strip_personal(item: Optional[dict], hide: bool) -> Optional[dict]:
+    """Return a placeholder dict when ``item`` is personal and ``hide`` is set."""
+    if item is None:
+        return None
+    if hide and item.get("is_personal"):
+        return {"id": item.get("id"), "hidden": True}
+    return item
+
+
+@router.get("/admin/duplicate-candidates")
+async def admin_duplicate_candidates(
+    resolved: Optional[bool] = None,
+    exclude_personal: bool = True,
+    limit: int = 100,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """List duplicate-candidate relations for admin review.
+
+    Pass ``resolved=true`` or ``resolved=false`` to filter; omit both to fetch
+    every state (the original UI default). The web UI keeps surfacing the
+    actionable backlog by passing ``resolved=false`` explicitly.
+
+    With ``exclude_personal=true`` (default) personal items in the pair are
+    replaced with ``{id, hidden: true}`` — the relation row is still visible
+    so admins can resolve it, but content stays inside the personal-item
+    privacy boundary (ADR Decision 1 precedent).
+    """
+    repo = KnowledgeRepository(conn)
+    relations = repo.list_relations(
+        relation_type=DUPLICATE_RELATION_TYPE,
+        resolved=resolved,
+        limit=limit,
+    )
+    item_ids = list({
+        id_
+        for r in relations
+        for id_ in (r["item_a_id"], r["item_b_id"])
+    })
+    items_by_id = repo.get_by_ids(item_ids) if item_ids else {}
+    for r in relations:
+        r["item_a"] = _strip_personal(items_by_id.get(r["item_a_id"]), exclude_personal)
+        r["item_b"] = _strip_personal(items_by_id.get(r["item_b_id"]), exclude_personal)
+    return {"relations": relations, "count": len(relations)}
+
+
+@router.post("/admin/duplicate-candidates/resolve")
+async def admin_resolve_duplicate_candidate(
+    item_a_id: str,
+    item_b_id: str,
+    request: ResolveDuplicateRequest,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Resolve a duplicate-candidate relation.
+
+    Admin chooses: ``duplicate`` (acknowledge), ``different`` (false
+    positive), or ``dismissed`` (don't surface again, but no judgment).
+    Idempotent re-resolve is rejected with 400 — the audit trail wants one
+    decision per pair.
+    """
+    if request.resolution not in VALID_DUPLICATE_RESOLUTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"resolution must be one of: {VALID_DUPLICATE_RESOLUTIONS}",
+        )
+    repo = KnowledgeRepository(conn)
+    existing = repo.get_relation(item_a_id, item_b_id, DUPLICATE_RELATION_TYPE)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Duplicate-candidate relation not found")
+    if existing.get("resolved"):
+        raise HTTPException(status_code=400, detail="Relation already resolved")
+
+    repo.resolve_relation(
+        item_a_id=item_a_id,
+        item_b_id=item_b_id,
+        relation_type=DUPLICATE_RELATION_TYPE,
+        resolved_by=user["email"],
+        resolution=request.resolution,
+    )
+    # Resource-id of audit row is the canonical (a,b) pair for grep-ability.
+    a, b = sorted([item_a_id, item_b_id])
+    _audit_action(
+        conn,
+        user["email"],
+        "resolve_duplicate",
+        f"{a}::{b}",
+        {"resolution": request.resolution, "item_a_id": a, "item_b_id": b},
+    )
+    return {
+        "item_a_id": a,
+        "item_b_id": b,
+        "resolved": True,
+        "resolution": request.resolution,
+    }
+
+
+# ---- Admin PATCH + bulk-update + tree endpoints (issue #62) ----
+
+
+@router.patch("/admin/{item_id}")
+async def admin_patch_item(
+    item_id: str,
+    request: PatchItemRequest,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Partial update — accepts category/domain/tags/audience/title/content.
+
+    Replaces the narrow ``POST /api/memory/admin/edit`` (kept one release as
+    a thin alias). Audit row tagged ``corporate_memory.update_item`` records
+    which fields changed (not the full diff — keep audit rows compact).
+    """
+    repo = KnowledgeRepository(conn)
+    _get_item_or_404(repo, item_id)
+
+    # ``exclude_unset=True`` preserves explicit ``null`` values from the request
+    # body so callers can clear previously-set Optional fields (e.g. PATCH
+    # ``{"audience": null}`` resets audience to NULL). With ``exclude_none=True``
+    # those nulls were silently dropped — the only path to clear was the
+    # empty-string short-circuit on ``domain``, and ``audience`` had no clearing
+    # path at all. See PR #126 round-4 review.
+    updates = request.model_dump(exclude_unset=True)
+    if "domain" in updates and updates["domain"] and updates["domain"] not in VALID_DOMAINS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"domain must be one of: {VALID_DOMAINS}",
+        )
+    # ``title`` is NOT NULL in the schema. ``exclude_unset=True`` lets explicit
+    # ``null`` through, which would 500 on a DuckDB constraint violation. Reject
+    # at the boundary so the caller gets a 400 with a clear message instead.
+    if "title" in updates and updates["title"] is None:
+        raise HTTPException(status_code=400, detail="title cannot be null")
+    if not updates:
+        return {"id": item_id, "updated": []}
+
+    # tags is a list — JSON-encode to match the column type, mirroring create().
+    repo_kwargs = dict(updates)
+    if "tags" in repo_kwargs:
+        repo_kwargs["tags"] = (
+            json.dumps(repo_kwargs["tags"]) if repo_kwargs["tags"] else None
+        )
+    repo.update(item_id, **repo_kwargs)
+    _audit_action(
+        conn,
+        user["email"],
+        "update_item",
+        item_id,
+        {"updated_fields": sorted(updates.keys())},
+    )
+    return {"id": item_id, "updated": sorted(updates.keys())}
+
+
+@router.post("/admin/bulk-update")
+async def admin_bulk_update(
+    request: BulkUpdateRequest,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Apply ``updates`` to every id in ``item_ids``. Per-id audit rows.
+
+    Returns a per-id status map plus rolled-up convenience lists (200 even on
+    partial failure — the body distinguishes successes from misses).
+    """
+    repo = KnowledgeRepository(conn)
+    updates = dict(request.updates or {})
+    # Reject governance-sensitive fields BEFORE hitting the repo. _UPDATABLE_FIELDS
+    # in the repo is broad on purpose; this endpoint is the narrow path. Callers
+    # that need to flip status/sensitivity/is_personal must use the dedicated
+    # governance endpoints so the right audit row is written. See PR #126 review.
+    disallowed = sorted(k for k in updates.keys() if k not in _BULK_UPDATE_ALLOWED)
+    if disallowed:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"updates contains disallowed field(s): {disallowed}. "
+                f"Allowed: {sorted(_BULK_UPDATE_ALLOWED)}"
+            ),
+        )
+    if "domain" in updates and updates["domain"] and updates["domain"] not in VALID_DOMAINS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"domain must be one of: {VALID_DOMAINS}",
+        )
+    # Mirror the PATCH boundary check — title is NOT NULL in the schema, so
+    # an explicit null here would fall through to a per-item Constraint Error
+    # in repo.bulk_update() instead of a clean 400 to the caller.
+    if "title" in updates and updates["title"] is None:
+        raise HTTPException(status_code=400, detail="title cannot be null")
+    if not request.item_ids:
+        return {"updated": [], "not_found": [], "errors": {}}
+
+    statuses = repo.bulk_update(request.item_ids, updates)
+
+    # Allowlist already enforced above, so every key in updates is auditable.
+    audited_fields = sorted(updates.keys())
+    updated: List[str] = []
+    not_found: List[str] = []
+    errors: dict = {}
+    for item_id, status in statuses.items():
+        if status == "updated":
+            updated.append(item_id)
+            _audit_action(
+                conn,
+                user["email"],
+                "bulk_update",
+                item_id,
+                {"updated_fields": audited_fields, "batch": True},
+            )
+        elif status == "not_found":
+            not_found.append(item_id)
+        else:
+            errors[item_id] = status
+    return {"updated": updated, "not_found": not_found, "errors": errors}
+
+
+# Axes the tree endpoint groups by. Anything else → 400. Order matters for
+# the default chip rendering in the UI.
+_TREE_AXES = ("domain", "category", "tag", "audience")
+
+
+def _label_for_axis(axis: str, key: Optional[str]) -> str:
+    """Pretty bucket label for the tree UI. Falls back to the raw key."""
+    if key is None or key == "":
+        return {
+            "domain": "(no domain)",
+            "category": "(no category)",
+            "tag": "(no tag)",
+            "audience": "All users",
+        }.get(axis, "(unset)")
+    if axis == "audience" and key == "all":
+        return "All users"
+    if axis == "audience" and key.startswith("group:"):
+        return f"Group: {key[len('group:'):]}"
+    return key
+
+
+def _matches_chip_filters(
+    item: dict,
+    *,
+    status_filter: Optional[str],
+    source_type: Optional[str],
+    audience: Optional[str],
+    has_duplicate_ids: Optional[set],
+    q: Optional[str],
+) -> bool:
+    """Apply chip filters to an already-RBAC-filtered item."""
+    if status_filter and item.get("status") != status_filter:
+        return False
+    if source_type and item.get("source_type") != source_type:
+        return False
+    if audience:
+        # Treat NULL audience as 'all' so chip-filter behavior matches the
+        # SQL audience filter, ``count_by_audience`` (COALESCE→'all'), and the
+        # tree's ``_bucket_key`` (NULL → 'all'). Without this coalesce,
+        # NULL-audience items disappear from the ``audience=all`` chip even
+        # though the rest of the system treats them as visible-to-everyone.
+        item_audience = item.get("audience") or "all"
+        if item_audience != audience:
+            return False
+    if has_duplicate_ids is not None and item.get("id") not in has_duplicate_ids:
+        return False
+    if q:
+        needle = q.lower()
+        title = (item.get("title") or "").lower()
+        content = (item.get("content") or "").lower()
+        if needle not in title and needle not in content:
+            return False
+    return True
+
+
+@router.get("/tree")
+async def get_tree(
+    axis: str = "domain",
+    status_filter: Optional[str] = None,
+    source_type: Optional[str] = None,
+    audience: Optional[str] = None,
+    q: Optional[str] = None,
+    has_duplicate: bool = False,
+    exclude_personal: bool = True,
+    page: int = 1,
+    per_page: int = 50,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Server-side grouping for the Browse / Group-by tree (issue #62).
+
+    Returns ``{groups: [{key, label, count, items: [...]}]}`` already
+    RBAC-filtered + chip-filtered. The same ``_effective_groups`` and
+    ``_can_view_item`` helpers used by ``GET /api/memory`` apply, so a
+    non-admin caller never sees personal items belonging to others, and
+    audience-restricted items only surface for members of the audience
+    group.
+
+    On the ``tag`` axis a single item appears once per tag it holds — that
+    is the intended "overlapping bucket" affordance. Every other axis puts
+    each item in its single canonical bucket.
+    """
+    if axis not in _TREE_AXES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"axis must be one of: {list(_TREE_AXES)}",
+        )
+    repo = KnowledgeRepository(conn)
+    is_priv = _is_privileged_viewer(user, conn)
+    effective_groups = _effective_groups(user, conn)
+    # Privacy parity with ``GET /api/memory``: non-admin can never opt out.
+    effective_exclude_personal = True if not is_priv else exclude_personal
+
+    page = max(page, 1)
+    per_page = max(min(per_page, 500), 1)
+
+    # has_duplicate=true narrows the candidate set to items present in any
+    # unresolved likely_duplicate relation. Computed once; intersected per
+    # item below.
+    has_duplicate_ids: Optional[set] = None
+    if has_duplicate:
+        rels = repo.list_relations(
+            relation_type=DUPLICATE_RELATION_TYPE, resolved=False, limit=10000,
+        )
+        has_duplicate_ids = {
+            id_ for r in rels for id_ in (r["item_a_id"], r["item_b_id"])
+        }
+
+    # Audience-axis privacy (decision 13): non-admins only see their own
+    # group buckets + null/all. Use the audience pre-filter on the SQL side
+    # so non-admins never accidentally see another group's bucket count.
+    statuses = [status_filter] if status_filter else None
+    items = repo.list_items(
+        statuses=statuses,
+        source_type=source_type,
+        exclude_personal=effective_exclude_personal,
+        user_groups=effective_groups,
+        limit=10000,
+        offset=0,
+    )
+
+    # Apply remaining chip filters that don't have a SQL layer yet.
+    visible: List[dict] = []
+    for item in items:
+        if not _can_view_item(user, item, is_priv):
+            continue
+        if not _matches_chip_filters(
+            item,
+            status_filter=None,  # already in SQL
+            source_type=None,    # already in SQL
+            audience=audience,
+            has_duplicate_ids=has_duplicate_ids,
+            q=q,
+        ):
+            continue
+        visible.append(item)
+
+    # Group items by axis. tag is multi-bucket; everything else is single.
+    groups: dict = {}
+
+    def _bucket_key(item: dict, axis: str) -> List[str]:
+        if axis == "tag":
+            tags = item.get("tags")
+            if isinstance(tags, str):
+                try:
+                    tags = json.loads(tags)
+                except json.JSONDecodeError:
+                    tags = []
+            if not tags:
+                return [""]
+            return [str(t) for t in tags]
+        if axis == "audience":
+            aud = item.get("audience")
+            return [aud if aud else "all"]
+        if axis == "category":
+            return [item.get("category") or ""]
+        # default: domain
+        return [item.get("domain") or ""]
+
+    for item in visible:
+        for key in _bucket_key(item, axis):
+            bucket = groups.setdefault(key, {
+                "key": key,
+                "label": _label_for_axis(axis, key),
+                "items": [],
+            })
+            bucket["items"].append(item)
+
+    # Stable ordering: alphabetic on key with the empty bucket sinking to
+    # the bottom — the UI usually wants the "real" buckets up top.
+    ordered = sorted(
+        groups.values(),
+        key=lambda g: (g["key"] == "", g["key"].lower() if isinstance(g["key"], str) else ""),
+    )
+    for g in ordered:
+        g["count"] = len(g["items"])
+
+    # Page over groups (not items): operators paging through hundreds of
+    # tags want bucket-level pagination. The UI expands a bucket to see all
+    # its items.
+    start = (page - 1) * per_page
+    paged = ordered[start:start + per_page]
+    return {
+        "axis": axis,
+        "groups": paged,
+        "page": page,
+        "per_page": per_page,
+        "total_groups": len(ordered),
+        "total_items": sum(g["count"] for g in ordered),
+    }
 
 
 # ---- Bundle endpoint ----

@@ -63,8 +63,14 @@ def _merged_manifest(plugins: List[dict], etag: str) -> Dict[str, Any]:
     """Synthesize .claude-plugin/marketplace.json over the filtered plugin set.
 
     Each entry copies the plugin's cached `raw` manifest, then overrides:
-      - `name`   = prefixed_name
-      - `source` = "./plugins/<prefixed_name>"  (flat relative path in the ZIP)
+      - `name`   = manifest_name  (from the plugin's own plugin.json — must
+                                   match the loaded plugin's identity, or the
+                                   `/plugin` UI Components panel can't link
+                                   the loaded plugin back to its catalog
+                                   entry; see src.marketplace_filter)
+      - `source` = "./plugins/<prefixed_name>"  (slug-prefixed dir avoids
+                                   cross-marketplace file collisions in the
+                                   flat ZIP / git tree layout)
     All other fields (version, description, author, homepage, keywords, ...)
     are preserved so Claude Code UI looks the same as if the user pulled from
     the upstream marketplace directly.
@@ -72,7 +78,7 @@ def _merged_manifest(plugins: List[dict], etag: str) -> Dict[str, Any]:
     entries: List[dict] = []
     for plugin in plugins:
         entry = dict(plugin["raw"])  # shallow copy — we only override two keys
-        entry["name"] = plugin["prefixed_name"]
+        entry["name"] = plugin["manifest_name"]
         entry["source"] = f"./plugins/{plugin['prefixed_name']}"
         # Always honor the cached version on the aggregated manifest — the
         # plugin_dir on disk might have drifted if sync fetched a new commit
@@ -108,8 +114,9 @@ def build_info(conn: duckdb.DuckDBPyConnection, user: dict) -> Dict[str, Any]:
         "plugin_count": len(plugins),
         "plugins": [
             {
-                "name": p["prefixed_name"],
+                "name": p["manifest_name"],
                 "original_name": p["original_name"],
+                "prefixed_name": p["prefixed_name"],
                 "marketplace_slug": p["marketplace_slug"],
                 "version": p.get("version"),
                 "description": p["raw"].get("description"),

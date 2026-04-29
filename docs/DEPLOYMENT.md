@@ -157,6 +157,45 @@ Two health endpoints serve different audiences:
 
 The Docker Compose `healthcheck` uses the minimal endpoint (`curl -sf http://localhost:8000/api/health`). For external monitoring tools (Datadog, Prometheus, UptimeRobot, etc.) that need service-level detail (DuckDB status, sync freshness, user count), point them at `/api/health/detailed` with an `Authorization: Bearer <token>` header. Any authenticated user can call it; a personal access token (`da admin create-pat`) works well for service accounts.
 
+### Scheduler tuning
+
+The scheduler sidecar (`services/scheduler/__main__.py`) fires periodic
+HTTP calls against the main app. Job cadences are configurable via env
+vars on the scheduler container:
+
+| Env var                            | Default | Purpose                                       |
+| ---------------------------------- | ------- | --------------------------------------------- |
+| `SCHEDULER_DATA_REFRESH_INTERVAL`  | `900`   | seconds between `POST /api/sync/trigger`      |
+| `SCHEDULER_HEALTH_CHECK_INTERVAL`  | `300`   | seconds between `GET /api/health`             |
+| `SCHEDULER_SCRIPT_RUN_INTERVAL`    | `60`    | seconds between `POST /api/scripts/run-due`   |
+| `SCHEDULER_TICK_SECONDS`           | `30`    | loop polling cadence; must be ≤ smallest interval above |
+
+`/api/sync/trigger` walks `table_registry`; tables with a per-row
+`sync_schedule` (`every Nm` / `every Nh` / `daily HH:MM[,...]`) are
+filtered to only those due for sync since their last run. Tables without
+a schedule continue to run on every tick. The marketplace job runs at
+`daily 03:00` UTC and is not currently env-tunable.
+
+`/api/scripts/run-due` walks `script_registry` and runs each deployed
+script whose `schedule` says it is due. Scripts in the `running` state
+are skipped on subsequent ticks until the previous run writes a terminal
+status. The endpoint requires admin auth (the sidecar's
+`SCHEDULER_API_TOKEN` resolves to a synthetic Admin user).
+
+#### Caveats
+
+- **Schedule quantization rounds up.** The schedule grammar has minute-
+  level resolution. Non-multiples of 60 seconds round UP to the next
+  minute (`SCHEDULER_DATA_REFRESH_INTERVAL=90` → `every 2m`, not `every 1m`)
+  so a job never fires more often than configured. Sub-minute values
+  clamp to `every 1m`. Use multiples of 60 for predictable cadence.
+- **A crashed BackgroundTask can leave a script stuck in `last_status='running'`.**
+  The next sidecar tick will skip the stuck script forever. Recovery is
+  manual: open a DuckDB shell on `system.duckdb` and run
+  `UPDATE script_registry SET last_status = NULL WHERE id = '<id>';`
+  Auto-recovery via max-runtime detection is intentionally out of scope
+  for v0; revisit if it happens in practice.
+
 ## Which path should I pick?
 
 | | Terraform | Docker Compose |

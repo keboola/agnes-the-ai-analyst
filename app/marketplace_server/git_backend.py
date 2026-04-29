@@ -53,11 +53,15 @@ def cache_dir() -> Path:
 
 def _merged_manifest_bytes(plugins: list[dict], etag: str) -> bytes:
     """Same manifest as the ZIP channel produces — kept inline to avoid
-    importing packager internals into the hot path."""
+    importing packager internals into the hot path.
+
+    See packager._merged_manifest for the rationale on `name` =
+    manifest_name vs. `source` = prefixed_name.
+    """
     entries = []
     for plugin in plugins:
         entry = dict(plugin["raw"])
-        entry["name"] = plugin["prefixed_name"]
+        entry["name"] = plugin["manifest_name"]
         entry["source"] = f"./plugins/{plugin['prefixed_name']}"
         if plugin.get("version") and "version" not in entry:
             entry["version"] = plugin["version"]

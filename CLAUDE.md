@@ -257,7 +257,7 @@ Admin-managed git repos cloned nightly to `${DATA_DIR}/marketplaces/<slug>/`
 so FastAPI can read their contents from disk.
 
 - Register via `/admin/marketplaces` (admin UI) or `POST /api/marketplaces`.
-- Scheduler calls `src.marketplace.sync_marketplaces()` in-process at `daily 03:00` UTC — no HTTP round-trip to the main app.
+- Scheduler calls `POST /api/marketplaces/sync-all` (admin-only, authed via `SCHEDULER_API_TOKEN`) at `daily 03:00` UTC. Routing through HTTP keeps the app the sole writer to `system.duckdb` — the previous in-process call from the scheduler container raced the app's long-lived DB handle and 500-ed on `Could not set lock on file`.
 - Manual re-sync from the UI ("Sync now") hits `POST /api/marketplaces/{id}/sync`.
 - PATs for private repos persist to `${DATA_DIR}/state/.env_overlay` (chmod 600) as `AGNES_MARKETPLACE_<SLUG>_TOKEN`. DuckDB stores only the env-var name (`token_env`), never the secret.
 - Registry lives in DuckDB table `marketplace_registry` (schema v9).
@@ -312,8 +312,19 @@ joins `resource_grants ↔ marketplace_plugins` (matching
 caller's `user_group_members`. Admin is treated as a regular group here —
 no god-mode shortcut for the marketplace feed, so admins curate their own
 view by granting plugins to the Admin group (or any group they belong to).
-Plugin names are prefixed with marketplace slug (`<slug>-<plugin>`) so two
-marketplaces with the same plugin name don't collide in the aggregated view.
+On-disk layout in the served ZIP / git tree uses a slug-prefixed directory
+(`plugins/<slug>-<plugin>/`) so two marketplaces shipping a same-named
+plugin don't overwrite each other's files. The synth marketplace.json's
+`name` field, however, is the plugin's authoritative name from its own
+`.claude-plugin/plugin.json` (with a fallback to the upstream
+marketplace.json `name`) — Claude Code's `/plugin` UI resolves a loaded
+plugin back to its catalog entry by `plugin.json` name, so the catalog
+entry's `name` must match. Same-named plugins from two upstream
+marketplaces therefore collide in the catalog by design; admin RBAC
+(which grants survive the filter) decides which one wins, identical to
+how Claude Code behaves when a user adds two upstream marketplaces with
+overlapping plugin names directly. `/marketplace/info` exposes both
+`name` and `prefixed_name` so operators can disambiguate.
 
 Cache: content-addressed bare repos at `${DATA_DIR}/marketplaces/git-cache/`
 keyed by sha256(filtered content). Two users with the same RBAC view share

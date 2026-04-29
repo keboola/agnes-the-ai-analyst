@@ -6,8 +6,9 @@ import logging
 import os
 from collections import defaultdict
 
-import aiohttp
 from aiohttp import web, WSMsgType
+
+from app.logging_config import setup_logging
 
 from .auth import validate_token
 from .config import (
@@ -41,9 +42,7 @@ def _remove_connection(username: str, ws: web.WebSocketResponse) -> None:
             del connections[username]
 
 
-async def _heartbeat_loop(
-    username: str, ws: web.WebSocketResponse
-) -> None:
+async def _heartbeat_loop(username: str, ws: web.WebSocketResponse) -> None:
     """Send periodic pings and disconnect on missed pongs.
 
     NOTE: This task may be cancelled and restarted when the client sends a pong.
@@ -102,9 +101,7 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
             return ws
 
         if data.get("type") != "auth" or "token" not in data:
-            await ws.send_json(
-                {"type": "auth_error", "message": "Expected auth message with token"}
-            )
+            await ws.send_json({"type": "auth_error", "message": "Expected auth message with token"})
             await ws.close()
             return ws
 
@@ -118,9 +115,7 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
 
         # Enforce per-user connection limit
         if len(connections[username]) >= MAX_CONNECTIONS_PER_USER:
-            await ws.send_json(
-                {"type": "auth_error", "message": "Too many connections"}
-            )
+            await ws.send_json({"type": "auth_error", "message": "Too many connections"})
             await ws.close()
             return ws
 
@@ -142,9 +137,7 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                 if data.get("type") == "pong":
                     # Reset missed counter by cancelling and restarting heartbeat
                     heartbeat_task.cancel()
-                    heartbeat_task = asyncio.create_task(
-                        _heartbeat_loop(username, ws)
-                    )
+                    heartbeat_task = asyncio.create_task(_heartbeat_loop(username, ws))
             elif msg.type == WSMsgType.CLOSE:
                 logger.info("User %s sent CLOSE frame", username)
                 break
@@ -159,9 +152,7 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
             heartbeat_task.cancel()
         if username is not None:
             _remove_connection(username, ws)
-            logger.info(
-                "User %s disconnected (total: %d)", username, _total_connections()
-            )
+            logger.info("User %s disconnected (total: %d)", username, _total_connections())
 
     return ws
 
@@ -180,9 +171,7 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     notification = body.get("notification")
 
     if not user or not notification:
-        return web.json_response(
-            {"error": "Missing 'user' or 'notification'"}, status=400
-        )
+        return web.json_response({"error": "Missing 'user' or 'notification'"}, status=400)
 
     user_connections = connections.get(user, [])
     sent_count = 0
@@ -204,17 +193,12 @@ async def health_handler(request: web.Request) -> web.Response:
     """Handle GET /health to report gateway status."""
     total = _total_connections()
     users = {user: len(ws_list) for user, ws_list in connections.items()}
-    return web.json_response(
-        {"status": "ok", "connections": total, "users": users}
-    )
+    return web.json_response({"status": "ok", "connections": total, "users": users})
 
 
 async def main() -> None:
     """Run both the WebSocket TCP server and the HTTP Unix socket dispatch server."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
+    setup_logging(__name__)
 
     # WebSocket TCP server
     ws_app = web.Application()
@@ -224,9 +208,7 @@ async def main() -> None:
     await ws_runner.setup()
     ws_site = web.TCPSite(ws_runner, WS_GATEWAY_HOST, WS_GATEWAY_PORT)
     await ws_site.start()
-    logger.info(
-        "WebSocket server listening on %s:%d", WS_GATEWAY_HOST, WS_GATEWAY_PORT
-    )
+    logger.info("WebSocket server listening on %s:%d", WS_GATEWAY_HOST, WS_GATEWAY_PORT)
 
     # HTTP dispatch Unix socket server
     dispatch_app = web.Application()

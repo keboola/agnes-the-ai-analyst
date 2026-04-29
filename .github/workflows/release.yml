@@ -38,7 +38,7 @@ jobs:
       version: ${{ steps.meta.outputs.version }}
       channel: ${{ steps.meta.outputs.channel }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -144,7 +144,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -162,13 +162,45 @@ jobs:
       - name: Run smoke tests
         run: bash scripts/smoke-test.sh http://localhost:8000
 
+      - name: Automatic rollback on failure
+        if: failure()
+        run: |
+          IMAGE_TAG="${{ needs.build-and-push.outputs.image_tag }}"
+          VERSION="${{ needs.build-and-push.outputs.version }}"
+          DEPRECATED_TAG="deprecated-${VERSION}"
+          REPO="ghcr.io/${{ github.repository }}"
+
+          echo "Smoke test failed — initiating rollback"
+
+          # Tag the current (failed) image as :deprecated-YYYY.MM.N
+          docker pull "${REPO}:${IMAGE_TAG}"
+          docker tag "${REPO}:${IMAGE_TAG}" "${REPO}:${DEPRECATED_TAG}"
+          docker push "${REPO}:${DEPRECATED_TAG}"
+          echo "Tagged failed image as ${REPO}:${DEPRECATED_TAG}"
+
+          # Revert :stable to the previous known-good image
+          PREV_TAG=$(git tag -l "stable-*" --sort=-version:refname | head -2 | tail -1)
+          if [ -n "$PREV_TAG" ]; then
+            docker pull "${REPO}:${PREV_TAG}"
+            docker tag "${REPO}:${PREV_TAG}" "${REPO}:stable"
+            docker push "${REPO}:stable"
+            echo "Reverted :stable to ${PREV_TAG}"
+          else
+            echo "WARNING: No previous stable tag found — cannot revert :stable automatically"
+          fi
+
+          # Create a GitHub issue alerting about the failure
+          ISSUE_TITLE="Smoke test failure — rollback to ${PREV_TAG:-unknown}"
+          ISSUE_BODY="## Automatic Rollback Report\n\nThe smoke test for image \`${IMAGE_TAG}\` failed.\n\n- **Failed image**: \`${REPO}:${IMAGE_TAG}\`\n- **Deprecated tag**: \`${REPO}:${DEPRECATED_TAG}\`\n- **Rolled back to**: \`${PREV_TAG:-N/A}\`\n- **Commit**: \`${{ github.sha }}\`\n- **Run**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\n\nPlease investigate and fix before re-deploying."
+          gh issue create --title "$ISSUE_TITLE" --body "$(echo -e "$ISSUE_BODY")" --label "bug" || echo "Failed to create GitHub issue (gh CLI may not be available)"
+
       - name: Collect logs on failure
         if: failure()
         run: docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.ci.yml logs > smoke-test-logs.txt
 
       - name: Upload logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: smoke-test-logs
           path: smoke-test-logs.txt
@@ -192,7 +224,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Pre-create /data with root-owned subdirs (mimics fresh GCE PD)
         run: |
@@ -250,7 +282,7 @@ jobs:
 
       - name: Upload logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-bind-mount-logs
           path: bind-mount-logs.txt

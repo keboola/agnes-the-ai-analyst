@@ -32,7 +32,7 @@ class TableRegistryFactory:
 
     _SOURCE_TYPES = ["keboola", "bigquery", "csv"]
     _QUERY_MODES = ["local", "remote"]
-    _SCHEDULES = ["0 * * * *", "0 6 * * *", "*/30 * * * *"]
+    _SCHEDULES = ["every 1h", "daily 06:00", "every 30m"]
 
     @staticmethod
     def build(**overrides) -> dict[str, Any]:

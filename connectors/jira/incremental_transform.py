@@ -8,11 +8,9 @@ Updates only the affected monthly Parquet file for efficient rsync.
 import json
 import logging
 import os
-from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
-import pyarrow as pa
 import pyarrow.parquet as pq
 
 # Import transform functions from batch transform
@@ -35,7 +33,6 @@ from .transform import (
     transform_remote_links,
 )
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Default paths (can be overridden via environment)
@@ -228,6 +225,7 @@ def transform_single_issue(
         # Update extract.duckdb _meta for all affected tables
         try:
             from .extract_init import update_meta
+
             extract_dir = output_dir.parent  # output_dir is .../data, parent is .../jira
             for table_name in ["issues", "comments", "attachments", "changelog", "issuelinks", "remote_links"]:
                 update_meta(extract_dir, table_name)

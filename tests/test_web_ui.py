@@ -100,10 +100,9 @@ class TestWebUISmoke:
         body = resp.text
         # Shared header chrome
         assert "app-header" in body
-        # Nav: "My tokens" (own) is in the user-menu dropdown; admin-only
-        # "All tokens" link is in the top nav. Admin dropdown holds the
-        # Users / Groups / Resource access links — /admin/users is reached
-        # through it.
+        # Nav: "My tokens" (own) is in the user-menu dropdown; admin Tokens
+        # entry (and Tables, Users, Groups, Resource access, Server config)
+        # lives in the Admin dropdown.
         assert 'href="/tokens"' in body
         assert 'href="/admin/tokens"' in body
         assert 'href="/profile"' in body
@@ -114,7 +113,7 @@ class TestWebUISmoke:
         assert 'id="confirm-modal"' in body
 
     def test_nav_shows_tokens_link_for_non_admin(self, web_client, analyst_cookie):
-        """Non-admins see 'My tokens' + 'Profile' user-menu links — no 'All tokens'."""
+        """Non-admins see 'My tokens' + 'Profile' user-menu links — no admin Tokens entry."""
         resp = web_client.get("/dashboard", cookies=analyst_cookie)
         assert resp.status_code in (200, 302)
         if resp.status_code == 302:
@@ -125,12 +124,11 @@ class TestWebUISmoke:
         assert 'href="/profile"' in body
         assert ">My tokens<" in body
         assert ">Profile<" in body
-        # Non-admins must NOT see the admin "All tokens" link.
+        # Non-admins must NOT see the admin Tokens link inside the Admin dropdown.
         assert 'href="/admin/tokens"' not in body
-        assert ">All tokens<" not in body
 
     def test_nav_shows_all_tokens_link_for_admin(self, web_client, admin_cookie):
-        """Admins see the 'My tokens' user-menu link and the 'All tokens' nav link."""
+        """Admins see the 'My tokens' user-menu link and the admin Tokens entry inside the Admin dropdown."""
         resp = web_client.get("/dashboard", cookies=admin_cookie)
         assert resp.status_code in (200, 302)
         if resp.status_code == 302:
@@ -139,7 +137,10 @@ class TestWebUISmoke:
         assert 'href="/tokens"' in body
         assert 'href="/admin/tokens"' in body
         assert ">My tokens<" in body
-        assert ">All tokens<" in body
+        # Admin dropdown now lists Tables / Tokens / Users / Groups / Resource access / Server config.
+        assert 'href="/admin/tables"' in body
+        assert ">Tables<" in body
+        assert ">Tokens<" in body
 
     def test_profile_renders_account_details(self, web_client, admin_cookie):
         """/profile renders a real profile page with email + tokens link.

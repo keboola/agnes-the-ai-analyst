@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.logging_config import setup_logging
 from connectors.llm import create_extractor
 from connectors.llm.exceptions import LLMError
 
@@ -37,8 +38,14 @@ from .tagger import auto_tag_items
 
 # Fields preserved across re-collections when item already exists
 GOVERNANCE_FIELDS = (
-    "status", "approved_by", "approved_at", "mandatory_reason",
-    "audience", "review_by", "edited_by", "edited_at",
+    "status",
+    "approved_by",
+    "approved_at",
+    "mandatory_reason",
+    "audience",
+    "review_by",
+    "edited_by",
+    "edited_at",
 )
 
 # Configuration
@@ -49,10 +56,7 @@ USER_HASHES_FILE = CORPORATE_MEMORY_DIR / "user_hashes.json"
 HOME_BASE = Path("/home")
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
+setup_logging(__name__)
 logger = logging.getLogger(__name__)
 
 # JSON Schema for catalog refresh structured output
@@ -70,8 +74,12 @@ CATALOG_SCHEMA = {
                     "category": {
                         "type": "string",
                         "enum": [
-                            "data_analysis", "api_integration", "debugging",
-                            "performance", "workflow", "infrastructure",
+                            "data_analysis",
+                            "api_integration",
+                            "debugging",
+                            "performance",
+                            "workflow",
+                            "infrastructure",
                             "business_logic",
                         ],
                     },
@@ -85,8 +93,12 @@ CATALOG_SCHEMA = {
                     },
                 },
                 "required": [
-                    "existing_id", "title", "content",
-                    "category", "tags", "source_users",
+                    "existing_id",
+                    "title",
+                    "content",
+                    "category",
+                    "tags",
+                    "source_users",
                 ],
                 "additionalProperties": False,
             },
@@ -251,10 +263,7 @@ def _format_user_files(user_files: dict[str, tuple[str, str]]) -> str:
     """
     sections = []
     for username, (content, _) in sorted(user_files.items()):
-        sections.append(
-            f"### User: {username}\n"
-            f"```\n{content.strip()}\n```"
-        )
+        sections.append(f"### User: {username}\n```\n{content.strip()}\n```")
 
     return "\n\n".join(sections)
 
@@ -346,8 +355,10 @@ def check_sensitivity(extractor, item: dict) -> bool:
 
     try:
         result = extractor.extract_json(
-            prompt, max_tokens=256,
-            json_schema=SENSITIVITY_SCHEMA, schema_name="sensitivity_check",
+            prompt,
+            max_tokens=256,
+            json_schema=SENSITIVITY_SCHEMA,
+            schema_name="sensitivity_check",
         )
 
         if not result.get("safe", False):
@@ -408,6 +419,7 @@ def collect_all(dry_run: bool = False) -> dict:
     # Step 2: Initialize AI extractor
     try:
         from config.loader import load_instance_config
+
         instance_config = load_instance_config()
         ai_config = instance_config.get("ai")
         if not ai_config:
@@ -454,8 +466,10 @@ def collect_all(dry_run: bool = False) -> dict:
 
     try:
         response_data = extractor.extract_json(
-            prompt, max_tokens=8192,
-            json_schema=CATALOG_SCHEMA, schema_name="catalog_refresh",
+            prompt,
+            max_tokens=8192,
+            json_schema=CATALOG_SCHEMA,
+            schema_name="catalog_refresh",
         )
         response_items = response_data.get("items", [])
         stats["items_extracted"] = len(response_items)
@@ -528,10 +542,13 @@ def collect_all(dry_run: bool = False) -> dict:
 
         # Save user hashes after successful processing
         current_hashes = {user: h for user, (_, h) in user_files.items()}
-        _write_json(USER_HASHES_FILE, {
-            "hashes": current_hashes,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        })
+        _write_json(
+            USER_HASHES_FILE,
+            {
+                "hashes": current_hashes,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
         logger.info("User hashes updated")
     else:
         logger.info(
@@ -574,13 +591,12 @@ def main() -> int:
     """CLI entry point for the collector."""
     import argparse
 
-    parser = argparse.ArgumentParser(
-        description="Collect knowledge from CLAUDE.local.md files"
-    )
+    parser = argparse.ArgumentParser(description="Collect knowledge from CLAUDE.local.md files")
     parser.add_argument("--dry-run", action="store_true", help="Don't write changes")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
     parser.add_argument(
-        "--reset", action="store_true",
+        "--reset",
+        action="store_true",
         help="Clear all data and recalculate from scratch (also clears votes)",
     )
 
@@ -592,9 +608,7 @@ def main() -> int:
     # Configure file logging
     CORPORATE_MEMORY_DIR.mkdir(parents=True, exist_ok=True)
     file_handler = logging.FileHandler(COLLECTION_LOG)
-    file_handler.setFormatter(
-        logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-    )
+    file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
     logging.getLogger().addHandler(file_handler)
 
     if args.reset:

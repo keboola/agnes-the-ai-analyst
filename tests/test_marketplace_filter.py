@@ -90,15 +90,25 @@ class TestResolveAllowedPlugins:
         prefixed = {p["prefixed_name"] for p in result}
         assert prefixed == {"mkt-a-p1", "mkt-b-p3"}
 
-    def test_everyone_grants_visible_to_all(self, db_conn):
+    def test_everyone_grants_require_explicit_membership(self, db_conn):
+        # Auto-Everyone removal: a freshly-created user is no longer
+        # implicitly a member of Everyone, so a grant on Everyone is
+        # invisible until the user is added as an explicit member.
         from src.marketplace_filter import resolve_allowed_plugins
         t = datetime.now(timezone.utc)
         _register_marketplace(db_conn, id="mkt", registered_at=t,
             plugins=[{"name": "public", "version": "1.0"}])
-        everyone_gid = db_conn.execute("SELECT id FROM user_groups WHERE name='Everyone'").fetchone()[0]
+        everyone_gid = db_conn.execute(
+            "SELECT id FROM user_groups WHERE name='Everyone'"
+        ).fetchone()[0]
         _grant(db_conn, group_id=everyone_gid, marketplace="mkt", plugin="public")
 
         _make_user(db_conn, user_id="u1", email="u1@x")
+        # No membership written → no plugin visible.
+        assert resolve_allowed_plugins(db_conn, {"id": "u1"}) == []
+
+        # After explicit membership the grant resolves.
+        _add_member(db_conn, user_id="u1", group_id=everyone_gid)
         result = resolve_allowed_plugins(db_conn, {"id": "u1"})
         assert [p["prefixed_name"] for p in result] == ["mkt-public"]
 
@@ -154,15 +164,89 @@ class TestResolveAllowedPlugins:
         order = [p["marketplace_id"] for p in result]
         assert order == ["earlier-mkt", "later-mkt"]
 
-    def test_user_with_unknown_group_sees_nothing(self, db_conn):
+    def test_user_with_no_groups_sees_nothing(self, db_conn):
         from src.marketplace_filter import resolve_allowed_plugins
         t = datetime.now(timezone.utc)
         _register_marketplace(db_conn, id="mkt", registered_at=t,
             plugins=[{"name": "p", "version": "1"}])
         _make_user(db_conn, user_id="u-nogroup", email="ng@x")
-        # Has only Everyone (auto-membership) but no grants on Everyone.
+        # Auto-Everyone removal: a brand-new user has zero memberships and
+        # therefore sees nothing regardless of what's granted on Everyone.
         result = resolve_allowed_plugins(db_conn, {"id": "u-nogroup"})
         assert result == []
+
+
+def _seed_grant_and_user(
+    conn, *, slug: str, plugin: str, user_id: str = "u-mn"
+) -> None:
+    """Helper for TestManifestName: register a marketplace + plugin, create
+    a user in a group with a grant on that plugin."""
+    t = datetime.now(timezone.utc)
+    _register_marketplace(conn, id=slug, registered_at=t,
+        plugins=[{"name": plugin, "version": "1.0"}])
+    gid = _make_group(conn, name=f"G-{slug}")
+    _grant(conn, group_id=gid, marketplace=slug, plugin=plugin)
+    _make_user(conn, user_id=user_id, email=f"{user_id}@x")
+    _add_member(conn, user_id=user_id, group_id=gid)
+
+
+class TestManifestName:
+    """resolve_allowed_plugins must surface the plugin's authoritative name
+    from its own .claude-plugin/plugin.json. Claude Code's /plugin UI looks
+    a loaded plugin back up against its catalog by plugin.json name; if the
+    synth marketplace.json's `name` doesn't match, the Components panel
+    errors with "Plugin <X> not found in marketplace"."""
+
+    def test_manifest_name_from_plugin_json(self, db_conn, tmp_path):
+        from src.marketplace_filter import resolve_allowed_plugins
+        _seed_grant_and_user(db_conn, slug="mkt", plugin="dirname")
+        plugin_dir = tmp_path / "marketplaces" / "mkt" / "plugins" / "dirname"
+        (plugin_dir / ".claude-plugin").mkdir(parents=True)
+        (plugin_dir / ".claude-plugin" / "plugin.json").write_text(
+            json.dumps({"name": "actual-name", "version": "1.0"}),
+            encoding="utf-8",
+        )
+
+        result = resolve_allowed_plugins(db_conn, {"id": "u-mn"})
+        assert len(result) == 1
+        assert result[0]["manifest_name"] == "actual-name"
+        # prefixed_name is unchanged — it drives the on-disk dir layout.
+        assert result[0]["prefixed_name"] == "mkt-dirname"
+        assert result[0]["original_name"] == "dirname"
+
+    def test_manifest_name_falls_back_when_plugin_json_missing(self, db_conn, tmp_path):
+        from src.marketplace_filter import resolve_allowed_plugins
+        _seed_grant_and_user(db_conn, slug="mkt", plugin="myplugin")
+        # No plugin_dir on disk at all → falls back to upstream name.
+        result = resolve_allowed_plugins(db_conn, {"id": "u-mn"})
+        assert len(result) == 1
+        assert result[0]["manifest_name"] == "myplugin"
+
+    def test_manifest_name_falls_back_on_malformed_plugin_json(self, db_conn, tmp_path):
+        from src.marketplace_filter import resolve_allowed_plugins
+        _seed_grant_and_user(db_conn, slug="mkt", plugin="myplugin")
+        plugin_dir = tmp_path / "marketplaces" / "mkt" / "plugins" / "myplugin"
+        (plugin_dir / ".claude-plugin").mkdir(parents=True)
+        (plugin_dir / ".claude-plugin" / "plugin.json").write_text(
+            "{ this is : not json", encoding="utf-8",
+        )
+
+        result = resolve_allowed_plugins(db_conn, {"id": "u-mn"})
+        assert len(result) == 1
+        assert result[0]["manifest_name"] == "myplugin"
+
+    def test_manifest_name_falls_back_when_name_field_missing(self, db_conn, tmp_path):
+        from src.marketplace_filter import resolve_allowed_plugins
+        _seed_grant_and_user(db_conn, slug="mkt", plugin="myplugin")
+        plugin_dir = tmp_path / "marketplaces" / "mkt" / "plugins" / "myplugin"
+        (plugin_dir / ".claude-plugin").mkdir(parents=True)
+        (plugin_dir / ".claude-plugin" / "plugin.json").write_text(
+            json.dumps({"version": "1.0"}), encoding="utf-8",
+        )
+
+        result = resolve_allowed_plugins(db_conn, {"id": "u-mn"})
+        assert len(result) == 1
+        assert result[0]["manifest_name"] == "myplugin"
 
 
 # ETag tests (unchanged from v11) — still uses the in-process compute_etag helper.

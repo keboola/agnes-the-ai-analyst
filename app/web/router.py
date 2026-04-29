@@ -150,6 +150,21 @@ def _build_context(request: Request, user: Optional[dict] = None, **extra) -> di
         DEBUG_AUTH_ENABLED = os.environ.get("AGNES_DEBUG_AUTH", "").strip().lower() in (
             "1", "true", "yes",
         )
+        # Google Workspace prefix-mapping config — surfaced into templates
+        # so client-side JS can derive a friendly display name from the
+        # full Workspace email stored as the group's `name` (admin UI
+        # strips the prefix and `@domain` for the big line, keeps the
+        # full email as subtitle). Read at template render time so an
+        # operator can flip these via env without an image rebuild.
+        AGNES_GOOGLE_GROUP_PREFIX = os.environ.get(
+            "AGNES_GOOGLE_GROUP_PREFIX", ""
+        )
+        AGNES_GROUP_ADMIN_EMAIL = os.environ.get(
+            "AGNES_GROUP_ADMIN_EMAIL", ""
+        )
+        AGNES_GROUP_EVERYONE_EMAIL = os.environ.get(
+            "AGNES_GROUP_EVERYONE_EMAIL", ""
+        )
 
         @staticmethod
         def theme_overrides():
@@ -558,6 +573,12 @@ async def corporate_memory_admin(
                 "hidden": base.get("is_personal", False),
             }
 
+    # Duplicate-candidate badge count (issue #62) — unresolved relations only.
+    duplicates_count = conn.execute(
+        "SELECT COUNT(*) FROM knowledge_item_relations "
+        "WHERE relation_type = 'likely_duplicate' AND resolved = FALSE"
+    ).fetchone()[0]
+
     ctx = _build_context(
         request, user=user,
         pending_items=pending,
@@ -565,7 +586,12 @@ async def corporate_memory_admin(
             "total": len(all_items),
             "by_status": status_counts,
             "pending": len(pending),
+            "pending_count": status_counts.get("pending", 0),
+            "approved_count": status_counts.get("approved", 0),
+            "mandatory_count": status_counts.get("mandatory", 0),
+            "knowledge_count": len(all_items),
             "contradictions": len(contradictions),
+            "duplicates": duplicates_count,
         },
         governance=get_corporate_memory_config(),
         groups=get_corporate_memory_config().get("groups", {}),
@@ -617,9 +643,18 @@ async def admin_tables(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     from src.repositories.table_registry import TableRegistryRepository
+    from app.instance_config import get_data_source_type
     repo = TableRegistryRepository(conn)
     tables = repo.list_all()
-    ctx = _build_context(request, user=user, registered_tables=tables)
+    # Branch the register-modal layout server-side so the JS doesn't have
+    # to round-trip /api/admin/server-config to learn the source type.
+    data_source_type = get_data_source_type() or "keboola"
+    ctx = _build_context(
+        request,
+        user=user,
+        registered_tables=tables,
+        data_source_type=data_source_type,
+    )
     return templates.TemplateResponse(request, "admin_tables.html", ctx)
 
 
@@ -708,10 +743,17 @@ async def admin_group_detail_page(
     """Single-group detail page — header + members table. Resource grants
     live on /admin/grants (deep-linked from here)."""
     from src.repositories.user_groups import UserGroupsRepository
+    from app.api.access import _is_google_managed
     g = UserGroupsRepository(conn).get(group_id)
     if not g:
         raise HTTPException(status_code=404, detail="Group not found")
-    ctx = _build_context(request, user=user, target_group=g)
+    # Project a `is_google_managed` flag onto the dict the template reads,
+    # using the same rule the API enforces (created_by='system:google-sync'
+    # OR system + env mapping). Doing it server-side keeps the template
+    # free of env-var lookups and Python-side logic duplication.
+    g_view = dict(g)
+    g_view["is_google_managed"] = _is_google_managed(g)
+    ctx = _build_context(request, user=user, target_group=g_view)
     return templates.TemplateResponse(request, "admin_group_detail.html", ctx)
 
 
@@ -808,3 +850,49 @@ async def profile_page(
         is_admin=is_user_admin(user["id"], conn),
     )
     return templates.TemplateResponse(request, "profile.html", ctx)
+
+
+@router.get("/_debug/throw/http/{code:int}", response_class=HTMLResponse, include_in_schema=False)
+async def _debug_throw_http(request: Request, code: int):
+    """Dev helper — raise an HTTPException with the given status code.
+
+    Only mounted when DEBUG=1 (gated below). Lets you eyeball the error
+    page chrome + debug-toolbar panels for any HTTP status code:
+      /_debug/throw/http/404  → 404 page
+      /_debug/throw/http/418  → 418 page (custom title falls back to "Error")
+      /_debug/throw/http/500  → 500 page rendered via the StarletteHTTPException
+                                handler (NOT the unhandled-exception handler —
+                                use /_debug/throw/exc for that)
+    """
+    if not _is_debug():
+        raise HTTPException(status_code=404, detail="Not found")
+    raise HTTPException(status_code=code, detail=f"Forced {code} via /_debug/throw/http/{code}")
+
+
+@router.get("/_debug/throw/exc", response_class=HTMLResponse, include_in_schema=False)
+async def _debug_throw_exc(request: Request):
+    """Dev helper — raise an unhandled exception to exercise the 500 path."""
+    if not _is_debug():
+        raise HTTPException(status_code=404, detail="Not found")
+    # Force a real traceback so the DEBUG-only `<details>Traceback</details>`
+    # block in error.html shows something interesting (not just "RuntimeError").
+    payload = {"a": 1}
+    return payload["nope"]  # KeyError with a useful traceback
+
+
+def _is_debug() -> bool:
+    return os.environ.get("DEBUG", "").lower() in ("1", "true", "yes")
+
+
+@router.get("/{full_path:path}", response_class=HTMLResponse, include_in_schema=False)
+async def _catch_all_404(request: Request, full_path: str):
+    """Catch-all 404 for unmatched routes.
+
+    Provides a matched route so fastapi-debug-toolbar can inject its panels —
+    the toolbar bails out of injection when ``matched_route(request)`` is None
+    (the case on truly unrouted paths). The actual rendering is delegated to
+    ``app.main._html_auth_redirect_handler`` via the raised ``HTTPException``,
+    which routes API paths to JSON and HTML paths to the ``error.html``
+    template.
+    """
+    raise HTTPException(status_code=404, detail="Page not found")

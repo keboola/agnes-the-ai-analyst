@@ -30,6 +30,12 @@ from urllib.parse import quote
 
 import os
 
+# Initialise structured logging BEFORE any module that emits logs at import
+# time. setup_logging is idempotent and safe to call once at process start.
+from app.logging_config import setup_logging
+
+setup_logging("app")
+
 
 def _app_version() -> str:
     """Product version for FastAPI title / OpenAPI schema.
@@ -52,6 +58,8 @@ from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from app.middleware.request_id import RequestIdMiddleware
+
 
 class _SelectiveGZipMiddleware:
     """GZipMiddleware wrapper that skips a set of path prefixes.
@@ -64,6 +72,11 @@ class _SelectiveGZipMiddleware:
     """
 
     def __init__(self, app: ASGIApp, minimum_size: int = 1024, skip_prefixes: tuple[str, ...] = ()) -> None:
+        # `self.app` is the Starlette middleware convention — outer middleware
+        # (e.g. fastapi-debug-toolbar's APIRouter walker) traverses the chain
+        # via `.app` to find the inner FastAPI app. Keep `_raw` as the public
+        # alias used by our own __call__ for the skip-path branch.
+        self.app = app
         self._raw = app
         self._gzip = GZipMiddleware(app, minimum_size=minimum_size)
         self._skip_prefixes = skip_prefixes
@@ -126,13 +139,125 @@ async def lifespan(app):
     close_system_db()
 
 
+DEBUG = os.environ.get("DEBUG", "").lower() in ("1", "true", "yes")
+
+
+def _toolbar_show_callback(request, settings) -> bool:
+    """Decide whether the debug toolbar shows on a request.
+
+    Replaces the upstream default (which reads `request.app.debug`) — we keep
+    `app.debug=False` so our @app.exception_handler(Exception) runs instead of
+    Starlette's debug-only ServerErrorMiddleware, but we still want the
+    toolbar mounted. Read DEBUG env directly.
+    """
+    return os.environ.get("DEBUG", "").lower() in ("1", "true", "yes")
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="AI Data Analyst",
         description="Data distribution platform for AI analytical systems",
         version=_app_version(),
         lifespan=lifespan,
+        # Intentionally NOT debug=DEBUG: FastAPI's debug=True installs
+        # Starlette's ServerErrorMiddleware which intercepts unhandled
+        # Exceptions and renders a plain-HTML traceback BEFORE our
+        # @app.exception_handler(Exception) can run — robbing the 500 page
+        # of its chrome and the debug toolbar. We get the toolbar back via
+        # SHOW_TOOLBAR_CALLBACK below (reads DEBUG env directly instead of
+        # request.app.debug).
+        debug=False,
     )
+
+    # FastAPI debug toolbar — only when DEBUG=1 in env. Injects per-request
+    # HTML overlay (headers, routes, timer, profiling, logs) on any HTML
+    # response; harmless on JSON. Inner try/except is for the import only:
+    # if a developer sets DEBUG=1 without installing dev deps, log a warning
+    # instead of crashing. The middleware mount itself fails loud if broken.
+    #
+    # Mounted FIRST (innermost on response) so it sees the raw HTML BEFORE
+    # GZip compresses it — debug_toolbar.middleware decodes response bodies
+    # as UTF-8 to inject markup, and a gzipped body fails that decode (the
+    # toolbar's own `Accept-Encoding` skip-check reads response headers, not
+    # request headers, so it never trips).
+    if DEBUG:
+        try:
+            from debug_toolbar.middleware import DebugToolbarMiddleware
+            from jinja2 import FileSystemLoader
+            # debug_toolbar.middleware splats **kwargs into DebugToolbarSettings
+            # (a pydantic-settings model with case-insensitive UPPERCASE fields).
+            # Pass field names as kwargs to add_middleware — `panels` becomes
+            # `PANELS`, etc. Do NOT wrap them in a `settings={...}` dict —
+            # that hits the model's actual `SETTINGS` field (Sequence[BaseSettings])
+            # and fails validation. Field reference:
+            # https://github.com/mongkok/fastapi-debug-toolbar/blob/master/debug_toolbar/settings.py
+            # ProfilingPanel (pyinstrument) is intentionally omitted: it
+            # raises "There is already a profiler running" under uvicorn's
+            # async context because pyinstrument's stack sampler can't be
+            # nested per task. Re-enable per-developer if you really want it
+            # via env override; the rest of the panels are async-safe.
+            #
+            # JINJA_LOADERS prepends our app/debug/templates so DuckDBPanel
+            # can resolve `panels/duckdb.html`. The toolbar's built-in loader
+            # (PackageLoader for debug_toolbar/templates) stays appended via
+            # ChoiceLoader, so first-party panels still render.
+            _debug_templates_dir = Path(__file__).parent / "debug" / "templates"
+            _toolbar_settings = dict(
+                panels=[
+                    "debug_toolbar.panels.headers.HeadersPanel",
+                    "debug_toolbar.panels.routes.RoutesPanel",
+                    "debug_toolbar.panels.settings.SettingsPanel",
+                    "debug_toolbar.panels.versions.VersionsPanel",
+                    "debug_toolbar.panels.timer.TimerPanel",
+                    "debug_toolbar.panels.logging.LoggingPanel",
+                    "app.debug.duckdb_panel.DuckDBPanel",
+                ],
+                jinja_loaders=[FileSystemLoader(str(_debug_templates_dir))],
+                show_toolbar_callback="app.main._toolbar_show_callback",
+            )
+            # Eagerly register the toolbar's own routes
+            # (/_debug_toolbar/render_panel/ + /_debug_toolbar/static mount)
+            # NOW, before app.web.router's /{full_path:path} catch-all gets
+            # added by include_router(web_router). Otherwise the catch-all
+            # swallows the toolbar's own GET requests and the panel scripts
+            # render our 404 page. We can't construct DebugToolbarMiddleware
+            # directly on the FastAPI app (its `while not isinstance(...,
+            # APIRouter): self.router = self.router.app` walk fails — FastAPI
+            # has `.router`, not `.app`), so call init_toolbar's body
+            # ourselves on the APIRouter directly. add_middleware below still
+            # works lazily; init_toolbar's NoMatchFound guard skips re-adding
+            # routes when called the second time.
+            from debug_toolbar.api import render_panel as _render_panel_view
+            from debug_toolbar.middleware import show_toolbar as _show_toolbar
+            from debug_toolbar.settings import DebugToolbarSettings
+            from fastapi import HTTPException as _HTTPException, status as _status
+            from fastapi.staticfiles import StaticFiles as _StaticFiles
+
+            _eager_settings = DebugToolbarSettings(**_toolbar_settings)
+
+            async def _require_show_toolbar(request, call_next=None):
+                """Mirror DebugToolbarMiddleware.require_show_toolbar: 404 the
+                toolbar API for clients that wouldn't see the toolbar."""
+                if not _show_toolbar(request, _eager_settings):
+                    raise _HTTPException(status_code=_status.HTTP_404_NOT_FOUND)
+                return await _render_panel_view(request)
+
+            app.router.get(
+                _eager_settings.API_URL,
+                name="debug_toolbar.render_panel",
+                include_in_schema=False,
+            )(_render_panel_view)
+            app.router.mount(
+                _eager_settings.STATIC_URL,
+                _StaticFiles(packages=["debug_toolbar"]),
+                name="debug_toolbar.static",
+            )
+
+            app.add_middleware(DebugToolbarMiddleware, **_toolbar_settings)
+        except ImportError:
+            logger.warning(
+                "DEBUG=1 but fastapi-debug-toolbar not installed; toolbar disabled",
+            )
 
     # Compress JSON / HTML responses on the wire. Parquet downloads are
     # excluded — they're already columnar-compressed and re-gzipping them
@@ -173,6 +298,13 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # RequestIdMiddleware mounted LAST — Starlette inserts middleware at
+    # index 0, so the last add_middleware call ends up OUTERMOST and runs
+    # FIRST per request. The request_id ContextVar is set before any
+    # downstream middleware or handler runs, and every response gets the
+    # x-request-id header.
+    app.add_middleware(RequestIdMiddleware)
 
     # Load .env_overlay (persisted by /api/admin/configure)
     _overlay = Path(os.environ.get("DATA_DIR", "./data")) / "state" / ".env_overlay"
@@ -292,6 +424,35 @@ def create_app() -> FastAPI:
         except Exception as e:
             logger.warning(f"Could not seed admin: {e}")
 
+    # Seed the synthetic scheduler user when SCHEDULER_API_TOKEN is configured,
+    # so the very first cron tick after a fresh deploy already has a valid
+    # actor to attribute audit-log entries to. The lazy seed in
+    # `app.auth.scheduler_token.get_scheduler_user` covers the case where the
+    # secret is rotated mid-life, but doing it here keeps startup observable.
+    from app.auth.scheduler_token import get_scheduler_secret
+    if get_scheduler_secret():
+        try:
+            from app.auth.scheduler_token import (
+                SCHEDULER_TOKEN_MIN_LENGTH,
+                ensure_scheduler_user,
+            )
+            from src.db import get_system_db
+            secret = get_scheduler_secret()
+            if len(secret) < SCHEDULER_TOKEN_MIN_LENGTH:
+                logger.warning(
+                    "SCHEDULER_API_TOKEN is set but only %d chars — auth path"
+                    " disabled (minimum %d). Generate a longer secret in .env.",
+                    len(secret), SCHEDULER_TOKEN_MIN_LENGTH,
+                )
+            else:
+                conn = get_system_db()
+                try:
+                    ensure_scheduler_user(conn)
+                finally:
+                    conn.close()
+        except Exception as e:
+            logger.warning(f"Could not seed scheduler user: {e}")
+
     # C8: Warn when no user has a password_hash — bootstrap endpoint is open.
     # This is intentional UX (operator can claim seed admin), but the open
     # window should be visible in startup logs so it's not forgotten.
@@ -376,26 +537,146 @@ def create_app() -> FastAPI:
         "/marketplace/",
     )
 
+    _ERROR_TITLES = {
+        400: "Bad request",
+        401: "Sign-in required",
+        403: "Forbidden",
+        404: "Page not found",
+        405: "Method not allowed",
+        408: "Request timeout",
+        413: "Payload too large",
+        422: "Unprocessable entity",
+        429: "Too many requests",
+        500: "Server error",
+        502: "Bad gateway",
+        503: "Service unavailable",
+        504: "Gateway timeout",
+    }
+
+    def _wants_html(request) -> bool:
+        """True when the client looks like a browser (non-API path, explicit html).
+
+        We deliberately do NOT treat ``Accept: */*`` (curl's default) or an
+        empty Accept header as wanting HTML. curl-using operators were
+        getting JSON error bodies for non-API paths before this PR; matching
+        ``*/*`` here would silently flip them to HTML and break tooling that
+        parses ``{"detail": "..."}``. A real browser sends
+        ``Accept: text/html,application/xhtml+xml,...`` so the explicit
+        substring check below covers that case.
+        Devin ANALYSIS_0003 on PR #136 review.
+        """
+        if request.url.path.startswith(_API_PATH_PREFIXES):
+            return False
+        accept = request.headers.get("accept", "")
+        return "text/html" in accept
+
+    async def _resolve_error_user(request) -> dict | None:
+        """Best-effort user resolution for the error page header.
+
+        Mirrors ``app.auth.dependencies.get_optional_user`` precedence
+        (LOCAL_DEV_MODE → seeded dev user, else verify JWT from
+        Authorization header or ``access_token`` cookie). Returns None on
+        any failure — error page still renders, just without the user menu.
+        """
+        try:
+            from app.auth.dependencies import get_current_user
+            from src.db import get_system_db
+
+            conn = get_system_db()
+            try:
+                authorization = request.headers.get("authorization")
+                return await get_current_user(
+                    request=request, authorization=authorization, conn=conn
+                )
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        except Exception:
+            return None
+
+    async def _render_error(request, code: int, message: str, traceback_str: str | None = None):
+        """Render error.html with the same chrome (header, theme, static_url)
+        as any other web route. Reuses ``_build_context`` so the page picks up
+        ConfigProxy, theme overrides, session user, and ``static_url`` /
+        ``url_for`` helpers — without these, base.html + _app_header.html
+        silently render empty header/stylesheets."""
+        from app.logging_config import request_id_var
+        from app.web.router import templates as _web_templates, _build_context
+
+        title = _ERROR_TITLES.get(code, "Error")
+        user = await _resolve_error_user(request)
+        ctx = _build_context(
+            request,
+            user=user,
+            code=code,
+            title=title,
+            message=message,
+            path=request.url.path,
+            traceback=traceback_str,
+            request_id=request_id_var.get(),
+        )
+        return _web_templates.TemplateResponse(request, "error.html", ctx, status_code=code)
+
     @app.exception_handler(StarletteHTTPException)
     async def _html_auth_redirect_handler(request, exc: StarletteHTTPException):
-        """Redirect unauthenticated HTML page loads (GET) to /login.
+        """Browser-friendly error rendering for HTML routes; JSON for API routes.
 
-        Only GET requests outside the API prefixes are redirected — that
-        targets browser navigations to HTML pages. POSTs, API prefixes, and
-        non-401 errors fall through to Starlette's default JSON response so
-        JSON clients (including `/auth/tokens` for PAT CRUD and
-        `/marketplace.zip` consumed by Claude Code) keep their existing
-        contract.
+        - 401 GET on a non-API path → redirect to ``/login`` (existing contract).
+        - Any other status code on a non-API path with HTML-accepting client →
+          render ``error.html`` (toolbar middleware injects panels because the
+          ``_catch_all_404`` route at the end of ``app.web.router`` provides a
+          matched route for unrouted paths).
+        - API prefixes (``/api/``, ``/auth/``, ``/marketplace.zip``,
+          ``/marketplace.git``, ``/marketplace/``) and non-HTML clients → JSON
+          ``{"detail": "..."}`` per the existing contract.
         """
+        path_is_api = request.url.path.startswith(_API_PATH_PREFIXES)
+
         if (
             exc.status_code == 401
             and request.method == "GET"
-            and not request.url.path.startswith(_API_PATH_PREFIXES)
+            and not path_is_api
         ):
             next_param = quote(request.url.path, safe="")
             return RedirectResponse(url=f"/login?next={next_param}", status_code=302)
+
+        if not path_is_api and _wants_html(request):
+            return await _render_error(request, exc.status_code, exc.detail or "")
+
         from fastapi.exception_handlers import http_exception_handler
         return await http_exception_handler(request, exc)
+
+    @app.exception_handler(Exception)
+    async def _unhandled_exception_handler(request, exc: Exception):
+        """Catch-all 500 handler — HTML for browsers, JSON for API clients."""
+        import os as _os
+        import traceback as _tb
+        logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
+
+        path_is_api = request.url.path.startswith(_API_PATH_PREFIXES)
+        debug_on = _os.environ.get("DEBUG", "").lower() in ("1", "true", "yes")
+        tb_str = _tb.format_exc() if debug_on else None
+
+        if not path_is_api and _wants_html(request):
+            # In production (DEBUG unset), never leak str(exc) to the
+            # rendered page — exception messages routinely contain DB paths,
+            # SQL fragments, internal hostnames, or credentials embedded in
+            # connection strings. Match the JSON branch's debug_on guard.
+            # Devin BUG_0001 on PR #136 (b1c6ee9 review).
+            visible_message = str(exc) if debug_on else "Internal server error"
+            return await _render_error(request, 500, visible_message, tb_str)
+
+        from app.logging_config import request_id_var
+        from fastapi.responses import JSONResponse
+        body: dict[str, str | None] = {
+            "detail": "Internal server error",
+            "request_id": request_id_var.get(),
+        }
+        if debug_on:
+            body["error"] = str(exc)
+        return JSONResponse(body, status_code=500)
 
     return app
 

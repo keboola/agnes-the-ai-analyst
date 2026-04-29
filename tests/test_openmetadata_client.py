@@ -2,6 +2,8 @@
 Tests for OpenMetadata client
 """
 
+import warnings
+
 import pytest
 import httpx
 from unittest.mock import Mock, patch, MagicMock
@@ -155,3 +157,48 @@ def test_context_manager():
 
         # Verify close() was called
         mock_client_instance.close.assert_called_once()
+
+
+# --- TLS verify (#89) -------------------------------------------------------
+
+
+def test_client_verifies_tls_by_default():
+    """Default `verify=True` — no more silent MITM exposure of the JWT."""
+    with patch("connectors.openmetadata.client.httpx.Client") as mock_client:
+        OpenMetadataClient(base_url="https://catalog.example.com", token="t")
+    kwargs = mock_client.call_args.kwargs
+    assert kwargs["verify"] is True
+
+
+def test_client_accepts_explicit_verify_false():
+    """Operators on internal CAs may opt out — but it must be explicit."""
+    with patch("connectors.openmetadata.client.httpx.Client") as mock_client:
+        OpenMetadataClient(base_url="https://catalog.example.com", token="t", verify=False)
+    assert mock_client.call_args.kwargs["verify"] is False
+
+
+def test_client_accepts_custom_ca_bundle_path():
+    """A path string passed to verify is forwarded to httpx untouched
+    (httpx then uses it as the trust store)."""
+    with patch("connectors.openmetadata.client.httpx.Client") as mock_client:
+        OpenMetadataClient(
+            base_url="https://catalog.example.com",
+            token="t",
+            verify="/etc/ssl/certs/internal-ca.pem",
+        )
+    assert mock_client.call_args.kwargs["verify"] == "/etc/ssl/certs/internal-ca.pem"
+
+
+def test_module_import_does_not_mutate_global_warnings_filter():
+    """The previous version called warnings.filterwarnings('ignore', ...)
+    at import time, suppressing urllib3 warnings for ALL httpx clients in
+    the process. Drop the side effect."""
+    import importlib
+    pre_filters = list(warnings.filters)
+    import connectors.openmetadata.client as om
+    importlib.reload(om)
+    post_filters = list(warnings.filters)
+    new = [f for f in post_filters if f not in pre_filters]
+    for action, message, *_ in new:
+        if message is not None:
+            assert "Unverified HTTPS request" not in message.pattern

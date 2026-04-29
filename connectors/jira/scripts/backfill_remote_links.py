@@ -36,11 +36,9 @@ from pathlib import Path
 import httpx
 from dotenv import load_dotenv
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+from app.logging_config import setup_logging
+
+setup_logging(__name__)
 logger = logging.getLogger(__name__)
 
 
@@ -70,9 +68,7 @@ def load_config() -> dict:
     }
 
 
-def fetch_remote_links(
-    base_url: str, auth: tuple[str, str], issue_key: str
-) -> list[dict]:
+def fetch_remote_links(base_url: str, auth: tuple[str, str], issue_key: str) -> list[dict]:
     """Fetch remote links for a single issue from Jira API."""
     url = f"{base_url}/issue/{issue_key}/remotelink"
 
@@ -94,9 +90,7 @@ def fetch_remote_links(
             time.sleep(retry_after)
             return fetch_remote_links(base_url, auth, issue_key)
         else:
-            logger.debug(
-                f"Failed to fetch remote links for {issue_key}: {response.status_code}"
-            )
+            logger.debug(f"Failed to fetch remote links for {issue_key}: {response.status_code}")
             return []
 
     except httpx.RequestError as e:
@@ -104,9 +98,7 @@ def fetch_remote_links(
         return []
 
 
-def process_file(
-    json_path: Path, base_url: str, auth: tuple[str, str]
-) -> str:
+def process_file(json_path: Path, base_url: str, auth: tuple[str, str]) -> str:
     """
     Process a single issue JSON file.
 
@@ -131,9 +123,7 @@ def process_file(
         data["_remote_links"] = remote_links
 
         # Atomic write: temp file + replace
-        fd, tmp_path = tempfile.mkstemp(
-            dir=str(json_path.parent), suffix=".tmp"
-        )
+        fd, tmp_path = tempfile.mkstemp(dir=str(json_path.parent), suffix=".tmp")
         try:
             with os.fdopen(fd, "w") as f:
                 json.dump(data, f, indent=2, default=str)
@@ -211,10 +201,7 @@ def main():
     start_time = time.time()
 
     with ThreadPoolExecutor(max_workers=args.parallel) as executor:
-        futures = {
-            executor.submit(process_file, jf, base_url, auth): jf
-            for jf in json_files
-        }
+        futures = {executor.submit(process_file, jf, base_url, auth): jf for jf in json_files}
 
         done_count = 0
         for future in as_completed(futures):

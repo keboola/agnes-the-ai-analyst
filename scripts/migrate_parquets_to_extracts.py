@@ -18,10 +18,12 @@ from pathlib import Path
 
 import duckdb
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-logger = logging.getLogger(__name__)
-
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from app.logging_config import setup_logging
+
+setup_logging(__name__)
+logger = logging.getLogger(__name__)
 
 
 def migrate_parquets(source_name: str, dry_run: bool = False) -> dict:
@@ -91,9 +93,7 @@ def migrate_parquets(source_name: str, dry_run: bool = False) -> dict:
                     continue
 
                 # Create view
-                conn.execute(
-                    f'CREATE OR REPLACE VIEW "{table_name}" AS SELECT * FROM read_parquet(\'{pq_path}\')'
-                )
+                conn.execute(f"CREATE OR REPLACE VIEW \"{table_name}\" AS SELECT * FROM read_parquet('{pq_path}')")
 
                 # Count rows
                 try:

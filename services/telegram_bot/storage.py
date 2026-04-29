@@ -11,7 +11,6 @@ import random
 import string
 import tempfile
 import time
-from pathlib import Path
 
 from . import config
 
@@ -44,6 +43,7 @@ def _write_json(path: str, data: dict) -> None:
 
 
 # --- Telegram Users ---
+
 
 def get_chat_id(username: str) -> int | None:
     """Get Telegram chat_id for a linked username."""
@@ -93,6 +93,7 @@ def get_user_status(username: str) -> dict | None:
 
 # --- Verification Codes ---
 
+
 def _generate_code() -> str:
     """Generate a random numeric verification code."""
     return "".join(random.choices(string.digits, k=config.CODE_LENGTH))
@@ -101,11 +102,7 @@ def _generate_code() -> str:
 def _cleanup_expired(codes: dict) -> dict:
     """Remove expired codes."""
     now = time.time()
-    return {
-        code: data
-        for code, data in codes.items()
-        if now - data.get("created_at", 0) < config.CODE_TTL_SECONDS
-    }
+    return {code: data for code, data in codes.items() if now - data.get("created_at", 0) < config.CODE_TTL_SECONDS}
 
 
 def create_verification_code(chat_id: int) -> str:
@@ -114,11 +111,7 @@ def create_verification_code(chat_id: int) -> str:
     codes = _cleanup_expired(codes)
 
     # Remove any existing code for this chat_id
-    codes = {
-        code: data
-        for code, data in codes.items()
-        if data.get("chat_id") != chat_id
-    }
+    codes = {code: data for code, data in codes.items() if data.get("chat_id") != chat_id}
 
     code = _generate_code()
     # Ensure uniqueness
