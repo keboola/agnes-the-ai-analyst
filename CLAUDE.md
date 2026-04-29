@@ -405,7 +405,7 @@ Module sets `lifecycle { ignore_changes = [metadata_startup_script] }` on `googl
 ## Key Implementation Details
 
 ### DuckDB Schema (src/db.py)
-- Schema v13 with auto-migration v1→…→v13 (v5 adds `users.active`, v6 adds `personal_access_tokens`, v7 adds `personal_access_tokens.last_used_ip`, v8/v9 added the legacy internal_roles/role-grants tables, v10 added `view_ownership` for cross-connector view-name collision detection (issue #81 Group C), v11 added marketplace_registry + marketplace_plugins + user_groups + plugin_access, v12 added users.groups JSON + user_groups.is_system, **v13 replaces internal_roles/group_mappings/user_role_grants/plugin_access with user_group_members + resource_grants and drops users.groups JSON** — see CHANGELOG and docs/RBAC.md)
+- Schema v13 with auto-migration v1→…→v13 (v5 adds `users.active`, v6 adds `personal_access_tokens`, v7 adds `personal_access_tokens.last_used_ip`, v8/v9 added the legacy internal_roles/role-grants tables, v10 added `view_ownership` for cross-connector view-name collision detection (issue #81 Group C), v11 added marketplace_registry + marketplace_plugins + user_groups + plugin_access, v12 added users.groups JSON + user_groups.is_system, **v13 replaces internal_roles/group_mappings/user_role_grants/plugin_access with user_group_members + resource_grants and drops users.groups JSON** — see docs/RBAC.md and the GitHub Releases page for the v13-cut release)
 - `table_registry`: id, name, source_type, bucket, source_table, query_mode, sync_schedule, etc.
 - `sync_state`, `sync_history`: track extraction progress
 - `users`, `dataset_permissions`, `audit_log`: auth + RBAC
@@ -445,24 +445,13 @@ When you motivate a change, frame it abstractly ("behind a TLS-terminating rever
 
 Customer-specific automation, hostnames, and identities live in private infra repos that *consume* this OSS. The OSS describes capabilities, defaults, and configuration knobs — not how a specific operator wired them up.
 
-## Changelog discipline — non-negotiable
+## Release notes
 
-**Every PR that adds, removes, or changes user-visible behavior MUST update `CHANGELOG.md` in the same PR.** No exceptions, no follow-ups, no "I'll do it after merge". User-visible = anything an operator, end-user, or downstream integrator can observe: CLI flags / output / exit codes, REST endpoints / payloads / status codes, web UI, `instance.yaml` schema, env vars, `extract.duckdb` contract, Docker / compose / Caddyfile knobs, default behaviors, breaking changes, security fixes.
+Release notes live in **GitHub Releases** (https://github.com/keboola/agnes-the-ai-analyst/releases), not in a tracked file. The legacy `CHANGELOG.md` was retired — `git log` and the Releases page are the authoritative history.
 
-**How:**
-- Add a bullet under the topmost `## [Unreleased]` heading (create one if missing — it sits above the latest released version).
-- Group by `### Added` / `### Changed` / `### Fixed` / `### Removed` / `### Internal` (Keep-a-Changelog sections).
-- Mark breaking changes with `**BREAKING**` at the start of the bullet — operators grep for that string before bumping the pin.
-- Reference the relevant doc/runbook if one exists (e.g. `see docs/auth-groups.md`), don't restate it.
-- Internal-only changes (refactors, test additions, dependency bumps without behavior change) go under `### Internal` — still log them, just keep them terse.
+**Per-PR contract:** the PR title is the release-note bullet. Write it so an operator reading a list of merged PRs since the last tag understands what changed and whether it affects them. Prefix breaking changes with `BREAKING:` so a tag-by-tag scan can pick them out. PR description carries the *why* and any migration steps; reviewers expect both.
 
-**When you cut a release:**
-- Rename `## [Unreleased]` → `## [X.Y.Z] — YYYY-MM-DD`.
-- Append a new empty `## [Unreleased]` section at the top so the next PR has somewhere to land.
-- Bump `version` in `pyproject.toml` to match `X.Y.Z`.
-- Tag the merge commit as `vX.Y.Z` and push the tag.
-
-**If you find yourself opening a PR without a CHANGELOG entry, stop and add one before requesting review.** Reviewers should bounce PRs that touch user-visible behavior without a changelog update — same way they'd bounce a PR with no test changes for new logic.
+**At release time:** push a `vX.Y.Z` tag, then `gh release create vX.Y.Z --generate-notes` (auto-fills from PR titles since the previous tag) and edit the draft to surface breaking changes / migration steps at the top before publishing. Mirror the prose structure of recent releases on the same repo.
 
 ## Git Commits & Pull Requests
 
