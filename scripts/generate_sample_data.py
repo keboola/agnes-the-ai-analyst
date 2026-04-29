@@ -87,15 +87,13 @@ SIZE_CONFIGS = {
 # ── Domain data ────────────────────────────────────────────────────────
 
 # Monthly seasonality multipliers (index 0 = January)
-MONTHLY_SEASONALITY = [0.70, 0.75, 0.85, 0.90, 0.95, 1.00,
-                       0.90, 0.85, 1.00, 1.10, 1.30, 1.50]
+MONTHLY_SEASONALITY = [0.70, 0.75, 0.85, 0.90, 0.95, 1.00, 0.90, 0.85, 1.00, 1.10, 1.30, 1.50]
 
 # Day-of-week multipliers (Monday=0 .. Sunday=6)
 DOW_MULTIPLIER = [1.0, 1.0, 1.0, 1.05, 1.15, 0.80, 0.60]
 
 # Hour-of-day weights (24 values, peak at 10-14)
-HOUR_WEIGHTS = [2, 1, 1, 1, 1, 2, 4, 8, 14, 18, 20, 19,
-                18, 17, 16, 15, 14, 12, 10, 8, 6, 5, 4, 3]
+HOUR_WEIGHTS = [2, 1, 1, 1, 1, 2, 4, 8, 14, 18, 20, 19, 18, 17, 16, 15, 14, 12, 10, 8, 6, 5, 4, 3]
 
 CUSTOMER_SEGMENTS = [
     ("b2c", 0.60),
@@ -104,82 +102,153 @@ CUSTOMER_SEGMENTS = [
 ]
 
 COUNTRIES = [
-    ("Czech Republic", "CZ", 0.25), ("Germany", "DE", 0.15),
-    ("United States", "US", 0.12),  ("United Kingdom", "GB", 0.10),
-    ("France", "FR", 0.08),         ("Austria", "AT", 0.05),
-    ("Poland", "PL", 0.05),         ("Netherlands", "NL", 0.05),
-    ("Slovakia", "SK", 0.05),       ("Spain", "ES", 0.04),
-    ("Italy", "IT", 0.03),          ("Sweden", "SE", 0.03),
+    ("Czech Republic", "CZ", 0.25),
+    ("Germany", "DE", 0.15),
+    ("United States", "US", 0.12),
+    ("United Kingdom", "GB", 0.10),
+    ("France", "FR", 0.08),
+    ("Austria", "AT", 0.05),
+    ("Poland", "PL", 0.05),
+    ("Netherlands", "NL", 0.05),
+    ("Slovakia", "SK", 0.05),
+    ("Spain", "ES", 0.04),
+    ("Italy", "IT", 0.03),
+    ("Sweden", "SE", 0.03),
 ]
 
 EMAIL_DOMAINS = [
-    "gmail.com", "yahoo.com", "outlook.com", "hotmail.com",
-    "protonmail.com", "icloud.com", "mail.com",
+    "gmail.com",
+    "yahoo.com",
+    "outlook.com",
+    "hotmail.com",
+    "protonmail.com",
+    "icloud.com",
+    "mail.com",
 ]
 
 PRODUCT_CATEGORIES = {
     "Electronics": {
         "items": [
-            "Wireless Headphones", "USB-C Charger 65W", "Smart Watch",
-            "Webcam 4K", "Bluetooth Speaker", "Noise-Cancelling Earbuds",
-            "Mechanical Keyboard", "27in Monitor QHD", "Laptop Stand",
-            "Power Bank 20000mAh", "Smart Home Hub", "LED Desk Lamp",
-            "External SSD 1TB", "Wireless Charging Pad", "Action Camera",
+            "Wireless Headphones",
+            "USB-C Charger 65W",
+            "Smart Watch",
+            "Webcam 4K",
+            "Bluetooth Speaker",
+            "Noise-Cancelling Earbuds",
+            "Mechanical Keyboard",
+            "27in Monitor QHD",
+            "Laptop Stand",
+            "Power Bank 20000mAh",
+            "Smart Home Hub",
+            "LED Desk Lamp",
+            "External SSD 1TB",
+            "Wireless Charging Pad",
+            "Action Camera",
         ],
         "price_range": (19.99, 1299.99),
         "cost_ratio": (0.40, 0.65),
     },
     "Clothing": {
         "items": [
-            "Oxford Shirt Classic", "Slim Chino Pants", "Merino Sweater",
-            "Leather Belt Premium", "Running Sneakers", "Denim Jacket",
-            "Polo Shirt Casual", "Winter Down Jacket", "Cotton T-Shirt",
-            "Formal Dress Shoes", "Yoga Leggings", "Crossbody Bag",
-            "Wool Blend Coat", "Sport Shorts Quick-Dry", "Canvas Tote Bag",
+            "Oxford Shirt Classic",
+            "Slim Chino Pants",
+            "Merino Sweater",
+            "Leather Belt Premium",
+            "Running Sneakers",
+            "Denim Jacket",
+            "Polo Shirt Casual",
+            "Winter Down Jacket",
+            "Cotton T-Shirt",
+            "Formal Dress Shoes",
+            "Yoga Leggings",
+            "Crossbody Bag",
+            "Wool Blend Coat",
+            "Sport Shorts Quick-Dry",
+            "Canvas Tote Bag",
         ],
         "price_range": (9.99, 299.99),
         "cost_ratio": (0.30, 0.55),
     },
     "Home & Garden": {
         "items": [
-            "Ceramic Mug Set", "Bamboo Cutting Board", "Steel Water Bottle",
-            "Indoor Plant Pot Set", "LED String Lights 10m", "Bath Towel Set",
-            "Memory Foam Pillow", "Scented Candle Set", "Kitchen Knife Set 5pc",
-            "Garden Tool Set", "Bedside Lamp", "Throw Blanket Fleece",
-            "Wall Clock Minimal", "Spice Rack Organizer", "Herb Garden Kit",
+            "Ceramic Mug Set",
+            "Bamboo Cutting Board",
+            "Steel Water Bottle",
+            "Indoor Plant Pot Set",
+            "LED String Lights 10m",
+            "Bath Towel Set",
+            "Memory Foam Pillow",
+            "Scented Candle Set",
+            "Kitchen Knife Set 5pc",
+            "Garden Tool Set",
+            "Bedside Lamp",
+            "Throw Blanket Fleece",
+            "Wall Clock Minimal",
+            "Spice Rack Organizer",
+            "Herb Garden Kit",
         ],
         "price_range": (7.99, 199.99),
         "cost_ratio": (0.35, 0.55),
     },
     "Sports & Outdoors": {
         "items": [
-            "Yoga Mat Premium", "Resistance Bands Set", "Insulated Bottle",
-            "Hiking Backpack 40L", "Speed Jump Rope", "Foam Roller 45cm",
-            "Camping Hammock", "Cycling Gloves", "Tennis Balls 4-Pack",
-            "Swim Goggles Anti-Fog", "Adjustable Dumbbells", "Running Armband",
-            "Compact Sleeping Bag", "Compression Socks", "Fishing Tackle Box",
+            "Yoga Mat Premium",
+            "Resistance Bands Set",
+            "Insulated Bottle",
+            "Hiking Backpack 40L",
+            "Speed Jump Rope",
+            "Foam Roller 45cm",
+            "Camping Hammock",
+            "Cycling Gloves",
+            "Tennis Balls 4-Pack",
+            "Swim Goggles Anti-Fog",
+            "Adjustable Dumbbells",
+            "Running Armband",
+            "Compact Sleeping Bag",
+            "Compression Socks",
+            "Fishing Tackle Box",
         ],
         "price_range": (8.99, 249.99),
         "cost_ratio": (0.35, 0.60),
     },
     "Books & Media": {
         "items": [
-            "Data Science Handbook", "Leadership in Practice", "Creative Writing",
-            "Python Programming", "World History Atlas", "Cooking Masterclass",
-            "Mindfulness Journal", "Photography Basics", "Financial Planning",
-            "Sci-Fi Novel Collection", "Art Supplies Set", "Board Game Classic",
-            "Puzzle 1000 Pieces", "Drawing Pencil Set 24pc", "Travel Guide Europe",
+            "Data Science Handbook",
+            "Leadership in Practice",
+            "Creative Writing",
+            "Python Programming",
+            "World History Atlas",
+            "Cooking Masterclass",
+            "Mindfulness Journal",
+            "Photography Basics",
+            "Financial Planning",
+            "Sci-Fi Novel Collection",
+            "Art Supplies Set",
+            "Board Game Classic",
+            "Puzzle 1000 Pieces",
+            "Drawing Pencil Set 24pc",
+            "Travel Guide Europe",
         ],
         "price_range": (5.99, 79.99),
         "cost_ratio": (0.25, 0.45),
     },
     "Beauty & Health": {
         "items": [
-            "Moisturizer SPF30", "Organic Shampoo 500ml", "Electric Toothbrush",
-            "Vitamin D3 Supplements", "Essential Oil Set 6pk", "Hair Dryer Pro",
-            "Sunscreen SPF50", "Protein Powder Vanilla", "Face Mask Pack 10",
-            "Hand Cream Repair", "Body Lotion Hydrating", "Beard Grooming Set",
-            "Collagen Drink Mix", "Makeup Brush Set 12pc", "Bath Bomb Gift Set",
+            "Moisturizer SPF30",
+            "Organic Shampoo 500ml",
+            "Electric Toothbrush",
+            "Vitamin D3 Supplements",
+            "Essential Oil Set 6pk",
+            "Hair Dryer Pro",
+            "Sunscreen SPF50",
+            "Protein Powder Vanilla",
+            "Face Mask Pack 10",
+            "Hand Cream Repair",
+            "Body Lotion Hydrating",
+            "Beard Grooming Set",
+            "Collagen Drink Mix",
+            "Makeup Brush Set 12pc",
+            "Bath Bomb Gift Set",
         ],
         "price_range": (4.99, 149.99),
         "cost_ratio": (0.20, 0.45),
@@ -200,10 +269,21 @@ CAMPAIGN_CHANNELS = [
 ]
 
 CAMPAIGN_TEMPLATES = [
-    "Spring Sale", "Summer Clearance", "Back to School", "Black Friday",
-    "Holiday Season", "New Year Push", "Flash Sale", "Product Launch",
-    "Loyalty Rewards", "Newsletter Blast", "Retargeting Wave",
-    "Brand Awareness", "Category Spotlight", "Win-Back", "Early Access",
+    "Spring Sale",
+    "Summer Clearance",
+    "Back to School",
+    "Black Friday",
+    "Holiday Season",
+    "New Year Push",
+    "Flash Sale",
+    "Product Launch",
+    "Loyalty Rewards",
+    "Newsletter Blast",
+    "Retargeting Wave",
+    "Brand Awareness",
+    "Category Spotlight",
+    "Win-Back",
+    "Early Access",
 ]
 
 LEAD_SOURCES = [
@@ -215,67 +295,120 @@ LEAD_SOURCES = [
 ]
 
 DEVICES = [("desktop", 0.45), ("mobile", 0.45), ("tablet", 0.10)]
-BROWSERS = [("Chrome", 0.64), ("Safari", 0.19), ("Firefox", 0.08),
-            ("Edge", 0.07), ("Other", 0.02)]
+BROWSERS = [("Chrome", 0.64), ("Safari", 0.19), ("Firefox", 0.08), ("Edge", 0.07), ("Other", 0.02)]
 
 LANDING_PAGES = [
-    "/", "/products", "/products/electronics", "/products/clothing",
-    "/products/home-garden", "/sale", "/new-arrivals", "/about",
-    "/blog", "/blog/tips", "/blog/reviews", "/contact",
+    "/",
+    "/products",
+    "/products/electronics",
+    "/products/clothing",
+    "/products/home-garden",
+    "/sale",
+    "/new-arrivals",
+    "/about",
+    "/blog",
+    "/blog/tips",
+    "/blog/reviews",
+    "/contact",
 ]
 
 ORDER_STATUSES = [
-    ("delivered", 0.58), ("shipped", 0.15), ("confirmed", 0.10),
-    ("pending", 0.04), ("cancelled", 0.08), ("returned", 0.05),
+    ("delivered", 0.58),
+    ("shipped", 0.15),
+    ("confirmed", 0.10),
+    ("pending", 0.04),
+    ("cancelled", 0.08),
+    ("returned", 0.05),
 ]
 
 ORDER_CHANNELS = [
-    ("web", 0.55), ("mobile_app", 0.35), ("phone", 0.05), ("api", 0.05),
+    ("web", 0.55),
+    ("mobile_app", 0.35),
+    ("phone", 0.05),
+    ("api", 0.05),
 ]
 
 PAYMENT_METHODS = [
-    ("credit_card", 0.38), ("debit_card", 0.20), ("paypal", 0.18),
-    ("bank_transfer", 0.12), ("apple_pay", 0.08), ("invoice", 0.04),
+    ("credit_card", 0.38),
+    ("debit_card", 0.20),
+    ("paypal", 0.18),
+    ("bank_transfer", 0.12),
+    ("apple_pay", 0.08),
+    ("invoice", 0.04),
 ]
 
 TICKET_CATEGORIES = [
-    ("question", 0.28), ("complaint", 0.18), ("return_request", 0.14),
-    ("shipping", 0.16), ("technical_issue", 0.12), ("refund", 0.12),
+    ("question", 0.28),
+    ("complaint", 0.18),
+    ("return_request", 0.14),
+    ("shipping", 0.16),
+    ("technical_issue", 0.12),
+    ("refund", 0.12),
 ]
 
 TICKET_PRIORITIES = [
-    ("low", 0.38), ("medium", 0.35), ("high", 0.20), ("critical", 0.07),
+    ("low", 0.38),
+    ("medium", 0.35),
+    ("high", 0.20),
+    ("critical", 0.07),
 ]
 
 TICKET_SUBJECTS = {
     "question": [
-        "Delivery time estimate", "Product compatibility", "Return policy",
-        "Bulk order pricing", "Warranty coverage", "Size guide help",
+        "Delivery time estimate",
+        "Product compatibility",
+        "Return policy",
+        "Bulk order pricing",
+        "Warranty coverage",
+        "Size guide help",
     ],
     "complaint": [
-        "Item arrived damaged", "Wrong product received", "Poor quality",
-        "Missing items in order", "Packaging insufficient", "Late delivery",
+        "Item arrived damaged",
+        "Wrong product received",
+        "Poor quality",
+        "Missing items in order",
+        "Packaging insufficient",
+        "Late delivery",
     ],
     "return_request": [
-        "Does not match description", "Changed my mind", "Duplicate order",
-        "Size does not fit", "Defective product", "Better price elsewhere",
+        "Does not match description",
+        "Changed my mind",
+        "Duplicate order",
+        "Size does not fit",
+        "Defective product",
+        "Better price elsewhere",
     ],
     "shipping": [
-        "Package not delivered", "Tracking not updating", "Wrong address",
-        "Expedited shipping request", "International shipping", "Lost package",
+        "Package not delivered",
+        "Tracking not updating",
+        "Wrong address",
+        "Expedited shipping request",
+        "International shipping",
+        "Lost package",
     ],
     "technical_issue": [
-        "Cannot complete checkout", "Payment error", "Login problem",
-        "Page not loading", "Mobile app crash", "Coupon not working",
+        "Cannot complete checkout",
+        "Payment error",
+        "Login problem",
+        "Page not loading",
+        "Mobile app crash",
+        "Coupon not working",
     ],
     "refund": [
-        "Cancelled order refund", "Partial refund request", "Overcharged",
-        "Refund not received", "Billing discrepancy", "Double charged",
+        "Cancelled order refund",
+        "Partial refund request",
+        "Overcharged",
+        "Refund not received",
+        "Billing discrepancy",
+        "Double charged",
     ],
 }
 
 TICKET_CHANNELS = [
-    ("email", 0.40), ("chat", 0.30), ("phone", 0.15), ("web_form", 0.15),
+    ("email", 0.40),
+    ("chat", 0.30),
+    ("phone", 0.15),
+    ("web_form", 0.15),
 ]
 
 # ── Parquet schema definitions (used by ParquetManager) ────────────────
@@ -287,21 +420,26 @@ TABLE_SCHEMAS = {
     },
     "products": {
         "dtypes": {
-            "price": "float64", "cost": "float64",
-            "weight_kg": "float64", "is_active": "Int64",
+            "price": "float64",
+            "cost": "float64",
+            "weight_kg": "float64",
+            "is_active": "Int64",
         },
         "date_columns": ["created_at"],
     },
     "campaigns": {
         "dtypes": {
-            "budget": "float64", "spend": "float64",
-            "impressions": "Int64", "clicks": "Int64",
+            "budget": "float64",
+            "spend": "float64",
+            "impressions": "Int64",
+            "clicks": "Int64",
         },
         "date_columns": ["start_date", "end_date"],
     },
     "web_sessions": {
         "dtypes": {
-            "duration_seconds": "Int64", "pages_viewed": "Int64",
+            "duration_seconds": "Int64",
+            "pages_viewed": "Int64",
             "is_bounce": "Int64",
         },
         "parse_dates": ["started_at"],
@@ -311,15 +449,19 @@ TABLE_SCHEMAS = {
     },
     "orders": {
         "dtypes": {
-            "items_total": "float64", "discount_amount": "float64",
-            "shipping_amount": "float64", "total_amount": "float64",
+            "items_total": "float64",
+            "discount_amount": "float64",
+            "shipping_amount": "float64",
+            "total_amount": "float64",
         },
         "parse_dates": ["created_at"],
     },
     "order_items": {
         "dtypes": {
-            "quantity": "Int64", "unit_price": "float64",
-            "discount_percent": "Int64", "line_total": "float64",
+            "quantity": "Int64",
+            "unit_price": "float64",
+            "discount_percent": "Int64",
+            "line_total": "float64",
         },
     },
     "payments": {
@@ -335,11 +477,11 @@ TABLE_SCHEMAS = {
 
 # ── Generator ──────────────────────────────────────────────────────────
 
+
 class SampleDataGenerator:
     """Generates realistic synthetic e-commerce data as CSV or Parquet."""
 
-    def __init__(self, size: str, seed: int, output_dir: Path,
-                 output_format: str = "csv"):
+    def __init__(self, size: str, seed: int, output_dir: Path, output_format: str = "csv"):
         self.cfg = SIZE_CONFIGS[size]
         self.size_name = size
         self.rng = random.Random(seed)
@@ -409,8 +551,7 @@ class SampleDataGenerator:
             return start
         return start + timedelta(days=self.rng.randint(0, delta))
 
-    def _write_table(self, name: str, fields: list[str],
-                     rows: list[dict] | Generator) -> int:
+    def _write_table(self, name: str, fields: list[str], rows: list[dict] | Generator) -> int:
         """Write CSV table from list or generator of dicts."""
         path = self.output_dir / f"{name}.csv"
         count = 0
@@ -450,18 +591,20 @@ class SampleDataGenerator:
                 domain = self.rng.choice(EMAIL_DOMAINS)
                 email = f"{first.lower()}.{last.lower()}@{domain}"
 
-            rows.append({
-                "customer_id": cid,
-                "email": email,
-                "first_name": first,
-                "last_name": last,
-                "company": company,
-                "country": country,
-                "city": self.fake.city(),
-                "segment": segment,
-                "registration_date": str(reg_date),
-                "is_active": self.rng.choices([1, 0], weights=[0.85, 0.15])[0],
-            })
+            rows.append(
+                {
+                    "customer_id": cid,
+                    "email": email,
+                    "first_name": first,
+                    "last_name": last,
+                    "company": company,
+                    "country": country,
+                    "city": self.fake.city(),
+                    "segment": segment,
+                    "registration_date": str(reg_date),
+                    "is_active": self.rng.choices([1, 0], weights=[0.85, 0.15])[0],
+                }
+            )
             self._customer_ids.append(cid)
             self._customer_reg_dates[cid] = reg_date
             self._customer_segments[cid] = segment
@@ -499,17 +642,19 @@ class SampleDataGenerator:
             cost_ratio = self.rng.uniform(*cat_cfg["cost_ratio"])
             cost = round(price * cost_ratio, 2)
 
-            rows.append({
-                "product_id": pid,
-                "sku": f"SKU-{self.rng.randint(10000, 99999)}",
-                "name": name,
-                "category": category,
-                "price": price,
-                "cost": cost,
-                "weight_kg": round(self.rng.uniform(0.1, 15.0), 2),
-                "is_active": self.rng.choices([1, 0], weights=[0.90, 0.10])[0],
-                "created_at": str(self._random_date()),
-            })
+            rows.append(
+                {
+                    "product_id": pid,
+                    "sku": f"SKU-{self.rng.randint(10000, 99999)}",
+                    "name": name,
+                    "category": category,
+                    "price": price,
+                    "cost": cost,
+                    "weight_kg": round(self.rng.uniform(0.1, 15.0), 2),
+                    "is_active": self.rng.choices([1, 0], weights=[0.90, 0.10])[0],
+                    "created_at": str(self._random_date()),
+                }
+            )
             self._product_ids.append(pid)
             self._product_prices[pid] = price
             self._product_categories[pid] = category
@@ -541,19 +686,21 @@ class SampleDataGenerator:
 
             status = "completed" if is_past else self.rng.choice(["active", "paused"])
 
-            rows.append({
-                "campaign_id": cid,
-                "name": name,
-                "channel": channel,
-                "status": status,
-                "budget": budget,
-                "spend": spend,
-                "impressions": impressions,
-                "clicks": clicks,
-                "start_date": str(start),
-                "end_date": str(end),
-                "target_segment": self._weighted_choice(CUSTOMER_SEGMENTS),
-            })
+            rows.append(
+                {
+                    "campaign_id": cid,
+                    "name": name,
+                    "channel": channel,
+                    "status": status,
+                    "budget": budget,
+                    "spend": spend,
+                    "impressions": impressions,
+                    "clicks": clicks,
+                    "start_date": str(start),
+                    "end_date": str(end),
+                    "target_segment": self._weighted_choice(CUSTOMER_SEGMENTS),
+                }
+            )
             self._campaign_ids.append(cid)
             self._campaign_ranges[cid] = (start, end)
 
@@ -564,9 +711,18 @@ class SampleDataGenerator:
         logger.info(f"  Generating {n:,} web sessions...")
 
         fields = [
-            "session_id", "visitor_id", "customer_id", "campaign_id",
-            "started_at", "duration_seconds", "pages_viewed",
-            "device_type", "browser", "country", "landing_page", "is_bounce",
+            "session_id",
+            "visitor_id",
+            "customer_id",
+            "campaign_id",
+            "started_at",
+            "duration_seconds",
+            "pages_viewed",
+            "device_type",
+            "browser",
+            "country",
+            "landing_page",
+            "is_bounce",
         ]
         country_vals = [(c[0], c[2]) for c in COUNTRIES]
 
@@ -585,8 +741,7 @@ class SampleDataGenerator:
                 if self.rng.random() < 0.25 and self._campaign_ids:
                     # Pick a campaign that was active on this date
                     candidates = [
-                        c for c in self._campaign_ids
-                        if self._campaign_ranges[c][0] <= d <= self._campaign_ranges[c][1]
+                        c for c in self._campaign_ids if self._campaign_ranges[c][0] <= d <= self._campaign_ranges[c][1]
                     ]
                     if candidates:
                         campaign_id = self.rng.choice(candidates)
@@ -621,12 +776,21 @@ class SampleDataGenerator:
         logger.info(f"  Generating {n:,} web leads...")
 
         fields = [
-            "lead_id", "customer_id", "email", "source", "campaign_id",
-            "created_at", "status", "converted_at",
+            "lead_id",
+            "customer_id",
+            "email",
+            "source",
+            "campaign_id",
+            "created_at",
+            "status",
+            "converted_at",
         ]
         lead_statuses = [
-            ("new", 0.35), ("contacted", 0.20), ("qualified", 0.15),
-            ("converted", 0.18), ("lost", 0.12),
+            ("new", 0.35),
+            ("contacted", 0.20),
+            ("qualified", 0.15),
+            ("converted", 0.18),
+            ("lost", 0.12),
         ]
 
         rows = []
@@ -647,20 +811,20 @@ class SampleDataGenerator:
 
             converted_at = ""
             if status == "converted":
-                converted_at = self._random_datetime(
-                    self._random_date_after(d, max_days=14)
-                )
+                converted_at = self._random_datetime(self._random_date_after(d, max_days=14))
 
-            rows.append({
-                "lead_id": lid,
-                "customer_id": customer_id,
-                "email": email,
-                "source": self._weighted_choice(LEAD_SOURCES),
-                "campaign_id": campaign_id,
-                "created_at": self._random_datetime(d),
-                "status": status,
-                "converted_at": converted_at,
-            })
+            rows.append(
+                {
+                    "lead_id": lid,
+                    "customer_id": customer_id,
+                    "email": email,
+                    "source": self._weighted_choice(LEAD_SOURCES),
+                    "campaign_id": campaign_id,
+                    "created_at": self._random_datetime(d),
+                    "status": status,
+                    "converted_at": converted_at,
+                }
+            )
 
         self._write_table("web_leads", fields, rows)
 
@@ -672,13 +836,24 @@ class SampleDataGenerator:
         activity = [self.rng.paretovariate(1.2) for _ in self._customer_ids]
 
         order_fields = [
-            "order_id", "customer_id", "created_at", "status",
-            "items_total", "discount_amount", "shipping_amount",
-            "total_amount", "channel",
+            "order_id",
+            "customer_id",
+            "created_at",
+            "status",
+            "items_total",
+            "discount_amount",
+            "shipping_amount",
+            "total_amount",
+            "channel",
         ]
         item_fields = [
-            "order_item_id", "order_id", "product_id", "quantity",
-            "unit_price", "discount_percent", "line_total",
+            "order_item_id",
+            "order_id",
+            "product_id",
+            "quantity",
+            "unit_price",
+            "discount_percent",
+            "line_total",
         ]
 
         order_rows = []
@@ -692,8 +867,7 @@ class SampleDataGenerator:
             segment = self._customer_segments[cust_id]
 
             # Order date: after customer registration
-            order_date = self._random_date_after(reg_date,
-                                                 max_days=(self.end_date - reg_date).days)
+            order_date = self._random_date_after(reg_date, max_days=(self.end_date - reg_date).days)
             status = self._weighted_choice(ORDER_STATUSES)
 
             # B2B orders tend to have more items
@@ -705,43 +879,43 @@ class SampleDataGenerator:
             for _j in range(n_items):
                 item_seq += 1
                 pid = self.rng.choice(self._product_ids)
-                qty = self.rng.choices([1, 2, 3, 4, 5],
-                                       weights=[60, 20, 10, 5, 5], k=1)[0]
+                qty = self.rng.choices([1, 2, 3, 4, 5], weights=[60, 20, 10, 5, 5], k=1)[0]
                 if segment == "b2b_enterprise":
                     qty *= self.rng.randint(1, 5)
                 unit_price = self._product_prices[pid]
-                disc_pct = self.rng.choices(
-                    [0, 5, 10, 15, 20],
-                    weights=[50, 20, 15, 10, 5], k=1
-                )[0]
+                disc_pct = self.rng.choices([0, 5, 10, 15, 20], weights=[50, 20, 15, 10, 5], k=1)[0]
                 line_total = round(unit_price * qty * (1 - disc_pct / 100), 2)
                 items_total += line_total
 
-                item_rows.append({
-                    "order_item_id": f"OI-{item_seq:08d}",
-                    "order_id": oid,
-                    "product_id": pid,
-                    "quantity": qty,
-                    "unit_price": unit_price,
-                    "discount_percent": disc_pct,
-                    "line_total": line_total,
-                })
+                item_rows.append(
+                    {
+                        "order_item_id": f"OI-{item_seq:08d}",
+                        "order_id": oid,
+                        "product_id": pid,
+                        "quantity": qty,
+                        "unit_price": unit_price,
+                        "discount_percent": disc_pct,
+                        "line_total": line_total,
+                    }
+                )
 
             discount_amount = round(items_total * self.rng.uniform(0, 0.05), 2)
             shipping = round(self.rng.uniform(0, 15.99), 2) if items_total < 100 else 0.0
             total = round(items_total - discount_amount + shipping, 2)
 
-            order_rows.append({
-                "order_id": oid,
-                "customer_id": cust_id,
-                "created_at": self._random_datetime(order_date),
-                "status": status,
-                "items_total": round(items_total, 2),
-                "discount_amount": discount_amount,
-                "shipping_amount": shipping,
-                "total_amount": total,
-                "channel": self._weighted_choice(ORDER_CHANNELS),
-            })
+            order_rows.append(
+                {
+                    "order_id": oid,
+                    "customer_id": cust_id,
+                    "created_at": self._random_datetime(order_date),
+                    "status": status,
+                    "items_total": round(items_total, 2),
+                    "discount_amount": discount_amount,
+                    "shipping_amount": shipping,
+                    "total_amount": total,
+                    "channel": self._weighted_choice(ORDER_CHANNELS),
+                }
+            )
             self._order_ids.append(oid)
             self._order_customers[oid] = cust_id
             self._order_dates[oid] = order_date
@@ -755,8 +929,15 @@ class SampleDataGenerator:
         logger.info(f"  Generating payments for {len(self._order_ids):,} orders...")
 
         fields = [
-            "payment_id", "order_id", "customer_id", "amount", "currency",
-            "method", "status", "created_at", "completed_at",
+            "payment_id",
+            "order_id",
+            "customer_id",
+            "amount",
+            "currency",
+            "method",
+            "status",
+            "created_at",
+            "completed_at",
         ]
 
         rows = []
@@ -777,17 +958,19 @@ class SampleDataGenerator:
             # 5% chance of a failed payment attempt first
             if self.rng.random() < 0.05:
                 seq += 1
-                rows.append({
-                    "payment_id": f"PAY-{seq:07d}",
-                    "order_id": oid,
-                    "customer_id": cust_id,
-                    "amount": amount,
-                    "currency": "EUR",
-                    "method": method,
-                    "status": "failed",
-                    "created_at": self._random_datetime(order_date),
-                    "completed_at": "",
-                })
+                rows.append(
+                    {
+                        "payment_id": f"PAY-{seq:07d}",
+                        "order_id": oid,
+                        "customer_id": cust_id,
+                        "amount": amount,
+                        "currency": "EUR",
+                        "method": method,
+                        "status": "failed",
+                        "created_at": self._random_datetime(order_date),
+                        "completed_at": "",
+                    }
+                )
 
             seq += 1
             if order_status == "cancelled":
@@ -795,26 +978,24 @@ class SampleDataGenerator:
                 completed = ""
             elif order_status == "returned":
                 pay_status = "refunded"
-                completed = self._random_datetime(
-                    self._random_date_after(order_date, max_days=14)
-                )
+                completed = self._random_datetime(self._random_date_after(order_date, max_days=14))
             else:
                 pay_status = "completed"
-                completed = self._random_datetime(
-                    self._random_date_after(order_date, max_days=3)
-                )
+                completed = self._random_datetime(self._random_date_after(order_date, max_days=3))
 
-            rows.append({
-                "payment_id": f"PAY-{seq:07d}",
-                "order_id": oid,
-                "customer_id": cust_id,
-                "amount": amount,
-                "currency": "EUR",
-                "method": method,
-                "status": pay_status,
-                "created_at": self._random_datetime(order_date),
-                "completed_at": completed,
-            })
+            rows.append(
+                {
+                    "payment_id": f"PAY-{seq:07d}",
+                    "order_id": oid,
+                    "customer_id": cust_id,
+                    "amount": amount,
+                    "currency": "EUR",
+                    "method": method,
+                    "status": pay_status,
+                    "created_at": self._random_datetime(order_date),
+                    "completed_at": completed,
+                }
+            )
 
         self._write_table("payments", fields, rows)
 
@@ -823,9 +1004,18 @@ class SampleDataGenerator:
         logger.info(f"  Generating {n:,} support tickets...")
 
         fields = [
-            "ticket_id", "customer_id", "order_id", "category", "priority",
-            "status", "channel", "subject", "created_at", "first_response_at",
-            "resolved_at", "satisfaction_score",
+            "ticket_id",
+            "customer_id",
+            "order_id",
+            "category",
+            "priority",
+            "status",
+            "channel",
+            "subject",
+            "created_at",
+            "first_response_at",
+            "resolved_at",
+            "satisfaction_score",
         ]
 
         rows = []
@@ -841,10 +1031,7 @@ class SampleDataGenerator:
             order_id = ""
             if self.rng.random() < 0.60 and self._order_ids:
                 # Pick an order from this customer if possible
-                cust_orders = [
-                    o for o in self._order_ids
-                    if self._order_customers[o] == cust_id
-                ]
+                cust_orders = [o for o in self._order_ids if self._order_customers[o] == cust_id]
                 if cust_orders:
                     order_id = self.rng.choice(cust_orders)
                 else:
@@ -859,8 +1046,10 @@ class SampleDataGenerator:
 
             # Response and resolution times based on priority
             response_hours = {
-                "critical": (0.5, 4), "high": (1, 12),
-                "medium": (4, 48), "low": (8, 96),
+                "critical": (0.5, 4),
+                "high": (1, 12),
+                "medium": (4, 48),
+                "low": (8, 96),
             }
             rh = response_hours[priority]
             first_response = ""
@@ -870,35 +1059,31 @@ class SampleDataGenerator:
             if status not in ("open",):
                 resp_delta = timedelta(hours=self.rng.uniform(*rh))
                 first_response = self._random_datetime(
-                    min(d + timedelta(days=int(resp_delta.total_seconds() // 86400)),
-                        self.end_date)
+                    min(d + timedelta(days=int(resp_delta.total_seconds() // 86400)), self.end_date)
                 )
 
             if is_resolved:
                 resolve_days = self.rng.randint(1, 14)
-                resolved_at = self._random_datetime(
-                    self._random_date_after(d, max_days=resolve_days)
-                )
+                resolved_at = self._random_datetime(self._random_date_after(d, max_days=resolve_days))
                 # Satisfaction: skewed toward 4-5 for resolved
-                satisfaction = self.rng.choices(
-                    [1, 2, 3, 4, 5],
-                    weights=[5, 8, 15, 35, 37], k=1
-                )[0]
+                satisfaction = self.rng.choices([1, 2, 3, 4, 5], weights=[5, 8, 15, 35, 37], k=1)[0]
 
-            rows.append({
-                "ticket_id": tid,
-                "customer_id": cust_id,
-                "order_id": order_id,
-                "category": category,
-                "priority": priority,
-                "status": status,
-                "channel": self._weighted_choice(TICKET_CHANNELS),
-                "subject": subject,
-                "created_at": self._random_datetime(d),
-                "first_response_at": first_response,
-                "resolved_at": resolved_at,
-                "satisfaction_score": satisfaction,
-            })
+            rows.append(
+                {
+                    "ticket_id": tid,
+                    "customer_id": cust_id,
+                    "order_id": order_id,
+                    "category": category,
+                    "priority": priority,
+                    "status": status,
+                    "channel": self._weighted_choice(TICKET_CHANNELS),
+                    "subject": subject,
+                    "created_at": self._random_datetime(d),
+                    "first_response_at": first_response,
+                    "resolved_at": resolved_at,
+                    "satisfaction_score": satisfaction,
+                }
+            )
 
         self._write_table("support_tickets", fields, rows)
 
@@ -922,16 +1107,12 @@ class SampleDataGenerator:
             )
 
             # Report stats
-            row_count = conn.execute(
-                f"SELECT count(*) FROM '{parquet_path}'"
-            ).fetchone()[0]
+            row_count = conn.execute(f"SELECT count(*) FROM '{parquet_path}'").fetchone()[0]
             parquet_size = parquet_path.stat().st_size
             csv_size = csv_path.stat().st_size
             ratio = csv_size / parquet_size if parquet_size > 0 else 0
             logger.info(
-                f"    {table_name}: {row_count:,} rows, "
-                f"{parquet_size / 1024:.0f} KB "
-                f"({ratio:.1f}x compression)"
+                f"    {table_name}: {row_count:,} rows, {parquet_size / 1024:.0f} KB ({ratio:.1f}x compression)"
             )
         conn.close()
 
@@ -944,8 +1125,7 @@ class SampleDataGenerator:
 
         fmt_label = self.output_format.upper()
         logger.info(f"Generating sample data (size: {self.size_name}, format: {fmt_label})")
-        logger.info(f"  Period: {self.start_date} to {self.end_date} "
-                     f"({self.cfg['months']} months)")
+        logger.info(f"  Period: {self.start_date} to {self.end_date} ({self.cfg['months']} months)")
         logger.info(f"  Output: {self.output_dir}/")
 
         # Phase 1: Generate CSVs (always needed as intermediate)
@@ -971,6 +1151,7 @@ class SampleDataGenerator:
             self._convert_to_parquet(parquet_dir)
             # Clean up temp CSVs
             import shutil
+
             shutil.rmtree(csv_dir)
             self.output_dir = parquet_dir  # restore for manifest
         elif self.output_format == "both":
@@ -998,58 +1179,72 @@ class SampleDataGenerator:
             json.dump(manifest, f, indent=2)
 
         logger.info("")
-        logger.info(f"Done! {len(self.row_counts)} tables, "
-                     f"{total_rows:,} total rows in {elapsed:.1f}s")
+        logger.info(f"Done! {len(self.row_counts)} tables, {total_rows:,} total rows in {elapsed:.1f}s")
         logger.info(f"Manifest: {manifest_path}")
         return manifest
 
 
 # ── CLI ────────────────────────────────────────────────────────────────
 
+
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Generate synthetic e-commerce sample data as CSV files."
-    )
+    parser = argparse.ArgumentParser(description="Generate synthetic e-commerce sample data as CSV files.")
     parser.add_argument(
-        "--size", choices=SIZE_CONFIGS.keys(), default="s",
+        "--size",
+        choices=SIZE_CONFIGS.keys(),
+        default="s",
         help="Data size preset (default: s)",
     )
     parser.add_argument(
-        "--output", type=Path, default=Path("data/sample"),
+        "--output",
+        type=Path,
+        default=Path("data/sample"),
         help="Output directory for CSV files (default: data/sample)",
     )
     parser.add_argument(
-        "--seed", type=int, default=42,
+        "--seed",
+        type=int,
+        default=42,
         help="Random seed for reproducibility (default: 42)",
     )
     parser.add_argument(
-        "--format", choices=["csv", "parquet", "both"], default="csv",
+        "--format",
+        choices=["csv", "parquet", "both"],
+        default="csv",
         help="Output format: csv, parquet (via ParquetManager), or both (default: csv)",
     )
     parser.add_argument(
-        "--list-sizes", action="store_true",
+        "--list-sizes",
+        action="store_true",
         help="Show available size presets and exit",
     )
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    from app.logging_config import setup_logging
+
+    setup_logging(__name__)
 
     if args.list_sizes:
         print("\nAvailable size presets:\n")
-        print(f"  {'Size':<6} {'Label':<24} {'Customers':>10} {'Products':>10} "
-              f"{'Sessions':>10} {'Orders':>10} {'~CSV MB':>8}")
-        print(f"  {'─' * 6} {'─' * 24} {'─' * 10} {'─' * 10} "
-              f"{'─' * 10} {'─' * 10} {'─' * 8}")
+        print(
+            f"  {'Size':<6} {'Label':<24} {'Customers':>10} {'Products':>10} "
+            f"{'Sessions':>10} {'Orders':>10} {'~CSV MB':>8}"
+        )
+        print(f"  {'─' * 6} {'─' * 24} {'─' * 10} {'─' * 10} {'─' * 10} {'─' * 10} {'─' * 8}")
         for key, cfg in SIZE_CONFIGS.items():
-            print(f"  {key:<6} {cfg['label']:<24} {cfg['customers']:>10,} "
-                  f"{cfg['products']:>10,} {cfg['web_sessions']:>10,} "
-                  f"{cfg['orders']:>10,} {cfg['estimated_csv_mb']:>7,}")
+            print(
+                f"  {key:<6} {cfg['label']:<24} {cfg['customers']:>10,} "
+                f"{cfg['products']:>10,} {cfg['web_sessions']:>10,} "
+                f"{cfg['orders']:>10,} {cfg['estimated_csv_mb']:>7,}"
+            )
         print()
         return
 
     gen = SampleDataGenerator(
-        size=args.size, seed=args.seed,
-        output_dir=args.output, output_format=args.format,
+        size=args.size,
+        seed=args.seed,
+        output_dir=args.output,
+        output_format=args.format,
     )
     gen.run()
 

@@ -99,7 +99,9 @@ def update_meta(output_dir: str | Path, table_name: str) -> None:
                     f'CREATE OR REPLACE VIEW "{table_name}" AS '
                     f"SELECT * FROM read_parquet('{glob_path}', union_by_name=true, hive_partitioning=false)"
                 )
-                rows = conn.execute(f"SELECT count(*) FROM read_parquet('{glob_path}', union_by_name=true)").fetchone()[0]
+                rows = conn.execute(f"SELECT count(*) FROM read_parquet('{glob_path}', union_by_name=true)").fetchone()[
+                    0
+                ]
                 size_bytes = sum(f.stat().st_size for f in parquets)
             except Exception as e:
                 logger.warning("Could not count rows for %s: %s", table_name, e)
@@ -121,5 +123,7 @@ def get_default_output_dir() -> Path:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    from app.logging_config import setup_logging
+
+    setup_logging(__name__)
     init_extract(get_default_output_dir())

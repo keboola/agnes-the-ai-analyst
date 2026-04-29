@@ -40,12 +40,9 @@ from typing import Iterator
 import httpx
 from dotenv import load_dotenv
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+from app.logging_config import setup_logging
+
+setup_logging(__name__)
 logger = logging.getLogger(__name__)
 
 
@@ -432,7 +429,7 @@ class JiraBackfill:
         Returns:
             Statistics dict
         """
-        logger.info(f"Starting Jira backfill")
+        logger.info("Starting Jira backfill")
         logger.info(f"JQL: {jql}")
         logger.info(f"Skip existing: {skip_existing}")
         logger.info(f"Dry run: {dry_run}")
@@ -458,10 +455,7 @@ class JiraBackfill:
         processed = 0
         with ThreadPoolExecutor(max_workers=parallel) as executor:
             # Submit all tasks
-            futures = {
-                executor.submit(self.process_issue, key, skip_existing): key
-                for key in issue_keys
-            }
+            futures = {executor.submit(self.process_issue, key, skip_existing): key for key in issue_keys}
 
             # Process as completed
             for future in as_completed(futures):
@@ -496,7 +490,7 @@ class JiraBackfill:
         logger.info(f"Skipped (existing): {self.stats['skipped']}")
         logger.info(f"Failed: {self.stats['failed']}")
         logger.info(f"Attachments: {self.stats['attachments']}")
-        logger.info(f"Time: {elapsed:.1f}s ({total_issues/elapsed:.1f} issues/s)")
+        logger.info(f"Time: {elapsed:.1f}s ({total_issues / elapsed:.1f} issues/s)")
         logger.info("=" * 60)
 
         return self.stats
@@ -564,10 +558,7 @@ def main():
 
             if args.dry_run:
                 logger.info("Dry run mode - not downloading any data")
-                existing = sum(
-                    1 for k in issue_keys
-                    if (backfill.issues_dir / f"{k}.json").exists()
-                )
+                existing = sum(1 for k in issue_keys if (backfill.issues_dir / f"{k}.json").exists())
                 logger.info(f"Already downloaded: {existing}")
                 logger.info(f"Would download: {len(issue_keys) - existing}")
                 sys.exit(0)
@@ -579,14 +570,7 @@ def main():
             processed = 0
 
             with ThreadPoolExecutor(max_workers=args.parallel) as executor:
-                futures = {
-                    executor.submit(
-                        backfill.process_issue,
-                        key,
-                        args.skip_existing
-                    ): key
-                    for key in issue_keys
-                }
+                futures = {executor.submit(backfill.process_issue, key, args.skip_existing): key for key in issue_keys}
 
                 for future in as_completed(futures):
                     issue_key = futures[future]
