@@ -218,6 +218,7 @@ def filter_due_tables(
         now = datetime.now(timezone.utc)
     out: list[dict] = []
     for tc in table_configs:
+        table_id = tc.get("id") or tc.get("name")
         schedule = tc.get("sync_schedule")
         if not schedule:
             out.append(tc)
@@ -226,13 +227,12 @@ def filter_due_tables(
             logger.warning(
                 "Table %s has malformed sync_schedule %r — syncing anyway "
                 "(fix the schedule string to suppress this message)",
-                tc.get("id") or tc.get("name"),
+                table_id,
                 schedule,
             )
             out.append(tc)
             continue
-        last_sync = sync_state_repo.get_last_sync(tc.get("id") or tc.get("name"))
-        last_sync_iso: Optional[str]
+        last_sync = sync_state_repo.get_last_sync(table_id)
         if last_sync is None:
             last_sync_iso = None
         else:
@@ -244,7 +244,7 @@ def filter_due_tables(
         else:
             logger.info(
                 "Table %s skipped: schedule=%r, last_sync=%s, not due yet",
-                tc.get("id") or tc.get("name"),
+                table_id,
                 schedule,
                 last_sync_iso,
             )

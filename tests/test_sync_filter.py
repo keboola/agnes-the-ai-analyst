@@ -1,6 +1,6 @@
 """Tests for the schedule-validity helper and the per-table due-filter."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import pytest
 
