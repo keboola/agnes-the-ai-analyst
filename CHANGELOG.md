@@ -10,10 +10,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-### Fixed
-
-- Empty-string `domain` is now consistently allowed across `POST /api/memory`, `PATCH /api/memory/admin/{id}`, and `POST /api/memory/admin/bulk-update` — previously create allowed it (short-circuit on falsy) but PATCH/bulk-update rejected it with 400, which made it impossible to clear a domain through the admin endpoints. Issue #62 / PR #126 review.
-
 ### Added
 
 - **Corporate-memory tree view + cross-axis filtering** on `/corporate-memory` and `/corporate-memory/admin`. Operators choose a grouping axis (domain / category / tag / audience) and combine it with chip filters (status, source_type, audience, has-duplicate-hint, search). Tree uses native `<details>`; localStorage persists open/closed state per axis; no new dependencies. Issue #62.
@@ -32,6 +28,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- Empty-string `domain` is now consistently allowed across `POST /api/memory`, `PATCH /api/memory/admin/{id}`, and `POST /api/memory/admin/bulk-update` — previously create allowed it (short-circuit on falsy) but PATCH/bulk-update rejected it with 400, which made it impossible to clear a domain through the admin endpoints. Issue #62 / PR #126 review.
+- Bulk-edit modal `(unset)` option for the domain field is now actually submittable. Pre-fix the JS rejected empty values with "Please enter a value" before the request fired, so the operator-visible "(unset)" option couldn't ever clear a domain even though the backend supports it. Issue #62 / PR #126 review.
 - **`POST /api/memory/admin/bulk-update` now enforces an API-layer allowlist** of mutable fields (`category`, `domain`, `tags`, `tags_add`, `tags_remove`, `audience`, `title`, `content`). Pre-fix the endpoint forwarded any key in the repo's `_UPDATABLE_FIELDS` set, which included `status`, `sensitivity`, `is_personal`, and `confidence` — an admin could `POST {"updates": {"status": "mandatory"}}` and silently bypass `/admin/mandate`'s dedicated audit trail (the bulk audit row also stamped `updated_fields: []` for those mutations, leaving no trace of what changed). Disallowed keys now return HTTP 400 with the offending list; the repo layer is unchanged so the per-item `repo.update` path keeps its broader access. Issue #62 / PR #126 review.
 - **Tree endpoint `audience=all` chip now includes NULL-audience items**, matching the SQL audience filter (`audience IS NULL OR audience = 'all'`), `count_by_audience` (COALESCE→'all'), and `_bucket_key` (NULL → "all"). Pre-fix the in-memory chip filter compared `item.audience != 'all'` and dropped NULL-audience items from the bucket they were supposed to land in. Issue #62 / PR #126 review.
 - **`GET /api/memory/admin/audit` honors `page`** — the SQL had `LIMIT` only and silently returned the first page for every page parameter. Both branches (`action`-filtered and unfiltered) now apply `OFFSET (page - 1) * per_page`. Issue #62 / PR #126 review.

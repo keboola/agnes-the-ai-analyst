@@ -1355,7 +1355,9 @@
         if (!mode || ids.length === 0) return closeBulkEditModal();
         const valueEl = document.getElementById('bulkEditValue');
         const value = (valueEl.value || '').trim();
-        if (!value) {
+        // Domain allows the explicit "(unset)" option (empty string clears the field
+        // — backend allows empty domain). Other modes still require a non-empty value.
+        if (!value && mode !== 'domain') {
             showToast('Please enter a value', 'error');
             return;
         }
