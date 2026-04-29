@@ -152,6 +152,26 @@ class TestDefaultClientFactory:
             _default_client_factory(BqProjects(billing="b", data="d"))
         assert exc_info.value.kind == "bq_lib_missing"
 
+    def test_raises_auth_failed_on_default_credentials_error(self, monkeypatch):
+        """bigquery.Client(...) resolves ADC at construction; missing credentials in
+        CI / dev raise google.auth.exceptions.DefaultCredentialsError synchronously.
+        Must translate to BqAccessError(auth_failed), not propagate raw."""
+        from connectors.bigquery.access import _default_client_factory, BqProjects, BqAccessError
+        from google.auth.exceptions import DefaultCredentialsError
+
+        class FakeClient:
+            def __init__(self, project, client_options):
+                raise DefaultCredentialsError("no ADC")
+
+        import google.cloud.bigquery as bq_mod
+        monkeypatch.setattr(bq_mod, "Client", FakeClient)
+
+        with pytest.raises(BqAccessError) as exc_info:
+            _default_client_factory(BqProjects(billing="b", data="d"))
+        assert exc_info.value.kind == "auth_failed"
+        assert "no ADC" in exc_info.value.message
+        assert "hint" in exc_info.value.details
+
 
 class TestDefaultDuckdbSessionFactory:
     def test_yields_duckdb_conn_with_secret_then_closes(self, monkeypatch):

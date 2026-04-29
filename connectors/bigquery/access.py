@@ -119,7 +119,15 @@ def translate_bq_error(
 
 
 def _default_client_factory(projects: BqProjects):
-    """Real BigQuery client construction. Raises BqAccessError on import / config issues."""
+    """Real BigQuery client construction. Raises BqAccessError on import / auth / config issues.
+
+    `bigquery.Client(...)` resolves Application Default Credentials at construction
+    time; in environments without ADC (CI without service-account key, dev laptop
+    that hasn't run `gcloud auth application-default login`) it raises
+    `google.auth.exceptions.DefaultCredentialsError` synchronously. Translate to
+    typed `BqAccessError(auth_failed)` so endpoints surface a structured 502 with
+    a helpful hint instead of a raw stack trace.
+    """
     try:
         from google.cloud import bigquery  # type: ignore
         from google.api_core.client_options import ClientOptions  # type: ignore
@@ -130,10 +138,29 @@ def _default_client_factory(projects: BqProjects):
             details={"original": str(e)},
         )
 
-    return bigquery.Client(
-        project=projects.billing,
-        client_options=ClientOptions(quota_project_id=projects.billing),
-    )
+    try:
+        from google.auth import exceptions as gauth_exc  # type: ignore
+        auth_error_types: tuple = (gauth_exc.DefaultCredentialsError,)
+    except ImportError:
+        auth_error_types = ()
+
+    try:
+        return bigquery.Client(
+            project=projects.billing,
+            client_options=ClientOptions(quota_project_id=projects.billing),
+        )
+    except auth_error_types as e:
+        raise BqAccessError(
+            "auth_failed",
+            f"GCP credentials unavailable: {e}",
+            details={
+                "original": str(e),
+                "hint": (
+                    "Run `gcloud auth application-default login` for local dev, or set "
+                    "GOOGLE_APPLICATION_CREDENTIALS to a service-account key in the deployment."
+                ),
+            },
+        )
 
 
 @contextmanager
