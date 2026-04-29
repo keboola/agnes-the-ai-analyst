@@ -8,10 +8,24 @@ is no implicit Everyone membership and no god-mode shortcut for the
 marketplace feed — admins curate their own view by granting plugins to a
 group they belong to (Admin or otherwise).
 
-Plugins from different marketplaces that happen to share a name are NOT the
-same plugin — the caller needs both. We therefore prefix every plugin name
-with its marketplace slug (`<slug>-<plugin_name>`) when projecting out, so
-the merged marketplace.json never has colliding entries.
+Two distinct identifiers travel through the resolver:
+
+- ``prefixed_name`` (``<slug>-<plugin_name>``) drives the on-disk directory
+  layout in the served ZIP / git tree (``plugins/<prefixed_name>/...``) so
+  two marketplaces shipping a same-named plugin don't overwrite each other's
+  files.
+- ``manifest_name`` (read from the plugin's own
+  ``.claude-plugin/plugin.json`` ``name`` field, with a fallback to the
+  upstream marketplace.json ``name``) is what the synth marketplace.json's
+  ``name`` field uses. Claude Code's ``/plugin`` UI resolves a loaded plugin
+  back to its catalog entry by ``plugin.json`` ``name``, so the catalog
+  entry must match — anything else and the Components panel renders
+  "Plugin <X> not found in marketplace".
+
+Same-named plugins from two upstream marketplaces therefore collide in the
+served catalog by design; admin RBAC (which grants survive the filter)
+decides which one wins, identical to Claude Code's behavior when a user
+adds two upstream marketplaces with overlapping plugin names directly.
 
 resource_id format for ``marketplace_plugin`` grants is
 ``<marketplace_slug>/<plugin_name>`` — the slash is the canonical separator;
