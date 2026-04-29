@@ -75,6 +75,25 @@ if [ "$DATA_SOURCE" = "keboola" ]; then
 fi
 JWT_KEY=$(gcloud secrets versions access latest --secret=agnes-$${CUSTOMER_NAME}-jwt-secret)
 
+# SCHEDULER_API_TOKEN — shared secret between the app and scheduler containers.
+# Both source the same /opt/agnes/.env via Docker Compose env_file:, so the
+# scheduler's outbound bearer token always matches the app's expected value.
+# See app/auth/scheduler_token.py for the auth path it unlocks.
+#
+# Preserve across reboots: the token is plumbed into a long-lived synthetic
+# user, and rotating it forces a restart of both containers. Read back from
+# an existing .env when present; mint fresh only on the first boot.
+SCHEDULER_API_TOKEN=""
+if [ -f "$APP_DIR/.env" ]; then
+    SCHEDULER_API_TOKEN=$(grep -E '^SCHEDULER_API_TOKEN=' "$APP_DIR/.env" | head -1 | cut -d= -f2- | tr -d '"' || true)
+fi
+if [ -z "$SCHEDULER_API_TOKEN" ]; then
+    # 64 hex chars = 256 bits of /dev/urandom entropy. Floor enforced in
+    # app/auth/scheduler_token.SCHEDULER_TOKEN_MIN_LENGTH is 32; 64 leaves
+    # headroom for a future tightening without re-provisioning every VM.
+    SCHEDULER_API_TOKEN=$(openssl rand -hex 32)
+fi
+
 # Optional Google OAuth credentials. If the operator has created
 # google-oauth-client-{id,secret} secrets in the project's Secret Manager
 # AND wired them via runtime_secrets in the calling Terraform, the VM SA can
@@ -118,6 +137,7 @@ KEBOOLA_STORAGE_TOKEN=$KEBOOLA_TOKEN
 KEBOOLA_STACK_URL=$KEBOOLA_STACK_URL
 SEED_ADMIN_EMAIL=$SEED_ADMIN_EMAIL
 SEED_ADMIN_PASSWORD=$SEED_ADMIN_PASSWORD
+SCHEDULER_API_TOKEN=$SCHEDULER_API_TOKEN
 LOG_LEVEL=info
 DOMAIN=$DOMAIN
 AGNES_TAG=$IMAGE_TAG
