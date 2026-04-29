@@ -123,3 +123,106 @@ def test_filter_due_tables_handles_naive_last_sync():
     repo = _FakeSyncStateRepo({"old": naive_2h_ago})
     out = filter_due_tables(configs, repo, now=_utc(2026, 5, 1, 10, 0))
     assert [c["id"] for c in out] == ["old"]
+
+
+# ---------------- _run_sync wiring ------------------------------------------
+
+def test_run_sync_filters_local_tables_by_schedule(monkeypatch, tmp_path):
+    """`_run_sync(tables=None)` consults `filter_due_tables` and skips
+    tables that are not due. Manual override (`tables=[...]`) bypasses
+    the filter entirely."""
+    from app.api import sync as sync_module
+
+    # Stub get_data_source_type → 'keboola' so the keboola subprocess code
+    # path is taken (also matches the existing _run_sync shape).
+    monkeypatch.setattr(
+        sync_module, "_get_data_dir", lambda: tmp_path,
+    )
+    import app.instance_config as instance_config
+    monkeypatch.setattr(instance_config, "get_data_source_type", lambda: "keboola")
+
+    # Fake registry with one due + one skipped table.
+    fake_configs = [
+        {"id": "due",     "name": "due",     "source_type": "keboola",
+         "sync_schedule": "every 30m", "query_mode": "local"},
+        {"id": "skipped", "name": "skipped", "source_type": "keboola",
+         "sync_schedule": "every 30m", "query_mode": "local"},
+    ]
+
+    class _StubRegistry:
+        def __init__(self, conn): pass
+        def list_local(self, source_type=None): return list(fake_configs)
+        def get(self, table_id):
+            return next((c for c in fake_configs if c["id"] == table_id), None)
+
+    monkeypatch.setattr(
+        "src.repositories.table_registry.TableRegistryRepository",
+        _StubRegistry,
+    )
+    monkeypatch.setattr(sync_module, "TableRegistryRepository", _StubRegistry)
+
+    # Stub get_system_db (imported locally inside _run_sync from src.db).
+    class _FakeConn:
+        def close(self): pass
+    import src.db as _db_mod
+    monkeypatch.setattr(_db_mod, "get_system_db", lambda: _FakeConn())
+
+    # Fake sync_state: 'due' last synced 60m ago, 'skipped' 10m ago.
+    from datetime import datetime, timezone
+    last_syncs = {
+        "due":     datetime(2026, 5, 1, 9, 0,  tzinfo=timezone.utc),
+        "skipped": datetime(2026, 5, 1, 9, 50, tzinfo=timezone.utc),
+    }
+
+    class _StubState:
+        def __init__(self, conn): pass
+        def get_last_sync(self, table_id): return last_syncs.get(table_id)
+
+    monkeypatch.setattr(
+        "src.repositories.sync_state.SyncStateRepository",
+        _StubState,
+    )
+    monkeypatch.setattr(sync_module, "SyncStateRepository", _StubState)
+
+    # Freeze 'now' inside src.scheduler.filter_due_tables. We do this by
+    # monkeypatching filter_due_tables itself to inject `now=`.
+    from src import scheduler as _sched
+    real_filter = _sched.filter_due_tables
+    monkeypatch.setattr(
+        sync_module, "filter_due_tables",
+        lambda cfgs, repo: real_filter(
+            cfgs, repo, now=datetime(2026, 5, 1, 10, 0, tzinfo=timezone.utc),
+        ),
+    )
+
+    # Capture the configs that subprocess.run sees (via stdin payload).
+    captured = {}
+
+    def _fake_run(cmd, input, capture_output, text, timeout, env, cwd):
+        import json as _json
+        captured["configs"] = _json.loads(input)
+        class _R:
+            returncode = 0
+            stdout = "{}"
+            stderr = ""
+        return _R()
+
+    monkeypatch.setattr(sync_module.subprocess, "run", _fake_run)
+
+    # Stub orchestrator + profiler imports inside the function so we don't
+    # require a real DuckDB analytics file.
+    import src.orchestrator as _orch_mod
+
+    class _StubOrch:
+        def rebuild(self): return {}
+
+    monkeypatch.setattr(_orch_mod, "SyncOrchestrator", _StubOrch)
+
+    # Run with tables=None → filter applies → only 'due' goes to subprocess.
+    sync_module._run_sync(tables=None)
+    assert [c["id"] for c in captured["configs"]] == ["due"]
+
+    # Run with explicit override → filter is BYPASSED → both go through.
+    captured.clear()
+    sync_module._run_sync(tables=["due", "skipped"])
+    assert sorted(c["id"] for c in captured["configs"]) == ["due", "skipped"]
