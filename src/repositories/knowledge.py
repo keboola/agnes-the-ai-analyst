@@ -429,6 +429,301 @@ class KnowledgeRepository:
         ).fetchone()
         return result is not None
 
+    # --- Item relations (duplicate-candidate hints, etc.) ---
+
+    @staticmethod
+    def _canonical_pair(a: str, b: str) -> tuple[str, str]:
+        """Return (min(a,b), max(a,b)) — every unordered pair maps to one row."""
+        return (a, b) if a <= b else (b, a)
+
+    def create_relation(
+        self,
+        item_a_id: str,
+        item_b_id: str,
+        relation_type: str,
+        score: Optional[float] = None,
+    ) -> None:
+        """Persist a relation row. Idempotent on (item_a_id, item_b_id, relation_type).
+
+        The PK is canonicalized to (min, max) so duplicate calls with reversed
+        arguments don't create a second row. Self-relations (a == b) are
+        rejected — a pair must reference two distinct items.
+        """
+        if item_a_id == item_b_id:
+            raise ValueError("Cannot create relation between an item and itself")
+        a, b = self._canonical_pair(item_a_id, item_b_id)
+        self.conn.execute(
+            """INSERT INTO knowledge_item_relations
+                (item_a_id, item_b_id, relation_type, score)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT (item_a_id, item_b_id, relation_type) DO NOTHING""",
+            [a, b, relation_type, score],
+        )
+
+    def list_relations(
+        self,
+        relation_type: Optional[str] = None,
+        resolved: Optional[bool] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        sql = "SELECT * FROM knowledge_item_relations WHERE 1=1"
+        params: List[Any] = []
+        if relation_type is not None:
+            sql += " AND relation_type = ?"
+            params.append(relation_type)
+        if resolved is not None:
+            sql += " AND resolved = ?"
+            params.append(resolved)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        return self._rows_to_dicts(self.conn.execute(sql, params).fetchall())
+
+    def resolve_relation(
+        self,
+        item_a_id: str,
+        item_b_id: str,
+        relation_type: str,
+        resolved_by: str,
+        resolution: str,
+    ) -> int:
+        """Mark a relation row resolved. Returns rowcount (0 if not found)."""
+        a, b = self._canonical_pair(item_a_id, item_b_id)
+        now = datetime.now(timezone.utc)
+        # DuckDB doesn't expose UPDATE rowcount via the cursor API uniformly;
+        # do an existence check first so callers can report 404 vs success.
+        existing = self.conn.execute(
+            """SELECT 1 FROM knowledge_item_relations
+                WHERE item_a_id = ? AND item_b_id = ? AND relation_type = ?""",
+            [a, b, relation_type],
+        ).fetchone()
+        if not existing:
+            return 0
+        self.conn.execute(
+            """UPDATE knowledge_item_relations
+                SET resolved = TRUE,
+                    resolved_by = ?,
+                    resolved_at = ?,
+                    resolution = ?
+                WHERE item_a_id = ? AND item_b_id = ? AND relation_type = ?""",
+            [resolved_by, now, resolution, a, b, relation_type],
+        )
+        return 1
+
+    def get_relation(
+        self,
+        item_a_id: str,
+        item_b_id: str,
+        relation_type: str,
+    ) -> Optional[Dict[str, Any]]:
+        a, b = self._canonical_pair(item_a_id, item_b_id)
+        result = self.conn.execute(
+            """SELECT * FROM knowledge_item_relations
+                WHERE item_a_id = ? AND item_b_id = ? AND relation_type = ?""",
+            [a, b, relation_type],
+        ).fetchone()
+        return self._row_to_dict(result)
+
+    def find_duplicate_candidates_by_entities(
+        self,
+        new_item_id: str,
+        entities: Optional[List[str]],
+        domain: Optional[str],
+        min_overlap: int,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Same-domain candidates whose ``entities`` set shares >= ``min_overlap``
+        members with ``entities``.
+
+        Personal items are excluded (privacy boundary — see ADR Decision 1
+        precedent in ``find_contradiction_candidates``). Self-id is excluded.
+        Domain is a hard SQL conjunct: a NULL-domain item produces no
+        candidates (matches the verification-detector skip-empty contract).
+        Jaccard is computed in Python because DuckDB lacks a portable JSON
+        intersection helper; the SQL layer trims the candidate set to the
+        same domain so the Python loop scales linearly with that.
+        """
+        if not entities or not domain:
+            return []
+        new_set = set(entities)
+        sql = """
+            SELECT * FROM knowledge_items
+            WHERE status IN ('approved', 'mandatory', 'pending')
+              AND (is_personal = FALSE OR is_personal IS NULL)
+              AND domain = ?
+              AND id != ?
+              AND entities IS NOT NULL
+            ORDER BY updated_at DESC
+            LIMIT ?
+        """
+        rows = self._rows_to_dicts(
+            self.conn.execute(sql, [domain, new_item_id, limit]).fetchall()
+        )
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            cand_entities = row.get("entities")
+            if isinstance(cand_entities, str):
+                try:
+                    cand_entities = json.loads(cand_entities)
+                except json.JSONDecodeError:
+                    continue
+            if not isinstance(cand_entities, list) or not cand_entities:
+                continue
+            cand_set = set(cand_entities)
+            overlap = new_set & cand_set
+            if len(overlap) < min_overlap:
+                continue
+            union = new_set | cand_set
+            jaccard = len(overlap) / len(union) if union else 0.0
+            row["overlap_count"] = len(overlap)
+            row["jaccard"] = jaccard
+            out.append(row)
+        return out
+
+    # --- Bulk update + tag/audience aggregations (issue #62) ---
+
+    def bulk_update(
+        self,
+        item_ids: List[str],
+        updates: Dict[str, Any],
+    ) -> Dict[str, str]:
+        """Apply ``updates`` to each item id; partial-failure tolerant.
+
+        ``updates`` may include the standard ``_UPDATABLE_FIELDS`` keys plus
+        the bulk-only ``tags_add`` / ``tags_remove`` lists. Tag mutations are
+        merged with the item's existing tags so callers don't have to fetch
+        first. Returns a per-id status map: ``"updated"`` / ``"not_found"`` /
+        an error message.
+        """
+        results: Dict[str, str] = {}
+        if not item_ids:
+            return results
+
+        plain_fields = {
+            k: v for k, v in updates.items()
+            if k in self._UPDATABLE_FIELDS and k != "tags"
+        }
+        # If the caller passed an explicit ``tags`` list, treat it as a hard
+        # set (same semantics as repo.update). Add/remove are applied per item.
+        explicit_tags = updates.get("tags") if "tags" in updates else None
+        tags_add = updates.get("tags_add") or []
+        tags_remove = updates.get("tags_remove") or []
+
+        for item_id in item_ids:
+            try:
+                item = self.get_by_id(item_id)
+                if not item:
+                    results[item_id] = "not_found"
+                    continue
+
+                per_item: Dict[str, Any] = dict(plain_fields)
+                if explicit_tags is not None:
+                    per_item["tags"] = explicit_tags
+                elif tags_add or tags_remove:
+                    existing = item.get("tags") or []
+                    if isinstance(existing, str):
+                        try:
+                            existing = json.loads(existing)
+                        except json.JSONDecodeError:
+                            existing = []
+                    if not isinstance(existing, list):
+                        existing = []
+                    new_tags = list(existing)
+                    for t in tags_add:
+                        if t not in new_tags:
+                            new_tags.append(t)
+                    if tags_remove:
+                        rm = set(tags_remove)
+                        new_tags = [t for t in new_tags if t not in rm]
+                    per_item["tags"] = new_tags
+
+                if not per_item:
+                    results[item_id] = "updated"  # nothing to do, treat as success
+                    continue
+
+                # JSON-encode tags before passing to .update (mirrors create()).
+                if "tags" in per_item:
+                    per_item["tags"] = (
+                        json.dumps(per_item["tags"]) if per_item["tags"] else None
+                    )
+                if "entities" in per_item and isinstance(per_item["entities"], list):
+                    per_item["entities"] = json.dumps(per_item["entities"]) if per_item["entities"] else None
+
+                self.update(item_id, **per_item)
+                results[item_id] = "updated"
+            except Exception as e:  # pragma: no cover - defensive
+                results[item_id] = f"error: {e}"
+        return results
+
+    def count_by_tag(
+        self,
+        exclude_personal: bool = False,
+        user_groups: Optional[List[str]] = None,
+    ) -> Dict[str, int]:
+        """Aggregate item counts per tag (one tag may belong to many items).
+
+        Uses DuckDB ``json_each`` to unnest the JSON tag list. Items with no
+        tags don't contribute. Audience filter mirrors ``count_items``.
+        """
+        where = ["tags IS NOT NULL"]
+        params: List[Any] = []
+        if exclude_personal:
+            where.append("(is_personal = FALSE OR is_personal IS NULL)")
+        if user_groups is not None:
+            if user_groups:
+                ph = ",".join(["?"] * len(user_groups))
+                where.append(f"(audience IS NULL OR audience = 'all' OR audience IN ({ph}))")
+                params.extend(user_groups)
+            else:
+                where.append("(audience IS NULL OR audience = 'all')")
+        where_sql = " WHERE " + " AND ".join(where)
+        sql = (
+            "SELECT t.value AS tag, COUNT(*) AS cnt "
+            "FROM knowledge_items, json_each(knowledge_items.tags) AS t "
+            f"{where_sql} "
+            "GROUP BY t.value ORDER BY cnt DESC"
+        )
+        rows = self.conn.execute(sql, params).fetchall()
+        out: Dict[str, int] = {}
+        for tag, cnt in rows:
+            # json_each returns the raw scalar; strip wrapping quotes if needed.
+            key = tag if isinstance(tag, str) else str(tag)
+            if key.startswith('"') and key.endswith('"'):
+                key = key[1:-1]
+            out[key] = cnt
+        return out
+
+    def count_by_audience(
+        self,
+        exclude_personal: bool = False,
+        user_groups: Optional[List[str]] = None,
+    ) -> Dict[str, int]:
+        """Aggregate item counts per audience bucket.
+
+        ``audience`` is a free-form column whose canonical values are
+        ``NULL`` / ``'all'`` / ``'group:<name>'``. NULL is bucketed as
+        ``'all'`` so the chip-filter UI doesn't need a separate "no audience"
+        affordance. Audience filter mirrors ``count_items``.
+        """
+        where: List[str] = []
+        params: List[Any] = []
+        if exclude_personal:
+            where.append("(is_personal = FALSE OR is_personal IS NULL)")
+        if user_groups is not None:
+            if user_groups:
+                ph = ",".join(["?"] * len(user_groups))
+                where.append(f"(audience IS NULL OR audience = 'all' OR audience IN ({ph}))")
+                params.extend(user_groups)
+            else:
+                where.append("(audience IS NULL OR audience = 'all')")
+        where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+        sql = (
+            "SELECT COALESCE(audience, 'all') AS aud, COUNT(*) AS cnt "
+            f"FROM knowledge_items{where_sql} "
+            "GROUP BY aud ORDER BY cnt DESC"
+        )
+        rows = self.conn.execute(sql, params).fetchall()
+        return {r[0]: r[1] for r in rows}
+
     def find_contradiction_candidates(
         self,
         new_item_id: str,

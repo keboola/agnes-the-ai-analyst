@@ -573,6 +573,12 @@ async def corporate_memory_admin(
                 "hidden": base.get("is_personal", False),
             }
 
+    # Duplicate-candidate badge count (issue #62) — unresolved relations only.
+    duplicates_count = conn.execute(
+        "SELECT COUNT(*) FROM knowledge_item_relations "
+        "WHERE relation_type = 'likely_duplicate' AND resolved = FALSE"
+    ).fetchone()[0]
+
     ctx = _build_context(
         request, user=user,
         pending_items=pending,
@@ -580,7 +586,12 @@ async def corporate_memory_admin(
             "total": len(all_items),
             "by_status": status_counts,
             "pending": len(pending),
+            "pending_count": status_counts.get("pending", 0),
+            "approved_count": status_counts.get("approved", 0),
+            "mandatory_count": status_counts.get("mandatory", 0),
+            "knowledge_count": len(all_items),
             "contradictions": len(contradictions),
+            "duplicates": duplicates_count,
         },
         governance=get_corporate_memory_config(),
         groups=get_corporate_memory_config().get("groups", {}),

@@ -66,6 +66,36 @@ class TestMemoryCreate:
         )
         assert resp.status_code == 401
 
+    def test_create_invalid_domain_returns_400(self, seeded_app):
+        """POST validates ``domain`` against VALID_DOMAINS, mirroring PATCH —
+        otherwise an item lands in the DB with a domain it can't be PATCHed
+        to (PR #126 review). Empty / missing domain stays valid."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/memory",
+            json={
+                "title": "Bad domain",
+                "content": "x",
+                "category": "engineering",
+                "domain": "totally_made_up_domain",
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400
+        # Sanity: a valid domain is still accepted.
+        ok = c.post(
+            "/api/memory",
+            json={
+                "title": "Good domain",
+                "content": "x",
+                "category": "engineering",
+                "domain": "finance",
+            },
+            headers=_auth(token),
+        )
+        assert ok.status_code == 201
+
 
 class TestMemoryList:
     def _create_item(self, c, token, title="Test Item", category="engineering"):
@@ -1071,3 +1101,686 @@ class TestAutoTopicTagging:
             headers=_auth(token),
         )
         assert resp.status_code == 201
+
+
+# ===========================================================================
+# Issue #62 — duplicate-candidate API, tree, PATCH, bulk-update
+# ===========================================================================
+
+
+def _seed_relation_via_repo(seeded_app, item_a_id, item_b_id, score=0.5):
+    """Insert a likely_duplicate relation directly via the repo for testing
+    the read/resolve endpoints (the auto-detector path is exercised by
+    ``test_corporate_memory_relations``)."""
+    from src.db import get_system_db
+    from src.repositories.knowledge import KnowledgeRepository
+    conn = get_system_db()
+    KnowledgeRepository(conn).create_relation(
+        item_a_id, item_b_id, "likely_duplicate", score=score,
+    )
+    conn.close()
+
+
+class TestDuplicateCandidatesAPI:
+    def _create_with_entities(self, c, token, *, title, entities, domain="finance"):
+        # Items via POST /api/memory don't carry entities by default — use
+        # the request body fields directly.
+        resp = c.post(
+            "/api/memory",
+            json={
+                "title": title,
+                "content": f"content for {title}",
+                "category": "business_logic",
+                "domain": domain,
+                "entities": entities,
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 201, resp.text
+        return resp.json()["id"]
+
+    def test_list_default_unresolved(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        a = self._create_with_entities(c, token, title="A", entities=["x", "y"])
+        b = self._create_with_entities(c, token, title="B", entities=["x", "y"])
+        _seed_relation_via_repo(seeded_app, a, b)
+        resp = c.get(
+            "/api/memory/admin/duplicate-candidates",
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["count"] == 1
+        assert data["relations"][0]["item_a_id"] in {a, b}
+        assert data["relations"][0]["item_b_id"] in {a, b}
+        assert "item_a" in data["relations"][0]
+        assert "item_b" in data["relations"][0]
+
+    def test_list_requires_admin(self, seeded_app):
+        c = seeded_app["client"]
+        resp = c.get(
+            "/api/memory/admin/duplicate-candidates",
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert resp.status_code == 403
+
+    def test_resolve_writes_audit_row(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        a = self._create_with_entities(c, token, title="A", entities=["x", "y"])
+        b = self._create_with_entities(c, token, title="B", entities=["x", "y"])
+        _seed_relation_via_repo(seeded_app, a, b)
+        resp = c.post(
+            f"/api/memory/admin/duplicate-candidates/resolve?item_a_id={a}&item_b_id={b}",
+            json={"resolution": "duplicate"},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+        # Idempotent re-resolve → 400
+        resp2 = c.post(
+            f"/api/memory/admin/duplicate-candidates/resolve?item_a_id={a}&item_b_id={b}",
+            json={"resolution": "duplicate"},
+            headers=_auth(token),
+        )
+        assert resp2.status_code == 400
+
+        # Audit row landed under the new corporate_memory.* prefix.
+        audit = c.get("/api/memory/admin/audit", headers=_auth(token))
+        assert audit.status_code == 200
+        actions = {e.get("action") for e in audit.json()["entries"]}
+        assert "corporate_memory.resolve_duplicate" in actions
+
+    def test_resolve_invalid_resolution_returns_400(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        a = self._create_with_entities(c, token, title="A", entities=["x", "y"])
+        b = self._create_with_entities(c, token, title="B", entities=["x", "y"])
+        _seed_relation_via_repo(seeded_app, a, b)
+        resp = c.post(
+            f"/api/memory/admin/duplicate-candidates/resolve?item_a_id={a}&item_b_id={b}",
+            json={"resolution": "merge"},  # not in the new enum
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400
+
+    def test_resolve_not_found_returns_404(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/memory/admin/duplicate-candidates/resolve?item_a_id=missing_a&item_b_id=missing_b",
+            json={"resolution": "duplicate"},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 404
+
+
+class TestTreeEndpoint:
+    def _seed(self, c, token, **kwargs):
+        body = {
+            "title": kwargs["title"],
+            "content": kwargs.get("content", "content"),
+            "category": kwargs.get("category", "business_logic"),
+            "domain": kwargs.get("domain"),
+            "tags": kwargs.get("tags"),
+        }
+        resp = c.post("/api/memory", json={k: v for k, v in body.items() if v is not None},
+                      headers=_auth(token))
+        assert resp.status_code == 201
+        return resp.json()["id"]
+
+    def test_tree_groups_by_domain(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        self._seed(c, token, title="A", domain="finance")
+        self._seed(c, token, title="B", domain="finance")
+        self._seed(c, token, title="C", domain="product")
+        resp = c.get("/api/memory/tree?axis=domain", headers=_auth(token))
+        assert resp.status_code == 200
+        data = resp.json()
+        keys = {g["key"]: g["count"] for g in data["groups"]}
+        assert keys.get("finance", 0) >= 2
+        assert keys.get("product", 0) >= 1
+
+    def test_tree_invalid_axis(self, seeded_app):
+        c = seeded_app["client"]
+        resp = c.get(
+            "/api/memory/tree?axis=invalid",
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert resp.status_code == 400
+
+    def test_tree_tag_axis_multi_bucket(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        self._seed(c, token, title="X", tags=["t1", "t2"], domain="data")
+        resp = c.get("/api/memory/tree?axis=tag", headers=_auth(token))
+        assert resp.status_code == 200
+        keys = [g["key"] for g in resp.json()["groups"]]
+        # Tag-axis: item appears in both buckets.
+        assert "t1" in keys
+        assert "t2" in keys
+
+    def test_tree_requires_auth(self, seeded_app):
+        c = seeded_app["client"]
+        resp = c.get("/api/memory/tree?axis=domain")
+        assert resp.status_code == 401
+
+    @staticmethod
+    def _seed_item_direct(conn, item_id, title, *, audience=None, source_type="user_verification",
+                           status="approved", domain=None, category="business_logic",
+                           source_user="admin@test.com"):
+        """Direct insert — POST /api/memory doesn't accept audience/source_type/status."""
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        conn.execute(
+            """INSERT INTO knowledge_items
+               (id, title, content, category, domain, source_user, audience,
+                status, source_type, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [item_id, title, f"content {title}", category, domain, source_user,
+             audience, status, source_type, now, now],
+        )
+
+    def test_tree_audience_axis_privacy_non_admin(self, seeded_app):
+        """Non-admin tree on audience axis sees only their own group buckets +
+        null/'all'; group:engineering bucket must not surface for a finance user."""
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        from app.auth.jwt import create_access_token
+
+        conn = get_system_db()
+        self._seed_item_direct(conn, "tree_aud_fin", "Finance fact",
+                               audience="group:finance", domain="finance")
+        self._seed_item_direct(conn, "tree_aud_eng", "Eng fact",
+                               audience="group:engineering", domain="engineering")
+        self._seed_item_direct(conn, "tree_aud_all", "All-users fact",
+                               audience="all", domain="data")
+        self._seed_item_direct(conn, "tree_aud_null", "Null-audience fact",
+                               audience=None, domain="data")
+        repo = UserRepository(conn)
+        repo.create(id="tree_fin_user", email="treefin@test.com",
+                    name="Tree Finance User", role="analyst")
+        TestAudienceDistribution._add_user_to_group(conn, "tree_fin_user", "finance")
+        conn.close()
+
+        token = create_access_token("tree_fin_user", "treefin@test.com", "analyst")
+        c = seeded_app["client"]
+        resp = c.get("/api/memory/tree?axis=audience", headers=_auth(token))
+        assert resp.status_code == 200, resp.text
+        keys = {g["key"] for g in resp.json()["groups"]}
+        # Finance user sees their own group + null/all; never the eng bucket.
+        assert "group:finance" in keys
+        assert "all" in keys  # both null and 'all' values bucket here
+        assert "group:engineering" not in keys
+
+        # Admin, by contrast, sees every audience bucket including engineering.
+        admin_resp = c.get(
+            "/api/memory/tree?axis=audience",
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert admin_resp.status_code == 200
+        admin_keys = {g["key"] for g in admin_resp.json()["groups"]}
+        assert "group:finance" in admin_keys
+        assert "group:engineering" in admin_keys
+
+    def test_tree_has_duplicate_filter(self, seeded_app):
+        """``has_duplicate=true`` narrows to items present in an unresolved
+        likely_duplicate relation; items without a relation drop out."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        a = self._seed(c, token, title="Dup A", domain="finance")
+        b = self._seed(c, token, title="Dup B", domain="finance")
+        c_id = self._seed(c, token, title="Solo C", domain="finance")
+        _seed_relation_via_repo(seeded_app, a, b)
+
+        resp = c.get(
+            "/api/memory/tree?axis=domain&has_duplicate=true",
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+        ids_in_groups = {
+            item["id"]
+            for g in resp.json()["groups"]
+            for item in g.get("items", [])
+        }
+        # The duplicated pair surfaces; the solo item does not.
+        assert a in ids_in_groups
+        assert b in ids_in_groups
+        assert c_id not in ids_in_groups
+
+    def test_tree_audience_chip_includes_null_when_filtering_all(self, seeded_app):
+        """``audience='all'`` chip must include NULL-audience items, matching
+        the SQL filter / count_by_audience COALESCE / _bucket_key behavior.
+        Pre-fix the in-memory chip filter compared raw audience to 'all' and
+        dropped NULLs. PR #126 review."""
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        self._seed_item_direct(
+            conn, "tree_aud_null_chip", "Null aud item",
+            audience=None, domain="data",
+        )
+        self._seed_item_direct(
+            conn, "tree_aud_all_chip", "All aud item",
+            audience="all", domain="data",
+        )
+        self._seed_item_direct(
+            conn, "tree_aud_fin_chip", "Finance aud item",
+            audience="group:finance", domain="data",
+        )
+        conn.close()
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+
+        # audience=all chip → both NULL and explicit-'all' surface; group:* drops out.
+        resp = c.get(
+            "/api/memory/tree?axis=domain&audience=all",
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+        ids_all = {item["id"] for g in resp.json()["groups"] for item in g.get("items", [])}
+        assert "tree_aud_null_chip" in ids_all
+        assert "tree_aud_all_chip" in ids_all
+        assert "tree_aud_fin_chip" not in ids_all
+
+        # audience=group:finance chip → NULL must NOT slip into a group bucket.
+        resp = c.get(
+            "/api/memory/tree?axis=domain&audience=group:finance",
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+        ids_fin = {item["id"] for g in resp.json()["groups"] for item in g.get("items", [])}
+        assert "tree_aud_null_chip" not in ids_fin
+        assert "tree_aud_all_chip" not in ids_fin
+        assert "tree_aud_fin_chip" in ids_fin
+
+    def test_tree_chip_filter_composition(self, seeded_app):
+        """``status_filter`` + ``source_type`` apply together — only items
+        matching both end up in the response."""
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        # Two items differing on each chip dimension; only one matches both.
+        self._seed_item_direct(conn, "tree_chip_match", "Both match",
+                               status="approved", source_type="user_verification",
+                               domain="finance")
+        self._seed_item_direct(conn, "tree_chip_status_only", "Approved but wrong source",
+                               status="approved", source_type="claude_local_md",
+                               domain="finance")
+        self._seed_item_direct(conn, "tree_chip_source_only", "Right source but pending",
+                               status="pending", source_type="user_verification",
+                               domain="finance")
+        conn.close()
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get(
+            "/api/memory/tree?axis=domain&status_filter=approved&source_type=user_verification",
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+        ids_in_groups = {
+            item["id"]
+            for g in resp.json()["groups"]
+            for item in g.get("items", [])
+        }
+        assert "tree_chip_match" in ids_in_groups
+        assert "tree_chip_status_only" not in ids_in_groups
+        assert "tree_chip_source_only" not in ids_in_groups
+
+
+class TestPatchAndBulkUpdate:
+    def _create(self, c, token, title="Patch test"):
+        resp = c.post(
+            "/api/memory",
+            json={"title": title, "content": "content", "category": "business_logic"},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 201
+        return resp.json()["id"]
+
+    def test_patch_updates_category_domain_tags(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        item_id = self._create(c, token)
+        resp = c.patch(
+            f"/api/memory/admin/{item_id}",
+            json={"category": "engineering", "domain": "engineering", "tags": ["x", "y"]},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert sorted(body["updated"]) == ["category", "domain", "tags"]
+
+    def test_patch_invalid_domain_returns_400(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        item_id = self._create(c, token)
+        resp = c.patch(
+            f"/api/memory/admin/{item_id}",
+            json={"domain": "nonsense"},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400
+
+    def test_patch_requires_admin(self, seeded_app):
+        c = seeded_app["client"]
+        admin_token = seeded_app["admin_token"]
+        item_id = self._create(c, admin_token)
+        resp = c.patch(
+            f"/api/memory/admin/{item_id}",
+            json={"category": "x"},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert resp.status_code == 403
+
+    def test_patch_rejects_null_title(self, seeded_app):
+        # ``title`` is NOT NULL in the schema; explicit null in PATCH body must
+        # be rejected at the boundary (400) instead of bubbling up as a 500
+        # constraint violation. PR #126 round-5 review.
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        item_id = self._create(c, token)
+        resp = c.patch(
+            f"/api/memory/admin/{item_id}",
+            json={"title": None},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400
+        assert "title" in resp.json()["detail"].lower()
+
+    def test_bulk_update_rejects_null_title(self, seeded_app):
+        # Symmetric with PATCH — bulk-update used to surface a per-item
+        # Constraint Error instead of a clean 400 when title=null leaked
+        # through the allowlist. PR #126 round-6 review.
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        item_id = self._create(c, token, title="bulk null title")
+        resp = c.post(
+            "/api/memory/admin/bulk-update",
+            json={"item_ids": [item_id], "updates": {"title": None}},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400
+        assert "title" in resp.json()["detail"].lower()
+
+    def test_bulk_update_partial_failure(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        a = self._create(c, token, title="bulk a")
+        b = self._create(c, token, title="bulk b")
+        resp = c.post(
+            "/api/memory/admin/bulk-update",
+            json={"item_ids": [a, b, "missing_id"], "updates": {"category": "engineering"}},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert set(body["updated"]) == {a, b}
+        assert "missing_id" in body["not_found"]
+
+    def test_bulk_update_rejects_governance_fields(self, seeded_app):
+        """Governance-sensitive fields (status / sensitivity / is_personal /
+        confidence) must not slip through bulk-update — those have dedicated
+        governance endpoints with their own audit rows. PR #126 review."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        a = self._create(c, token, title="gov a")
+
+        # status: clear blocker the review called out — would silently flip
+        # an item to mandatory bypassing /admin/mandate.
+        resp = c.post(
+            "/api/memory/admin/bulk-update",
+            json={"item_ids": [a], "updates": {"status": "mandatory"}},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400
+        assert "status" in resp.json()["detail"]
+
+        # is_personal: same blast radius — would bypass /{id}/personal's
+        # contributor-only check.
+        resp = c.post(
+            "/api/memory/admin/bulk-update",
+            json={"item_ids": [a], "updates": {"is_personal": False}},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400
+
+        # sensitivity / confidence: same allowlist gate.
+        resp = c.post(
+            "/api/memory/admin/bulk-update",
+            json={"item_ids": [a], "updates": {"sensitivity": "secret"}},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400
+
+        # Confirm a clean call still works post-fix.
+        ok = c.post(
+            "/api/memory/admin/bulk-update",
+            json={"item_ids": [a], "updates": {"category": "engineering"}},
+            headers=_auth(token),
+        )
+        assert ok.status_code == 200, ok.text
+        assert a in ok.json()["updated"]
+
+    # ---- exclude_unset=True regression tests (PR #126 round-4 review) ----
+    # Pre-fix the PATCH/bulk-update endpoints used model_dump(exclude_none=True),
+    # which silently dropped explicit ``null`` values. That left no path to
+    # clear ``audience`` (and only the empty-string short-circuit for
+    # ``domain``). Switching to exclude_unset=True preserves nulls so callers
+    # can reset Optional fields.
+
+    def _read(self, seeded_app, item_id):
+        from src.db import get_system_db
+        conn = get_system_db()
+        try:
+            return KnowledgeRepository(conn).get_by_id(item_id)
+        finally:
+            conn.close()
+
+    def test_patch_clears_audience_with_null(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        item_id = self._create(c, token, title="audience clear")
+        # First set an audience so we have something to clear.
+        set_resp = c.patch(
+            f"/api/memory/admin/{item_id}",
+            json={"audience": "group:finance"},
+            headers=_auth(token),
+        )
+        assert set_resp.status_code == 200, set_resp.text
+        assert self._read(seeded_app, item_id)["audience"] == "group:finance"
+        # Now clear via explicit null.
+        clear_resp = c.patch(
+            f"/api/memory/admin/{item_id}",
+            json={"audience": None},
+            headers=_auth(token),
+        )
+        assert clear_resp.status_code == 200, clear_resp.text
+        assert clear_resp.json()["updated"] == ["audience"]
+        assert self._read(seeded_app, item_id)["audience"] is None
+
+    def test_patch_clears_domain_with_null(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        item_id = self._create(c, token, title="domain clear")
+        # Set a domain first.
+        set_resp = c.patch(
+            f"/api/memory/admin/{item_id}",
+            json={"domain": "engineering"},
+            headers=_auth(token),
+        )
+        assert set_resp.status_code == 200, set_resp.text
+        assert self._read(seeded_app, item_id)["domain"] == "engineering"
+        # Clear via explicit null. None is falsy so it skips the
+        # VALID_DOMAINS validator (intentional — same as empty-string path).
+        clear_resp = c.patch(
+            f"/api/memory/admin/{item_id}",
+            json={"domain": None},
+            headers=_auth(token),
+        )
+        assert clear_resp.status_code == 200, clear_resp.text
+        assert clear_resp.json()["updated"] == ["domain"]
+        assert self._read(seeded_app, item_id)["domain"] is None
+
+    def test_bulk_update_clears_audience_with_null(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        item_id = self._create(c, token, title="bulk audience clear")
+        # Seed an audience via PATCH so the clear has something to undo.
+        c.patch(
+            f"/api/memory/admin/{item_id}",
+            json={"audience": "group:finance"},
+            headers=_auth(token),
+        )
+        assert self._read(seeded_app, item_id)["audience"] == "group:finance"
+        # Bulk-update with explicit null should clear it.
+        resp = c.post(
+            "/api/memory/admin/bulk-update",
+            json={"item_ids": [item_id], "updates": {"audience": None}},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+        assert item_id in resp.json()["updated"]
+        assert self._read(seeded_app, item_id)["audience"] is None
+
+    def test_patch_unset_field_left_alone(self, seeded_app):
+        """Regression for exclude_unset=True semantics: fields NOT sent in the
+        request body must not be touched (distinct from explicit-null clearing)."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        item_id = self._create(c, token, title="leave alone")
+        # Seed both audience + domain.
+        c.patch(
+            f"/api/memory/admin/{item_id}",
+            json={"audience": "group:finance", "domain": "engineering"},
+            headers=_auth(token),
+        )
+        before = self._read(seeded_app, item_id)
+        assert before["audience"] == "group:finance"
+        assert before["domain"] == "engineering"
+        # PATCH only category — audience/domain must be untouched.
+        resp = c.patch(
+            f"/api/memory/admin/{item_id}",
+            json={"category": "engineering"},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["updated"] == ["category"]
+        after = self._read(seeded_app, item_id)
+        assert after["audience"] == "group:finance"
+        assert after["domain"] == "engineering"
+        assert after["category"] == "engineering"
+
+
+class TestStatsExtensionsAPI:
+    def test_stats_includes_by_tag_and_by_audience(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        c.post(
+            "/api/memory",
+            json={"title": "Tagged", "content": "x", "category": "business_logic", "tags": ["t1"]},
+            headers=_auth(token),
+        )
+        resp = c.get("/api/memory/stats", headers=_auth(token))
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "by_tag" in data
+        assert "by_audience" in data
+
+
+class TestAuditPrefixBackCompat:
+    def test_audit_filter_surfaces_legacy_km_rows(self, seeded_app):
+        """Legacy ``km_*`` audit rows still surface in the admin audit tab."""
+        from src.db import get_system_db
+        from src.repositories.audit import AuditRepository
+        conn = get_system_db()
+        # Inject a legacy-prefixed row directly.
+        AuditRepository(conn).log(
+            user_id="legacy@x", action="km_approve", resource="kv_legacy",
+            params={"reason": "back-compat row"},
+        )
+        conn.close()
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/api/memory/admin/audit", headers=_auth(token))
+        assert resp.status_code == 200
+        actions = {e.get("action") for e in resp.json()["entries"]}
+        assert "km_approve" in actions
+
+    def test_audit_filter_surfaces_new_corporate_memory_rows(self, seeded_app):
+        """New rows write under the corporate_memory.* namespace."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/memory",
+            json={"title": "audit test", "content": "x", "category": "business_logic"},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 201
+        item_id = resp.json()["id"]
+        c.post(f"/api/memory/admin/approve?item_id={item_id}", headers=_auth(token))
+        audit = c.get("/api/memory/admin/audit", headers=_auth(token))
+        actions = {e.get("action") for e in audit.json()["entries"]}
+        assert "corporate_memory.approve" in actions
+
+    def test_audit_pagination_returns_distinct_pages(self, seeded_app):
+        """page=2 must return rows distinct from page=1. Pre-fix the SQL
+        ignored page entirely and returned page 1 for every page param.
+        PR #126 review."""
+        from src.db import get_system_db
+        from src.repositories.audit import AuditRepository
+
+        conn = get_system_db()
+        audit = AuditRepository(conn)
+        # Seed enough rows that per_page=2 spans at least three pages.
+        for i in range(6):
+            audit.log(
+                user_id=f"pagetest{i}@x",
+                action="corporate_memory.approve",
+                resource=f"audit_page_resource_{i}",
+                params={"i": i},
+            )
+        conn.close()
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+
+        page1 = c.get("/api/memory/admin/audit?page=1&per_page=2", headers=_auth(token))
+        page2 = c.get("/api/memory/admin/audit?page=2&per_page=2", headers=_auth(token))
+        assert page1.status_code == 200
+        assert page2.status_code == 200
+
+        ids_page1 = [
+            (e.get("resource"), e.get("timestamp")) for e in page1.json()["entries"]
+        ]
+        ids_page2 = [
+            (e.get("resource"), e.get("timestamp")) for e in page2.json()["entries"]
+        ]
+        assert len(ids_page1) == 2
+        assert len(ids_page2) == 2
+        # The two pages must not overlap row-for-row (offset is honored).
+        assert set(ids_page1).isdisjoint(set(ids_page2)), (
+            f"page 1 and page 2 returned the same rows: {ids_page1} vs {ids_page2}"
+        )
+
+        # And the same with the action filter branch — which had the same bug.
+        page1_f = c.get(
+            "/api/memory/admin/audit?action=approve&page=1&per_page=2",
+            headers=_auth(token),
+        )
+        page2_f = c.get(
+            "/api/memory/admin/audit?action=approve&page=2&per_page=2",
+            headers=_auth(token),
+        )
+        assert page1_f.status_code == 200
+        assert page2_f.status_code == 200
+        ids_page1_f = [
+            (e.get("resource"), e.get("timestamp")) for e in page1_f.json()["entries"]
+        ]
+        ids_page2_f = [
+            (e.get("resource"), e.get("timestamp")) for e in page2_f.json()["entries"]
+        ]
+        assert set(ids_page1_f).isdisjoint(set(ids_page2_f))

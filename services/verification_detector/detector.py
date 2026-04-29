@@ -18,6 +18,7 @@ from services.corporate_memory import contradiction as contradiction_module
 from services.corporate_memory.confidence import compute_confidence
 from src.repositories.knowledge import KnowledgeRepository
 
+from .duplicates import _record_duplicate_candidates
 from .prompts import VERIFICATION_EXTRACT_PROMPT
 from .schemas import VERIFICATION_SCHEMA
 
@@ -145,6 +146,7 @@ def run(
         "verifications_extracted": 0,
         "items_created": 0,
         "contradictions_recorded": 0,
+        "duplicate_candidates_recorded": 0,
         "errors": [],
     }
 
@@ -242,6 +244,22 @@ def run(
                         user_quote=v.get("user_quote"),
                     )
                     items_created += 1
+                    # Record duplicate-candidate hints inline. Heuristic-only
+                    # (no LLM call) so it stays cheap; failures must never
+                    # abort session processing — log and continue. Issue #62.
+                    try:
+                        new_item = repo.get_by_id(item_id)
+                        if new_item is not None:
+                            recorded_dup = _record_duplicate_candidates(
+                                repo, new_item
+                            )
+                            stats["duplicate_candidates_recorded"] += recorded_dup
+                    except Exception as e:
+                        logger.warning(
+                            "Duplicate-candidate detection failed for %s: %s",
+                            item_id, e,
+                        )
+
                     # Run contradiction detection inline. Failure of the LLM
                     # judge must not abort session processing — log and move on.
                     try:

@@ -880,6 +880,13 @@
                 Contradictions
                 <span class="tab-badge" id="contradictionsBadge" style="{% if not stats.contradictions %}display:none{% endif %}">{{ stats.contradictions|default(0) }}</span>
             </button>
+            <button class="tab-btn" data-tab="duplicates" onclick="switchTab('duplicates')">
+                Duplicate Candidates
+                <span class="tab-badge" id="duplicatesBadge" style="{% if not stats.duplicates %}display:none{% endif %}">{{ stats.duplicates|default(0) }}</span>
+            </button>
+            <button class="tab-btn" data-tab="browse" onclick="switchTab('browse')">
+                Browse
+            </button>
             <button class="tab-btn" data-tab="audit" onclick="switchTab('audit')">
                 Audit Log
             </button>
@@ -907,6 +914,12 @@
                         </svg>
                         Reject Selected
                     </button>
+                    <!-- Bulk-edit affordances (issue #62) -->
+                    <button class="btn" id="batchMoveCategoryBtn" disabled onclick="openBulkEditModal('category')">Move to category…</button>
+                    <button class="btn" id="batchMoveDomainBtn" disabled onclick="openBulkEditModal('domain')">Move to domain…</button>
+                    <button class="btn" id="batchAddTagBtn" disabled onclick="openBulkEditModal('add_tag')">Add tag…</button>
+                    <button class="btn" id="batchRemoveTagBtn" disabled onclick="openBulkEditModal('remove_tag')">Remove tag…</button>
+                    <button class="btn" id="batchSetAudienceBtn" disabled onclick="openBulkEditModal('audience')">Set audience…</button>
                 </div>
             </div>
             <div id="reviewList" class="knowledge-list">
@@ -999,6 +1012,63 @@
             </div>
         </div>
 
+        <!-- Duplicate Candidates Tab (issue #62) -->
+        <div id="tab-duplicates" class="tab-content">
+            <div id="duplicatesList" class="knowledge-list">
+                <div class="loading">Loading duplicate candidates...</div>
+            </div>
+        </div>
+
+        <!-- Browse Tab (issue #62) — group items by axis + chip filters. -->
+        <div id="tab-browse" class="tab-content">
+            <div class="filter-bar" style="flex-wrap: wrap; gap: var(--space-3);">
+                <label for="treeAxis">Group by:</label>
+                <select class="filter-select" id="treeAxis" onchange="loadBrowseTree()">
+                    <option value="domain">Domain</option>
+                    <option value="category">Category</option>
+                    <option value="tag">Tag</option>
+                    <option value="audience">Audience</option>
+                </select>
+                <label for="treeStatus" style="margin-left: var(--space-3);">Status:</label>
+                <select class="filter-select" id="treeStatus" onchange="loadBrowseTree()">
+                    <option value="">Any</option>
+                    <option value="pending">Pending</option>
+                    <option value="approved">Approved</option>
+                    <option value="mandatory">Mandatory</option>
+                    <option value="rejected">Rejected</option>
+                    <option value="revoked">Revoked</option>
+                </select>
+                <label for="treeSourceType" style="margin-left: var(--space-3);">Source:</label>
+                <select class="filter-select" id="treeSourceType" onchange="loadBrowseTree()">
+                    <option value="">Any</option>
+                    <option value="user_verification">Verified</option>
+                    <option value="claude_local_md">CLAUDE.local.md</option>
+                </select>
+                <label style="margin-left: var(--space-3);">
+                    <input type="checkbox" id="treeHasDuplicate" onchange="loadBrowseTree()">
+                    Has duplicate hint
+                </label>
+                <label style="margin-left: var(--space-3);">
+                    <input type="text" id="treeQuery" placeholder="Search…" oninput="onTreeQueryInput()" style="padding: var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-md);">
+                </label>
+            </div>
+            <div id="browseTree">
+                <div class="loading">Loading tree…</div>
+            </div>
+        </div>
+
+        <!-- Bulk-edit modal (issue #62) — shared by Move-to/Set-tag actions. -->
+        <div id="bulkEditModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:2000;">
+            <div style="background: var(--surface); max-width: 480px; margin: 80px auto; padding: var(--space-5); border-radius: var(--radius-lg); border: 1px solid var(--border);">
+                <h3 id="bulkEditTitle" style="margin-bottom: var(--space-3);">Bulk edit</h3>
+                <div id="bulkEditBody"></div>
+                <div style="display: flex; gap: var(--space-2); justify-content: flex-end; margin-top: var(--space-4);">
+                    <button class="btn" onclick="closeBulkEditModal()">Cancel</button>
+                    <button class="btn btn-mandate" onclick="submitBulkEdit()">Apply</button>
+                </div>
+            </div>
+        </div>
+
         <!-- Audit Log Tab -->
         <div id="tab-audit" class="tab-content">
             <div class="filter-bar">
@@ -1009,7 +1079,10 @@
                     <option value="reject">Rejected</option>
                     <option value="mandate">Mandated</option>
                     <option value="revoke">Revoked</option>
-                    <option value="edit">Edited</option>
+                    <option value="edit">Edited (legacy)</option>
+                    <option value="update_item">Updated (PATCH)</option>
+                    <option value="bulk_update">Bulk-updated</option>
+                    <option value="resolve_duplicate">Duplicate resolved</option>
                 </select>
             </div>
             <div id="auditContent">
@@ -1065,6 +1138,258 @@
         if (tab === 'review') loadReviewQueue(reviewPage);
         else if (tab === 'all') loadAllItems(allPage);
         else if (tab === 'audit') loadAuditLog(auditPage);
+        else if (tab === 'duplicates') loadDuplicateCandidates();
+        else if (tab === 'browse') loadBrowseTree();
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Duplicate Candidates (issue #62)
+    // ─────────────────────────────────────────────────────────────
+
+    async function loadDuplicateCandidates() {
+        const list = document.getElementById('duplicatesList');
+        try {
+            const params = new URLSearchParams({ resolved: 'false', _t: Date.now() });
+            const resp = await fetch(`/api/memory/admin/duplicate-candidates?${params}`);
+            const data = await resp.json();
+            renderDuplicateCandidates(data, list);
+        } catch (e) {
+            console.error('Failed to load duplicate candidates:', e);
+            list.innerHTML = '<div class="empty-state"><p>Error loading duplicate candidates.</p></div>';
+        }
+    }
+
+    function renderDuplicateCandidates(data, list) {
+        const relations = data.relations || [];
+        if (relations.length === 0) {
+            list.innerHTML = `
+                <div class="empty-state">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width: 48px; height: 48px;">
+                        <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    </svg>
+                    <p>No unresolved duplicate candidates.</p>
+                    <p style="font-size: var(--text-sm);">Duplicate hints are recorded automatically when the verification detector finds two same-domain items sharing entities.</p>
+                </div>`;
+            return;
+        }
+        list.innerHTML = relations.map((r, idx) => {
+            const a = r.item_a || {};
+            const b = r.item_b || {};
+            const score = r.score != null ? r.score.toFixed(2) : '—';
+            const aTitle = a.hidden ? `<em>(hidden — personal)</em>` : escapeHtml(a.title || '?');
+            const bTitle = b.hidden ? `<em>(hidden — personal)</em>` : escapeHtml(b.title || '?');
+            const aContent = a.hidden ? '' : escapeHtml((a.content || '').substring(0, 200));
+            const bContent = b.hidden ? '' : escapeHtml((b.content || '').substring(0, 200));
+            return `
+                <div class="contradiction-card" data-key="${escapeHtml(r.item_a_id)}::${escapeHtml(r.item_b_id)}" style="border: 1px solid var(--border); border-radius: var(--radius-xl); padding: var(--space-5); margin-bottom: var(--space-4); background: var(--surface);">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-3);">
+                        <div>
+                            <span style="font-weight: var(--font-semibold); color: var(--primary);">Likely Duplicate</span>
+                            <span style="display: inline-block; padding: 2px 8px; background: var(--primary-light); color: var(--primary); border-radius: 999px; font-size: 11px; margin-left: 8px;">Jaccard ${score}</span>
+                        </div>
+                        <span style="font-size: var(--text-xs); color: var(--text-secondary);">${escapeHtml((r.created_at || '').toString().substring(0, 10))}</span>
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4); margin-bottom: var(--space-4);">
+                        <div style="padding: var(--space-4); background: var(--background); border-radius: var(--radius-lg); border: 1px solid var(--border);">
+                            <div style="font-weight: var(--font-semibold); margin-bottom: var(--space-2);">Item A</div>
+                            <div style="font-weight: var(--font-medium);">${aTitle}</div>
+                            <div style="font-size: var(--text-sm); color: var(--text-secondary); margin-top: var(--space-1);">${aContent}</div>
+                            <div style="font-size: var(--text-xs); color: var(--text-secondary); margin-top: var(--space-2);">id=<code>${escapeHtml(r.item_a_id)}</code></div>
+                        </div>
+                        <div style="padding: var(--space-4); background: var(--background); border-radius: var(--radius-lg); border: 1px solid var(--border);">
+                            <div style="font-weight: var(--font-semibold); margin-bottom: var(--space-2);">Item B</div>
+                            <div style="font-weight: var(--font-medium);">${bTitle}</div>
+                            <div style="font-size: var(--text-sm); color: var(--text-secondary); margin-top: var(--space-1);">${bContent}</div>
+                            <div style="font-size: var(--text-xs); color: var(--text-secondary); margin-top: var(--space-2);">id=<code>${escapeHtml(r.item_b_id)}</code></div>
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: var(--space-2);">
+                        <button class="btn btn-mandate" onclick="resolveDuplicate('${esc(r.item_a_id)}', '${esc(r.item_b_id)}', 'duplicate')">Mark as duplicate</button>
+                        <button class="btn btn-approve" onclick="resolveDuplicate('${esc(r.item_a_id)}', '${esc(r.item_b_id)}', 'different')">Different</button>
+                        <button class="btn btn-revoke" onclick="resolveDuplicate('${esc(r.item_a_id)}', '${esc(r.item_b_id)}', 'dismissed')">Dismiss</button>
+                    </div>
+                </div>`;
+        }).join('');
+    }
+
+    async function resolveDuplicate(aId, bId, resolution) {
+        try {
+            const params = new URLSearchParams({ item_a_id: aId, item_b_id: bId });
+            const resp = await fetch(`/api/memory/admin/duplicate-candidates/resolve?${params}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ resolution }),
+            });
+            if (resp.ok) {
+                showToast(`Pair resolved as '${resolution}'`, 'success');
+                // Optimistic UI: fade the row and decrement the badge.
+                const sorted = [aId, bId].sort();
+                const row = document.querySelector(`.contradiction-card[data-key="${sorted[0]}::${sorted[1]}"]`);
+                if (row) {
+                    row.style.transition = 'opacity 0.4s';
+                    row.style.opacity = '0';
+                    setTimeout(() => row.remove(), 400);
+                }
+                const badge = document.getElementById('duplicatesBadge');
+                if (badge) {
+                    const cur = parseInt(badge.textContent || '0', 10) || 0;
+                    if (cur > 0) badge.textContent = cur - 1;
+                    if (cur - 1 <= 0) badge.style.display = 'none';
+                }
+            } else {
+                const data = await resp.json().catch(() => ({}));
+                showToast(data.detail || 'Resolve failed', 'error');
+            }
+        } catch (e) {
+            showToast('Network error: resolve failed', 'error');
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Browse Tree (issue #62)
+    // ─────────────────────────────────────────────────────────────
+
+    let _treeQueryTimeout = null;
+    function onTreeQueryInput() {
+        clearTimeout(_treeQueryTimeout);
+        _treeQueryTimeout = setTimeout(loadBrowseTree, 300);
+    }
+
+    async function loadBrowseTree() {
+        const tree = document.getElementById('browseTree');
+        const axis = document.getElementById('treeAxis').value;
+        const status = document.getElementById('treeStatus').value;
+        const sourceType = document.getElementById('treeSourceType').value;
+        const hasDup = document.getElementById('treeHasDuplicate').checked;
+        const q = (document.getElementById('treeQuery').value || '').trim();
+        const params = new URLSearchParams({ axis, _t: Date.now() });
+        if (status) params.append('status_filter', status);
+        if (sourceType) params.append('source_type', sourceType);
+        if (hasDup) params.append('has_duplicate', 'true');
+        if (q) params.append('q', q);
+        try {
+            const resp = await fetch(`/api/memory/tree?${params}`);
+            const data = await resp.json();
+            renderBrowseTree(data, tree);
+        } catch (e) {
+            console.error('Failed to load browse tree:', e);
+            tree.innerHTML = '<div class="empty-state"><p>Error loading tree.</p></div>';
+        }
+    }
+
+    function renderBrowseTree(data, container) {
+        if (!data.groups || data.groups.length === 0) {
+            container.innerHTML = '<div class="empty-state"><p>No items match the current filters.</p></div>';
+            return;
+        }
+        const stateKey = `cm_admin_tree_open_${data.axis}`;
+        let openSet = new Set();
+        try { openSet = new Set(JSON.parse(localStorage.getItem(stateKey) || '[]')); } catch {}
+        container.innerHTML = data.groups.map(g => {
+            const isOpen = openSet.has(g.key);
+            return `
+                <details ${isOpen ? 'open' : ''} data-key="${escapeHtml(g.key)}" onToggle="onAdminTreeToggle(this, '${escapeHtml(stateKey)}')" style="margin-bottom: var(--space-4); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: var(--space-3);">
+                    <summary style="cursor: pointer; font-weight: var(--font-semibold);">
+                        ${escapeHtml(g.label)} <span style="color: var(--text-secondary); font-weight: normal;">(${g.count})</span>
+                    </summary>
+                    <div style="margin-top: var(--space-3);">${(g.items || []).map((it, idx) => renderItemCard(it, idx, false)).join('')}</div>
+                </details>`;
+        }).join('');
+    }
+
+    function onAdminTreeToggle(detailsEl, stateKey) {
+        const key = detailsEl.dataset.key;
+        let s = new Set();
+        try { s = new Set(JSON.parse(localStorage.getItem(stateKey) || '[]')); } catch {}
+        if (detailsEl.open) s.add(key); else s.delete(key);
+        try { localStorage.setItem(stateKey, JSON.stringify(Array.from(s))); } catch {}
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Bulk-edit modal (issue #62)
+    // ─────────────────────────────────────────────────────────────
+
+    let _bulkEditState = { mode: null, ids: [] };
+
+    function openBulkEditModal(mode) {
+        const ids = getSelectedIds(currentTab === 'review' ? 'review' : 'all');
+        if (ids.length === 0) {
+            showToast('Select at least one item first', 'error');
+            return;
+        }
+        _bulkEditState = { mode, ids };
+        const titleEl = document.getElementById('bulkEditTitle');
+        const bodyEl = document.getElementById('bulkEditBody');
+        if (mode === 'category') {
+            titleEl.textContent = `Move ${ids.length} item(s) to category…`;
+            bodyEl.innerHTML = `<input type="text" id="bulkEditValue" placeholder="e.g. business_logic" style="width: 100%; padding: var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-md);">`;
+        } else if (mode === 'domain') {
+            titleEl.textContent = `Move ${ids.length} item(s) to domain…`;
+            bodyEl.innerHTML = `
+                <select id="bulkEditValue" style="width: 100%; padding: var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-md);">
+                    <option value="">(unset)</option>
+                    <option value="finance">finance</option>
+                    <option value="engineering">engineering</option>
+                    <option value="product">product</option>
+                    <option value="data">data</option>
+                    <option value="operations">operations</option>
+                    <option value="infrastructure">infrastructure</option>
+                </select>`;
+        } else if (mode === 'audience') {
+            titleEl.textContent = `Set audience for ${ids.length} item(s)…`;
+            bodyEl.innerHTML = `<input type="text" id="bulkEditValue" placeholder="e.g. all or group:finance" style="width: 100%; padding: var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-md);">`;
+        } else if (mode === 'add_tag') {
+            titleEl.textContent = `Add tag to ${ids.length} item(s)…`;
+            bodyEl.innerHTML = `<input type="text" id="bulkEditValue" placeholder="tag name" style="width: 100%; padding: var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-md);">`;
+        } else if (mode === 'remove_tag') {
+            titleEl.textContent = `Remove tag from ${ids.length} item(s)…`;
+            bodyEl.innerHTML = `<input type="text" id="bulkEditValue" placeholder="tag name" style="width: 100%; padding: var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-md);">`;
+        }
+        document.getElementById('bulkEditModal').style.display = 'block';
+    }
+
+    function closeBulkEditModal() {
+        document.getElementById('bulkEditModal').style.display = 'none';
+        _bulkEditState = { mode: null, ids: [] };
+    }
+
+    async function submitBulkEdit() {
+        const { mode, ids } = _bulkEditState;
+        if (!mode || ids.length === 0) return closeBulkEditModal();
+        const valueEl = document.getElementById('bulkEditValue');
+        const value = (valueEl.value || '').trim();
+        // Domain allows the explicit "(unset)" option (empty string clears the field
+        // — backend allows empty domain). Other modes still require a non-empty value.
+        if (!value && mode !== 'domain') {
+            showToast('Please enter a value', 'error');
+            return;
+        }
+        const updates = {};
+        if (mode === 'category') updates.category = value;
+        else if (mode === 'domain') updates.domain = value;
+        else if (mode === 'audience') updates.audience = value;
+        else if (mode === 'add_tag') updates.tags_add = [value];
+        else if (mode === 'remove_tag') updates.tags_remove = [value];
+        try {
+            const resp = await fetch('/api/memory/admin/bulk-update', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ item_ids: ids, updates }),
+            });
+            if (resp.ok) {
+                const body = await resp.json();
+                const okCount = (body.updated || []).length;
+                const errCount = Object.keys(body.errors || {}).length + (body.not_found || []).length;
+                showToast(`Updated ${okCount}, errors: ${errCount}`, errCount > 0 ? 'error' : 'success');
+                closeBulkEditModal();
+                refreshCurrentTab();
+            } else {
+                const data = await resp.json().catch(() => ({}));
+                showToast(data.detail || 'Bulk update failed', 'error');
+            }
+        } catch (e) {
+            showToast('Network error: bulk update failed', 'error');
+        }
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -1586,6 +1911,11 @@
         if (countEl) countEl.textContent = ids.length > 0 ? `${ids.length} selected` : '';
         if (approveBtn) approveBtn.disabled = ids.length === 0;
         if (rejectBtn) rejectBtn.disabled = ids.length === 0;
+        // Bulk-edit buttons (issue #62) — enable when at least one item ticked.
+        ['batchMoveCategoryBtn', 'batchMoveDomainBtn', 'batchAddTagBtn', 'batchRemoveTagBtn', 'batchSetAudienceBtn'].forEach(id => {
+            const btn = document.getElementById(id);
+            if (btn) btn.disabled = ids.length === 0;
+        });
     }
 
     async function batchAction(action) {
@@ -1648,6 +1978,8 @@
         else if (currentTab === 'all') loadAllItems(allPage);
         else if (currentTab === 'audit') loadAuditLog(auditPage);
         else if (currentTab === 'contradictions') location.reload();
+        else if (currentTab === 'duplicates') loadDuplicateCandidates();
+        else if (currentTab === 'browse') loadBrowseTree();
     }
 
     // ─────────────────────────────────────────────────────────────
