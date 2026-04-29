@@ -31,6 +31,15 @@ if [ "$HEALTH" = "unreachable" ]; then
 fi
 check "health ($HEALTH)" "true"
 
+# 1a. Version endpoint — verifies setuptools_scm resolved a real version at build time.
+# Empty, "0.0.0+unknown", or "unknown" signals a failed/shallow build.
+VERSION=$(curl -sf "$HOST/api/version" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('version',''))" 2>/dev/null || echo "")
+if [ -z "$VERSION" ] || [ "$VERSION" = "0.0.0+unknown" ] || [ "$VERSION" = "unknown" ]; then
+    check "api/version resolved ($VERSION)" "false"
+else
+    check "api/version resolved ($VERSION)" "true"
+fi
+
 # 1b. Unauthenticated DB-touching probe — exercises the system-DB path before
 # any token is acquired. /api/health does NOT open system.duckdb (deliberate, so
 # the LB probe stays cheap), so it can return 200 while every authed request
