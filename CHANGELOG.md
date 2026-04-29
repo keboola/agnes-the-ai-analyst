@@ -10,6 +10,79 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.20.0] — 2026-04-29
+
+### Added
+- Dev debug toolbar gated by `DEBUG=1`. Mounts `fastapi-debug-toolbar` with panels
+  for headers, routes, settings, versions, timer, logging, and a custom DuckDB
+  panel that captures every `con.execute()` from `src/db.py` (tagged by
+  `system` / `analytics` / `analytics_ro`). See `docs/development.md`.
+- `X-Request-ID` request header / response header on every FastAPI response, plus
+  a `request_id` field in JSON logs for cross-process correlation.
+- Request-ID surfaced end-to-end on error responses: `Reference: <rid>` block on
+  the rendered `error.html` page (with `user-select: all` for one-click copy)
+  and a `"request_id": "<rid>"` field in the JSON 5xx body. The same id appears
+  in the `x-request-id` response header, so a support ticket can be traced from
+  a single value the user sees on the page.
+- Dev log lines now carry the request id via `_RequestIdFilter` — `RichHandler`
+  format is `[<rid>] [<logger>] <msg>` (or `[-]` outside of a request scope).
+  JSON formatter already included `request_id`; this closes the gap for
+  `DEBUG=1` development.
+- Centralized `app.logging_config.setup_logging()` — replaces 23 scattered
+  `logging.basicConfig(...)` calls. Uses `rich.logging.RichHandler` in dev
+  (`DEBUG=1`) and JSON to stderr in prod.
+
+### Changed
+- All service entrypoints (`services/scheduler/__main__.py`, `ws_gateway`,
+  `telegram_bot`, `corporate_memory`, `session_collector`, `verification_detector`)
+  and CLI scripts under `scripts/` and `connectors/jira/scripts/` now call
+  `setup_logging(__name__)` instead of inline `basicConfig`. Library modules no
+  longer configure root logger at import time.
+- **BREAKING** Telegram bot no longer writes to `/data/notifications/bot.log`.
+  All bot logs go to stdout, captured by Docker. Use
+  `docker compose logs -f notify-bot` to read them. Operators tail-ing the file
+  must update their runbooks; see `dev_docs/telegram_bot.md` for the new
+  procedure (including `journalctl` fallback for non-Docker hosts).
+- Toolbar middleware is mounted INSIDE the GZip middleware (innermost on
+  response) so the toolbar can decode HTML before compression. RequestIdMiddleware
+  remains outermost; production behavior (DEBUG unset) is byte-identical to
+  before.
+
+### Fixed
+- Removed rogue module-level `logging.basicConfig` from `app/api/sync.py` that
+  was reconfiguring root logger every time the api module was imported.
+- `RequestIdMiddleware` rewritten as a pure ASGI middleware (was
+  `BaseHTTPMiddleware`). Removes the early `request_id_var.reset` in `finally`
+  that fired BEFORE BackgroundTasks ran, causing them to lose the id. Also
+  side-steps the known `BaseHTTPMiddleware` ContextVar-cross-task issue.
+- Incoming `X-Request-ID` headers are now sanitized (alnum + `-` / `_`,
+  truncated to 64 chars; falls back to a fresh uuid if nothing legal remains).
+  Closes a CRLF log-forging vector when log handlers don't escape newlines.
+- `_wants_html` no longer treats `Accept: */*` (curl default) or empty Accept
+  as "wants HTML". Operators who curl non-API paths get JSON `{"detail": "..."}`
+  as before — only real browsers (with `Accept: text/html,...`) get HTML error
+  pages. (Devin ANALYSIS_0003 on PR #136 review.)
+- Subprocess extractor in `app/api/sync.py` re-installs `logging.basicConfig`
+  so INFO-level extraction progress from `connectors.keboola.extractor.run()`
+  reaches stderr again (was silently dropped by Python's `lastResort` handler
+  after the import-time `basicConfig` cleanup). (Devin BUG_0002.)
+- `.env.template` comment for `DEBUG=1` no longer claims to enable
+  `FastAPI debug=True` — that flag is intentionally NOT toggled (Starlette's
+  `ServerErrorMiddleware` would intercept unhandled exceptions before the
+  custom error handler runs). (Devin BUG_0001.)
+- **Security**: HTML error page (500) no longer leaks `str(exc)` in
+  production. The JSON branch already guarded that string behind `debug_on`
+  but the HTML branch did not — browser users could see raw exception
+  messages containing DB paths, SQL fragments, internal hostnames, or
+  credentials embedded in connection strings. The HTML branch now mirrors
+  the JSON branch's `debug_on` check; production users see only
+  `"Internal server error"` plus the request id. (Devin BUG on b1c6ee9 review.)
+
+### Internal
+- `pyproject.toml`: added `fastapi-debug-toolbar>=0.6.3` to dev optional deps.
+- `services/telegram_bot/config.py`: removed unused `BOT_LOG_FILE` constant.
+- `tests/conftest.py`: removed stale comment about bot.py FileHandler.
+
 ## [0.19.0] — 2026-04-29
 
 ### Added

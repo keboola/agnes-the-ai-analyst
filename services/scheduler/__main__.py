@@ -26,19 +26,16 @@ from datetime import datetime, timezone
 
 import httpx
 
+from app.logging_config import setup_logging
 from src.scheduler import is_table_due
 
-logging.basicConfig(
-    level=os.environ.get("LOG_LEVEL", "INFO").upper(),
-    format="%(asctime)s %(levelname)s [scheduler] %(message)s",
-)
+setup_logging(__name__)
 logger = logging.getLogger(__name__)
 
 API_URL = os.environ.get("API_URL", "http://localhost:8000")
 SCHEDULER_API_TOKEN = os.environ.get("SCHEDULER_API_TOKEN", "")
 
 _token_warning_emitted = False
-
 
 
 def _get_auth_token() -> str:
@@ -145,7 +142,6 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
         ("script-runner", _seconds_to_schedule(scripts), "/api/scripts/run-due",       "POST", 600),
         ("marketplaces",  "daily 03:00",                 "/api/marketplaces/sync-all", "POST", 900),
     ]
-
 
 _running = True
 

@@ -8,7 +8,6 @@ import hashlib
 import json
 import logging
 import os
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -168,9 +167,7 @@ def run(
             if not turns:
                 logger.info("Empty session: %s", session_key)
                 if not dry_run:
-                    repo.mark_session_processed(
-                        session_key, username, 0, _compute_file_hash(jsonl_path)
-                    )
+                    repo.mark_session_processed(session_key, username, 0, _compute_file_hash(jsonl_path))
                 stats["sessions_skipped"] += 1
                 continue
 
@@ -211,9 +208,7 @@ def run(
                     # docs/pd-ps-comments.md and the ADR.
                     detection_type = v.get("detection_type")
                     try:
-                        confidence_value = compute_confidence(
-                            "user_verification", detection_type
-                        )
+                        confidence_value = compute_confidence("user_verification", detection_type)
                     except ValueError:
                         # Unknown detection_type from the LLM; fall back to a
                         # lookup-keyed default rather than the LLM-supplied value.
@@ -265,24 +260,19 @@ def run(
                     try:
                         new_item = repo.get_by_id(item_id)
                         if new_item is not None:
-                            recorded = contradiction_module.detect_and_record(
-                                extractor, new_item, repo
-                            )
+                            recorded = contradiction_module.detect_and_record(extractor, new_item, repo)
                             stats["contradictions_recorded"] += len(recorded)
                     except LLMError as e:
-                        logger.warning(
-                            "Contradiction check failed for %s: %s", item_id, e
-                        )
+                        logger.warning("Contradiction check failed for %s: %s", item_id, e)
                     except Exception as e:
                         logger.warning(
                             "Unexpected error during contradiction check for %s: %s",
-                            item_id, e,
+                            item_id,
+                            e,
                         )
 
             if not dry_run:
-                repo.mark_session_processed(
-                    session_key, username, items_created, _compute_file_hash(jsonl_path)
-                )
+                repo.mark_session_processed(session_key, username, items_created, _compute_file_hash(jsonl_path))
 
             stats["sessions_processed"] += 1
             stats["items_created"] += items_created

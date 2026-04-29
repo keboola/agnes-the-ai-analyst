@@ -22,14 +22,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import duckdb
 import yaml
 
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
 logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Profiler configuration (loaded from instance.yaml, with defaults)
@@ -37,7 +31,8 @@ logger = logging.getLogger(__name__)
 def _load_profiler_config():
     """Load profiler config from instance.yaml with sensible defaults."""
     try:
-        from config.loader import load_instance_config, get_instance_value
+        from config.loader import load_instance_config
+
         config = load_instance_config()
         profiler_cfg = config.get("profiler", {})
 
@@ -69,6 +64,7 @@ def _load_profiler_config():
             "alert_high_cardinality": 50,
         }
 
+
 _cfg = _load_profiler_config()
 
 SAMPLE_SIZE = _cfg["sample_size"]
@@ -94,11 +90,13 @@ METRICS_YML_PATH = DOCS_DIR / "metrics.yml"
 METRICS_DIR = DOCS_DIR / "metrics"
 DATA_DESCRIPTION_PATH = DOCS_DIR / "data_description.md"
 
+
 def _load_metrics_from_db() -> Dict[str, List[str]]:
     """Load metrics table map from DuckDB. Returns empty dict on failure."""
     try:
         from src.db import get_system_db
         from src.repositories.metrics import MetricRepository
+
         conn = get_system_db()
         repo = MetricRepository(conn)
         table_map = repo.get_table_map()
@@ -129,21 +127,27 @@ def _load_jira_tables() -> tuple:
             "subdir": "comments",
             "description": "Comments on Jira issues. Key fields: comment_id, issue_key, author_email, body, created_at.",
             "primary_key": "comment_id",
-            "foreign_keys": [{"column": "issue_key", "references": "jira_issues.issue_key", "description": "Parent issue"}],
+            "foreign_keys": [
+                {"column": "issue_key", "references": "jira_issues.issue_key", "description": "Parent issue"}
+            ],
         },
         {
             "name": "jira_attachments",
             "subdir": "attachments",
             "description": "Attachment metadata with local file paths. Key fields: attachment_id, issue_key, filename, local_path, size_bytes, mime_type.",
             "primary_key": "attachment_id",
-            "foreign_keys": [{"column": "issue_key", "references": "jira_issues.issue_key", "description": "Parent issue"}],
+            "foreign_keys": [
+                {"column": "issue_key", "references": "jira_issues.issue_key", "description": "Parent issue"}
+            ],
         },
         {
             "name": "jira_changelog",
             "subdir": "changelog",
             "description": "History of all field changes on issues. Key fields: change_id, issue_key, field_name, from_value, to_value, changed_at.",
             "primary_key": "change_id",
-            "foreign_keys": [{"column": "issue_key", "references": "jira_issues.issue_key", "description": "Parent issue"}],
+            "foreign_keys": [
+                {"column": "issue_key", "references": "jira_issues.issue_key", "description": "Parent issue"}
+            ],
         },
         {
             "name": "jira_issuelinks",
@@ -152,7 +156,11 @@ def _load_jira_tables() -> tuple:
             "primary_key": "link_id",
             "foreign_keys": [
                 {"column": "issue_key", "references": "jira_issues.issue_key", "description": "Source issue"},
-                {"column": "linked_issue_key", "references": "jira_issues.issue_key", "description": "Target linked issue"},
+                {
+                    "column": "linked_issue_key",
+                    "references": "jira_issues.issue_key",
+                    "description": "Target linked issue",
+                },
             ],
         },
         {
@@ -160,7 +168,9 @@ def _load_jira_tables() -> tuple:
             "subdir": "remote_links",
             "description": "External links attached to issues (Confluence pages, Slack threads, etc.). Key fields: issue_key, remote_link_id, url, title.",
             "primary_key": "remote_link_id",
-            "foreign_keys": [{"column": "issue_key", "references": "jira_issues.issue_key", "description": "Parent issue"}],
+            "foreign_keys": [
+                {"column": "issue_key", "references": "jira_issues.issue_key", "description": "Parent issue"}
+            ],
         },
     ]
 
@@ -231,10 +241,27 @@ def classify_type(duckdb_type: str) -> str:
     # Strip parameters for parameterized types (e.g. DECIMAL(18,3) -> DECIMAL)
     base_type = t.split("(")[0].strip()
     if base_type in (
-        "FLOAT", "DOUBLE", "DECIMAL", "REAL", "FLOAT4", "FLOAT8",
-        "NUMERIC", "HUGEINT", "INTEGER", "INT", "BIGINT", "SMALLINT",
-        "TINYINT", "INT8", "INT4", "INT2", "INT1", "UBIGINT",
-        "UINTEGER", "USMALLINT", "UTINYINT",
+        "FLOAT",
+        "DOUBLE",
+        "DECIMAL",
+        "REAL",
+        "FLOAT4",
+        "FLOAT8",
+        "NUMERIC",
+        "HUGEINT",
+        "INTEGER",
+        "INT",
+        "BIGINT",
+        "SMALLINT",
+        "TINYINT",
+        "INT8",
+        "INT4",
+        "INT2",
+        "INT1",
+        "UBIGINT",
+        "UINTEGER",
+        "USMALLINT",
+        "UTINYINT",
     ):
         return "NUMERIC"
     return "STRING"
@@ -456,9 +483,7 @@ def get_parquet_path(table: TableInfo, folder_mapping: Dict[str, str]) -> Path:
 # ---------------------------------------------------------------------------
 # Related tables enrichment
 # ---------------------------------------------------------------------------
-def compute_related_tables(
-    table: TableInfo, all_tables: List[TableInfo]
-) -> List[Dict[str, str]]:
+def compute_related_tables(table: TableInfo, all_tables: List[TableInfo]) -> List[Dict[str, str]]:
     """Build related_tables list from foreign key metadata (both directions)."""
     related: List[Dict[str, str]] = []
 
@@ -502,9 +527,7 @@ def compute_related_tables(
 # ---------------------------------------------------------------------------
 # Metrics referencing a table
 # ---------------------------------------------------------------------------
-def get_metrics_for_table(
-    table_name: str, metrics_map: Dict[str, List[str]]
-) -> List[str]:
+def get_metrics_for_table(table_name: str, metrics_map: Dict[str, List[str]]) -> List[str]:
     """Return list of metric names that reference a given table."""
     return sorted(set(metrics_map.get(table_name, [])))
 
@@ -556,19 +579,21 @@ def _batch_numeric_stats(
     parts = []
     for col_name in numeric_cols:
         safe = f'"{col_name}"'
-        parts.extend([
-            f"MIN({safe})",
-            f"MAX({safe})",
-            f"AVG({safe})",
-            f"MEDIAN({safe})",
-            f"STDDEV({safe})",
-            f"PERCENTILE_CONT(0.05) WITHIN GROUP (ORDER BY {safe})",
-            f"PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY {safe})",
-            f"PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY {safe})",
-            f"PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY {safe})",
-            f"SUM(CASE WHEN {safe} = 0 THEN 1 ELSE 0 END)",
-            f"SUM(CASE WHEN {safe} < 0 THEN 1 ELSE 0 END)",
-        ])
+        parts.extend(
+            [
+                f"MIN({safe})",
+                f"MAX({safe})",
+                f"AVG({safe})",
+                f"MEDIAN({safe})",
+                f"STDDEV({safe})",
+                f"PERCENTILE_CONT(0.05) WITHIN GROUP (ORDER BY {safe})",
+                f"PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY {safe})",
+                f"PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY {safe})",
+                f"PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY {safe})",
+                f"SUM(CASE WHEN {safe} = 0 THEN 1 ELSE 0 END)",
+                f"SUM(CASE WHEN {safe} < 0 THEN 1 ELSE 0 END)",
+            ]
+        )
 
     sql = f"SELECT {', '.join(parts)} FROM {view_name}"
     row = con.execute(sql).fetchone()
@@ -577,11 +602,17 @@ def _batch_numeric_stats(
     idx = 0
     for col_name in numeric_cols:
         result[col_name] = {
-            "min": row[idx], "max": row[idx + 1], "mean": row[idx + 2],
-            "median": row[idx + 3], "stddev": row[idx + 4],
-            "p5": row[idx + 5], "p25": row[idx + 6],
-            "p75": row[idx + 7], "p95": row[idx + 8],
-            "zeros": row[idx + 9], "negative": row[idx + 10],
+            "min": row[idx],
+            "max": row[idx + 1],
+            "mean": row[idx + 2],
+            "median": row[idx + 3],
+            "stddev": row[idx + 4],
+            "p5": row[idx + 5],
+            "p25": row[idx + 6],
+            "p75": row[idx + 7],
+            "p95": row[idx + 8],
+            "zeros": row[idx + 9],
+            "negative": row[idx + 10],
         }
         idx += 11
     return result
@@ -602,11 +633,13 @@ def _batch_string_stats(
     parts = []
     for col_name in string_cols:
         safe = f'"{col_name}"'
-        parts.extend([
-            f"MIN(LENGTH({safe}))",
-            f"MAX(LENGTH({safe}))",
-            f"AVG(LENGTH({safe}))",
-        ])
+        parts.extend(
+            [
+                f"MIN(LENGTH({safe}))",
+                f"MAX(LENGTH({safe}))",
+                f"AVG(LENGTH({safe}))",
+            ]
+        )
 
     sql = f"SELECT {', '.join(parts)} FROM {view_name}"
     row = con.execute(sql).fetchone()
@@ -637,10 +670,12 @@ def _batch_date_stats(
     for col_name in date_cols:
         safe = f'"{col_name}"'
         cast_expr = f"CAST({safe} AS DATE)" if category_map[col_name] == "TIMESTAMP" else safe
-        parts.extend([
-            f"MIN({cast_expr})",
-            f"MAX({cast_expr})",
-        ])
+        parts.extend(
+            [
+                f"MIN({cast_expr})",
+                f"MAX({cast_expr})",
+            ]
+        )
 
     sql = f"SELECT {', '.join(parts)} FROM {view_name}"
     row = con.execute(sql).fetchone()
@@ -678,10 +713,12 @@ def _batch_boolean_stats(
     parts = []
     for col_name in bool_cols:
         safe = f'"{col_name}"'
-        parts.extend([
-            f"SUM(CASE WHEN {safe} = TRUE THEN 1 ELSE 0 END)",
-            f"SUM(CASE WHEN {safe} = FALSE THEN 1 ELSE 0 END)",
-        ])
+        parts.extend(
+            [
+                f"SUM(CASE WHEN {safe} = TRUE THEN 1 ELSE 0 END)",
+                f"SUM(CASE WHEN {safe} = FALSE THEN 1 ELSE 0 END)",
+            ]
+        )
 
     sql = f"SELECT {', '.join(parts)} FROM {view_name}"
     row = con.execute(sql).fetchone()
@@ -742,9 +779,7 @@ def profile_table(
     view_name = "tbl"
     sampled = total_rows > SAMPLE_SIZE
     if sampled:
-        con.execute(
-            f"CREATE TEMP TABLE {view_name} AS SELECT * FROM {read_expr} USING SAMPLE {SAMPLE_SIZE} ROWS"
-        )
+        con.execute(f"CREATE TEMP TABLE {view_name} AS SELECT * FROM {read_expr} USING SAMPLE {SAMPLE_SIZE} ROWS")
         working_rows = con.execute(f"SELECT COUNT(*) FROM {view_name}").fetchone()[0]
     else:
         con.execute(f"CREATE TEMP TABLE {view_name} AS SELECT * FROM {read_expr}")
@@ -1011,9 +1046,7 @@ def profile_table(
     # Table-level completeness
     avg_completeness = 0.0
     if columns:
-        avg_completeness = _round(
-            sum(c["completeness_pct"] for c in columns) / len(columns)
-        )
+        avg_completeness = _round(sum(c["completeness_pct"] for c in columns) / len(columns))
     missing_cells_pct = _round(100.0 * total_null_count / total_cells) if total_cells > 0 else 0.0
 
     # Duplicate rows (by primary key)
@@ -1021,9 +1054,7 @@ def profile_table(
     if pk_columns and working_rows > 0:
         try:
             pk_expr = ", ".join(f'"{c}"' for c in pk_columns)
-            distinct_pk = con.execute(
-                f"SELECT COUNT(DISTINCT ({pk_expr})) FROM {view_name}"
-            ).fetchone()[0]
+            distinct_pk = con.execute(f"SELECT COUNT(DISTINCT ({pk_expr})) FROM {view_name}").fetchone()[0]
             duplicate_rows = working_rows - distinct_pk
         except Exception as exc:
             logger.debug("Duplicate check failed for %s: %s", table.name, exc)
@@ -1034,9 +1065,7 @@ def profile_table(
         sample_result = con.execute(f"SELECT * FROM {view_name} LIMIT {SAMPLE_ROWS_LIMIT}")
         sample_col_names = [desc[0] for desc in sample_result.description]
         for row in sample_result.fetchall():
-            sample_rows.append(
-                {sample_col_names[i]: str(v) if v is not None else None for i, v in enumerate(row)}
-            )
+            sample_rows.append({sample_col_names[i]: str(v) if v is not None else None for i, v in enumerate(row)})
     except Exception as exc:
         logger.debug("Sample rows failed for %s: %s", table.name, exc)
 
@@ -1107,9 +1136,7 @@ def profile_table(
     # Metrics - include file path for UI linking
     metric_names = get_metrics_for_table(table.name, metrics_map)
     _file_map = metric_file_map or {}
-    used_by_metrics = [
-        {"name": m, "file": _file_map.get(m, "")} for m in metric_names
-    ]
+    used_by_metrics = [{"name": m, "file": _file_map.get(m, "")} for m in metric_names]
 
     con.close()
 
@@ -1207,9 +1234,7 @@ def profile_changed_tables(table_names: list[str]) -> dict:
 
         try:
             logger.info("Auto-profiling %s ...", name)
-            profile = profile_table(
-                table, parquet_path, tables, sync_state, metrics_map, metric_file_map
-            )
+            profile = profile_table(table, parquet_path, tables, sync_state, metrics_map, metric_file_map)
             new_profiles[name] = profile
             success += 1
             logger.info(
@@ -1237,7 +1262,9 @@ def profile_changed_tables(table_names: list[str]) -> dict:
 
     logger.info(
         "Auto-profiling complete: %d profiled, %d skipped, %d errors",
-        success, skipped, errors,
+        success,
+        skipped,
+        errors,
     )
     return {"success": success, "errors": errors, "skipped": skipped}
 

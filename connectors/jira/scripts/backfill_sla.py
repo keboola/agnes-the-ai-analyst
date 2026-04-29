@@ -49,11 +49,9 @@ SLA_FIELD_FIRST_RESPONSE = "customfield_10328"
 SLA_FIELD_TIME_TO_RESOLUTION = "customfield_10161"
 SLA_FIELDS = [SLA_FIELD_FIRST_RESPONSE, SLA_FIELD_TIME_TO_RESOLUTION]
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+from app.logging_config import setup_logging
+
+setup_logging(__name__)
 logger = logging.getLogger(__name__)
 
 
@@ -96,11 +94,7 @@ def has_valid_sla_data(field_value: object) -> bool:
     if "errorMessage" in field_value:
         return False
     # Valid SLA data has "name" or "completedCycles" or "ongoingCycle"
-    return bool(
-        field_value.get("name")
-        or "completedCycles" in field_value
-        or "ongoingCycle" in field_value
-    )
+    return bool(field_value.get("name") or "completedCycles" in field_value or "ongoingCycle" in field_value)
 
 
 def needs_sla_update(data: dict) -> bool:
@@ -113,9 +107,7 @@ def needs_sla_update(data: dict) -> bool:
     return False
 
 
-def fetch_sla_fields(
-    base_url: str, auth: tuple[str, str], issue_key: str
-) -> dict | None:
+def fetch_sla_fields(base_url: str, auth: tuple[str, str], issue_key: str) -> dict | None:
     """
     Fetch SLA fields for a single issue from Jira API.
 
@@ -144,10 +136,7 @@ def fetch_sla_fields(
             time.sleep(retry_after)
             return fetch_sla_fields(base_url, auth, issue_key)
         else:
-            logger.warning(
-                f"Failed to fetch SLA for {issue_key}: "
-                f"{response.status_code} {response.text[:200]}"
-            )
+            logger.warning(f"Failed to fetch SLA for {issue_key}: {response.status_code} {response.text[:200]}")
             return None
 
     except httpx.RequestError as e:
@@ -155,9 +144,7 @@ def fetch_sla_fields(
         return None
 
 
-def process_file(
-    json_path: Path, base_url: str, auth: tuple[str, str], force: bool
-) -> str:
+def process_file(json_path: Path, base_url: str, auth: tuple[str, str], force: bool) -> str:
     """
     Process a single issue JSON file - fetch and embed SLA data.
 
@@ -189,9 +176,7 @@ def process_file(
                 data["fields"][sla_field] = sla_data[sla_field]
 
         # Atomic write: temp file + replace
-        fd, tmp_path = tempfile.mkstemp(
-            dir=str(json_path.parent), suffix=".tmp"
-        )
+        fd, tmp_path = tempfile.mkstemp(dir=str(json_path.parent), suffix=".tmp")
         try:
             with os.fdopen(fd, "w") as f:
                 json.dump(data, f, indent=2, default=str)
@@ -289,12 +274,7 @@ def main():
     start_time = time.time()
 
     with ThreadPoolExecutor(max_workers=args.parallel) as executor:
-        futures = {
-            executor.submit(
-                process_file, jf, base_url, auth, args.force
-            ): jf
-            for jf in json_files
-        }
+        futures = {executor.submit(process_file, jf, base_url, auth, args.force): jf for jf in json_files}
 
         done_count = 0
         for future in as_completed(futures):

@@ -17,11 +17,13 @@ from pathlib import Path
 
 import yaml
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-logger = logging.getLogger(__name__)
-
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from app.logging_config import setup_logging
+
+setup_logging(__name__)
+logger = logging.getLogger(__name__)
 
 
 def _parse_table_id(table_id: str, default_source: str) -> dict:
@@ -50,20 +52,22 @@ def migrate_from_markdown(md_path: Path, source_type: str) -> list[dict]:
     configs = []
     for t in tables:
         parsed = _parse_table_id(t.get("id", t.get("name", "")), source_type)
-        configs.append({
-            "id": t.get("id", t.get("name", "")),
-            "name": t.get("name", ""),
-            "source_type": source_type,
-            "bucket": parsed["bucket"],
-            "source_table": parsed["source_table"],
-            "sync_strategy": t.get("sync_strategy", "full_refresh"),
-            "query_mode": t.get("query_mode", "local"),
-            "sync_schedule": t.get("sync_schedule"),
-            "profile_after_sync": t.get("profile_after_sync", True),
-            "primary_key": t.get("primary_key"),
-            "folder": t.get("folder"),
-            "description": t.get("description", ""),
-        })
+        configs.append(
+            {
+                "id": t.get("id", t.get("name", "")),
+                "name": t.get("name", ""),
+                "source_type": source_type,
+                "bucket": parsed["bucket"],
+                "source_table": parsed["source_table"],
+                "sync_strategy": t.get("sync_strategy", "full_refresh"),
+                "query_mode": t.get("query_mode", "local"),
+                "sync_schedule": t.get("sync_schedule"),
+                "profile_after_sync": t.get("profile_after_sync", True),
+                "primary_key": t.get("primary_key"),
+                "folder": t.get("folder"),
+                "description": t.get("description", ""),
+            }
+        )
 
     return configs
 
@@ -76,20 +80,22 @@ def migrate_from_json(json_path: Path, source_type: str) -> list[dict]:
     configs = []
     for t in tables:
         parsed = _parse_table_id(t.get("id", t.get("name", "")), source_type)
-        configs.append({
-            "id": t.get("id", t.get("name", "")),
-            "name": t.get("name", ""),
-            "source_type": source_type,
-            "bucket": parsed["bucket"],
-            "source_table": parsed["source_table"],
-            "sync_strategy": t.get("sync_strategy", "full_refresh"),
-            "query_mode": t.get("query_mode", "local"),
-            "sync_schedule": t.get("sync_schedule"),
-            "profile_after_sync": t.get("profile_after_sync", True),
-            "primary_key": t.get("primary_key"),
-            "folder": t.get("folder"),
-            "description": t.get("description", ""),
-        })
+        configs.append(
+            {
+                "id": t.get("id", t.get("name", "")),
+                "name": t.get("name", ""),
+                "source_type": source_type,
+                "bucket": parsed["bucket"],
+                "source_table": parsed["source_table"],
+                "sync_strategy": t.get("sync_strategy", "full_refresh"),
+                "query_mode": t.get("query_mode", "local"),
+                "sync_schedule": t.get("sync_schedule"),
+                "profile_after_sync": t.get("profile_after_sync", True),
+                "primary_key": t.get("primary_key"),
+                "folder": t.get("folder"),
+                "description": t.get("description", ""),
+            }
+        )
 
     return configs
 
@@ -138,6 +144,7 @@ def main():
     if not source_type:
         try:
             from app.instance_config import get_data_source_type
+
             source_type = get_data_source_type()
         except Exception:
             source_type = "keboola"

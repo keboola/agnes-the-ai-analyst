@@ -37,10 +37,7 @@ def run_user_script(username: str, script_name: str) -> dict | None:
             # notify-scripts prints JSON error to stdout on failure
             try:
                 error_info = json.loads(result.stdout)
-                logger.warning(
-                    f"Script {script_name} (user={username}) failed: "
-                    f"{error_info.get('error', 'unknown')}"
-                )
+                logger.warning(f"Script {script_name} (user={username}) failed: {error_info.get('error', 'unknown')}")
             except (json.JSONDecodeError, Exception):
                 logger.warning(
                     f"Script {script_name} (user={username}) exited with code "
@@ -54,16 +51,11 @@ def run_user_script(username: str, script_name: str) -> dict | None:
             return None
 
         parsed = json.loads(stdout)
-        logger.info(
-            f"Script {script_name} output: "
-            f"image_path={parsed.get('image_path', 'MISSING')}"
-        )
+        logger.info(f"Script {script_name} output: image_path={parsed.get('image_path', 'MISSING')}")
         return parsed
 
     except subprocess.TimeoutExpired:
-        logger.error(
-            f"Script {script_name} timed out after {config.SCRIPT_TIMEOUT_SECONDS}s"
-        )
+        logger.error(f"Script {script_name} timed out after {config.SCRIPT_TIMEOUT_SECONDS}s")
         return None
     except json.JSONDecodeError as e:
         logger.error(f"Script {script_name} returned invalid JSON: {e}")
