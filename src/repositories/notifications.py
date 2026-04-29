@@ -119,7 +119,7 @@ class ScriptRepository:
             """UPDATE script_registry
                SET last_status = 'running', last_run = ?
                WHERE id = ?
-                 AND (last_status IS NULL OR last_status != 'running')
+                 AND last_status IS DISTINCT FROM 'running'
                RETURNING id""",
             [now, script_id],
         ).fetchone()
