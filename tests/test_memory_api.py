@@ -1491,6 +1491,21 @@ class TestPatchAndBulkUpdate:
         assert resp.status_code == 400
         assert "title" in resp.json()["detail"].lower()
 
+    def test_bulk_update_rejects_null_title(self, seeded_app):
+        # Symmetric with PATCH — bulk-update used to surface a per-item
+        # Constraint Error instead of a clean 400 when title=null leaked
+        # through the allowlist. PR #126 round-6 review.
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        item_id = self._create(c, token, title="bulk null title")
+        resp = c.post(
+            "/api/memory/admin/bulk-update",
+            json={"item_ids": [item_id], "updates": {"title": None}},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400
+        assert "title" in resp.json()["detail"].lower()
+
     def test_bulk_update_partial_failure(self, seeded_app):
         c = seeded_app["client"]
         token = seeded_app["admin_token"]

@@ -986,6 +986,11 @@ async def admin_bulk_update(
             status_code=400,
             detail=f"domain must be one of: {VALID_DOMAINS}",
         )
+    # Mirror the PATCH boundary check — title is NOT NULL in the schema, so
+    # an explicit null here would fall through to a per-item Constraint Error
+    # in repo.bulk_update() instead of a clean 400 to the caller.
+    if "title" in updates and updates["title"] is None:
+        raise HTTPException(status_code=400, detail="title cannot be null")
     if not request.item_ids:
         return {"updated": [], "not_found": [], "errors": {}}
 
