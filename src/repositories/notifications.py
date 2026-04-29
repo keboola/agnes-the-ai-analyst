@@ -103,3 +103,40 @@ class ScriptRepository:
             return []
         columns = [desc[0] for desc in self.conn.description]
         return [dict(zip(columns, row)) for row in results]
+
+    def claim_for_run(self, script_id: str) -> bool:
+        """Atomically set last_status='running' iff the script is idle.
+
+        Returns True iff this caller is the new owner of the run slot.
+        Returns False if the script does not exist OR is already running.
+
+        Implementation: UPDATE … WHERE last_status IS DISTINCT FROM 'running'
+        + RETURNING id. DuckDB supports IS DISTINCT FROM and RETURNING; if
+        zero rows come back, somebody else already owns the slot.
+        """
+        now = datetime.now(timezone.utc)
+        result = self.conn.execute(
+            """UPDATE script_registry
+               SET last_status = 'running', last_run = ?
+               WHERE id = ?
+                 AND last_status IS DISTINCT FROM 'running'
+               RETURNING id""",
+            [now, script_id],
+        ).fetchone()
+        return result is not None
+
+    def record_run_result(self, script_id: str, status: str) -> None:
+        """Write the terminal status of a finished run (clears 'running').
+
+        Accepts only 'success' or 'failure' — 'running' would re-arm the
+        flag instead of clearing it, defeating the purpose of the call.
+        """
+        if status not in ("success", "failure"):
+            raise ValueError(
+                f"record_run_result: status must be 'success' or 'failure', "
+                f"got {status!r}"
+            )
+        self.conn.execute(
+            "UPDATE script_registry SET last_status = ? WHERE id = ?",
+            [status, script_id],
+        )

@@ -3,6 +3,7 @@
 import hashlib
 import logging
 import os
+import subprocess
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +20,7 @@ from src.repositories.sync_state import SyncStateRepository
 from src.repositories.sync_settings import SyncSettingsRepository, DatasetPermissionRepository
 from src.repositories.table_registry import TableRegistryRepository
 from src.rbac import can_access_table
+from src.scheduler import filter_due_tables
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/sync", tags=["sync"])
@@ -42,32 +44,50 @@ def _run_sync(tables: Optional[List[str]] = None):
     This avoids DuckDB lock conflicts — subprocess never opens system.duckdb.
     """
     import json as _json
-    import subprocess
     import sys
 
     try:
         from app.instance_config import get_data_source_type, get_value
         from src.db import get_system_db
-        from src.repositories.table_registry import TableRegistryRepository
 
         source_type = get_data_source_type()
         data_dir = _get_data_dir()
 
         # Read table configs in main process (has shared DuckDB connection)
         sys_conn = get_system_db()
+        # Track whether the REGISTRY (not the post-filter list) was empty.
+        # Auto-discovery must only fire on a truly empty registry; if the
+        # filter returned [] because nothing was due, re-discovering would
+        # bypass the schedule entirely on Keboola instances. (Devin BUG_0001
+        # on ebb8cc9.)
+        registry_has_tables = False
         try:
             repo = TableRegistryRepository(sys_conn)
             if tables:
+                # Manual operator override — bypass schedule filter entirely
+                # so an admin saying "sync these specific tables now" wins.
                 all_configs = [repo.get(t) for t in tables]
                 table_configs = [c for c in all_configs if c is not None]
+                registry_has_tables = bool(table_configs)
             else:
                 table_configs = repo.list_local(source_type) if source_type else repo.list_local()
+                registry_has_tables = bool(table_configs)
+                # Without this filter, every scheduler tick would re-sync
+                # every table regardless of its sync_schedule cadence,
+                # making the field a no-op at trigger time. Tables with
+                # no schedule pass through unchanged (opt-in feature).
+                state_repo = SyncStateRepository(sys_conn)
+                table_configs = filter_due_tables(table_configs, state_repo)
         finally:
             sys_conn.close()
 
         if not table_configs:
-            # Auto-discover tables on first sync when registry is empty
-            if source_type == "keboola" and os.environ.get("KEBOOLA_STORAGE_TOKEN"):
+            # Auto-discover tables on first sync when registry is empty.
+            # `not registry_has_tables` is the load-bearing guard — without
+            # it, "filter excluded everything" looks identical to "registry
+            # empty" and we'd re-discover + re-sync every tick regardless of
+            # sync_schedule.
+            if not registry_has_tables and source_type == "keboola" and os.environ.get("KEBOOLA_STORAGE_TOKEN"):
                 logger.info("No tables registered — running auto-discovery from Keboola")
                 try:
                     from app.api.admin import _discover_and_register_tables
