@@ -142,13 +142,31 @@ async def lifespan(app):
 DEBUG = os.environ.get("DEBUG", "").lower() in ("1", "true", "yes")
 
 
+def _toolbar_show_callback(request, settings) -> bool:
+    """Decide whether the debug toolbar shows on a request.
+
+    Replaces the upstream default (which reads `request.app.debug`) — we keep
+    `app.debug=False` so our @app.exception_handler(Exception) runs instead of
+    Starlette's debug-only ServerErrorMiddleware, but we still want the
+    toolbar mounted. Read DEBUG env directly.
+    """
+    return os.environ.get("DEBUG", "").lower() in ("1", "true", "yes")
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="AI Data Analyst",
         description="Data distribution platform for AI analytical systems",
         version=_app_version(),
         lifespan=lifespan,
-        debug=DEBUG,
+        # Intentionally NOT debug=DEBUG: FastAPI's debug=True installs
+        # Starlette's ServerErrorMiddleware which intercepts unhandled
+        # Exceptions and renders a plain-HTML traceback BEFORE our
+        # @app.exception_handler(Exception) can run — robbing the 500 page
+        # of its chrome and the debug toolbar. We get the toolbar back via
+        # SHOW_TOOLBAR_CALLBACK below (reads DEBUG env directly instead of
+        # request.app.debug).
+        debug=False,
     )
 
     # FastAPI debug toolbar — only when DEBUG=1 in env. Injects per-request
@@ -195,6 +213,7 @@ def create_app() -> FastAPI:
                     "app.debug.duckdb_panel.DuckDBPanel",
                 ],
                 jinja_loaders=[FileSystemLoader(str(_debug_templates_dir))],
+                show_toolbar_callback="app.main._toolbar_show_callback",
             )
             # Eagerly register the toolbar's own routes
             # (/_debug_toolbar/render_panel/ + /_debug_toolbar/static mount)
