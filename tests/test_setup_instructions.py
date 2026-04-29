@@ -292,9 +292,11 @@ def test_resolve_lines_with_ca_pem_switches_step_one_to_curl_then_local_install(
 
 
 def test_resolve_lines_with_ca_pem_marketplace_is_platform_aware():
-    """When ca_pem is set + plugins requested, step 7 emits a platform branch:
-    Windows → straight to git-clone fallback (claude.exe ignores OS trust);
-    macOS/Linux → try direct first, fall back to git clone on failure."""
+    """When ca_pem is set + plugins requested, step 5 emits a platform branch:
+    Linux → try direct HTTPS first, fall back to git clone on failure
+    (node-based claude honors NODE_EXTRA_CA_CERTS);
+    Windows + macOS → straight to git-clone fallback (Bun-compiled claude
+    binary ignores OS trust store and CA env vars on both platforms)."""
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(
@@ -306,21 +308,124 @@ def test_resolve_lines_with_ca_pem_marketplace_is_platform_aware():
         )
     )
     # The platform branch + MARKETPLACE_VIA selector.
-    assert 'case "$PLATFORM" in' in joined
     assert "MARKETPLACE_VIA=clone" in joined
     assert "MARKETPLACE_VIA=direct" in joined
-    # Direct attempt is tried (with stderr suppressed) on non-Windows.
+    # Locate the marketplace step's case block specifically — there is
+    # ALSO a `case "$PLATFORM" in` block in step 0(c) (OS trust store
+    # registration), so we anchor on the marketplace section header to
+    # narrow the slice.
+    section_idx = joined.index("Register the Agnes Claude Code marketplace")
+    market_case_idx = joined.index('case "$PLATFORM" in', section_idx)
+    market_esac_idx = joined.index("esac", market_case_idx)
+    branch_block = joined[market_case_idx:market_esac_idx]
+    assert "linux)" in branch_block
+    # Direct attempt only in the linux branch.
     assert (
         'claude plugin marketplace add "https://x:{token}@agnes.example.com/marketplace.git/" 2>/dev/null'
-        in joined
+        in branch_block
     )
+    # The default `*)` branch must hard-set clone (no direct attempt).
+    star_idx = branch_block.index("*)")
+    star_branch = branch_block[star_idx:]
+    assert "MARKETPLACE_VIA=clone" in star_branch
+    assert "claude plugin marketplace add" not in star_branch
     # Git-clone fallback writes to ~/.agnes/marketplace and adds it as a local path.
     assert 'git clone "https://x:{token}@agnes.example.com/marketplace.git/" ~/.agnes/marketplace' in joined
     assert "claude plugin marketplace add ~/.agnes/marketplace" in joined
     # Harmless credential-manager-core warning is called out.
     assert "credential-manager-core" in joined
-    # Plugin install line stays unchanged.
+    # Plugin install line stays unchanged (errors checked in a sibling test).
     assert "claude plugin install foo@agnes --scope project" in joined
+
+
+def test_resolve_lines_with_ca_pem_marketplace_strips_pat_after_clone():
+    """After `git clone https://x:<PAT>@host/...`, the cloned repo's
+    `.git/config` holds the PAT in plaintext at `[remote "origin"] url`.
+    On default home setups that file syncs to iCloud/OneDrive and gets
+    read by antivirus / sync agents. The marketplace step must run
+    `git remote set-url origin <url-without-token>` after clone, plus a
+    best-effort chmod tighten. claude registers the *local path* (not the
+    remote URL), so stripping the token doesn't break marketplace
+    registration — refreshes go via re-running setup with a fresh PAT."""
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(
+        resolve_lines(
+            "agnes.whl",
+            plugin_install_names=["foo"],
+            server_host="agnes.example.com",
+            ca_pem=_FAKE_CA_PEM,
+        )
+    )
+    # Token-bearing clone line still exists (we need the token to authenticate
+    # the initial clone) but a token-less remote set-url line follows.
+    clone_idx = joined.index(
+        'git clone "https://x:{token}@agnes.example.com/marketplace.git/"'
+    )
+    set_url_idx = joined.index(
+        'git -C ~/.agnes/marketplace remote set-url origin "https://agnes.example.com/marketplace.git/"'
+    )
+    add_idx = joined.index("claude plugin marketplace add ~/.agnes/marketplace")
+    assert clone_idx < set_url_idx < add_idx
+    # Token-less URL must NOT contain the placeholder or `x:` prefix.
+    set_url_line_end = joined.index("\n", set_url_idx)
+    set_url_line = joined[set_url_idx:set_url_line_end]
+    assert "{token}" not in set_url_line
+    assert "x:" not in set_url_line
+
+    # Best-effort chmod tighten — wrapped in `|| true` so MSYS / Git Bash
+    # on Windows (where chmod is a no-op against NTFS ACLs) doesn't fail
+    # the step.
+    assert "chmod 700 ~/.agnes/marketplace ~/.agnes/marketplace/.git" in joined
+    assert "chmod 600 ~/.agnes/marketplace/.git/config" in joined
+    assert "|| true" in joined
+
+
+def test_resolve_lines_with_ca_pem_marketplace_has_explicit_error_handling():
+    """Each shell-out in the marketplace block must fail loudly with `exit 1`
+    on a non-zero exit, not silently fall through to the next step. Without
+    this, a failed `git clone` causes a confusing 'marketplace 'agnes' not
+    found' error from the subsequent `claude plugin install`."""
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(
+        resolve_lines(
+            "agnes.whl",
+            plugin_install_names=["foo", "bar"],
+            server_host="agnes.example.com",
+            ca_pem=_FAKE_CA_PEM,
+        )
+    )
+    # git clone has an `|| { ... exit 1 }` guard.
+    assert (
+        'git clone "https://x:{token}@agnes.example.com/marketplace.git/" '
+        '~/.agnes/marketplace || {'
+    ) in joined
+    # `claude plugin marketplace add ~/.agnes/marketplace` (the local path
+    # one — not the chmod best-effort lines) has its own guard.
+    assert "claude plugin marketplace add ~/.agnes/marketplace || {" in joined
+    # Each `claude plugin install <name>@agnes` has its own guard so we know
+    # which plugin failed.
+    assert "claude plugin install foo@agnes --scope project || {" in joined
+    assert "claude plugin install bar@agnes --scope project || {" in joined
+    # Error messages are written to stderr, not stdout.
+    assert ">&2" in joined
+
+
+def test_diagnose_step_documents_non_admin_role_state():
+    """`db_schema: unknown` is normal in two cases — fresh install AND
+    non-admin roles (e.g. analyst) without grants on the system schema.
+    The original wording only mentioned 'fresh install', leading
+    operators on populated instances to chase a phantom yellow check.
+    Both contexts must be called out."""
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(resolve_lines("agnes.whl"))
+    assert "db_schema: unknown" in joined
+    assert "0 tables" in joined
+    # Both contexts called out.
+    assert "fresh install" in joined.lower()
+    assert "non-admin" in joined.lower() or "analyst" in joined.lower()
 
 
 def test_resolve_lines_with_ca_pem_suppresses_legacy_sslverify_line():

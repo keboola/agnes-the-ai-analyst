@@ -44,17 +44,31 @@ practice and the design here exists to dodge each one:
    semantics is *additive* (appends to bundled roots), so a single-cert
    file is correct there.
 
-3. **Native binaries (claude.exe on Windows, claude on macOS) ignore both
-   `NODE_EXTRA_CA_CERTS` and our env vars** — they have a bundled CA list
-   and/or use the OS trust store directly. Registering the cert in the OS
-   trust store (Windows: `certutil -user -addstore Root`; macOS: `security
-   add-trusted-cert`; Linux: `update-ca-certificates`/`update-ca-trust`) is
-   what makes those binaries trust the host. Even with that registered,
-   we observed claude.exe on Windows still failing the marketplace HTTPS
-   add — it appears to use a fully bundled CA list that isn't refreshable
-   from the OS store. So the marketplace step goes straight to a system-`git
-   clone` fallback on Windows (system git honors `GIT_SSL_CAINFO`), and only
-   tries the direct HTTPS path on macOS/Linux.
+3. **Bun-compiled `claude` (Windows + macOS distributions) ignores every
+   CA env var AND the OS trust store for marketplace HTTPS.** On macOS
+   arm64 the binary at `~/.local/bin/claude` is a Mach-O with a `__BUN`
+   segment (single-file `bun build --compile`); on Windows claude.exe is
+   the same shape. `strings` shows the binary recognizes
+   `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`,
+   `CURL_CA_BUNDLE` (including a "NODE_EXTRA_CA_CERTS detected" log
+   string), but in practice the values never reach the TLS context — a
+   known limitation of Bun's compiled-binary HTTPS path. Registering the
+   cert in the OS trust store (Windows: `certutil -user -addstore Root`;
+   macOS: `security add-trusted-cert`; Linux: `update-ca-certificates` /
+   `update-ca-trust`) doesn't fix it on Windows or macOS either — the
+   binary's bundled CA list isn't refreshable from the OS store.
+
+   So the marketplace step branches on platform:
+     - Windows + macOS → straight to system-`git clone` fallback
+       (system git honors `GIT_SSL_CAINFO`, so the clone works).
+     - Linux → typically the node-based npm install where
+       `NODE_EXTRA_CA_CERTS` does take effect; try direct first, fall
+       back to git clone on failure.
+
+   The OS trust-store registration in (c) is still done on all three
+   platforms because it's needed for *non-claude* native tools — e.g.
+   the system git fetch path itself (Schannel on Windows, Security
+   framework on macOS) trusts via the OS store, not via env vars.
 
 ## Step ordering
 
@@ -326,9 +340,12 @@ def _diagnose_skills_lines(*, diagnose_num: str, skills_num: str) -> list[str]:
         f"{diagnose_num}) Run diagnostics:",
         "   da diagnose",
         "",
-        "   This should print \"Overall: healthy\". On a fresh install, expect",
-        "   `db_schema: unknown` and `data: 0 tables` — those are NORMAL on an",
-        "   empty instance, not errors. Only flag actual yellow/red checks.",
+        "   This should print \"Overall: healthy\". `db_schema: unknown` and",
+        "   `data: 0 tables` are NORMAL in two cases:",
+        "     - fresh install (no tables registered yet), and",
+        "     - non-admin roles (e.g. `analyst`) that don't have grants to read",
+        "       the system schema even on populated instances.",
+        "   Only flag actual yellow/red checks (api / duckdb_state / users).",
         "",
         f"{skills_num}) Skills (ask the user — this is the last interactive step before Confirm):",
         "   The CLI ships with reusable markdown skills (setup, connectors,",
@@ -414,14 +431,27 @@ def _marketplace_block(
 
     With `has_ca=True`: the user has the trust block from step 0, so we know
     the cert is in the OS store and our env vars are set. Strategy:
-      - Windows: claude.exe has been observed to ignore both the Windows
-        trust store AND NODE_EXTRA_CA_CERTS for marketplace HTTPS (it errors
-        with "unable to verify the first certificate"). Skip the direct
-        attempt and go straight to a system-`git clone` fallback. System git
-        honors GIT_SSL_CAINFO (= the combined bundle) so the clone works.
-      - macOS / Linux: try direct HTTPS first; claude on these platforms
-        often uses the OS-trusted cert path. Fall back to git clone if it
-        fails.
+      - Windows: claude.exe is a Bun-compiled binary that ignores both the
+        Windows trust store AND NODE_EXTRA_CA_CERTS for marketplace HTTPS.
+        Skip the direct attempt; system `git clone` honors GIT_SSL_CAINFO
+        (the combined bundle from step 0) and works.
+      - macOS: same story. `claude` on macOS arm64 ships as a Mach-O binary
+        with a `__BUN` segment (single-file Bun build); empirically it
+        ignores SSL_CERT_FILE / NODE_EXTRA_CA_CERTS / login keychain alike,
+        even though `strings` shows the binary recognizes those env-var
+        names. Go straight to git-clone on macOS too.
+      - Linux: still ships node-based claude on most distros (npm install
+        path), where NODE_EXTRA_CA_CERTS does take effect. Try direct
+        first, fall back to git clone on failure.
+
+    Token hygiene: after the clone, we strip the PAT from the cloned repo's
+    `origin` URL (`git remote set-url`) and chmod ~/.agnes/marketplace tight.
+    Reason: `git clone https://x:<PAT>@host/...` writes the URL verbatim
+    into `.git/config`, where it sits in plaintext for anything that reads
+    home (cloud sync, antivirus scanners, peer processes). claude's
+    marketplace registration uses the local FS path, not the remote URL,
+    so stripping the token after clone is harmless — to refresh later, the
+    user re-runs setup from the dashboard with a fresh PAT.
 
     With `has_ca=False`: the legacy path. If `self_signed_tls=True` we emit
     the host-scoped `git config sslVerify=false` downgrade so the marketplace
@@ -433,23 +463,24 @@ def _marketplace_block(
             f"{step_num}) Register the Agnes Claude Code marketplace and install plugins.",
             "",
             "   Strategy depends on platform:",
-            "     - Windows: claude.exe has been observed to ignore both the OS trust",
-            "       store and NODE_EXTRA_CA_CERTS for marketplace HTTPS. Skip the direct",
-            "       attempt and go straight to the git-clone fallback (system git honors",
-            "       GIT_SSL_CAINFO from step 0).",
-            "     - macOS / Linux: try direct HTTPS first; claude on those platforms",
-            "       usually picks up the OS-trusted cert. Fall back to git clone on failure.",
+            "     - Windows + macOS: `claude` ships as a Bun-compiled native binary on",
+            "       these platforms, which ignores the OS trust store and our CA env",
+            "       vars for marketplace HTTPS. Skip the direct attempt and use a",
+            "       system `git clone` (system git honors GIT_SSL_CAINFO from step 0).",
+            "     - Linux: claude is typically the node-based npm install, where",
+            "       NODE_EXTRA_CA_CERTS works. Try direct first; fall back to git",
+            "       clone on failure.",
             "",
             "   case \"$PLATFORM\" in",
-            "     windows)",
-            "       MARKETPLACE_VIA=clone",
-            "       ;;",
-            "     *)",
+            "     linux)",
             "       if claude plugin marketplace add \"https://x:{token}@{server_host}/marketplace.git/\" 2>/dev/null; then",
             "         MARKETPLACE_VIA=direct",
             "       else",
             "         MARKETPLACE_VIA=clone",
             "       fi",
+            "       ;;",
+            "     *)",
+            "       MARKETPLACE_VIA=clone",
             "       ;;",
             "   esac",
             "",
@@ -457,13 +488,34 @@ def _marketplace_block(
             "     # Heads-up: 'git: credential-manager-core is not a git command' is a",
             "     # harmless warning from a stale git config — the clone itself succeeds.",
             "     rm -rf ~/.agnes/marketplace",
-            "     git clone \"https://x:{token}@{server_host}/marketplace.git/\" ~/.agnes/marketplace",
-            "     claude plugin marketplace add ~/.agnes/marketplace",
+            "     git clone \"https://x:{token}@{server_host}/marketplace.git/\" ~/.agnes/marketplace || {",
+            "       echo \"ERROR: marketplace clone failed — verify step 0 trust block + network reachability\" >&2",
+            "       exit 1",
+            "     }",
+            "     # Strip the PAT from the cloned repo's origin URL so it doesn't sit",
+            "     # in plaintext at ~/.agnes/marketplace/.git/config. Future marketplace",
+            "     # refreshes go via re-running setup (new PAT) from the dashboard, not",
+            "     # via `git pull` against this clone.",
+            "     git -C ~/.agnes/marketplace remote set-url origin \"https://{server_host}/marketplace.git/\"",
+            "     # Best-effort tighten on POSIX; chmod is a no-op on Windows NTFS via",
+            "     # MSYS / Git Bash, hence the `|| true` so the step never fails there.",
+            "     chmod 700 ~/.agnes/marketplace ~/.agnes/marketplace/.git 2>/dev/null || true",
+            "     chmod 600 ~/.agnes/marketplace/.git/config 2>/dev/null || true",
+            "     claude plugin marketplace add ~/.agnes/marketplace || {",
+            "       echo \"ERROR: claude plugin marketplace add failed\" >&2",
+            "       exit 1",
+            "     }",
             "   fi",
             "",
         ]
         for name in plugin_install_names:
-            lines.append(f"   claude plugin install {name}@{_MARKETPLACE_NAME} --scope project")
+            lines.append(
+                f"   claude plugin install {name}@{_MARKETPLACE_NAME} --scope project || {{"
+            )
+            lines.append(
+                f"     echo \"ERROR: claude plugin install {name}@{_MARKETPLACE_NAME} failed\" >&2; exit 1"
+            )
+            lines.append("   }")
         lines.extend([
             "",
             "   These run non-interactively. After they finish, tell the user to /exit",
