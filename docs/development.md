@@ -22,7 +22,11 @@ configure root.
 
 `LOG_LEVEL` overrides the level (default `DEBUG` when `DEBUG=1`, else `INFO`).
 
-`DEBUG` and `LOG_LEVEL` are read at process start. They cannot be toggled at runtime.
+`DEBUG` and `LOG_LEVEL` are read at process start by `app/main.py` to decide
+whether to mount the toolbar middleware and configure logging handlers. The
+DuckDB connection wrapper in `src/db.py` reads `DEBUG` at call time, so tests
+can toggle it via `monkeypatch.setenv` — but the toolbar itself only mounts
+on initial app construction.
 
 ## Request correlation
 

@@ -22,12 +22,15 @@ logger = logging.getLogger(__name__)
 # records `.execute()` calls into a contextvar buffer the debug toolbar reads
 # at response time. In prod (DEBUG unset), `_maybe_instrument` is a no-op pass-
 # through, so the wrapper is never even constructed on the hot path.
-_DEBUG = os.environ.get("DEBUG", "").lower() in ("1", "true", "yes")
 
 
 def _maybe_instrument(con, db_tag: str):
-    """Wrap a duckdb connection with InstrumentedConnection when DEBUG=1, else return as-is."""
-    if not _DEBUG:
+    """Wrap a duckdb connection with InstrumentedConnection when DEBUG=1, else return as-is.
+
+    DEBUG is read on each call so tests can toggle it via monkeypatch.setenv
+    without reloading this module. Connection creation is not a hot path.
+    """
+    if os.environ.get("DEBUG", "").lower() not in ("1", "true", "yes"):
         return con
     from app.debug.duckdb_panel import InstrumentedConnection
 
