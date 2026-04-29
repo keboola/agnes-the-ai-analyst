@@ -980,6 +980,48 @@ class TestUpdateTableBigQueryValidation:
         )
         assert resp.status_code == 400, resp.text
 
+    def test_put_preserves_registered_at_across_edits(self, seeded_app):
+        """Issue #130 — PUT /api/admin/registry/{id} must NOT reset
+        registered_at on every edit. The original timestamp from the initial
+        register call must survive subsequent PUTs."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        # Initial registration.
+        resp = c.post(
+            "/api/admin/register-table",
+            json={
+                "name": "preserve_ts",
+                "source_type": "keboola",
+                "bucket": "in.c-crm",
+                "source_table": "preserve_ts",
+                "query_mode": "local",
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 201, resp.text
+        # Read the timestamp the registry actually stored.
+        listing = c.get("/api/admin/registry", headers=_auth(token)).json()
+        original_ts = next(
+            r for r in listing["tables"] if r["id"] == "preserve_ts"
+        )["registered_at"]
+        assert original_ts  # not None / empty
+        # Edit the row — PUT a description change.
+        resp = c.put(
+            "/api/admin/registry/preserve_ts",
+            json={"description": "edited"},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+        # Re-read; registered_at must still match the original.
+        listing2 = c.get("/api/admin/registry", headers=_auth(token)).json()
+        post_edit_ts = next(
+            r for r in listing2["tables"] if r["id"] == "preserve_ts"
+        )["registered_at"]
+        assert post_edit_ts == original_ts, (
+            f"registered_at changed across PUT: was {original_ts!r}, "
+            f"now {post_edit_ts!r}"
+        )
+
 
 class TestAuditAllowlistMasking:
     """Review IMPORTANT-5: explicit allowlist instead of substring scan.

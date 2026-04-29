@@ -75,8 +75,13 @@ class TableRegistryRepository:
         source_table: Optional[str] = None, query_mode: str = "local",
         sync_schedule: Optional[str] = None, profile_after_sync: bool = True,
         is_public: bool = True,
+        registered_at: Optional[datetime] = None,
     ) -> None:
-        now = datetime.now(timezone.utc)
+        # `registered_at` defaults to "now" for fresh inserts. Updaters that
+        # want to preserve the original registration time across edits pass
+        # the existing value explicitly — otherwise PUT /api/admin/registry/{id}
+        # would silently reset the timestamp on every edit (issue #130).
+        ts = registered_at or datetime.now(timezone.utc)
         encoded_pk = _encode_primary_key(primary_key)
         self.conn.execute(
             """INSERT INTO table_registry (id, name, folder, sync_strategy,
@@ -92,7 +97,7 @@ class TableRegistryRepository:
                 source_table = excluded.source_table, query_mode = excluded.query_mode,
                 sync_schedule = excluded.sync_schedule, profile_after_sync = excluded.profile_after_sync,
                 is_public = excluded.is_public""",
-            [id, name, folder, sync_strategy, encoded_pk, description, registered_by, now,
+            [id, name, folder, sync_strategy, encoded_pk, description, registered_by, ts,
              source_type, bucket, source_table, query_mode, sync_schedule, profile_after_sync, is_public],
         )
 

@@ -1308,7 +1308,10 @@ async def update_table(
     # row and the next rebuild would silently fail at view-create time —
     # surface the bad shape at PUT time instead.
     if updates:
-        merged = {k: v for k, v in existing.items() if k != "registered_at"}
+        # Preserve the original `registered_at` across PUTs — `repo.register`
+        # now accepts it as an optional kwarg; without this the upsert would
+        # stamp a fresh `now()` on every edit (issue #130).
+        merged = dict(existing)
         merged.update(updates)
         merged.pop("id", None)  # avoid duplicate id kwarg
 
