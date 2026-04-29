@@ -69,16 +69,23 @@ def _get_auth_token() -> str:
     return ""
 
 
-# Schedule definitions: (name, schedule_string, endpoint, method).
+# Schedule definitions: (name, schedule_string, endpoint, method, timeout_sec).
 # All jobs are HTTP — see the module docstring for why nothing runs
 # in-process anymore. ``daily 03:00`` for marketplaces matches the cadence
 # the previous in-process job used; the endpoint is admin-only and
 # idempotent (it iterates the registry and per-marketplace errors do not
 # abort the run).
+#
+# timeout_sec: per-job override for the httpx call. Marketplaces gets a
+# generous 15 min because the app handler iterates every registered
+# marketplace under a single lock with up to 300s of git timeout per
+# entry — at 120s (the default that data-refresh uses) a real-world
+# registry of more than 2-3 slow repos times out the scheduler call,
+# which then re-fires on the next 30s tick and queues a redundant sync.
 JOBS = [
-    ("data-refresh",    "every 15m",   "/api/sync/trigger",         "POST"),
-    ("health-check",    "every 5m",    "/api/health",               "GET"),
-    ("marketplaces",    "daily 03:00", "/api/marketplaces/sync-all", "POST"),
+    ("data-refresh",    "every 15m",   "/api/sync/trigger",          "POST", 120),
+    ("health-check",    "every 5m",    "/api/health",                "GET",   30),
+    ("marketplaces",    "daily 03:00", "/api/marketplaces/sync-all", "POST", 900),
 ]
 
 _running = True
@@ -90,7 +97,7 @@ def _signal_handler(sig, frame):
     _running = False
 
 
-def _call_api(endpoint: str, method: str = "POST") -> bool:
+def _call_api(endpoint: str, method: str, timeout_sec: int) -> bool:
     """Call the main app API. Returns True on success."""
     url = f"{API_URL}{endpoint}"
     headers = {}
@@ -99,9 +106,9 @@ def _call_api(endpoint: str, method: str = "POST") -> bool:
         headers["Authorization"] = f"Bearer {token}"
     try:
         if method == "POST":
-            resp = httpx.post(url, headers=headers, timeout=120)
+            resp = httpx.post(url, headers=headers, timeout=timeout_sec)
         else:
-            resp = httpx.get(url, headers=headers, timeout=30)
+            resp = httpx.get(url, headers=headers, timeout=timeout_sec)
         if resp.status_code < 400:
             logger.info(f"Job {endpoint}: {resp.status_code}")
             return True
@@ -125,11 +132,11 @@ def run():
 
     while _running:
         now_iso = datetime.now(timezone.utc).isoformat()
-        for name, schedule, endpoint, method in JOBS:
+        for name, schedule, endpoint, method, timeout_sec in JOBS:
             if not is_table_due(schedule, last_run[name]):
                 continue
             logger.info("Running job: %s (%s)", name, schedule)
-            ok = _call_api(endpoint, method)
+            ok = _call_api(endpoint, method, timeout_sec)
             if ok:
                 last_run[name] = now_iso
         # 30s tick is plenty: interval jobs have minute-level resolution,

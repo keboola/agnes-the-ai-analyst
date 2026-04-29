@@ -413,7 +413,7 @@ async def trigger_sync(
 
 
 @router.post("/sync-all")
-async def trigger_sync_all(
+def trigger_sync_all(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
@@ -425,6 +425,14 @@ async def trigger_sync_all(
     long-lived ``system.duckdb`` handle (DuckDB allows only one writer per
     file across processes). Routing through the app inherits the existing
     connection without contention.
+
+    Declared ``def`` (not ``async def``) so FastAPI runs it in a thread
+    pool — :func:`sync_marketplaces` does blocking I/O (subprocess git
+    clones with ``GIT_TIMEOUT_SEC=300`` per repo, DuckDB writes, a
+    process-wide threading.Lock) and would freeze the event loop for the
+    duration of a bulk sync if it ran on the asyncio thread. Health
+    checks, login redirects, and every other concurrent request keep
+    serving while the bulk sync churns through the registry.
 
     One audit row per call summarises the outcome — per-marketplace details
     live in ``marketplace_registry`` and the per-call result payload below.
