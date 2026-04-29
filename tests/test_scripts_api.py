@@ -60,8 +60,14 @@ class TestScriptsDeploy:
         data = resp.json()
         assert data["schedule"] == "daily 08:00"
 
-    def test_deploy_script_with_blocked_import_deploys_ok_but_run_fails(self, seeded_app):
-        """Deploy stores scripts as-is; safety validation happens at run time, not deploy time."""
+    def test_deploy_script_with_blocked_import_rejected_at_deploy_time(self, seeded_app):
+        """Deploy validates the source against the safety blocklist BEFORE persisting.
+
+        Previously deploys stored bad scripts as-is and rejected them at run
+        time, which combined with the new run-due endpoint created a
+        perpetual claim-fail-retry loop (Devin ANALYSIS_0004 on the #135
+        review). Reject up front so bad scripts never land in the registry.
+        """
         c = seeded_app["client"]
         admin_token = seeded_app["admin_token"]
         deploy_resp = c.post(
@@ -69,12 +75,8 @@ class TestScriptsDeploy:
             json={"name": "bad_import", "source": "import os; print(os.getcwd())"},
             headers=_auth(admin_token),
         )
-        assert deploy_resp.status_code == 201
-        script_id = deploy_resp.json()["id"]
-
-        run_resp = c.post(f"/api/scripts/{script_id}/run", headers=_auth(admin_token))
-        assert run_resp.status_code == 400
-        assert "Blocked" in run_resp.json()["detail"] or "disallowed" in run_resp.json()["detail"]
+        assert deploy_resp.status_code == 400
+        assert "Blocked" in deploy_resp.json()["detail"] or "disallowed" in deploy_resp.json()["detail"]
 
     def test_deploy_requires_auth(self, seeded_app):
         c = seeded_app["client"]

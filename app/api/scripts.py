@@ -75,7 +75,14 @@ async def deploy_script(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Deploy a Python script to be run on the server (optionally on schedule). Admin-only."""
+    """Deploy a Python script to be run on the server (optionally on schedule). Admin-only.
+
+    Validates the source against the safety blocklist BEFORE persisting —
+    closes the Devin claim-fail-retry loop where a script with blocked
+    patterns would land in script_registry, fail every scheduler tick, and
+    re-claim itself perpetually.
+    """
+    _validate_script_source(request.source)
     repo = ScriptRepository(conn)
     script_id = str(uuid.uuid4())
     repo.deploy(
@@ -204,13 +211,15 @@ def _run_claimed_script(script_id: str, source: str, name: str) -> None:
         bg_conn.close()
 
 
-def _execute_script(source: str, name: str) -> dict:
-    """Execute a Python script in a sandboxed subprocess.
+def _validate_script_source(source: str) -> None:
+    """Reject scripts containing blocked imports / patterns.
 
-    The blocklist below is defense-in-depth, not a primary trust boundary.
-    The role gate on the route (admin-only) is the actual boundary; the
-    blocklist catches obvious mistakes, not a hostile admin."""
-    # Comprehensive safety checks — block dangerous patterns
+    Raises HTTPException(400) on any violation. Called from BOTH the deploy
+    endpoint (so bad scripts never land in script_registry — closes the
+    Devin claim-fail-retry loop where the scheduler would re-claim and
+    re-fail a deployed-but-unrunnable script every tick) and from
+    ``_execute_script`` as defense-in-depth.
+    """
     blocked_patterns = [
         # Direct imports of dangerous modules
         "import subprocess", "from subprocess",
@@ -289,6 +298,16 @@ def _execute_script(source: str, name: str) -> dict:
                 detail=f"Script contains disallowed pattern: {pattern.split('(')[0].strip()}",
             )
 
+
+def _execute_script(source: str, name: str) -> dict:
+    """Execute a Python script in a sandboxed subprocess.
+
+    Defense-in-depth: re-runs ``_validate_script_source`` even though the
+    deploy endpoint already validates. A bad script reaching this path would
+    indicate a registry write that bypassed the deploy contract; reject it
+    rather than spawn a subprocess.
+    """
+    _validate_script_source(source)
     data_dir = os.environ.get("DATA_DIR", "./data")
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
