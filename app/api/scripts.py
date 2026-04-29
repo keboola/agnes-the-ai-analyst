@@ -181,8 +181,12 @@ def _run_claimed_script(script_id: str, source: str, name: str) -> None:
 
     Runs in a FastAPI BackgroundTask, so it owns its own DB connection
     (the request-scoped conn is already gone by the time this fires).
-    Any exception writes 'failure' and re-raises so the BG handler still
-    surfaces the traceback in logs.
+    ``_execute_script`` only raises on safety-check violations — runtime
+    failures (non-zero exit code, ``subprocess.TimeoutExpired`` → exit -1)
+    are returned in the result dict, so we must inspect ``exit_code`` to
+    decide success vs failure rather than treating "no exception" as
+    success. Any exception still writes 'failure' and re-raises so the BG
+    handler surfaces the traceback in logs.
     """
     # Fresh connection for the background task — the request-scoped conn
     # was returned to FastAPI by the time this fires.
@@ -190,8 +194,9 @@ def _run_claimed_script(script_id: str, source: str, name: str) -> None:
     try:
         bg_repo = ScriptRepository(bg_conn)
         try:
-            _execute_script(source, name)
-            bg_repo.record_run_result(script_id, status="success")
+            result = _execute_script(source, name)
+            status = "success" if result.get("exit_code", 1) == 0 else "failure"
+            bg_repo.record_run_result(script_id, status=status)
         except Exception:
             bg_repo.record_run_result(script_id, status="failure")
             raise

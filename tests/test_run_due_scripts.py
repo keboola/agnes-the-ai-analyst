@@ -153,6 +153,62 @@ def test_run_due_claims_due_scripts(seeded_app, monkeypatch):
     assert "report" in calls
 
 
+def test_run_due_records_failure_when_script_exits_nonzero(seeded_app, monkeypatch):
+    """`_execute_script` returns `{exit_code: N, ...}` for non-zero exits +
+    timeouts (only safety violations RAISE). `_run_claimed_script` must
+    inspect exit_code rather than treat "no exception" as success — see
+    Devin review BUG_0001."""
+    monkeypatch.setattr(
+        "app.api.scripts._execute_script",
+        lambda src, name: {
+            "name": name, "exit_code": 1,
+            "stdout": "", "stderr": "boom", "truncated": False,
+        },
+    )
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    deploy = c.post(
+        "/api/scripts/deploy",
+        json={"name": "broken", "source": "print(1)", "schedule": "every 1h"},
+        headers=_auth(token),
+    )
+    assert deploy.status_code == 201
+    script_id = deploy.json()["id"]
+    resp = c.post("/api/scripts/run-due", headers=_auth(token))
+    assert resp.json()["claimed"] == [script_id]
+    # BackgroundTasks runs synchronously inside TestClient — by now the
+    # terminal status must be 'failure', not 'success'.
+    listing = c.get("/api/scripts", headers=_auth(token)).json()["scripts"]
+    row = next(s for s in listing if s["id"] == script_id)
+    assert row["last_status"] == "failure", (
+        f"non-zero exit_code must record 'failure', got {row['last_status']!r}"
+    )
+
+
+def test_run_due_records_success_when_script_exits_zero(seeded_app, monkeypatch):
+    """Mirror of the failure test — exit_code=0 must record 'success'."""
+    monkeypatch.setattr(
+        "app.api.scripts._execute_script",
+        lambda src, name: {
+            "name": name, "exit_code": 0,
+            "stdout": "ok", "stderr": "", "truncated": False,
+        },
+    )
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    deploy = c.post(
+        "/api/scripts/deploy",
+        json={"name": "good", "source": "print(1)", "schedule": "every 1h"},
+        headers=_auth(token),
+    )
+    assert deploy.status_code == 201
+    script_id = deploy.json()["id"]
+    c.post("/api/scripts/run-due", headers=_auth(token))
+    listing = c.get("/api/scripts", headers=_auth(token)).json()["scripts"]
+    row = next(s for s in listing if s["id"] == script_id)
+    assert row["last_status"] == "success"
+
+
 def test_run_due_skips_scripts_already_running(seeded_app, monkeypatch):
     """A script in 'running' state must not be re-claimed by a second
     sidecar tick that arrives while the previous run is still going."""

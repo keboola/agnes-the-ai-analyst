@@ -125,6 +125,26 @@ def test_filter_due_tables_handles_naive_last_sync():
     assert [c["id"] for c in out] == ["old"]
 
 
+def test_filter_due_tables_keys_lookup_by_name_when_id_differs():
+    """sync_state.table_id is populated from _meta.table_name (= registry
+    name), NOT registry id. When id != name (auto-discovered Keboola rows),
+    the helper must look up sync_state by NAME or it sees last_sync=None
+    for every row → degrades to "always sync" → schedule no-op. See
+    Devin review BUG_0002 + the comment in app/api/sync.py:244-249."""
+    configs = [{
+        "id": "in_c-crm_company",   # auto-discovered shape
+        "name": "company",          # what _meta.table_name records
+        "sync_schedule": "every 1h",
+    }]
+    # 30m ago — keyed by NAME, the lookup must hit and the table must skip.
+    repo = _FakeSyncStateRepo({"company": _utc(2026, 5, 1, 9, 30)})
+    out = filter_due_tables(configs, repo, now=_utc(2026, 5, 1, 10, 0))
+    assert out == [], (
+        "id-keyed lookup would have missed sync_state, treated table as "
+        "never-synced, and kept it. The fix keys by name."
+    )
+
+
 # ---------------- _run_sync wiring ------------------------------------------
 
 def test_run_sync_filters_local_tables_by_schedule(monkeypatch, tmp_path):
