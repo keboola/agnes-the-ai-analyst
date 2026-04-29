@@ -23,6 +23,8 @@ CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "./config"))
 
 _ENV_PATTERN = re.compile(r"\$\{([^}]+)\}")
 
+SUPPORTED_CONFIG_VERSIONS = {1}
+
 
 def _resolve_env_refs(value: Any, _path: str = "") -> Any:
     """Resolve ${ENV_VAR} references in config values.
@@ -64,6 +66,31 @@ def _resolve_env_refs(value: Any, _path: str = "") -> Any:
     return value
 
 
+def _validate_config_version(config: dict) -> None:
+    """Validate config_version field in the loaded config.
+
+    Reads config_version from the config dict. If missing, logs a warning
+    and defaults to 0. If the version is not in SUPPORTED_CONFIG_VERSIONS,
+    raises an error with a clear message.
+
+    Raises:
+        ValueError: If config_version is not supported.
+    """
+    version = config.get("config_version")
+    if version is None:
+        logger.warning(
+            "config_version not set in instance.yaml; defaulting to 0. "
+            "Add config_version: 1 to your config for forward compatibility."
+        )
+        version = 0
+    if version not in SUPPORTED_CONFIG_VERSIONS:
+        raise ValueError(
+            f"Unsupported config_version: {version}. "
+            f"Supported versions: {sorted(SUPPORTED_CONFIG_VERSIONS)}. "
+            f"Update your instance.yaml config_version field."
+        )
+
+
 def load_instance_config() -> dict[str, Any]:
     """Load instance configuration from instance.yaml.
 
@@ -95,6 +122,7 @@ def load_instance_config() -> dict[str, Any]:
         raise ValueError("instance.yaml is empty")
 
     config = _resolve_env_refs(config)
+    _validate_config_version(config)
     _validate_config(config)
     logger.info("Instance config loaded from %s", path)
     return config

@@ -31,6 +31,17 @@ jobs:
       - name: Install dependencies
         run: uv pip install --system ".[dev]"
 
+      - name: Lint with ruff
+        run: |
+          pip install ruff
+          ruff check .
+
+      - name: Type check with mypy
+        run: |
+          pip install mypy
+          mypy src/ app/ cli/ connectors/ --ignore-missing-imports --no-error-summary || true
+        continue-on-error: true  # Don't block on mypy initially, can tighten later
+
       - name: Run tests
         run: pytest tests/ -v --tb=short
         env:
@@ -175,6 +186,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Start Agnes from built image
         run: |
@@ -188,6 +202,38 @@ jobs:
 
       - name: Run smoke tests
         run: bash scripts/smoke-test.sh http://localhost:8000
+
+      - name: Automatic rollback on failure
+        if: failure()
+        run: |
+          IMAGE_TAG="${{ needs.build-and-push.outputs.image_tag }}"
+          VERSION="${{ needs.build-and-push.outputs.version }}"
+          DEPRECATED_TAG="deprecated-${VERSION}"
+          REPO="ghcr.io/${{ github.repository }}"
+
+          echo "Smoke test failed — initiating rollback"
+
+          # Tag the current (failed) image as :deprecated-YYYY.MM.N
+          docker pull "${REPO}:${IMAGE_TAG}"
+          docker tag "${REPO}:${IMAGE_TAG}" "${REPO}:${DEPRECATED_TAG}"
+          docker push "${REPO}:${DEPRECATED_TAG}"
+          echo "Tagged failed image as ${REPO}:${DEPRECATED_TAG}"
+
+          # Revert :stable to the previous known-good image
+          PREV_TAG=$(git tag -l "stable-*" --sort=-version:refname | head -2 | tail -1)
+          if [ -n "$PREV_TAG" ]; then
+            docker pull "${REPO}:${PREV_TAG}"
+            docker tag "${REPO}:${PREV_TAG}" "${REPO}:stable"
+            docker push "${REPO}:stable"
+            echo "Reverted :stable to ${PREV_TAG}"
+          else
+            echo "WARNING: No previous stable tag found — cannot revert :stable automatically"
+          fi
+
+          # Create a GitHub issue alerting about the failure
+          ISSUE_TITLE="Smoke test failure — rollback to ${PREV_TAG:-unknown}"
+          ISSUE_BODY="## Automatic Rollback Report\n\nThe smoke test for image \`${IMAGE_TAG}\` failed.\n\n- **Failed image**: \`${REPO}:${IMAGE_TAG}\`\n- **Deprecated tag**: \`${REPO}:${DEPRECATED_TAG}\`\n- **Rolled back to**: \`${PREV_TAG:-N/A}\`\n- **Commit**: \`${{ github.sha }}\`\n- **Run**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\n\nPlease investigate and fix before re-deploying."
+          gh issue create --title "$ISSUE_TITLE" --body "$(echo -e "$ISSUE_BODY")" --label "bug" || echo "Failed to create GitHub issue (gh CLI may not be available)"
 
       - name: Collect logs on failure
         if: failure()

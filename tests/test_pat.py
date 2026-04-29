@@ -699,3 +699,94 @@ def test_pat_null_expiry_end_to_end_allows_authenticated_request(fresh_db):
     listed = client.get("/auth/tokens", headers={"Authorization": f"Bearer {pat}"})
     assert listed.status_code == 200, listed.text
     assert any(row["name"] == "forever" for row in listed.json())
+
+
+class TestPATMalformedToken:
+    """Tests for malformed and edge-case PAT tokens."""
+
+    def test_malformed_jwt_rejected(self, fresh_db):
+        """A completely malformed JWT string must be rejected with 401."""
+        from fastapi.testclient import TestClient
+        from app.main import app
+
+        client = TestClient(app)
+        resp = client.get(
+            "/api/users",
+            headers={"Authorization": "Bearer not.a.valid.jwt", "Accept": "application/json"},
+        )
+        assert resp.status_code == 401
+
+    def test_random_string_rejected(self, fresh_db):
+        """A random string (not JWT format) must be rejected with 401."""
+        from fastapi.testclient import TestClient
+        from app.main import app
+
+        client = TestClient(app)
+        resp = client.get(
+            "/api/users",
+            headers={"Authorization": "Bearer totally-random-garbage", "Accept": "application/json"},
+        )
+        assert resp.status_code == 401
+
+    def test_empty_bearer_rejected(self, fresh_db):
+        """An empty Bearer token must be rejected with 401."""
+        from fastapi.testclient import TestClient
+        from app.main import app
+
+        client = TestClient(app)
+        resp = client.get(
+            "/api/users",
+            headers={"Authorization": "Bearer ", "Accept": "application/json"},
+        )
+        assert resp.status_code in (401, 403)
+
+    def test_pat_last_used_ip_updated(self, fresh_db):
+        """Successful PAT use must update last_used_ip in the DB."""
+        from fastapi.testclient import TestClient
+        import hashlib, uuid
+        from datetime import datetime, timezone, timedelta
+        from src.db import get_system_db, close_system_db
+        from src.repositories.users import UserRepository
+        from src.repositories.access_tokens import AccessTokenRepository
+        from app.auth.jwt import create_access_token
+        from app.main import app
+
+        conn = get_system_db()
+        try:
+            uid = str(uuid.uuid4())
+            UserRepository(conn).create(id=uid, email="ip@t", name="IP", role="admin")
+            from tests.helpers.auth import grant_admin
+            grant_admin(conn, uid)
+            tid = str(uuid.uuid4())
+            pat = create_access_token(
+                user_id=uid, email="ip@t", role="admin", token_id=tid, typ="pat",
+                expires_delta=timedelta(days=90),
+            )
+            AccessTokenRepository(conn).create(
+                id=tid, user_id=uid, name="ip-test",
+                token_hash=hashlib.sha256(pat.encode()).hexdigest(),
+                prefix=tid.replace("-", "")[:8],
+                expires_at=datetime.now(timezone.utc) + timedelta(days=90),
+            )
+        finally:
+            conn.close()
+            close_system_db()
+
+        client = TestClient(app)
+        resp = client.get(
+            "/api/users",
+            headers={
+                "Authorization": f"Bearer {pat}",
+                "Accept": "application/json",
+                "X-Forwarded-For": "10.20.30.40",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+
+        conn = get_system_db()
+        try:
+            row = AccessTokenRepository(conn).get_by_id(tid)
+            assert row["last_used_ip"] == "10.20.30.40", "last_used_ip should be updated"
+        finally:
+            conn.close()
+            close_system_db()

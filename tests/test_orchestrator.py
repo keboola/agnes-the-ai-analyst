@@ -413,3 +413,145 @@ class TestSyncOrchestrator:
         assert "orders" in result["keboola"]
         # Malicious table_name must not appear
         assert "evil; DROP TABLE users--" not in result["keboola"]
+
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator failure mode tests
+# ---------------------------------------------------------------------------
+
+
+class TestOrchestratorFailureModes:
+    """Tests for how the orchestrator handles corrupted or partial extract.duckdb files."""
+
+    def test_corrupted_extract_duckdb_skipped_not_crashed(self, setup_env):
+        """A corrupted extract.duckdb should be skipped (with a warning) and
+        not crash the orchestrator. Other sources should still be processed."""
+        from src.orchestrator import SyncOrchestrator
+
+        # Create a corrupted extract.duckdb
+        corrupt_dir = setup_env["extracts_dir"] / "corrupt_source"
+        corrupt_dir.mkdir()
+        db_path = corrupt_dir / "extract.duckdb"
+        db_path.write_bytes(b"this is not a valid duckdb file!!!")
+
+        # Also create a valid source
+        _create_mock_extract(
+            setup_env["extracts_dir"],
+            "keboola",
+            [{"name": "orders", "data": [{"id": "1"}]}],
+        )
+
+        orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
+        result = orch.rebuild()
+
+        # Corrupt source should not appear
+        assert "corrupt_source" not in result
+        # Valid source should still be processed
+        assert "keboola" in result
+
+    def test_empty_extract_duckdb_skipped(self, setup_env):
+        """An extract.duckdb with _meta but no rows should be handled gracefully."""
+        from src.orchestrator import SyncOrchestrator
+
+        source_dir = setup_env["extracts_dir"] / "empty_source"
+        source_dir.mkdir()
+        (source_dir / "data").mkdir()
+
+        db_path = source_dir / "extract.duckdb"
+        conn = duckdb.connect(str(db_path))
+        conn.execute("""CREATE TABLE _meta (
+            table_name VARCHAR, description VARCHAR, rows BIGINT,
+            size_bytes BIGINT, extracted_at TIMESTAMP,
+            query_mode VARCHAR DEFAULT 'local'
+        )""")
+        # No rows in _meta
+        conn.close()
+
+        orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
+        result = orch.rebuild()
+
+        # Empty source appears but with no tables
+        assert "empty_source" in result
+        assert result["empty_source"] == []
+
+    def test_extract_duckdb_with_only_failed_tables(self, setup_env):
+        """An extract.duckdb where all tables have unsafe names should produce
+        no views in the analytics DB."""
+        from src.orchestrator import SyncOrchestrator
+
+        source_dir = setup_env["extracts_dir"] / "bad_names"
+        source_dir.mkdir()
+        (source_dir / "data").mkdir()
+
+        db_path = source_dir / "extract.duckdb"
+        conn = duckdb.connect(str(db_path))
+        conn.execute("""CREATE TABLE _meta (
+            table_name VARCHAR, description VARCHAR, rows BIGINT,
+            size_bytes BIGINT, extracted_at TIMESTAMP,
+            query_mode VARCHAR DEFAULT 'local'
+        )""")
+        # All unsafe names
+        conn.execute("INSERT INTO _meta VALUES ('bad-name', '', 0, 0, current_timestamp, 'local')")
+        conn.execute("INSERT INTO _meta VALUES ('also bad', '', 0, 0, current_timestamp, 'local')")
+        conn.close()
+
+        orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
+        result = orch.rebuild()
+
+        # Source appears but with no valid tables
+        assert "bad_names" in result
+        assert result["bad_names"] == []
+
+    def test_mid_write_extract_duckdb_handled_gracefully(self, setup_env):
+        """If an extractor is mid-write (tmp file exists but hasn't been
+        swapped yet), the orchestrator should not crash."""
+        from src.orchestrator import SyncOrchestrator
+
+        source_dir = setup_env["extracts_dir"] / "midwrite"
+        source_dir.mkdir()
+        (source_dir / "data").mkdir()
+
+        # No extract.duckdb, but a .tmp file exists (mid-write)
+        tmp_path = source_dir / "extract.duckdb.tmp"
+        tmp_path.write_bytes(b"partial data")
+
+        # Also create a valid source
+        _create_mock_extract(
+            setup_env["extracts_dir"],
+            "keboola",
+            [{"name": "orders", "data": [{"id": "1"}]}],
+        )
+
+        orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
+        result = orch.rebuild()
+
+        # midwrite source should not appear (no extract.duckdb)
+        assert "midwrite" not in result
+        # Valid source should still work
+        assert "keboola" in result
+
+    def test_multiple_corrupted_sources_do_not_block_others(self, setup_env):
+        """Multiple corrupted extract.duckdb files should not prevent
+        processing of valid sources."""
+        from src.orchestrator import SyncOrchestrator
+
+        # Create two corrupted sources
+        for name in ["corrupt_a", "corrupt_b"]:
+            d = setup_env["extracts_dir"] / name
+            d.mkdir()
+            (d / "extract.duckdb").write_bytes(b"garbage " + name.encode())
+
+        # Create a valid source
+        _create_mock_extract(
+            setup_env["extracts_dir"],
+            "keboola",
+            [{"name": "orders", "data": [{"id": "1"}]}],
+        )
+
+        orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
+        result = orch.rebuild()
+
+        assert "corrupt_a" not in result
+        assert "corrupt_b" not in result
+        assert "keboola" in result

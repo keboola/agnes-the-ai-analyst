@@ -6,6 +6,11 @@
 # SECRET VALUES use ${ENV_VAR} syntax - actual values go in .env file.
 # Non-secret values are set directly here.
 
+# --- Config version ---
+# Incremented when the config schema changes. Must match SUPPORTED_CONFIG_VERSIONS
+# in config/loader.py. Currently only version 1 is supported.
+config_version: 1
+
 # --- Instance branding ---
 instance:
   name: "AI Data Analyst"

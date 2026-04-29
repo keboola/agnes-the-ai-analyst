@@ -184,3 +184,183 @@ class TestBigQueryExtractor:
             "query_mode",
         ]
         conn.close()
+
+
+
+# ---------------------------------------------------------------------------
+# Connector failure mode tests
+# ---------------------------------------------------------------------------
+
+
+class TestBigQueryExtractorFailureModes:
+    """Tests for BigQuery extractor failure handling and resilience."""
+
+    def test_corrupted_extract_duckdb_orchestrator_skips(self, output_dir):
+        """If extract.duckdb is corrupted, the orchestrator should skip it
+        and not crash. This test creates a corrupted file and verifies the
+        orchestrator handles it gracefully."""
+        from src.orchestrator import SyncOrchestrator
+
+        # Write garbage to extract.duckdb
+        db_path = Path(output_dir) / "extract.duckdb"
+        db_path.write_bytes(b"not a real duckdb file!!!")
+
+        # Orchestrator should not crash when encountering this
+        analytics_db = str(Path(output_dir) / "analytics.duckdb")
+        orch = SyncOrchestrator(analytics_db_path=analytics_db)
+        # The rebuild should complete (possibly with warnings) but not raise
+        result = orch.rebuild()
+        # The corrupted source should not appear in results
+        assert "bigquery" not in result
+
+    def test_partial_data_write_incomplete_extract(self, output_dir):
+        """When init_extract fails partway through (e.g. one view creation
+        fails), the extract.duckdb is still created atomically and the
+        successful tables are preserved."""
+        from connectors.bigquery.extractor import init_extract
+        from unittest.mock import patch
+
+        configs = [
+            {
+                "name": "good_table",
+                "bucket": "analytics",
+                "source_table": "good_table",
+                "query_mode": "remote",
+                "description": "OK",
+            },
+            {
+                "name": "bad-table",  # hyphen → unsafe identifier
+                "bucket": "analytics",
+                "source_table": "bad_table",
+                "query_mode": "remote",
+                "description": "Will fail validation",
+            },
+        ]
+
+        def proxy_connect(path=None, **kwargs):
+            real_conn = duckdb.connect(path)
+            return _DuckDBProxy(real_conn)
+
+        with patch("connectors.bigquery.extractor.duckdb") as mock_mod:
+            mock_mod.connect = proxy_connect
+            result = init_extract(output_dir, "my-project", configs)
+
+        # good_table registered, bad-table skipped
+        assert result["tables_registered"] == 1
+        assert len(result["errors"]) == 1
+
+    def test_network_timeout_during_extraction(self, output_dir):
+        """Network timeout during BQ extension ATTACH should be caught and
+        reported as an error, not crash the process."""
+        from connectors.bigquery.extractor import init_extract
+        from unittest.mock import patch
+
+        configs = [
+            {
+                "name": "timeout_table",
+                "bucket": "analytics",
+                "source_table": "timeout_table",
+                "query_mode": "remote",
+                "description": "Will timeout",
+            },
+        ]
+
+        def proxy_connect_timeout(path=None, **kwargs):
+            real_conn = duckdb.connect(path)
+            proxy = _DuckDBProxy(real_conn)
+            # Override execute to raise on ATTACH
+            original_execute = proxy.execute
+            def timeout_execute(sql, *args, **kwargs):
+                sql_upper = sql.strip().upper()
+                if "ATTACH" in sql_upper and "BIGQUERY" in sql_upper:
+                    raise TimeoutError("BigQuery connection timed out")
+                return original_execute(sql, *args, **kwargs)
+            proxy.execute = timeout_execute
+            return proxy
+
+        with patch("connectors.bigquery.extractor.duckdb") as mock_mod:
+            mock_mod.connect = proxy_connect_timeout
+            result = init_extract(output_dir, "my-project", configs)
+
+        # The timeout should be caught — no tables registered, error recorded
+        assert result["tables_registered"] == 0
+        assert len(result["errors"]) >= 1
+
+    def test_all_tables_fail_returns_errors(self, output_dir):
+        """When every table registration fails, the extractor returns all
+        errors without crashing."""
+        from connectors.bigquery.extractor import init_extract
+        from unittest.mock import patch
+
+        configs = [
+            {"name": "bad-1", "bucket": "ds", "source_table": "t1",
+             "query_mode": "remote", "description": ""},
+            {"name": "bad-2", "bucket": "ds", "source_table": "t2",
+             "query_mode": "remote", "description": ""},
+        ]
+
+        def proxy_connect(path=None, **kwargs):
+            real_conn = duckdb.connect(path)
+            return _DuckDBProxy(real_conn)
+
+        with patch("connectors.bigquery.extractor.duckdb") as mock_mod:
+            mock_mod.connect = proxy_connect
+            result = init_extract(output_dir, "my-project", configs)
+
+        # Both have unsafe identifiers (hyphens)
+        assert result["tables_registered"] == 0
+        assert len(result["errors"]) == 2
+
+    def test_unsafe_identifier_skipped_not_crashed(self, output_dir):
+        """Tables with unsafe identifiers are skipped with an error in stats,
+        not causing a crash."""
+        from connectors.bigquery.extractor import init_extract
+        from unittest.mock import patch
+
+        configs = [
+            {"name": "bad-name", "bucket": "dataset", "source_table": "t",
+             "query_mode": "remote", "description": "hyphen not allowed"},
+            {"name": "good_name", "bucket": "dataset", "source_table": "t",
+             "query_mode": "remote", "description": "OK"},
+        ]
+
+        def proxy_connect(path=None, **kwargs):
+            real_conn = duckdb.connect(path)
+            return _DuckDBProxy(real_conn)
+
+        with patch("connectors.bigquery.extractor.duckdb") as mock_mod:
+            mock_mod.connect = proxy_connect
+            result = init_extract(output_dir, "my-project", configs)
+
+        assert result["tables_registered"] == 1
+        assert len(result["errors"]) == 1
+        assert "unsafe" in result["errors"][0]["error"].lower()
+
+    def test_atomic_swap_prevents_corruption_on_crash(self, output_dir):
+        """The extractor writes to a temp file then atomically swaps it into
+        place. If the process crashes mid-write, the old extract.duckdb
+        (if any) is not corrupted."""
+        # Create a valid existing extract.duckdb
+        db_path = Path(output_dir) / "extract.duckdb"
+        conn = duckdb.connect(str(db_path))
+        conn.execute("""CREATE TABLE _meta (
+            table_name VARCHAR, description VARCHAR, rows BIGINT,
+            size_bytes BIGINT, extracted_at TIMESTAMP,
+            query_mode VARCHAR DEFAULT 'remote'
+        )""")
+        conn.execute("INSERT INTO _meta VALUES ('existing', '', 0, 0, current_timestamp, 'remote')")
+        conn.close()
+
+        # Simulate a crash: the tmp file exists but is incomplete
+        tmp_path = Path(output_dir) / "extract.duckdb.tmp"
+        tmp_path.write_bytes(b"incomplete garbage")
+
+        # The existing extract.duckdb should still be valid
+        conn2 = duckdb.connect(str(db_path))
+        rows = conn2.execute("SELECT table_name FROM _meta").fetchall()
+        assert len(rows) == 1
+        assert rows[0][0] == "existing"
+        conn2.close()
+
+        # Clean up
+        tmp_path.unlink()

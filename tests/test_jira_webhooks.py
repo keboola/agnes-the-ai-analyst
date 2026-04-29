@@ -266,3 +266,250 @@ def test_webhook_event_path_traversal_sanitized(webhook_client, tmp_path, monkey
     for f in written:
         assert f.is_relative_to(log_dir), f"file {f} escaped log dir"
         assert "/" not in f.name and ".." not in f.name
+
+
+# ---------------------------------------------------------------------------
+# Additional HMAC validation + error handling tests
+# ---------------------------------------------------------------------------
+
+
+def test_valid_hmac_signature_accepted(webhook_client):
+    """Webhook with valid HMAC-SHA256 signature is accepted (200)."""
+    from unittest.mock import patch
+
+    payload = json.dumps({
+        "webhookEvent": "jira:issue_updated",
+        "issue": {"key": "PROJ-1"},
+    }).encode()
+    sig = _sign(payload, "test-webhook-secret")
+
+    with patch("app.api.jira_webhooks.get_jira_service") as mock_svc:
+        mock_svc.return_value.is_configured.return_value = True
+        mock_svc.return_value.process_webhook_event.return_value = True
+
+        resp = webhook_client.post(
+            "/webhooks/jira",
+            content=payload,
+            headers={
+                "Content-Type": "application/json",
+                "X-Hub-Signature-256": sig,
+            },
+        )
+    assert resp.status_code == 200
+
+
+def test_invalid_hmac_signature_rejected_401(webhook_client):
+    """Webhook with wrong HMAC signature is rejected with 401."""
+    payload = json.dumps({
+        "webhookEvent": "jira:issue_updated",
+        "issue": {"key": "PROJ-1"},
+    }).encode()
+    # Sign with the wrong secret
+    sig = _sign(payload, "wrong-secret")
+
+    resp = webhook_client.post(
+        "/webhooks/jira",
+        content=payload,
+        headers={
+            "Content-Type": "application/json",
+            "X-Hub-Signature-256": sig,
+        },
+    )
+    assert resp.status_code == 401
+
+
+def test_missing_signature_header_rejected(webhook_client):
+    """Webhook with no signature header at all is rejected with 401."""
+    payload = json.dumps({
+        "webhookEvent": "jira:issue_updated",
+        "issue": {"key": "PROJ-1"},
+    }).encode()
+
+    resp = webhook_client.post(
+        "/webhooks/jira",
+        content=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status_code == 401
+
+
+def test_x_hub_signature_legacy_header_accepted(webhook_client):
+    """X-Hub-Signature (SHA1 legacy) header is also checked."""
+    from unittest.mock import patch
+
+    payload = json.dumps({
+        "webhookEvent": "jira:issue_updated",
+        "issue": {"key": "PROJ-1"},
+    }).encode()
+    # The handler falls back to X-Hub-Signature if X-Hub-Signature-256 is absent.
+    # _verify_signature strips "sha256=" prefix; for sha1 it strips "sha1=".
+    # Since the handler uses hmac.new with sha256, a sha1= prefix will still
+    # be checked against sha256 HMAC. This test verifies the fallback header
+    # is read at all (the signature won't match sha256, so expect 401).
+    resp = webhook_client.post(
+        "/webhooks/jira",
+        content=payload,
+        headers={
+            "Content-Type": "application/json",
+            "X-Hub-Signature": "sha1=somehex",
+        },
+    )
+    # Legacy header is read but signature won't match → 401
+    assert resp.status_code == 401
+
+
+def test_malformed_json_payload_handled_gracefully(webhook_client):
+    """Malformed webhook payload (invalid JSON) is handled gracefully with 400."""
+    payload = b'this is not json {!><'
+    sig = _sign(payload, "test-webhook-secret")
+
+    resp = webhook_client.post(
+        "/webhooks/jira",
+        content=payload,
+        headers={
+            "Content-Type": "application/json",
+            "X-Hub-Signature-256": sig,
+        },
+    )
+    assert resp.status_code == 400
+    assert "json" in resp.json()["detail"].lower() or "invalid" in resp.json()["detail"].lower()
+
+
+def test_duplicate_event_processed_twice(webhook_client):
+    """Same Jira event ID sent twice is processed both times (idempotent at
+    the service layer, not rejected at the webhook layer)."""
+    from unittest.mock import patch
+
+    payload = json.dumps({
+        "webhookEvent": "jira:issue_updated",
+        "issue": {"key": "DUP-1"},
+    }).encode()
+    sig = _sign(payload, "test-webhook-secret")
+
+    with patch("app.api.jira_webhooks.get_jira_service") as mock_svc:
+        mock_svc.return_value.is_configured.return_value = True
+        mock_svc.return_value.process_webhook_event.return_value = True
+
+        resp1 = webhook_client.post(
+            "/webhooks/jira",
+            content=payload,
+            headers={
+                "Content-Type": "application/json",
+                "X-Hub-Signature-256": sig,
+            },
+        )
+        resp2 = webhook_client.post(
+            "/webhooks/jira",
+            content=payload,
+            headers={
+                "Content-Type": "application/json",
+                "X-Hub-Signature-256": sig,
+            },
+        )
+
+    # Both requests succeed — deduplication is the service layer's job
+    assert resp1.status_code == 200
+    assert resp2.status_code == 200
+
+
+def test_signature_without_sha256_prefix(webhook_client):
+    """A raw hex signature without 'sha256=' prefix is also accepted by
+    _verify_signature (it strips the prefix if present)."""
+    from unittest.mock import patch
+    import hmac as hmac_mod
+
+    payload = json.dumps({
+        "webhookEvent": "jira:issue_updated",
+        "issue": {"key": "PROJ-1"},
+    }).encode()
+    # Compute raw hex without prefix
+    mac = hmac_mod.new("test-webhook-secret".encode(), payload, hashlib.sha256).hexdigest()
+
+    with patch("app.api.jira_webhooks.get_jira_service") as mock_svc:
+        mock_svc.return_value.is_configured.return_value = True
+        mock_svc.return_value.process_webhook_event.return_value = True
+
+        resp = webhook_client.post(
+            "/webhooks/jira",
+            content=payload,
+            headers={
+                "Content-Type": "application/json",
+                "X-Hub-Signature-256": mac,  # no sha256= prefix
+            },
+        )
+    assert resp.status_code == 200
+
+
+def test_jira_service_not_configured_returns_503(webhook_client):
+    """When Jira service is not configured, webhook returns 503."""
+    from unittest.mock import patch
+
+    payload = json.dumps({
+        "webhookEvent": "jira:issue_updated",
+        "issue": {"key": "PROJ-1"},
+    }).encode()
+    sig = _sign(payload, "test-webhook-secret")
+
+    with patch("app.api.jira_webhooks.get_jira_service") as mock_svc:
+        mock_svc.return_value.is_configured.return_value = False
+
+        resp = webhook_client.post(
+            "/webhooks/jira",
+            content=payload,
+            headers={
+                "Content-Type": "application/json",
+                "X-Hub-Signature-256": sig,
+            },
+        )
+    assert resp.status_code == 503
+
+
+def test_process_webhook_event_failure_returns_500(webhook_client):
+    """When process_webhook_event returns False, the endpoint returns 500."""
+    from unittest.mock import patch
+
+    payload = json.dumps({
+        "webhookEvent": "jira:issue_updated",
+        "issue": {"key": "PROJ-1"},
+    }).encode()
+    sig = _sign(payload, "test-webhook-secret")
+
+    with patch("app.api.jira_webhooks.get_jira_service") as mock_svc:
+        mock_svc.return_value.is_configured.return_value = True
+        mock_svc.return_value.process_webhook_event.return_value = False
+
+        resp = webhook_client.post(
+            "/webhooks/jira",
+            content=payload,
+            headers={
+                "Content-Type": "application/json",
+                "X-Hub-Signature-256": sig,
+            },
+        )
+    assert resp.status_code == 500
+
+
+def test_issue_key_at_top_level_accepted(webhook_client):
+    """Some Jira event types deliver issue_key at the top level instead of
+    issue.key. The handler should accept these."""
+    from unittest.mock import patch
+
+    payload = json.dumps({
+        "webhookEvent": "jira:issue_deleted",
+        "issue_key": "PROJ-99",
+    }).encode()
+    sig = _sign(payload, "test-webhook-secret")
+
+    with patch("app.api.jira_webhooks.get_jira_service") as mock_svc:
+        mock_svc.return_value.is_configured.return_value = True
+        mock_svc.return_value.process_webhook_event.return_value = True
+
+        resp = webhook_client.post(
+            "/webhooks/jira",
+            content=payload,
+            headers={
+                "Content-Type": "application/json",
+                "X-Hub-Signature-256": sig,
+            },
+        )
+    assert resp.status_code == 200

@@ -101,6 +101,59 @@ else
     check "post-sync health ($HEALTH2)" "true"
 fi
 
+# 7. Catalog endpoint (authenticated)
+if [ -n "$TOKEN" ]; then
+    CATALOG_HTTP=$(curl -s -o /tmp/smoke_catalog.json -w "%{http_code}" "$HOST/api/catalog" \
+      -H "Authorization: Bearer $TOKEN" 2>/dev/null || echo "000")
+    if [[ "$CATALOG_HTTP" =~ ^(200|404)$ ]]; then
+        check "catalog endpoint (HTTP $CATALOG_HTTP)" "true"
+    else
+        check "catalog endpoint (HTTP $CATALOG_HTTP)" "false"
+    fi
+else
+    echo "  SKIP catalog (no token)"
+fi
+
+# 8. Admin tables endpoint (authenticated)
+if [ -n "$TOKEN" ]; then
+    TABLES_HTTP=$(curl -s -o /tmp/smoke_tables.json -w "%{http_code}" "$HOST/api/admin/tables" \
+      -H "Authorization: Bearer $TOKEN" 2>/dev/null || echo "000")
+    if [[ "$TABLES_HTTP" =~ ^(200|403)$ ]]; then
+        check "admin tables endpoint (HTTP $TABLES_HTTP)" "true"
+    else
+        check "admin tables endpoint (HTTP $TABLES_HTTP)" "false"
+    fi
+else
+    echo "  SKIP admin tables (no token)"
+fi
+
+# 9. Marketplace.zip endpoint (with PAT auth if available)
+MARKETPLACE_PAT="${AGNES_PAT:-${SMOKE_PAT:-}}"
+if [ -n "$MARKETPLACE_PAT" ]; then
+    MARKET_HTTP=$(curl -s -o /tmp/smoke_marketplace.zip -w "%{http_code}" "$HOST/api/marketplace.zip" \
+      -H "Authorization: Bearer $MARKETPLACE_PAT" 2>/dev/null || echo "000")
+    if [[ "$MARKET_HTTP" =~ ^(200|304|404)$ ]]; then
+        check "marketplace.zip (HTTP $MARKET_HTTP)" "true"
+    else
+        check "marketplace.zip (HTTP $MARKET_HTTP)" "false"
+    fi
+else
+    echo "  SKIP marketplace.zip (no PAT — set AGNES_PAT or SMOKE_PAT to test)"
+fi
+
+# 10. Metrics endpoint (authenticated)
+if [ -n "$TOKEN" ]; then
+    METRICS_HTTP=$(curl -s -o /tmp/smoke_metrics.json -w "%{http_code}" "$HOST/api/metrics" \
+      -H "Authorization: Bearer $TOKEN" 2>/dev/null || echo "000")
+    if [[ "$METRICS_HTTP" =~ ^(200|404)$ ]]; then
+        check "metrics endpoint (HTTP $METRICS_HTTP)" "true"
+    else
+        check "metrics endpoint (HTTP $METRICS_HTTP)" "false"
+    fi
+else
+    echo "  SKIP metrics (no token)"
+fi
+
 # Results
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

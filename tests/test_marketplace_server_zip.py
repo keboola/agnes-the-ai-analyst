@@ -1,4 +1,9 @@
-"""Integration tests for /marketplace.zip and /marketplace/info."""
+"""Integration tests for /marketplace.zip and /marketplace/info.
+
+v13: uses user_group_members + resource_grants (no PluginAccessRepository,
+no users.groups JSON). Admin is a regular group for marketplace filtering —
+no god-mode shortcut.
+"""
 
 from __future__ import annotations
 
@@ -10,15 +15,6 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-
-pytest.skip(
-    "v12: PluginAccessRepository was removed and users.role/users.groups are "
-    "no longer the authorization source. Rewrite this module against the "
-    "v12 model — seed user_group_members + resource_grants directly, drop "
-    "the role='analyst' fixture pattern, and use UserGroupMembersRepository "
-    "for group assignment.",
-    allow_module_level=True,
-)
 
 
 def _auth(token):
@@ -35,18 +31,17 @@ def marketplace_env(e2e_env, monkeypatch):
           mkt-a: plug-x (v1.0)
           mkt-b: plug-y (v2.0), plug-z (v3.0)
       - DATA_DIR/marketplaces/<slug>/plugins/<plugin>/ with a tiny CLAUDE.md
-      - admin user (role=admin) with token
-      - analyst user (role=analyst) with token
-      - user group 'TestGroup' granted plug-y from mkt-b
-      - analyst user's groups = ["TestGroup"]
+      - admin user in Admin group with grants for all 3 plugins
+      - analyst user in TestGroup with grant for plug-y only
+      - nogroups user (only Everyone, no grants)
     """
     from app.main import create_app
     from app.auth.jwt import create_access_token
     from src.db import get_system_db
     from src.repositories.users import UserRepository
-    from src.repositories.user_groups import (
-        UserGroupsRepository, PluginAccessRepository,
-    )
+    from src.repositories.user_groups import UserGroupsRepository
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    from src.repositories.resource_grants import ResourceGrantsRepository
 
     data_dir = e2e_env["data_dir"]
 
@@ -89,24 +84,33 @@ def marketplace_env(e2e_env, monkeypatch):
         users = UserRepository(conn)
         users.create(id="admin1", email="admin@test.local", name="Admin", role="admin")
         users.create(id="analyst1", email="analyst@test.local", name="Analyst", role="analyst")
-        # Assign TestGroup to analyst manually (this is what the real admin does too)
-        conn.execute(
-            "UPDATE users SET groups = ? WHERE id = ?",
-            [json.dumps(["TestGroup"]), "analyst1"],
-        )
-        conn.execute(
-            "INSERT INTO users (id, email, name, role, groups) VALUES (?, ?, ?, ?, ?)",
-            ["nogroups1", "nobody@test.local", "Nobody", "analyst", None],
-        )
+        users.create(id="nogroups1", email="nobody@test.local", name="Nobody", role="analyst")
 
+        # System groups are seeded by db.init_schema(); look them up.
         ug = UserGroupsRepository(conn)
-        tg = ug.create(name="TestGroup", description="granted plug-y only")
-        # Seed Admin / Everyone system groups the same way the app does at startup
         ug.ensure_system("Admin", "system")
         ug.ensure_system("Everyone", "system")
 
-        access = PluginAccessRepository(conn)
-        access.grant(tg["id"], "mkt-b", "plug-y")
+        admin_gid = conn.execute("SELECT id FROM user_groups WHERE name='Admin'").fetchone()[0]
+
+        # Create a custom group for the analyst
+        tg = ug.create(name="TestGroup", description="granted plug-y only")
+        test_group_gid = tg["id"]
+
+        # Assign memberships
+        ugm = UserGroupMembersRepository(conn)
+        ugm.add_member("admin1", admin_gid, source="system_seed")
+        ugm.add_member("analyst1", test_group_gid, source="admin")
+        # nogroups1 is only in Everyone (auto-membership, no explicit row needed)
+
+        # Grant plugins via resource_grants
+        rg = ResourceGrantsRepository(conn)
+        # Admin group gets all 3 plugins
+        rg.create(group_id=admin_gid, resource_type="marketplace_plugin", resource_id="mkt-a/plug-x")
+        rg.create(group_id=admin_gid, resource_type="marketplace_plugin", resource_id="mkt-b/plug-y")
+        rg.create(group_id=admin_gid, resource_type="marketplace_plugin", resource_id="mkt-b/plug-z")
+        # TestGroup gets only plug-y
+        rg.create(group_id=test_group_gid, resource_type="marketplace_plugin", resource_id="mkt-b/plug-y")
     finally:
         conn.close()
 
@@ -139,7 +143,7 @@ class TestMarketplaceInfo:
         info = resp.json()
         names = {p["name"] for p in info["plugins"]}
         assert names == {"mkt-a-plug-x", "mkt-b-plug-y", "mkt-b-plug-z"}
-        assert info["groups"] == ["Admin"]
+        assert "Admin" in info["groups"]
         assert info["marketplace_name"] == "agnes"
         assert info["plugin_count"] == 3
 
@@ -150,7 +154,7 @@ class TestMarketplaceInfo:
         info = resp.json()
         names = {p["name"] for p in info["plugins"]}
         assert names == {"mkt-b-plug-y"}
-        assert info["groups"] == ["TestGroup"]
+        assert "TestGroup" in info["groups"]
 
     def test_user_with_no_groups_falls_back_to_everyone(self, marketplace_env):
         """Everyone has no grants here, so the list is empty but call succeeds."""
@@ -158,7 +162,7 @@ class TestMarketplaceInfo:
         resp = c.get("/marketplace/info", headers=_auth(marketplace_env["nogroups_token"]))
         assert resp.status_code == 200
         info = resp.json()
-        assert info["groups"] == ["Everyone"]
+        assert "Everyone" in info["groups"]
         assert info["plugins"] == []
 
     def test_missing_auth_returns_401(self, marketplace_env):
@@ -233,3 +237,59 @@ class TestMarketplaceZip:
         c = marketplace_env["client"]
         resp = c.get("/marketplace.zip")
         assert resp.status_code == 401
+
+    # --- New tests for ETag + auth coverage ---
+
+    def test_zip_returns_correct_content_with_etag_header(self, marketplace_env):
+        """GET /marketplace.zip returns ZIP body with a valid ETag header."""
+        c = marketplace_env["client"]
+        headers = _auth(marketplace_env["admin_token"])
+        resp = c.get("/marketplace.zip", headers=headers)
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "application/zip"
+        etag = resp.headers["etag"]
+        assert etag.startswith('"') and etag.endswith('"')
+        # ETag is a 16-char hex string (sha256 prefix)
+        etag_val = etag.strip('"')
+        assert len(etag_val) == 16
+        # Body is a valid ZIP
+        with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+            assert ".claude-plugin/marketplace.json" in zf.namelist()
+
+    def test_if_none_match_returns_full_content_when_changed(self, marketplace_env):
+        """GET /marketplace.zip with a stale If-None-Match returns full content."""
+        c = marketplace_env["client"]
+        headers = _auth(marketplace_env["admin_token"])
+        first = c.get("/marketplace.zip", headers=headers)
+        stale_etag = "0000000000000000"  # definitely wrong
+        second = c.get(
+            "/marketplace.zip",
+            headers={**headers, "If-None-Match": f'"{stale_etag}"'},
+        )
+        assert second.status_code == 200
+        assert len(second.content) > 0
+        # The returned ETag is the real one, not the stale one
+        assert second.headers["etag"].strip('"') != stale_etag
+
+    def test_zip_requires_pat_authentication(self, marketplace_env):
+        """GET /marketplace.zip without any auth returns 401."""
+        c = marketplace_env["client"]
+        resp = c.get("/marketplace.zip")
+        assert resp.status_code == 401
+
+    def test_zip_with_invalid_token_returns_401(self, marketplace_env):
+        """GET /marketplace.zip with a garbage Bearer token returns 401."""
+        c = marketplace_env["client"]
+        resp = c.get("/marketplace.zip", headers={"Authorization": "Bearer invalid-token"})
+        assert resp.status_code == 401
+
+    def test_if_none_match_with_wrong_etag_returns_full_zip(self, marketplace_env):
+        """If-None-Match with a non-matching ETag returns 200 + full ZIP."""
+        c = marketplace_env["client"]
+        headers = _auth(marketplace_env["admin_token"])
+        resp = c.get(
+            "/marketplace.zip",
+            headers={**headers, "If-None-Match": '"wrong-etag-value"'},
+        )
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "application/zip"
