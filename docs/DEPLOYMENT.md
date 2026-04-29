@@ -182,6 +182,19 @@ are skipped on subsequent ticks until the previous run writes a terminal
 status. The endpoint requires admin auth (the sidecar's
 `SCHEDULER_API_TOKEN` resolves to a synthetic Admin user).
 
+#### Caveats
+
+- **Sub-minute env values are quantized to 1 minute.** The schedule grammar
+  has minute-level resolution, so `SCHEDULER_DATA_REFRESH_INTERVAL=30`
+  silently becomes a 1-minute cadence rather than 30 seconds. Pick values
+  ≥ 60 to avoid surprise.
+- **A crashed BackgroundTask can leave a script stuck in `last_status='running'`.**
+  The next sidecar tick will skip the stuck script forever. Recovery is
+  manual: open a DuckDB shell on `system.duckdb` and run
+  `UPDATE script_registry SET last_status = NULL WHERE id = '<id>';`
+  Auto-recovery via max-runtime detection is intentionally out of scope
+  for v0; revisit if it happens in practice.
+
 ## Which path should I pick?
 
 | | Terraform | Docker Compose |

@@ -247,10 +247,10 @@ class TestScriptRepository:
         from src.repositories.notifications import ScriptRepository
         repo = ScriptRepository(db_conn)
         repo.deploy("s1", name="sales_alert", owner="u1",
-                     schedule="0 8 * * MON", source="print('hello')")
+                     schedule="daily 08:00", source="print('hello')")
         script = repo.get("s1")
         assert script is not None
-        assert script["schedule"] == "0 8 * * MON"
+        assert script["schedule"] == "daily 08:00"
 
     def test_list_all(self, db_conn):
         from src.repositories.notifications import ScriptRepository

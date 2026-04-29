@@ -403,7 +403,7 @@ class TestRegisterTable:
                 "bucket": "in.c-crm",
                 "source_table": "full_table",
                 "query_mode": "local",
-                "sync_schedule": "0 6 * * *",
+                "sync_schedule": "daily 06:00",
                 "description": "Full configuration table",
                 "profile_after_sync": True,
             },
