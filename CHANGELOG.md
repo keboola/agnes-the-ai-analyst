@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Internal
+
+- `scripts/dev/agnes-client-reset.sh` — destructive cleanup of an Agnes *client* install on a developer workstation, mirror image of `app/web/setup_instructions.py` so an onboarding-from-scratch test is reproducible. Removes the `da` CLI (`uv tool uninstall`), `~/.config/da` / `~/.agnes` / `~/.claude/skills/agnes`, the Claude Code `agnes` marketplace + its plugins, the Agnes CA from the OS trust store (Windows `certutil -delstore`, macOS `security delete-certificate -Z`, Linux `update-ca-certificates`/`update-ca-trust`), the `AGNES_CA_PEM_TRUST` block from the user's shell rc (with `.agnes-reset.bak` backup), and `/tmp/agnes*.whl` matches. Cross-platform (Git Bash on Windows / macOS / Linux); `--yes` skips the confirm prompt, `--dry-run` prints actions without executing.
+
 ### Changed
 
 - **Setup prompt step ordering reshuffled so all installation work runs before the human-loop skills question.** Old order interleaved the human question (skills, step 5) between install (step 1) and marketplace/plugins (step 7), which led the assistant to either block on the user mid-install or "do the rest in parallel" while waiting. New order: install → login → verify → git check → marketplace + plugins → diagnose → **skills (last interactive step before Confirm)** → Confirm. With marketplace plugins to install, that's steps 1-2-3-4-5-6-7-8; without plugins, 4-5 (git/marketplace) collapse out and diagnose/skills/confirm renumber to 4-5-6. The skills step now explicitly tells the assistant to *wait* for the user's answer before moving to Confirm — the old "you can continue in parallel" hint is gone because there's no longer anything to do in parallel. `da diagnose` running late doubles as a final smoke test after plugins are in place.
