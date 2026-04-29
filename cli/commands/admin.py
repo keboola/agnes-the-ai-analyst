@@ -57,24 +57,77 @@ def remove_user(user_id: str = typer.Argument(..., help="User ID to remove")):
 
 @admin_app.command("register-table")
 def register_table(
-    name: str = typer.Argument(..., help="Table display name"),
-    source_type: str = typer.Option("keboola", help="Source type"),
-    bucket: str = typer.Option("", help="Source bucket/dataset"),
-    source_table: str = typer.Option("", help="Source table name"),
-    query_mode: str = typer.Option("local", help="Query mode: local or remote"),
+    name: str = typer.Argument(..., help="Table display name (DuckDB view name for BQ)"),
+    source_type: str = typer.Option("keboola", help="Source type: keboola | bigquery | jira | local"),
+    bucket: str = typer.Option("", help="Source bucket (Keboola) or dataset (BigQuery)"),
+    source_table: str = typer.Option("", help="Source table name in the bucket/dataset"),
+    query_mode: str = typer.Option("local", help="Query mode: local or remote (forced to 'remote' for bigquery)"),
     description: str = typer.Option("", help="Table description"),
+    sync_schedule: str = typer.Option(
+        "",
+        help="Cron schedule (BigQuery only — note: scheduler not yet wired, see #79 / M3 of #108)",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Run validation + (BQ) source-side check without writing to the registry",
+    ),
 ):
-    """Register a single table."""
-    resp = api_post("/api/admin/register-table", json={
+    """Register a single table.
+
+    For BigQuery: dataset goes in --bucket, the BQ table/view name in
+    --source-table, the DuckDB view name in NAME. The server forces
+    query_mode=remote and profile_after_sync=False; --dry-run goes
+    through /precheck and prints rows + size + columns without writing.
+    """
+    payload = {
         "name": name,
         "source_type": source_type,
         "bucket": bucket,
         "source_table": source_table or name,
         "query_mode": query_mode,
         "description": description,
-    })
-    if resp.status_code == 201:
-        typer.echo(f"Registered: {name}")
+    }
+    if sync_schedule:
+        payload["sync_schedule"] = sync_schedule
+
+    if dry_run:
+        # Hits /precheck — no DB write, but for BQ does a real
+        # bigquery.Client(project).get_table() round-trip so the operator
+        # gets the same NotFound / Forbidden error they'd see at
+        # registration time, before committing.
+        resp = api_post("/api/admin/register-table/precheck", json=payload)
+        if resp.status_code == 200:
+            data = resp.json()
+            t = data.get("table") or {}
+            typer.echo("[DRY RUN] precheck OK")
+            typer.echo(f"  name:         {t.get('name')}")
+            typer.echo(f"  source_type:  {t.get('source_type')}")
+            typer.echo(f"  bucket:       {t.get('bucket')}")
+            typer.echo(f"  source_table: {t.get('source_table')}")
+            if t.get("project_id"):
+                typer.echo(f"  project_id:   {t.get('project_id')}")
+            if t.get("rows") is not None:
+                typer.echo(f"  rows:         {t.get('rows'):,}")
+            if t.get("size_bytes") is not None:
+                typer.echo(f"  size_bytes:   {t.get('size_bytes'):,}")
+            cols = t.get("columns") or []
+            if cols:
+                typer.echo(f"  columns ({len(cols)}):")
+                for c in cols:
+                    typer.echo(f"    - {c.get('name'):<32s} {c.get('type', '')}")
+            return
+        typer.echo(f"Precheck failed: {resp.json().get('detail', resp.text)}", err=True)
+        raise typer.Exit(1)
+
+    resp = api_post("/api/admin/register-table", json=payload)
+    # 200 (BQ sync materialize OK), 201 (legacy non-BQ), and 202 (BQ
+    # background materialize) are all success.
+    if resp.status_code in (200, 201, 202):
+        if resp.status_code == 202:
+            typer.echo(f"Registered (materializing in background): {name}")
+        else:
+            typer.echo(f"Registered: {name}")
     elif resp.status_code == 409:
         typer.echo(f"Already exists: {name}")
     else:

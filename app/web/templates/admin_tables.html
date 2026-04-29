@@ -747,7 +747,32 @@
     <!-- ═══════════════ CONTENT ═══════════════ -->
     <div class="content">
 
-        <!-- ── Discovery Panel ── -->
+        {% if data_source_type == 'bigquery' %}
+        <!-- ── BigQuery Register Panel (M1: no discovery, manual entry) ── -->
+        <div class="panel" data-test="bq-register-panel">
+            <div class="panel-header">
+                <div class="panel-header-left">
+                    <div class="panel-header-icon">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0073D1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="12" y1="5" x2="12" y2="19"/>
+                            <line x1="5" y1="12" x2="19" y2="12"/>
+                        </svg>
+                    </div>
+                    <div>
+                        <div class="panel-title">Register BigQuery Table</div>
+                        <div class="panel-subtitle">Manually register a BQ table or view as a remote DuckDB view</div>
+                    </div>
+                </div>
+                <button class="btn btn-primary" onclick="openBigQueryRegisterModal()">
+                    Register BigQuery table
+                </button>
+            </div>
+            <div class="panel-body-empty">
+                BigQuery dataset/table discovery lands in Milestone 2 of issue #108. For now, enter the dataset + table by hand.
+            </div>
+        </div>
+        {% else %}
+        <!-- ── Discovery Panel (Keboola etc.) ── -->
         <div class="panel">
             <div class="panel-header">
                 <div class="panel-header-left">
@@ -776,6 +801,7 @@
                 </div>
             </div>
         </div>
+        {% endif %}
 
         <!-- ── Registry Panel ── -->
         <div class="panel">
@@ -814,7 +840,13 @@
     </div>
 
     <!-- ═══════════════ REGISTRATION MODAL ═══════════════ -->
-    <div class="modal-overlay" id="registerModal">
+    <!--
+      The form is branched server-side on data_source_type so the JS
+      doesn't have to round-trip /api/admin/server-config to learn the
+      source type. data-source-type carries the value down to the JS so
+      the submit handler picks the right payload shape.
+    -->
+    <div class="modal-overlay" id="registerModal" data-source-type="{{ data_source_type }}">
         <div class="modal">
             <div class="modal-header">
                 <h2>Register Table</h2>
@@ -826,6 +858,43 @@
                 </button>
             </div>
             <div class="modal-body">
+                {% if data_source_type == 'bigquery' %}
+                {# BigQuery path — registers a remote view that queries BQ directly. #}
+                <div class="form-group">
+                    <label class="form-label" for="bqDataset">Dataset</label>
+                    <input type="text" class="form-input" id="bqDataset" placeholder="e.g. analytics">
+                    <div class="form-hint">BigQuery dataset name (no project prefix — that's read from instance.yaml)</div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="bqSourceTable">Source Table</label>
+                    <input type="text" class="form-input" id="bqSourceTable" placeholder="e.g. orders">
+                    <div class="form-hint">BigQuery table or view name within the dataset</div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="bqViewName">View Name</label>
+                    <input type="text" class="form-input" id="bqViewName" placeholder="defaults to source table">
+                    <div class="form-hint">DuckDB view name analysts will use; defaults to the source table</div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="bqDescription">Description <span class="optional">(optional)</span></label>
+                    <textarea class="form-textarea" id="bqDescription" placeholder="Brief description of the table contents..."></textarea>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="bqFolder">Folder <span class="optional">(optional)</span></label>
+                    <input type="text" class="form-input" id="bqFolder" placeholder="e.g. crm, finance, marketing">
+                    <div class="form-hint">Logical grouping for catalog organization</div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="bqSyncSchedule">Sync Schedule <span class="optional">(optional)</span></label>
+                    <input type="text" class="form-input" id="bqSyncSchedule" placeholder="e.g. 0 6 * * *">
+                    <div class="form-hint">Cron expression. Note: scheduler does not yet evaluate this — see #79; addressed in M3 of #108.</div>
+                </div>
+                <div class="form-group" id="bqPrecheckSummary" style="display:none;">
+                    <div class="form-label">Source check</div>
+                    <div class="form-hint" id="bqPrecheckSummaryText"></div>
+                </div>
+                {% else %}
+                {# Keboola (default) path — fields populated by Discover-tables prefill. #}
                 <div class="form-group">
                     <label class="form-label" for="regTableId">Table ID</label>
                     <input type="text" class="form-input" id="regTableId" readonly>
@@ -834,6 +903,11 @@
                     <label class="form-label" for="regTableName">Table Name</label>
                     <input type="text" class="form-input" id="regTableName" readonly>
                     <div class="form-hint">Derived from the source table identifier</div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="regBucket">Bucket</label>
+                    <input type="text" class="form-input" id="regBucket" readonly>
+                    <div class="form-hint">Source bucket (Keboola: in.c-foo)</div>
                 </div>
                 <div class="form-group">
                     <label class="form-label" for="regStrategy">Sync Strategy</label>
@@ -854,10 +928,11 @@
                     <textarea class="form-textarea" id="regDescription" placeholder="Brief description of the table contents..."></textarea>
                 </div>
                 <div class="form-group">
-                    <label class="form-label" for="regDataset">Dataset Group <span class="optional">(optional)</span></label>
-                    <input type="text" class="form-input" id="regDataset" placeholder="e.g. crm, finance, marketing">
+                    <label class="form-label" for="regFolder">Folder <span class="optional">(optional)</span></label>
+                    <input type="text" class="form-input" id="regFolder" placeholder="e.g. crm, finance, marketing">
                     <div class="form-hint">Logical grouping for catalog organization</div>
                 </div>
+                {% endif %}
             </div>
             <div class="modal-footer">
                 <button class="btn btn-secondary" onclick="closeRegisterModal()">Cancel</button>
@@ -1005,8 +1080,10 @@
             })
             .then(function(data) {
                 discoveryData = data;
+                // renderDiscoveryResults handles the per-source shape and
+                // surfaces its own success toast (count derived from the
+                // actual flat tables list, not whatever `data.total` says).
                 renderDiscoveryResults(data);
-                showToast('Found ' + data.total + ' tables in ' + data.buckets.length + ' buckets', 'success');
             })
             .catch(function(err) {
                 resultsEl.innerHTML = '<div class="panel-body-empty" style="color: var(--error);">Discovery failed: ' + escapeHtml(err.message) + '</div>';
@@ -1021,14 +1098,41 @@
     function renderDiscoveryResults(data) {
         var el = document.getElementById('discoveryResults');
 
-        if (!data.buckets || data.buckets.length === 0) {
+        // The discovery API returns a flat {tables: [...]} list; group on
+        // the client by `bucket_id` so the rendered accordion still shows
+        // bucket → tables. Fall back to the legacy `data.buckets` shape
+        // if a future endpoint emits it pre-grouped.
+        var buckets;
+        if (data.buckets && data.buckets.length) {
+            buckets = data.buckets;
+        } else if (data.tables && data.tables.length) {
+            var byBucket = {};
+            data.tables.forEach(function(t) {
+                var bid = t.bucket_id || '(ungrouped)';
+                if (!byBucket[bid]) {
+                    byBucket[bid] = {
+                        bucket_id: bid,
+                        bucket_name: t.bucket_name || bid,
+                        tables: [],
+                    };
+                }
+                byBucket[bid].tables.push(t);
+            });
+            buckets = Object.keys(byBucket).sort().map(function(k) { return byBucket[k]; });
+        } else {
+            buckets = [];
+        }
+
+        if (!buckets.length) {
             el.innerHTML = '<div class="panel-body-empty">No tables found in data source</div>';
             return;
         }
 
         var html = '';
-        data.buckets.forEach(function(bucket) {
+        var totalTables = 0;
+        buckets.forEach(function(bucket) {
             var registeredCount = bucket.tables.filter(function(t) { return t.is_registered; }).length;
+            totalTables += bucket.tables.length;
 
             html += '<div class="bucket-group">';
             html += '<button class="bucket-trigger expanded" onclick="toggleBucket(this)">';
@@ -1068,6 +1172,9 @@
         });
 
         el.innerHTML = html;
+        // Surface the discovery summary in the toast (count is whatever
+        // discovery returned, not whatever the API claimed in `total`).
+        showToast('Found ' + totalTables + ' tables in ' + buckets.length + ' buckets', 'success');
     }
 
     function toggleBucket(trigger) {
@@ -1085,14 +1192,38 @@
 
     // ── Registration Modal ──────────────────────────────────────
 
+    // Server-rendered marker so the JS knows whether to drive the Keboola
+    // form or the BigQuery form. Single source of truth — stays in sync
+    // with the Jinja branch above.
+    var DATA_SOURCE_TYPE = document.getElementById('registerModal').dataset.sourceType || 'keboola';
+
     function openRegisterModal(table) {
-        document.getElementById('regTableId').value = table.id || '';
-        document.getElementById('regTableName').value = table.name || '';
-        document.getElementById('regStrategy').value = 'full_refresh';
-        document.getElementById('regPrimaryKey').value = (table.primary_key || []).join(', ');
-        document.getElementById('regDescription').value = '';
-        document.getElementById('regDataset').value = '';
+        if (DATA_SOURCE_TYPE === 'bigquery') {
+            // BQ uses a manual-entry form (no discovery panel for BQ in M1).
+            // `table` may be partially populated by a future M2 prefill —
+            // tolerate either an empty call or a {bucket, source_table, ...}
+            // shape from a hypothetical future prefill.
+            table = table || {};
+            document.getElementById('bqDataset').value = table.bucket || '';
+            document.getElementById('bqSourceTable').value = table.source_table || table.name || '';
+            document.getElementById('bqViewName').value = table.name || '';
+            document.getElementById('bqDescription').value = '';
+            document.getElementById('bqFolder').value = '';
+            document.getElementById('bqSyncSchedule').value = '';
+            var summary = document.getElementById('bqPrecheckSummary');
+            if (summary) summary.style.display = 'none';
+        } else {
+            // Keboola path — fields populated from the discovery click.
+            document.getElementById('regTableId').value = table.id || '';
+            document.getElementById('regTableName').value = table.name || '';
+            document.getElementById('regBucket').value = table.bucket_id || (table.bucket && table.bucket.id) || '';
+            document.getElementById('regStrategy').value = 'full_refresh';
+            document.getElementById('regPrimaryKey').value = (table.primary_key || []).join(', ');
+            document.getElementById('regDescription').value = '';
+            document.getElementById('regFolder').value = '';
+        }
         document.getElementById('registerSubmitBtn').disabled = false;
+        document.getElementById('registerSubmitBtn').textContent = 'Register Table';
         document.getElementById('registerModal').classList.add('active');
     }
 
@@ -1100,38 +1231,72 @@
         document.getElementById('registerModal').classList.remove('active');
     }
 
+    function _buildKeboolaPayload() {
+        var pk = document.getElementById('regPrimaryKey').value.trim();
+        var primaryKey = pk ? pk.split(',').map(function(s) { return s.trim(); }).filter(Boolean) : [];
+        return {
+            // RegisterTableRequest contract: name + source_type + bucket +
+            // source_table; no `id`, no `version`, no `dataset` (the field
+            // is `bucket`). Pre-fix the modal posted those phantom fields
+            // and the API silently dropped them.
+            name: document.getElementById('regTableName').value,
+            source_type: 'keboola',
+            bucket: document.getElementById('regBucket').value,
+            source_table: document.getElementById('regTableName').value,
+            query_mode: 'local',
+            sync_strategy: document.getElementById('regStrategy').value,
+            primary_key: primaryKey,
+            description: document.getElementById('regDescription').value.trim() || null,
+            folder: document.getElementById('regFolder').value.trim() || null,
+        };
+    }
+
+    function _buildBigQueryPayload() {
+        var dataset = document.getElementById('bqDataset').value.trim();
+        var sourceTable = document.getElementById('bqSourceTable').value.trim();
+        var viewName = document.getElementById('bqViewName').value.trim() || sourceTable;
+        return {
+            name: viewName,
+            source_type: 'bigquery',
+            bucket: dataset,
+            source_table: sourceTable,
+            // The server forces these for BQ rows, but we set them explicitly
+            // so the network log + audit-log entry reflect the operator's
+            // intent rather than a server-side mutation.
+            query_mode: 'remote',
+            profile_after_sync: false,
+            description: document.getElementById('bqDescription').value.trim() || null,
+            folder: document.getElementById('bqFolder').value.trim() || null,
+            sync_schedule: document.getElementById('bqSyncSchedule').value.trim() || null,
+        };
+    }
+
     function registerTable() {
         var btn = document.getElementById('registerSubmitBtn');
         btn.disabled = true;
+
+        if (DATA_SOURCE_TYPE === 'bigquery') {
+            _registerBigQueryTable(btn);
+        } else {
+            _registerKeboolaTable(btn);
+        }
+    }
+
+    function _registerKeboolaTable(btn) {
         btn.textContent = 'Registering...';
-
-        var pk = document.getElementById('regPrimaryKey').value.trim();
-        var primaryKey = pk ? pk.split(',').map(function(s) { return s.trim(); }).filter(Boolean) : [];
-
-        var payload = {
-            id: document.getElementById('regTableId').value,
-            name: document.getElementById('regTableName').value,
-            sync_strategy: document.getElementById('regStrategy').value,
-            primary_key: primaryKey,
-            description: document.getElementById('regDescription').value.trim(),
-            dataset: document.getElementById('regDataset').value.trim(),
-            version: registryVersion
-        };
-
+        var payload = _buildKeboolaPayload();
         fetch('/api/admin/register-table', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         })
         .then(function(r) {
-            if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || 'Registration failed'); });
+            if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || d.error || 'Registration failed'); });
             return r.json();
         })
         .then(function(data) {
-            registryVersion = data.version;
             closeRegisterModal();
             showToast('Table registered successfully', 'success');
-            // Refresh both panels
             loadRegistry();
             if (discoveryData) discoverTables();
         })
@@ -1142,6 +1307,73 @@
             btn.disabled = false;
             btn.textContent = 'Register Table';
         });
+    }
+
+    function _registerBigQueryTable(btn) {
+        // Two-step flow: precheck → confirm summary in modal → register.
+        // Keeps the operator from registering a typo'd dataset/table only
+        // to find out at first query that the view is broken.
+        btn.textContent = 'Checking source...';
+        var payload = _buildBigQueryPayload();
+        var summary = document.getElementById('bqPrecheckSummary');
+        var summaryText = document.getElementById('bqPrecheckSummaryText');
+
+        fetch('/api/admin/register-table/precheck', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        })
+        .then(function(r) {
+            if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Precheck failed'); });
+            return r.json();
+        })
+        .then(function(data) {
+            // Surface the source-side metrics so the operator can sanity-
+            // check the dataset/table before committing the row.
+            var t = data.table || {};
+            if (summary && summaryText) {
+                summary.style.display = '';
+                summaryText.textContent =
+                    formatNumber(t.rows) + ' rows, ' +
+                    formatSize(t.size_bytes) + ', ' +
+                    (t.column_count != null ? t.column_count : (t.columns || []).length) + ' columns';
+            }
+            btn.textContent = 'Registering...';
+            return fetch('/api/admin/register-table', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+        })
+        .then(function(r) {
+            if (!r) return;  // precheck failure already thrown
+            // Both 200 (synchronous materialize) and 201/202 (background)
+            // are success; surface different toast text for the deferred
+            // case so the operator knows the view isn't queryable yet.
+            return r.json().then(function(d) {
+                if (!r.ok) throw new Error(d.detail || 'Registration failed');
+                closeRegisterModal();
+                if (r.status === 202) {
+                    showToast('Registration accepted, materializing in background', 'success');
+                } else {
+                    showToast('Queryable as ' + (d.view_name || d.id || payload.name), 'success');
+                }
+                loadRegistry();
+            });
+        })
+        .catch(function(err) {
+            showToast('Registration failed: ' + err.message, 'error');
+        })
+        .finally(function() {
+            btn.disabled = false;
+            btn.textContent = 'Register Table';
+        });
+    }
+
+    // BQ-only: surface a "Register" button outside the discovery panel,
+    // since Discovery doesn't run for BQ in M1.
+    function openBigQueryRegisterModal() {
+        openRegisterModal({});
     }
 
     // ── Edit Modal ──────────────────────────────────────────────
@@ -1172,12 +1404,16 @@
         var pk = document.getElementById('editPrimaryKey').value.trim();
         var primaryKey = pk ? pk.split(',').map(function(s) { return s.trim(); }).filter(Boolean) : [];
 
+        // UpdateTableRequest contract: no `dataset` field (it's `folder` for
+        // catalog grouping in the registry), no `version` (the API has no
+        // optimistic-concurrency layer). Pre-fix the modal posted `dataset`
+        // + `version` and the API silently dropped them, so the operator's
+        // dataset edit looked saved but never persisted.
         var payload = {
             sync_strategy: document.getElementById('editStrategy').value,
             primary_key: primaryKey,
-            description: document.getElementById('editDescription').value.trim(),
-            dataset: document.getElementById('editDataset').value.trim(),
-            version: registryVersion
+            description: document.getElementById('editDescription').value.trim() || null,
+            folder: document.getElementById('editDataset').value.trim() || null,
         };
 
         fetch('/api/admin/registry/' + encodeURIComponent(currentEditTableId), {
@@ -1186,11 +1422,10 @@
             body: JSON.stringify(payload)
         })
         .then(function(r) {
-            if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || 'Update failed'); });
+            if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || d.error || 'Update failed'); });
             return r.json();
         })
         .then(function(data) {
-            registryVersion = data.version;
             closeEditModal();
             showToast('Table updated successfully', 'success');
             loadRegistry();
@@ -1273,17 +1508,17 @@
             return;
         }
 
+        // DELETE doesn't need a body — the API has no `version` field.
         fetch('/api/admin/registry/' + encodeURIComponent(tableId), {
             method: 'DELETE',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ version: registryVersion })
         })
         .then(function(r) {
-            if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || 'Delete failed'); });
+            // 204 No Content has an empty body, so don't .json() it.
+            if (r.status === 204) return null;
+            if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || d.error || 'Delete failed'); });
             return r.json();
         })
-        .then(function(data) {
-            registryVersion = data.version;
+        .then(function() {
             showToast('Table unregistered successfully', 'success');
             loadRegistry();
             if (discoveryData) discoverTables();

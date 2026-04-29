@@ -11,7 +11,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Dict, Any
 import duckdb
@@ -20,6 +20,11 @@ from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
 from src.repositories.table_registry import TableRegistryRepository
 from src.repositories.audit import AuditRepository
+from src.identifier_validation import (
+    is_safe_identifier as _is_safe_identifier,
+    is_safe_quoted_identifier as _is_safe_quoted_identifier,
+)
+from src.sql_safe import is_safe_project_id as _is_safe_project_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -573,6 +578,46 @@ async def update_server_config(
 # --- End server-config editor -----------------------------------------------
 
 
+# Source types accepted by /api/admin/register-table. Anything else is
+# rejected with 422 — keeps a typo'd source_type from silently landing in
+# table_registry (where it would later confuse the orchestrator scan).
+_VALID_SOURCE_TYPES: tuple[str, ...] = ("keboola", "bigquery", "jira", "local")
+
+# Substrings that mark a request-body field as a credential and force masking
+# in the audit log. Symmetric with _SECRET_KEY_PATTERNS used by server-config;
+# kept as a separate constant because the registry payload doesn't normally
+# carry secrets — but a future field name change shouldn't accidentally let
+# one through.
+_REGISTRY_SECRET_KEY_PATTERNS: tuple[str, ...] = (
+    "secret",
+    "token",
+    "password",
+    "key",
+)
+
+
+def _sanitize_for_audit(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Mask secret-looking fields in a request payload before writing to audit_log.
+
+    The `description` field is kept raw — it's documentation an admin
+    typed and is not a credential. Anything matching the secret patterns
+    (`secret`, `token`, `password`, `key`) is replaced with ``"***"``;
+    `primary_key` is whitelisted because it's the literal column name list,
+    not a credential, even though it contains "key".
+    """
+    out: Dict[str, Any] = {}
+    for k, v in payload.items():
+        if k in ("primary_key",):
+            out[k] = v
+            continue
+        kl = k.lower()
+        if any(pat in kl for pat in _REGISTRY_SECRET_KEY_PATTERNS):
+            out[k] = "***" if v not in (None, "") else "<empty>"
+        else:
+            out[k] = v
+    return out
+
+
 class RegisterTableRequest(BaseModel):
     name: str
     folder: Optional[str] = None
@@ -594,6 +639,97 @@ class RegisterTableRequest(BaseModel):
     @classmethod
     def _coerce_primary_key(cls, v):
         return _normalize_primary_key(v)
+
+    @field_validator("source_type", mode="before")
+    @classmethod
+    def _validate_source_type(cls, v):
+        # None is tolerated for backward compat with old CLI scripts that
+        # didn't set a source_type; the route resolves it later. Anything
+        # else must be in the canonical list.
+        if v in (None, ""):
+            return v
+        if v not in _VALID_SOURCE_TYPES:
+            raise ValueError(
+                f"source_type must be one of {sorted(_VALID_SOURCE_TYPES)}, got {v!r}"
+            )
+        return v
+
+
+def _validate_bigquery_register_payload(req: "RegisterTableRequest") -> None:
+    """Enforce BQ-specific shape on a register/precheck request.
+
+    Mutates the model: forces ``query_mode='remote'`` and
+    ``profile_after_sync=False`` (per Decision 7 in #108) so a caller can't
+    accidentally enqueue a parquet profiling pass for a remote view that
+    has no local file. Raises HTTPException(422) for missing required
+    fields and HTTPException(400) for unsafe identifiers / bogus project_id.
+    """
+    if not req.bucket or not req.bucket.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="bigquery: 'bucket' (BQ dataset) is required",
+        )
+    if not req.source_table or not req.source_table.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="bigquery: 'source_table' is required",
+        )
+    # No wildcard / sharded BQ tables in M1 (Decision 8).
+    if "*" in (req.source_table or "") or "*" in (req.bucket or ""):
+        raise HTTPException(
+            status_code=400,
+            detail="bigquery: wildcard / sharded tables are not supported (see #108 M3+)",
+        )
+    # Strict identifier on the DuckDB view name (extractor uses the strict
+    # validator there too — accept the same constraint upstream so a name
+    # with `-` / `.` fails fast at register time rather than getting silently
+    # dropped at the next rebuild).
+    view_name = (req.name or "").strip().lower().replace(" ", "_")
+    if not _is_safe_identifier(view_name):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"bigquery: view name {view_name!r} is unsafe — must match "
+                f"^[a-zA-Z_][a-zA-Z0-9_]{{0,63}}$ (DuckDB identifier rules)"
+            ),
+        )
+    if not _is_safe_quoted_identifier(req.bucket.strip()):
+        raise HTTPException(
+            status_code=400,
+            detail=f"bigquery: dataset {req.bucket!r} is unsafe (only [A-Za-z0-9_.-] allowed)",
+        )
+    if not _is_safe_quoted_identifier(req.source_table.strip()):
+        raise HTTPException(
+            status_code=400,
+            detail=f"bigquery: source_table {req.source_table!r} is unsafe (only [A-Za-z0-9_.-] allowed)",
+        )
+    # Pull project from instance.yaml — single-project model in M1
+    # (Decision: no per-table project field). Validate the format here so
+    # we surface a config issue at registration rather than at first
+    # rebuild, where the operator no longer has a request to look at.
+    from app.instance_config import get_value
+    project_id = get_value("data_source", "bigquery", "project", default="")
+    if not project_id:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "bigquery: data_source.bigquery.project is not set in instance.yaml; "
+                "configure it via /admin/server-config or /api/admin/configure first"
+            ),
+        )
+    if not _is_safe_project_id(project_id):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"bigquery: data_source.bigquery.project {project_id!r} is malformed — "
+                "must match GCP project_id grammar ^[a-z][a-z0-9-]{4,28}[a-z0-9]$"
+            ),
+        )
+    # Force the BQ-required mode + flag (Decision 7). The orchestrator and
+    # extractor both assume remote; persisting `local` here would later create
+    # a profiling job against a non-existent parquet file.
+    req.query_mode = "remote"
+    req.profile_after_sync = False
 
 
 class UpdateTableRequest(BaseModel):
@@ -661,13 +797,103 @@ async def list_registry(
     return {"tables": tables, "count": len(tables)}
 
 
+# Wall-clock budget for the synchronous BQ materialization that runs after
+# a successful BQ register. If the rebuild + view creation exceeds this,
+# we hand the rest off to BackgroundTasks and return 202. 5s matches the
+# UX contract in #108 ("Queryable as <view> within seconds") — long enough
+# to cover a healthy GCE round-trip, short enough that a hung GCE call
+# doesn't park the request handler.
+_BQ_SYNC_REGISTER_TIMEOUT_S: float = 5.0
+
+
+def _materialize_bigquery_extract(conn: duckdb.DuckDBPyConnection) -> None:
+    """Re-build the BigQuery extract.duckdb + master views.
+
+    Wrapper used by both the synchronous (in-band) and async (BackgroundTask)
+    code paths after a BQ register/update/delete. Imports kept inside the
+    function so non-BQ instances don't pay the import cost on app start.
+    """
+    from connectors.bigquery import extractor as _bq_extractor
+    from src.orchestrator import SyncOrchestrator
+
+    _bq_extractor.rebuild_from_registry(conn=conn)
+    SyncOrchestrator().rebuild()
+
+
+def _run_bigquery_materialize_with_timeout(
+    conn: duckdb.DuckDBPyConnection,
+    background: BackgroundTasks,
+) -> bool:
+    """Try to materialize synchronously within the wall-clock budget.
+
+    Returns True on success (caller returns 200), False on timeout
+    (caller returns 202 and the rebuild continues on a BackgroundTask).
+    Any non-timeout exception is logged and the BG task takes over so the
+    register call still returns success — the row is in the registry, the
+    view will appear when the rebuild finishes.
+    """
+    import threading
+
+    done = threading.Event()
+    err_holder: Dict[str, Any] = {}
+
+    def _worker():
+        try:
+            _materialize_bigquery_extract(conn)
+        except Exception as e:  # pragma: no cover — logged below
+            err_holder["error"] = e
+        finally:
+            done.set()
+
+    t = threading.Thread(target=_worker, daemon=True, name="bq-register-rebuild")
+    t.start()
+    finished = done.wait(_BQ_SYNC_REGISTER_TIMEOUT_S)
+
+    if finished:
+        if "error" in err_holder:
+            logger.warning(
+                "BQ post-register rebuild raised %r; falling back to background retry",
+                err_holder["error"],
+            )
+            # Schedule a fresh attempt in the background — the synchronous
+            # one failed, but the row is already in the registry.
+            background.add_task(_materialize_bigquery_extract, conn)
+            return False
+        return True
+
+    # Timed out — let the worker keep running on its thread (already daemon)
+    # and also schedule a BackgroundTask so the orchestrator gets called via
+    # the supported FastAPI path. The orchestrator's _rebuild_lock serializes
+    # them, so the second call is effectively a no-op.
+    logger.info(
+        "BQ post-register rebuild exceeded %ss budget — handing off to BackgroundTask",
+        _BQ_SYNC_REGISTER_TIMEOUT_S,
+    )
+    background.add_task(_materialize_bigquery_extract, conn)
+    return False
+
+
 @router.post("/register-table", status_code=201)
 async def register_table(
     request: RegisterTableRequest,
+    background: BackgroundTasks,
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Register a new table in the system."""
+    """Register a new table in the system.
+
+    Behavior by source_type:
+    - **bigquery**: validates BQ-specific shape (dataset / source_table /
+      identifier safety / project_id format), forces query_mode='remote' and
+      profile_after_sync=False, then synchronously rebuilds extract.duckdb +
+      master views with a wall-clock budget. Returns 200 with the view name
+      on success or 202 on budget overrun (rebuild continues in a
+      BackgroundTask).
+    - other source types: insert-only, no post-register hook.
+
+    Always: 409 on view-name collision against the existing registry, audit
+    log entry on success.
+    """
     if not request.name or not request.name.strip():
         raise HTTPException(status_code=422, detail="Table name cannot be empty")
     repo = TableRegistryRepository(conn)
@@ -675,6 +901,30 @@ async def register_table(
 
     if repo.get(table_id):
         raise HTTPException(status_code=409, detail=f"Table '{table_id}' already registered")
+
+    # View-name collision pre-check — distinct from id collision above.
+    # `id` is derived from `name`, but two callers could legally pick
+    # different display names that lower-case + slugify to the same view
+    # (e.g. "Orders v2" + "orders_v2"); the strict view-name uniqueness
+    # check stops that here, before the orchestrator surfaces it as a
+    # silent overwrite at next rebuild.
+    existing_by_name = next(
+        (r for r in repo.list_all() if (r.get("name") or "") == request.name),
+        None,
+    )
+    if existing_by_name is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"View name '{request.name}' is already in use by table id '{existing_by_name.get('id')}'",
+        )
+
+    # BQ rows go through the extra validation + post-insert materialization
+    # contract from issue #108. Other source types keep the legacy insert-only
+    # flow — Keboola materialization happens via the scheduled sync, Jira via
+    # webhook, local via a manual extractor run.
+    is_bigquery = request.source_type == "bigquery"
+    if is_bigquery:
+        _validate_bigquery_register_payload(request)
 
     repo.register(
         id=table_id,
@@ -692,42 +942,234 @@ async def register_table(
         profile_after_sync=request.profile_after_sync,
     )
 
-    return {"id": table_id, "name": request.name, "status": "registered"}
+    # Audit entry — masked params; description kept raw (it's documentation).
+    AuditRepository(conn).log(
+        user_id=user.get("id"),
+        action="register_table",
+        resource=table_id,
+        params=_sanitize_for_audit(request.model_dump()),
+    )
+
+    if not is_bigquery:
+        return {"id": table_id, "name": request.name, "status": "registered"}
+
+    # BQ post-register: rebuild extract + master views, with timeout fallback.
+    # The route decorator's default status_code (201) doesn't fit the BQ
+    # path — Decision 1 says 200 on synchronous success, 202 on timeout —
+    # so build a Response explicitly. JSONResponse rather than Response so
+    # the body is correctly content-typed and serialized.
+    from fastapi.responses import JSONResponse
+    materialized = _run_bigquery_materialize_with_timeout(conn, background)
+    if materialized:
+        return JSONResponse(
+            status_code=200,
+            content={
+                "id": table_id,
+                "name": request.name,
+                "status": "ok",
+                "view_name": table_id,
+            },
+        )
+    return JSONResponse(
+        status_code=202,
+        content={
+            "id": table_id,
+            "name": request.name,
+            "status": "accepted",
+            "view_name": table_id,
+            "message": "Registration accepted; materializing in background",
+        },
+    )
+
+
+class PrecheckResponse(BaseModel):
+    """Response model for /api/admin/register-table/precheck.
+
+    Documented here so OpenAPI consumers know what to expect; the route
+    returns a plain dict for backwards compatibility with the rest of the
+    admin API which doesn't use response_model.
+    """
+    ok: bool
+    table: Dict[str, Any]
+
+
+@router.post("/register-table/precheck")
+async def register_table_precheck(
+    request: RegisterTableRequest,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Validate a register-table payload + (BQ only) confirm the source table exists.
+
+    No DB write. Used by the UI to surface row count + size + column count
+    in the modal before the operator clicks Register, and by the CLI's
+    ``--dry-run`` to print what *would* be registered without touching
+    state. Identical Pydantic validation to register-table; for BQ rows we
+    additionally make a ``bigquery.Client(project).get_table(...)`` call
+    and surface the GCP error verbatim.
+    """
+    if not request.name or not request.name.strip():
+        raise HTTPException(status_code=422, detail="Table name cannot be empty")
+
+    if request.source_type != "bigquery":
+        # M1 only adds BQ-specific precheck. Other source types get a
+        # validation-only response so the CLI / UI can rely on the same
+        # endpoint shape across types.
+        return {
+            "ok": True,
+            "table": {
+                "name": request.name,
+                "source_type": request.source_type,
+                "bucket": request.bucket,
+                "source_table": request.source_table,
+                "rows": None,
+                "size_bytes": None,
+                "columns": [],
+                "note": "precheck for non-bigquery sources is validation-only in M1",
+            },
+        }
+
+    # BQ-specific shape validation (forces query_mode/profile_after_sync,
+    # checks identifier safety, validates project_id from instance.yaml).
+    _validate_bigquery_register_payload(request)
+
+    # Round-trip the BQ jobs API to confirm the table exists and the SA can
+    # see it. Imports kept local to avoid pulling google-cloud-bigquery into
+    # the import chain on non-BQ instances.
+    try:
+        from google.cloud import bigquery  # noqa: PLC0415
+        from google.api_core import exceptions as google_exc  # noqa: PLC0415
+    except ImportError as e:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "google-cloud-bigquery not installed; install the bigquery "
+                f"extras to use BQ precheck ({e})"
+            ),
+        ) from e
+
+    from app.instance_config import get_value
+    project_id = get_value("data_source", "bigquery", "project", default="")
+    dataset = (request.bucket or "").strip()
+    source_table = (request.source_table or "").strip()
+    fq = f"{project_id}.{dataset}.{source_table}"
+
+    try:
+        client = bigquery.Client(project=project_id)
+        bq_table = client.get_table(fq)
+    except google_exc.NotFound as e:
+        raise HTTPException(status_code=404, detail=f"BigQuery table not found: {fq} ({e})") from e
+    except google_exc.Forbidden as e:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"BigQuery access denied for {fq}: {e}. "
+                "Service account needs bigquery.metadata.get on the dataset."
+            ),
+        ) from e
+    except Exception as e:
+        # Auth errors, transient 5xx, malformed table refs — surface as 400
+        # so the operator gets the GCP error verbatim and can fix their
+        # config without us guessing the right HTTP code.
+        raise HTTPException(status_code=400, detail=f"BigQuery precheck failed for {fq}: {e}") from e
+
+    columns = [
+        {"name": f.name, "type": f.field_type}
+        for f in (bq_table.schema or [])
+    ]
+    return {
+        "ok": True,
+        "table": {
+            "name": request.name,
+            "source_type": "bigquery",
+            "bucket": dataset,
+            "source_table": source_table,
+            "project_id": project_id,
+            "rows": int(bq_table.num_rows or 0),
+            "size_bytes": int(bq_table.num_bytes or 0),
+            "columns": columns,
+            "column_count": len(columns),
+        },
+    }
 
 
 @router.put("/registry/{table_id}")
 async def update_table(
     table_id: str,
     request: UpdateTableRequest,
+    background: BackgroundTasks,
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Update a registered table's configuration."""
+    """Update a registered table's configuration.
+
+    For BQ rows, schedules a background rebuild so the master view picks
+    up changes (e.g. a renamed dataset) without waiting for the next
+    scheduled sync.
+    """
     repo = TableRegistryRepository(conn)
-    if not repo.get(table_id):
+    existing = repo.get(table_id)
+    if not existing:
         raise HTTPException(status_code=404, detail="Table not found")
 
     updates = {k: v for k, v in request.model_dump().items() if v is not None}
     if updates:
-        existing = repo.get(table_id)
         merged = {k: v for k, v in existing.items() if k != "registered_at"}
         merged.update(updates)
         merged.pop("id", None)  # avoid duplicate id kwarg
         repo.register(id=table_id, **merged)
+
+    AuditRepository(conn).log(
+        user_id=user.get("id"),
+        action="update_table",
+        resource=table_id,
+        params=_sanitize_for_audit({"updated_fields": sorted(updates.keys()), **updates}),
+    )
+
+    # If we updated a BQ row (or one that's now BQ), refresh the extract in
+    # the background so the view picks up renames / column-list changes.
+    after = repo.get(table_id) or {}
+    if after.get("source_type") == "bigquery":
+        background.add_task(_materialize_bigquery_extract, conn)
+
     return {"id": table_id, "updated": list(updates.keys())}
 
 
 @router.delete("/registry/{table_id}", status_code=204)
 async def unregister_table(
     table_id: str,
+    background: BackgroundTasks,
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Unregister a table from the system."""
+    """Unregister a table from the system.
+
+    For BQ rows, schedules a background rebuild so the dropped row's
+    master view is removed from analytics.duckdb (rather than hanging
+    around until the next scheduled sync).
+    """
     repo = TableRegistryRepository(conn)
-    if not repo.get(table_id):
+    existing = repo.get(table_id)
+    if not existing:
         raise HTTPException(status_code=404, detail="Table not found")
+
+    was_bigquery = existing.get("source_type") == "bigquery"
     repo.unregister(table_id)
+
+    AuditRepository(conn).log(
+        user_id=user.get("id"),
+        action="unregister_table",
+        resource=table_id,
+        params=_sanitize_for_audit({
+            "name": existing.get("name"),
+            "source_type": existing.get("source_type"),
+            "bucket": existing.get("bucket"),
+            "source_table": existing.get("source_table"),
+        }),
+    )
+
+    if was_bigquery:
+        background.add_task(_materialize_bigquery_extract, conn)
 
 
 @router.post("/configure")
