@@ -103,6 +103,7 @@ class CatalogEnricher:
             url = om_config.get("url", "").strip()
             token = om_config.get("token", "").strip()
             cache_ttl = om_config.get("cache_ttl_seconds", 3600)
+            verify_ssl = om_config.get("verify_ssl", True)
 
             if not url or not token:
                 logger.debug(
@@ -111,7 +112,9 @@ class CatalogEnricher:
                 return
 
             self._cache_ttl_seconds = cache_ttl
-            self._client = OpenMetadataClient(base_url=url, token=token)
+            self._client = OpenMetadataClient(
+                base_url=url, token=token, verify=verify_ssl,
+            )
             self.enabled = True
 
             logger.info(

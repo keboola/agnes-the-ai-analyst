@@ -11,12 +11,8 @@ Low-level HTTP wrapper for OpenMetadata REST API with these functions:
 import json
 import logging
 from typing import Dict, List, Optional, Any
-import warnings
 
 import httpx
-
-# Suppress SSL warnings for self-signed certificates
-warnings.filterwarnings("ignore", message="Unverified HTTPS request")
 
 
 logger = logging.getLogger(__name__)
@@ -36,6 +32,7 @@ class OpenMetadataClient:
         base_url: str,
         token: str,
         timeout: int = 30,
+        verify: bool | str = True,
     ):
         """
         Initialize OpenMetadata API client.
@@ -44,6 +41,12 @@ class OpenMetadataClient:
             base_url: Base URL of OpenMetadata instance (e.g., "https://catalog.example.com")
             token: JWT bearer token for authentication
             timeout: HTTP request timeout in seconds
+            verify: TLS verification — True (default), False to disable
+                (e.g., for self-signed certificates on internal CAs), or a
+                path to a CA bundle. The previous version hardcoded False
+                globally and suppressed warnings — both removed in #89.
+                Operators with self-signed certs should pass an explicit
+                ``verify=False`` or a CA bundle path from their config.
         """
         self.base_url = base_url.rstrip("/")
         self.token = token
@@ -55,7 +58,7 @@ class OpenMetadataClient:
                 "Content-Type": "application/json",
             },
             timeout=timeout,
-            verify=False,  # Allow self-signed certificates (internal networks)
+            verify=verify,
         )
 
     def get_table(self, fqn: str) -> Dict[str, Any]:
