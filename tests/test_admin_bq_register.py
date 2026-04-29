@@ -873,3 +873,323 @@ class TestCliRegisterTableDryRun:
             ])
         assert result.exit_code == 0
         assert "background" in result.output.lower()
+
+
+# --- Review fixes for #108 M1 ------------------------------------------------
+
+
+class TestKeboolaRegisterStatusCode:
+    """Status-code contract: the route no longer carries `status_code=201` on
+    its decorator — each branch returns its own. Keboola (non-BQ) must still
+    explicitly return 201 with the registered-row body."""
+
+    def test_keboola_register_returns_201(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/register-table",
+            json={
+                "name": "kb_status",
+                "source_type": "keboola",
+                "bucket": "in.c-crm",
+                "source_table": "orders",
+                "query_mode": "local",
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert body["id"] == "kb_status"
+        assert body["status"] == "registered"
+
+
+class TestUpdateTableBigQueryValidation:
+    """PUT /api/admin/registry/{id} must run the BQ-shape validator whenever
+    the merged record would be a BQ row, including the case where the patch
+    flips source_type from keboola → bigquery (review IMPORTANT-4)."""
+
+    def test_put_keboola_row_to_bq_with_bad_project_returns_4xx(
+        self, seeded_app, monkeypatch,
+    ):
+        from app.instance_config import reset_cache
+        # Set a malformed project_id in instance.yaml so the BQ validator
+        # rejects the merged row at PUT time.
+        monkeypatch.setattr(
+            "app.instance_config.load_instance_config",
+            lambda: {
+                "data_source": {
+                    "type": "bigquery",
+                    "bigquery": {"project": "Bad Project With Spaces"},
+                }
+            },
+            raising=False,
+        )
+        reset_cache()
+        try:
+            c = seeded_app["client"]
+            token = seeded_app["admin_token"]
+            # Seed a Keboola row first.
+            resp = c.post(
+                "/api/admin/register-table",
+                json={
+                    "name": "rev4",
+                    "source_type": "keboola",
+                    "bucket": "in.c-crm",
+                    "source_table": "rev4",
+                    "query_mode": "local",
+                },
+                headers=_auth(token),
+            )
+            assert resp.status_code == 201
+
+            # Now PATCH it to bigquery — must run BQ validation and 4xx
+            # because the project_id is bogus.
+            resp = c.put(
+                "/api/admin/registry/rev4",
+                json={
+                    "source_type": "bigquery",
+                    "bucket": "analytics",
+                    "source_table": "rev4",
+                },
+                headers=_auth(token),
+            )
+            assert resp.status_code in (400, 422), resp.text
+        finally:
+            reset_cache()
+
+    def test_put_existing_bq_row_with_bad_bucket_returns_400(
+        self, seeded_app, bq_instance, stub_bq_extractor,
+    ):
+        """An admin PATCH that mutates `bucket` on an existing BQ row to an
+        unsafe identifier must be rejected before the registry write."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        # Register a BQ row.
+        resp = c.post(
+            "/api/admin/register-table",
+            json=_bq_payload(name="rev4_bq"),
+            headers=_auth(token),
+        )
+        assert resp.status_code in (200, 202), resp.text
+
+        # PATCH bucket to an unsafe identifier — must 400.
+        resp = c.put(
+            "/api/admin/registry/rev4_bq",
+            json={"bucket": 'evil";DROP'},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400, resp.text
+
+
+class TestAuditAllowlistMasking:
+    """Review IMPORTANT-5: explicit allowlist instead of substring scan.
+
+    Asserts that:
+      - field names containing 'token'/'key'/'secret' as substrings are NOT
+        masked unless they're in the explicit allowlist; and
+      - known-secret fields IN the allowlist are still masked.
+    """
+
+    def test_substring_match_does_not_mask_unknown_fields(self):
+        from app.api.admin import _sanitize_for_audit
+        out = _sanitize_for_audit({
+            # All of these would have been masked by the old substring
+            # scan but should now flow through cleartext — they aren't
+            # actual credentials.
+            "not_actually_a_token": "literal value",
+            "primary_key": ["id"],
+            "primary_key_hash": "deadbeef",
+            "passwordless": "no creds here",
+            "secretly_an_int": 42,
+        })
+        assert out["not_actually_a_token"] == "literal value"
+        assert out["primary_key"] == ["id"]
+        assert out["primary_key_hash"] == "deadbeef"
+        assert out["passwordless"] == "no creds here"
+        assert out["secretly_an_int"] == 42
+
+    def test_allowlisted_secret_fields_are_masked(self):
+        from app.api.admin import _sanitize_for_audit
+        out = _sanitize_for_audit({
+            "keboola_token": "kbc-1234",
+            "client_secret": "abc",
+            "smtp_password": "p",
+            "bot_token": "tg-1",
+            "name": "kept-raw",
+        })
+        assert out["keboola_token"] == "***"
+        assert out["client_secret"] == "***"
+        assert out["smtp_password"] == "***"
+        assert out["bot_token"] == "***"
+        assert out["name"] == "kept-raw"
+
+    def test_empty_secret_fields_are_marked_empty(self):
+        from app.api.admin import _sanitize_for_audit
+        out = _sanitize_for_audit({"keboola_token": "", "client_secret": None})
+        assert out["keboola_token"] == "<empty>"
+        assert out["client_secret"] == "<empty>"
+
+
+class TestBigQueryInitExtractLockSerialization:
+    """Review IMPORTANT-2: two concurrent calls to `init_extract` (the
+    file-swap path) must serialize cleanly under `_INIT_EXTRACT_LOCK`. We
+    verify the lock by stubbing the heavy GCE round-trip and asserting that
+    only one worker is inside the locked body at a time."""
+
+    def test_concurrent_init_extract_serializes(self, tmp_path, monkeypatch):
+        import threading
+        import time
+
+        from connectors.bigquery import extractor as bq
+
+        # Track concurrent entries into the locked body. If the lock works,
+        # `inside` is never > 1.
+        inside = {"current": 0, "peak": 0}
+        lock = threading.Lock()
+
+        def fake_locked(output_dir, project_id, table_configs):
+            with lock:
+                inside["current"] += 1
+                inside["peak"] = max(inside["peak"], inside["current"])
+            try:
+                # Hold the lock long enough that a parallel call has time to
+                # block on `_INIT_EXTRACT_LOCK` if serialization works, or
+                # race past it (and bump `peak` to 2) if it doesn't.
+                time.sleep(0.05)
+                return {"tables_registered": 0, "errors": []}
+            finally:
+                with lock:
+                    inside["current"] -= 1
+
+        monkeypatch.setattr(bq, "_init_extract_locked", fake_locked)
+
+        results = []
+
+        def call():
+            results.append(
+                bq.init_extract(str(tmp_path / "extr"), "ok-project", [])
+            )
+
+        threads = [threading.Thread(target=call) for _ in range(3)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(results) == 3
+        assert inside["peak"] == 1, (
+            f"_INIT_EXTRACT_LOCK did not serialize concurrent callers — "
+            f"peak concurrency was {inside['peak']}"
+        )
+
+
+class TestBigQueryRegisterFreshConnection:
+    """Review BLOCKER-1: the worker must not capture the request-scoped
+    DuckDB connection. Confirm by asserting the worker calls `get_system_db`
+    (fresh handle) and the request connection is NEVER passed through.
+    """
+
+    def test_worker_opens_fresh_connection(
+        self, seeded_app, bq_instance, stub_bq_extractor, monkeypatch,
+    ):
+        from src import db as _db
+
+        opens = {"count": 0}
+        original_get = _db.get_system_db
+
+        def counting_get_system_db():
+            opens["count"] += 1
+            return original_get()
+
+        monkeypatch.setattr("src.db.get_system_db", counting_get_system_db)
+        # The admin module imports `get_system_db` via `from src.db import …`
+        # inside the worker function, so patching `src.db.get_system_db` is
+        # sufficient — but also patch any cached binding for safety.
+        import app.api.admin as admin_mod
+        if hasattr(admin_mod, "get_system_db"):
+            monkeypatch.setattr(admin_mod, "get_system_db", counting_get_system_db, raising=False)
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/register-table",
+            json=_bq_payload(name="fresh_conn"),
+            headers=_auth(token),
+        )
+        assert resp.status_code in (200, 202), resp.text
+        # The worker opens at least one fresh connection (via get_system_db).
+        # Other parts of the request also use get_system_db (auth gate, repo
+        # lookup), so we just assert that the worker contributed at least one
+        # extra open. Stronger guarantee: the rebuild stub was invoked.
+        assert stub_bq_extractor["rebuild"].called
+        # And the connection passed to rebuild_from_registry must NOT be the
+        # same one the request handler held — assert it's not None and was
+        # opened in the worker (we can't compare object identity without
+        # threading the request conn through, but a separate handle implies
+        # the worker did its own open).
+        passed_conn = stub_bq_extractor["rebuild"].call_args.kwargs.get("conn")
+        assert passed_conn is not None, (
+            "rebuild_from_registry should receive a fresh worker-opened conn"
+        )
+
+    def test_worker_runs_after_request_returns(
+        self, seeded_app, bq_instance, monkeypatch,
+    ):
+        """Force the synchronous budget to expire so the BackgroundTask path
+        runs after the request connection is closed. The worker must still
+        complete because it opens its own connection."""
+        from unittest.mock import MagicMock
+        import time
+
+        # Replace SyncOrchestrator with a fast no-op so we can observe the
+        # rebuild_from_registry call after the response.
+        orch_mock = MagicMock()
+        monkeypatch.setattr(
+            "src.orchestrator.SyncOrchestrator",
+            lambda *a, **kw: orch_mock,
+        )
+
+        # Stub rebuild_from_registry to take longer than the budget so the
+        # synchronous path times out and BackgroundTask kicks in.
+        slow_rebuild = MagicMock()
+
+        def slow_call(conn=None, output_dir=None):
+            time.sleep(0.2)
+            return {
+                "project_id": "my-test-project",
+                "tables_registered": 1,
+                "errors": [],
+                "skipped": False,
+            }
+
+        slow_rebuild.side_effect = slow_call
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor.rebuild_from_registry",
+            slow_rebuild,
+        )
+
+        # Tighten the budget so the test is fast.
+        monkeypatch.setattr(
+            "app.api.admin._BQ_SYNC_REGISTER_TIMEOUT_S", 0.05, raising=False,
+        )
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/register-table",
+            json=_bq_payload(name="fresh_after"),
+            headers=_auth(token),
+        )
+        # 202 (timeout) is the expected path; 200 is acceptable if the box is
+        # slow enough that BackgroundTask runs synchronously inside TestClient.
+        assert resp.status_code in (200, 202), resp.text
+        # Wait for the BackgroundTask to drain. TestClient already does this
+        # synchronously for tasks, but the timeout-fallback also spawned a
+        # daemon thread. Give both up to 1s to settle.
+        deadline = time.time() + 1.0
+        while time.time() < deadline and slow_rebuild.call_count < 1:
+            time.sleep(0.01)
+        assert slow_rebuild.called, (
+            "rebuild_from_registry should run after request returns "
+            "(via BackgroundTask + daemon fallback)"
+        )

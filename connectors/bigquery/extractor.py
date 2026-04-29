@@ -6,11 +6,20 @@ No data is downloaded. All queries go directly to BigQuery via DuckDB extension 
 import logging
 import os
 import shutil
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Dict, Any
 
 import duckdb
+
+# Serializes the body of `init_extract` across threads so two concurrent
+# materialize calls (e.g. the synchronous timeout-fallback BackgroundTask
+# kicking in while the original daemon thread is still running) can't both
+# reach the `shutil.move(tmp, db_path)` swap and corrupt the extract file.
+# `SyncOrchestrator._rebuild_lock` only protects the master-view rebuild,
+# not the per-source extract-file write, so we need a dedicated lock here.
+_INIT_EXTRACT_LOCK = threading.Lock()
 
 from connectors.bigquery.auth import get_metadata_token, BQMetadataAuthError
 from app.instance_config import get_value
@@ -103,6 +112,19 @@ def init_extract(
     Returns:
         Dict with stats: {tables_registered: int, errors: list}
     """
+    # Serialize concurrent calls to avoid a torn `shutil.move` swap when the
+    # admin route's timeout-fallback BackgroundTask runs alongside the still-
+    # alive daemon thread that exceeded the 5s budget.
+    with _INIT_EXTRACT_LOCK:
+        return _init_extract_locked(output_dir, project_id, table_configs)
+
+
+def _init_extract_locked(
+    output_dir: str,
+    project_id: str,
+    table_configs: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Inner body of init_extract executed under _INIT_EXTRACT_LOCK."""
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 

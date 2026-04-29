@@ -583,35 +583,58 @@ async def update_server_config(
 # table_registry (where it would later confuse the orchestrator scan).
 _VALID_SOURCE_TYPES: tuple[str, ...] = ("keboola", "bigquery", "jira", "local")
 
-# Substrings that mark a request-body field as a credential and force masking
-# in the audit log. Symmetric with _SECRET_KEY_PATTERNS used by server-config;
-# kept as a separate constant because the registry payload doesn't normally
-# carry secrets — but a future field name change shouldn't accidentally let
-# one through.
-_REGISTRY_SECRET_KEY_PATTERNS: tuple[str, ...] = (
-    "secret",
-    "token",
+# Explicit allowlist of audit-payload keys whose values are credentials and
+# must be masked. Substring-scan + ad-hoc whitelist (the previous shape) is
+# fragile in two ways:
+#   1. False positive: legit fields like `primary_key` get masked because
+#      they contain "key" — we then need a whitelist exception, which has
+#      to be kept in sync as new fields are added.
+#   2. False negative: a future field like `primary_key_hash` *would* be
+#      masked (defensible) but `not_actually_a_token` ALSO matches "token"
+#      and gets masked unnecessarily; conversely, a brand-new credential
+#      field that doesn't contain one of the patterns (`auth_material`,
+#      `bearer`) silently leaks.
+# Allowlist puts the burden on the developer adding a new secret-bearing
+# field: they must add the literal key name here, which forces a code-
+# review touch on the audit path. Audit the current Pydantic models
+# (RegisterTableRequest / UpdateTableRequest / ConfigureRequest /
+# ServerConfigUpdateRequest) when extending — the registry payloads don't
+# currently carry credentials, but ConfigureRequest does (`keboola_token`)
+# and could be routed through this sanitizer in the future.
+_SECRET_FIELDS: frozenset = frozenset({
+    # ConfigureRequest — POST /api/admin/configure carries Keboola creds.
+    "keboola_token",
+    # Generic names that have appeared in earlier iterations of admin
+    # request bodies and could resurface — keep them masked defensively.
+    "api_token",
+    "auth_token",
+    "bot_token",
+    "client_secret",
+    "google_client_secret",
+    "google_oauth_client_secret",
     "password",
-    "key",
-)
+    "smtp_password",
+    "webapp_secret_key",
+    "bot_secret",
+    # Marketplace PATs (private repos) — see src/marketplace.py.
+    "marketplace_token",
+    "marketplace_pat",
+})
 
 
 def _sanitize_for_audit(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Mask secret-looking fields in a request payload before writing to audit_log.
+    """Mask credential-bearing fields in a request payload before audit_log.
 
-    The `description` field is kept raw — it's documentation an admin
-    typed and is not a credential. Anything matching the secret patterns
-    (`secret`, `token`, `password`, `key`) is replaced with ``"***"``;
-    `primary_key` is whitelisted because it's the literal column name list,
-    not a credential, even though it contains "key".
+    Uses an explicit `_SECRET_FIELDS` allowlist (case-insensitive) instead
+    of substring matching. The trade-off is that adding a new secret field
+    requires updating the set — but that's the *point*: the test suite
+    asserts `not_actually_a_token` does NOT get masked, so a substring-
+    based regression would surface immediately, and a missing entry for a
+    real new credential gets caught at code review of the audit path.
     """
     out: Dict[str, Any] = {}
     for k, v in payload.items():
-        if k in ("primary_key",):
-            out[k] = v
-            continue
-        kl = k.lower()
-        if any(pat in kl for pat in _REGISTRY_SECRET_KEY_PATTERNS):
+        if k.lower() in _SECRET_FIELDS:
             out[k] = "***" if v not in (None, "") else "<empty>"
         else:
             out[k] = v
@@ -806,22 +829,36 @@ async def list_registry(
 _BQ_SYNC_REGISTER_TIMEOUT_S: float = 5.0
 
 
-def _materialize_bigquery_extract(conn: duckdb.DuckDBPyConnection) -> None:
+def _materialize_bigquery_extract() -> None:
     """Re-build the BigQuery extract.duckdb + master views.
 
     Wrapper used by both the synchronous (in-band) and async (BackgroundTask)
     code paths after a BQ register/update/delete. Imports kept inside the
     function so non-BQ instances don't pay the import cost on app start.
+
+    Opens a FRESH system DB connection rather than reusing the request-scoped
+    one. The request handler closes its connection in a `finally` after the
+    response, but BackgroundTask + the timeout-fallback daemon thread can
+    both outlive that close — they would then operate on a closed handle (or
+    one being torn down concurrently). A fresh handle is cheap (DuckDB is an
+    embedded engine) and isolates the worker's lifetime from the request's.
     """
     from connectors.bigquery import extractor as _bq_extractor
+    from src.db import get_system_db
     from src.orchestrator import SyncOrchestrator
 
-    _bq_extractor.rebuild_from_registry(conn=conn)
-    SyncOrchestrator().rebuild()
+    fresh_conn = get_system_db()
+    try:
+        _bq_extractor.rebuild_from_registry(conn=fresh_conn)
+        SyncOrchestrator().rebuild()
+    finally:
+        try:
+            fresh_conn.close()
+        except Exception:
+            pass
 
 
 def _run_bigquery_materialize_with_timeout(
-    conn: duckdb.DuckDBPyConnection,
     background: BackgroundTasks,
 ) -> bool:
     """Try to materialize synchronously within the wall-clock budget.
@@ -831,6 +868,10 @@ def _run_bigquery_materialize_with_timeout(
     Any non-timeout exception is logged and the BG task takes over so the
     register call still returns success — the row is in the registry, the
     view will appear when the rebuild finishes.
+
+    The worker runs on a daemon thread that opens its OWN system DB
+    connection (see `_materialize_bigquery_extract`) — never the request-
+    scoped one, which the dependency layer closes after the response.
     """
     import threading
 
@@ -839,7 +880,7 @@ def _run_bigquery_materialize_with_timeout(
 
     def _worker():
         try:
-            _materialize_bigquery_extract(conn)
+            _materialize_bigquery_extract()
         except Exception as e:  # pragma: no cover — logged below
             err_holder["error"] = e
         finally:
@@ -857,23 +898,33 @@ def _run_bigquery_materialize_with_timeout(
             )
             # Schedule a fresh attempt in the background — the synchronous
             # one failed, but the row is already in the registry.
-            background.add_task(_materialize_bigquery_extract, conn)
+            background.add_task(_materialize_bigquery_extract)
             return False
         return True
 
     # Timed out — let the worker keep running on its thread (already daemon)
     # and also schedule a BackgroundTask so the orchestrator gets called via
-    # the supported FastAPI path. The orchestrator's _rebuild_lock serializes
-    # them, so the second call is effectively a no-op.
+    # the supported FastAPI path. `_INIT_EXTRACT_LOCK` in the BQ extractor
+    # serializes the two file-swap calls so the slow daemon thread and the
+    # background task can't tear `extract.duckdb`; the orchestrator's own
+    # `_rebuild_lock` protects the master-view rebuild step downstream.
     logger.info(
         "BQ post-register rebuild exceeded %ss budget — handing off to BackgroundTask",
         _BQ_SYNC_REGISTER_TIMEOUT_S,
     )
-    background.add_task(_materialize_bigquery_extract, conn)
+    background.add_task(_materialize_bigquery_extract)
     return False
 
 
-@router.post("/register-table", status_code=201)
+@router.post(
+    "/register-table",
+    responses={
+        200: {"description": "BigQuery row registered + materialized synchronously"},
+        201: {"description": "Non-BigQuery row registered (no post-insert materialize)"},
+        202: {"description": "BigQuery row registered; materialize continues in background"},
+        409: {"description": "Table id or view name already in use"},
+    },
+)
 async def register_table(
     request: RegisterTableRequest,
     background: BackgroundTasks,
@@ -889,11 +940,16 @@ async def register_table(
       master views with a wall-clock budget. Returns 200 with the view name
       on success or 202 on budget overrun (rebuild continues in a
       BackgroundTask).
-    - other source types: insert-only, no post-register hook.
+    - other source types: insert-only, no post-register hook. Returns 201.
+
+    The route does NOT carry a default ``status_code`` — each branch returns
+    its own JSONResponse with the right code. A blanket ``status_code=201``
+    on the decorator would mislead OpenAPI consumers about the BQ branch.
 
     Always: 409 on view-name collision against the existing registry, audit
     log entry on success.
     """
+    from fastapi.responses import JSONResponse
     if not request.name or not request.name.strip():
         raise HTTPException(status_code=422, detail="Table name cannot be empty")
     repo = TableRegistryRepository(conn)
@@ -951,15 +1007,18 @@ async def register_table(
     )
 
     if not is_bigquery:
-        return {"id": table_id, "name": request.name, "status": "registered"}
+        # Keboola / Jira / local rows are insert-only here. 201 Created — the
+        # decorator no longer carries a default status, so each branch is
+        # explicit about its code (BQ branch overrides via JSONResponse).
+        return JSONResponse(
+            status_code=201,
+            content={"id": table_id, "name": request.name, "status": "registered"},
+        )
 
     # BQ post-register: rebuild extract + master views, with timeout fallback.
-    # The route decorator's default status_code (201) doesn't fit the BQ
-    # path — Decision 1 says 200 on synchronous success, 202 on timeout —
-    # so build a Response explicitly. JSONResponse rather than Response so
-    # the body is correctly content-typed and serialized.
-    from fastapi.responses import JSONResponse
-    materialized = _run_bigquery_materialize_with_timeout(conn, background)
+    # Decision 1: 200 on synchronous success, 202 on timeout — distinct from
+    # the 201 Keboola path above, so the BQ branch builds its own response.
+    materialized = _run_bigquery_materialize_with_timeout(background)
     if materialized:
         return JSONResponse(
             status_code=200,
@@ -1113,10 +1172,38 @@ async def update_table(
         raise HTTPException(status_code=404, detail="Table not found")
 
     updates = {k: v for k, v in request.model_dump().items() if v is not None}
+    # Run BQ-shape validation BEFORE persisting whenever the merged record
+    # would be a bigquery row (existing was BQ, or the patch flips it to BQ,
+    # or the patch touches BQ-relevant fields on an already-BQ row). Without
+    # this gate, an admin could PUT `bucket="evil\"; DROP --"` onto a BQ
+    # row and the next rebuild would silently fail at view-create time —
+    # surface the bad shape at PUT time instead.
     if updates:
         merged = {k: v for k, v in existing.items() if k != "registered_at"}
         merged.update(updates)
         merged.pop("id", None)  # avoid duplicate id kwarg
+
+        if merged.get("source_type") == "bigquery":
+            # Reuse the register-time validator. It mutates the request to
+            # force query_mode='remote' / profile_after_sync=False — apply
+            # the same coercion to `merged` so the persisted row matches.
+            synthetic = RegisterTableRequest(
+                name=merged.get("name") or table_id,
+                bucket=merged.get("bucket"),
+                source_table=merged.get("source_table"),
+                source_type="bigquery",
+                query_mode=merged.get("query_mode") or "remote",
+                profile_after_sync=bool(merged.get("profile_after_sync") or False),
+                primary_key=merged.get("primary_key"),
+                description=merged.get("description"),
+                folder=merged.get("folder"),
+                sync_strategy=merged.get("sync_strategy") or "full_refresh",
+                sync_schedule=merged.get("sync_schedule"),
+            )
+            _validate_bigquery_register_payload(synthetic)
+            merged["query_mode"] = synthetic.query_mode
+            merged["profile_after_sync"] = synthetic.profile_after_sync
+
         repo.register(id=table_id, **merged)
 
     AuditRepository(conn).log(
@@ -1130,7 +1217,7 @@ async def update_table(
     # the background so the view picks up renames / column-list changes.
     after = repo.get(table_id) or {}
     if after.get("source_type") == "bigquery":
-        background.add_task(_materialize_bigquery_extract, conn)
+        background.add_task(_materialize_bigquery_extract)
 
     return {"id": table_id, "updated": list(updates.keys())}
 
@@ -1169,7 +1256,7 @@ async def unregister_table(
     )
 
     if was_bigquery:
-        background.add_task(_materialize_bigquery_extract, conn)
+        background.add_task(_materialize_bigquery_extract)
 
 
 @router.post("/configure")
