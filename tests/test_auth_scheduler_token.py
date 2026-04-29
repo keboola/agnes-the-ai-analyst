@@ -116,3 +116,38 @@ def test_get_scheduler_user_lazy_seeds_when_absent(fresh_db, monkeypatch):
         assert user["email"] == SCHEDULER_USER_EMAIL
     finally:
         conn.close()
+
+
+def test_require_session_token_rejects_scheduler_secret(fresh_db, monkeypatch):
+    """The shared scheduler secret must NOT pass `require_session_token`.
+
+    /auth/tokens (PAT minting) is gated by `require_session_token`, which
+    historically rejected only PATs (JWTs with typ=pat). The scheduler
+    secret is opaque so verify_token() returns None and the PAT-claim
+    check would silently pass — letting a compromised secret forge
+    persistent PATs that survive a rotation. Regression guard for the
+    Devin review on PR #127.
+    """
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from fastapi import HTTPException
+
+    from app.auth.dependencies import require_session_token
+
+    secret = "x" * 64
+    monkeypatch.setenv("SCHEDULER_API_TOKEN", secret)
+
+    request = MagicMock()
+    request.headers = {"authorization": f"Bearer {secret}"}
+    request.cookies = {}
+
+    user = {"id": "scheduler-id", "email": "scheduler@system.local"}
+    try:
+        asyncio.run(require_session_token(request=request, user=user))
+    except HTTPException as exc:
+        assert exc.status_code == 403
+        # Detail should signal "interactive only", flavor doesn't matter.
+        assert "interactive" in exc.detail.lower()
+    else:
+        raise AssertionError("require_session_token must reject scheduler secret")
