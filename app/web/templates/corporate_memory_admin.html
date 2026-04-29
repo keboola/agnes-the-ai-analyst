@@ -840,10 +840,10 @@
     {% include '_theme.html' %}
 </head>
 <body>
-    <div class="container-memory">
-        <!-- Header -->
-        {% include '_app_header.html' %}
+    <!-- Header (outside container so it spans full viewport, matching dashboard) -->
+    {% include '_app_header.html' %}
 
+    <div class="container-memory">
         <!-- Stats Bar -->
         <div class="stats-bar">
             <div class="stat-item highlight">
