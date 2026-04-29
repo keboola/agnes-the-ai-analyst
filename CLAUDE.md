@@ -364,42 +364,76 @@ See **[Access control (v13)](#access-control-v13)** above and [`docs/RBAC.md`](d
 
 ## Release & deploy workflows
 
-Two separate release.yml-style workflows produce GHCR images. Pick the one that matches what you're shipping.
+Three GitHub Actions workflows publish images to GHCR. They share `_test.yml` for the test stage. Operator-facing reference: `docs/release-process.md`.
 
-### `release.yml` — auto-build on every push
-Runs on **every** push to **every** branch.
-- Push to `main` → `:stable`, `:stable-YYYY.MM.N` (CalVer).
-- Push to non-main `<prefix>/<branch>` → `:dev`, `:dev-YYYY.MM.N`, `:dev-<branch-slug>`, and (when prefix isn't a Git Flow convention) `:dev-<prefix>-latest` alias.
+### `release.yml` — main-only auto-build + per-branch manual
 
-VMs that pin to a floating tag (`:dev`, `:dev-<prefix>-latest`) auto-upgrade within ~5 min via the cron in `agnes-auto-upgrade.sh`. Convenient for per-developer dev VMs; **footgun for shared dev VMs** (last pusher wins, regardless of who).
+Runs on every push to `main` (auto) and on `workflow_dispatch` from any branch (manual). Image identity uses `${{ github.run_number }}` — no more CalVer claim-tag race, no more git-tag side-effects on the repo.
 
-### `keboola-deploy.yml` — tag-triggered, explicit deploy only
-Runs **only** on git tags matching `keboola-deploy-*`. Publishes:
-- `:keboola-deploy-<git-tag-suffix>` — immutable, tied to the exact commit
-- `:keboola-deploy-latest` — floating alias the consumer pins to
+**Push to main publishes:**
+- `:stable` — floating, the latest main build
+- `:stable-<run-number>` — immutable, pinnable
+- `:sha-<7>` — git-SHA-pinned debugging tag
 
-**Operator workflow:**
-```bash
-git checkout <commit-or-branch>
-git tag keboola-deploy-<descriptive-name>
-git push origin keboola-deploy-<descriptive-name>
-# → workflow builds + publishes both tags
-# → VM cron picks up :keboola-deploy-latest within ~5 min
-# → manual cron trigger (skip the wait): sudo /usr/local/bin/agnes-auto-upgrade.sh on the VM
-```
+**`workflow_dispatch -r <branch>` from non-main publishes:**
+- `:dev` — floating, latest dev across all branches
+- `:dev-<run-number>` — immutable
+- `:dev-<branch-slug>` — per-branch immutable (e.g. `:dev-zs-foo` from `zs/foo`)
+- `:dev-<prefix>-latest` — per-developer floating alias (e.g. `:dev-zs-latest` from any `zs/*`); skipped when prefix matches a Git Flow keyword (`feature`, `fix`, `hotfix`, etc.)
+- `:sha-<7>`
 
-Use this when the consumer (e.g. a customer dev VM) needs **deploy-when-I-decide** semantics — no surprise rollouts from upstream branch pushes by other contributors. The infra repo pins `image_tag = "keboola-deploy-latest"` on the relevant VM.
+Pushes to non-main branches do NOT auto-build. To deploy non-main code:
+
+    gh workflow run release.yml -r <branch> --field reason="why"
+
+Smoke-test on the freshly-built `:stable` runs `scripts/smoke-test.sh`. On smoke failure, the downstream `rollback-on-smoke-fail` job in `release.yml` calls `.github/workflows/rollback.yml` which re-tags `:stable` to `stable-<run_number-1>`, deprecates the failed image, and opens a tracking issue (label `bug,rollback`) — primary operator notification.
+
+### `keboola-deploy.yml` — tag-triggered, explicit deploy
+
+Runs only on `keboola-deploy-*` git tag pushes. Publishes:
+
+- `:keboola-deploy-<git-tag-suffix>` — immutable
+- `:keboola-deploy-latest` — floating alias
+
+Operator workflow unchanged — see `docs/release-process.md`.
+
+### `_test.yml` — reusable test stage
+
+Called by `release.yml`, `keboola-deploy.yml`, and `ci.yml` via `uses: ./.github/workflows/_test.yml`. One copy of the install/lint/mypy/pytest recipe; default `pytest-args` is serial (no `-n auto`), `ci.yml` overrides to parallel.
+
+### `release-drafter.yml` — rolling draft GitHub Release
+
+Updates the draft release on every push to main (and PR sync). Categories derive from PR labels or conventional-commit title prefixes (`feat:` / `fix:` / `chore:` / `docs:` / etc.). When you push a `vX.Y.Z` git tag and publish the draft, that release's notes auto-fill from PR titles since the previous tag.
+
+### `rollback.yml` — extracted auto-rollback
+
+Callable via `workflow_call` (from `release.yml` smoke-fail) or `workflow_dispatch` (manual). Re-tags `:stable` to a previous build, deprecates the failing image, opens a tracking issue.
+
+Manual trigger:
+
+    gh workflow run rollback.yml -f failed_image_tag=stable-475
+    # or with explicit target
+    gh workflow run rollback.yml -f failed_image_tag=stable-475 -f target_image_tag=stable-470
+
+### `prune-dev-tags.yml` — weekly housekeeping
+
+Runs Sundays 04:00 UTC. Prunes legacy CalVer `dev-YYYY.MM.N` / `stable-YYYY.MM.N` git tags + matching GHCR image versions. Default retention: current month + previous month (`KEEP_MONTHS=1`). Manual trigger supports dry-run + `keep_months` override. The new short-form scheme (`stable-475`, `dev-475`) is NOT pruned by this job.
+
+### Versioning
+
+Package version is read from git tags via `setuptools_scm` (filtered to `v*` semver tags via `--match 'v*'`). To cut a release: push a `vX.Y.Z` tag, publish the Release Drafter draft on the Releases page. The next `:stable` build's `/api/version` reports `X.Y.Z`.
 
 ### Module versioning
-The customer-instance Terraform module under `infra/modules/customer-instance/` is published as `infra-vMAJOR.MINOR.PATCH` git tags (separate from app CalVer tags). Bump on any module-API change; downstream infra repos pin to the tag in their `source = "github.com/keboola/agnes-the-ai-analyst//infra/modules/customer-instance?ref=infra-v1.X.Y"`.
+
+The customer-instance Terraform module under `infra/modules/customer-instance/` is published as `infra-vMAJOR.MINOR.PATCH` git tags. Bump on any module-API change; downstream infra repos pin to the tag in their `source = "github.com/keboola/agnes-the-ai-analyst//infra/modules/customer-instance?ref=infra-v1.X.Y"`.
 
 After merging a module change to `main`:
-```bash
-git tag infra-vX.Y.Z origin/main
-git push origin infra-vX.Y.Z
-```
+
+    git tag infra-vX.Y.Z origin/main
+    git push origin infra-vX.Y.Z
 
 ### Replacing a VM after a startup-script change
+
 Module sets `lifecycle { ignore_changes = [metadata_startup_script] }` on `google_compute_instance.vm` so normal `terraform apply` doesn't churn running VMs. To propagate a startup-script update, trigger the consumer's apply workflow manually with the VM resource address — typical workflow_dispatch input is `recreate_targets='module.agnes.google_compute_instance.vm["<vm-name>"]'`.
 
 ## Key Implementation Details
