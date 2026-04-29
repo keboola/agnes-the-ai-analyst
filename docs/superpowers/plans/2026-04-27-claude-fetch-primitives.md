@@ -1,5 +1,7 @@
 # Claude-Driven Fetch Primitives Implementation Plan
 
+> **Historical note (2026-04-29):** `CHANGELOG.md` was retired in favor of GitHub Releases. Wherever this plan instructs adding entries under `## [Unreleased]` or modifying `CHANGELOG.md`, the equivalent today is: write the change as the PR title bullet and put migration details in the PR description (Release Drafter auto-aggregates). See CLAUDE.md → "Release notes".
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the broken BQ-view-wrapping approach (issue #101) with primitive operations the Claude agent composes — `da catalog`, `da schema`, `da fetch`, `da snapshot *`, `da query` — backed by `/api/v2/{catalog,schema,sample,scan,scan/estimate}` server endpoints. Secrets stay server-side; agent does the planning.

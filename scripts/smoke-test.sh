@@ -31,6 +31,24 @@ if [ "$HEALTH" = "unreachable" ]; then
 fi
 check "health ($HEALTH)" "true"
 
+# 1a. Version endpoint — verifies setuptools_scm resolved a real semver at
+# build time. Healthy values: 0.18.0, 0.18.1.dev3+gSHA, 0.18.0.dev0.
+# Rejected:
+#   - empty / "0.0.0+unknown" / "unknown" → shallow checkout or no v* tag
+#   - CalVer-shape (^YYYY.MM.N) → setuptools_scm `--match v*` filter did
+#     not apply at build time
+#   - anything that doesn't START with N.N.N → broken or unexpected scheme
+VERSION=$(curl -sf "$HOST/api/version" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('version',''))" 2>/dev/null || echo "")
+if [ -z "$VERSION" ] \
+   || [ "$VERSION" = "0.0.0+unknown" ] \
+   || [ "$VERSION" = "unknown" ] \
+   || echo "$VERSION" | grep -qE '^[0-9]{4}\.' \
+   || ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+'; then
+    check "api/version resolved ($VERSION)" "false"
+else
+    check "api/version resolved ($VERSION)" "true"
+fi
+
 # 1b. Unauthenticated DB-touching probe — exercises the system-DB path before
 # any token is acquired. /api/health does NOT open system.duckdb (deliberate, so
 # the LB probe stays cheap), so it can return 200 while every authed request

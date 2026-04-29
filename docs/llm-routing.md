@@ -289,7 +289,7 @@ so no manual pip install is needed. The deployment sequence:
 1. Add `openai` to `requirements.txt` (OSS repo)
 2. Update `collector.py` to use new connector (OSS repo)
 3. Add `ai:` section to `instance.yaml` (instance repo)
-4. Add `LLM_API_KEY` secret to GHA secrets and deploy.yml (instance repo)
+4. Add `LLM_API_KEY` to GHA secrets and instance repo `.env` (instance repo)
 5. Add `CONFIG_DIR` to the wrapper script `collect-knowledge` (OSS repo)
 6. Push both repos → CI/CD deploys automatically
 7. Verify via `--dry-run` on server
@@ -312,7 +312,7 @@ means existing `ai.anthropic_api_key` still works if we need to roll back.
 | `tests/test_llm_connector.py` | OSS | New: connector tests |
 | `tests/test_corporate_memory.py` | OSS | New/expanded: behavior tests |
 | `config/instance.yaml` | Instance | Add ai: section for the target provider |
-| `.github/workflows/deploy.yml` | Instance | Add LLM_API_KEY to .env |
+| `.env` (or VM `/opt/agnes/.env`) | Instance | Add LLM_API_KEY secret |
 | `env.example` | Instance | Document LLM_API_KEY |
 
 ## Risk Assessment

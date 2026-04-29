@@ -375,48 +375,82 @@ See **[Access control (v13)](#access-control-v13)** above and [`docs/RBAC.md`](d
 
 ## Release & deploy workflows
 
-Two separate release.yml-style workflows produce GHCR images. Pick the one that matches what you're shipping.
+Three GitHub Actions workflows publish images to GHCR. They share `_test.yml` for the test stage. Operator-facing reference: `docs/release-process.md`.
 
-### `release.yml` — auto-build on every push
-Runs on **every** push to **every** branch.
-- Push to `main` → `:stable`, `:stable-YYYY.MM.N` (CalVer).
-- Push to non-main `<prefix>/<branch>` → `:dev`, `:dev-YYYY.MM.N`, `:dev-<branch-slug>`, and (when prefix isn't a Git Flow convention) `:dev-<prefix>-latest` alias.
+### `release.yml` — main-only auto-build + per-branch manual
 
-VMs that pin to a floating tag (`:dev`, `:dev-<prefix>-latest`) auto-upgrade within ~5 min via the cron in `agnes-auto-upgrade.sh`. Convenient for per-developer dev VMs; **footgun for shared dev VMs** (last pusher wins, regardless of who).
+Runs on every push to `main` (auto) and on `workflow_dispatch` from any branch (manual). Image identity uses `${{ github.run_number }}` — no more CalVer claim-tag race, no more git-tag side-effects on the repo.
 
-### `keboola-deploy.yml` — tag-triggered, explicit deploy only
-Runs **only** on git tags matching `keboola-deploy-*`. Publishes:
-- `:keboola-deploy-<git-tag-suffix>` — immutable, tied to the exact commit
-- `:keboola-deploy-latest` — floating alias the consumer pins to
+**Push to main publishes:**
+- `:stable` — floating, the latest main build
+- `:stable-<run-number>` — immutable, pinnable
+- `:sha-<7>` — git-SHA-pinned debugging tag
 
-**Operator workflow:**
-```bash
-git checkout <commit-or-branch>
-git tag keboola-deploy-<descriptive-name>
-git push origin keboola-deploy-<descriptive-name>
-# → workflow builds + publishes both tags
-# → VM cron picks up :keboola-deploy-latest within ~5 min
-# → manual cron trigger (skip the wait): sudo /usr/local/bin/agnes-auto-upgrade.sh on the VM
-```
+**`workflow_dispatch -r <branch>` from non-main publishes:**
+- `:dev` — floating, latest dev across all branches
+- `:dev-<run-number>` — immutable
+- `:dev-<branch-slug>` — per-branch immutable (e.g. `:dev-zs-foo` from `zs/foo`)
+- `:dev-<prefix>-latest` — per-developer floating alias (e.g. `:dev-zs-latest` from any `zs/*`); skipped when prefix matches a Git Flow keyword (`feature`, `fix`, `hotfix`, etc.)
+- `:sha-<7>`
 
-Use this when the consumer (e.g. a customer dev VM) needs **deploy-when-I-decide** semantics — no surprise rollouts from upstream branch pushes by other contributors. The infra repo pins `image_tag = "keboola-deploy-latest"` on the relevant VM.
+Pushes to non-main branches do NOT auto-build. To deploy non-main code:
+
+    gh workflow run release.yml -r <branch> --field reason="why"
+
+Smoke-test on the freshly-built `:stable` runs `scripts/smoke-test.sh`. On smoke failure, the downstream `rollback-on-smoke-fail` job in `release.yml` calls `.github/workflows/rollback.yml` which re-tags `:stable` to `stable-<run_number-1>`, deprecates the failed image, and opens a tracking issue (label `bug,rollback`) — primary operator notification.
+
+### `keboola-deploy.yml` — tag-triggered, explicit deploy
+
+Runs only on `keboola-deploy-*` git tag pushes. Publishes:
+
+- `:keboola-deploy-<git-tag-suffix>` — immutable
+- `:keboola-deploy-latest` — floating alias
+
+Operator workflow unchanged — see `docs/release-process.md`.
+
+### `_test.yml` — reusable test stage
+
+Called by `release.yml`, `keboola-deploy.yml`, and `ci.yml` via `uses: ./.github/workflows/_test.yml`. One copy of the install/lint/mypy/pytest recipe; default `pytest-args` is serial (no `-n auto`), `ci.yml` overrides to parallel.
+
+### `release-drafter.yml` — rolling draft GitHub Release
+
+Updates the draft release on every push to main (and PR sync). Categories derive from PR labels or conventional-commit title prefixes (`feat:` / `fix:` / `chore:` / `docs:` / etc.). When you push a `vX.Y.Z` git tag and publish the draft, that release's notes auto-fill from PR titles since the previous tag.
+
+### `rollback.yml` — extracted auto-rollback
+
+Callable via `workflow_call` (from `release.yml` smoke-fail) or `workflow_dispatch` (manual). Re-tags `:stable` to a previous build, deprecates the failing image, opens a tracking issue.
+
+Manual trigger:
+
+    gh workflow run rollback.yml -f failed_image_tag=stable-475
+    # or with explicit target
+    gh workflow run rollback.yml -f failed_image_tag=stable-475 -f target_image_tag=stable-470
+
+### `prune-dev-tags.yml` — weekly housekeeping
+
+Runs Sundays 04:00 UTC. Prunes legacy CalVer `dev-YYYY.MM.N` / `stable-YYYY.MM.N` git tags + matching GHCR image versions. Default retention: current month + previous month (`KEEP_MONTHS=1`). Manual trigger supports dry-run + `keep_months` override. The new short-form scheme (`stable-475`, `dev-475`) is NOT pruned by this job.
+
+### Versioning
+
+Package version is read from git tags via `setuptools_scm` (filtered to `v*` semver tags via `--match 'v*'`). To cut a release: push a `vX.Y.Z` tag, publish the Release Drafter draft on the Releases page. The next `:stable` build's `/api/version` reports `X.Y.Z`.
 
 ### Module versioning
-The customer-instance Terraform module under `infra/modules/customer-instance/` is published as `infra-vMAJOR.MINOR.PATCH` git tags (separate from app CalVer tags). Bump on any module-API change; downstream infra repos pin to the tag in their `source = "github.com/keboola/agnes-the-ai-analyst//infra/modules/customer-instance?ref=infra-v1.X.Y"`.
+
+The customer-instance Terraform module under `infra/modules/customer-instance/` is published as `infra-vMAJOR.MINOR.PATCH` git tags. Bump on any module-API change; downstream infra repos pin to the tag in their `source = "github.com/keboola/agnes-the-ai-analyst//infra/modules/customer-instance?ref=infra-v1.X.Y"`.
 
 After merging a module change to `main`:
-```bash
-git tag infra-vX.Y.Z origin/main
-git push origin infra-vX.Y.Z
-```
+
+    git tag infra-vX.Y.Z origin/main
+    git push origin infra-vX.Y.Z
 
 ### Replacing a VM after a startup-script change
+
 Module sets `lifecycle { ignore_changes = [metadata_startup_script] }` on `google_compute_instance.vm` so normal `terraform apply` doesn't churn running VMs. To propagate a startup-script update, trigger the consumer's apply workflow manually with the VM resource address — typical workflow_dispatch input is `recreate_targets='module.agnes.google_compute_instance.vm["<vm-name>"]'`.
 
 ## Key Implementation Details
 
 ### DuckDB Schema (src/db.py)
-- Schema v13 with auto-migration v1→…→v13 (v5 adds `users.active`, v6 adds `personal_access_tokens`, v7 adds `personal_access_tokens.last_used_ip`, v8/v9 added the legacy internal_roles/role-grants tables, v10 added `view_ownership` for cross-connector view-name collision detection (issue #81 Group C), v11 added marketplace_registry + marketplace_plugins + user_groups + plugin_access, v12 added users.groups JSON + user_groups.is_system, **v13 replaces internal_roles/group_mappings/user_role_grants/plugin_access with user_group_members + resource_grants and drops users.groups JSON** — see CHANGELOG and docs/RBAC.md)
+- Schema v13 with auto-migration v1→…→v13 (v5 adds `users.active`, v6 adds `personal_access_tokens`, v7 adds `personal_access_tokens.last_used_ip`, v8/v9 added the legacy internal_roles/role-grants tables, v10 added `view_ownership` for cross-connector view-name collision detection (issue #81 Group C), v11 added marketplace_registry + marketplace_plugins + user_groups + plugin_access, v12 added users.groups JSON + user_groups.is_system, **v13 replaces internal_roles/group_mappings/user_role_grants/plugin_access with user_group_members + resource_grants and drops users.groups JSON** — see docs/RBAC.md and the GitHub Releases page for the v13-cut release)
 - `table_registry`: id, name, source_type, bucket, source_table, query_mode, sync_schedule, etc.
 - `sync_state`, `sync_history`: track extraction progress
 - `users`, `dataset_permissions`, `audit_log`: auth + RBAC
@@ -456,24 +490,13 @@ When you motivate a change, frame it abstractly ("behind a TLS-terminating rever
 
 Customer-specific automation, hostnames, and identities live in private infra repos that *consume* this OSS. The OSS describes capabilities, defaults, and configuration knobs — not how a specific operator wired them up.
 
-## Changelog discipline — non-negotiable
+## Release notes
 
-**Every PR that adds, removes, or changes user-visible behavior MUST update `CHANGELOG.md` in the same PR.** No exceptions, no follow-ups, no "I'll do it after merge". User-visible = anything an operator, end-user, or downstream integrator can observe: CLI flags / output / exit codes, REST endpoints / payloads / status codes, web UI, `instance.yaml` schema, env vars, `extract.duckdb` contract, Docker / compose / Caddyfile knobs, default behaviors, breaking changes, security fixes.
+Release notes live in **GitHub Releases** (https://github.com/keboola/agnes-the-ai-analyst/releases), not in a tracked file. The legacy `CHANGELOG.md` was retired — `git log` and the Releases page are the authoritative history.
 
-**How:**
-- Add a bullet under the topmost `## [Unreleased]` heading (create one if missing — it sits above the latest released version).
-- Group by `### Added` / `### Changed` / `### Fixed` / `### Removed` / `### Internal` (Keep-a-Changelog sections).
-- Mark breaking changes with `**BREAKING**` at the start of the bullet — operators grep for that string before bumping the pin.
-- Reference the relevant doc/runbook if one exists (e.g. `see docs/auth-groups.md`), don't restate it.
-- Internal-only changes (refactors, test additions, dependency bumps without behavior change) go under `### Internal` — still log them, just keep them terse.
+**Per-PR contract:** the PR title is the release-note bullet. Write it so an operator reading a list of merged PRs since the last tag understands what changed and whether it affects them. Prefix breaking changes with `BREAKING:` so a tag-by-tag scan can pick them out. PR description carries the *why* and any migration steps; reviewers expect both.
 
-**When you cut a release:**
-- Rename `## [Unreleased]` → `## [X.Y.Z] — YYYY-MM-DD`.
-- Append a new empty `## [Unreleased]` section at the top so the next PR has somewhere to land.
-- Bump `version` in `pyproject.toml` to match `X.Y.Z`.
-- Tag the merge commit as `vX.Y.Z` and push the tag.
-
-**If you find yourself opening a PR without a CHANGELOG entry, stop and add one before requesting review.** Reviewers should bounce PRs that touch user-visible behavior without a changelog update — same way they'd bounce a PR with no test changes for new logic.
+**At release time:** push a `vX.Y.Z` tag, then `gh release create vX.Y.Z --generate-notes` (auto-fills from PR titles since the previous tag) and edit the draft to surface breaking changes / migration steps at the top before publishing. Mirror the prose structure of recent releases on the same repo.
 
 ## Git Commits & Pull Requests
 

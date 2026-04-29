@@ -1,5 +1,16 @@
 # Security Audit Report: Data Broker Server
 
+> **Historical note (2026-04-29):** This audit was conducted on the
+> SSH-based deploy model in 2026-01. The CI/CD findings below (the
+> C1 sudoers-wildcard finding and references to
+> `.github/workflows/deploy.yml` / `deploy.sh`) describe a pipeline
+> that has since been retired. The current deploy model uses Docker
+> images on GHCR with no SSH-based deploy step — see
+> `docs/release-process.md`. Other findings (POSIX ACLs,
+> Unix-socket notifications, desktop-app surface) remain relevant
+> and should be reviewed against the current architecture before
+> assuming they still apply.
+
 **Date:** 2026-01-30
 **Server:** `your-server` (YOUR_SERVER_IP), Debian 12 (bookworm), GCP e2-medium
 **Auditors:** Claude Opus 4.5 (primary) + Perplexity Sonar (validation) + OpenAI Codex (second opinion)

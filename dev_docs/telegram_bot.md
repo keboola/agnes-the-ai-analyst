@@ -159,6 +159,12 @@ Scripts output JSON to stdout:
 
 ## Deployment
 
+> **Note (2026-04-29):** This section documents the legacy SSH-based deploy model
+> (`server/deploy.sh`, `.github/workflows/deploy.yml`) that has since been
+> superseded by the Docker/GHCR pipeline. See `docs/release-process.md` for the
+> current operator reference. The tables below remain as a historical record of
+> what files were touched when the bot feature was added.
+
 ### Files deployed by `deploy.sh`
 
 | Source | Destination |

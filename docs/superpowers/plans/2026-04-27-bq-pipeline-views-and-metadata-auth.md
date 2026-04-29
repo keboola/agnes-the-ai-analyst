@@ -1,5 +1,7 @@
 # BigQuery Pipeline: Views, Metadata Auth, Manifest Filter — Implementation Plan
 
+> **Historical note (2026-04-29):** `CHANGELOG.md` was retired in favor of GitHub Releases. Wherever this plan instructs adding entries under `## [Unreleased]` or modifying `CHANGELOG.md`, the equivalent today is: write the change as the PR title bullet and put migration details in the PR description (Release Drafter auto-aggregates). See CLAUDE.md → "Release notes".
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make Agnes's BigQuery data source work end-to-end on GCE — handle BQ views (not just base tables), authenticate via the VM's GCE metadata-server token (no key file required), refresh ephemeral tokens at orchestrator rebuild time, and stop the analyst CLI from 404-ing on remote-mode tables.

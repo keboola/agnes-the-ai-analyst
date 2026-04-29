@@ -1,22 +1,24 @@
 name: Keboola Deploy
 
-# Tag-triggered build for Keboola's internal dev instance.
+# Tag-triggered build for a shared dev instance with explicit, operator-
+# controlled deploy semantics.
 #
-# Why a separate workflow: the default release.yml builds an image for *every* push
-# to *every* branch, which means a shared dev VM pinned to a floating tag like
-# `:dev` sees whoever pushed last. That convenience for per-developer dev VMs
-# (`dev-<prefix>-latest` aliases) is a footgun for shared instances.
+# Why a separate workflow: release.yml auto-builds on push to main and on
+# manual workflow_dispatch from any branch. For a shared VM that should
+# only update when an operator decides — independent of upstream main
+# pushes — we use a tag-triggered alias so the VM sees only what's been
+# explicitly tagged for it.
 #
-# This workflow runs ONLY when an operator explicitly creates a `keboola-deploy-*`
+# This workflow runs ONLY when an operator creates a `keboola-deploy-*`
 # git tag. The image is published with two tags:
 #   - keboola-deploy-<git-tag-suffix>  (immutable, audit trail in git)
-#   - keboola-deploy-latest             (floating alias the VM tracks)
+#   - keboola-deploy-latest            (floating alias the VM tracks)
 #
 # Operator workflow:
 #   git checkout <commit>
 #   git tag keboola-deploy-2026-04-25-groups-test
 #   git push origin keboola-deploy-2026-04-25-groups-test
-#   # → image built, alias updated, agnes-dev cron picks it up within 5 min
+#   # → image built, alias updated, VM cron picks it up within 5 min
 on:
   push:
     tags:
@@ -28,36 +30,7 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-
-      - name: Install dependencies
-        run: uv pip install --system ".[dev]"
-
-      - name: Lint with ruff
-        run: |
-          pip install ruff
-          ruff check . || true
-        continue-on-error: true  # Don't block on pre-existing lint issues; can tighten later
-
-      - name: Type check with mypy
-        run: |
-          pip install mypy
-          mypy src/ app/ cli/ connectors/ --ignore-missing-imports --no-error-summary || true
-        continue-on-error: true  # Don't block on mypy initially, can tighten later
-
-      - name: Run tests
-        run: pytest tests/ -v --tb=short
-        env:
-          TESTING: "1"
+    uses: ./.github/workflows/_test.yml
 
   build-and-push:
     needs: test
@@ -66,6 +39,9 @@ jobs:
       image_tag: ${{ steps.meta.outputs.tag }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Resolve tag + version
         id: meta
@@ -77,12 +53,14 @@ jobs:
             keboola-deploy-*) ;;
             *) echo "::error::Tag $TAG does not match keboola-deploy-* — refusing to build"; exit 1 ;;
           esac
-          # Package version: source of truth is pyproject.toml (same convention as
-          # release.yml). The git tag is the *deploy identifier*, package version
-          # is the *product identifier*.
-          PKG_VERSION=$(grep '^version' pyproject.toml | head -1 | sed -E 's/^version\s*=\s*"([^"]+)".*/\1/')
-          if [ -z "$PKG_VERSION" ]; then
-            echo "::error::Could not extract version from pyproject.toml"; exit 1
+          # Package version: source of truth is pyproject.toml + git tags via
+          # setuptools_scm. Runtime get_version() doesn't auto-read pyproject,
+          # so the `--match v*` filter is passed explicitly (mirrors release.yml).
+          python3 -m pip install --quiet setuptools_scm
+          PKG_VERSION=$(python3 -c "from setuptools_scm import get_version; print(get_version(root='.', git_describe_command=['git','describe','--tags','--match','v*','--dirty']))")
+          if [ -z "$PKG_VERSION" ] || [ "$PKG_VERSION" = "0.0.0+unknown" ] || echo "$PKG_VERSION" | grep -qE '^[0-9]{4}\.'; then
+            echo "::error::setuptools_scm did not resolve a semver version (got '$PKG_VERSION')"
+            exit 1
           fi
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "pkg_version=${PKG_VERSION}" >> "$GITHUB_OUTPUT"

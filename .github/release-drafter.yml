@@ -1,0 +1,60 @@
+# Release Drafter config
+# Maintains a rolling draft GitHub Release. On every PR merge to main it
+# adds a bullet under the matching category (by PR label or PR-title prefix)
+# and bumps the resolved version. When you push a v* tag, publish the draft.
+
+name-template: 'v$RESOLVED_VERSION'
+tag-template: 'v$RESOLVED_VERSION'
+version-resolver:
+  major:
+    labels: [breaking, 'BREAKING CHANGE']
+  minor:
+    labels: [feature, enhancement]
+  patch:
+    labels: [fix, bug, chore, docs]
+  default: patch
+
+categories:
+  - title: 'Breaking Changes'
+    labels: [breaking, 'BREAKING CHANGE']
+  - title: 'Features'
+    labels: [feature, enhancement]
+  - title: 'Fixes'
+    labels: [fix, bug]
+  - title: 'Internal'
+    labels: [chore, refactor, ci, test, docs]
+
+# Fallback: derive category from conventional-commit prefix in the PR title
+# when the PR has no label.
+autolabeler:
+  - label: breaking
+    title: ['/^[a-z]+!:/', '/BREAKING/']
+  - label: feature
+    title: ['/^feat:/', '/^feat\(.+\):/']
+  - label: fix
+    title: ['/^fix:/', '/^fix\(.+\):/']
+  - label: chore
+    title: ['/^chore:/', '/^chore\(.+\):/']
+  - label: docs
+    title: ['/^docs:/', '/^docs\(.+\):/']
+  - label: refactor
+    title: ['/^refactor:/', '/^refactor\(.+\):/']
+  - label: ci
+    title: ['/^ci:/']
+  - label: test
+    title: ['/^test:/', '/^test\(.+\):/']
+
+template: |
+  ## What's Changed
+
+  $CHANGES
+
+  **Image:** `ghcr.io/keboola/agnes-the-ai-analyst:v$RESOLVED_VERSION`
+
+  **Full Changelog:** https://github.com/keboola/agnes-the-ai-analyst/compare/$PREVIOUS_TAG...v$RESOLVED_VERSION
+
+exclude-labels:
+  - skip-changelog
+
+change-template: '- $TITLE (#$NUMBER) by @$AUTHOR'
+no-changes-template: '- No user-visible changes'

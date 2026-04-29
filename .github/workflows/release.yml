@@ -1,95 +1,40 @@
 name: Release
 
+# Builds + publishes images on push to main; manual workflow_dispatch
+# from any branch lets developers cut a `:dev-<run>` image (and the
+# `:dev-<branch-slug>` / `:dev-<prefix>-latest` aliases) for testing
+# non-main code on a personal VM. Image identity uses
+# `${{ github.run_number }}` instead of CalVer-claim git tags — no more
+# race loop, no more git-tag side-effects from CI.
+
 on:
   push:
-    branches:
-      - main
-      - "**"  # build :dev-<slug> image for any branch push (e.g. feature/x, zs/edit, fix/y)
+    branches: [main]
     paths-ignore:
       - "docs/**"
       - "*.md"
       - "LICENSE"
-  # Branch creation. Required because `paths-ignore` on the `push` event
-  # diffs the new ref against the default branch — a branch created from
-  # main with no extra commits has zero diff, so every file matches
-  # paths-ignore and the workflow is skipped. Devs spinning up a personal
-  # branch off main to deploy main's exact state to their dev VM
-  # (`:dev-<user>-latest` floating tag) need an image to be published, so
-  # we trigger explicitly on branch create. Tag creates are filtered out
-  # at the job level so we don't double-build with `keboola-deploy.yml`
-  # (which owns `keboola-deploy-*` tag pushes).
-  create:
-  workflow_dispatch:  # manual trigger for explicit dev-<slug> builds
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Why a manual run? (optional, logged in run summary)"
+        required: false
+        default: ""
 
 permissions:
-  contents: write
+  contents: read
   packages: write
-
-# When a developer pushes a brand-new branch with code changes, GitHub fires
-# both a `create` and a `push` event for the same commit. Without
-# concurrency control, both runs would claim distinct CalVer version tags
-# (dev-YYYY.MM.N and dev-YYYY.MM.N+1) and race to push overlapping floating
-# tags (:dev, :dev-<slug>, :dev-<prefix>-latest). Group by ref and cancel
-# in-progress duplicates so only the most recent event survives — the
-# zero-diff case (only `create` fires, no `push`) is unaffected since
-# there's only one run.
-concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: true
+  issues: write   # auto-rollback opens a tracking issue on smoke failure
 
 jobs:
   test:
-    # Skip the `create` event for tags — those are owned by keboola-deploy.yml
-    # and shouldn't double-build here. Branch creates DO run.
-    if: github.event_name != 'create' || github.event.ref_type == 'branch'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-
-      - name: Install dependencies
-        run: uv pip install --system ".[dev]"
-
-      - name: Lint with ruff
-        run: |
-          pip install ruff
-          ruff check . || true
-        continue-on-error: true  # Don't block on pre-existing lint issues; can tighten later
-
-      - name: Type check with mypy
-        run: |
-          pip install mypy
-          mypy src/ app/ cli/ connectors/ --ignore-missing-imports --no-error-summary || true
-        continue-on-error: true  # Don't block on mypy initially, can tighten later
-
-      - name: Run tests
-        run: pytest tests/ -v --tb=short
-        env:
-          TESTING: "1"
+    uses: ./.github/workflows/_test.yml
 
   build-and-push:
     needs: test
-    # Publish on:
-    #   - any push (main → :stable-* / non-main → :dev-* + :dev-<slug>);
-    #   - branch creation (a fresh branch off main with no extra commits
-    #     should still produce a `:dev-<slug>` + `:dev-<prefix>-latest`
-    #     image so the developer's VM, which pins to that floating tag,
-    #     can deploy main's exact state without manually changing code);
-    #   - manual workflow_dispatch.
-    # Tag creates are excluded — `keboola-deploy.yml` owns tag pushes.
-    if: |
-      github.event_name == 'push' ||
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'create' && github.event.ref_type == 'branch')
     runs-on: ubuntu-latest
     outputs:
-      image_tag: ${{ steps.meta.outputs.versioned_tag }}
+      image_tag: ${{ steps.meta.outputs.image_tag }}
       version: ${{ steps.meta.outputs.version }}
       channel: ${{ steps.meta.outputs.channel }}
     steps:
@@ -98,54 +43,31 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Claim version tag (with retry to avoid race conditions)
+      - name: Resolve image identity
         id: meta
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          YEAR_MONTH=$(date +%Y.%m)
+          # Build identity uses GitHub's monotonic per-repo run_number for
+          # the immutable per-build tag — no more git-tag race loop.
+          # Channel is `stable` on main, `dev` on every other ref (including
+          # workflow_dispatch from non-main branches).
           if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
             CHANNEL="stable"
           else
             CHANNEL="dev"
           fi
+          RUN_NUM="${{ github.run_number }}"
+          IMAGE_TAG="${CHANNEL}-${RUN_NUM}"
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
 
-          # Claim a unique version by pushing a git tag BEFORE building.
-          # Retry up to 5 times if another CI run took our N.
-          TAG_CLAIMED=false
-          for ATTEMPT in 1 2 3 4 5; do
-            git fetch --tags --force
-            # Use max(N) not count — safe even if tags are deleted
-            MAX_N=$(git tag -l "*-${YEAR_MONTH}.*" | sed 's/.*\.//' | sort -n | tail -1)
-            N=$(( ${MAX_N:-0} + 1 ))
-            VERSION="${YEAR_MONTH}.${N}"
-            TAG="${CHANNEL}-${VERSION}"
-
-            git tag -a "$TAG" -m "Release $TAG"
-            if git push origin "$TAG" 2>/dev/null; then
-              echo "Claimed tag $TAG (attempt $ATTEMPT)"
-              TAG_CLAIMED=true
-              break
-            else
-              echo "Tag $TAG already exists, retrying... (attempt $ATTEMPT)"
-              git tag -d "$TAG"
-              sleep 2
-            fi
-          done
-
-          if [ "$TAG_CLAIMED" != "true" ]; then
-            echo "::error::Failed to claim a unique version tag after 5 attempts"
-            exit 1
-          fi
-
           echo "channel=${CHANNEL}" >> "$GITHUB_OUTPUT"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "versioned_tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "run_number=${RUN_NUM}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
           echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
 
-          # Per-branch slug for dev builds (enables branch-aware dev VMs)
+          # Per-branch slug for dev builds — enables branch-aware dev VMs
+          # to pin a `:dev-<branch-slug>` immutable tag and a
+          # `:dev-<prefix>-latest` floating alias. Triggered when an
+          # operator does `gh workflow run release.yml -r <branch>`.
           if [[ "${{ github.ref }}" != "refs/heads/main" ]]; then
             BRANCH_NAME="${GITHUB_REF#refs/heads/}"
             BRANCH_SLUG=$(echo "$BRANCH_NAME" | sed 's|^feature/||' | sed 's|[^a-zA-Z0-9-]|-|g' | tr '[:upper:]' '[:lower:]' | cut -c1-50)
@@ -172,20 +94,23 @@ jobs:
           fi
 
           echo "Channel: ${CHANNEL}"
-          echo "Version: ${VERSION}"
-          echo "Versioned tag: ${TAG}"
+          echo "Image tag: ${IMAGE_TAG}"
 
-      - name: Extract package version from pyproject.toml
+      - name: Resolve package version from git
         id: pkgver
         run: |
-          # Single source of truth for the product version: the
-          # pyproject.toml [project] table. The CalVer "${YEAR_MONTH}.${N}"
-          # claimed above stays as the git / image tag (release identity),
-          # but AGNES_VERSION — what /api/version, /cli/latest, and `da
-          # --version` all expose — tracks the package version.
-          VERSION=$(grep '^version' pyproject.toml | head -1 | sed -E 's/^version\s*=\s*"([^"]+)".*/\1/')
-          if [ -z "$VERSION" ]; then
-            echo "::error::Could not extract version from pyproject.toml"
+          # Source of truth: git tags via setuptools_scm. Pyproject's
+          # [tool.setuptools_scm.scm.git] describe_command is honored at
+          # `pip install` build time, but the runtime get_version() API
+          # used here does NOT auto-read pyproject — the filter must be
+          # passed explicitly. Keep both in sync (filter `--match v*` to
+          # ignore CalVer build tags + infra-v* module tags).
+          python3 -m pip install --quiet setuptools_scm
+          VERSION=$(python3 -c "from setuptools_scm import get_version; print(get_version(root='.', git_describe_command=['git','describe','--tags','--match','v*','--dirty']))")
+          # Reject CalVer-shape leakage (YYYY.MM.N) — signals the filter
+          # didn't apply. Healthy semver: e.g. 0.18.0 or 0.18.1.dev3+gSHA.
+          if [ -z "$VERSION" ] || [ "$VERSION" = "0.0.0+unknown" ] || echo "$VERSION" | grep -qE '^[0-9]{4}\.'; then
+            echo "::error::setuptools_scm did not resolve a semver version (got '$VERSION'). Likely shallow checkout or missing v* tag."
             exit 1
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
@@ -206,10 +131,10 @@ jobs:
             AGNES_VERSION=${{ steps.pkgver.outputs.version }}
             RELEASE_CHANNEL=${{ steps.meta.outputs.channel }}
             AGNES_COMMIT_SHA=${{ github.sha }}
-            AGNES_TAG=${{ steps.meta.outputs.versioned_tag }}
+            AGNES_TAG=${{ steps.meta.outputs.image_tag }}
           tags: |
             ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.channel }}
-            ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.versioned_tag }}
+            ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.image_tag }}
             ghcr.io/${{ github.repository }}:sha-${{ steps.meta.outputs.short_sha }}
             ${{ steps.meta.outputs.channel == 'dev' && format('ghcr.io/{0}:dev-{1}', github.repository, steps.meta.outputs.branch_slug) || '' }}
             ${{ steps.meta.outputs.channel == 'dev' && steps.meta.outputs.user_prefix != '' && format('ghcr.io/{0}:dev-{1}-latest', github.repository, steps.meta.outputs.user_prefix) || '' }}
@@ -370,3 +295,19 @@ jobs:
             -f docker-compose.ci.yml -f docker-compose.bind-test.yml \
             down -v || true
           sudo rm -rf /tmp/agnes-data || true
+
+  # Fires when smoke-test job fails for ANY reason (smoke step itself failed,
+  # checkout failed, container never started, etc.). The previous
+  # `outputs.failed == 'true'` check tied us to a specific step's outcome,
+  # which silently no-op'd if the failure was earlier in the job — fail
+  # loudly instead.
+  rollback-on-smoke-fail:
+    needs: [build-and-push, smoke-test]
+    if: failure() && needs.smoke-test.result == 'failure'
+    uses: ./.github/workflows/rollback.yml
+    with:
+      failed_image_tag: ${{ needs.build-and-push.outputs.image_tag }}
+    permissions:
+      contents: read
+      packages: write
+      issues: write

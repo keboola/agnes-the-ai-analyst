@@ -1,6 +1,8 @@
 # Multi-Instance Deployment & Versioning — Design Spec
 
 > **Historical note (2026-04-24):** This spec is a snapshot from 2026-04-09. Some operational details have evolved since — most notably, the Caddy `production` profile referenced in command examples below was renamed to `tls` (see PR #51). For the current deployment commands, follow `docs/DEPLOYMENT.md`. This file is preserved as design history.
+>
+> **Update (2026-04-29):** `CHANGELOG.md` was retired in favor of GitHub Releases (Release Drafter aggregates merged-PR titles). Wherever this spec references "CHANGELOG.md entry with migration guide" or `## [Unreleased]`, the equivalent today is the PR title bullet + PR description (with migration steps). See CLAUDE.md → "Release notes".
 
 ## Goal
 
