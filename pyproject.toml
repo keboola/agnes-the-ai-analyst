@@ -1,6 +1,6 @@
 [project]
 name = "agnes-the-ai-analyst"
-version = "0.15.0"
+dynamic = ["version"]
 description = "Agnes — AI Data Analyst platform for AI analytical systems"
 requires-python = ">=3.11,<3.14"
 license = "MIT"
@@ -74,11 +74,12 @@ dev = [
 da = "cli.main:app"
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=64", "setuptools_scm>=8"]
+build-backend = "setuptools.build_meta"
 
-[tool.hatch.build.targets.wheel]
-packages = ["app", "src", "connectors", "cli", "services", "config"]
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*", "src*", "connectors*", "cli*", "services*", "config*"]
 
 [tool.ruff]
 line-length = 120
@@ -93,3 +94,11 @@ dev-dependencies = [
     "anthropic>=0.30.0",
     "openai>=1.30.0",
 ]
+
+[tool.setuptools_scm]
+# Read version from semver release tags only (vX.Y.Z), ignoring CalVer
+# build tags (stable-YYYY.MM.N, dev-YYYY.MM.N) and infra-vX.Y.Z module
+# tags. Untagged commits get a `0.X.Y.devN+gSHA` post-release suffix.
+git_describe_command = ["git", "describe", "--tags", "--match", "v*", "--dirty"]
+write_to = "src/_version.py"
+fallback_version = "0.0.0+unknown"
