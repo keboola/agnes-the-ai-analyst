@@ -709,9 +709,36 @@ class TestAudienceDistribution:
         conn.close()
         assert row[0] == "group:engineering"
 
+    @staticmethod
+    def _add_user_to_group(conn, user_id: str, group_name: str) -> None:
+        """v13 helper: attach a user to a named group via user_group_members,
+        creating the group_name row if it doesn't exist yet. Pre-v13 the test
+        seeded a JSON list on users.groups; that column was dropped."""
+        import uuid as _uuid
+        existing = conn.execute(
+            "SELECT id FROM user_groups WHERE name = ?", [group_name]
+        ).fetchone()
+        if existing is None:
+            group_id = str(_uuid.uuid4())
+            conn.execute(
+                "INSERT INTO user_groups (id, name, created_by) VALUES (?, ?, 'test:seed')",
+                [group_id, group_name],
+            )
+        else:
+            group_id = existing[0]
+        try:
+            conn.execute(
+                """INSERT INTO user_group_members
+                   (user_id, group_id, source, added_by)
+                   VALUES (?, ?, 'admin', 'test:seed')""",
+                [user_id, group_id],
+            )
+        except Exception:
+            pass  # already a member; idempotent for re-runs
+
     def test_user_in_group_sees_group_items(self, seeded_app):
-        """A user whose groups include 'finance' sees audience='group:finance' items."""
-        import json
+        """A user whose user_group_members row references 'finance' sees
+        audience='group:finance' items."""
         from src.db import get_system_db
         from src.repositories.users import UserRepository
         from app.auth.jwt import create_access_token
@@ -719,10 +746,10 @@ class TestAudienceDistribution:
         conn = get_system_db()
         self._seed_item(conn, "aud_fin", "Finance fact", audience="group:finance")
         self._seed_item(conn, "aud_all", "All-users fact", audience="all")
-        # Create a user with finance group
+        # Create a user and attach them to the finance group via the v13 model.
         repo = UserRepository(conn)
         repo.create(id="fin_user1", email="fin@test.com", name="Finance User", role="analyst")
-        repo.update("fin_user1", groups=json.dumps(["finance"]))
+        self._add_user_to_group(conn, "fin_user1", "finance")
         conn.close()
 
         token = create_access_token("fin_user1", "fin@test.com", "analyst")

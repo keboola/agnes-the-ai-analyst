@@ -216,32 +216,79 @@ async def get_stats(
     `total` and the `by_*` counts would change in observable ways when a
     colleague flags or unflags a personal item, leaking existence info per
     ADR Decision 1.
+
+    Uses SQL aggregation rather than ``repo.list_items()`` to keep the
+    endpoint cheap on large knowledge bases (the loader path materializes
+    every row + parses JSON tags/contributors per row, which blocks the
+    event loop on N>1k items). Audience filter mirrors what list_items
+    applies: ``audience IS NULL OR audience = 'all'`` plus, for non-admins,
+    membership in any of the caller's group-prefixed audiences.
     """
-    repo = KnowledgeRepository(conn)
-    all_items = repo.list_items(
-        limit=10000,
-        exclude_personal=not _is_privileged_viewer(user, conn),
-        user_groups=_effective_groups(user, conn),
-    )
-    status_counts: dict = {}
-    categories: set = set()
-    domains: dict = {}
-    source_types: dict = {}
-    for item in all_items:
-        s = item.get("status", "unknown")
-        status_counts[s] = status_counts.get(s, 0) + 1
-        if item.get("category"):
-            categories.add(item["category"])
-        d = item.get("domain") or "unset"
-        domains[d] = domains.get(d, 0) + 1
-        st = item.get("source_type") or "unknown"
-        source_types[st] = source_types.get(st, 0) + 1
+    is_priv = _is_privileged_viewer(user, conn)
+    groups = _effective_groups(user, conn)
+
+    where_clauses: List[str] = []
+    params: list = []
+    if not is_priv:
+        # Personal-item privacy: only the contributor sees their own personals.
+        # _can_view_item is the per-item analogue; here we hoist it into SQL.
+        where_clauses.append(
+            "(COALESCE(is_personal, FALSE) = FALSE OR source_user = ?)"
+        )
+        params.append(user.get("email"))
+
+    if groups is not None:
+        # groups is None for admins → no audience filter; otherwise restrict to
+        # null/'all' or one of the caller's group audiences.
+        if groups:
+            placeholders = ",".join(["?"] * len(groups))
+            where_clauses.append(
+                f"(audience IS NULL OR audience = 'all' OR audience IN ({placeholders}))"
+            )
+            params.extend(groups)
+        else:
+            where_clauses.append("(audience IS NULL OR audience = 'all')")
+
+    where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+
+    total = conn.execute(
+        f"SELECT COUNT(*) FROM knowledge_items{where_sql}", params
+    ).fetchone()[0] or 0
+
+    by_status_rows = conn.execute(
+        f"SELECT COALESCE(status, 'unknown') AS s, COUNT(*) "
+        f"FROM knowledge_items{where_sql} GROUP BY s",
+        params,
+    ).fetchall()
+    by_status = {r[0]: r[1] for r in by_status_rows}
+
+    cat_rows = conn.execute(
+        f"SELECT DISTINCT category FROM knowledge_items{where_sql} "
+        f"{'AND' if where_sql else 'WHERE'} category IS NOT NULL",
+        params,
+    ).fetchall()
+    categories = sorted(r[0] for r in cat_rows if r[0])
+
+    by_domain_rows = conn.execute(
+        f"SELECT COALESCE(domain, 'unset') AS d, COUNT(*) "
+        f"FROM knowledge_items{where_sql} GROUP BY d",
+        params,
+    ).fetchall()
+    by_domain = {r[0]: r[1] for r in by_domain_rows}
+
+    by_source_rows = conn.execute(
+        f"SELECT COALESCE(source_type, 'unknown') AS st, COUNT(*) "
+        f"FROM knowledge_items{where_sql} GROUP BY st",
+        params,
+    ).fetchall()
+    by_source_type = {r[0]: r[1] for r in by_source_rows}
+
     return {
-        "total": len(all_items),
-        "by_status": status_counts,
-        "categories": sorted(categories),
-        "by_domain": domains,
-        "by_source_type": source_types,
+        "total": total,
+        "by_status": by_status,
+        "categories": categories,
+        "by_domain": by_domain,
+        "by_source_type": by_source_type,
     }
 
 
