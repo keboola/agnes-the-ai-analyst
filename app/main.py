@@ -592,6 +592,7 @@ def create_app() -> FastAPI:
         ConfigProxy, theme overrides, session user, and ``static_url`` /
         ``url_for`` helpers — without these, base.html + _app_header.html
         silently render empty header/stylesheets."""
+        from app.logging_config import request_id_var
         from app.web.router import templates as _web_templates, _build_context
 
         title = _ERROR_TITLES.get(code, "Error")
@@ -604,6 +605,7 @@ def create_app() -> FastAPI:
             message=message,
             path=request.url.path,
             traceback=traceback_str,
+            request_id=request_id_var.get(),
         )
         return _web_templates.TemplateResponse(request, "error.html", ctx, status_code=code)
 
@@ -650,8 +652,12 @@ def create_app() -> FastAPI:
         if not path_is_api and _wants_html(request):
             return await _render_error(request, 500, str(exc) or "Internal server error", tb_str)
 
+        from app.logging_config import request_id_var
         from fastapi.responses import JSONResponse
-        body = {"detail": "Internal server error"}
+        body: dict[str, str | None] = {
+            "detail": "Internal server error",
+            "request_id": request_id_var.get(),
+        }
         if debug_on:
             body["error"] = str(exc)
         return JSONResponse(body, status_code=500)

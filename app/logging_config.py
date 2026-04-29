@@ -23,6 +23,14 @@ request_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar("req
 _CONFIGURED = False
 
 
+class _RequestIdFilter(logging.Filter):
+    """Inject the current request_id ContextVar into every LogRecord."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.request_id = request_id_var.get() or "-"
+        return True
+
+
 def setup_logging(service: str | None = None, level: str | None = None) -> None:
     """Configure root logger. Idempotent.
 
@@ -49,11 +57,12 @@ def setup_logging(service: str | None = None, level: str | None = None) -> None:
             show_path=True,
             markup=False,
         )
-        handler.setFormatter(logging.Formatter("[%(name)s] %(message)s"))
+        handler.setFormatter(logging.Formatter("[%(request_id)s] [%(name)s] %(message)s"))
     else:
         handler = logging.StreamHandler()
         handler.setFormatter(_JSONFormatter(service=slug))
 
+    handler.addFilter(_RequestIdFilter())
     logging.basicConfig(level=lvl, handlers=[handler], force=True)
     logging.getLogger("uvicorn.access").setLevel(logging.INFO if debug else logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
