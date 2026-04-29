@@ -38,11 +38,11 @@ autolabeler:
   - label: docs
     title: ['/^docs:/', '/^docs\(.+\):/']
   - label: refactor
-    title: ['/^refactor:/']
+    title: ['/^refactor:/', '/^refactor\(.+\):/']
   - label: ci
     title: ['/^ci:/']
   - label: test
-    title: ['/^test:/']
+    title: ['/^test:/', '/^test\(.+\):/']
 
 template: |
   ## What's Changed
