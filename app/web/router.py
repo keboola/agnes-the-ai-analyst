@@ -133,8 +133,19 @@ def _url_for_shim(endpoint: str, **kw) -> str:
     return _URL_MAP.get(endpoint, f"/{endpoint}")
 
 
-def _build_context(request: Request, user: Optional[dict] = None, **extra) -> dict:
-    """Build template context with config, user, and theme."""
+def _build_context(
+    request: Request,
+    user: Optional[dict] = None,
+    conn: Optional[duckdb.DuckDBPyConnection] = None,
+    **extra,
+) -> dict:
+    """Build template context with config, user, and theme.
+
+    `conn` is optional: when supplied alongside a logged-in `user`, the
+    setup-prompt preview/clipboard payload is rendered with that user's
+    RBAC-allowed Claude Code marketplace plugins inlined as install
+    commands. Routes that don't render the env-setup-cta block can omit it.
+    """
     class ConfigProxy:
         INSTANCE_NAME = get_instance_name()
         INSTANCE_SUBTITLE = get_instance_subtitle()
@@ -182,7 +193,38 @@ def _build_context(request: Request, user: Optional[dict] = None, **extra) -> di
     from app.api.cli_artifacts import _find_wheel
     _wheel = _find_wheel()
     _wheel_filename = _wheel.name if _wheel else "agnes.whl"
-    setup_instructions_lines = resolve_lines(_wheel_filename)
+
+    # Inline the user's RBAC-allowed marketplace plugins as `claude plugin
+    # install` commands so a single paste also bootstraps the marketplace
+    # and plugin set. Anonymous viewers (no user, or no DB conn) get the
+    # original 6-step layout.
+    plugin_install_names: list[str] = []
+    if user and conn is not None:
+        try:
+            from src import marketplace_filter
+            plugin_install_names = [
+                p["manifest_name"]
+                for p in marketplace_filter.resolve_allowed_plugins(conn, user)
+            ]
+        except Exception:  # pragma: no cover — defensive: never block dashboard render
+            logger.exception("Failed to resolve marketplace plugins for setup prompt")
+            plugin_install_names = []
+
+    # `AGNES_DEBUG_AUTH` is the existing dev/staging gate (see
+    # `app/api/me_debug.py`, `app/web/router.py` template ConfigProxy).
+    # When on, the setup prompt also disables host-scoped git TLS verify
+    # so `claude plugin marketplace add` works against self-signed instances.
+    self_signed_tls = os.environ.get("AGNES_DEBUG_AUTH", "").strip().lower() in (
+        "1", "true", "yes",
+    )
+    server_host = request.url.netloc
+
+    setup_instructions_lines = resolve_lines(
+        _wheel_filename,
+        plugin_install_names=plugin_install_names,
+        self_signed_tls=self_signed_tls,
+        server_host=server_host,
+    )
     ctx_server_url = str(request.base_url).rstrip("/")
 
     ctx = {
@@ -350,7 +392,7 @@ async def dashboard(
             self.groups = []
 
     ctx = _build_context(
-        request, user=user,
+        request, user=user, conn=conn,
         user_info=UserInfo(),
         username=user.get("email", "").split("@")[0],
         total_tables=total_tables,
@@ -624,12 +666,14 @@ async def activity_center(
 async def install_page(
     request: Request,
     user: Optional[dict] = Depends(get_optional_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Public install instructions for the CLI."""
     base_url = str(request.base_url).rstrip("/")
     ctx = _build_context(
         request,
         user=user,
+        conn=conn,
         server_url=base_url,
         agnes_version=os.environ.get("AGNES_VERSION", "dev"),
     )
