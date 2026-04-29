@@ -919,7 +919,7 @@ async def admin_patch_item(
     _get_item_or_404(repo, item_id)
 
     updates = request.model_dump(exclude_none=True)
-    if "domain" in updates and updates["domain"] not in VALID_DOMAINS:
+    if "domain" in updates and updates["domain"] and updates["domain"] not in VALID_DOMAINS:
         raise HTTPException(
             status_code=400,
             detail=f"domain must be one of: {VALID_DOMAINS}",
@@ -970,7 +970,7 @@ async def admin_bulk_update(
                 f"Allowed: {sorted(_BULK_UPDATE_ALLOWED)}"
             ),
         )
-    if "domain" in updates and updates["domain"] not in VALID_DOMAINS:
+    if "domain" in updates and updates["domain"] and updates["domain"] not in VALID_DOMAINS:
         raise HTTPException(
             status_code=400,
             detail=f"domain must be one of: {VALID_DOMAINS}",

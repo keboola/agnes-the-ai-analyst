@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- Empty-string `domain` is now consistently allowed across `POST /api/memory`, `PATCH /api/memory/admin/{id}`, and `POST /api/memory/admin/bulk-update` — previously create allowed it (short-circuit on falsy) but PATCH/bulk-update rejected it with 400, which made it impossible to clear a domain through the admin endpoints. Issue #62 / PR #126 review.
+
 ### Added
 
 - **Corporate-memory tree view + cross-axis filtering** on `/corporate-memory` and `/corporate-memory/admin`. Operators choose a grouping axis (domain / category / tag / audience) and combine it with chip filters (status, source_type, audience, has-duplicate-hint, search). Tree uses native `<details>`; localStorage persists open/closed state per axis; no new dependencies. Issue #62.
