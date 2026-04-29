@@ -13,6 +13,62 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 <!-- Add bullets here. Group: Added / Changed / Fixed / Removed / Internal.
      Mark breaking changes with **BREAKING** at the start of the bullet. -->
 
+## [0.16.0] — 2026-04-29
+
+Minor release. Comprehensive deploy safety audit — CI/CD pipeline hardening, 50+ new tests covering previously untested failure modes, DB schema health check, config versioning, and BigQuery ATTACH error resilience. Built on top of v0.15.0 / `2e1dfb7`.
+
+PR: [#120](https://github.com/keboola/agnes-the-ai-analyst/pull/120) (ci/deploy-safety-audit).
+
+### Added
+
+- **ruff lint + mypy type check** in `release.yml` and `keboola-deploy.yml` CI workflows (both `continue-on-error: true` initially — 257 pre-existing ruff errors, mypy has pre-existing issues; neither blocks CI yet).
+- **Automatic rollback** on smoke test failure in `release.yml` — tags the broken image as `:deprecated-<short-sha>`, reverts `:stable` to the previous good tag, opens a GitHub issue for investigation.
+- **Smoke test in `keboola-deploy.yml`** — was completely missing; now runs the same `smoke-test.sh` as `release.yml`.
+- **Expanded smoke-test.sh** — added `/api/catalog`, `/api/admin/tables`, `/marketplace.zip`, `/api/metrics` endpoint checks beyond the original `/api/health`.
+- **Post-deploy smoke test** (`scripts/ops/post-deploy-smoke-test.sh`) — validates health, DB schema version, query endpoint, catalog, and marketplace on a prod VM after deploy.
+- **DB schema version check** in `/api/health` — returns `db_schema: "ok" | "mismatch" | "unreachable"`; overall status becomes `"unhealthy"` on schema mismatch. Lets load balancers and monitoring detect half-migrated instances.
+- **Config versioning** — `config_version: 1` in `instance.yaml`, validated at startup by `_validate_config_version()` in `config/loader.py`. Prevents silent misconfiguration when the config schema evolves.
+- **`.github/settings.yml`** — required status checks on `main` branch.
+- **`.github/dependabot.yml`** — weekly pip + github-actions dependency updates.
+- **`.github/CODEOWNERS`** — default `@keboola/agnes-team`, special owners for `/infra/`, `/app/auth/`, `src/db.py`.
+- **`.pre-commit-config.yaml`** — detect-private-key, check-yaml/json/merge-conflict, ruff, mypy.
+- **`[tool.ruff]`** config in `pyproject.toml` — `line-length = 120`, `target-version = "py313"`.
+
+### Test Coverage (~50 new tests)
+
+- **v13→v14 migration** (`test_db.py`): orphan cleanup, FK constraints, rollback on failure.
+- **Email magic link TTL** (`test_auth_providers.py`): expired token, token reuse, wrong token.
+- **PAT** (`test_pat.py`): malformed JWT, empty bearer, `last_used_ip` tracking.
+- **Marketplace ZIP** (`test_marketplace_server_zip.py`): ETag/304, PAT auth, content-addressed caching, `invalidate_etag_cache()` on mutation.
+- **Marketplace Git** (`test_marketplace_server_git.py`): smart HTTP, Basic auth with PAT, RBAC filtering.
+- **Jira webhooks** (`test_jira_webhooks.py`): HMAC validation, missing signature, malformed JSON (10 tests).
+- **Hybrid Query BQ** (`test_remote_query.py`): `register_bq`, JOIN local+BQ, error handling (12 tests).
+- **Keboola extractor** (`test_keboola_extractor.py`): crash, partial write, timeout, extension fallback (9 tests).
+- **BigQuery extractor** (`test_bigquery_extractor.py`): corrupted DB, partial write, atomic swap, ATTACH timeout (6 tests).
+- **Orchestrator** (`test_orchestrator.py`): corrupted extract.duckdb, empty `_meta`, mid-write, unsafe identifiers (5 tests).
+
+### Fixed
+
+- **BigQuery extractor ATTACH error handling** — `init_extract()` now catches exceptions on `INSTALL`/`ATTACH` and records them in `stats["errors"]` instead of propagating up. A network timeout or auth failure no longer crashes the extractor; all configured tables are marked as skipped.
+- **ETag cache invalidation on disk mutation** — `invalidate_etag_cache()` is the documented way to force re-hash after marketplace sync. Tests now call it after mutating on-disk content.
+
+### Internal
+
+- `fetch-depth: 0` + `fetch-tags: true` in `release.yml` for rollback tag resolution.
+- Docs updated: `ARCHITECTURE.md`, `docs/DATA_SOURCES.md`, `docs/QUICKSTART.md`, `docs/RBAC.md`, `docs/auth-groups.md`.
+
+## [0.15.0] — 2026-04-29
+
+Minor release. Adds corporate memory v1+v1.5 and /me/debug self-only auth diagnostic. See [GitHub release](https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.15.0) for full notes.
+
+## [0.14.0] — 2026-04-28
+
+Minor release. Replaces BigQuery wrap-view pattern with Claude-driven fetch primitives. See [GitHub release](https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.14.0) for full notes.
+
+## [0.13.0] — 2026-04-28
+
+Minor release. Admin server-config editor + Windows PowerShell wrapper. See [GitHub release](https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.13.0) for full notes.
+
 ## [0.12.1] — 2026-04-28
 
 Patch release. Hotfixes the pre-migration snapshot-integrity bug shipped in [v0.12.0](https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.12.0) and bundles the security/ops hardening from issue groups #82 (auth hardening), #85 (API validation), #87 (deploy posture), plus #46 (SSRF) and #90 (memory stats blocking).
@@ -586,6 +642,14 @@ First tagged semver release. The `version = "2.x"` strings that appeared in earl
 
 - Test suite expanded to 1357+ tests (4 layers — unit, integration, web smoke, journey).
 
+[0.16.0]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.16.0
+[0.15.0]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.15.0
+[0.14.0]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.14.0
+[0.13.0]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.13.0
+[0.12.1]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.12.1
+[0.12.0]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.12.0
+[0.11.5]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.11.5
+[0.11.4]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.11.4
 [0.11.3]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.11.3
 [0.11.2]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.11.2
 [0.11.1]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.11.1
