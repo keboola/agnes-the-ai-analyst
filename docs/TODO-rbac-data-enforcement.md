@@ -62,8 +62,10 @@ plugins to groups; tables are the last holdout.
        `resource_grants(group_id, "table", dataset)`. Wildcard rows
        (`bucket.*`) need expansion to all matching `table_registry.id`
        values at migration time.
-     - **(b) Drop without backfill** — log a CHANGELOG warning,
-       require admins to re-grant via `/admin/access` post-deploy.
+     - **(b) Drop without backfill** — surface the breakage in the
+       PR's release-note bullet (e.g. `BREAKING: drop dataset_permissions
+       — re-grant via /admin/access`), require admins to re-grant via
+       `/admin/access` post-deploy.
    - **Recommended: (b)**, contingent on an ops check that
      `dataset_permissions` is not heavily populated in any active
      deployment. (b) is much simpler and avoids creating "groups of one"
@@ -86,14 +88,19 @@ plugins to groups; tables are the last holdout.
    verbatim because the public surface (HTTP status codes, manifest
    content) does not change.
 
-6. **CHANGELOG entry under `## [Unreleased]`:**
+6. **PR title + GitHub Release note (auto-aggregated by Release Drafter):**
+   PR title becomes the bullet on the rolling draft release. Use
    ```
-   ### Changed
-   - **BREAKING** Table access moved from per-user `dataset_permissions`
-     to per-group `resource_grants` (via `ResourceType.TABLE`). Existing
-     `dataset_permissions` entries are dropped on upgrade — admins must
-     re-grant via /admin/access.
+   feat!: move table access from dataset_permissions to per-group resource_grants
    ```
+   The leading `!` (or a `BREAKING` label) routes Release Drafter into the
+   *Breaking Changes* category. Spell out the migration in the PR description
+   so it lands in the published release notes:
+
+   > **BREAKING** Table access moved from per-user `dataset_permissions`
+   > to per-group `resource_grants` (via `ResourceType.TABLE`). Existing
+   > `dataset_permissions` entries are dropped on upgrade — admins must
+   > re-grant via /admin/access.
 
 7. **Update `docs/RBAC.md`.** It already calls out v13's removal of
    `plugin_access`; add the analogous note for `dataset_permissions`
@@ -101,8 +108,7 @@ plugins to groups; tables are the last holdout.
 
 8. **Delete the dummy seed script.** Once enforcement is wired up and
    verified end-to-end against a real data source, remove
-   `scripts/seed_dummy_tables.py` and the corresponding `### Internal`
-   entry from `CHANGELOG.md`. The script exists only to make the
+   `scripts/seed_dummy_tables.py`. The script exists only to make the
    `/admin/access` Tables section testable while no real connector is
    configured; once production-style tables flow through `table_registry`
    via Keboola/BigQuery discovery, the dummy rows just clutter the UI.

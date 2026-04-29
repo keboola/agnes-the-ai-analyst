@@ -1,22 +1,24 @@
 name: Keboola Deploy
 
-# Tag-triggered build for Keboola's internal dev instance.
+# Tag-triggered build for a shared dev instance with explicit, operator-
+# controlled deploy semantics.
 #
-# Why a separate workflow: the default release.yml builds an image for *every* push
-# to *every* branch, which means a shared dev VM pinned to a floating tag like
-# `:dev` sees whoever pushed last. That convenience for per-developer dev VMs
-# (`dev-<prefix>-latest` aliases) is a footgun for shared instances.
+# Why a separate workflow: release.yml auto-builds on push to main and on
+# manual workflow_dispatch from any branch. For a shared VM that should
+# only update when an operator decides — independent of upstream main
+# pushes — we use a tag-triggered alias so the VM sees only what's been
+# explicitly tagged for it.
 #
-# This workflow runs ONLY when an operator explicitly creates a `keboola-deploy-*`
+# This workflow runs ONLY when an operator creates a `keboola-deploy-*`
 # git tag. The image is published with two tags:
 #   - keboola-deploy-<git-tag-suffix>  (immutable, audit trail in git)
-#   - keboola-deploy-latest             (floating alias the VM tracks)
+#   - keboola-deploy-latest            (floating alias the VM tracks)
 #
 # Operator workflow:
 #   git checkout <commit>
 #   git tag keboola-deploy-2026-04-25-groups-test
 #   git push origin keboola-deploy-2026-04-25-groups-test
-#   # → image built, alias updated, agnes-dev cron picks it up within 5 min
+#   # → image built, alias updated, VM cron picks it up within 5 min
 on:
   push:
     tags:
