@@ -1004,7 +1004,27 @@ kill $APP_PID
 
 Expected: `no toolbar (correct)`.
 
-- [ ] **Step 6.6: Run the full test suite**
+- [ ] **Step 6.6: Verify under `docker compose up`**
+
+Compose runs uvicorn under a non-TTY stdout, which is the case `force_terminal=True` exists for. This step catches docker-only failure modes that uvicorn-direct misses (env propagation, log multiplexing).
+
+```bash
+DEBUG=1 LOCAL_DEV_MODE=1 docker compose up -d app
+sleep 8
+docker compose logs --tail=30 app | grep -iE "rich|debug|toolbar|color" || true
+docker compose exec -T app sh -lc 'python -c "import os; print(\"DEBUG=\", os.environ.get(\"DEBUG\"))"'
+curl -s http://localhost:8000/health -i 2>/dev/null | head -5
+docker compose down
+```
+
+Expected:
+- Compose log lines appear with ANSI color codes (e.g. `\e[`) — proves `force_terminal=True` is doing its job.
+- The python eval prints `DEBUG= 1`.
+- `/health` returns 200 with `x-request-id` header.
+
+If colors are missing, `force_terminal=True` is being overridden — check whether the compose service has `tty: true` set, or whether stdout is being piped through a process that strips ANSI.
+
+- [ ] **Step 6.7: Run the full test suite**
 
 ```bash
 uv run pytest -q
@@ -1012,7 +1032,7 @@ uv run pytest -q
 
 Expected: all tests pass.
 
-- [ ] **Step 6.7: Commit**
+- [ ] **Step 6.8: Commit**
 
 ```bash
 git add pyproject.toml app/main.py uv.lock
@@ -1555,14 +1575,28 @@ uv run pytest -q --cov=app.logging_config --cov=app.middleware --cov=app.debug -
 
 Expected: tests pass and coverage on the new modules ≥ 80%.
 
-- [ ] **Step 8.10: Run quality checks**
+- [ ] **Step 8.10: Verify DuckDBPanel under `docker compose up`**
+
+```bash
+DEBUG=1 LOCAL_DEV_MODE=1 docker compose up -d app
+sleep 8
+# Trigger a request that hits the DB
+curl -s http://localhost:8000/dashboard -o /tmp/dash.html
+docker compose logs --tail=40 app | head -40
+grep -i "duckdb\|djdt" /tmp/dash.html | head -5
+docker compose down
+```
+
+Expected: `dash.html` contains the toolbar HTML with the DuckDB panel slot. Logs show DB queries when DEBUG=1 (debug-level log output captures execute calls indirectly through any `logger.debug` in src/db.py).
+
+- [ ] **Step 8.11: Run quality checks**
 
 ```bash
 ruff format app/ src/db.py tests/test_toolbar_integration.py
 ruff check app/ src/db.py tests/test_toolbar_integration.py --fix
 ```
 
-- [ ] **Step 8.11: Commit**
+- [ ] **Step 8.12: Commit**
 
 ```bash
 git add app/debug/ src/db.py app/main.py tests/test_toolbar_integration.py
