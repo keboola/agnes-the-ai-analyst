@@ -2,6 +2,8 @@
 Tests for OpenMetadata client
 """
 
+import warnings
+
 import pytest
 import httpx
 from unittest.mock import Mock, patch, MagicMock
@@ -158,8 +160,6 @@ def test_context_manager():
 
 
 # --- TLS verify (#89) -------------------------------------------------------
-
-import warnings
 
 
 def test_client_verifies_tls_by_default():
