@@ -218,7 +218,13 @@ def filter_due_tables(
         now = datetime.now(timezone.utc)
     out: list[dict] = []
     for tc in table_configs:
-        table_id = tc.get("id") or tc.get("name")
+        # sync_state.table_id is populated from _meta.table_name by the
+        # orchestrator and equals table_registry.name (NOT id). When
+        # id != name (auto-discovered Keboola rows: id="in_c-crm_company",
+        # name="company") an id-keyed lookup misses every row and the
+        # filter degrades to "always sync" — defeating the schedule. The
+        # same pitfall is documented at app/api/sync.py:244-249.
+        table_id = tc.get("name") or tc.get("id")
         schedule = tc.get("sync_schedule")
         if not schedule:
             out.append(tc)
