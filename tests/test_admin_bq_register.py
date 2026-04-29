@@ -2042,3 +2042,50 @@ class TestRegisterTablePrecheckHandlerIsSync:
             "it in a threadpool; otherwise the synchronous bigquery.Client "
             "calls block the asyncio event loop."
         )
+
+
+# --- sync_schedule format validation (#79) ----------------------------------
+
+from pydantic import ValidationError
+
+from app.api.admin import RegisterTableRequest, UpdateTableRequest
+
+
+@pytest.mark.parametrize("schedule", [
+    "every 15m",
+    "every 1h",
+    "daily 05:00",
+    "daily 07:00,13:00,18:00",
+    None,  # explicit None is allowed (no schedule = always sync)
+])
+def test_register_request_accepts_valid_sync_schedule(schedule):
+    req = RegisterTableRequest(name="orders", sync_schedule=schedule)
+    assert req.sync_schedule == schedule
+
+
+@pytest.mark.parametrize("schedule", [
+    "hourly",
+    "every 0m",
+    "daily 25:00",
+    "every 5x",
+    "  ",
+])
+def test_register_request_rejects_malformed_sync_schedule(schedule):
+    with pytest.raises(ValidationError) as exc_info:
+        RegisterTableRequest(name="orders", sync_schedule=schedule)
+    assert "sync_schedule" in str(exc_info.value)
+
+
+@pytest.mark.parametrize("schedule", [
+    "every 30m",
+    "daily 08:00",
+    None,
+])
+def test_update_request_accepts_valid_sync_schedule(schedule):
+    req = UpdateTableRequest(sync_schedule=schedule)
+    assert req.sync_schedule == schedule
+
+
+def test_update_request_rejects_malformed_sync_schedule():
+    with pytest.raises(ValidationError):
+        UpdateTableRequest(sync_schedule="weekly")

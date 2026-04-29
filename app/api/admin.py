@@ -25,6 +25,7 @@ from src.identifier_validation import (
     is_safe_quoted_identifier as _is_safe_quoted_identifier,
 )
 from src.sql_safe import is_safe_project_id as _is_safe_project_id
+from src.scheduler import is_valid_schedule
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -677,6 +678,22 @@ class RegisterTableRequest(BaseModel):
             )
         return v
 
+    @field_validator("sync_schedule", mode="before")
+    @classmethod
+    def _validate_sync_schedule(cls, v):
+        # None / "" → no schedule, accepted.
+        # Any non-empty string (including pure whitespace) must parse as a
+        # valid schedule — otherwise it would be persisted and silently
+        # ignored by the runtime evaluator.
+        if v in (None, ""):
+            return v
+        if not is_valid_schedule(v):
+            raise ValueError(
+                f"sync_schedule must be 'every Nm' / 'every Nh' / "
+                f"'daily HH:MM[,HH:MM,...]', got {v!r}"
+            )
+        return v
+
 
 def _validate_bigquery_register_payload(req: "RegisterTableRequest") -> None:
     """Enforce BQ-specific shape on a register/precheck request.
@@ -793,6 +810,22 @@ class UpdateTableRequest(BaseModel):
     @classmethod
     def _coerce_primary_key(cls, v):
         return _normalize_primary_key(v)
+
+    @field_validator("sync_schedule", mode="before")
+    @classmethod
+    def _validate_sync_schedule(cls, v):
+        # None / "" → no schedule, accepted.
+        # Any non-empty string (including pure whitespace) must parse as a
+        # valid schedule — otherwise it would be persisted and silently
+        # ignored by the runtime evaluator.
+        if v in (None, ""):
+            return v
+        if not is_valid_schedule(v):
+            raise ValueError(
+                f"sync_schedule must be 'every Nm' / 'every Nh' / "
+                f"'daily HH:MM[,HH:MM,...]', got {v!r}"
+            )
+        return v
 
 
 class ConfigureRequest(BaseModel):
