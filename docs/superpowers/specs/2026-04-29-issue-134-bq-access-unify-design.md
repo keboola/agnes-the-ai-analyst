@@ -1,6 +1,6 @@
 # Issue #134 — Unify BigQuery access behind `BqAccess`, fix v2_sample + 502 contract
 
-**Date:** 2026-04-29
+**Date:** 2026-04-29 (revised after first review)
 **Issue:** [keboola/agnes-the-ai-analyst#134](https://github.com/keboola/agnes-the-ai-analyst/issues/134)
 **Branch:** `fix/134-bq-access-unify`
 
@@ -14,43 +14,68 @@ Issue #134 reports that v2 BigQuery endpoints on `agnes-development` (0.18.0) re
 
 `POST /api/query/hybrid` against the same tables works correctly.
 
-### Root cause analysis (corrects the issue's hypothesis)
+### Root cause analysis
 
-The issue header attributes commit `33a9964` to a fix in `RemoteQueryEngine`. That is wrong. `33a9964` actually fixed `app/api/v2_scan.py` (added `billing_project` parameter, used as `quota_project_id` for the BQ client). The `RemoteQueryEngine` fallback chain (`BIGQUERY_PROJECT` env → `instance.yaml billing_project` → `instance.yaml project`) lives at `src/remote_query.py:407-449` and was added separately.
+Two distinct bugs cause the symptom:
 
-What is actually broken in code today:
+#### Bug A — `v2_scan.py` has correct project resolution but no error translation
 
-1. **`app/api/v2_sample.py:104`** reads only `data_source.bigquery.project`, never `billing_project`. It then passes that project to `bigquery_query()` as the billing target. This is the same bug `33a9964` fixed in `v2_scan.py`, just in a sibling file that didn't get the same patch.
+Commit `33a9964` (the spec under review previously misattributed this to `RemoteQueryEngine`) added the `billing_project` parameter to `app/api/v2_scan.py`. Today both endpoints (`scan_endpoint` line 385, `scan_estimate_endpoint` line 221) read `data_source.bigquery.billing_project` from `instance.yaml`, fall back to `project`, and pass it to the BQ client constructor.
 
-2. **`app/api/v2_sample.py`** has no structured error handling — it catches only `FileNotFoundError` (404) and `PermissionError` (403). Anything else (Google API `Forbidden`, `BadRequest`, identifier validation `ValueError`, `ImportError`) bubbles up as bare HTTP 500 with no body.
+**However, `_bq_dry_run_bytes` (lines 43-55) and `_run_bq_scan` (lines 266-282) have no `try/except` at all.** The endpoint-level handlers in `scan_endpoint` and `scan_estimate_endpoint` catch `WhereValidationError`, `QuotaExceededError`, `FileNotFoundError`, `PermissionError`, `ValueError` — but `google.api_core.exceptions.Forbidden` and `BadRequest` propagate as bare HTTP 500 with no body.
 
-3. **`app/api/v2_scan.py`** catches `WhereValidationError`, `QuotaExceededError`, `FileNotFoundError`, `PermissionError`, `ValueError`. It does **not** catch `google.api_core.exceptions.Forbidden` / `BadRequest`. When the SA lacks `serviceusage.services.use` on the data project (Pavel's case), the BQ client raises `Forbidden` which propagates as bare 500. This is plausibly the symptom Pavel reports on `/scan/estimate`.
+**This is the headline cause of the v2_scan/estimate 500s.** When the SA on `agnes-development` lacks `serviceusage.services.use` on whatever project resolves to billing, BQ raises `Forbidden`, which propagates uncaught. The config fix landed in `33a9964`; the error translation didn't.
 
-4. **Operator-config dimension (out of scope for code fix):** if `instance.yaml` on `agnes-development` does not set `data_source.bigquery.billing_project`, the fallback `or project_id` in `v2_scan.py` puts the call right back in the broken state. Fix surfaces this to the operator via a structured error body with `hint`.
+#### Bug B — `v2_sample.py` is missing the billing_project split entirely
 
-### Three duplicate code paths
+`app/api/v2_sample.py:104` reads only `data_source.bigquery.project`, never `billing_project`. It then passes that project to `bigquery_query()` as the billing target. This is the same bug `33a9964` fixed in `v2_scan.py`, just in a sibling file that didn't get the same patch.
 
-The BQ-access pattern is duplicated three times today:
+`v2_sample.py` also has no structured error handling — it catches only `FileNotFoundError` (404) and `PermissionError` (403). Anything else (Google API errors, identifier `ValueError`, `ImportError`) bubbles up as bare HTTP 500.
 
-- `app/api/v2_scan.py:_bq_dry_run_bytes`, `_run_bq_scan` — `bigquery.Client(...)` construction
-- `app/api/v2_sample.py:_fetch_bq_sample` — DuckDB BQ extension via `bigquery_query()`, uses `get_metadata_token()`
-- `src/remote_query.py:RemoteQueryEngine._get_bq_client` — `bigquery.Client(...)` construction with full fallback chain
+#### Bug C — `v2_schema.py` has the same shape as `v2_sample`
 
-Each call site re-implements project resolution from `instance.yaml` and BQ client construction, with subtle drift.
+`app/api/v2_schema.py` contains **two separate copies** of the INSTALL/LOAD/SECRET/`bigquery_query()` dance (lines 51-60 and 104-117). Schema reportedly works for Pavel today because it queries `INFORMATION_SCHEMA`, which doesn't trip the `serviceusage` permission check. But the same code path is one query change away from the same 500. It uses `data_source.bigquery.project` directly, no billing fallback.
+
+#### Operator-config dimension (out of scope for code fix)
+
+If `instance.yaml` on `agnes-development` does not set `data_source.bigquery.billing_project`, the fallback `or project_id` puts the call right back in the broken state. The fix surfaces this to the operator via a structured error body containing a `hint` pointing at the missing config key.
+
+### Five+ duplicate code paths today
+
+The BQ-access pattern is duplicated across:
+
+| File | Function | Shape | Status in this PR |
+|---|---|---|---|
+| `app/api/v2_scan.py` | `_bq_dry_run_bytes`, `_run_bq_scan` | `bigquery.Client` (Python SDK) | **In scope** |
+| `app/api/v2_sample.py` | `_fetch_bq_sample` | DuckDB `bigquery_query()` | **In scope** |
+| `app/api/v2_schema.py` | two anonymous blocks | DuckDB `bigquery_query()` (×2) | **In scope** |
+| `src/remote_query.py` | `RemoteQueryEngine._get_bq_client` | `bigquery.Client` (Python SDK) | **In scope** |
+| `connectors/bigquery/extractor.py` | sync-time extractor | mixed (`ATTACH 'project=...'` + `bigquery_query()`) | **Deferred** (see below) |
+| `scripts/duckdb_manager.py` | `register_bq_table` | `bigquery.Client` (Python SDK) | **Deferred** (see below) |
+
+**Deferred sites — rationale:**
+
+- **`extractor.py`** runs at sync time, async, behind the scheduler. Errors surface in logs / `sync_history`, not as HTTP responses. Different lifecycle, different control flow (uses `ATTACH` not `bigquery.Client.query`). Migrating it doubles the PR size for benefit not in #134's scope. Track as follow-up issue.
+- **`register_bq_table`** is admin-only, runs once at table registration time (M1 from #108). Its project resolution is `bq_project or BIGQUERY_PROJECT env` — no `instance.yaml` fallback, different semantics from the runtime path. Different concern. Track as follow-up issue.
+
+The stale docstring at `src/remote_query.py:204` claims `_bq_client_factory` defaults to `scripts.duckdb_manager._create_bq_client`. It doesn't — `_get_bq_client` constructs `_bq_module.Client(project=project)` inline at line 450. Will self-correct when `_bq_client_factory` is removed.
 
 ## Goals
 
 1. **Fix the v2_sample billing_project bug** so cross-project BQ reads work when the operator sets `billing_project`.
-2. **Translate Google API errors into structured 502 responses** with actionable bodies (the user / CLI gets an error shape they can reason about, not bare 500).
-3. **Eliminate the three duplicate BQ-access call sites** behind a single facade so the fix lives in one place.
-4. **Preserve test invasiveness** — existing tests that mock the BQ client must remain straightforward to write.
+2. **Fix the v2_scan/estimate error translation** so cross-project Forbidden surfaces as a structured 502 instead of bare 500.
+3. **Translate Google API errors into structured responses** with actionable bodies across all three v2 endpoints (the user / CLI gets an error shape they can reason about, not bare 500).
+4. **Eliminate four duplicate BQ-access call sites** behind a single facade so the fix lives in one place. (Two deferred — see above.)
+5. **Preserve test invasiveness** — existing tests that mock the BQ client must remain straightforward to write, ideally cleaner than today's `_bq_client_factory` injection point.
 
 ## Non-goals
 
-- Changing the operator-facing config schema. `data_source.bigquery.billing_project` already exists; we just route everything through it.
-- Auto-detecting cross-project misconfiguration at startup (a guardrail discussed but rejected — keeping scope tight).
-- Touching the `/api/query/hybrid` endpoint behavior — `RemoteQueryEngine` internals change, but the endpoint contract does not.
-- Migrating extant `extract.duckdb` files or `_remote_attach` rows.
+- Changing the operator-facing config schema. `data_source.bigquery.billing_project` already exists; we route everything through it.
+- Auto-detecting cross-project misconfiguration at startup (rejected for scope; would require a real BQ call at boot).
+- Touching the `/api/query/hybrid` endpoint behavior — `RemoteQueryEngine` internals change, but the HTTP contract does not.
+- Migrating `extractor.py` or `register_bq_table` to `BqAccess` (deferred — see above).
+- Adding per-table multi-project support. Today's `table_registry` schema has no `source_project` column; every BQ table uses `instance.yaml`'s `project` as the data project. Future multi-project is a separate feature; spec notes the constraint so it can be lifted cleanly later.
+- Schema migration / data migration of any kind.
 
 ## Design
 
@@ -59,21 +84,26 @@ Each call site re-implements project resolution from `instance.yaml` and BQ clie
 ```
 connectors/bigquery/
 ├── auth.py          (existing — get_metadata_token, unchanged)
-├── extractor.py     (existing — unchanged)
+├── extractor.py     (existing — unchanged in this PR)
 └── access.py        (NEW)
-    ├── BqProjects        (frozen dataclass)
-    ├── BqAccessError     (typed exception, with HTTP_STATUS class mapping)
-    ├── BqAccess          (facade)
-    └── translate_bq_error(e, projects) -> BqAccessError
+    ├── BqProjects                 (frozen dataclass)
+    ├── BqAccessError              (typed exception with HTTP_STATUS class mapping)
+    ├── BqAccess                   (facade with injectable factories)
+    ├── translate_bq_error(e, projects, *, sql_origin) -> BqAccessError
+    ├── _default_client_factory    (real bigquery.Client construction)
+    └── _default_duckdb_session_factory (real INSTALL/LOAD/SECRET dance)
 ```
 
-### `BqAccess` public API
+### `BqAccess` public API (revised — accepts factories at construction, no `from_config` monkey-patching needed)
 
 ```python
 @dataclass(frozen=True)
 class BqProjects:
     billing: str   # billing/quota target — used as `project=` and `quota_project_id=`
-    data: str      # default data project for FROM clauses
+    data: str      # data project for FROM clauses (today: instance.yaml `project`).
+                   # Note: locked to a single project per instance until table_registry
+                   # grows a per-table source_project column. See "Non-goals".
+
 
 class BqAccessError(Exception):
     HTTP_STATUS = {
@@ -82,7 +112,8 @@ class BqAccessError(Exception):
         "auth_failed":             502,  # GCP metadata server unreachable
         "cross_project_forbidden": 502,  # SA lacks serviceusage.services.use on billing project
         "bq_forbidden":            502,  # other Forbidden from BQ
-        "bq_bad_request":          502,  # 400 from BQ (malformed query etc.)
+        "bq_bad_request_user":     400,  # 400 from BQ on user-derived SQL
+        "bq_bad_request_server":   502,  # 400 from BQ on server-constructed SQL (registry corruption)
         "bq_upstream_error":       502,  # other GoogleAPICallError catch-all
     }
 
@@ -95,22 +126,42 @@ class BqAccessError(Exception):
 
 class BqAccess:
     """Single entry point for BigQuery access — config resolution, client construction,
-    DuckDB-extension session, and error translation. Stateless after construction."""
+    DuckDB-extension session, and error translation. Stateless after construction.
 
-    def __init__(self, projects: BqProjects):
+    Factories are injectable for tests:
+        bq = BqAccess(
+            BqProjects(billing="test-billing", data="test-data"),
+            client_factory=lambda projects: mock_client,
+        )
+    """
+
+    def __init__(
+        self,
+        projects: BqProjects,
+        *,
+        client_factory: Callable[[BqProjects], "bigquery.Client"] | None = None,
+        duckdb_session_factory: Callable[[BqProjects], "AbstractContextManager"] | None = None,
+    ):
         self._projects = projects
+        self._client_factory = client_factory or _default_client_factory
+        self._duckdb_session_factory = duckdb_session_factory or _default_duckdb_session_factory
 
     @classmethod
+    @functools.cache
     def from_config(cls) -> "BqAccess":
         """Resolve projects from BIGQUERY_PROJECT env → instance.yaml billing_project → project.
-        Raises BqAccessError(kind='not_configured') if data project is unresolvable."""
+        Raises BqAccessError(kind='not_configured') if data project unresolvable.
+
+        Cached at process level — config is read at boot and doesn't change at runtime.
+        Tests should use `BqAccess(...)` directly with FastAPI dependency_overrides
+        rather than mutating this cache."""
 
     @property
     def projects(self) -> BqProjects: ...
 
     def client(self) -> "bigquery.Client":
-        """bigquery.Client(project=billing, client_options=ClientOptions(quota_project_id=billing)).
-        Raises BqAccessError(kind='bq_lib_missing') if google-cloud-bigquery is not installed."""
+        """Construct (or retrieve from injected factory) a BigQuery client.
+        Raises BqAccessError(kind='bq_lib_missing') if google-cloud-bigquery missing."""
 
     @contextmanager
     def duckdb_session(self) -> Iterator["duckdb.DuckDBPyConnection"]:
@@ -119,13 +170,25 @@ class BqAccess:
         to BqAccessError(kind='auth_failed' or 'bq_lib_missing')."""
 
 
-def translate_bq_error(e: Exception, projects: BqProjects) -> BqAccessError:
+def translate_bq_error(
+    e: Exception,
+    projects: BqProjects,
+    *,
+    sql_origin: Literal["user_derived", "server_constructed"],
+) -> BqAccessError:
     """Pass-through for BqAccessError. Maps google.api_core exceptions:
-      - Forbidden + ('serviceusage' in msg or billing != data) -> cross_project_forbidden
-      - Forbidden                                              -> bq_forbidden
-      - BadRequest                                             -> bq_bad_request
-      - GoogleAPICallError (catch-all)                         -> bq_upstream_error
-    Unknown exceptions are re-raised — never silently swallowed."""
+      - Forbidden + 'serviceusage' in msg -> cross_project_forbidden
+      - Forbidden                         -> bq_forbidden
+      - BadRequest, sql_origin=user       -> bq_bad_request_user (400)
+      - BadRequest, sql_origin=server     -> bq_bad_request_server (502)
+      - GoogleAPICallError (catch-all)    -> bq_upstream_error
+    Unknown exceptions are re-raised — never silently swallowed.
+
+    `sql_origin` MUST be supplied by the caller. It distinguishes:
+      - user_derived: SQL contains user input (select/where/order_by/limit/etc.).
+        BQ rejecting it is plausibly the user's fault → 400.
+      - server_constructed: SQL is fully built server-side from validated identifiers.
+        BQ rejecting it is server-side corruption → 502."""
 ```
 
 ### Project resolution rules (single source of truth)
@@ -136,31 +199,27 @@ def translate_bq_error(e: Exception, projects: BqProjects) -> BqAccessError:
 2. `data_source.bigquery.billing_project` from `instance.yaml` → billing.
 3. `data_source.bigquery.project` from `instance.yaml` → data, and billing if (2) is unset.
 
-If neither (1) nor (3) yields a value: `BqAccessError(kind='not_configured')` with a `details.hint` pointing to the missing config key.
+If neither (1) nor (3) yields a value: `BqAccessError(kind='not_configured', details={"hint": "set data_source.bigquery.project in instance.yaml"})`.
 
-### Error translation contract
+### Cross-project Forbidden detection — heuristic narrowed
 
-`translate_bq_error` is the only place in the codebase that knows how to interpret raw Google API exceptions. Call sites wrap their BQ calls in `try/except Exception → raise translate_bq_error(e, bq.projects)` so the rest of the system speaks `BqAccessError`.
+Per first-round review: `billing != data` is the **normal** cross-project setup, not a signal of failure. Using it to classify `cross_project_forbidden` over-triggers and gives operators a misleading hint when the actual cause is unrelated (revoked SA, table-level ACL, etc.).
 
-Endpoints translate `BqAccessError` to HTTP via:
+**Heuristic:** `'serviceusage' in str(e).lower()` is the only reliable signal. Drop the `billing != data` clause from the kind-classification logic.
 
-```python
-except BqAccessError as e:
-    raise HTTPException(
-        status_code=BqAccessError.HTTP_STATUS.get(e.kind, 500),
-        detail={"error": e.kind, "message": e.message, "details": e.details},
-    )
-```
+`billing != data` may still enrich `details.hint` ("Note: billing and data projects differ — verify SA has both BQ Read on data project AND serviceusage.services.use on billing project"), but does not alter `kind`.
 
-Status code mapping rationale:
-- **502** for upstream BQ refusal (Pavel's bug + the kind-of bugs that are server-side misconfig from the user's POV but caused by an upstream service). Operationally distinguishable from 500 in dashboards — "integration with BQ broken" vs "Agnes itself broken".
-- **500** for `not_configured` and `bq_lib_missing` — these are deployment / admin-config bugs that should page on-call, not a transient upstream error.
+### Status code mapping rationale
 
-### Migration of three call sites
+- **400** for `bq_bad_request_user` — BQ rejecting a SQL string built from user input is plausibly the user's fault. Returns it back to the user as a 4xx with the BQ message.
+- **502** for `bq_bad_request_server`, `bq_forbidden`, `cross_project_forbidden`, `bq_upstream_error`, `auth_failed` — upstream BQ refused or was unreachable. Operationally distinguishable from 500 in dashboards: "integration with BQ broken" vs "Agnes itself broken".
+- **500** for `not_configured`, `bq_lib_missing` — deployment/admin-config bugs that should page on-call, not transient upstream errors.
 
-#### `app/api/v2_scan.py`
+### Migration of four call sites
 
-`_bq_dry_run_bytes` and `_run_bq_scan` change signature from `(project: str, sql: str)` to `(bq: BqAccess, sql: str)`. Body becomes:
+#### A. `app/api/v2_scan.py`
+
+`_bq_dry_run_bytes` and `_run_bq_scan` change signature from `(project: str, sql: str)` to `(bq: BqAccess, sql: str)`. Body:
 
 ```python
 def _bq_dry_run_bytes(bq: BqAccess, sql: str) -> int:
@@ -171,16 +230,40 @@ def _bq_dry_run_bytes(bq: BqAccess, sql: str) -> int:
         )
         return int(job.total_bytes_processed or 0)
     except Exception as e:
-        raise translate_bq_error(e, bq.projects)
+        raise translate_bq_error(e, bq.projects, sql_origin="user_derived")
 ```
 
-`scan_endpoint`, `scan_estimate_endpoint`, and the underlying `estimate` / `run_scan` functions lose the `project_id` and `billing_project` parameters — they take a `BqAccess` instead. Endpoints construct it with `bq = BqAccess.from_config()` and add `except BqAccessError` after the existing exception clauses.
+`_run_bq_scan` mirrors the same shape with `sql_origin="user_derived"` (SQL contains user's `select`/`where`/`order_by`).
 
-The existing `_build_bq_sql(table_row, project_id, req)` keeps its `project_id` parameter (it's the data project for the FROM clause), passed as `bq.projects.data`.
+`scan_endpoint`, `scan_estimate_endpoint`, `estimate`, and `run_scan` lose the `project_id` and `billing_project` parameters in favor of `bq: BqAccess`. Endpoints inject via FastAPI:
 
-#### `app/api/v2_sample.py`
+```python
+@router.post("/scan")
+async def scan_endpoint(
+    raw: dict,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+    bq: BqAccess = Depends(BqAccess.from_config),
+):
+    try:
+        ipc = run_scan(conn, user, raw, bq=bq, quota=...)
+        return Response(...)
+    except WhereValidationError as e:
+        raise HTTPException(status_code=400, detail=...)
+    except QuotaExceededError as e:
+        raise HTTPException(status_code=429, detail=...)
+    except BqAccessError as e:
+        raise HTTPException(
+            status_code=BqAccessError.HTTP_STATUS.get(e.kind, 500),
+            detail={"error": e.kind, "message": e.message, "details": e.details},
+        )
+```
 
-`_fetch_bq_sample` changes signature from `(project: str, dataset: str, table: str, n: int)` to `(bq: BqAccess, dataset: str, table: str, n: int)`. Body becomes:
+`_build_bq_sql(table_row, project_id, req)` keeps `project_id` as a parameter (it's the data project for the FROM clause). Call sites pass `bq.projects.data`. **Forward-compat note** in code comments: when `table_registry` grows a per-table `source_project` column, callers should prefer `table_row.get('source_project') or bq.projects.data`.
+
+#### B. `app/api/v2_sample.py`
+
+`_fetch_bq_sample` changes signature to `(bq: BqAccess, dataset: str, table: str, n: int)`. Body:
 
 ```python
 def _fetch_bq_sample(bq: BqAccess, dataset: str, table: str, n: int) -> list[dict]:
@@ -199,52 +282,101 @@ def _fetch_bq_sample(bq: BqAccess, dataset: str, table: str, n: int) -> list[dic
             ).fetchdf()
             return df.to_dict(orient="records")
         except Exception as e:
-            raise translate_bq_error(e, bq.projects)
+            raise translate_bq_error(e, bq.projects, sql_origin="server_constructed")
 ```
 
-`build_sample` and `sample` endpoint signatures lose `project_id` for `BqAccess`. Endpoint adds `except BqAccessError` and `except ValueError` (→ 400 for unsafe identifiers).
+`build_sample` and `sample` endpoint signatures lose `project_id` for `bq: BqAccess = Depends(BqAccess.from_config)`. Endpoint catch chain adds `BqAccessError` and `ValueError → 400 (kind='unsafe_identifier')`.
 
-#### `src/remote_query.py`
+#### C. `app/api/v2_schema.py` (new in scope, was missed in v1 of this spec)
 
-`RemoteQueryEngine.__init__` loses the `_bq_client_factory` parameter. `_get_bq_client` collapses to:
+Two anonymous INSTALL/LOAD/SECRET blocks (lines 51-60 and 104-117) replaced with `bq.duckdb_session()` context manager. Both call sites use `sql_origin="server_constructed"` (queries are against `INFORMATION_SCHEMA` with validated identifiers, no user-derived fragments). Endpoint signature gains `bq: BqAccess = Depends(BqAccess.from_config)`.
+
+#### D. `src/remote_query.py`
+
+`RemoteQueryEngine.__init__` signature changes:
+
+```python
+def __init__(
+    self,
+    ...,  # existing args
+    bq_access: BqAccess | None = None,
+):
+    ...
+    self._bq = bq_access or BqAccess.from_config()
+```
+
+`_bq_client_factory` parameter, the docstring at line 204 (which referenced the stale `scripts.duckdb_manager._create_bq_client` default), and lines 407-450 of `_get_bq_client` all delete. Replacement:
 
 ```python
 def _get_bq_client(self):
-    from connectors.bigquery.access import BqAccess
-    return BqAccess.from_config().client()
+    return self._bq.client()
 ```
 
-Lines 418-449 (lazy import + project resolution + ImportError handling) move into `BqAccess.from_config` and `BqAccess.client`. The class becomes thinner; its public API loses the test-only injection point.
+The fallback chain logic moves to `BqAccess.from_config`. `_get_bq_client` becomes one line.
 
-### Test rewrite (eliminating `_bq_client_factory`)
+### Test rewrite
 
-Existing tests that injected `_bq_client_factory` into `RemoteQueryEngine` migrate to monkey-patching `BqAccess.from_config`. New shared fixture in `tests/conftest.py`:
+The existing `_bq_client_factory` injection point in `RemoteQueryEngine` and tests like `tests/test_remote_query.py` currently look like:
+
+```python
+engine = RemoteQueryEngine(_bq_client_factory=lambda project: mock_client)
+```
+
+Migrates to direct `BqAccess` injection — no monkey-patching, no classmethod gymnastics:
+
+```python
+def test_remote_query_x():
+    bq = BqAccess(
+        BqProjects(billing="test-billing", data="test-data"),
+        client_factory=lambda projects: mock_client,
+    )
+    engine = RemoteQueryEngine(..., bq_access=bq)
+    engine.execute(...)
+```
+
+For FastAPI endpoint tests (`tests/test_v2_*.py`), use FastAPI's `dependency_overrides`:
+
+```python
+def test_v2_scan_x(client):
+    bq = BqAccess(
+        BqProjects(billing="test-billing", data="test-data"),
+        client_factory=lambda projects: mock_client,
+    )
+    app.dependency_overrides[BqAccess.from_config] = lambda: bq
+    try:
+        response = client.post("/api/v2/scan", json={...})
+        assert response.status_code == 200
+    finally:
+        app.dependency_overrides.clear()
+```
+
+Optional shared fixture in `tests/conftest.py`:
 
 ```python
 @pytest.fixture
-def bq_access_factory(monkeypatch):
-    """Returns a callable that patches BqAccess.from_config to yield a controllable BqAccess.
+def bq_access():
+    """Build a BqAccess with pluggable factories. Returns a callable that overrides
+    the FastAPI Depends and yields the BqAccess instance."""
+    created = []
 
-    Usage:
-        def test_x(bq_access_factory):
-            mock_client = MagicMock()
-            bq_access_factory(client=mock_client)
-            engine = RemoteQueryEngine(...)
-            engine.execute(...)
-    """
-    def _factory(*, client=None, projects=None):
-        proj = projects or BqProjects(billing="test-billing", data="test-data")
-        bq = BqAccess(proj)
-        if client is not None:
-            bq.client = lambda: client
-        monkeypatch.setattr(
-            "connectors.bigquery.access.BqAccess.from_config", classmethod(lambda cls: bq)
+    def _build(*, client=None, duckdb_conn=None,
+               billing="test-billing", data="test-data"):
+        bq = BqAccess(
+            BqProjects(billing=billing, data=data),
+            client_factory=(lambda projects: client) if client else None,
+            duckdb_session_factory=(
+                lambda projects: contextlib.nullcontext(duckdb_conn)
+            ) if duckdb_conn else None,
         )
+        app.dependency_overrides[BqAccess.from_config] = lambda: bq
+        created.append(bq)
         return bq
-    return _factory
+
+    yield _build
+    app.dependency_overrides.clear()
 ```
 
-All three callers (`tests/test_remote_query.py`, `tests/test_v2_scan.py`, `tests/test_v2_sample.py`) use this fixture uniformly. No more per-call-site mocking glue.
+All three endpoint test files plus `test_remote_query.py` use this uniformly. No more per-call-site mocking glue.
 
 ### Tests
 
@@ -252,73 +384,105 @@ All three callers (`tests/test_remote_query.py`, `tests/test_v2_scan.py`, `tests
 
 | Test | Asserts |
 |---|---|
-| `test_resolve_env_var_wins` | `BIGQUERY_PROJECT=foo` overrides `instance.yaml` |
+| `test_resolve_env_var_wins` | `BIGQUERY_PROJECT=foo` overrides `instance.yaml`; both billing+data = foo |
 | `test_resolve_billing_falls_back_to_project` | unset `billing_project` → both billing and data = `project` |
-| `test_resolve_raises_when_neither_set` | `BqAccessError(kind='not_configured')` |
-| `test_translate_forbidden_cross_project` | `gax.Forbidden` with `'serviceusage'` in msg → `kind='cross_project_forbidden'` + `details.hint` mentioning `data_source.bigquery.billing_project` |
-| `test_translate_forbidden_diff_projects` | `gax.Forbidden` + billing != data (regardless of msg) → `kind='cross_project_forbidden'` |
-| `test_translate_forbidden_same_project` | `gax.Forbidden` + billing == data + no `'serviceusage'` substring → `kind='bq_forbidden'` |
-| `test_translate_bad_request` | `gax.BadRequest` → `kind='bq_bad_request'` |
+| `test_resolve_billing_distinct_from_project` | both set → billing and data differ |
+| `test_resolve_raises_when_neither_set` | `BqAccessError(kind='not_configured')` with hint |
+| `test_from_config_is_cached` | two calls return the same instance |
+| `test_translate_forbidden_serviceusage` | `gax.Forbidden('serviceusage.services.use')` → `kind='cross_project_forbidden'` + hint |
+| `test_translate_forbidden_no_serviceusage_diff_projects` | `gax.Forbidden('table-level perm denied')` + billing≠data → `kind='bq_forbidden'` (NOT cross_project — heuristic narrowed) |
+| `test_translate_forbidden_same_project` | `gax.Forbidden` + billing==data → `kind='bq_forbidden'` |
+| `test_translate_bad_request_user` | `gax.BadRequest`, `sql_origin='user_derived'` → `kind='bq_bad_request_user'`, status 400 |
+| `test_translate_bad_request_server` | `gax.BadRequest`, `sql_origin='server_constructed'` → `kind='bq_bad_request_server'`, status 502 |
 | `test_translate_passes_through_typed` | `BqAccessError` in → identical out |
 | `test_translate_unknown_reraises` | `RuntimeError("oops")` is re-raised, NOT silently wrapped |
-| `test_client_uses_billing_as_quota_project` | mock `bigquery.Client`, assert `quota_project_id=projects.billing` |
+| `test_client_uses_billing_as_quota_project` | `_default_client_factory` constructs with `quota_project_id=projects.billing` |
 | `test_duckdb_session_closes_on_exit` | mock token + duckdb conn, assert `conn.close()` called |
 | `test_duckdb_session_closes_on_exception` | exception inside `with` block still triggers `conn.close()` |
+| `test_injected_client_factory_overrides_default` | `BqAccess(..., client_factory=...)` skips `_default_client_factory` |
 
-#### Integration tests — extending `tests/test_v2_scan.py`, `tests/test_v2_sample.py`
+#### Integration tests — extending `tests/test_v2_*.py`
 
 | Test | Asserts |
 |---|---|
-| `test_v2_scan_returns_502_on_bq_forbidden` | patch `BqAccess.client` to raise `gax.Forbidden`; response is 502, body has `error=cross_project_forbidden` + hint |
-| `test_v2_scan_estimate_returns_502_on_bq_forbidden` | same for `/scan/estimate` |
-| `test_v2_sample_returns_502_on_bq_forbidden` | patch `BqAccess.duckdb_session` to raise via `bigquery_query`; response is 502, body has structured shape |
-| `test_v2_sample_returns_400_on_unsafe_identifier` | registry row with backtick in `source_table` → 400 with structured body |
+| `test_v2_scan_returns_502_on_bq_forbidden_serviceusage` | mock client raises `gax.Forbidden('...serviceusage...')`; response 502 + body `error=cross_project_forbidden` + hint mentions `billing_project` |
+| `test_v2_scan_returns_400_on_bq_bad_request` | mock client raises `gax.BadRequest('invalid syntax')`; response 400 + body `error=bq_bad_request_user` |
+| `test_v2_scan_estimate_returns_502_on_bq_forbidden` | same pattern for `/scan/estimate` |
+| `test_v2_sample_returns_502_on_bq_forbidden` | mock duckdb_session raises via `bigquery_query`; response 502 + structured body |
+| `test_v2_sample_returns_400_on_unsafe_identifier` | registry row with backtick in `source_table` → 400 + body `error=unsafe_identifier` |
 | `test_v2_sample_returns_404_on_unknown_table` | unchanged behavior (regression guard) |
 | `test_v2_sample_returns_403_on_unauthorized` | unchanged behavior (regression guard) |
+| `test_v2_schema_returns_502_on_bq_forbidden` | NEW (v2_schema in scope) |
+| `test_v2_schema_returns_200_on_success` | regression guard (the existing happy path) |
 
 #### E2E manual verification (post-deploy on `agnes-development`)
+
+For each of `/sample`, `/scan/estimate`, `/scan`:
 
 ```bash
 PAT=...
 
-# Pre-fix verification (current state) — expect 500 with empty body on all three:
+# Pre-deploy reference (current production behavior — bare 500 with no body)
 curl -k -i -H "Authorization: Bearer $PAT" \
   https://agnes-development.groupondev.com/api/v2/sample/s1_session_landings?n=2
 
+curl -k -i -X POST -H "Authorization: Bearer $PAT" -H "Content-Type: application/json" \
+  https://agnes-development.groupondev.com/api/v2/scan/estimate \
+  -d '{"table_id":"s1_session_landings","select":["event_date"],"where":"event_date = DATE \"2026-04-21\""}'
+
+curl -k -i -X POST -H "Authorization: Bearer $PAT" -H "Content-Type: application/json" \
+  https://agnes-development.groupondev.com/api/v2/scan \
+  -d '{"table_id":"s1_session_landings","select":["event_date"],"where":"event_date = DATE \"2026-04-21\"","limit":50}'
+
 # Post-deploy, BEFORE fixing instance.yaml — expect 502 + structured JSON body
-# with error=cross_project_forbidden and a hint pointing at billing_project:
-curl -k -i -H "Authorization: Bearer $PAT" \
-  https://agnes-development.groupondev.com/api/v2/sample/s1_session_landings?n=2
+# with error=cross_project_forbidden and a hint pointing at billing_project on
+# all three endpoints.
 
 # Operator action: set data_source.bigquery.billing_project in instance.yaml,
 # restart the container.
 
-# Post-config-fix — expect 200 with sample rows:
-curl -k -i -H "Authorization: Bearer $PAT" \
-  https://agnes-development.groupondev.com/api/v2/sample/s1_session_landings?n=2
+# Post-config-fix — expect 200 on all three endpoints.
 ```
 
-This three-step E2E is the success criterion for closing #134. Without it, "fixed" is unverifiable.
+This three-endpoint × three-state matrix is the success criterion for closing #134. Without it, "fixed" is unverifiable.
 
-## Out of scope (explicitly)
+## Implementation strategy — staged commits
 
-- **Startup-time BQ misconfig warning.** Discussed and rejected for scope. The structured 502 with hint is the user-visible signal; adding a startup probe means a real BQ call at boot, which is a separate concern.
-- **`/api/query/hybrid` endpoint behavior change.** Internal `RemoteQueryEngine.__init__` signature changes (drops `_bq_client_factory`), but the HTTP contract of `/api/query/hybrid` does not.
-- **Schema migration / data migration.** None required.
+Per first-round review: stage as **two commits** so the user-visible bug fix is independently reviewable / revertable from the refactor.
+
+**Commit 1 — Minimal bug fix (revertable):**
+- `app/api/v2_sample.py`: read `billing_project` with same fallback as `v2_scan.py:385`; pass to `bigquery_query()`.
+- `app/api/v2_scan.py`: wrap `_bq_dry_run_bytes` and `_run_bq_scan` in `try/except` translating Google API errors to `HTTPException(502, detail=...)` inline (no `BqAccess` yet — direct translation).
+- Tests: regression tests for the 502 shape on `/scan` and `/scan/estimate`.
+
+This commit alone closes the user-visible part of #134. If commit 2 needs another review round, commit 1 still ships.
+
+**Commit 2 — `BqAccess` extraction + migration:**
+- Create `connectors/bigquery/access.py` with the design above.
+- Migrate `v2_scan`, `v2_sample`, `v2_schema`, `RemoteQueryEngine` to `BqAccess`.
+- Remove `_bq_client_factory` from `RemoteQueryEngine.__init__`.
+- Migrate tests to the new `BqAccess(client_factory=...)` + `dependency_overrides` pattern.
+- Delete inline `try/except` blocks added in commit 1 (replaced by `BqAccess`-aware translation).
 
 ## Risks
 
-1. **Test rewrite breaks something subtle.** Existing tests use `_bq_client_factory` for various RemoteQueryEngine flows. The new fixture must cover every shape they exercised. Mitigation: convert tests one-by-one, run pytest after each, before deleting the old injection point.
-2. **Cross-project Forbidden detection heuristic is fuzzy.** Distinguishing `cross_project_forbidden` from generic `bq_forbidden` relies on message-substring + project-comparison. False negatives are mostly cosmetic (user gets less-specific hint). False positives are unlikely (only when billing != data, which is itself a strong signal).
-3. **`BqAccess.from_config()` is called per-request in endpoints.** Cheap (just env + yaml lookup) but worth noting — instance is cheap to construct.
+1. **Test rewrite breaks something subtle.** `tests/test_remote_query.py` and possibly `tests/test_duckdb_manager.py` have many `_bq_client_factory` call sites. The new fixture pattern must cover every shape they exercise. Mitigation: convert tests one-by-one in commit 2, run pytest after each, before deleting the old injection point.
+2. **Cross-project Forbidden detection heuristic is narrow but principled.** Relies on Google's error message containing `'serviceusage'` (case-insensitive). False positives are unlikely (the substring is specific). False **negatives** (real cross-project errors that don't say `'serviceusage'`) are possible — those degrade to `bq_forbidden` with a generic message, still a 502 with structured body, just less specific in the hint. Acceptable.
+3. **`BqAccess.from_config()` is `@functools.cache`'d.** Cheap and process-lifetime-safe (config is loaded at boot and immutable). Tests use `dependency_overrides` and direct `BqAccess(...)` construction, never the cached path — no cache invalidation needed in tests.
+4. **`bq_bad_request_user → 400` could leak BQ error messages.** BQ's `BadRequest` text typically describes the SQL problem. We surface it in `details.message`. Operators who don't want this can filter at a reverse-proxy layer; this matches behavior of any 4xx-with-detail elsewhere in the app.
+5. **Two duplicate sites left behind (`extractor.py`, `register_bq_table`).** Explicit follow-up issue should be filed at PR-merge time.
 
 ## CHANGELOG entry (for the implementation PR)
 
 Under `## [Unreleased]`:
 
 **`### Fixed`**
-- v2 `/sample` endpoint: BigQuery cross-project queries now respect `data_source.bigquery.billing_project` from `instance.yaml` (mirrors v2 `/scan` fix from `33a9964`). Closes #134.
-- v2 `/scan`, `/scan/estimate`, `/sample`: BigQuery upstream errors now return HTTP 502 with structured JSON body (`{"error": "<kind>", "message": "...", "details": {...}}`) instead of bare HTTP 500. Cross-project Forbidden gets `kind=cross_project_forbidden` with a hint pointing at the missing config key.
+- v2 `/sample` endpoint: BigQuery cross-project queries now respect `data_source.bigquery.billing_project` from `instance.yaml` (mirrors v2 `/scan` fix from `33a9964`). Closes #134 for `/sample`.
+- v2 `/scan`, `/scan/estimate`: BigQuery upstream errors no longer return bare HTTP 500 with empty body. `Forbidden` from BQ now returns HTTP 502 with structured JSON body (`{"error": "cross_project_forbidden", "message": "...", "details": {"hint": "..."}}`); `BadRequest` on user-derived SQL returns HTTP 400 with `kind=bq_bad_request_user`. Closes #134 for `/scan*`.
+- v2 `/schema`: same error translation applied (was previously also bare 500 on Google API errors, though triggered less often because INFORMATION_SCHEMA queries don't usually fail).
 
 **`### Internal`**
-- New shared module `connectors/bigquery/access.py` — `BqAccess` facade unifies BQ project resolution, client construction, DuckDB-extension session, and Google-API error translation across `v2_scan`, `v2_sample`, and `RemoteQueryEngine`. Removes `_bq_client_factory` injection point from `RemoteQueryEngine` (test fixture `bq_access_factory` in `tests/conftest.py` replaces it).
+- New shared module `connectors/bigquery/access.py` — `BqAccess` facade unifies BQ project resolution, client construction, DuckDB-extension session, and Google-API error translation across `v2_scan`, `v2_sample`, `v2_schema`, and `RemoteQueryEngine`.
+- **BREAKING (internal):** `RemoteQueryEngine.__init__` no longer accepts `_bq_client_factory`. Tests that injected it migrate to `RemoteQueryEngine(..., bq_access=BqAccess(projects, client_factory=...))`. No external callers were affected (parameter prefix `_` indicated test-only).
+- Stale docstring at `src/remote_query.py:204` (referencing `scripts.duckdb_manager._create_bq_client` as the default factory) removed.
+- Two known-duplicate BQ-access sites (`connectors/bigquery/extractor.py`, `scripts/duckdb_manager.register_bq_table`) explicitly out of scope; tracked as follow-up.
