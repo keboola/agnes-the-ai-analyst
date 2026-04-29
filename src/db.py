@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -141,6 +141,28 @@ CREATE TABLE IF NOT EXISTS knowledge_contradictions (
     resolution VARCHAR,
     detected_at TIMESTAMP DEFAULT current_timestamp
 );
+
+-- v17: duplicate-candidate hints — one row per (item_a, item_b, relation_type)
+-- pair where the verification detector identified two same-domain knowledge
+-- items sharing >= MIN_ENTITY_OVERLAP entities (see issue #62 + ADR Decision 1).
+-- The repository canonicalizes (a, b) to (min, max) so each unordered pair maps
+-- to one row regardless of insertion order. ``score`` carries the Jaccard ratio
+-- (|A ∩ B| / |A ∪ B|) at detection time. ``resolved`` flips to TRUE when an
+-- admin marks the pair via /api/memory/admin/duplicate-candidates/resolve.
+CREATE TABLE IF NOT EXISTS knowledge_item_relations (
+    item_a_id VARCHAR NOT NULL,
+    item_b_id VARCHAR NOT NULL,
+    relation_type VARCHAR NOT NULL,
+    score DOUBLE,
+    resolved BOOLEAN DEFAULT FALSE,
+    resolved_by VARCHAR,
+    resolved_at TIMESTAMP,
+    resolution VARCHAR,
+    created_at TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (item_a_id, item_b_id, relation_type)
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_item_relations_resolved
+    ON knowledge_item_relations(resolved);
 
 -- v15: track which session JSONL files the verification detector has already
 -- processed so re-runs over the same session dir are idempotent and the
@@ -864,6 +886,29 @@ _V15_TO_V16_MIGRATIONS = [
 ]
 
 
+# v16 -> v17: knowledge_item_relations table for duplicate-candidate hints
+# (see issue #62). Same DDL as in _SYSTEM_SCHEMA so fresh installs and
+# upgrades converge.
+_V16_TO_V17_MIGRATIONS = [
+    """
+    CREATE TABLE IF NOT EXISTS knowledge_item_relations (
+        item_a_id VARCHAR NOT NULL,
+        item_b_id VARCHAR NOT NULL,
+        relation_type VARCHAR NOT NULL,
+        score DOUBLE,
+        resolved BOOLEAN DEFAULT FALSE,
+        resolved_by VARCHAR,
+        resolved_at TIMESTAMP,
+        resolution VARCHAR,
+        created_at TIMESTAMP DEFAULT current_timestamp,
+        PRIMARY KEY (item_a_id, item_b_id, relation_type)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_knowledge_item_relations_resolved "
+    "ON knowledge_item_relations(resolved)",
+]
+
+
 # Core role seed data — single source of truth. Used by both _seed_core_roles
 # (idempotent insert) and the v8→v9 backfill. Order matters: lowest privilege
 # first so implies references resolve cleanly when expand_implies does BFS.
@@ -1491,6 +1536,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                     conn.execute(sql)
             if current < 16:
                 for sql in _V15_TO_V16_MIGRATIONS:
+                    conn.execute(sql)
+            if current < 17:
+                for sql in _V16_TO_V17_MIGRATIONS:
                     conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",

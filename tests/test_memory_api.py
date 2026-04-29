@@ -1071,3 +1071,280 @@ class TestAutoTopicTagging:
             headers=_auth(token),
         )
         assert resp.status_code == 201
+
+
+# ===========================================================================
+# Issue #62 — duplicate-candidate API, tree, PATCH, bulk-update
+# ===========================================================================
+
+
+def _seed_relation_via_repo(seeded_app, item_a_id, item_b_id, score=0.5):
+    """Insert a likely_duplicate relation directly via the repo for testing
+    the read/resolve endpoints (the auto-detector path is exercised by
+    ``test_corporate_memory_relations``)."""
+    from src.db import get_system_db
+    from src.repositories.knowledge import KnowledgeRepository
+    conn = get_system_db()
+    KnowledgeRepository(conn).create_relation(
+        item_a_id, item_b_id, "likely_duplicate", score=score,
+    )
+    conn.close()
+
+
+class TestDuplicateCandidatesAPI:
+    def _create_with_entities(self, c, token, *, title, entities, domain="finance"):
+        # Items via POST /api/memory don't carry entities by default — use
+        # the request body fields directly.
+        resp = c.post(
+            "/api/memory",
+            json={
+                "title": title,
+                "content": f"content for {title}",
+                "category": "business_logic",
+                "domain": domain,
+                "entities": entities,
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 201, resp.text
+        return resp.json()["id"]
+
+    def test_list_default_unresolved(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        a = self._create_with_entities(c, token, title="A", entities=["x", "y"])
+        b = self._create_with_entities(c, token, title="B", entities=["x", "y"])
+        _seed_relation_via_repo(seeded_app, a, b)
+        resp = c.get(
+            "/api/memory/admin/duplicate-candidates",
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["count"] == 1
+        assert data["relations"][0]["item_a_id"] in {a, b}
+        assert data["relations"][0]["item_b_id"] in {a, b}
+        assert "item_a" in data["relations"][0]
+        assert "item_b" in data["relations"][0]
+
+    def test_list_requires_admin(self, seeded_app):
+        c = seeded_app["client"]
+        resp = c.get(
+            "/api/memory/admin/duplicate-candidates",
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert resp.status_code == 403
+
+    def test_resolve_writes_audit_row(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        a = self._create_with_entities(c, token, title="A", entities=["x", "y"])
+        b = self._create_with_entities(c, token, title="B", entities=["x", "y"])
+        _seed_relation_via_repo(seeded_app, a, b)
+        resp = c.post(
+            f"/api/memory/admin/duplicate-candidates/resolve?item_a_id={a}&item_b_id={b}",
+            json={"resolution": "duplicate"},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+        # Idempotent re-resolve → 400
+        resp2 = c.post(
+            f"/api/memory/admin/duplicate-candidates/resolve?item_a_id={a}&item_b_id={b}",
+            json={"resolution": "duplicate"},
+            headers=_auth(token),
+        )
+        assert resp2.status_code == 400
+
+        # Audit row landed under the new corporate_memory.* prefix.
+        audit = c.get("/api/memory/admin/audit", headers=_auth(token))
+        assert audit.status_code == 200
+        actions = {e.get("action") for e in audit.json()["entries"]}
+        assert "corporate_memory.resolve_duplicate" in actions
+
+    def test_resolve_invalid_resolution_returns_400(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        a = self._create_with_entities(c, token, title="A", entities=["x", "y"])
+        b = self._create_with_entities(c, token, title="B", entities=["x", "y"])
+        _seed_relation_via_repo(seeded_app, a, b)
+        resp = c.post(
+            f"/api/memory/admin/duplicate-candidates/resolve?item_a_id={a}&item_b_id={b}",
+            json={"resolution": "merge"},  # not in the new enum
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400
+
+    def test_resolve_not_found_returns_404(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/memory/admin/duplicate-candidates/resolve?item_a_id=missing_a&item_b_id=missing_b",
+            json={"resolution": "duplicate"},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 404
+
+
+class TestTreeEndpoint:
+    def _seed(self, c, token, **kwargs):
+        body = {
+            "title": kwargs["title"],
+            "content": kwargs.get("content", "content"),
+            "category": kwargs.get("category", "business_logic"),
+            "domain": kwargs.get("domain"),
+            "tags": kwargs.get("tags"),
+        }
+        resp = c.post("/api/memory", json={k: v for k, v in body.items() if v is not None},
+                      headers=_auth(token))
+        assert resp.status_code == 201
+        return resp.json()["id"]
+
+    def test_tree_groups_by_domain(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        self._seed(c, token, title="A", domain="finance")
+        self._seed(c, token, title="B", domain="finance")
+        self._seed(c, token, title="C", domain="product")
+        resp = c.get("/api/memory/tree?axis=domain", headers=_auth(token))
+        assert resp.status_code == 200
+        data = resp.json()
+        keys = {g["key"]: g["count"] for g in data["groups"]}
+        assert keys.get("finance", 0) >= 2
+        assert keys.get("product", 0) >= 1
+
+    def test_tree_invalid_axis(self, seeded_app):
+        c = seeded_app["client"]
+        resp = c.get(
+            "/api/memory/tree?axis=invalid",
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert resp.status_code == 400
+
+    def test_tree_tag_axis_multi_bucket(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        self._seed(c, token, title="X", tags=["t1", "t2"], domain="data")
+        resp = c.get("/api/memory/tree?axis=tag", headers=_auth(token))
+        assert resp.status_code == 200
+        keys = [g["key"] for g in resp.json()["groups"]]
+        # Tag-axis: item appears in both buckets.
+        assert "t1" in keys
+        assert "t2" in keys
+
+    def test_tree_requires_auth(self, seeded_app):
+        c = seeded_app["client"]
+        resp = c.get("/api/memory/tree?axis=domain")
+        assert resp.status_code == 401
+
+
+class TestPatchAndBulkUpdate:
+    def _create(self, c, token, title="Patch test"):
+        resp = c.post(
+            "/api/memory",
+            json={"title": title, "content": "content", "category": "business_logic"},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 201
+        return resp.json()["id"]
+
+    def test_patch_updates_category_domain_tags(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        item_id = self._create(c, token)
+        resp = c.patch(
+            f"/api/memory/admin/{item_id}",
+            json={"category": "engineering", "domain": "engineering", "tags": ["x", "y"]},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert sorted(body["updated"]) == ["category", "domain", "tags"]
+
+    def test_patch_invalid_domain_returns_400(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        item_id = self._create(c, token)
+        resp = c.patch(
+            f"/api/memory/admin/{item_id}",
+            json={"domain": "nonsense"},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400
+
+    def test_patch_requires_admin(self, seeded_app):
+        c = seeded_app["client"]
+        admin_token = seeded_app["admin_token"]
+        item_id = self._create(c, admin_token)
+        resp = c.patch(
+            f"/api/memory/admin/{item_id}",
+            json={"category": "x"},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert resp.status_code == 403
+
+    def test_bulk_update_partial_failure(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        a = self._create(c, token, title="bulk a")
+        b = self._create(c, token, title="bulk b")
+        resp = c.post(
+            "/api/memory/admin/bulk-update",
+            json={"item_ids": [a, b, "missing_id"], "updates": {"category": "engineering"}},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert set(body["updated"]) == {a, b}
+        assert "missing_id" in body["not_found"]
+
+
+class TestStatsExtensionsAPI:
+    def test_stats_includes_by_tag_and_by_audience(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        c.post(
+            "/api/memory",
+            json={"title": "Tagged", "content": "x", "category": "business_logic", "tags": ["t1"]},
+            headers=_auth(token),
+        )
+        resp = c.get("/api/memory/stats", headers=_auth(token))
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "by_tag" in data
+        assert "by_audience" in data
+
+
+class TestAuditPrefixBackCompat:
+    def test_audit_filter_surfaces_legacy_km_rows(self, seeded_app):
+        """Legacy ``km_*`` audit rows still surface in the admin audit tab."""
+        from src.db import get_system_db
+        from src.repositories.audit import AuditRepository
+        conn = get_system_db()
+        # Inject a legacy-prefixed row directly.
+        AuditRepository(conn).log(
+            user_id="legacy@x", action="km_approve", resource="kv_legacy",
+            params={"reason": "back-compat row"},
+        )
+        conn.close()
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/api/memory/admin/audit", headers=_auth(token))
+        assert resp.status_code == 200
+        actions = {e.get("action") for e in resp.json()["entries"]}
+        assert "km_approve" in actions
+
+    def test_audit_filter_surfaces_new_corporate_memory_rows(self, seeded_app):
+        """New rows write under the corporate_memory.* namespace."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/memory",
+            json={"title": "audit test", "content": "x", "category": "business_logic"},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 201
+        item_id = resp.json()["id"]
+        c.post(f"/api/memory/admin/approve?item_id={item_id}", headers=_auth(token))
+        audit = c.get("/api/memory/admin/audit", headers=_auth(token))
+        actions = {e.get("action") for e in audit.json()["entries"]}
+        assert "corporate_memory.approve" in actions
