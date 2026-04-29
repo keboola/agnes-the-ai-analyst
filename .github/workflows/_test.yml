@@ -19,7 +19,7 @@ on:
         default: true
       pytest-args:
         type: string
-        default: "-v --tb=short -n auto"
+        default: "-v --tb=short"
 
 jobs:
   test:
