@@ -3,6 +3,7 @@
 import hashlib
 import logging
 import os
+import subprocess
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +20,7 @@ from src.repositories.sync_state import SyncStateRepository
 from src.repositories.sync_settings import SyncSettingsRepository, DatasetPermissionRepository
 from src.repositories.table_registry import TableRegistryRepository
 from src.rbac import can_access_table
+from src.scheduler import filter_due_tables
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/sync", tags=["sync"])
@@ -42,7 +44,6 @@ def _run_sync(tables: Optional[List[str]] = None):
     This avoids DuckDB lock conflicts — subprocess never opens system.duckdb.
     """
     import json as _json
-    import subprocess
     import sys
 
     try:
@@ -58,10 +59,16 @@ def _run_sync(tables: Optional[List[str]] = None):
         try:
             repo = TableRegistryRepository(sys_conn)
             if tables:
+                # Manual operator override — bypass schedule filter entirely
+                # so an admin saying "sync these specific tables now" wins.
                 all_configs = [repo.get(t) for t in tables]
                 table_configs = [c for c in all_configs if c is not None]
             else:
                 table_configs = repo.list_local(source_type) if source_type else repo.list_local()
+                # #79: drop tables whose sync_schedule says they are not due.
+                # Tables without a schedule pass through (opt-in feature).
+                state_repo = SyncStateRepository(sys_conn)
+                table_configs = filter_due_tables(table_configs, state_repo)
         finally:
             sys_conn.close()
 
