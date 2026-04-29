@@ -81,13 +81,17 @@ CREATE TABLE _remote_attach (
     alias     VARCHAR,  -- DuckDB alias used in views, e.g. 'kbc'
     extension VARCHAR,  -- Extension name, e.g. 'keboola'
     url       VARCHAR,  -- Connection URL
-    token_env VARCHAR   -- Env-var name holding the auth token (NOT the token itself)
+    token_env VARCHAR   -- Env-var name holding the auth token, OR empty for
+                        -- extensions with built-in auth (e.g. BigQuery uses the
+                        -- GCE metadata server — see `connectors/bigquery/auth.py`).
 );
 ```
 
-The orchestrator reads this table, installs/loads the extension, reads the token from the
-environment, and ATTACHes the external source. Views referencing `kbc."bucket"."table"` then
-resolve correctly. This mechanism is generic — any connector can use it.
+The orchestrator reads this table, installs/loads the extension, fetches the token
+(via `token_env` lookup, or via the extension-specific auth path when `token_env=''`),
+creates a session-scoped DuckDB SECRET when the extension requires one (BigQuery), and
+ATTACHes the external source. Views referencing `kbc."bucket"."table"` then resolve correctly.
+This mechanism is generic — any connector can plug in.
 
 The SyncOrchestrator scans `/data/extracts/*/extract.duckdb`, ATTACHes each into master `analytics.duckdb`, and creates views.
 
@@ -159,6 +163,93 @@ Before computing any business metric, look up the canonical definition:
 3. Use the SQL from the metric definition, adapt to the specific question
 
 Never invent metric calculations — always use the canonical definitions.
+
+## Querying Agnes data — agent rails
+
+When asked about ANY data in Agnes, follow this protocol.
+
+### Discovery first
+
+Before writing ANY query against a table, run:
+
+    da catalog --json | jq <filter>     # know what's available
+    da schema <table>                   # learn columns + types
+    da describe <table> -n 5            # see real values for shape
+
+NEVER write `SELECT * FROM <table>` blindly. For local-mode tables it's
+wasteful; for remote-mode tables it can blow up at 225M rows.
+
+### Choose the right tool
+
+Tables in `da catalog` have a `query_mode`:
+
+- **`local`**: data is on the laptop as parquet (synced via `da sync`).
+  Query directly with `da query "SELECT … FROM <table>"`.
+
+- **`remote`** (typically BigQuery): the parquet does NOT exist on the laptop.
+  You MUST either:
+  1. **`da fetch`** a filtered subset → query the local snapshot, OR
+  2. **`da query --remote`** for one-shot server-side execution, OR
+  3. **`da query --register-bq`** for hybrid joins (rarely needed).
+
+### `da fetch` workflow (preferred for remote tables)
+
+    # 1. estimate first
+    da fetch web_sessions_example \
+        --select event_date,country_code,session_id \
+        --where "event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY) 
+                 AND country_code = 'CZ'" \
+        --estimate
+    # → "estimated_scan_bytes: 4.2 GB, result: ~250k rows, 12 MB locally"
+
+    # 2. if reasonable, fetch
+    da fetch web_sessions_example ... --as cz_recent
+
+    # 3. query the local snapshot
+    da query "SELECT event_date, COUNT(*) FROM cz_recent GROUP BY 1 ORDER BY 1"
+
+### Heuristics for `da fetch`
+
+- ALWAYS list specific columns in `--select`. Avoid implicit SELECT *.
+- ALWAYS include a `--where` for remote tables; otherwise add `--limit`.
+- ALWAYS run `--estimate` first when:
+  - You're not sure of the data shape
+  - The table has `partition_by` or `clustered_by` set (per `da schema`)
+  - The fetch could plausibly exceed 1 GB local bytes
+- Reuse `da snapshot list` before fetching — if a snapshot covers your
+  query already, skip the fetch.
+
+### BigQuery SQL flavor for `--where`
+
+For `source_type=bigquery` (per `da catalog`):
+
+- Date literal: `DATE '2026-01-01'` (NOT `'2026-01-01'::date`)
+- Timestamp literal: `TIMESTAMP '2026-01-01 00:00:00 UTC'`
+- Now: `CURRENT_DATE()`, `CURRENT_TIMESTAMP()`
+- Date arithmetic: `DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)`
+- Regex: `REGEXP_CONTAINS(col, r'pattern')` (raw string!)
+- NULL: `col IS NOT NULL` (standard)
+- Cast: `CAST(x AS INT64)` (NOT `INT`)
+
+For `source_type=keboola` / `source_type=jira` (local), use DuckDB SQL flavor
+in your `da query` calls — there's no `--where` on local since fetch is implicit.
+
+### Snapshot hygiene
+
+- Reuse snapshots across questions in the same conversation.
+- Use descriptive names: `cz_recent`, `orders_q1_us`, `sessions_today`.
+- Drop with `da snapshot drop <name>` when done with a topic.
+- `da disk-info` to see total cache size.
+
+### When NOT to use `da fetch`
+
+- Single aggregate on remote table (`SELECT COUNT(*) FROM remote`):
+  use `da query --remote "SELECT COUNT(*) FROM web_sessions_example"`.
+  No materialization needed; cheap.
+- Throwaway exploration with raw BQ syntax: `da query --remote`.
+- Cross-table JOIN with both tables remote: combine `da fetch` for one
+  side + `da query --remote` for the other; full cross-remote JOIN
+  requires more thought (see #101 for design space).
 
 ## Marketplace Repositories
 

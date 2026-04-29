@@ -1,6 +1,6 @@
 [project]
 name = "agnes-the-ai-analyst"
-version = "0.12.1"
+version = "0.14.0"
 description = "Agnes — AI Data Analyst platform for AI analytical systems"
 requires-python = ">=3.11,<3.14"
 license = "MIT"
@@ -32,6 +32,12 @@ dependencies = [
     "pandas>=2.0.0",
     "pyarrow>=12.0.0",
     "pytz>=2024.1",
+    # SQL parsing — server-side WHERE validator for /api/v2/scan (app/api/where_validator.py)
+    # Minimum 30.x — older versions had walk() yielding (node, parent, key)
+    # tuples instead of expression nodes, which would silently bypass the
+    # WHERE-validator structural checks (isinstance(tuple, exp.Subquery)
+    # is always False). 30.x yields nodes directly.
+    "sqlglot>=30.0.0",
     # Data source connectors
     "google-cloud-bigquery>=3.0.0",
     "google-cloud-bigquery-storage>=2.0.0",

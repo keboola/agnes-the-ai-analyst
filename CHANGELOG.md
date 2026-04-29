@@ -14,6 +14,32 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - `/me/debug` — self-only auth diagnostic page. Shows the logged-in user their own decoded JWT claims (no raw token), group memberships with sources and bound `external_id` when present, resource grants effective via those memberships, and a "Refetch from Google (dry-run)" button that issues a fresh `fetch_user_groups` call and reports the diff against the cached `user_group_members` snapshot without writing anything. Gated by `AGNES_DEBUG_AUTH=true` env var (default off → route returns 404 and the navbar item is not rendered). Intended for dev / staging VMs; do not enable on customer-facing instances. The infra module exposes a `debug_auth_enabled` variable that propagates to the env.
 
+## [0.14.0] — 2026-04-29
+
+### Added
+
+- **v2 fetch primitives — discovery + scoped fetch** for analytical workflows. Replaces the BigQuery wrap-view pattern (which caused "Response too large" on multi-hundred-million-row source views) with a Claude-session-driven toolkit. Server exposes `GET /api/v2/catalog` (RBAC-filtered table list with flavor + fetch-via hints), `GET /api/v2/schema/{table_id}` (column metadata + BQ flavor hints), `GET /api/v2/sample/{table_id}` (N sample rows), `POST /api/v2/scan` (validator + RBAC + quota + max_result_bytes guard, Arrow IPC stream), `POST /api/v2/scan/estimate` (BigQuery dryRun, no execution). CLI gains `da catalog`, `da schema`, `da describe`, `da fetch <table> --select … --where … --limit N [--estimate] [--as <name>]`, `da snapshot list/refresh/drop/prune`, `da disk-info`. WHERE-clause validator at `app/api/where_validator.py` is sqlglot-backed with structural rejects + function allow-list + column-existence enforcement. Process-local quota tracker (concurrent + daily bytes per user). New `cli/skills/agnes-data-querying.md` standalone skill + CLAUDE.md addendum tells Claude to discover → estimate → fetch a filtered subset locally → analyze. 11 new `instance.yaml` knobs (`api.scan_max_concurrent_per_user`, `api.scan_daily_bytes_per_user`, `api.scan_max_result_bytes`, `api.where_clause_max_length`, `api.catalog_cache_ttl_seconds`, `api.schema_cache_ttl_seconds`, `api.sample_cache_ttl_seconds`, `data_source.bigquery.billing_project`, `data_source.bigquery.legacy_wrap_views`, `snapshots.dir`, `snapshots.cache_size_limit_gb`). Issue #101.
+- `data_source.bigquery.billing_project` config knob — explicit billing project for BQ scan + estimate. Defaults to `data_source.bigquery.project`. Matters for cross-project read patterns where the VM service account has `bigquery.data.*` on the data project but lacks `serviceusage.services.use` there; setting this to a project where the SA holds `serviceusage.services.use` fixes the dry-run 403.
+
+### Changed
+
+- **BREAKING**: `connectors/bigquery/extractor.py` no longer creates a wrap view (`SELECT * FROM bigquery_query(...)`) for VIEW / MATERIALIZED_VIEW entities by default. Operators relying on the old behavior must set `data_source.bigquery.legacy_wrap_views: true` in `instance.yaml` for one release cycle. BASE TABLE entities are unchanged. The new `da fetch` workflow replaces wrap views for analytical queries — see CLAUDE.md "Querying Agnes data — agent rails".
+- `RegisterTableRequest.primary_key` and `UpdateTableRequest.primary_key` accept `Optional[List[str]]` for composite keys (session-grain MSA tables key on `(session_id, event_date)`, browse rows on more); a bare string remains accepted for backward compat via a `field_validator(mode="before")` that wraps it in a one-element list. Old CLI scripts posting `"primary_key": "session_id"` continue to work.
+- `GET /api/v2/catalog` now caches the underlying `repo.list_all()` rows globally with the documented `api.catalog_cache_ttl_seconds` default (300s) and runs RBAC fresh per request. The previous per-user cache served stale RBAC-filtered results for up to TTL after a permission flip — `v2_schema.py` and `v2_sample.py` already had this pattern; `v2_catalog.py` now matches.
+
+## [0.13.0] — 2026-04-29
+
+### Added
+
+- **Windows/PowerShell wrapper for local dev.** New `scripts/run-local-dev.ps1` mirrors `scripts/run-local-dev.sh` for operators on Windows where GNU Make / bash aren't available — same compose stack (`docker-compose.yml` + `docker-compose.dev.yml` + `docker-compose.local-dev.yml`), same `LOCAL_DEV_GROUPS` default seeding, same `up` / `down` / `logs` actions. Run `.\scripts\run-local-dev.ps1` for the fast path (reuses existing image) or `.\scripts\run-local-dev.ps1 -Build` to force `--build` after `pyproject.toml` / `Dockerfile` changes. Verified on Docker Desktop for Windows. See `docs/local-development.md`.
+- **Admin server configuration editor** at `/admin/server-config` — admins can now view and edit `instance.yaml` from the web UI without SSHing into the host. Two new endpoints (`GET /api/admin/server-config` returns the current config with secret-looking values masked; `POST /api/admin/server-config` deep-merges a section patch into `DATA_DIR/state/instance.yaml`). The page lists the editable sections (`instance`, `data_source`, `email`, `telegram`, `jira`, `theme`, `server`, `auth`) and renders a per-field form. Saves touching `auth.*` or `server.*` ("danger zone" — can lock operators out) require an explicit confirmation step. Every save writes an `instance_config.update` row to `audit_log` with a per-field diff (secret values masked as `***`, field paths preserved so a rotation is recorded as `email.smtp_password: *** → ***`). Issue #91.
+
+### Fixed
+
+- `app/instance_config.py:load_instance_config` now deep-merges the static `CONFIG_DIR/instance.yaml` with the writable overlay at `DATA_DIR/state/instance.yaml` instead of returning the overlay verbatim when present. Pre-fix, the first save through the new server-config editor (which writes only the section the operator actually touched) caused every consumer of static-only sections (corporate memory, dataset list, OpenMetadata client) to fall through to empty defaults until the overlay was deleted. Issue #91.
+- `POST /api/admin/configure` now uses the same narrow-overlay write strategy as the new server-config editor: it reads the overlay verbatim (no static fallback), patches only `instance` / `auth` / `data_source`, and writes atomically via tmp + `os.replace`. Pre-fix it seeded `existing` from the env-resolved merged config when no overlay file was present and dumped the whole thing back, persisting cleartext `${ENV_VAR}` values (e.g. `smtp_password`) into the writable overlay even though the wizard never touched those sections. Issue #91.
+- `POST /api/admin/server-config` now strips redaction sentinels (`***` / `<empty>`) out of every secret-keyed leaf in the incoming patch before the deep-merge. The companion GET endpoint masks secret-keyed children inside nested objects (e.g. `data_source.keboola.token_env`), and the form renders those nested objects as JSON textareas — without the scrub, a no-op save would round-trip the masked JSON back and overwrite the real overlay value (`token_env: "KEBOOLA_STORAGE_TOKEN"` → `"***"`), silently breaking the next sync. Defense-in-depth on both sides: the client form scrubs before posting, and the server scrubs before merge so an API caller (CLI / script) can't corrupt secrets either. Issue #91.
+
 ## [0.12.1] — 2026-04-28
 
 Patch release. Hotfixes the pre-migration snapshot-integrity bug shipped in [v0.12.0](https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.12.0) and bundles the security/ops hardening from issue groups #82 (auth hardening), #85 (API validation), #87 (deploy posture), plus #46 (SSRF) and #90 (memory stats blocking).
@@ -196,25 +222,42 @@ Patch release. Hotfixes the pre-migration snapshot-integrity bug shipped in [v0.
 
 ### Added
 
-- **Schema v10** introduces `view_ownership` to detect cross-connector
-  view-name collisions in the master analytics DB (issue #81 Group C).
-  When two connectors register the same `_meta.table_name`, the
-  orchestrator now refuses to silently overwrite the prior owner's view —
-  it logs a `view_ownership collision` ERROR identifying both sources
-  and the colliding name, and the second source's view is NOT created.
-  Previously this was last-write-wins, which depended on directory
-  iteration order and could change deployment-to-deployment. Operators
-  resolve a collision by renaming `name` in `table_registry` on one side
-  (registry-side aliasing — `source_table` stays unchanged, only the
-  view name changes). The orchestrator pre-scans every connector's
-  `_meta` at the start of each rebuild and releases stale ownerships
-  immediately (when ALL pre-scans succeed; if any fail, reconcile is
-  skipped to avoid silently stealing a transient-IO source's name),
-  so a renamed table frees its name in the SAME rebuild that introduces
-  the rename — no two-step waits needed. New module
-  `src/repositories/view_ownership.py` exposes the repository.
+- `/api/v2/{catalog,schema,sample,scan,scan/estimate}` — discovery + scoped fetch primitives for remote-mode tables. See `docs/superpowers/specs/2026-04-27-claude-fetch-primitives-design.md`.
+- `da catalog`, `da schema`, `da describe`, `da fetch`, `da snapshot {list,refresh,drop,prune}`, `da disk-info` — CLI primitives backed by the v2 API.
+- `cli/skills/agnes-data-querying.md` — Claude rails skill loaded for Agnes-flavored projects; covers discovery-first protocol, `da fetch` workflow, BigQuery SQL flavor cheat-sheet, and snapshot hygiene.
+- `cli/skills/agnes-table-registration.md` — admin-side companion skill: when to register single vs. bulk-discover, source-side verification before registration, idempotence rules, update/delete via REST (no CLI today), and confirmation flow.
+- `instance.yaml: api.scan.*` knobs — `max_limit`, `max_result_bytes`, `max_concurrent_per_user`, `max_daily_bytes_per_user`, `bq_cost_per_tb_usd`, `request_timeout_seconds`. All optional; defaults applied if absent.
+- `instance.yaml: api.catalog_cache_ttl_seconds`, `api.schema_cache_ttl_seconds`, `api.sample_cache_ttl_seconds` — TTL knobs for server-side discovery caches.
+- `instance.yaml: data_source.bigquery.legacy_wrap_views` — opt-in toggle to restore the pre-v2 behavior of exposing BigQuery VIEW/MATERIALIZED_VIEW tables as DuckDB master views in `analytics.duckdb`. Default `false`. Set `true` for one release cycle when migrating existing scripts (see **BREAKING** note below).
+- `instance.yaml: data_source.bigquery.billing_project` — optional GCP project to bill BQ jobs to / submit jobs from. Defaults to `data_source.bigquery.project` for backwards compatibility. Set when the SA has `bigquery.data.*` on the data project but lacks `serviceusage.services.use` there (cross-project read pattern); otherwise `/api/v2/scan/estimate` and BQ-mode `/api/v2/scan` fail with 403.
+- **BigQuery extractor detects table type** (BASE TABLE vs. VIEW / MATERIALIZED_VIEW) via `INFORMATION_SCHEMA.TABLES` using DuckDB's `bigquery_query()` table function. Emits the appropriate DuckDB view:
+  - BASE TABLE → direct `bq."dataset"."table"` reference (queries hit BigQuery Storage Read API).
+  - VIEW / MATERIALIZED_VIEW → `bigquery_query('project', 'SELECT * FROM \`dataset.table\`')` wrapper (queries hit BigQuery Jobs API, required for views).
+- **GCE metadata-server authentication for BigQuery.** New `connectors/bigquery/auth.py` module (`get_metadata_token()` function) fetches OAuth access tokens from the GCE metadata server on GCE instances. No service-account key file required. Both the extractor (at sync time) and the orchestrator / read-side (at ATTACH time) fetch fresh tokens on every rebuild / readonly-conn open. Raises `BQMetadataAuthError` on failure (network or malformed metadata-server response).
+- **SQL identifier-validation helper** in `src/sql_safe.py`. New functions `is_safe_identifier()` and `validate_identifier()` enforce safe character sets before f-stringing identifiers into SQL. BigQuery extractor and orchestrator `_attach_remote_extensions` both validate `dataset`, `source_table`, and view names before use, closing a SQL-injection surface if admin config is untrusted.
+- **`/api/sync/manifest` response now includes `query_mode` and `source_type` per table**, joined from `table_registry`. Clients can branch on table semantics (remote vs. local, source type) without a second API call.
+- **`da sync --json` output** now includes a `skipped_remote` list with IDs of `query_mode='remote'` tables that were skipped during sync (they're not downloaded locally; only queried via `/api/query`).
+- **Schema v10** introduces `view_ownership` to detect cross-connector view-name collisions in the master analytics DB (issue #81 Group C). When two connectors register the same `_meta.table_name`, the orchestrator now refuses to silently overwrite the prior owner's view — it logs a `view_ownership collision` ERROR identifying both sources and the colliding name, and the second source's view is NOT created. Previously this was last-write-wins, which depended on directory iteration order and could change deployment-to-deployment. Operators resolve a collision by renaming `name` in `table_registry` on one side (registry-side aliasing — `source_table` stays unchanged, only the view name changes). The orchestrator pre-scans every connector's `_meta` at the start of each rebuild and releases stale ownerships immediately (when ALL pre-scans succeed; if any fail, reconcile is skipped to avoid silently stealing a transient-IO source's name), so a renamed table frees its name in the SAME rebuild that introduces the rename — no two-step waits needed. New module `src/repositories/view_ownership.py` exposes the repository.
 
 ### Changed
+
+- **BREAKING:** BigQuery `VIEW` and `MATERIALIZED_VIEW` tables (i.e. `query_mode='remote'` tables whose underlying BQ object is a view) are no longer wrapped as DuckDB master views in `analytics.duckdb`. `da query --remote "SELECT * FROM <bq_view>"` no longer resolves the view name by default. Use `da fetch <table_id> --where ... --as <snapshot_name>` to materialize a local snapshot, or `da query --remote "SELECT ... FROM bigquery_query('<project>', '<inner BQ SQL>')"` for one-shot execution. To restore the previous behavior for a migration window, set `instance.yaml: data_source.bigquery.legacy_wrap_views: true`. BQ `BASE TABLE` entities are unaffected — their direct-ref master views remain.
+- **`da sync` skips `query_mode='remote'` tables.** Previously they produced 404s on download attempts. Now the CLI prints a one-line stderr summary (`Skipping N remote-mode tables: a, b, c (and M more)`) and a separate summary line (`Skipped (remote-mode): N`) in the final output, distinct from existing `Skipped (unchanged): M` counts.
+
+### Fixed
+
+- **`/api/v2/scan` 500 on local-mode tables.** `arrow_table_to_ipc_bytes()` only handled `pa.Table`; DuckDB's local query path returns a `pa.RecordBatchReader`. Helper now accepts both. (Caught during dev-VM E2E.)
+- **`/api/v2/schema/{table_id}` 500 on BigQuery tables.** `_fetch_bq_schema()` selected `description` from `INFORMATION_SCHEMA.COLUMNS`, which BigQuery doesn't expose there — column descriptions live in `INFORMATION_SCHEMA.COLUMN_FIELD_PATHS` for nested fields. Removed the column from the SELECT; descriptions default to empty string until a real source is wired. (Caught during dev-VM E2E.)
+- **BigQuery views failed at first query when FastAPI / CLI reopened `analytics.duckdb`.** `SyncOrchestrator._attach_remote_extensions` fetches a fresh GCE-metadata access token and creates a `bigquery` DuckDB SECRET before ATTACH, but secrets are session-scoped and don't persist with the on-disk database. The mirror code in `src.db._reattach_remote_extensions` (called from `get_analytics_db_readonly()`) still ATTACHed BigQuery without auth, so the next query against `bq."dataset"."table"` failed. Fixed by adding the same three-branch structure to `src.db`: BigQuery → fetch metadata token → `CREATE OR REPLACE SECRET bq_secret_<alias> (TYPE bigquery, ACCESS_TOKEN '<token>')` → ATTACH; otherwise fall back to env-var-token / no-auth paths. Metadata-server failures log at ERROR and skip the source so other connectors still resolve.
+- **`src/orchestrator.py::_attach_remote_extensions` was ineffective for BigQuery.** It filtered `_remote_attach` lookups by `table_schema=<source_name>`, but DuckDB lists an attached database with `table_catalog=<source_name>` (not `table_schema`), so the loop never executed and `_remote_attach` rows were silently ignored. Switched the filter to `table_catalog`, matching the corresponding query already in `src.db`.
+- **BigQuery extractor `python -m connectors.bigquery.extractor` standalone CLI** now reads project ID from `data_source.bigquery.project` matching `instance.yaml.example`. Previously it looked for an undocumented top-level `bigquery.project_id` key and silently produced an empty string on miss, causing cryptic BigQuery API errors downstream. Now exits with code 2 + a clear `logger.error` when the key is missing.
+
+### Internal
+
+- Test pattern: BigQuery extractor is exercised with a dual-path strategy (BASE TABLE + VIEW detection) via `_CapturingProxy` SQL-capture wrappers. DuckDB's C-implemented `execute` attribute is read-only and can't be monkey-patched directly; the proxy wraps the connection and captures outgoing SQL before forwarding to the real DuckDB conn.
+- Implementation plan: `docs/superpowers/plans/2026-04-27-bq-pipeline-views-and-metadata-auth.md` — subagent-driven development for Tasks 1-7 of this PR.
+
+### Changed (issue #81 / #44 / #88 — security & OSS neutralization)
 
 - **BREAKING (ops)**: Keboola extractor now exits with three distinct
   codes instead of two (issue #81 Group B / M14): `0` = full success,

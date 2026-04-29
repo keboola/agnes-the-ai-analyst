@@ -742,6 +742,210 @@ class TestExtensionReattach:
             conn.close()
 
 
+class TestReattachRemoteExtensionsBQ:
+    """src.db.get_analytics_db_readonly() / _reattach_remote_extensions must
+    refresh BQ token from GCE metadata when extension='bigquery' (secret is
+    session-scoped, so it has to be recreated on every readonly-conn open)."""
+
+    def _make_analytics_db(self, tmp_path):
+        analytics_dir = tmp_path / "analytics"
+        analytics_dir.mkdir(parents=True, exist_ok=True)
+        conn = duckdb.connect(str(analytics_dir / "server.duckdb"))
+        conn.close()
+
+    def _make_bq_extract(self, tmp_path, source_name):
+        ext_dir = tmp_path / "extracts" / source_name
+        ext_dir.mkdir(parents=True, exist_ok=True)
+        conn = duckdb.connect(str(ext_dir / "extract.duckdb"))
+        try:
+            conn.execute(
+                "CREATE TABLE _meta (table_name VARCHAR, description VARCHAR, "
+                "rows BIGINT, size_bytes BIGINT, extracted_at TIMESTAMP, "
+                "query_mode VARCHAR DEFAULT 'remote')"
+            )
+            conn.execute(
+                "CREATE TABLE _remote_attach "
+                "(alias VARCHAR, extension VARCHAR, url VARCHAR, token_env VARCHAR)"
+            )
+            conn.execute(
+                "INSERT INTO _remote_attach VALUES "
+                "('bq', 'bigquery', 'project=test-proj', '')"
+            )
+            # Co-located local stub table so the readonly conn has something usable.
+            conn.execute('CREATE TABLE "stub" (x INT)')
+            conn.execute("INSERT INTO stub VALUES (1)")
+            conn.execute(
+                "INSERT INTO _meta VALUES "
+                "('stub', '', 1, 0, current_timestamp, 'local')"
+            )
+        finally:
+            conn.close()
+
+    def test_bq_reattach_calls_get_metadata_token(self, tmp_path, monkeypatch):
+        """BQ row in _remote_attach triggers get_metadata_token() and a
+        CREATE OR REPLACE SECRET for the alias."""
+        from unittest.mock import MagicMock
+
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        import importlib
+        import src.db as db_module
+        importlib.reload(db_module)
+
+        self._make_analytics_db(tmp_path)
+        self._make_bq_extract(tmp_path, "bigquery")
+
+        called = {"count": 0}
+
+        def fake_token():
+            called["count"] += 1
+            return "ya29.fake-token"
+
+        monkeypatch.setattr(db_module, "get_metadata_token", fake_token)
+
+        # Capture SQL on the readonly connection. DuckDB connections have
+        # read-only attributes, so wrap in a proxy. Stub LOAD/SECRET/ATTACH
+        # for BigQuery (TYPE bigquery) so we don't need real BQ network.
+        captured = []
+
+        class _ConnProxy:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def execute(self, sql, *args, **kwargs):
+                captured.append(sql)
+                up = sql.upper()
+                if "LOAD BIGQUERY" in up:
+                    return MagicMock()
+                if "CREATE OR REPLACE SECRET" in up and "TYPE BIGQUERY" in up:
+                    return MagicMock()
+                if up.startswith("ATTACH ") and "TYPE BIGQUERY" in up:
+                    return MagicMock()
+                return self._inner.execute(sql, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+        real_connect = duckdb.connect
+
+        def spy_connect(path, *a, **kw):
+            return _ConnProxy(real_connect(path, *a, **kw))
+
+        monkeypatch.setattr(db_module.duckdb, "connect", spy_connect)
+
+        conn = db_module.get_analytics_db_readonly()
+        try:
+            assert called["count"] >= 1, \
+                "get_metadata_token() must be called for BQ source"
+            assert any(
+                "CREATE OR REPLACE SECRET" in s.upper() and "TYPE BIGQUERY" in s.upper()
+                for s in captured
+            ), "must create DuckDB secret with metadata token"
+            attach_for_bq = [
+                s for s in captured
+                if s.upper().startswith("ATTACH ") and "TYPE BIGQUERY" in s.upper()
+            ]
+            assert attach_for_bq, "expected ATTACH for the bq alias"
+            assert all("TOKEN '" not in s for s in attach_for_bq), \
+                f"BQ ATTACH must not pass TOKEN= directly; got: {attach_for_bq}"
+        finally:
+            conn.close()
+
+    def test_bq_reattach_failure_logs_and_skips(self, tmp_path, monkeypatch):
+        """If GCE metadata is unreachable, _reattach_remote_extensions logs an
+        ERROR and skips ATTACH — connection is still usable for local queries.
+
+        Uses a direct spy on ``logger.error`` instead of pytest's ``caplog``
+        because ``caplog`` was unreliable in CI when combined with the
+        ``importlib.reload(src.db)`` setup pattern (handler attachment / log-
+        propagation timing differed from the local pytest config and yielded
+        empty ``caplog.records``). A method-level spy is fully independent of
+        pytest's logging plumbing.
+
+        Also stubs ``LOAD bigquery`` (and friends) via a connection proxy
+        because CI runners don't have the BigQuery community extension cached
+        on disk. Without the stub, ``conn.execute("LOAD bigquery;")`` inside
+        ``_reattach_remote_extensions`` raises a Catalog/IO/HTTP error before
+        the BQ branch can run, the outer ``except`` swallows it at
+        ``logger.debug``, and the BQ-specific ``logger.error`` we're asserting
+        on is never reached. Mirrors the stub already present in
+        ``test_bq_reattach_calls_get_metadata_token``.
+        """
+        from unittest.mock import MagicMock
+        from connectors.bigquery.auth import BQMetadataAuthError
+
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        import importlib
+        import src.db as db_module
+        importlib.reload(db_module)
+
+        self._make_analytics_db(tmp_path)
+        self._make_bq_extract(tmp_path, "bigquery")
+
+        # Patch the local binding in src.db (NOT in connectors.bigquery.auth) —
+        # `from connectors.bigquery.auth import get_metadata_token` creates a
+        # fresh name in src.db's namespace; the call site looks it up there.
+        def boom():
+            raise BQMetadataAuthError("metadata server unreachable: simulated")
+        monkeypatch.setattr("src.db.get_metadata_token", boom)
+
+        # Stub BigQuery-extension-specific SQL on the readonly connection so the
+        # test doesn't depend on the community extension being cached on disk
+        # (CI runners start clean). With this stub, `LOAD bigquery` returns a
+        # MagicMock and the BQ branch in _reattach_remote_extensions is reached;
+        # `boom` then raises BQMetadataAuthError, which the production code
+        # catches and logs at ERROR — exactly what the spy below verifies.
+        class _ConnProxy:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def execute(self, sql, *args, **kwargs):
+                up = sql.upper()
+                if "LOAD BIGQUERY" in up or "INSTALL BIGQUERY" in up:
+                    return MagicMock()
+                if "CREATE OR REPLACE SECRET" in up and "TYPE BIGQUERY" in up:
+                    return MagicMock()
+                if up.startswith("ATTACH ") and "TYPE BIGQUERY" in up:
+                    return MagicMock()
+                return self._inner.execute(sql, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+        real_connect = duckdb.connect
+
+        def spy_connect(path, *a, **kw):
+            return _ConnProxy(real_connect(path, *a, **kw))
+
+        monkeypatch.setattr(db_module.duckdb, "connect", spy_connect)
+
+        # Direct spy on logger.error — captures regardless of pytest config /
+        # propagation / handler attachment.
+        captured_errors: list[str] = []
+        real_error = db_module.logger.error
+
+        def spy_error(msg, *args, **kwargs):
+            try:
+                formatted = msg % args if args else msg
+            except (TypeError, ValueError):
+                formatted = str(msg) + " | args=" + repr(args)
+            captured_errors.append(formatted)
+            return real_error(msg, *args, **kwargs)
+
+        monkeypatch.setattr(db_module.logger, "error", spy_error)
+
+        conn = db_module.get_analytics_db_readonly()
+        try:
+            # Connection still usable for local SQL — BQ failure didn't break it
+            row = conn.execute("SELECT 7 AS n").fetchone()
+            assert row[0] == 7
+            assert any("metadata" in m.lower() for m in captured_errors), (
+                f"expected ERROR log mentioning metadata; "
+                f"got {len(captured_errors)} errors: {captured_errors}"
+            )
+        finally:
+            conn.close()
+
+
 class TestGetAnalyticsDbReadonly:
     def test_analytics_readonly_rejects_malicious_dir_name(self, tmp_path, monkeypatch):
         """Directories with SQL-injection chars in their name are skipped."""

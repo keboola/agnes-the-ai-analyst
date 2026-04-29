@@ -10,6 +10,15 @@ make local-dev
 
 Then open <http://localhost:8000>. You land on `/dashboard` already logged in as `dev@localhost` (role `admin`) and your `/profile` shows two mocked Workspace groups. No login screen, no `.env` file, no SMTP, no GCP project — just code.
 
+On Windows (or anywhere GNU Make / bash aren't available), `scripts\run-local-dev.ps1` is the feature-equivalent sibling — same compose stack, same `LOCAL_DEV_GROUPS` default. Verified on Docker Desktop for Windows.
+
+```powershell
+.\scripts\run-local-dev.ps1            # up — reuses existing image (auto-builds first run)
+.\scripts\run-local-dev.ps1 -Build     # up --build — after pyproject.toml / Dockerfile changes
+.\scripts\run-local-dev.ps1 down       # stop + remove containers (data volume preserved)
+.\scripts\run-local-dev.ps1 logs       # tail logs
+```
+
 What `make local-dev` actually does:
 
 - Stacks three Compose files: `docker-compose.yml` (base) + `docker-compose.dev.yml` (hot-reload + source bind mount) + `docker-compose.local-dev.yml` (LOCAL_DEV_MODE overlay).

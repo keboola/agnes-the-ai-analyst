@@ -581,6 +581,24 @@ async def admin_tables(
     return templates.TemplateResponse(request, "admin_tables.html", ctx)
 
 
+@router.get("/admin/server-config", response_class=HTMLResponse)
+async def admin_server_config_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Server configuration editor — instance.yaml fields grouped by section.
+
+    Shell-only page. The form is populated client-side from
+    GET /api/admin/server-config (which redacts secrets) and submitted
+    section-by-section to POST /api/admin/server-config. Auth/server
+    sections require an explicit confirmation dialog before save (see
+    ``_DANGER_SECTIONS`` in the API). Saves trigger the "restart required"
+    banner — hot-reload is out of scope for #91.
+    """
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_server_config.html", ctx)
+
+
 @router.get("/admin/permissions", response_class=HTMLResponse)
 async def admin_permissions_page(
     request: Request,
