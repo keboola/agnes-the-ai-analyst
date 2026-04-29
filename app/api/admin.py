@@ -723,15 +723,30 @@ def _validate_bigquery_register_payload(req: "RegisterTableRequest") -> None:
                 "with no leading/trailing whitespace"
             ),
         )
-    if not _is_safe_quoted_identifier(req.bucket.strip()):
+    # Same fast-fail rule as ``raw_name`` above: validate the RAW value the
+    # caller sent, not a stripped form. ``register_table`` persists ``bucket``
+    # / ``source_table`` verbatim, and the BQ extractor splices them straight
+    # into the ``ATTACH … AS bq_<bucket>`` and view DDL at next rebuild — so a
+    # value with leading/trailing whitespace passes validation here, gets
+    # stored as-is, and explodes inside DuckDB at view-create time. Surface
+    # the offending raw value in the 400 detail and let the operator retype.
+    raw_bucket = req.bucket
+    if raw_bucket.strip() != raw_bucket or not _is_safe_quoted_identifier(raw_bucket):
         raise HTTPException(
             status_code=400,
-            detail=f"bigquery: dataset {req.bucket!r} is unsafe (only [A-Za-z0-9_.-] allowed)",
+            detail=(
+                f"bigquery: dataset {raw_bucket!r} is unsafe (only [A-Za-z0-9_.-] "
+                "allowed, no leading/trailing whitespace)"
+            ),
         )
-    if not _is_safe_quoted_identifier(req.source_table.strip()):
+    raw_source_table = req.source_table
+    if raw_source_table.strip() != raw_source_table or not _is_safe_quoted_identifier(raw_source_table):
         raise HTTPException(
             status_code=400,
-            detail=f"bigquery: source_table {req.source_table!r} is unsafe (only [A-Za-z0-9_.-] allowed)",
+            detail=(
+                f"bigquery: source_table {raw_source_table!r} is unsafe (only "
+                "[A-Za-z0-9_.-] allowed, no leading/trailing whitespace)"
+            ),
         )
     # Pull project from instance.yaml — single-project model in M1
     # (Decision: no per-table project field). Validate the format here so

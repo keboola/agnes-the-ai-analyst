@@ -1764,6 +1764,136 @@ class TestBigQueryRegisterRawNameValidation:
         assert resp.status_code == 200, resp.text
 
 
+class TestBigQueryRegisterRawBucketSourceTableValidation:
+    """Round-4 review: ``_validate_bigquery_register_payload`` must apply the
+    same RAW-value rule to ``bucket`` and ``source_table`` as it does to
+    ``name``. Pre-fix the helper validated ``bucket.strip()`` /
+    ``source_table.strip()`` but ``register_table`` persists the un-stripped
+    value, so ``"my_dataset "`` slipped through and 500'd downstream at
+    view-create time. Parity with the ``name`` fix from round 3."""
+
+    def test_register_rejects_bucket_with_leading_whitespace(
+        self, seeded_app, bq_instance, stub_bq_extractor,
+    ):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/register-table",
+            json=_bq_payload(bucket=" my_dataset"),
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400, resp.text
+        body = resp.json()
+        # Operator-friendly: surface the offending raw value verbatim.
+        assert " my_dataset" in body["detail"]
+        assert "dataset" in body["detail"].lower()
+
+    def test_register_rejects_bucket_with_trailing_whitespace(
+        self, seeded_app, bq_instance, stub_bq_extractor,
+    ):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/register-table",
+            json=_bq_payload(bucket="my_dataset "),
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400, resp.text
+        body = resp.json()
+        assert "my_dataset " in body["detail"]
+        assert "dataset" in body["detail"].lower()
+
+    def test_register_rejects_source_table_with_leading_whitespace(
+        self, seeded_app, bq_instance, stub_bq_extractor,
+    ):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/register-table",
+            json=_bq_payload(source_table=" my_table"),
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400, resp.text
+        body = resp.json()
+        assert " my_table" in body["detail"]
+        assert "source_table" in body["detail"].lower()
+
+    def test_register_rejects_source_table_with_trailing_whitespace(
+        self, seeded_app, bq_instance, stub_bq_extractor,
+    ):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/register-table",
+            json=_bq_payload(source_table="my_table "),
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400, resp.text
+        body = resp.json()
+        assert "my_table " in body["detail"]
+        assert "source_table" in body["detail"].lower()
+
+    def test_precheck_rejects_bucket_with_leading_whitespace(
+        self, seeded_app, bq_instance,
+    ):
+        """Validation runs identically in /precheck and short-circuits before
+        the BQ round-trip — the helper is shared, so this is the same code
+        path covered above, but we assert the BQ Client is never constructed."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        with patch("google.cloud.bigquery.Client") as cls:
+            resp = c.post(
+                "/api/admin/register-table/precheck",
+                json=_bq_payload(bucket=" my_dataset"),
+                headers=_auth(token),
+            )
+        assert resp.status_code == 400, resp.text
+        assert " my_dataset" in resp.json()["detail"]
+        cls.assert_not_called()
+
+    def test_precheck_rejects_bucket_with_trailing_whitespace(
+        self, seeded_app, bq_instance,
+    ):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        with patch("google.cloud.bigquery.Client") as cls:
+            resp = c.post(
+                "/api/admin/register-table/precheck",
+                json=_bq_payload(bucket="my_dataset "),
+                headers=_auth(token),
+            )
+        assert resp.status_code == 400, resp.text
+        cls.assert_not_called()
+
+    def test_precheck_rejects_source_table_with_leading_whitespace(
+        self, seeded_app, bq_instance,
+    ):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        with patch("google.cloud.bigquery.Client") as cls:
+            resp = c.post(
+                "/api/admin/register-table/precheck",
+                json=_bq_payload(source_table=" my_table"),
+                headers=_auth(token),
+            )
+        assert resp.status_code == 400, resp.text
+        cls.assert_not_called()
+
+    def test_precheck_rejects_source_table_with_trailing_whitespace(
+        self, seeded_app, bq_instance,
+    ):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        with patch("google.cloud.bigquery.Client") as cls:
+            resp = c.post(
+                "/api/admin/register-table/precheck",
+                json=_bq_payload(source_table="my_table "),
+                headers=_auth(token),
+            )
+        assert resp.status_code == 400, resp.text
+        cls.assert_not_called()
+
+
 class TestBigQueryWorkerExceptionVsTimeout:
     """Round-3 review IMPORTANT 2: when the synchronous worker raises
     *within* the wall-clock budget, the API must surface that as a 500
