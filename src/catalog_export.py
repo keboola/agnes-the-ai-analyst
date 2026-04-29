@@ -418,6 +418,7 @@ def main() -> None:
     om_config = instance_config.get("openmetadata", {})
     catalog_url = om_config.get("url", "").strip()
     token = om_config.get("token", "").strip()
+    verify_ssl = om_config.get("verify_ssl", True)
 
     if not catalog_url or not token:
         logger.warning("OpenMetadata not configured (url or token missing) - skipping export")
@@ -428,7 +429,9 @@ def main() -> None:
 
     # Initialize client
     try:
-        client = OpenMetadataClient(base_url=catalog_url, token=token)
+        client = OpenMetadataClient(
+            base_url=catalog_url, token=token, verify=verify_ssl,
+        )
     except Exception as e:
         logger.warning(f"Failed to initialize OpenMetadata client: {e}")
         return
