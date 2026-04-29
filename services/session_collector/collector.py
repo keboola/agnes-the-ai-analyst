@@ -27,17 +27,15 @@ import sys
 from pathlib import Path
 from typing import Iterator
 
+from app.logging_config import setup_logging
+
 # Central storage for session transcripts
 TARGET_BASE = Path("/data/user_sessions")
 
 # Directory to scan for sessions in each user home
 USER_SESSIONS_DIR = "user/sessions"
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    stream=sys.stdout,
-)
+setup_logging(__name__)
 logger = logging.getLogger(__name__)
 
 
@@ -120,19 +118,9 @@ def main() -> int:
     import argparse
     import grp
 
-    parser = argparse.ArgumentParser(
-        description="Collect Claude Code session transcripts from all users"
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Preview what would be copied without actually copying"
-    )
-    parser.add_argument(
-        "--verbose", "-v",
-        action="store_true",
-        help="Enable verbose output"
-    )
+    parser = argparse.ArgumentParser(description="Collect Claude Code session transcripts from all users")
+    parser.add_argument("--dry-run", action="store_true", help="Preview what would be copied without actually copying")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
 
     args = parser.parse_args()
 
@@ -184,8 +172,7 @@ def main() -> int:
             logger.info(f"User {username}: {copied} copied, {skipped} skipped")
 
     logger.info(
-        f"Collection complete: {users_processed} users, "
-        f"{total_copied} files copied, {total_skipped} files skipped"
+        f"Collection complete: {users_processed} users, {total_copied} files copied, {total_skipped} files skipped"
     )
 
     return 0

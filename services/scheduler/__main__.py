@@ -26,19 +26,16 @@ from datetime import datetime, timezone
 
 import httpx
 
+from app.logging_config import setup_logging
 from src.scheduler import is_table_due
 
-logging.basicConfig(
-    level=os.environ.get("LOG_LEVEL", "INFO").upper(),
-    format="%(asctime)s %(levelname)s [scheduler] %(message)s",
-)
+setup_logging(__name__)
 logger = logging.getLogger(__name__)
 
 API_URL = os.environ.get("API_URL", "http://localhost:8000")
 SCHEDULER_API_TOKEN = os.environ.get("SCHEDULER_API_TOKEN", "")
 
 _token_warning_emitted = False
-
 
 
 def _get_auth_token() -> str:
@@ -83,9 +80,9 @@ def _get_auth_token() -> str:
 # registry of more than 2-3 slow repos times out the scheduler call,
 # which then re-fires on the next 30s tick and queues a redundant sync.
 JOBS = [
-    ("data-refresh",    "every 15m",   "/api/sync/trigger",          "POST", 120),
-    ("health-check",    "every 5m",    "/api/health",                "GET",   30),
-    ("marketplaces",    "daily 03:00", "/api/marketplaces/sync-all", "POST", 900),
+    ("data-refresh", "every 15m", "/api/sync/trigger", "POST", 120),
+    ("health-check", "every 5m", "/api/health", "GET", 30),
+    ("marketplaces", "daily 03:00", "/api/marketplaces/sync-all", "POST", 900),
 ]
 
 _running = True

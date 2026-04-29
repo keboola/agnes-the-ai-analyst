@@ -18,6 +18,7 @@ import argparse
 import logging
 import sys
 
+from app.logging_config import setup_logging
 from src.db import get_system_db
 
 from . import detector
@@ -46,14 +47,12 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    setup_logging(__name__, level="DEBUG" if args.verbose else "INFO")
 
     # Load AI config lazily (same pattern as corporate memory collector)
     try:
         from config.loader import load_instance_config
+
         config = load_instance_config()
         ai_config = config.get("ai")
         if not ai_config:
@@ -64,6 +63,7 @@ def main() -> None:
         sys.exit(1)
 
     from connectors.llm import create_extractor
+
     extractor = create_extractor(ai_config)
     conn = get_system_db()
 
