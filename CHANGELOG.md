@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-04-29
+
 ### Added
 
 - **Corporate-memory tree view + cross-axis filtering** on `/corporate-memory` and `/corporate-memory/admin`. Operators choose a grouping axis (domain / category / tag / audience) and combine it with chip filters (status, source_type, audience, has-duplicate-hint, search). Tree uses native `<details>`; localStorage persists open/closed state per axis; no new dependencies. Issue #62.
