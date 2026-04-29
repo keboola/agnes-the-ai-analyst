@@ -89,6 +89,7 @@ from app.api.settings import router as settings_router
 from app.api.catalog import router as catalog_router
 from app.api.telegram import router as telegram_router
 from app.api.access import router as access_router, me_router as me_access_router
+from app.api.me_debug import router as me_debug_router
 from app.api.admin import router as admin_router
 from app.api.permissions import router as permissions_router
 from app.api.access_requests import router as access_requests_router
@@ -340,6 +341,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_router)
     app.include_router(access_router)
     app.include_router(me_access_router)
+    app.include_router(me_debug_router)
     app.include_router(permissions_router)
     app.include_router(access_requests_router)
     app.include_router(jira_webhooks_router)

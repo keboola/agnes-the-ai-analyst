@@ -144,6 +144,12 @@ def _build_context(request: Request, user: Optional[dict] = None, **extra) -> di
         SSH_ALIAS = "data-analyst"
         SERVER_HOST = os.environ.get("SERVER_HOST", "")
         PROJECT_DIR = "data-analyst"
+        # Drives whether the user dropdown renders the "Auth debug" link.
+        # Same env var the route guard checks — keep them in lock-step so
+        # the link never appears when the route would 404, and vice versa.
+        DEBUG_AUTH_ENABLED = os.environ.get("AGNES_DEBUG_AUTH", "").strip().lower() in (
+            "1", "true", "yes",
+        )
 
         @staticmethod
         def theme_overrides():
