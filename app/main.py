@@ -151,6 +151,57 @@ def create_app() -> FastAPI:
         debug=DEBUG,
     )
 
+    # FastAPI debug toolbar — only when DEBUG=1 in env. Injects per-request
+    # HTML overlay (headers, routes, timer, profiling, logs) on any HTML
+    # response; harmless on JSON. Inner try/except is for the import only:
+    # if a developer sets DEBUG=1 without installing dev deps, log a warning
+    # instead of crashing. The middleware mount itself fails loud if broken.
+    #
+    # Mounted FIRST (innermost on response) so it sees the raw HTML BEFORE
+    # GZip compresses it — debug_toolbar.middleware decodes response bodies
+    # as UTF-8 to inject markup, and a gzipped body fails that decode (the
+    # toolbar's own `Accept-Encoding` skip-check reads response headers, not
+    # request headers, so it never trips).
+    if DEBUG:
+        try:
+            from debug_toolbar.middleware import DebugToolbarMiddleware
+            from jinja2 import FileSystemLoader
+            # debug_toolbar.middleware splats **kwargs into DebugToolbarSettings
+            # (a pydantic-settings model with case-insensitive UPPERCASE fields).
+            # Pass field names as kwargs to add_middleware — `panels` becomes
+            # `PANELS`, etc. Do NOT wrap them in a `settings={...}` dict —
+            # that hits the model's actual `SETTINGS` field (Sequence[BaseSettings])
+            # and fails validation. Field reference:
+            # https://github.com/mongkok/fastapi-debug-toolbar/blob/master/debug_toolbar/settings.py
+            # ProfilingPanel (pyinstrument) is intentionally omitted: it
+            # raises "There is already a profiler running" under uvicorn's
+            # async context because pyinstrument's stack sampler can't be
+            # nested per task. Re-enable per-developer if you really want it
+            # via env override; the rest of the panels are async-safe.
+            #
+            # JINJA_LOADERS prepends our app/debug/templates so DuckDBPanel
+            # can resolve `panels/duckdb.html`. The toolbar's built-in loader
+            # (PackageLoader for debug_toolbar/templates) stays appended via
+            # ChoiceLoader, so first-party panels still render.
+            _debug_templates_dir = Path(__file__).parent / "debug" / "templates"
+            app.add_middleware(
+                DebugToolbarMiddleware,
+                panels=[
+                    "debug_toolbar.panels.headers.HeadersPanel",
+                    "debug_toolbar.panels.routes.RoutesPanel",
+                    "debug_toolbar.panels.settings.SettingsPanel",
+                    "debug_toolbar.panels.versions.VersionsPanel",
+                    "debug_toolbar.panels.timer.TimerPanel",
+                    "debug_toolbar.panels.logging.LoggingPanel",
+                    "app.debug.duckdb_panel.DuckDBPanel",
+                ],
+                jinja_loaders=[FileSystemLoader(str(_debug_templates_dir))],
+            )
+        except ImportError:
+            logger.warning(
+                "DEBUG=1 but fastapi-debug-toolbar not installed; toolbar disabled",
+            )
+
     # Compress JSON / HTML responses on the wire. Parquet downloads are
     # excluded — they're already columnar-compressed and re-gzipping them
     # just burns CPU with no size win. minimum_size=1024 keeps tiny
@@ -197,42 +248,6 @@ def create_app() -> FastAPI:
     # downstream middleware or handler runs, and every response gets the
     # x-request-id header.
     app.add_middleware(RequestIdMiddleware)
-
-    # FastAPI debug toolbar — only when DEBUG=1 in env. Injects per-request
-    # HTML overlay (headers, routes, timer, profiling, logs) on any HTML
-    # response; harmless on JSON. Inner try/except is for the import only:
-    # if a developer sets DEBUG=1 without installing dev deps, log a warning
-    # instead of crashing. The middleware mount itself fails loud if broken.
-    if DEBUG:
-        try:
-            from debug_toolbar.middleware import DebugToolbarMiddleware
-            # debug_toolbar.middleware splats **kwargs into DebugToolbarSettings
-            # (a pydantic-settings model with case-insensitive UPPERCASE fields).
-            # Pass field names as kwargs to add_middleware — `panels` becomes
-            # `PANELS`, etc. Do NOT wrap them in a `settings={...}` dict —
-            # that hits the model's actual `SETTINGS` field (Sequence[BaseSettings])
-            # and fails validation. Field reference:
-            # https://github.com/mongkok/fastapi-debug-toolbar/blob/master/debug_toolbar/settings.py
-            # ProfilingPanel (pyinstrument) is intentionally omitted: it
-            # raises "There is already a profiler running" under uvicorn's
-            # async context because pyinstrument's stack sampler can't be
-            # nested per task. Re-enable per-developer if you really want it
-            # via env override; the rest of the panels are async-safe.
-            app.add_middleware(
-                DebugToolbarMiddleware,
-                panels=[
-                    "debug_toolbar.panels.headers.HeadersPanel",
-                    "debug_toolbar.panels.routes.RoutesPanel",
-                    "debug_toolbar.panels.settings.SettingsPanel",
-                    "debug_toolbar.panels.versions.VersionsPanel",
-                    "debug_toolbar.panels.timer.TimerPanel",
-                    "debug_toolbar.panels.logging.LoggingPanel",
-                ],
-            )
-        except ImportError:
-            logger.warning(
-                "DEBUG=1 but fastapi-debug-toolbar not installed; toolbar disabled",
-            )
 
     # Load .env_overlay (persisted by /api/admin/configure)
     _overlay = Path(os.environ.get("DATA_DIR", "./data")) / "state" / ".env_overlay"
