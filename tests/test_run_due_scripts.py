@@ -4,7 +4,9 @@ the run-due endpoint, and Pydantic validation on DeployScriptRequest."""
 from datetime import datetime, timezone
 
 import pytest
+from pydantic import ValidationError
 
+from app.api.scripts import DeployScriptRequest
 from src.db import get_system_db
 from src.repositories.notifications import ScriptRepository
 
@@ -79,3 +81,102 @@ def test_record_run_result_rejects_running_as_terminal(conn):
     repo.claim_for_run("s1")
     with pytest.raises(ValueError):
         repo.record_run_result("s1", status="running")
+
+
+# ---------------- DeployScriptRequest.schedule validation -------------------
+
+def test_deploy_request_accepts_valid_schedule():
+    req = DeployScriptRequest(name="report", source="print(1)", schedule="every 1h")
+    assert req.schedule == "every 1h"
+
+
+def test_deploy_request_accepts_no_schedule():
+    req = DeployScriptRequest(name="report", source="print(1)")
+    assert req.schedule is None
+
+
+def test_deploy_request_rejects_malformed_schedule():
+    with pytest.raises(ValidationError):
+        DeployScriptRequest(name="report", source="print(1)", schedule="weekly")
+
+
+# ---------------- /api/scripts/run-due endpoint -----------------------------
+
+def _auth(token):
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_run_due_skips_scripts_without_schedule(seeded_app, monkeypatch):
+    """A script with schedule=NULL is never picked up by run-due (those
+    are run only via explicit POST /api/scripts/{id}/run)."""
+    monkeypatch.setattr(
+        "app.api.scripts._execute_script",
+        lambda src, name: {"name": name, "exit_code": 0, "stdout": "", "stderr": "", "truncated": False},
+    )
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    deploy = c.post(
+        "/api/scripts/deploy",
+        json={"name": "manual-only", "source": "print(1)"},
+        headers=_auth(token),
+    )
+    assert deploy.status_code == 201
+    resp = c.post("/api/scripts/run-due", headers=_auth(token))
+    assert resp.status_code == 200
+    assert resp.json()["claimed"] == []
+
+
+def test_run_due_claims_due_scripts(seeded_app, monkeypatch):
+    """A script on 'every 1h' that has never run gets claimed and executed."""
+    calls = []
+
+    def _fake_exec(source, name):
+        calls.append(name)
+        return {"name": name, "exit_code": 0, "stdout": "", "stderr": "", "truncated": False}
+
+    monkeypatch.setattr("app.api.scripts._execute_script", _fake_exec)
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    deploy = c.post(
+        "/api/scripts/deploy",
+        json={"name": "report", "source": "print(1)", "schedule": "every 1h"},
+        headers=_auth(token),
+    )
+    assert deploy.status_code == 201
+    script_id = deploy.json()["id"]
+    resp = c.post("/api/scripts/run-due", headers=_auth(token))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["claimed"] == [script_id]
+    # BackgroundTasks runs synchronously inside TestClient, so the call
+    # has happened by now.
+    assert "report" in calls
+
+
+def test_run_due_skips_scripts_already_running(seeded_app, monkeypatch):
+    """A script in 'running' state must not be re-claimed by a second
+    sidecar tick that arrives while the previous run is still going."""
+    monkeypatch.setattr(
+        "app.api.scripts._execute_script",
+        # Simulate a slow run by NOT updating last_status — repo.claim_for_run
+        # already wrote 'running'; we leave it that way.
+        lambda src, name: {"name": name, "exit_code": 0, "stdout": "", "stderr": "", "truncated": False},
+    )
+    # Patch out record_run_result so the run never "completes".
+    monkeypatch.setattr(
+        "src.repositories.notifications.ScriptRepository.record_run_result",
+        lambda self, *a, **kw: None,
+    )
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    deploy = c.post(
+        "/api/scripts/deploy",
+        json={"name": "long", "source": "print(1)", "schedule": "every 1h"},
+        headers=_auth(token),
+    )
+    assert deploy.status_code == 201
+    script_id = deploy.json()["id"]
+    first = c.post("/api/scripts/run-due", headers=_auth(token))
+    assert first.json()["claimed"] == [script_id]
+    second = c.post("/api/scripts/run-due", headers=_auth(token))
+    assert second.json()["claimed"] == []
