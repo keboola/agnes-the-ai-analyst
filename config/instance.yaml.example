@@ -234,6 +234,78 @@ ai:
 #
 #   # Notify km_admins about new pending items
 #   notify_on_new_items: true
+#
+#   # --- V1 Context Engineering ---
+#
+#   sources:
+#     claude_local_md:
+#       enabled: true
+#       confidence_base: 0.50
+#     session_transcripts:
+#       enabled: true
+#       confidence_base: 0.60
+#       max_turns_per_session: 100
+#       detection_types:
+#         - correction
+#         - confirmation
+#         - unprompted_definition
+#
+#   extraction:
+#     model: "claude-haiku-4-5-20251001"
+#     sensitivity_check: true
+#     contradiction_check: true
+#
+#   confidence:
+#     # Base score per extraction source. Key format: "source_type" or "source_type.detection_type"
+#     base:
+#       user_verification.correction: 0.90
+#       user_verification.unprompted_definition: 0.90
+#       user_verification.confirmation: 0.60
+#       admin_mandate: 1.00
+#       claude_local_md: 0.50
+#       session_transcript: 0.50
+#     # Per-key modifier step sizes applied to base when optional signals are present.
+#     modifiers:
+#       user_verification.correction:
+#         additional_verifiers: 0.05    # per extra unique verifier
+#       user_verification.unprompted_definition:
+#         additional_verifiers: 0.05
+#       user_verification.confirmation:
+#         admin_confirmed: 0.20
+#       session_transcript:
+#         user_confirmed_in_session: 0.20
+#     # Confidence decay applied to items as they age.
+#     decay:
+#       mode: exponential               # linear | exponential
+#       half_life_months: 12            # used when mode=exponential
+#       decay_rate_monthly: 0.02        # used when mode=linear
+#       floor:
+#         admin_mandate: 0.50           # admin policies don't silently decay to zero
+#         user_verification: 0.40       # user-verified facts never fall below 0.40
+#         default: 0.0
+#
+#   contradiction_detection:
+#     enabled: true
+#     max_candidates: 10
+#
+#   entity_resolution:
+#     enabled: true
+#     entities:
+#       metrics: ["churn", "MRR", "ARR", "NPS", "CAC", "LTV"]
+#       products: ["Platform", "API", "Dashboard"]
+#
+#   domain_owners:
+#     finance: ["cfo@company.com"]
+#     engineering: ["cto@company.com"]
+#     product: ["pm@company.com"]
+#
+#   domains:
+#     - finance
+#     - engineering
+#     - product
+#     - data
+#     - operations
+#     - infrastructure
 
 # --- User groups for audience targeting (optional) ---
 # Used with Corporate Memory governance to target mandatory knowledge to specific groups.

@@ -10,9 +10,29 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-04-29
+
 ### Added
 
-- `/me/debug` — self-only auth diagnostic page. Shows the logged-in user their own decoded JWT claims (no raw token), group memberships with sources and bound `external_id` when present, resource grants effective via those memberships, and a "Refetch from Google (dry-run)" button that issues a fresh `fetch_user_groups` call and reports the diff against the cached `user_group_members` snapshot without writing anything. Gated by `AGNES_DEBUG_AUTH=true` env var (default off → route returns 404 and the navbar item is not rendered). Intended for dev / staging VMs; do not enable on customer-facing instances. The infra module exposes a `debug_auth_enabled` variable that propagates to the env.
+- **Corporate-memory v1 + v1.5 — confidence, contradictions, audience distribution, and rule sync.** Issue #72.
+  - Schema v15: `knowledge_items` gains context-engineering columns (`confidence`, `domain`, `entities`, `source_type`, `source_ref`, `valid_from`, `valid_until`, `supersedes`, `sensitivity`, `is_personal`); new `knowledge_contradictions` table for surfacing conflicting facts and `session_extraction_state` for the verification detector's idempotent resume.
+  - Schema v16: `verification_evidence` table — one row per analyst confirmation, indexed on `item_id`, drives the `confidence` calculation in `services/corporate_memory/confidence.py` (linear-decay with floor + additional-verifier boost; configurable via `instance.yaml`).
+  - **Server**: `GET /api/memory/bundle` returns mandatory + ranked-approved items within a token budget (default 6000 ≈ 24KB) — drives `da sync`'s rule write. `GET /api/memory/stats` now uses SQL aggregation (no full-list materialization, doesn't block the event loop). `POST /api/memory/admin/mandate` and `POST /api/memory/admin/batch` accept an `audience` field; the audience is matched against the caller's `user_group_members` JOIN `user_groups` on read so a user in group `finance` sees `audience='group:finance'` items, and admins see all. Verification-detector endpoint extracts knowledge candidates from session JSONL files and merges evidence into the existing item when a fact is re-asserted.
+  - **CLI**: `da sync` step 7 (`_fetch_and_write_rules`) calls `/api/memory/bundle`, writes `mandatory` items to `.claude/rules/km_<id>.md` (one file per item) and concatenates `approved` into `.claude/rules/km_approved.md`. Stale `km_*.md` files from a previous run are pruned. Best-effort: any HTTP/JSON failure is logged and sync continues.
+  - **Auto-tagging**: `services/corporate_memory/tagger.py` runs an LLM extraction pass on knowledge create/update when `ai:` is configured in `instance.yaml`. Wrapped in `asyncio.to_thread` so it doesn't block the event loop. Best-effort: missing config or LLM error → item created with no auto-tags.
+  - **Per-item privacy**: `is_personal` items are visible only to the contributor and platform admins (members of the `Admin` system group). The `_can_view_item` helper takes a pre-computed `is_priv` flag so list endpoints don't re-query `user_group_members` per item.
+  - **Audit log**: every admin action (mandate / approve / reject / revoke / mandate-batch / contradiction resolve) writes a row tagged `corporate_memory.<action>` with the affected item ids and reason field.
+- `/me/debug` — self-only auth diagnostic page. Shows the logged-in user their own decoded JWT claims (no raw token), group memberships with sources and bound `external_id` when present, resource grants effective via those memberships, and a "Refetch from Google (dry-run)" button that issues a fresh `fetch_user_groups` call and reports the diff against the cached `user_group_members` snapshot without writing anything. Gated by `AGNES_DEBUG_AUTH=true` env var (default off → route returns 404 and the navbar item is not rendered). Intended for dev / staging VMs; do not enable on customer-facing instances. Issue #116.
+
+### Changed
+
+- **`POST /api/memory/{id}/vote` accepts `vote=0`** to retract a previous vote (toggle un-vote from the UI). Pre-fix the API rejected vote=0 with 400 and the UI's toggle logic silently no-op'd on un-toggle.
+- **`/admin/corporate-memory` and `/corporate-memory/admin` are gated by `require_admin`** (admin-group membership) instead of the v9-era `require_role(Role.KM_ADMIN)`. The km_admin role was collapsed into admin in main's RBAC v13; module authors needing finer-grained corporate-memory curation should use a `resource_grants` row of type `corporate_memory_admin`.
+
+### Internal
+
+- `_effective_groups` in `app/api/memory.py` queries `user_group_members JOIN user_groups` instead of reading the `users.groups` JSON column (dropped in v13). The audience-distribution tests in `tests/test_memory_api.py` use a `_add_user_to_group` helper that inserts into `user_group_members` + `user_groups` directly.
+- `jsonschema` added to dev dependencies for the corporate-memory schema-validation fixtures (`tests/test_corporate_memory_v1.py::TestSchemaValidation`). Production code does not import it.
 
 ## [0.14.0] — 2026-04-29
 
@@ -451,6 +471,8 @@ Patch release. Hotfixes the pre-migration snapshot-integrity bug shipped in [v0.
   if anything goes wrong during the migration, the snapshot at
   `<DATA_DIR>/state/system.duckdb.pre-migrate` lets you roll back.
 
+---
+
 ## [0.11.5] — 2026-04-27
 
 Follow-up release for PR #73: addresses four rounds of Devin AI review on the role-management-complete branch. No new public-API surface; the user-visible payoff is that v8→v9-migrated installations now work end-to-end (login flows, user list, admin nav, privilege revocation), and `make local-dev` startup is finally quiet.
@@ -474,6 +496,8 @@ Follow-up release for PR #73: addresses four rounds of Devin AI review on the ro
 ### Changed
 
 - Renamed `docs/internal-roles.md` → **`docs/RBAC.md`**. Standard industry term, more discoverable for engineers grepping for "RBAC" in a new repo. Added Quickstart-by-role sections (operator / end-user / module author) and a step-by-step *Module-author workflow* with code examples for registering a key, gating endpoints, declaring implies hierarchies, and writing a contract test against the gate. Cross-references in code (`app/api/admin.py`, `tests/test_role_resolver.py`) updated. `CLAUDE.md` now points contributors at the new doc from the *Extensibility → RBAC* section. Historical CHANGELOG entries (`[0.11.3]` / `[0.11.4]` body) keep the original `internal-roles.md` filename — they describe what shipped at that version and aren't retro-edited.
+
+---
 
 ## [0.11.4] — 2026-04-27
 

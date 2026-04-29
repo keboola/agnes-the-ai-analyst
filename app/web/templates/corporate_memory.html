@@ -261,6 +261,56 @@
         .category-badge.infrastructure { background: rgba(107, 114, 128, 0.1); color: var(--text-secondary); }
         .category-badge.business_logic { background: rgba(16, 183, 127, 0.1); color: #0d9668; }
 
+        .domain-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            background: var(--primary-light, #e8f0fe);
+            color: var(--primary, #1a73e8);
+            border-radius: var(--radius-full, 999px);
+            font-size: var(--text-xs);
+            font-weight: var(--font-medium);
+        }
+
+        .confidence-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            background: #f0fdf4;
+            color: #16a34a;
+            border-radius: var(--radius-full, 999px);
+            font-size: var(--text-xs);
+            font-weight: var(--font-medium);
+        }
+
+        .source-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: var(--radius-full, 999px);
+            font-size: var(--text-xs);
+            font-weight: var(--font-medium);
+        }
+
+        .source-badge.verification {
+            background: #dbeafe;
+            color: #1d4ed8;
+        }
+
+        .source-badge.mandatory {
+            background: #fef3c7;
+            color: #92400e;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: var(--radius-full, 999px);
+            font-size: var(--text-xs);
+            font-weight: var(--font-medium);
+        }
+        .status-badge.approved { background: #dcfce7; color: #166534; }
+        .status-badge.pending { background: #fef9c3; color: #854d0e; }
+        .status-badge.mandatory { background: #dbeafe; color: #1e40af; }
+        .status-badge.rejected { background: #fee2e2; color: #991b1b; }
+
         .knowledge-content {
             font-size: var(--text-base);
             color: var(--text-secondary);
@@ -529,16 +579,21 @@
             </div>
             <div class="stat-divider"></div>
             <div class="stat-item highlight">
-                <div class="value">{{ user_stats.your_rules }}</div>
-                <div class="label">Your Rules</div>
+                <div class="value">{{ user_stats.authored }}</div>
+                <div class="label">My Contributions</div>
             </div>
             <div class="stats-bar-right">
-                <div class="sync-info">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <polyline points="20 6 9 17 4 12"/>
+                {% if user_contributions %}
+                <a href="#my-contributions" style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; background: var(--primary, #1a73e8); color: white; border-radius: var(--radius-md); font-size: var(--text-sm); text-decoration: none; font-weight: var(--font-medium);">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                        <circle cx="8.5" cy="7" r="4"/>
+                        <line x1="20" y1="8" x2="20" y2="14"/>
+                        <line x1="23" y1="11" x2="17" y2="11"/>
                     </svg>
-                    Synced to .claude/rules/
-                </div>
+                    My Contributions ({{ user_contributions|length }})
+                </a>
+                {% endif %}
             </div>
         </div>
 
@@ -554,14 +609,20 @@
             <div class="filter-group">
                 <button class="filter-btn active" data-category="" onclick="setFilter(this)">All</button>
                 <button class="filter-btn" data-category="my_rules" onclick="setFilter(this)">My Rules</button>
-                <button class="filter-btn" data-category="data_analysis" onclick="setFilter(this)">Data Analysis</button>
-                <button class="filter-btn" data-category="api_integration" onclick="setFilter(this)">API</button>
-                <button class="filter-btn" data-category="performance" onclick="setFilter(this)">Performance</button>
+                {% for cat in categories %}
+                <button class="filter-btn" data-category="{{ cat }}" onclick="setFilter(this)">{{ cat|replace('_', ' ')|title }}</button>
+                {% endfor %}
             </div>
             <select class="sort-select" id="sortSelect" onchange="applyFilters()">
                 <option value="score">Most Popular</option>
                 <option value="updated_at">Most Recent</option>
                 <option value="contributors">Most Contributors</option>
+            </select>
+            <select class="sort-select" id="domainFilter" onchange="onDomainChange()">
+                <option value="">All Domains</option>
+                {% for d in domains %}
+                <option value="{{ d }}">{{ d|title }}</option>
+                {% endfor %}
             </select>
         </div>
 
@@ -574,7 +635,11 @@
                         <div class="knowledge-title">{{ item.title }}</div>
                         <div class="knowledge-meta">
                             <span class="category-badge {{ item.category }}">{{ item.category.replace('_', ' ').title() }}</span>
-                            <span>Added {{ item.extracted_at[:10] if item.extracted_at else 'recently' }}</span>
+                            {% if item.domain %}<span class="domain-badge">{{ item.domain|title }}</span>{% endif %}
+                            {% if item.confidence %}<span class="confidence-badge" title="Confidence: {{ '%.0f'|format(item.confidence * 100) }}%">{{ '%.0f'|format(item.confidence * 100) }}%</span>{% endif %}
+                            {% if item.source_type == 'user_verification' %}<span class="source-badge verification">Verified</span>{% endif %}
+                            {% if item.status == 'mandatory' %}<span class="source-badge mandatory">Mandatory</span>{% endif %}
+                            <span>Added {{ item.created_at.strftime('%Y-%m-%d') if item.created_at else 'recently' }}</span>
                         </div>
                     </div>
                     <div class="vote-section">
@@ -640,13 +705,47 @@
         <!-- Pagination -->
         <div id="pagination" class="pagination">
             {% if knowledge.total_pages > 1 %}
-            <button class="page-btn" onclick="goToPage({{ knowledge.page - 1 }})" {% if knowledge.page == 0 %}disabled{% endif %}>Prev</button>
-            {% for p in range(knowledge.total_pages) %}
-            <button class="page-btn {% if p == knowledge.page %}active{% endif %}" onclick="goToPage({{ p }})">{{ p + 1 }}</button>
+            <button class="page-btn" onclick="goToPage({{ knowledge.page - 1 }})" {% if knowledge.page == 1 %}disabled{% endif %}>Prev</button>
+            {% for p in range(1, knowledge.total_pages + 1) %}
+            <button class="page-btn {% if p == knowledge.page %}active{% endif %}" onclick="goToPage({{ p }})">{{ p }}</button>
             {% endfor %}
-            <button class="page-btn" onclick="goToPage({{ knowledge.page + 1 }})" {% if knowledge.page >= knowledge.total_pages - 1 %}disabled{% endif %}>Next</button>
+            <button class="page-btn" onclick="goToPage({{ knowledge.page + 1 }})" {% if knowledge.page >= knowledge.total_pages %}disabled{% endif %}>Next</button>
             {% endif %}
         </div>
+
+        <!-- My Contributions Section -->
+        {% if user_contributions %}
+        <div id="my-contributions" style="margin-top: var(--space-8); scroll-margin-top: 20px;">
+            <h2 style="font-size: var(--text-lg); font-weight: var(--font-semibold); margin-bottom: var(--space-4);">My Contributions</h2>
+            <p style="font-size: var(--text-sm); color: var(--text-secondary); margin-bottom: var(--space-4);">
+                Items you contributed via session corrections or notes. Flag items as personal to exclude from enterprise memory.
+            </p>
+            <div class="knowledge-list">
+                {% for item in user_contributions %}
+                <div class="knowledge-item" data-id="{{ item.id }}" style="{% if item.is_personal %}opacity: 0.6; border-left: 3px solid var(--warning);{% endif %}">
+                    <div class="knowledge-header">
+                        <div>
+                            <div class="knowledge-title">{{ item.title }}</div>
+                            <div class="knowledge-meta">
+                                <span class="category-badge {{ item.category }}">{{ item.category.replace('_', ' ').title() if item.category else 'N/A' }}</span>
+                                {% if item.domain %}<span class="domain-badge">{{ item.domain|title }}</span>{% endif %}
+                                {% if item.confidence %}<span class="confidence-badge">{{ '%.0f'|format(item.confidence * 100) }}%</span>{% endif %}
+                                <span class="status-badge {{ item.status }}">{{ item.status|title }}</span>
+                                {% if item.is_personal %}<span class="source-badge" style="background: var(--warning); color: white;">Personal</span>{% endif %}
+                            </div>
+                        </div>
+                        <button class="btn {% if item.is_personal %}btn-approve{% else %}btn-reject{% endif %}"
+                                onclick="togglePersonal('{{ item.id }}', {{ 'false' if item.is_personal else 'true' }})"
+                                style="padding: 6px 12px; font-size: var(--text-xs); white-space: nowrap;">
+                            {{ 'Unmark Personal' if item.is_personal else 'Mark Personal' }}
+                        </button>
+                    </div>
+                    <div class="knowledge-content">{{ item.content }}</div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
     </div>
 
     <script>
@@ -665,14 +764,26 @@
         document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         currentCategory = btn.dataset.category;
-        currentPage = 0;
+        currentPage = 1;
+        // Reset domain filter when switching category to avoid confusing cross-filter empty results
+        document.getElementById('domainFilter').value = '';
+        applyFilters();
+    }
+
+    function onDomainChange() {
+        // Reset category filter to "All" when changing domain
+        document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+        document.querySelector('.filter-btn[data-category=""]').classList.add('active');
+        currentCategory = '';
+        currentPage = 1;
         applyFilters();
     }
 
     async function applyFilters() {
         const search = document.getElementById('searchInput').value;
         const sort = document.getElementById('sortSelect').value;
-        await loadKnowledge(currentCategory, search, currentPage, sort);
+        const domain = document.getElementById('domainFilter').value;
+        await loadKnowledge(currentCategory, search, currentPage, sort, domain);
     }
 
     async function goToPage(page) {
@@ -680,17 +791,18 @@
         await applyFilters();
     }
 
-    async function loadKnowledge(category, search, page, sort) {
+    async function loadKnowledge(category, search, page, sort, domain) {
         const params = new URLSearchParams();
         if (category && category !== 'my_rules') params.append('category', category);
         if (category === 'my_rules') params.append('my_rules', 'true');
         if (search) params.append('search', search);
         if (sort) params.append('sort', sort);
+        if (domain) params.append('domain', domain);
         params.append('page', page);
 
         try {
             params.append('_t', Date.now());
-            const resp = await fetch(`/api/corporate-memory/knowledge?${params}`);
+            const resp = await fetch(`/api/memory?${params}`);
             const data = await resp.json();
             renderKnowledge(data);
         } catch (e) {
@@ -720,8 +832,12 @@
                     <div>
                         <div class="knowledge-title">${escapeHtml(item.title)}</div>
                         <div class="knowledge-meta">
-                            <span class="category-badge ${item.category}">${escapeHtml(item.category.replace('_', ' '))}</span>
-                            <span>Added ${item.extracted_at ? item.extracted_at.substring(0, 10) : 'recently'}</span>
+                            <span class="category-badge ${item.category}">${escapeHtml((item.category || '').replace('_', ' '))}</span>
+                            ${item.domain ? `<span class="domain-badge">${escapeHtml(item.domain)}</span>` : ''}
+                            ${item.confidence ? `<span class="confidence-badge">${Math.round(item.confidence * 100)}%</span>` : ''}
+                            ${item.source_type === 'user_verification' ? '<span class="source-badge verification">Verified</span>' : ''}
+                            ${item.status === 'mandatory' ? '<span class="source-badge mandatory">Mandatory</span>' : ''}
+                            <span>Added ${item.created_at ? item.created_at.substring(0, 10) : 'recently'}</span>
                         </div>
                     </div>
                     <div class="vote-section">
@@ -755,7 +871,7 @@
                 <div class="knowledge-content">${escapeHtml(item.content)}</div>
                 <div class="knowledge-footer">
                     <div class="knowledge-tags">
-                        ${(item.tags || []).map(tag => `<span class="tag">${escapeHtml(tag)}</span>`).join('')}
+                        ${(typeof item.tags === 'string' ? JSON.parse(item.tags || '[]') : (item.tags || [])).map(tag => `<span class="tag">${escapeHtml(tag)}</span>`).join('')}
                     </div>
                     <div class="contributors">
                         <div class="contributor-avatars">
@@ -774,13 +890,13 @@
         // Render pagination
         if (data.total_pages > 1) {
             let paginationHtml = `
-                <button class="page-btn" onclick="goToPage(${data.page - 1})" ${data.page === 0 ? 'disabled' : ''}>Prev</button>
+                <button class="page-btn" onclick="goToPage(${data.page - 1})" ${data.page === 1 ? 'disabled' : ''}>Prev</button>
             `;
-            for (let p = 0; p < data.total_pages; p++) {
-                paginationHtml += `<button class="page-btn ${p === data.page ? 'active' : ''}" onclick="goToPage(${p})">${p + 1}</button>`;
+            for (let p = 1; p <= data.total_pages; p++) {
+                paginationHtml += `<button class="page-btn ${p === data.page ? 'active' : ''}" onclick="goToPage(${p})">${p}</button>`;
             }
             paginationHtml += `
-                <button class="page-btn" onclick="goToPage(${data.page + 1})" ${data.page >= data.total_pages - 1 ? 'disabled' : ''}>Next</button>
+                <button class="page-btn" onclick="goToPage(${data.page + 1})" ${data.page >= data.total_pages ? 'disabled' : ''}>Next</button>
             `;
             pagination.innerHTML = paginationHtml;
         } else {
@@ -794,10 +910,10 @@
         const newVote = currentVote === voteValue ? 0 : voteValue;
 
         try {
-            const resp = await fetch('/api/corporate-memory/vote', {
+            const resp = await fetch(`/api/memory/${itemId}/vote`, {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({item_id: itemId, vote: newVote})
+                body: JSON.stringify({vote: newVote})
             });
 
             if (resp.ok) {
@@ -817,6 +933,21 @@
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
+    }
+
+    async function togglePersonal(itemId, isPersonal) {
+        try {
+            const resp = await fetch(`/api/memory/${itemId}/personal`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({is_personal: isPersonal})
+            });
+            if (resp.ok) {
+                location.reload();
+            }
+        } catch(e) {
+            console.error('Failed to toggle personal flag:', e);
+        }
     }
     </script>
     {% include "_version_badge.html" %}

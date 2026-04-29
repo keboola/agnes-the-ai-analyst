@@ -2701,22 +2701,14 @@
     // Load Corporate Memory stats
     async function loadMemoryStats() {
         try {
-            const resp = await fetch('/api/corporate-memory/stats');
+            const resp = await fetch('/api/memory/stats');
             if (resp.ok) {
                 const data = await resp.json();
-                document.getElementById('memoryKnowledgeCount').textContent = data.knowledge_count || 0;
-                document.getElementById('memoryContributors').textContent = data.contributors || 0;
-                document.getElementById('memoryYourRules').textContent = data.your_rules || 0;
-                // Show relative collection time
-                const el = document.getElementById('memorySyncStatus');
-                if (data.last_collection) {
-                    const ago = Date.now() - new Date(data.last_collection).getTime();
-                    const mins = Math.floor(ago / 60000);
-                    if (mins < 1) el.textContent = 'Compiled just now';
-                    else if (mins < 60) el.textContent = 'Compiled ' + mins + ' min ago';
-                    else if (mins < 1440) el.textContent = 'Compiled ' + Math.floor(mins / 60) + 'h ago';
-                    else el.textContent = 'Compiled ' + Math.floor(mins / 1440) + 'd ago';
-                }
+                document.getElementById('memoryKnowledgeCount').textContent = data.total || 0;
+                const approved = (data.by_status && data.by_status.approved) || 0;
+                const mandatory = (data.by_status && data.by_status.mandatory) || 0;
+                document.getElementById('memoryContributors').textContent = approved + mandatory;
+                document.getElementById('memoryYourRules').textContent = mandatory || 0;
             }
         } catch (e) {
             // Silently fail - widget will show defaults

@@ -1,6 +1,6 @@
 [project]
 name = "agnes-the-ai-analyst"
-version = "0.14.0"
+version = "0.15.0"
 description = "Agnes — AI Data Analyst platform for AI analytical systems"
 requires-python = ">=3.11,<3.14"
 license = "MIT"
@@ -64,6 +64,10 @@ dev = [
     "faker>=24.0.0",
     "anthropic>=0.30.0",
     "openai>=1.30.0",
+    # jsonschema validates the corporate-memory extraction-tool golden fixtures
+    # under tests/test_corporate_memory_v1.py (extraction.json, correction.json,
+    # confidence_calibration.json). Production code does not depend on it.
+    "jsonschema>=4.0.0",
 ]
 
 [project.scripts]

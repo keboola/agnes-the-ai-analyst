@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 16
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -105,9 +105,68 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     contributors JSON,
     source_user VARCHAR,
     audience VARCHAR,
+    -- v15: context-engineering columns. Confidence is derived from verification
+    -- evidence (see services/corporate_memory/confidence.py); valid_from/until
+    -- carry the time-bounded validity for fact items; supersedes points to a
+    -- prior id this row replaces; sensitivity gates which audiences can see
+    -- the row; is_personal scopes the row to the contributor only (excluded
+    -- from /bundle, listed only when the contributor is the caller).
+    confidence DOUBLE,
+    domain VARCHAR,
+    entities JSON,
+    source_type VARCHAR DEFAULT 'claude_local_md',
+    source_ref VARCHAR,
+    valid_from TIMESTAMP,
+    valid_until TIMESTAMP,
+    supersedes VARCHAR,
+    sensitivity VARCHAR DEFAULT 'internal',
+    is_personal BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT current_timestamp,
     updated_at TIMESTAMP
 );
+
+-- v15: contradiction tracking — surfaced when two `mandatory`/`approved` items
+-- assert conflicting facts on overlapping audiences. Detected by the
+-- contradiction service; resolved by a curator (see app/api/memory.py).
+CREATE TABLE IF NOT EXISTS knowledge_contradictions (
+    id VARCHAR PRIMARY KEY,
+    item_a_id VARCHAR NOT NULL,
+    item_b_id VARCHAR NOT NULL,
+    explanation TEXT,
+    severity VARCHAR,
+    suggested_resolution TEXT,
+    resolved BOOLEAN DEFAULT FALSE,
+    resolved_by VARCHAR,
+    resolved_at TIMESTAMP,
+    resolution VARCHAR,
+    detected_at TIMESTAMP DEFAULT current_timestamp
+);
+
+-- v15: track which session JSONL files the verification detector has already
+-- processed so re-runs over the same session dir are idempotent and the
+-- detector can resume mid-batch on crash.
+CREATE TABLE IF NOT EXISTS session_extraction_state (
+    session_file VARCHAR PRIMARY KEY,
+    username VARCHAR NOT NULL,
+    processed_at TIMESTAMP DEFAULT current_timestamp,
+    items_extracted INTEGER DEFAULT 0,
+    file_hash VARCHAR
+);
+
+-- v16: per-detection evidence rows — one knowledge_item can accumulate
+-- multiple evidence rows over time (each new analyst confirmation adds one).
+-- Persisting user_quote + detection_type per row is what enables future
+-- Bayesian re-calibration and "additional verifiers" boost computation.
+CREATE TABLE IF NOT EXISTS verification_evidence (
+    id VARCHAR PRIMARY KEY,
+    item_id VARCHAR NOT NULL,
+    source_user VARCHAR,
+    source_ref VARCHAR,
+    detection_type VARCHAR,
+    user_quote TEXT,
+    created_at TIMESTAMP DEFAULT current_timestamp
+);
+CREATE INDEX IF NOT EXISTS idx_verification_evidence_item ON verification_evidence(item_id);
 
 CREATE TABLE IF NOT EXISTS knowledge_votes (
     item_id VARCHAR NOT NULL,
@@ -741,6 +800,70 @@ _V12_TO_V13_MIGRATIONS = [
 ]
 
 
+# v15: corporate-memory context-engineering columns + contradiction tracking +
+# session-extraction state. The columns rename `knowledge_items.audience`'s
+# original semantics into a richer model: confidence + domain + entities +
+# source_type/ref + valid window + supersedes lineage + sensitivity tier +
+# is_personal flag. Pavel's branch had this as v9→v10 against a v9-era main;
+# the bump to v15 sequences after main's v14 (FK-on-grants).
+_V14_TO_V15_MIGRATIONS = [
+    "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS confidence DOUBLE",
+    "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS domain VARCHAR",
+    "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS entities JSON",
+    "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS source_type VARCHAR DEFAULT 'claude_local_md'",
+    "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS source_ref VARCHAR",
+    "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS valid_from TIMESTAMP",
+    "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS valid_until TIMESTAMP",
+    "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS supersedes VARCHAR",
+    "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS sensitivity VARCHAR DEFAULT 'internal'",
+    "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS is_personal BOOLEAN DEFAULT FALSE",
+    "UPDATE knowledge_items SET source_type = 'claude_local_md' WHERE source_type IS NULL",
+    """
+    CREATE TABLE IF NOT EXISTS knowledge_contradictions (
+        id VARCHAR PRIMARY KEY,
+        item_a_id VARCHAR NOT NULL,
+        item_b_id VARCHAR NOT NULL,
+        explanation TEXT,
+        severity VARCHAR,
+        suggested_resolution TEXT,
+        resolved BOOLEAN DEFAULT FALSE,
+        resolved_by VARCHAR,
+        resolved_at TIMESTAMP,
+        resolution VARCHAR,
+        detected_at TIMESTAMP DEFAULT current_timestamp
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS session_extraction_state (
+        session_file VARCHAR PRIMARY KEY,
+        username VARCHAR NOT NULL,
+        processed_at TIMESTAMP DEFAULT current_timestamp,
+        items_extracted INTEGER DEFAULT 0,
+        file_hash VARCHAR
+    )
+    """,
+]
+
+# v16: per-detection evidence rows — many-to-one against knowledge_items.
+# Future Bayesian re-calibration uses (detection_type, user_quote, source_user)
+# triples; for now confidence.py walks them to compute "additional verifiers"
+# boosts. Index on item_id keeps the per-item walk O(evidence-per-item).
+_V15_TO_V16_MIGRATIONS = [
+    """
+    CREATE TABLE IF NOT EXISTS verification_evidence (
+        id VARCHAR PRIMARY KEY,
+        item_id VARCHAR NOT NULL,
+        source_user VARCHAR,
+        source_ref VARCHAR,
+        detection_type VARCHAR,
+        user_quote TEXT,
+        created_at TIMESTAMP DEFAULT current_timestamp
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_verification_evidence_item ON verification_evidence(item_id)",
+]
+
+
 # Core role seed data — single source of truth. Used by both _seed_core_roles
 # (idempotent insert) and the v8→v9 backfill. Order matters: lowest privilege
 # first so implies references resolve cleanly when expand_implies does BFS.
@@ -1363,6 +1486,12 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v12_to_v13_finalize(conn)
             if current < 14:
                 _v13_to_v14_finalize(conn)
+            if current < 15:
+                for sql in _V14_TO_V15_MIGRATIONS:
+                    conn.execute(sql)
+            if current < 16:
+                for sql in _V15_TO_V16_MIGRATIONS:
+                    conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

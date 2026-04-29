@@ -12,6 +12,12 @@ Design principles:
 - Idempotent - safe to run multiple times (skips existing files)
 - Atomic operations - uses tempfile + os.replace for safety
 - Logs to stdout (captured by journalctl)
+
+TODO(scheduler-v2): In docker-compose.yml this service is a one-shot process
+restarted by Docker (`restart: unless-stopped`), which is effectively a tight
+boot loop. Replace with proper cadence: either an internal `while True: scan;
+sleep(N)` loop, or wire into services/scheduler/__main__.py JOBS list with an
+admin endpoint /api/admin/collect-sessions.
 """
 
 import logging
