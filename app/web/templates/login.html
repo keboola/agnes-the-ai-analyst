@@ -95,6 +95,22 @@
                     Access your AI data analysis workspace
                 </p>
 
+                {% set _err = request.query_params.get('error') %}
+                {% set _err_messages = {
+                    'not_in_foundryai_group': "Your Google account isn't a member of any group permitted to use this Agnes instance. Ask your Agnes administrator to grant you access.",
+                    'group_check_unavailable': "We couldn't verify your group membership with Google right now. Please try signing in again in a moment.",
+                    'deactivated': "This account has been deactivated. Contact your Agnes administrator if you believe this is in error.",
+                    'oauth_failed': "Google sign-in failed. Please try again.",
+                    'no_email': "Google didn't return an email for this account.",
+                    'domain_not_allowed': "This email's domain is not permitted to sign in to this Agnes instance.",
+                    'google_not_configured': "Google sign-in is not configured on this server.",
+                } %}
+                {% if _err and _err_messages.get(_err) %}
+                <div class="login-error" role="alert" style="background:#fef2f2;border:1px solid #fecaca;color:#b91c1c;padding:12px 14px;border-radius:8px;font-size:13px;line-height:1.5;margin:0 auto 16px;max-width:280px;text-align:left;">
+                    {{ _err_messages.get(_err) }}
+                </div>
+                {% endif %}
+
                 {% for btn in login_buttons %}
                 <a href="{{ btn.url }}" class="btn {{ btn.css_class|default('btn-secondary') }}" style="width: 100%; max-width: 280px;">
                     {% if btn.icon_html %}{{ btn.icon_html|safe }}{% endif %}

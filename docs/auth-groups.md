@@ -35,11 +35,19 @@ Switching to `discussion_forum` will silently break for everyone but Workspace a
 
 `app/auth/providers/google.py:google_callback` runs on every Google sign-in:
 
-1. Fetch via `fetch_user_groups(access_token, email)` (in `app/auth/group_sync.py`) → list of `{"id": "<email>", "name": "<displayName>"}`.
-2. Write to `user_group_members` table with `source='google_sync'` (DuckDB-backed, persistent across sessions).
-3. The previous Google-sync set is wholesale replaced (DELETE + INSERT for `source='google_sync'` rows) so a removed Workspace membership disappears immediately.
-4. Admin-added memberships (`source='admin'`) are preserved — Google sync only touches its own rows.
-5. **Fail-soft**: If the Cloud Identity API returns an error (403, 401, network), the callback preserves existing memberships instead of wiping them. This prevents a transient API outage from silently dropping all Workspace-synced group memberships.
+1. Fetch via `fetch_user_groups(email)` (in `app/auth/group_sync.py`) → list of Workspace group emails the user is a member of (transitive).
+2. **Filter** by the optional `AGNES_GOOGLE_GROUP_PREFIX` env var. If set (e.g. `grp_foundryai_`), only emails whose local part starts with the prefix survive into Agnes; the rest are discarded. If unset, every fetched group is mirrored (legacy behavior).
+3. **System-group mapping**. Two optional env vars route specific Workspace emails into the seeded system rows instead of creating fresh `user_groups` entries:
+   - `AGNES_GROUP_ADMIN_EMAIL` — when set, membership in the matching Workspace group adds the user to the seeded `Admin` row.
+   - `AGNES_GROUP_EVERYONE_EMAIL` — same, for `Everyone`.
+   This lets operators have a Workspace group like `grp_foundryai_admin@example.com` show up in Agnes as the canonical `Admin` system group (with the same `is_system=TRUE` semantics, the same membership-table id) — no parallel "near-Admin" row.
+4. **Login gate**. If `AGNES_GOOGLE_GROUP_PREFIX` is set AND the fetch returned a non-empty list AND none of those groups match the prefix → the callback redirects to `/login?error=not_in_foundryai_group`. The prefix gate fires only on a real, prefix-mismatched answer; if Cloud Identity returned an empty list (transient failure or genuine no-membership), the previous cached snapshot is preserved (fail-soft) and the login proceeds — locking returning users out on a flaky API call would be worse than the alternative.
+5. Surviving groups land in `user_group_members` with `source='google_sync'`, the underlying `user_groups` row's `name` is the **full Workspace email** (no separate `external_id` column — the email IS the canonical identifier), `created_by='system:google-sync'`. Admin UI strips the prefix and `@domain` for display ("grp_foundryai_finance@example.com" → "Finance" big + email subtitle small).
+6. The previous Google-sync set is wholesale replaced (DELETE + INSERT for `source='google_sync'` rows) so a removed Workspace membership disappears immediately. Admin-added memberships (`source='admin'`) are preserved — Google sync only touches its own rows.
+
+**Read-only admin UI on Google-managed rows.** The admin UI hides the Edit / Delete affordances on rows owned by Google sync (`created_by='system:google-sync'`) and on the seeded `Admin` / `Everyone` rows when their email-mapping env var is set. The REST API enforces the same rule: PATCH / DELETE / add-member / remove-member return `409 google_managed_readonly` for these rows. To add or remove members, an operator changes Workspace membership at admin.google.com and the user signs in again to Agnes.
+
+**No more implicit Everyone.** The auto-`system_seed` insert into `Everyone` for every new user was removed when prefix-mapping landed. Every membership now traces to a real source row (`admin`, `google_sync`, or an explicit `system_seed`). If you want plugins visible to "everyone in the company", grant them on a Workspace group every employee belongs to, mapped to `Everyone` via `AGNES_GROUP_EVERYONE_EMAIL`.
 
 The `user_group_members` table is the single source of truth for group memberships, used by:
 - RBAC authorization (`app/auth/access.py`) — `require_resource_access` checks group grants
@@ -48,6 +56,13 @@ The `user_group_members` table is the single source of truth for group membershi
 - Marketplace filtering (`src/marketplace_filter.py`) — plugin access based on group grants
 
 **Refresh.** Memberships are refreshed on every Google sign-in. A user's stale memberships persist until their next login.
+
+## Custom (admin-managed) groups
+
+Admins can still create / rename / delete groups manually via `/admin/groups`. Two caveats vs. the prefix-mapped flow:
+
+- A renamed group's primary key (`id`) stays put, but DuckDB's UNIQUE constraint on `name` combined with the FK from `user_group_members.group_id` makes renaming a populated group awkward — the operator must clear members + grants first, rename, then re-add. Documented limitation; the same constraint blocks the prefix-mapping design from using `external_id` so the email is the name.
+- System groups (`Admin`, `Everyone`) refuse renames at the repository level regardless of `created_by` — those names are referenced from code (`app.auth.access`, marketplace filter, the email-mapping check) and must not move.
 
 ## Local-dev mock (no Google round-trip)
 

@@ -150,6 +150,21 @@ def _build_context(request: Request, user: Optional[dict] = None, **extra) -> di
         DEBUG_AUTH_ENABLED = os.environ.get("AGNES_DEBUG_AUTH", "").strip().lower() in (
             "1", "true", "yes",
         )
+        # Google Workspace prefix-mapping config — surfaced into templates
+        # so client-side JS can derive a friendly display name from the
+        # full Workspace email stored as the group's `name` (admin UI
+        # strips the prefix and `@domain` for the big line, keeps the
+        # full email as subtitle). Read at template render time so an
+        # operator can flip these via env without an image rebuild.
+        AGNES_GOOGLE_GROUP_PREFIX = os.environ.get(
+            "AGNES_GOOGLE_GROUP_PREFIX", ""
+        )
+        AGNES_GROUP_ADMIN_EMAIL = os.environ.get(
+            "AGNES_GROUP_ADMIN_EMAIL", ""
+        )
+        AGNES_GROUP_EVERYONE_EMAIL = os.environ.get(
+            "AGNES_GROUP_EVERYONE_EMAIL", ""
+        )
 
         @staticmethod
         def theme_overrides():
@@ -717,10 +732,17 @@ async def admin_group_detail_page(
     """Single-group detail page — header + members table. Resource grants
     live on /admin/grants (deep-linked from here)."""
     from src.repositories.user_groups import UserGroupsRepository
+    from app.api.access import _is_google_managed
     g = UserGroupsRepository(conn).get(group_id)
     if not g:
         raise HTTPException(status_code=404, detail="Group not found")
-    ctx = _build_context(request, user=user, target_group=g)
+    # Project a `is_google_managed` flag onto the dict the template reads,
+    # using the same rule the API enforces (created_by='system:google-sync'
+    # OR system + env mapping). Doing it server-side keeps the template
+    # free of env-var lookups and Python-side logic duplication.
+    g_view = dict(g)
+    g_view["is_google_managed"] = _is_google_managed(g)
+    ctx = _build_context(request, user=user, target_group=g_view)
     return templates.TemplateResponse(request, "admin_group_detail.html", ctx)
 
 

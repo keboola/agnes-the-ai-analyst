@@ -156,13 +156,14 @@ class TestMarketplaceInfo:
         assert names == {"mkt-b-plug-y"}
         assert "TestGroup" in info["groups"]
 
-    def test_user_with_no_groups_falls_back_to_everyone(self, marketplace_env):
-        """Everyone has no grants here, so the list is empty but call succeeds."""
+    def test_user_with_no_groups_sees_empty_payload(self, marketplace_env):
+        """Auto-Everyone removal: a user with zero memberships now sees an
+        empty groups list and zero plugins (no implicit Everyone fallback)."""
         c = marketplace_env["client"]
         resp = c.get("/marketplace/info", headers=_auth(marketplace_env["nogroups_token"]))
         assert resp.status_code == 200
         info = resp.json()
-        assert "Everyone" in info["groups"]
+        assert info["groups"] == []
         assert info["plugins"] == []
 
     def test_missing_auth_returns_401(self, marketplace_env):

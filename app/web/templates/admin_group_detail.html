@@ -18,7 +18,23 @@
   .gd-back:hover { color: var(--text-primary, #111827); }
   .gd-title-block { flex: 1; }
   .gd-title { font-size: 22px; font-weight: 600; margin: 0; }
+  .gd-title-email {
+    display: block;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+    font-size: 12px; font-weight: 400; color: var(--text-secondary, #6b7280);
+    margin-top: 2px;
+  }
   .gd-subtitle { font-size: 13px; color: var(--text-secondary, #6b7280); margin-top: 2px; }
+  .gd-managed-banner {
+    margin-bottom: 16px;
+    padding: 12px 16px;
+    background: #ecfdf5;
+    border: 1px solid #86efac;
+    color: #166534;
+    border-radius: 10px;
+    font-size: 13px;
+    line-height: 1.5;
+  }
   .origin-chip {
     display: inline-block; padding: 3px 10px; border-radius: 999px;
     font-size: 10px; font-weight: 600;
@@ -133,25 +149,45 @@
   .toast.error { background: #b91c1c; }
 </style>
 
-<div class="gd-page" data-group-id="{{ target_group.id }}" data-group-name="{{ target_group.name }}" data-is-system="{{ 'true' if target_group.is_system else 'false' }}">
+<div class="gd-page"
+     data-group-id="{{ target_group.id }}"
+     data-group-name="{{ target_group.name }}"
+     data-is-system="{{ 'true' if target_group.is_system else 'false' }}"
+     data-is-google-managed="{{ 'true' if target_group.is_google_managed else 'false' }}"
+     data-google-prefix="{{ config.AGNES_GOOGLE_GROUP_PREFIX }}">
   <div class="gd-header">
     <a href="/admin/groups" class="gd-back">← Back to groups</a>
     <div class="gd-title-block">
-      <h1 class="gd-title">
-        {{ target_group.name }}
+      <h1 class="gd-title" id="header-title">
+        {% if target_group.is_google_managed %}
+          <span id="header-display-name">{{ target_group.name }}</span>
+        {% else %}
+          {{ target_group.name }}
+        {% endif %}
         <span id="origin-chip" class="origin-chip" style="display:none;"></span>
       </h1>
+      {% if target_group.is_google_managed %}
+        <span class="gd-title-email">{{ target_group.name }}</span>
+      {% endif %}
       <div class="gd-subtitle" id="header-sub">
         {{ target_group.description or "—" }}
       </div>
     </div>
-    {% if not target_group.is_system %}
+    {% if not target_group.is_system and not target_group.is_google_managed %}
     <div style="display:flex; gap:6px;">
       <button class="icon-btn" id="edit-group-btn">Edit</button>
       <button class="icon-btn danger" id="delete-group-btn">Delete</button>
     </div>
     {% endif %}
   </div>
+
+  {% if target_group.is_google_managed %}
+  <div class="gd-managed-banner">
+    This group is managed by Google Workspace — read-only here.
+    Add or remove members via <a href="https://admin.google.com" target="_blank" rel="noopener">admin.google.com</a>,
+    or sign in again to refresh.
+  </div>
+  {% endif %}
 
   <!-- Members section -->
   <section class="gd-section">
@@ -168,10 +204,12 @@
       <tbody id="members-tbody"></tbody>
     </table>
     <div class="gd-empty" id="members-empty" style="display:none;">No members yet.</div>
+    {% if not target_group.is_google_managed %}
     <div class="add-row">
       <input id="add-email" type="email" autocomplete="off" placeholder="Add user by email…">
       <button id="add-btn" disabled>Add member</button>
     </div>
+    {% endif %}
   </section>
 
   <!-- Resource grants summary -->
@@ -212,8 +250,26 @@
 const root = document.querySelector(".gd-page");
 const GROUP_ID = root.dataset.groupId;
 const IS_SYSTEM = root.dataset.isSystem === "true";
+const IS_GOOGLE_MANAGED = root.dataset.isGoogleManaged === "true";
+const GOOGLE_GROUP_PREFIX = root.dataset.googlePrefix || "";
 const GROUP_API = `/api/admin/groups/${encodeURIComponent(GROUP_ID)}`;
 const MEMBERS_API = `${GROUP_API}/members`;
+
+function deriveDisplayName(fullEmail) {
+  if (!fullEmail) return "";
+  const local = String(fullEmail).split("@")[0] || String(fullEmail);
+  const px = (GOOGLE_GROUP_PREFIX || "").toLowerCase();
+  let s = local;
+  if (px && s.toLowerCase().startsWith(px)) s = s.slice(px.length);
+  s = s.replace(/^[_\-\s]+/, "");
+  if (!s) return local;
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+if (IS_GOOGLE_MANAGED) {
+  const dn = document.getElementById("header-display-name");
+  if (dn) dn.textContent = deriveDisplayName(root.dataset.groupName);
+}
 
 function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
 function fmtDate(s) { return s ? String(s).slice(0, 16).replace("T", " ") : "-"; }
@@ -316,13 +372,19 @@ async function addMember() {
   loadMembers();
 }
 
-document.getElementById("add-btn").addEventListener("click", addMember);
-document.getElementById("add-email").addEventListener("input", e => {
-  document.getElementById("add-btn").disabled = !e.target.value.trim();
-});
-document.getElementById("add-email").addEventListener("keydown", e => {
-  if (e.key === "Enter") { e.preventDefault(); if (e.target.value.trim()) addMember(); }
-});
+// Add-member affordance is hidden server-side on google-managed rows; bind
+// the listeners only when the elements actually exist.
+const addBtnEl = document.getElementById("add-btn");
+const addEmailEl = document.getElementById("add-email");
+if (addBtnEl && addEmailEl) {
+  addBtnEl.addEventListener("click", addMember);
+  addEmailEl.addEventListener("input", e => {
+    addBtnEl.disabled = !e.target.value.trim();
+  });
+  addEmailEl.addEventListener("keydown", e => {
+    if (e.key === "Enter") { e.preventDefault(); if (e.target.value.trim()) addMember(); }
+  });
+}
 
 async function removeMember(userId, label) {
   if (!confirm(`Remove ${label} from this group?`)) return;
