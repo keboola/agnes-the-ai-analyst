@@ -184,8 +184,7 @@ def create_app() -> FastAPI:
             # (PackageLoader for debug_toolbar/templates) stays appended via
             # ChoiceLoader, so first-party panels still render.
             _debug_templates_dir = Path(__file__).parent / "debug" / "templates"
-            app.add_middleware(
-                DebugToolbarMiddleware,
+            _toolbar_settings = dict(
                 panels=[
                     "debug_toolbar.panels.headers.HeadersPanel",
                     "debug_toolbar.panels.routes.RoutesPanel",
@@ -197,6 +196,45 @@ def create_app() -> FastAPI:
                 ],
                 jinja_loaders=[FileSystemLoader(str(_debug_templates_dir))],
             )
+            # Eagerly register the toolbar's own routes
+            # (/_debug_toolbar/render_panel/ + /_debug_toolbar/static mount)
+            # NOW, before app.web.router's /{full_path:path} catch-all gets
+            # added by include_router(web_router). Otherwise the catch-all
+            # swallows the toolbar's own GET requests and the panel scripts
+            # render our 404 page. We can't construct DebugToolbarMiddleware
+            # directly on the FastAPI app (its `while not isinstance(...,
+            # APIRouter): self.router = self.router.app` walk fails — FastAPI
+            # has `.router`, not `.app`), so call init_toolbar's body
+            # ourselves on the APIRouter directly. add_middleware below still
+            # works lazily; init_toolbar's NoMatchFound guard skips re-adding
+            # routes when called the second time.
+            from debug_toolbar.api import render_panel as _render_panel_view
+            from debug_toolbar.middleware import show_toolbar as _show_toolbar
+            from debug_toolbar.settings import DebugToolbarSettings
+            from fastapi import HTTPException as _HTTPException, status as _status
+            from fastapi.staticfiles import StaticFiles as _StaticFiles
+
+            _eager_settings = DebugToolbarSettings(**_toolbar_settings)
+
+            async def _require_show_toolbar(request, call_next=None):
+                """Mirror DebugToolbarMiddleware.require_show_toolbar: 404 the
+                toolbar API for clients that wouldn't see the toolbar."""
+                if not _show_toolbar(request, _eager_settings):
+                    raise _HTTPException(status_code=_status.HTTP_404_NOT_FOUND)
+                return await _render_panel_view(request)
+
+            app.router.get(
+                _eager_settings.API_URL,
+                name="debug_toolbar.render_panel",
+                include_in_schema=False,
+            )(_render_panel_view)
+            app.router.mount(
+                _eager_settings.STATIC_URL,
+                _StaticFiles(packages=["debug_toolbar"]),
+                name="debug_toolbar.static",
+            )
+
+            app.add_middleware(DebugToolbarMiddleware, **_toolbar_settings)
         except ImportError:
             logger.warning(
                 "DEBUG=1 but fastapi-debug-toolbar not installed; toolbar disabled",
