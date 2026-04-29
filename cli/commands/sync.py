@@ -65,16 +65,30 @@ def sync(
 
         # 2. Determine what to download
         to_download = []
+        skipped_remote = []
         for tid, info in server_tables.items():
             if table and tid != table:
                 continue
             if docs_only:
+                continue
+            # Tables with query_mode='remote' have no parquet on the server —
+            # they're queried via /api/query (BQ pushdown). Skip in sync.
+            if info.get("query_mode") == "remote":
+                skipped_remote.append(tid)
                 continue
             local_hash = local_tables.get(tid, {}).get("hash", "")
             server_hash = info.get("hash", "")
             # Download if: hashes differ, or no local copy, or hash is empty (not computed)
             if server_hash != local_hash or tid not in local_tables or not server_hash:
                 to_download.append(tid)
+
+        if skipped_remote and not as_json:
+            preview = ", ".join(skipped_remote[:5])
+            extra = f" (+{len(skipped_remote) - 5} more)" if len(skipped_remote) > 5 else ""
+            typer.echo(
+                f"Skipping {len(skipped_remote)} remote-mode tables: {preview}{extra}",
+                err=True,
+            )
 
         # Switch the bar from indeterminate to "X/N" progress once we know the total.
         progress.update(
@@ -95,7 +109,7 @@ def sync(
         parquet_dir = local_dir / "server" / "parquet"
         parquet_dir.mkdir(parents=True, exist_ok=True)
 
-        results = {"downloaded": [], "skipped": [], "errors": []}
+        results = {"downloaded": [], "skipped": [], "skipped_remote": list(skipped_remote), "errors": []}
         total = len(to_download)
         for idx, tid in enumerate(to_download, start=1):
             progress.update(task, description=f"[{idx}/{total}] Downloading {tid}...")
@@ -140,19 +154,93 @@ def sync(
             progress.update(task, description="Rebuilding DuckDB views...")
             _rebuild_duckdb_views(local_dir, parquet_dir)
 
+        # 7. Fetch corporate memory bundle and write .claude/rules/km_*.md
+        progress.update(task, description="Fetching corporate memory rules...")
+        _fetch_and_write_rules(local_dir)
+
         progress.update(task, description="Sync complete")
 
     # Output
-    skipped = len(server_tables) - len(to_download)
     if as_json:
         typer.echo(json.dumps(results, indent=2))
     else:
+        skipped_unchanged = len(server_tables) - len(to_download) - len(skipped_remote)
         typer.echo(f"Downloaded: {len(results['downloaded'])} tables")
-        typer.echo(f"Skipped (unchanged): {skipped}")
+        typer.echo(f"Skipped (unchanged): {skipped_unchanged}")
+        if skipped_remote:
+            typer.echo(f"Skipped (remote-mode): {len(skipped_remote)}")
         if results["errors"]:
             typer.echo(f"Errors: {len(results['errors'])}")
             for err in results["errors"]:
                 typer.echo(f"  {err['table']}: {err['error']}")
+
+
+def _item_to_md(item: dict) -> str:
+    """Render a knowledge item as a Markdown rule file."""
+    lines = [f"# {item.get('title', 'Untitled')}"]
+    if item.get("domain"):
+        lines.append(f"_Domain: {item['domain']}_")
+    if item.get("category"):
+        lines.append(f"_Category: {item['category']}_")
+    lines.append("")
+    lines.append(item.get("content", ""))
+    return "\n".join(lines)
+
+
+_SAFE_ID_RE = __import__("re").compile(r"^[a-zA-Z0-9_\-]{1,128}$")
+
+
+def _fetch_and_write_rules(local_dir: Path) -> None:
+    """Fetch /api/memory/bundle and write .claude/rules/km_*.md files.
+
+    The km_*.md namespace in .claude/rules/ is server-managed: this function
+    is the only writer, and it prunes any stale km_*.md files on every run.
+    Do not create km_*.md files manually — they will be removed on next sync.
+
+    Best-effort — sync continues if the server is unreachable or the endpoint
+    returns an error. Stale files from previously-mandated items are removed.
+    """
+    rules_dir = local_dir / ".claude" / "rules"
+    try:
+        resp = api_get("/api/memory/bundle")
+        resp.raise_for_status()
+        bundle = resp.json()
+    except Exception as e:
+        typer.echo(f"Corporate memory bundle unavailable (skipping): {e}", err=True)
+        return
+
+    rules_dir.mkdir(parents=True, exist_ok=True)
+    written: set[str] = set()
+
+    # Write one file per mandatory item.
+    for item in bundle.get("mandatory", []):
+        item_id = item.get("id", "")
+        if not _SAFE_ID_RE.match(item_id):
+            typer.echo(f"Skipping mandatory item with unsafe id: {item_id!r}", err=True)
+            continue
+        fname = f"km_{item_id}.md"
+        (rules_dir / fname).write_text(_item_to_md(item), encoding="utf-8")
+        written.add(fname)
+
+    # Write ranked approved items into a single file.
+    approved = bundle.get("approved", [])
+    if approved:
+        lines = ["# Approved Corporate Knowledge\n"]
+        for item in approved:
+            lines.append(f"## {item.get('title', 'Untitled')}\n")
+            lines.append(item.get("content", "") + "\n")
+        (rules_dir / "km_approved.md").write_text("\n".join(lines), encoding="utf-8")
+        written.add("km_approved.md")
+    else:
+        # Remove stale approved bundle if nothing qualifies.
+        stale = rules_dir / "km_approved.md"
+        if stale.exists():
+            stale.unlink()
+
+    # Prune stale per-item files that are no longer mandatory.
+    for existing in rules_dir.glob("km_*.md"):
+        if existing.name not in written and existing.name != "km_approved.md":
+            existing.unlink()
 
 
 def _print_dry_run_plan(

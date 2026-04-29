@@ -9,24 +9,34 @@ BigQuery) must include a ``_remote_attach`` table in their extract.duckdb:
         alias     VARCHAR,  -- DuckDB alias used in views, e.g. 'kbc'
         extension VARCHAR,  -- Extension name, e.g. 'keboola'
         url       VARCHAR,  -- Connection URL
-        token_env VARCHAR   -- Env-var name holding the auth token (NOT the token itself)
+        token_env VARCHAR   -- Env-var name holding the auth token (NOT the token itself).
+                            -- Empty string for BigQuery — orchestrator detects
+                            -- extension='bigquery' and refreshes the token from the
+                            -- GCE metadata server on its own.
     );
 
 At rebuild time the orchestrator reads ``_remote_attach``, installs/loads the
-extension, reads the token from the environment, and ATTACHes the external source
-so that remote views resolve correctly.
+extension, then either: (a) for BigQuery, fetches a fresh access token from the
+GCE metadata server and creates a session-scoped DuckDB SECRET before ATTACH;
+(b) for sources with a non-empty ``token_env``, reads that env var and passes
+the token inline; (c) ATTACHes without auth. Views referencing
+``bq."dataset"."table"`` or ``kbc."bucket"."table"`` then resolve correctly.
+
+Note: BQ secrets are session-scoped, so ``src.db._reattach_remote_extensions``
+re-fetches the metadata token and re-creates the secret each time a read-only
+analytics connection is opened.
 """
 
 import hashlib
 import logging
 import os
-import re
 import threading
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import duckdb
 
+from connectors.bigquery.auth import get_metadata_token, BQMetadataAuthError
 from src.orchestrator_security import (
     escape_sql_string_literal,
     is_builtin_extension,
@@ -46,7 +56,6 @@ from src.identifier_validation import (  # noqa: E402
     _SAFE_IDENTIFIER,  # noqa: F401  (re-exported for any historical caller)
     validate_identifier as _validate_identifier,
 )
-
 
 def _atomic_swap_db(tmp_path: str, target_path: str) -> None:
     """Atomically replace target DuckDB file, cleaning up WAL files."""
@@ -318,8 +327,31 @@ class SyncOrchestrator:
                 f"FROM {source_name}._meta"
             ).fetchall()
 
+            # Pre-fetch the set of names that actually exist as views/tables in
+            # the attached extract.duckdb. The BQ connector with
+            # legacy_wrap_views=False inserts _meta rows for VIEW entities
+            # without creating inner views — those need a different code path.
+            inner_objects = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT table_name FROM information_schema.tables "
+                    f"WHERE table_catalog='{source_name}'"
+                ).fetchall()
+            }
+
             for table_name, rows, size_bytes, query_mode in meta_rows:
                 if not _validate_identifier(table_name, "table_name"):
+                    continue
+                if table_name not in inner_objects:
+                    # `_meta` row without an inner object — typically a BQ
+                    # VIEW entity in the v2 fetch-primitives flow. Skip the
+                    # master-view creation (use `da fetch` to materialize),
+                    # but still process subsequent rows. No claim, no view.
+                    logger.info(
+                        "Skipping master view for %s.%s — no inner object "
+                        "(use `da fetch` for BQ views)",
+                        source_name, table_name,
+                    )
                     continue
 
                 # Issue #81 Group C — refuse cross-connector collisions.
@@ -330,10 +362,6 @@ class SyncOrchestrator:
                 # is fine (idempotent rebuild).
                 if view_repo is not None:
                     if not view_repo.claim(table_name, source_name):
-                        # Query live owner — covers two cases:
-                        # (1) stale snapshot from rebuild start (existing_owners),
-                        # (2) two sources both first-time-claim the same name
-                        #     in this rebuild — the loser sees the winner here.
                         prior_owner = (
                             view_repo.get_owner(table_name)
                             or existing_owners.get(table_name, "<unknown>")
@@ -348,11 +376,19 @@ class SyncOrchestrator:
                     if claimed_pairs is not None:
                         claimed_pairs.append((source_name, table_name))
 
-                conn.execute(
-                    f"CREATE OR REPLACE VIEW \"{table_name}\" AS "
-                    f"SELECT * FROM {source_name}.\"{table_name}\""
-                )
-                tables.append(table_name)
+                try:
+                    conn.execute(
+                        f"CREATE OR REPLACE VIEW \"{table_name}\" AS "
+                        f"SELECT * FROM {source_name}.\"{table_name}\""
+                    )
+                    tables.append(table_name)
+                except Exception as e:
+                    # Per-row catch so one bad row doesn't drop the rest of
+                    # the source's master views from the rebuild.
+                    logger.error(
+                        "Failed to create master view for %s.%s: %s",
+                        source_name, table_name, e,
+                    )
 
             # Update sync_state in system DB
             self._update_sync_state(meta_rows, source_name)
@@ -442,16 +478,39 @@ class SyncOrchestrator:
                     conn.execute(f"INSTALL {extension} FROM community; LOAD {extension};")
                 # #81 Group A.3 — escape URL single-quotes (mirrors src/db.py).
                 safe_url = escape_sql_string_literal(url)
-                if token:
+
+                # BQ-specific: refresh token from GCE metadata, create session-scoped
+                # secret before ATTACH. Empty token_env (set by the BQ extractor) is
+                # the contract that signals "use built-in metadata path".
+                if extension == "bigquery":
+                    try:
+                        bq_token = get_metadata_token()
+                    except BQMetadataAuthError as e:
+                        logger.error(
+                            "Failed to fetch BQ metadata token for %s: %s — skipping ATTACH",
+                            alias, e,
+                        )
+                        continue
+                    escaped = escape_sql_string_literal(bq_token)
+                    secret_name = f"bq_secret_{alias}"
+                    conn.execute(
+                        f"CREATE OR REPLACE SECRET {secret_name} "
+                        f"(TYPE bigquery, ACCESS_TOKEN '{escaped}')"
+                    )
+                    conn.execute(
+                        f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)"
+                    )
+                elif token:
                     escaped_token = escape_sql_string_literal(token)
                     conn.execute(
                         f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, TOKEN '{escaped_token}')"
                     )
                 else:
-                    # Extensions like BigQuery handle auth via env (e.g. GOOGLE_APPLICATION_CREDENTIALS)
+                    # No auth required (or extension handles it via env automatically)
                     conn.execute(
                         f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)"
                     )
+
                 logger.info("Attached remote source %s via %s extension", alias, extension)
             except Exception as e:
                 logger.error("Failed to attach remote source %s: %s", alias, e)

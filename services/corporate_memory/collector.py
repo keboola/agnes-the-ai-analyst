@@ -8,6 +8,16 @@ Uses a "full refresh" approach with hash-based change detection:
    and send to HAIKU in ONE call for a unified catalog refresh
 4. HAIKU preserves existing item IDs (critical for vote stability),
    merges similar knowledge, and tracks source_users per item
+
+TODO(scheduler-v2): In docker-compose.yml this service is a one-shot process
+restarted by Docker (`restart: unless-stopped`), which is effectively a tight
+boot loop. Replace with proper cadence: wire into services/scheduler/__main__.py
+JOBS list and expose an admin endpoint /api/admin/run-corporate-memory that
+invokes collect_all().
+
+TODO(notifications): When new pending items appear after a collection run, no
+admin is notified. Hook into services/telegram_bot or email to ping km_admins
+with a digest so the review queue actually gets triaged.
 """
 
 import hashlib
@@ -23,6 +33,7 @@ from connectors.llm import create_extractor
 from connectors.llm.exceptions import LLMError
 
 from .prompts import CATALOG_REFRESH_PROMPT, SENSITIVITY_CHECK_PROMPT
+from .tagger import auto_tag_items
 
 # Fields preserved across re-collections when item already exists
 GOVERNANCE_FIELDS = (
@@ -478,7 +489,27 @@ def collect_all(dry_run: bool = False) -> dict:
 
     stats["items_pending"] = sum(1 for item in final_items.values() if item.get("status") == "pending")
 
-    # Step 8: Build updated knowledge.json
+    # Step 8: Auto-tag new items with topic vocabulary (best-effort)
+    new_items = [item for item_id, item in final_items.items() if item_id not in existing_ids]
+    if new_items:
+        try:
+            topic_assignments = auto_tag_items(new_items, extractor)
+            for item_id, topics in topic_assignments.items():
+                if item_id in final_items and topics:
+                    existing_tags = final_items[item_id].get("tags") or []
+                    # Prepend topics before free-form keywords (dedup, preserve order)
+                    seen: set[str] = set()
+                    merged: list[str] = []
+                    for t in topics + existing_tags:
+                        if t not in seen:
+                            seen.add(t)
+                            merged.append(t)
+                    final_items[item_id]["tags"] = merged
+            logger.info("Auto-tagged %d new item(s) with topics", len(topic_assignments))
+        except Exception as e:
+            logger.warning("auto_tag_items failed (non-fatal): %s", e)
+
+    # Step 9: Build updated knowledge.json
     updated = {
         "items": final_items,
         "metadata": {
@@ -487,7 +518,7 @@ def collect_all(dry_run: bool = False) -> dict:
         },
     }
 
-    # Step 9: Save unless dry run
+    # Step 10: Save unless dry run
     if not dry_run:
         _write_json(KNOWLEDGE_FILE, updated)
         logger.info(

@@ -144,6 +144,12 @@ def _build_context(request: Request, user: Optional[dict] = None, **extra) -> di
         SSH_ALIAS = "data-analyst"
         SERVER_HOST = os.environ.get("SERVER_HOST", "")
         PROJECT_DIR = "data-analyst"
+        # Drives whether the user dropdown renders the "Auth debug" link.
+        # Same env var the route guard checks — keep them in lock-step so
+        # the link never appears when the route would 404, and vice versa.
+        DEBUG_AUTH_ENABLED = os.environ.get("AGNES_DEBUG_AUTH", "").strip().lower() in (
+            "1", "true", "yes",
+        )
 
         @staticmethod
         def theme_overrides():
@@ -479,9 +485,23 @@ async def corporate_memory(
     cm_config = get_corporate_memory_config()
     governance_mode = cm_config.get("distribution_mode")
 
-    # Build stats
+    # Build stats + filter dropdowns from the full item set so the dropdowns
+    # match the data the page is rendering. `categories` and `domains` are
+    # consumed by the filter pickers in `corporate_memory.html`; without
+    # `domains` the "All domains" picker stays empty.
     all_items = repo.list_items(limit=10000)
     categories = sorted(set(i.get("category", "") for i in all_items if i.get("category")))
+    domains = sorted(set(i.get("domain", "") for i in all_items if i.get("domain")))
+
+    # "My contributions" — items the caller authored. Personal items are
+    # always visible to their author regardless of audience filtering;
+    # this is the surface the user uses to mark/unmark `is_personal`.
+    user_email = user.get("email") or ""
+    user_contributions = repo.get_user_contributions(user_email) if user_email else []
+    for item in user_contributions:
+        votes = repo.get_votes(item["id"])
+        item["upvotes"] = votes["upvotes"]
+        item["downvotes"] = votes["downvotes"]
 
     ctx = _build_context(
         request, user=user,
@@ -489,10 +509,12 @@ async def corporate_memory(
         governance_mode=governance_mode,
         governance={"mode": governance_mode, "groups": cm_config.get("groups", {})},
         categories=categories,
+        domains=domains,
         stats={"total": len(all_items), "approved": len([i for i in all_items if i.get("status") == "approved"])},
         user_votes={},
         is_km_admin=is_user_admin(user["id"], conn),
-        user_stats={"authored": 0, "votes_given": 0},
+        user_contributions=user_contributions,
+        user_stats={"authored": len(user_contributions), "votes_given": 0},
         # Template expects knowledge as object with .items and .total_pages
         knowledge={"items": items, "total_pages": 1, "page": 1, "per_page": 100, "total": len(items)},
         total_pages=1,
@@ -516,12 +538,38 @@ async def corporate_memory_admin(
     for item in all_items:
         s = item.get("status", "unknown")
         status_counts[s] = status_counts.get(s, 0) + 1
+
+    # Contradictions tab is server-rendered (no JS fetch on this tab — see
+    # corporate_memory_admin.html). Fetch the unresolved set and enrich each
+    # entry with the title/sensitivity of both sides so the template doesn't
+    # need to re-query per row.
+    contradictions = repo.list_contradictions(resolved=False)
+    item_lookup = {it["id"]: it for it in all_items}
+    for c in contradictions:
+        for side in ("item_a_id", "item_b_id"):
+            base = item_lookup.get(c.get(side)) or {}
+            target = "item_a" if side == "item_a_id" else "item_b"
+            c[target] = {
+                "title": base.get("title", ""),
+                "content": base.get("content", ""),
+                "domain": base.get("domain"),
+                "sensitivity": base.get("sensitivity"),
+                "status": base.get("status"),
+                "hidden": base.get("is_personal", False),
+            }
+
     ctx = _build_context(
         request, user=user,
         pending_items=pending,
-        stats={"total": len(all_items), "by_status": status_counts, "pending": len(pending)},
+        stats={
+            "total": len(all_items),
+            "by_status": status_counts,
+            "pending": len(pending),
+            "contradictions": len(contradictions),
+        },
         governance=get_corporate_memory_config(),
         groups=get_corporate_memory_config().get("groups", {}),
+        contradictions=contradictions,
         audit_entries=[],
     )
     return templates.TemplateResponse(request, "corporate_memory_admin.html", ctx)
@@ -573,6 +621,24 @@ async def admin_tables(
     tables = repo.list_all()
     ctx = _build_context(request, user=user, registered_tables=tables)
     return templates.TemplateResponse(request, "admin_tables.html", ctx)
+
+
+@router.get("/admin/server-config", response_class=HTMLResponse)
+async def admin_server_config_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Server configuration editor — instance.yaml fields grouped by section.
+
+    Shell-only page. The form is populated client-side from
+    GET /api/admin/server-config (which redacts secrets) and submitted
+    section-by-section to POST /api/admin/server-config. Auth/server
+    sections require an explicit confirmation dialog before save (see
+    ``_DANGER_SECTIONS`` in the API). Saves trigger the "restart required"
+    banner — hot-reload is out of scope for #91.
+    """
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_server_config.html", ctx)
 
 
 @router.get("/admin/permissions", response_class=HTMLResponse)

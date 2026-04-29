@@ -15,7 +15,7 @@
         {% if session.user.role == 'admin' %}
         <a class="app-nav-link {% if _path.startswith('/admin/tokens') %}is-active{% endif %}" href="/admin/tokens">All tokens</a>
         <a class="app-nav-link {% if _path.startswith('/admin/marketplaces') %}is-active{% endif %}" href="/admin/marketplaces">Marketplaces</a>
-        {% set _admin_active = _path.startswith('/admin/users') or _path.startswith('/admin/groups') or _path.startswith('/admin/access') %}
+        {% set _admin_active = _path.startswith('/admin/users') or _path.startswith('/admin/groups') or _path.startswith('/admin/access') or _path.startswith('/admin/server-config') %}
         <div class="app-nav-menu" id="adminNavMenu">
             <button type="button"
                     class="app-nav-link app-nav-menu-trigger {% if _admin_active %}is-active{% endif %}"
@@ -30,6 +30,7 @@
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/users') %}is-active{% endif %}" role="menuitem" href="/admin/users">Users</a>
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/groups') %}is-active{% endif %}" role="menuitem" href="/admin/groups">Groups</a>
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/access') %}is-active{% endif %}" role="menuitem" href="/admin/access">Resource access</a>
+                <a class="app-nav-menu-item {% if _path.startswith('/admin/server-config') %}is-active{% endif %}" role="menuitem" href="/admin/server-config">Server config</a>
             </div>
         </div>
         {% endif %}
@@ -55,6 +56,9 @@
                 </div>
                 <a class="app-user-menu-item {% if _path.startswith('/profile') %}is-active{% endif %}" role="menuitem" href="/profile">Profile</a>
                 <a class="app-user-menu-item {% if _path == '/tokens' %}is-active{% endif %}" role="menuitem" href="/tokens">My tokens</a>
+                {% if config.DEBUG_AUTH_ENABLED %}
+                <a class="app-user-menu-item {% if _path.startswith('/me/debug') %}is-active{% endif %}" role="menuitem" href="/me/debug">Auth debug</a>
+                {% endif %}
                 <a class="app-user-menu-item" role="menuitem" href="{{ url_for('auth.logout') }}">Logout</a>
             </div>
         </div>

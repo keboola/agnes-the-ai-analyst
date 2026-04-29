@@ -86,6 +86,13 @@ def migrate_all(data_dir: str = None) -> dict:
                 source_user=item.get("source_user"),
                 tags=item.get("tags"),
                 status=item.get("status", "pending"),
+                confidence=item.get("confidence"),
+                domain=item.get("domain"),
+                entities=item.get("entities"),
+                source_type=item.get("source_type", "claude_local_md"),
+                source_ref=item.get("source_ref"),
+                sensitivity=item.get("sensitivity", "internal"),
+                is_personal=item.get("is_personal", False),
             )
             count += 1
     stats["knowledge"] = count

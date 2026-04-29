@@ -62,7 +62,10 @@ async def execute_query(
     if any(keyword in sql_lower for keyword in blocked):
         raise HTTPException(status_code=400, detail="Only single SELECT queries are allowed")
 
-    if not sql_lower.startswith("select ") and not sql_lower.startswith("with "):
+    # Accept any whitespace (newline, tab, space) after the keyword so
+    # multi-line SQL doesn't 400 on `SELECT\n  col, ...`.
+    import re as _re
+    if not _re.match(r"^(select|with)\s", sql_lower):
         raise HTTPException(status_code=400, detail="Query must start with SELECT or WITH")
 
     # Get allowed tables for this user

@@ -89,6 +89,7 @@ from app.api.settings import router as settings_router
 from app.api.catalog import router as catalog_router
 from app.api.telegram import router as telegram_router
 from app.api.access import router as access_router, me_router as me_access_router
+from app.api.me_debug import router as me_debug_router
 from app.api.admin import router as admin_router
 from app.api.permissions import router as permissions_router
 from app.api.access_requests import router as access_requests_router
@@ -98,6 +99,10 @@ from app.api.metadata import router as metadata_router
 from app.api.query_hybrid import router as query_hybrid_router
 from app.api.cli_artifacts import router as cli_artifacts_router
 from app.api.tokens import router as tokens_router, admin_router as tokens_admin_router
+from app.api.v2_catalog import router as v2_catalog_router
+from app.api.v2_schema import router as v2_schema_router
+from app.api.v2_sample import router as v2_sample_router
+from app.api.v2_scan import router as v2_scan_router
 from app.api.marketplaces import router as marketplaces_router
 from app.marketplace_server.router import router as marketplace_server_router
 from app.marketplace_server.git_router import make_git_wsgi_app
@@ -184,6 +189,17 @@ def create_app() -> FastAPI:
         logger.info("Instance config loaded")
     except Exception as e:
         logger.warning(f"Could not load instance config: {e}")
+
+    # Configure confidence scoring from instance config (corporate_memory.confidence section)
+    try:
+        from app.instance_config import get_corporate_memory_config
+        from services.corporate_memory.confidence import configure as configure_confidence
+        cm_config = get_corporate_memory_config()
+        if cm_config and "confidence" in cm_config:
+            configure_confidence(cm_config["confidence"])
+            logger.info("Corporate memory confidence config applied")
+    except Exception as e:
+        logger.warning(f"Could not configure corporate memory confidence: {e}")
 
     # Startup banner
     from src.db import SCHEMA_VERSION
@@ -325,6 +341,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_router)
     app.include_router(access_router)
     app.include_router(me_access_router)
+    app.include_router(me_debug_router)
     app.include_router(permissions_router)
     app.include_router(access_requests_router)
     app.include_router(jira_webhooks_router)
@@ -334,6 +351,10 @@ def create_app() -> FastAPI:
     app.include_router(cli_artifacts_router)
     app.include_router(tokens_router)
     app.include_router(tokens_admin_router)
+    app.include_router(v2_catalog_router)
+    app.include_router(v2_schema_router)
+    app.include_router(v2_sample_router)
+    app.include_router(v2_scan_router)
     app.include_router(marketplaces_router)
     app.include_router(marketplace_server_router)
 

@@ -135,7 +135,15 @@ class TestTokenEnvAllowlist:
 
     def test_empty_token_env_skips_check(self, captured_conn, monkeypatch):
         """token_env='' (the BigQuery-style env-auth path) skips the
-        allowlist check entirely. Verifies the BQ flow keeps working."""
+        allowlist check entirely. Verifies the BQ flow keeps working.
+
+        Stubs get_metadata_token because the BQ branch fetches a token
+        from the GCE metadata server before ATTACH — that's unreachable
+        in unit tests."""
+        monkeypatch.setattr(
+            "src.orchestrator.get_metadata_token",
+            lambda: "fake-token",
+        )
         conn, sql_calls, set_rows = captured_conn
         set_rows([("bq", "bigquery", "project=x", "")])
         SyncOrchestrator()._attach_remote_extensions(conn, "src1")

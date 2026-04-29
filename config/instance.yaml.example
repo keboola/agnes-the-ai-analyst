@@ -111,10 +111,17 @@ data_source:
     stack_url: ""                 # e.g., "https://connection.keboola.com"
     project_id: ""
   bigquery:
-    project: "${BIGQUERY_PROJECT}"       # GCP project for job execution/billing
+    project: "${BIGQUERY_PROJECT}"       # GCP project hosting the data (used in FROM clause)
     location: "${BIGQUERY_LOCATION}"     # BigQuery location (e.g., "us-central1", "US")
     # Uses ADC (Application Default Credentials) - VM service account on GCP
     # Data can live in a different project -- use fully-qualified table IDs in data_description.md
+    # billing_project: ""                # Optional: GCP project to bill BQ jobs to / submit jobs from.
+    #                                    # Defaults to `project`. Set this when the SA has bigquery.data.* on
+    #                                    # the data project but lacks serviceusage.services.use there (i.e.,
+    #                                    # cross-project read pattern). Submission/billing target must be a
+    #                                    # project the SA can use; data project just needs read.
+    # legacy_wrap_views: false           # Set true to restore pre-v2 wrap views for BQ VIEW/MATERIALIZED_VIEW
+    #                                    # tables in analytics.duckdb (migration escape hatch; default: false)
 
 # --- OpenMetadata catalog (optional) ---
 # Enriches table and column metadata from OpenMetadata REST API.
@@ -232,6 +239,78 @@ ai:
 #
 #   # Notify km_admins about new pending items
 #   notify_on_new_items: true
+#
+#   # --- V1 Context Engineering ---
+#
+#   sources:
+#     claude_local_md:
+#       enabled: true
+#       confidence_base: 0.50
+#     session_transcripts:
+#       enabled: true
+#       confidence_base: 0.60
+#       max_turns_per_session: 100
+#       detection_types:
+#         - correction
+#         - confirmation
+#         - unprompted_definition
+#
+#   extraction:
+#     model: "claude-haiku-4-5-20251001"
+#     sensitivity_check: true
+#     contradiction_check: true
+#
+#   confidence:
+#     # Base score per extraction source. Key format: "source_type" or "source_type.detection_type"
+#     base:
+#       user_verification.correction: 0.90
+#       user_verification.unprompted_definition: 0.90
+#       user_verification.confirmation: 0.60
+#       admin_mandate: 1.00
+#       claude_local_md: 0.50
+#       session_transcript: 0.50
+#     # Per-key modifier step sizes applied to base when optional signals are present.
+#     modifiers:
+#       user_verification.correction:
+#         additional_verifiers: 0.05    # per extra unique verifier
+#       user_verification.unprompted_definition:
+#         additional_verifiers: 0.05
+#       user_verification.confirmation:
+#         admin_confirmed: 0.20
+#       session_transcript:
+#         user_confirmed_in_session: 0.20
+#     # Confidence decay applied to items as they age.
+#     decay:
+#       mode: exponential               # linear | exponential
+#       half_life_months: 12            # used when mode=exponential
+#       decay_rate_monthly: 0.02        # used when mode=linear
+#       floor:
+#         admin_mandate: 0.50           # admin policies don't silently decay to zero
+#         user_verification: 0.40       # user-verified facts never fall below 0.40
+#         default: 0.0
+#
+#   contradiction_detection:
+#     enabled: true
+#     max_candidates: 10
+#
+#   entity_resolution:
+#     enabled: true
+#     entities:
+#       metrics: ["churn", "MRR", "ARR", "NPS", "CAC", "LTV"]
+#       products: ["Platform", "API", "Dashboard"]
+#
+#   domain_owners:
+#     finance: ["cfo@company.com"]
+#     engineering: ["cto@company.com"]
+#     product: ["pm@company.com"]
+#
+#   domains:
+#     - finance
+#     - engineering
+#     - product
+#     - data
+#     - operations
+#     - infrastructure
 
 # --- User groups for audience targeting (optional) ---
 # Used with Corporate Memory governance to target mandatory knowledge to specific groups.
@@ -286,3 +365,24 @@ catalog:
 #   max_bq_registration_rows: 500000  # Max rows per --register-bq sub-query
 #   default_format: "table"           # Default output format
 #   output_dir: "/tmp/remote_query"   # Directory for Parquet/CSV exports
+
+# --- v2 API knobs (optional) ---
+# Controls for the /api/v2/{catalog,schema,sample,scan,scan/estimate} endpoints.
+# All values are optional — the defaults shown below are applied if keys are absent.
+#
+# api:
+#   # --- Scan / fetch limits ---
+#   scan:
+#     max_limit: 10000000             # Hard row cap per /api/v2/scan request (default: 10 M)
+#     max_result_bytes: 2147483648    # Hard byte cap on Arrow stream response: 2 GB (default)
+#                                     # If exceeded, partial result returned with X-Agnes-Truncated header.
+#     max_concurrent_per_user: 5      # In-flight /api/v2/scan requests allowed per user (default: 5)
+#                                     # Note: quota is process-local; N replicas → effective N× cap.
+#     max_daily_bytes_per_user: 53687091200  # Per-user daily byte quota: 50 GB (default). Resets at UTC midnight.
+#     bq_cost_per_tb_usd: 5.00        # Cost rate shown in /api/v2/scan/estimate response (default: $5/TB)
+#     request_timeout_seconds: 300    # Server-side timeout for a single scan request (default: 300 s)
+#   # --- Discovery cache TTLs ---
+#   catalog_cache_ttl_seconds: 300    # /api/v2/catalog response cache lifetime (default: 5 min)
+#   schema_cache_ttl_seconds: 3600    # /api/v2/schema/{table_id} cache lifetime (default: 1 h)
+#   sample_cache_ttl_seconds: 3600    # /api/v2/sample/{table_id} cache lifetime (default: 1 h)
+#                                     # Admins can force-refresh via POST /api/v2/sample/{id}?refresh=true

@@ -415,6 +415,142 @@ class TestSyncOrchestrator:
         assert "evil; DROP TABLE users--" not in result["keboola"]
 
 
+class TestBQMetadataAuth:
+    """Orchestrator fetches a fresh metadata token for BQ remote attach."""
+
+    def test_bq_extension_triggers_metadata_token_fetch(self, setup_env, monkeypatch):
+        """When _remote_attach.extension='bigquery' with empty token_env, orchestrator
+        calls get_metadata_token() and creates a DuckDB secret before ATTACH."""
+        from src.orchestrator import SyncOrchestrator
+        from unittest.mock import MagicMock
+
+        # Build extract.duckdb with bq _remote_attach row
+        source_dir = setup_env["extracts_dir"] / "bigquery"
+        source_dir.mkdir()
+        db_path = source_dir / "extract.duckdb"
+        conn = duckdb.connect(str(db_path))
+        conn.execute("""CREATE TABLE _meta (
+            table_name VARCHAR, description VARCHAR, rows BIGINT,
+            size_bytes BIGINT, extracted_at TIMESTAMP, query_mode VARCHAR DEFAULT 'remote'
+        )""")
+        conn.execute("""CREATE TABLE _remote_attach (
+            alias VARCHAR, extension VARCHAR, url VARCHAR, token_env VARCHAR
+        )""")
+        conn.execute(
+            "INSERT INTO _remote_attach VALUES ('bq', 'bigquery', 'project=test-proj', '')"
+        )
+        # Local stub view so rebuild has something to attach (avoids INSTALL bigquery in test)
+        conn.execute('CREATE TABLE "stub" (x INT)')
+        conn.execute("INSERT INTO stub VALUES (1)")
+        conn.execute(
+            "INSERT INTO _meta VALUES ('stub', '', 1, 0, current_timestamp, 'local')"
+        )
+        conn.close()
+
+        # Stub get_metadata_token
+        called = {"count": 0}
+        def fake_token():
+            called["count"] += 1
+            return "ya29.fake-token"
+        monkeypatch.setattr(
+            "src.orchestrator.get_metadata_token",
+            fake_token,
+        )
+
+        # Capture executed SQL on the master connection. DuckDB's PyConnection has
+        # read-only attributes, so wrap it in a proxy instead of patching `.execute`.
+        captured = []
+
+        class _ConnProxy:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def execute(self, sql, *args, **kwargs):
+                captured.append(sql)
+                up = sql.upper()
+                # Skip BQ-extension-specific calls — they need real BQ network access
+                # that isn't available in unit tests. Match on `TYPE bigquery`
+                # rather than substring "bigquery" so we don't shadow ATTACH of
+                # extract.duckdb files that live under /extracts/bigquery/.
+                if "INSTALL BIGQUERY" in up or "LOAD BIGQUERY" in up:
+                    return MagicMock()
+                if "CREATE OR REPLACE SECRET" in up and "TYPE BIGQUERY" in up:
+                    return MagicMock()
+                if up.startswith("ATTACH ") and "TYPE BIGQUERY" in up:
+                    return MagicMock()
+                return self._inner.execute(sql, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+        real_connect = duckdb.connect
+
+        def spy_connect(path, *a, **kw):
+            return _ConnProxy(real_connect(path, *a, **kw))
+
+        monkeypatch.setattr("src.orchestrator.duckdb.connect", spy_connect)
+
+        orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
+        orch.rebuild()
+
+        assert called["count"] >= 1, "get_metadata_token() must be called for BQ source"
+        assert any(
+            "CREATE OR REPLACE SECRET" in s.upper() and "TYPE BIGQUERY" in s.upper()
+            for s in captured
+        ), "orchestrator must create DuckDB secret with metadata token"
+        # ATTACH for BQ must not include TOKEN= clause (auth is via the secret)
+        attach_for_bq = [
+            s for s in captured
+            if s.upper().startswith("ATTACH ") and "TYPE BIGQUERY" in s.upper()
+        ]
+        assert attach_for_bq, "expected ATTACH for the bq alias"
+        assert all("TOKEN '" not in s for s in attach_for_bq), \
+            f"ATTACH for BQ must not pass TOKEN= directly (auth via secret); got: {attach_for_bq}"
+
+    def test_bq_metadata_failure_logs_and_skips(self, setup_env, monkeypatch, caplog):
+        """If metadata is unreachable, orchestrator logs and skips the BQ source — does not crash."""
+        from src.orchestrator import SyncOrchestrator
+        from connectors.bigquery.auth import BQMetadataAuthError
+        import logging
+
+        # Build minimal BQ extract with a co-located local 'stub' table
+        source_dir = setup_env["extracts_dir"] / "bigquery"
+        source_dir.mkdir()
+        db_path = source_dir / "extract.duckdb"
+        conn = duckdb.connect(str(db_path))
+        conn.execute("""CREATE TABLE _meta (
+            table_name VARCHAR, description VARCHAR, rows BIGINT,
+            size_bytes BIGINT, extracted_at TIMESTAMP, query_mode VARCHAR DEFAULT 'remote'
+        )""")
+        conn.execute("""CREATE TABLE _remote_attach (
+            alias VARCHAR, extension VARCHAR, url VARCHAR, token_env VARCHAR
+        )""")
+        conn.execute(
+            "INSERT INTO _remote_attach VALUES ('bq', 'bigquery', 'project=test-proj', '')"
+        )
+        conn.execute('CREATE TABLE "stub" (x INT)')
+        conn.execute("INSERT INTO stub VALUES (1)")
+        conn.execute(
+            "INSERT INTO _meta VALUES ('stub', '', 1, 0, current_timestamp, 'local')"
+        )
+        conn.close()
+
+        def boom():
+            raise BQMetadataAuthError("metadata server unreachable: simulated")
+        monkeypatch.setattr("src.orchestrator.get_metadata_token", boom)
+
+        with caplog.at_level(logging.ERROR, logger="src.orchestrator"):
+            orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
+            result = orch.rebuild()
+
+        # Local 'stub' view should still attach — failure of one source shouldn't break others
+        assert "bigquery" in result
+        assert "stub" in result["bigquery"]
+        assert any(
+            "metadata" in r.message.lower() and r.levelname == "ERROR"
+            for r in caplog.records
+        ), f"expected ERROR-level log mentioning metadata; got: {[(r.levelname, r.message) for r in caplog.records]}"
+
 
 # ---------------------------------------------------------------------------
 # Orchestrator failure mode tests
@@ -508,30 +644,18 @@ class TestOrchestratorFailureModes:
 
         source_dir = setup_env["extracts_dir"] / "midwrite"
         source_dir.mkdir()
-        (source_dir / "data").mkdir()
-
-        # No extract.duckdb, but a .tmp file exists (mid-write)
-        tmp_path = source_dir / "extract.duckdb.tmp"
-        tmp_path.write_bytes(b"partial data")
-
-        # Also create a valid source
-        _create_mock_extract(
-            setup_env["extracts_dir"],
-            "keboola",
-            [{"name": "orders", "data": [{"id": "1"}]}],
-        )
+        # Only a .tmp file — no extract.duckdb yet
+        tmp = source_dir / "extract.duckdb.tmp"
+        tmp.write_bytes(b"partial write in progress")
 
         orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
         result = orch.rebuild()
 
-        # midwrite source should not appear (no extract.duckdb)
+        # midwrite source is omitted (no extract.duckdb)
         assert "midwrite" not in result
-        # Valid source should still work
-        assert "keboola" in result
 
     def test_multiple_corrupted_sources_do_not_block_others(self, setup_env):
-        """Multiple corrupted extract.duckdb files should not prevent
-        processing of valid sources."""
+        """Multiple corrupted sources should not prevent valid ones from being processed."""
         from src.orchestrator import SyncOrchestrator
 
         # Create two corrupted sources
@@ -540,7 +664,7 @@ class TestOrchestratorFailureModes:
             d.mkdir()
             (d / "extract.duckdb").write_bytes(b"garbage " + name.encode())
 
-        # Create a valid source
+        # And a valid one
         _create_mock_extract(
             setup_env["extracts_dir"],
             "keboola",

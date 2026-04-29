@@ -51,12 +51,21 @@ class _DuckDBProxy:
         sql_upper = sql.strip().upper()
         if sql_upper.startswith("INSTALL BIGQUERY") or sql_upper.startswith("LOAD BIGQUERY"):
             return MagicMock()
+        if sql_upper.startswith("CREATE SECRET"):
+            return MagicMock()
         if "ATTACH" in sql_upper and "BIGQUERY" in sql_upper:
             return MagicMock()
         if sql_upper.startswith("DETACH BQ"):
             return MagicMock()
         # CREATE VIEW referencing bq.* -> create a dummy table instead
         if "FROM BQ." in sql_upper and "CREATE" in sql_upper:
+            match = re.search(r'VIEW\s+"?(\w+)"?', sql, re.IGNORECASE)
+            if match:
+                view_name = match.group(1)
+                self._real.execute(f'CREATE OR REPLACE TABLE "{view_name}" (dummy INTEGER)')
+                return MagicMock()
+        # bigquery_query() table function — stub as a CREATE TABLE so the view persists
+        if "BIGQUERY_QUERY(" in sql_upper and "CREATE" in sql_upper:
             match = re.search(r'VIEW\s+"?(\w+)"?', sql, re.IGNORECASE)
             if match:
                 view_name = match.group(1)
@@ -76,6 +85,20 @@ def _proxy_connect(path=None, **kwargs):
     return _DuckDBProxy(real_conn)
 
 
+@pytest.fixture
+def mock_bq_auth_and_detect(monkeypatch):
+    """Stub metadata-token auth + entity-type detection so init_extract runs offline."""
+    monkeypatch.setattr(
+        "connectors.bigquery.extractor.get_metadata_token",
+        lambda: "test-token",
+    )
+    monkeypatch.setattr(
+        "connectors.bigquery.extractor._detect_table_type",
+        lambda *a, **kw: "BASE TABLE",
+    )
+
+
+@pytest.mark.usefixtures("mock_bq_auth_and_detect")
 class TestBigQueryExtractorFull:
     def test_init_extract_creates_contract_compliant_db(self, output_dir, sample_configs):
         """init_extract() creates extract.duckdb that passes contract validation."""

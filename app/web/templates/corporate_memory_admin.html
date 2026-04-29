@@ -647,6 +647,46 @@
             white-space: nowrap;
         }
 
+        .audit-row { cursor: pointer; }
+        .audit-row:hover { background: var(--bg-secondary, #f9fafb); }
+        .audit-row.expanded { background: #eff6ff; }
+        .audit-detail-row > td {
+            background: #f8fafc;
+            border-top: 0;
+            padding: var(--space-4) var(--space-5);
+        }
+        .audit-detail-grid {
+            display: grid;
+            grid-template-columns: 140px 1fr;
+            gap: var(--space-2) var(--space-3);
+            font-size: var(--text-sm);
+        }
+        .audit-detail-grid .k {
+            color: var(--text-secondary);
+            font-weight: var(--font-medium);
+        }
+        .audit-detail-grid .v {
+            color: var(--text-primary);
+            word-break: break-word;
+        }
+        .audit-detail-grid pre {
+            margin: 0;
+            padding: var(--space-3);
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            font-size: var(--text-xs);
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .audit-disclosure {
+            display: inline-block;
+            width: 12px;
+            color: var(--text-secondary);
+            transition: transform 0.15s;
+        }
+        .audit-row.expanded .audit-disclosure { transform: rotate(90deg); }
+
         /* Pagination */
         .pagination {
             display: flex;
@@ -800,10 +840,10 @@
     {% include '_theme.html' %}
 </head>
 <body>
-    <div class="container-memory">
-        <!-- Header -->
-        {% include '_app_header.html' %}
+    <!-- Header (outside container so it spans full viewport, matching dashboard) -->
+    {% include '_app_header.html' %}
 
+    <div class="container-memory">
         <!-- Stats Bar -->
         <div class="stats-bar">
             <div class="stat-item highlight">
@@ -835,6 +875,10 @@
             </button>
             <button class="tab-btn" data-tab="all" onclick="switchTab('all')">
                 All Items
+            </button>
+            <button class="tab-btn" data-tab="contradictions" onclick="switchTab('contradictions')">
+                Contradictions
+                <span class="tab-badge" id="contradictionsBadge" style="{% if not stats.contradictions %}display:none{% endif %}">{{ stats.contradictions|default(0) }}</span>
             </button>
             <button class="tab-btn" data-tab="audit" onclick="switchTab('audit')">
                 Audit Log
@@ -875,13 +919,19 @@
         <div id="tab-all" class="tab-content">
             <div class="filter-bar">
                 <label for="statusFilter">Status:</label>
-                <select class="filter-select" id="statusFilter" onchange="loadAllItems(0)">
+                <select class="filter-select" id="statusFilter" onchange="loadAllItems(1)">
                     <option value="">All</option>
                     <option value="pending">Pending</option>
                     <option value="approved">Approved</option>
                     <option value="mandatory">Mandatory</option>
                     <option value="rejected">Rejected</option>
                     <option value="revoked">Revoked</option>
+                </select>
+                <label for="sourceTypeFilter" style="margin-left: var(--space-4);">Source:</label>
+                <select class="filter-select" id="sourceTypeFilter" onchange="loadAllItems(1)">
+                    <option value="">All sources</option>
+                    <option value="user_verification">Verified facts (from sessions)</option>
+                    <option value="claude_local_md">CLAUDE.local.md</option>
                 </select>
             </div>
             <div id="allList" class="knowledge-list">
@@ -890,17 +940,76 @@
             <div id="allPagination" class="pagination"></div>
         </div>
 
+        <!-- Contradictions Tab -->
+        <div id="tab-contradictions" class="tab-content">
+            <div id="contradictionsList" class="knowledge-list">
+                {% if contradictions %}
+                {% for c in contradictions %}
+                <div class="contradiction-card" style="border: 1px solid var(--border); border-radius: var(--radius-xl); padding: var(--space-5); margin-bottom: var(--space-4); background: var(--surface);">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-3);">
+                        <div>
+                            <span style="font-weight: var(--font-semibold); color: #dc2626;">Contradiction Detected</span>
+                            {% if c.severity == 'hard' %}
+                            <span style="display: inline-block; padding: 2px 8px; background: #fee2e2; color: #991b1b; border-radius: 999px; font-size: 11px; margin-left: 8px;">Hard</span>
+                            {% elif c.severity == 'soft' %}
+                            <span style="display: inline-block; padding: 2px 8px; background: #fef9c3; color: #854d0e; border-radius: 999px; font-size: 11px; margin-left: 8px;">Soft</span>
+                            {% endif %}
+                        </div>
+                        <span style="font-size: var(--text-xs); color: var(--text-secondary);">{{ (c.detected_at|string)[:10] if c.detected_at else '' }}</span>
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4); margin-bottom: var(--space-4);">
+                        <div style="padding: var(--space-4); background: #fef2f2; border-radius: var(--radius-lg); border: 1px solid #fecaca;">
+                            <div style="font-weight: var(--font-semibold); margin-bottom: var(--space-2);">Item A</div>
+                            <div style="font-weight: var(--font-medium);">{{ c.item_a.title if c.item_a else 'Unknown' }}</div>
+                            <div style="font-size: var(--text-sm); color: var(--text-secondary); margin-top: var(--space-1);">{{ c.item_a.content[:200] if c.item_a else '' }}</div>
+                            {% if c.item_a and c.item_a.domain %}<div style="margin-top: var(--space-2);"><span style="display: inline-block; padding: 2px 8px; background: #e8f0fe; color: #1a73e8; border-radius: 999px; font-size: 11px;">{{ c.item_a.domain|title }}</span></div>{% endif %}
+                        </div>
+                        <div style="padding: var(--space-4); background: #eff6ff; border-radius: var(--radius-lg); border: 1px solid #bfdbfe;">
+                            <div style="font-weight: var(--font-semibold); margin-bottom: var(--space-2);">Item B</div>
+                            <div style="font-weight: var(--font-medium);">{{ c.item_b.title if c.item_b else 'Unknown' }}</div>
+                            <div style="font-size: var(--text-sm); color: var(--text-secondary); margin-top: var(--space-1);">{{ c.item_b.content[:200] if c.item_b else '' }}</div>
+                            {% if c.item_b and c.item_b.domain %}<div style="margin-top: var(--space-2);"><span style="display: inline-block; padding: 2px 8px; background: #e8f0fe; color: #1a73e8; border-radius: 999px; font-size: 11px;">{{ c.item_b.domain|title }}</span></div>{% endif %}
+                        </div>
+                    </div>
+                    <div style="padding: var(--space-3); background: var(--bg-secondary, #f9fafb); border-radius: var(--radius-md); margin-bottom: var(--space-3); font-size: var(--text-sm);">
+                        <strong>Analysis:</strong> {{ c.explanation }}
+                    </div>
+                    {% if c.suggested_resolution %}
+                    <div style="padding: var(--space-3); background: #f0fdf4; border-radius: var(--radius-md); margin-bottom: var(--space-3); font-size: var(--text-sm);">
+                        <strong>Suggested:</strong> {{ c.suggested_resolution }}
+                    </div>
+                    {% endif %}
+                    <div style="display: flex; gap: var(--space-2);">
+                        <button class="btn btn-approve" onclick="resolveContradiction('{{ c.id }}', 'kept_a')" style="font-size: var(--text-xs);">Keep Item A</button>
+                        <button class="btn btn-approve" onclick="resolveContradiction('{{ c.id }}', 'kept_b')" style="font-size: var(--text-xs);">Keep Item B</button>
+                        <button class="btn" onclick="resolveContradiction('{{ c.id }}', 'merged')" style="font-size: var(--text-xs); background: var(--border-light); color: var(--text-primary);">Merge</button>
+                        <button class="btn" onclick="resolveContradiction('{{ c.id }}', 'both_valid')" style="font-size: var(--text-xs); background: var(--border-light); color: var(--text-primary);">Both Valid</button>
+                    </div>
+                </div>
+                {% endfor %}
+                {% else %}
+                <div class="empty-state">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width: 48px; height: 48px; margin-bottom: 12px;">
+                        <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    </svg>
+                    <p>No contradictions detected.</p>
+                    <p style="font-size: var(--text-sm);">Contradictions are flagged when new items conflict with existing knowledge.</p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
         <!-- Audit Log Tab -->
         <div id="tab-audit" class="tab-content">
             <div class="filter-bar">
                 <label for="auditActionFilter">Action:</label>
-                <select class="filter-select" id="auditActionFilter" onchange="loadAuditLog(0)">
+                <select class="filter-select" id="auditActionFilter" onchange="loadAuditLog(1)">
                     <option value="">All Actions</option>
-                    <option value="approved">Approved</option>
-                    <option value="rejected">Rejected</option>
-                    <option value="mandated">Mandated</option>
-                    <option value="revoked">Revoked</option>
-                    <option value="edited">Edited</option>
+                    <option value="approve">Approved</option>
+                    <option value="reject">Rejected</option>
+                    <option value="mandate">Mandated</option>
+                    <option value="revoke">Revoked</option>
+                    <option value="edit">Edited</option>
                 </select>
             </div>
             <div id="auditContent">
@@ -920,11 +1029,23 @@
 
     // State
     let currentTab = 'review';
-    let reviewPage = 0;
-    let allPage = 0;
-    let auditPage = 0;
+    let reviewPage = 1;
+    let allPage = 1;
+    let auditPage = 1;
     let focusedIndex = -1;
     let keyboardActive = false;
+
+    // ─────────────────────────────────────────────────────────────
+    // Helpers
+    // ─────────────────────────────────────────────────────────────
+
+    function parseJsonField(val) {
+        if (Array.isArray(val)) return val;
+        if (typeof val === 'string') {
+            try { return JSON.parse(val); } catch { return []; }
+        }
+        return [];
+    }
 
     // ─────────────────────────────────────────────────────────────
     // Tab management
@@ -957,7 +1078,7 @@
 
         try {
             const params = new URLSearchParams({page, _t: Date.now()});
-            const resp = await fetch(`/api/corporate-memory/admin/pending?${params}`);
+            const resp = await fetch(`/api/memory/admin/pending?${params}`);
             const data = await resp.json();
             renderReviewItems(data, list, pagination);
             updateStats();
@@ -972,20 +1093,46 @@
         const list = document.getElementById('allList');
         const pagination = document.getElementById('allPagination');
         const status = document.getElementById('statusFilter').value;
+        const sourceType = document.getElementById('sourceTypeFilter').value;
 
         try {
             const params = new URLSearchParams({page, _t: Date.now()});
             if (status) {
-                params.append('status', status);
-            } else {
-                params.append('all_statuses', 'true');
+                params.append('status_filter', status);
             }
-            const resp = await fetch(`/api/corporate-memory/knowledge?${params}`);
+            if (sourceType) {
+                params.append('source_type', sourceType);
+            }
+            const resp = await fetch(`/api/memory?${params}`);
             const data = await resp.json();
             renderAllItems(data, list, pagination);
         } catch (e) {
             console.error('Failed to load all items:', e);
             list.innerHTML = '<div class="empty-state"><p>Error loading items.</p></div>';
+        }
+    }
+
+    // Map of item_id -> {title, status, source_type, content} for the audit log.
+    // Lazily refreshed when the audit tab is opened so the table can show titles
+    // instead of bare UUIDs and resolve item context inside expanded rows.
+    let auditItemMap = {};
+
+    async function refreshAuditItemMap() {
+        try {
+            const resp = await fetch(`/api/memory?per_page=500&_t=${Date.now()}`);
+            const data = await resp.json();
+            const map = {};
+            for (const item of (data.items || [])) {
+                map[item.id] = {
+                    title: item.title || '',
+                    status: item.status || '',
+                    source_type: item.source_type || '',
+                    content: item.content || '',
+                };
+            }
+            auditItemMap = map;
+        } catch (e) {
+            console.error('Failed to refresh audit item map:', e);
         }
     }
 
@@ -996,9 +1143,10 @@
         const action = document.getElementById('auditActionFilter').value;
 
         try {
+            await refreshAuditItemMap();
             const params = new URLSearchParams({page, per_page: 20, _t: Date.now()});
             if (action) params.append('action', action);
-            const resp = await fetch(`/api/corporate-memory/admin/audit?${params}`);
+            const resp = await fetch(`/api/memory/admin/audit?${params}`);
             const data = await resp.json();
             renderAuditLog(data, content, pagination);
         } catch (e) {
@@ -1007,17 +1155,26 @@
         }
     }
 
+    function toggleAuditDetail(idx) {
+        const row = document.querySelector(`tr.audit-row[data-idx="${idx}"]`);
+        const detail = document.querySelector(`tr.audit-detail-row[data-idx="${idx}"]`);
+        if (!row || !detail) return;
+        const isOpen = row.classList.toggle('expanded');
+        detail.style.display = isOpen ? '' : 'none';
+    }
+
     async function updateStats() {
         try {
-            const resp = await fetch(`/api/corporate-memory/stats?_t=${Date.now()}`);
+            const resp = await fetch(`/api/memory/stats?_t=${Date.now()}`);
             const data = await resp.json();
-            document.getElementById('statPending').textContent = data.pending_count || 0;
-            document.getElementById('statApproved').textContent = data.approved_count || 0;
-            document.getElementById('statMandatory').textContent = data.mandatory_count || 0;
-            document.getElementById('statTotal').textContent = data.knowledge_count || 0;
+            const byStatus = data.by_status || {};
+            document.getElementById('statPending').textContent = byStatus.pending || 0;
+            document.getElementById('statApproved').textContent = byStatus.approved || 0;
+            document.getElementById('statMandatory').textContent = byStatus.mandatory || 0;
+            document.getElementById('statTotal').textContent = data.total || 0;
 
             const badge = document.getElementById('pendingBadge');
-            const pending = data.pending_count || 0;
+            const pending = byStatus.pending || 0;
             badge.textContent = pending;
             badge.style.display = pending > 0 ? '' : 'none';
         } catch (e) {
@@ -1076,8 +1233,10 @@
     function renderItemCard(item, idx, isReview) {
         const status = item.status || 'pending';
         const categoryDisplay = (item.category || 'general').replace(/_/g, ' ');
-        const dateStr = item.extracted_at ? item.extracted_at.substring(0, 10) : 'recently';
-        const contributors = item.source_users_display || [];
+        const dateStr = (item.created_at || item.extracted_at || '').substring(0, 10) || 'recently';
+        const sourceUser = item.source_user || '';
+        const initials = sourceUser.split('@')[0].substring(0, 2).toUpperCase();
+        const contributors = [{name: sourceUser, initials: initials}];
 
         // Determine available actions based on current status
         let actionsHtml = '';
@@ -1133,6 +1292,9 @@
                                 <div class="knowledge-title">${escapeHtml(item.title || 'Untitled')}</div>
                                 <div class="knowledge-meta">
                                     <span class="category-badge ${esc(item.category || 'general')}">${escapeHtml(categoryDisplay)}</span>
+                                    ${item.domain ? `<span style="display:inline-block;padding:2px 8px;background:#e8f0fe;color:#1a73e8;border-radius:999px;font-size:11px;">${escapeHtml(item.domain)}</span>` : ''}
+                                    ${item.confidence ? `<span style="display:inline-block;padding:2px 8px;background:#f0fdf4;color:#16a34a;border-radius:999px;font-size:11px;">${Math.round(item.confidence*100)}%</span>` : ''}
+                                    ${item.source_type === 'user_verification' ? '<span style="display:inline-block;padding:2px 8px;background:#dbeafe;color:#1d4ed8;border-radius:999px;font-size:11px;">Verified</span>' : ''}
                                     ${!isReview ? `<span class="status-badge ${esc(status)}">${escapeHtml(status)}</span>` : ''}
                                     <span>Added ${escapeHtml(dateStr)}</span>
                                 </div>
@@ -1141,7 +1303,7 @@
                         <div class="knowledge-content">${escapeHtml(item.content || '')}</div>
                         <div class="knowledge-footer">
                             <div class="knowledge-tags">
-                                ${(item.tags || []).map(tag => `<span class="tag">${escapeHtml(tag)}</span>`).join('')}
+                                ${parseJsonField(item.tags).map(tag => `<span class="tag">${escapeHtml(tag)}</span>`).join('')}
                             </div>
                             <div class="contributors">
                                 <div class="contributor-avatars">
@@ -1206,26 +1368,62 @@
             return;
         }
 
-        let rows = data.entries.map(entry => {
+        let rows = data.entries.map((entry, idx) => {
             const ts = entry.timestamp ? new Date(entry.timestamp).toLocaleString() : 'Unknown';
-            const admin = entry.admin || 'Unknown';
-            const action = entry.action || 'unknown';
-            const itemId = entry.item_id || '';
-            const details = entry.details || {};
+            const admin = entry.user_id || entry.admin || 'Unknown';
+            const action = (entry.action || 'unknown').replace(/^km_/, '');
+            const itemId = entry.resource || entry.item_id || '';
+            const rawParams = entry.params || entry.details || '{}';
+            const details = typeof rawParams === 'string' ? (() => { try { return JSON.parse(rawParams); } catch { return {}; } })() : rawParams;
 
             let detailStr = '';
             if (details.reason) detailStr = details.reason;
             else if (details.mandatory_reason) detailStr = details.mandatory_reason;
             else if (details.audience) detailStr = `Audience: ${details.audience}`;
             else if (details.previous_status) detailStr = `From: ${details.previous_status}`;
+            else if (action === 'edit' && Object.keys(details).length) {
+                detailStr = `Edited: ${Object.keys(details).join(', ')}`;
+            }
+            if (!detailStr) detailStr = '—';
+
+            const item = auditItemMap[itemId] || null;
+            const itemLabel = item && item.title
+                ? item.title
+                : (itemId ? `${itemId.substring(0, 12)}…` : '(unknown)');
+
+            const detailRows = [];
+            detailRows.push(`<div class="k">Item ID</div><div class="v"><code>${escapeHtml(itemId || '(none)')}</code></div>`);
+            if (item) {
+                detailRows.push(`<div class="k">Title</div><div class="v">${escapeHtml(item.title)}</div>`);
+                detailRows.push(`<div class="k">Current status</div><div class="v">${escapeHtml(item.status || '(unknown)')}</div>`);
+                if (item.source_type) {
+                    detailRows.push(`<div class="k">Source</div><div class="v">${escapeHtml(item.source_type)}</div>`);
+                }
+                if (item.content) {
+                    const snippet = item.content.length > 400 ? item.content.substring(0, 400) + '…' : item.content;
+                    detailRows.push(`<div class="k">Content</div><div class="v">${escapeHtml(snippet)}</div>`);
+                }
+            } else if (itemId) {
+                detailRows.push(`<div class="k">Item</div><div class="v" style="color: var(--text-secondary); font-style: italic;">No matching item found (it may have been deleted, or this audit row references a contradiction id).</div>`);
+            }
+            detailRows.push(`<div class="k">Action</div><div class="v">${escapeHtml(action)}</div>`);
+            detailRows.push(`<div class="k">Admin</div><div class="v">${escapeHtml(admin)}</div>`);
+            detailRows.push(`<div class="k">Timestamp</div><div class="v">${escapeHtml(ts)}</div>`);
+            const paramsJson = JSON.stringify(details, null, 2);
+            detailRows.push(`<div class="k">Raw params</div><div class="v"><pre>${escapeHtml(paramsJson)}</pre></div>`);
 
             return `
-                <tr>
-                    <td>${escapeHtml(ts)}</td>
+                <tr class="audit-row" data-idx="${idx}" onclick="toggleAuditDetail(${idx})">
+                    <td><span class="audit-disclosure">▶</span> ${escapeHtml(ts)}</td>
                     <td>${escapeHtml(admin)}</td>
                     <td><span class="action-badge ${esc(action)}">${escapeHtml(action)}</span></td>
-                    <td title="${escapeHtml(itemId)}">${escapeHtml(itemId.substring(0, 12))}${itemId.length > 12 ? '...' : ''}</td>
+                    <td title="${escapeHtml(itemId)}">${escapeHtml(itemLabel)}</td>
                     <td class="audit-details" title="${escapeHtml(detailStr)}">${escapeHtml(detailStr)}</td>
+                </tr>
+                <tr class="audit-detail-row" data-idx="${idx}" style="display: none;">
+                    <td colspan="5">
+                        <div class="audit-detail-grid">${detailRows.join('')}</div>
+                    </td>
                 </tr>`;
         }).join('');
 
@@ -1245,7 +1443,7 @@
 
         // Pagination for audit (using total and per_page)
         const totalPages = Math.ceil((data.total || 0) / (data.per_page || 20));
-        renderPaginationGeneric(paginationEl, data.page || 0, totalPages, 'loadAuditLog');
+        renderPaginationGeneric(paginationEl, data.page || 1, totalPages, 'loadAuditLog');
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -1253,7 +1451,7 @@
     // ─────────────────────────────────────────────────────────────
 
     function renderPagination(el, data, fnName) {
-        renderPaginationGeneric(el, data.page || 0, data.total_pages || 0, fnName);
+        renderPaginationGeneric(el, data.page || 1, data.total_pages || 0, fnName);
     }
 
     function renderPaginationGeneric(el, page, totalPages, fnName) {
@@ -1262,31 +1460,31 @@
             return;
         }
 
-        let html = `<button class="page-btn" onclick="${fnName}(${page - 1})" ${page === 0 ? 'disabled' : ''}>Prev</button>`;
+        let html = `<button class="page-btn" onclick="${fnName}(${page - 1})" ${page <= 1 ? 'disabled' : ''}>Prev</button>`;
 
-        // Smart pagination: show max 7 page buttons
+        // Smart pagination: show max 7 page buttons (1-based)
         const maxVisible = 7;
-        let startPage = Math.max(0, page - Math.floor(maxVisible / 2));
-        let endPage = Math.min(totalPages, startPage + maxVisible);
-        if (endPage - startPage < maxVisible) {
-            startPage = Math.max(0, endPage - maxVisible);
+        let startPage = Math.max(1, page - Math.floor(maxVisible / 2));
+        let endPage = Math.min(totalPages, startPage + maxVisible - 1);
+        if (endPage - startPage < maxVisible - 1) {
+            startPage = Math.max(1, endPage - maxVisible + 1);
         }
 
-        if (startPage > 0) {
-            html += `<button class="page-btn" onclick="${fnName}(0)">1</button>`;
-            if (startPage > 1) html += `<span style="padding: var(--space-2); color: var(--text-secondary);">...</span>`;
+        if (startPage > 1) {
+            html += `<button class="page-btn" onclick="${fnName}(1)">1</button>`;
+            if (startPage > 2) html += `<span style="padding: var(--space-2); color: var(--text-secondary);">...</span>`;
         }
 
-        for (let p = startPage; p < endPage; p++) {
-            html += `<button class="page-btn ${p === page ? 'active' : ''}" onclick="${fnName}(${p})">${p + 1}</button>`;
+        for (let p = startPage; p <= endPage; p++) {
+            html += `<button class="page-btn ${p === page ? 'active' : ''}" onclick="${fnName}(${p})">${p}</button>`;
         }
 
         if (endPage < totalPages) {
             if (endPage < totalPages - 1) html += `<span style="padding: var(--space-2); color: var(--text-secondary);">...</span>`;
-            html += `<button class="page-btn" onclick="${fnName}(${totalPages - 1})">${totalPages}</button>`;
+            html += `<button class="page-btn" onclick="${fnName}(${totalPages})">${totalPages}</button>`;
         }
 
-        html += `<button class="page-btn" onclick="${fnName}(${page + 1})" ${page >= totalPages - 1 ? 'disabled' : ''}>Next</button>`;
+        html += `<button class="page-btn" onclick="${fnName}(${page + 1})" ${page >= totalPages ? 'disabled' : ''}>Next</button>`;
         el.innerHTML = html;
     }
 
@@ -1295,18 +1493,17 @@
     // ─────────────────────────────────────────────────────────────
 
     async function adminAction(action, itemId) {
-        const url = `/api/corporate-memory/admin/${action}`;
-        const body = {item_id: itemId};
+        const url = `/api/memory/admin/${action}?item_id=${encodeURIComponent(itemId)}`;
 
         try {
             const resp = await fetch(url, {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(body),
+                body: JSON.stringify({}),
             });
 
             const result = await resp.json();
-            if (result.ok) {
+            if (resp.ok) {
                 showToast(`Item ${action}d successfully`, 'success');
                 refreshCurrentTab();
             } else {
@@ -1340,18 +1537,17 @@
         }
 
         try {
-            const resp = await fetch('/api/corporate-memory/admin/mandate', {
+            const resp = await fetch(`/api/memory/admin/mandate?item_id=${encodeURIComponent(itemId)}`, {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({
-                    item_id: itemId,
-                    mandatory_reason: reason,
+                    reason: reason,
                     audience: audience,
                 }),
             });
 
             const result = await resp.json();
-            if (result.ok) {
+            if (resp.ok) {
                 showToast('Item mandated successfully', 'success');
                 refreshCurrentTab();
             } else {
@@ -1397,14 +1593,14 @@
         if (ids.length === 0) return;
 
         try {
-            const resp = await fetch('/api/corporate-memory/admin/batch', {
+            const resp = await fetch('/api/memory/admin/batch', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({item_ids: ids, action: action}),
             });
 
             const result = await resp.json();
-            if (result.ok) {
+            if (resp.ok) {
                 const successCount = (result.success || []).length;
                 const failCount = (result.failed || []).length;
                 let msg = `${successCount} item${successCount !== 1 ? 's' : ''} ${action}d`;
@@ -1421,6 +1617,29 @@
     }
 
     // ─────────────────────────────────────────────────────────────
+    // Contradiction Resolution
+    // ─────────────────────────────────────────────────────────────
+
+    async function resolveContradiction(contradictionId, resolution) {
+        try {
+            const resp = await fetch(`/api/memory/admin/contradictions/${contradictionId}/resolve`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({resolution: resolution})
+            });
+            if (resp.ok) {
+                showToast(`Contradiction resolved: ${resolution.replace('_', ' ')}`, 'success');
+                setTimeout(() => location.reload(), 1000);
+            } else {
+                const data = await resp.json();
+                showToast(data.detail || 'Failed to resolve', 'error');
+            }
+        } catch(e) {
+            showToast('Error resolving contradiction', 'error');
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────
     // Tab Refresh
     // ─────────────────────────────────────────────────────────────
 
@@ -1428,6 +1647,7 @@
         if (currentTab === 'review') loadReviewQueue(reviewPage);
         else if (currentTab === 'all') loadAllItems(allPage);
         else if (currentTab === 'audit') loadAuditLog(auditPage);
+        else if (currentTab === 'contradictions') location.reload();
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -1523,7 +1743,7 @@
     // Initial load
     // ─────────────────────────────────────────────────────────────
 
-    loadReviewQueue(0);
+    loadReviewQueue(1);
     </script>
     {% include "_version_badge.html" %}
 </body>
