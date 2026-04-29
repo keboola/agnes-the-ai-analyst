@@ -238,3 +238,77 @@ def test_run_sync_filters_local_tables_by_schedule(monkeypatch, tmp_path):
     captured.clear()
     sync_module._run_sync(tables=["due", "skipped"])
     assert sorted(c["id"] for c in captured["configs"]) == ["due", "skipped"]
+
+
+def test_run_sync_does_not_auto_discover_when_filter_returns_empty(monkeypatch, tmp_path):
+    """Devin BUG_0001 on ebb8cc9: when registry HAS tables but filter returns
+    [] (nothing due), the `if not table_configs` guard must NOT fire
+    auto-discovery. Otherwise on Keboola instances with KEBOOLA_STORAGE_TOKEN
+    set, every tick re-discovers + re-reads the registry without the filter,
+    bypassing sync_schedule entirely."""
+    from app.api import sync as sync_module
+
+    monkeypatch.setattr(sync_module, "_get_data_dir", lambda: tmp_path)
+    import app.instance_config as instance_config
+    monkeypatch.setattr(instance_config, "get_data_source_type", lambda: "keboola")
+    # Critical: KEBOOLA_STORAGE_TOKEN must be set to make the bug reachable.
+    monkeypatch.setenv("KEBOOLA_STORAGE_TOKEN", "fake-token")
+
+    # Registry has 1 table. Filter will return [] (synced 5m ago, schedule 1h).
+    fake_configs = [
+        {"id": "fresh", "name": "fresh", "source_type": "keboola",
+         "sync_schedule": "every 1h", "query_mode": "local"},
+    ]
+
+    class _StubRegistry:
+        def __init__(self, conn): pass
+        def list_local(self, source_type=None): return list(fake_configs)
+        def get(self, table_id):
+            return next((c for c in fake_configs if c["id"] == table_id), None)
+
+    monkeypatch.setattr(sync_module, "TableRegistryRepository", _StubRegistry)
+
+    class _FakeConn:
+        def close(self): pass
+    import src.db as _db_mod
+    monkeypatch.setattr(_db_mod, "get_system_db", lambda: _FakeConn())
+
+    # 5m ago → not due under "every 1h"
+    from datetime import datetime, timezone
+    class _StubState:
+        def __init__(self, conn): pass
+        def get_last_sync(self, table_id):
+            return datetime(2026, 5, 1, 9, 55, tzinfo=timezone.utc)
+    monkeypatch.setattr(sync_module, "SyncStateRepository", _StubState)
+
+    from src import scheduler as _sched
+    real_filter = _sched.filter_due_tables
+    monkeypatch.setattr(
+        sync_module, "filter_due_tables",
+        lambda cfgs, repo: real_filter(
+            cfgs, repo, now=datetime(2026, 5, 1, 10, 0, tzinfo=timezone.utc),
+        ),
+    )
+
+    # Sentinel: if auto-discovery fires, this counter increments.
+    discovery_calls = []
+
+    def _fake_discover(conn, who):
+        discovery_calls.append(who)
+        return {"registered": 0, "skipped": 0}
+
+    import app.api.admin as _admin_mod
+    monkeypatch.setattr(_admin_mod, "_discover_and_register_tables", _fake_discover)
+
+    # Subprocess + orchestrator stubs in case the function gets that far
+    # (it shouldn't — filter returned [], no work to do).
+    def _fake_run(cmd, **kw):
+        raise AssertionError("subprocess.run must not be called when filter returns empty")
+    monkeypatch.setattr(sync_module.subprocess, "run", _fake_run)
+
+    sync_module._run_sync(tables=None)
+
+    assert discovery_calls == [], (
+        f"Auto-discovery must not fire when registry has tables but the "
+        f"filter excluded them all; got {discovery_calls!r} call(s)."
+    )

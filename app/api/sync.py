@@ -55,6 +55,12 @@ def _run_sync(tables: Optional[List[str]] = None):
 
         # Read table configs in main process (has shared DuckDB connection)
         sys_conn = get_system_db()
+        # Track whether the REGISTRY (not the post-filter list) was empty.
+        # Auto-discovery must only fire on a truly empty registry; if the
+        # filter returned [] because nothing was due, re-discovering would
+        # bypass the schedule entirely on Keboola instances. (Devin BUG_0001
+        # on ebb8cc9.)
+        registry_has_tables = False
         try:
             repo = TableRegistryRepository(sys_conn)
             if tables:
@@ -62,8 +68,10 @@ def _run_sync(tables: Optional[List[str]] = None):
                 # so an admin saying "sync these specific tables now" wins.
                 all_configs = [repo.get(t) for t in tables]
                 table_configs = [c for c in all_configs if c is not None]
+                registry_has_tables = bool(table_configs)
             else:
                 table_configs = repo.list_local(source_type) if source_type else repo.list_local()
+                registry_has_tables = bool(table_configs)
                 # Without this filter, every scheduler tick would re-sync
                 # every table regardless of its sync_schedule cadence,
                 # making the field a no-op at trigger time. Tables with
@@ -74,8 +82,12 @@ def _run_sync(tables: Optional[List[str]] = None):
             sys_conn.close()
 
         if not table_configs:
-            # Auto-discover tables on first sync when registry is empty
-            if source_type == "keboola" and os.environ.get("KEBOOLA_STORAGE_TOKEN"):
+            # Auto-discover tables on first sync when registry is empty.
+            # `not registry_has_tables` is the load-bearing guard — without
+            # it, "filter excluded everything" looks identical to "registry
+            # empty" and we'd re-discover + re-sync every tick regardless of
+            # sync_schedule.
+            if not registry_has_tables and source_type == "keboola" and os.environ.get("KEBOOLA_STORAGE_TOKEN"):
                 logger.info("No tables registered — running auto-discovery from Keboola")
                 try:
                     from app.api.admin import _discover_and_register_tables
