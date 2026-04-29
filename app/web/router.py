@@ -545,6 +545,8 @@ async def corporate_memory_admin(
             target = "item_a" if side == "item_a_id" else "item_b"
             c[target] = {
                 "title": base.get("title", ""),
+                "content": base.get("content", ""),
+                "domain": base.get("domain"),
                 "sensitivity": base.get("sensitivity"),
                 "status": base.get("status"),
                 "hidden": base.get("is_personal", False),
