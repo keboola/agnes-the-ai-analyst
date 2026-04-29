@@ -39,6 +39,113 @@ def test_render_setup_instructions_wires_all_placeholders():
     assert "T-123" in out
 
 
+def test_resolve_lines_no_plugins_keeps_six_step_layout():
+    """Backwards-compat: empty plugin list → original 6-step layout, Confirm = 6."""
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(resolve_lines("agnes.whl"))
+    assert "6) Confirm:" in joined
+    assert "7) Confirm:" not in joined
+    assert "claude plugin marketplace add" not in joined
+    assert "claude plugin install" not in joined
+    assert "sslVerify" not in joined
+
+
+def test_resolve_lines_with_plugins_inserts_git_check_marketplace_and_renumbers_confirm():
+    from app.web.setup_instructions import resolve_lines
+
+    lines = resolve_lines(
+        "agnes.whl",
+        plugin_install_names=["foo", "bar"],
+        server_host="agnes.example.com",
+    )
+    joined = "\n".join(lines)
+    # Step 6 — git pre-flight, with both Mac + Windows install commands.
+    assert "6) Make sure git is installed" in joined
+    assert "git --version" in joined
+    assert "brew install git" in joined
+    assert "winget install --id Git.Git -e --source winget --silent" in joined
+    # Step 7 — marketplace + plugins.
+    assert "7) Register the Agnes Claude Code marketplace and install plugins:" in joined
+    assert (
+        'claude plugin marketplace add "https://x:{token}@agnes.example.com/marketplace.git/"'
+        in joined
+    )
+    assert "claude plugin install foo@agnes --scope project" in joined
+    assert "claude plugin install bar@agnes --scope project" in joined
+    # Step 8 — Confirm renumbered (no stray 6/7 Confirm).
+    assert "8) Confirm:" in joined
+    assert "6) Confirm:" not in joined
+    assert "7) Confirm:" not in joined
+    # Git pre-flight must come BEFORE marketplace add inside the script.
+    assert joined.index("6) Make sure git is installed") < joined.index(
+        "7) Register the Agnes Claude Code marketplace"
+    )
+    # No git-config sslVerify line unless self_signed_tls is set.
+    assert "sslVerify" not in joined
+    # server_host is server-side substituted; the placeholder must be gone.
+    assert "{server_host}" not in joined
+    # server_url + token are still placeholders for click-time JS substitution.
+    assert "{server_url}" in joined
+    assert "{token}" in joined
+
+
+def test_resolve_lines_self_signed_adds_git_config_line():
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(
+        resolve_lines(
+            "agnes.whl",
+            plugin_install_names=["foo"],
+            self_signed_tls=True,
+            server_host="agnes.example.com",
+        )
+    )
+    assert 'git config --global http."{server_url}/".sslVerify false' in joined
+    # The git-config line must come BEFORE the marketplace add inside step 6.
+    git_idx = joined.index('git config --global')
+    add_idx = joined.index('claude plugin marketplace add')
+    assert git_idx < add_idx
+
+
+def test_resolve_lines_self_signed_no_op_without_plugins():
+    """`self_signed_tls=True` is a no-op when there are no plugins (no marketplace step to attach to)."""
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(
+        resolve_lines("agnes.whl", plugin_install_names=[], self_signed_tls=True)
+    )
+    assert "sslVerify" not in joined
+    assert "claude plugin" not in joined
+    # No git pre-flight either when there's no marketplace step.
+    assert "Make sure git is installed" not in joined
+    assert "6) Confirm:" in joined  # original layout intact
+
+
+def test_render_setup_instructions_with_plugins_substitutes_all_placeholders():
+    from app.web.setup_instructions import render_setup_instructions
+
+    out = render_setup_instructions(
+        server_url="https://agnes.example.com",
+        token="T-XYZ",
+        wheel_filename="agnes-1.0-py3-none-any.whl",
+        plugin_install_names=["foo", "bar"],
+        self_signed_tls=True,
+        server_host="agnes.example.com",
+    )
+    # No raw placeholders remain in the final string.
+    assert "{server_url}" not in out
+    assert "{token}" not in out
+    assert "{wheel_filename}" not in out
+    assert "{server_host}" not in out
+    # Token leaks into both the auth-import-token line and the marketplace URL.
+    assert "T-XYZ" in out
+    assert "https://x:T-XYZ@agnes.example.com/marketplace.git/" in out
+    assert 'git config --global http."https://agnes.example.com/".sslVerify false' in out
+    assert "claude plugin install foo@agnes --scope project" in out
+    assert "claude plugin install bar@agnes --scope project" in out
+
+
 def test_install_page_uses_versioned_wheel_url(monkeypatch, tmp_path):
     """End-to-end: the /install preview must render the PEP 427 wheel URL,
     so a user copy-pasting the snippet gets a URL `uv tool install` accepts."""
