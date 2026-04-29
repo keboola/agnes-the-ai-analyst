@@ -90,6 +90,68 @@ _FINALE_LINES_TEMPLATE: list[str] = [
 _MARKETPLACE_NAME = "agnes"
 
 
+def _tls_trust_block(ca_pem: str) -> list[str]:
+    """Step 0 — install the Agnes server's TLS cert into a per-user trust file.
+
+    Emitted only when the server has a non-publicly-trusted cert (self-signed
+    bring-up cert, or a corp-CA chain whose root isn't in the user's OS trust
+    store). The PEM body is inlined in a single-quoted heredoc so `$`/backtick
+    chars in cert PEM never get shell-expanded.
+
+    Trust path is `~/.agnes/ca.pem`. Three env vars cover every TLS client
+    later in the prompt:
+
+      - SSL_CERT_FILE       — Python (httpx/requests/uv-via-rustls), `da`
+      - NODE_EXTRA_CA_CERTS — `claude plugin marketplace add` (Node `https`).
+                              Note: NODE_EXTRA_CA_CERTS *adds* to system
+                              trust, so public HTTPS keeps working.
+      - GIT_SSL_CAINFO      — `git clone` of the marketplace repo
+
+    The exports are also appended to ~/.bashrc / ~/.zshrc so `da` in newly
+    spawned terminals keeps trusting the host. Idempotent: a `grep` guard
+    skips the append when the marker line is already present, so re-running
+    setup doesn't duplicate the block.
+
+    Trust scope caveat: SSL_CERT_FILE *replaces* Python's default trust
+    store, so Python apps that talk to public hosts after this is set will
+    fail unless their target's root is in `ca.pem`. Acceptable here because
+    `da` only ever talks to the Agnes host; users running unrelated Python
+    work in the same shell can `unset SSL_CERT_FILE` to opt out.
+    """
+    pem = ca_pem.strip()
+    lines: list[str] = [
+        "0) Trust the Agnes TLS certificate (this server uses a private CA / self-signed cert):",
+        "     mkdir -p ~/.agnes",
+        "     cat > ~/.agnes/ca.pem <<'AGNES_CA_PEM'",
+    ]
+    # PEM body is flush-left: `<<'DELIM'` heredocs preserve leading whitespace,
+    # and any indent inside the cert breaks `openssl x509` / Python ssl parsers.
+    lines.extend(pem.splitlines())
+    lines.extend([
+        "AGNES_CA_PEM",
+        "",
+        "     # Trust this CA in the current shell — uv / da / claude (Node) / git:",
+        "     export SSL_CERT_FILE=\"$HOME/.agnes/ca.pem\"",
+        "     export NODE_EXTRA_CA_CERTS=\"$HOME/.agnes/ca.pem\"",
+        "     export GIT_SSL_CAINFO=\"$HOME/.agnes/ca.pem\"",
+        "",
+        "     # Persist for new shells (so `da` keeps trusting the host after you reopen the terminal).",
+        "     # Idempotent: the grep guard prevents duplicate appends on re-run.",
+        "     RC=\"$HOME/.zshrc\"; [ -f \"$HOME/.bashrc\" ] && RC=\"$HOME/.bashrc\"",
+        "     if ! grep -q 'AGNES_CA_PEM_TRUST' \"$RC\" 2>/dev/null; then",
+        "       cat >> \"$RC\" <<'AGNES_RC_BLOCK'",
+        "",
+        "# AGNES_CA_PEM_TRUST — added by `da` setup; trusts the Agnes server's private CA",
+        "export SSL_CERT_FILE=\"$HOME/.agnes/ca.pem\"",
+        "export NODE_EXTRA_CA_CERTS=\"$HOME/.agnes/ca.pem\"",
+        "export GIT_SSL_CAINFO=\"$HOME/.agnes/ca.pem\"",
+        "AGNES_RC_BLOCK",
+        "     fi",
+        "",
+    ])
+    return lines
+
+
 def _git_check_block() -> list[str]:
     """Step 6 — ensure git is on PATH before the marketplace step clones.
 
@@ -151,6 +213,7 @@ def resolve_lines(
     plugin_install_names: list[str] | None = None,
     self_signed_tls: bool = False,
     server_host: str = "",
+    ca_pem: str | None = None,
 ) -> list[str]:
     """Return the template lines with server-side placeholders substituted.
 
@@ -162,10 +225,24 @@ def resolve_lines(
     original 6-step layout (Confirm = step 6). When non-empty, a step-6
     marketplace block is inserted and Confirm becomes step 7.
 
-    `self_signed_tls=True` (typically driven by the server-side
-    `AGNES_DEBUG_AUTH` env flag) prepends a host-scoped
-    `git config http."<host>/".sslVerify false` line inside the
-    marketplace block. No-op when the marketplace block isn't rendered.
+    `ca_pem` (PEM-encoded fullchain of the Agnes server's TLS cert) gates
+    the step-0 trust-bootstrap block. When supplied, the prompt:
+      - Inlines the cert into `~/.agnes/ca.pem` via heredoc (no TOFU,
+        no `openssl s_client` against the very server we don't trust).
+      - Sets SSL_CERT_FILE / NODE_EXTRA_CA_CERTS / GIT_SSL_CAINFO so every
+        TLS client later in the prompt accepts the server.
+      - Suppresses the legacy `git config sslVerify=false` line — with
+        the cert trusted, full TLS validation is back on the table.
+    Caller decides whether the cert needs the bootstrap (typically: skip
+    for publicly-trusted certs like Let's Encrypt, emit for self-signed
+    or private corp CA).
+
+    `self_signed_tls=True` is the legacy fallback when no `ca_pem` is
+    available — it prepends a host-scoped
+    `git config http."<host>/".sslVerify false` inside the marketplace
+    block (TLS *downgrade*, not bootstrap). When `ca_pem` is set, this
+    flag is ignored because the trust block subsumes it. No-op when the
+    marketplace block isn't rendered (no plugins).
 
     Fallback: callers pass `"agnes.whl"` when no wheel is present on disk.
     The resulting URL (`/cli/wheel/agnes.whl`) will 404 at download time, but
@@ -174,11 +251,19 @@ def resolve_lines(
     """
     names = list(plugin_install_names or [])
     has_marketplace = bool(names)
+    has_ca = bool(ca_pem and ca_pem.strip())
+    # Trust block subsumes the legacy sslVerify-off downgrade. Don't emit
+    # both: with `~/.agnes/ca.pem` wired into GIT_SSL_CAINFO, git already
+    # trusts the host without disabling verification.
+    effective_self_signed = self_signed_tls and not has_ca
 
-    lines = list(_PROLOGUE_LINES)
+    lines: list[str] = []
+    if has_ca:
+        lines.extend(_tls_trust_block(ca_pem))  # type: ignore[arg-type]
+    lines.extend(_PROLOGUE_LINES)
     if has_marketplace:
         lines.extend(_git_check_block())
-        lines.extend(_marketplace_block(names, self_signed_tls))
+        lines.extend(_marketplace_block(names, effective_self_signed))
     confirm_step_num = "8" if has_marketplace else "6"
     lines.append("")
     for fl in _FINALE_LINES_TEMPLATE:
@@ -198,19 +283,21 @@ def render_setup_instructions(
     plugin_install_names: list[str] | None = None,
     self_signed_tls: bool = False,
     server_host: str = "",
+    ca_pem: str | None = None,
 ) -> str:
     """Render the setup instructions as a single string.
 
     Used server-side for tests and any non-JS rendering path. The browser
     clipboard flow uses the JS renderer embedded in the Jinja partial; both
     must produce byte-identical output for a given (server_url, token,
-    wheel, plugins, flag, host) tuple.
+    wheel, plugins, flag, host, ca_pem) tuple.
     """
     lines = resolve_lines(
         wheel_filename,
         plugin_install_names=plugin_install_names,
         self_signed_tls=self_signed_tls,
         server_host=server_host,
+        ca_pem=ca_pem,
     )
     text = "\n".join(lines)
     return text.replace("{server_url}", server_url).replace("{token}", token)

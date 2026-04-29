@@ -146,6 +146,130 @@ def test_render_setup_instructions_with_plugins_substitutes_all_placeholders():
     assert "claude plugin install bar@agnes --scope project" in out
 
 
+_FAKE_CA_PEM = (
+    "-----BEGIN CERTIFICATE-----\n"
+    "MIIBkTCB+wIJAKf9$x`cNotARealCert\n"  # `$` and backtick: smoke test for shell-quote safety
+    "thisIsNotARealCertificateBodyJustAnInlinePlaceholder==\n"
+    "-----END CERTIFICATE-----\n"
+)
+
+
+def test_resolve_lines_with_ca_pem_emits_step_zero_trust_block():
+    from app.web.setup_instructions import resolve_lines
+
+    lines = resolve_lines("agnes.whl", ca_pem=_FAKE_CA_PEM)
+    joined = "\n".join(lines)
+
+    # Step 0 header (must come BEFORE step 1 in the rendered prompt).
+    assert "0) Trust the Agnes TLS certificate" in joined
+    assert joined.index("0) Trust the Agnes TLS certificate") < joined.index("1) Install the CLI:")
+
+    # PEM body inlined verbatim, flush-left (heredoc would corrupt indented content).
+    assert "-----BEGIN CERTIFICATE-----" in joined
+    assert "-----END CERTIFICATE-----" in joined
+    # The PEM is passed inside a single-quoted heredoc so `$` / backtick
+    # in real-world cert bodies are NOT shell-expanded — preserve verbatim.
+    assert "MIIBkTCB+wIJAKf9$x`cNotARealCert" in joined
+    assert "<<'AGNES_CA_PEM'" in joined
+
+    # All three trust env vars exported in the current shell.
+    assert 'export SSL_CERT_FILE="$HOME/.agnes/ca.pem"' in joined
+    assert 'export NODE_EXTRA_CA_CERTS="$HOME/.agnes/ca.pem"' in joined
+    assert 'export GIT_SSL_CAINFO="$HOME/.agnes/ca.pem"' in joined
+
+    # Persisted to shell rc behind an idempotent grep guard so re-running
+    # setup doesn't duplicate the block.
+    assert "AGNES_CA_PEM_TRUST" in joined  # marker grep-checks for
+    assert "AGNES_RC_BLOCK" in joined  # the rc-append heredoc delimiter
+
+
+def test_resolve_lines_with_ca_pem_suppresses_legacy_sslverify_line():
+    """When ca_pem is supplied, the legacy `git config sslVerify=false`
+    downgrade must NOT appear — the trust block subsumes it (full TLS
+    validation re-enabled, just against the inlined cert)."""
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(
+        resolve_lines(
+            "agnes.whl",
+            plugin_install_names=["foo"],
+            self_signed_tls=True,  # legacy flag — should be ignored when ca_pem set
+            server_host="agnes.example.com",
+            ca_pem=_FAKE_CA_PEM,
+        )
+    )
+    assert "sslVerify" not in joined
+    # But the marketplace step itself still renders.
+    assert "claude plugin marketplace add" in joined
+    assert "claude plugin install foo@agnes --scope project" in joined
+    # And the trust block is present.
+    assert "0) Trust the Agnes TLS certificate" in joined
+
+
+def test_resolve_lines_without_ca_pem_keeps_legacy_self_signed_path():
+    """Legacy fallback: no ca_pem + self_signed_tls=True still emits the
+    sslVerify=false line (so existing AGNES_DEBUG_AUTH instances keep
+    working until they roll a fullchain.pem onto disk)."""
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(
+        resolve_lines(
+            "agnes.whl",
+            plugin_install_names=["foo"],
+            self_signed_tls=True,
+            server_host="agnes.example.com",
+            # no ca_pem
+        )
+    )
+    assert "0) Trust the Agnes TLS certificate" not in joined
+    assert 'sslVerify false' in joined
+
+
+def test_resolve_lines_ca_pem_empty_string_is_treated_as_absent():
+    """`ca_pem=''` (or whitespace-only) must NOT emit the trust block —
+    same as None. Guards against `Path.read_text()` returning empty for
+    a touched-but-unwritten cert file."""
+    from app.web.setup_instructions import resolve_lines
+
+    for empty in ("", "   ", "\n\n"):
+        joined = "\n".join(resolve_lines("agnes.whl", ca_pem=empty))
+        assert "0) Trust the Agnes TLS certificate" not in joined
+
+
+def test_resolve_lines_ca_pem_works_without_plugins():
+    """Trust block is independent of the marketplace block — emit step 0
+    even when plugin list is empty. Confirm step number stays at 6
+    (the original layout) since step 0 is preamble, not numbered."""
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(resolve_lines("agnes.whl", ca_pem=_FAKE_CA_PEM))
+    assert "0) Trust the Agnes TLS certificate" in joined
+    assert "6) Confirm:" in joined
+    assert "claude plugin marketplace add" not in joined
+
+
+def test_render_setup_instructions_propagates_ca_pem():
+    from app.web.setup_instructions import render_setup_instructions
+
+    out = render_setup_instructions(
+        server_url="https://agnes.example.com",
+        token="T-CA",
+        wheel_filename="agnes-1.0-py3-none-any.whl",
+        plugin_install_names=["foo"],
+        self_signed_tls=True,
+        server_host="agnes.example.com",
+        ca_pem=_FAKE_CA_PEM,
+    )
+    assert "0) Trust the Agnes TLS certificate" in out
+    assert "-----BEGIN CERTIFICATE-----" in out
+    # ca_pem masks legacy sslVerify=false.
+    assert "sslVerify" not in out
+    # Other placeholders still substituted.
+    assert "{server_url}" not in out
+    assert "{token}" not in out
+    assert "T-CA" in out
+
+
 def test_install_page_uses_versioned_wheel_url(monkeypatch, tmp_path):
     """End-to-end: the /install preview must render the PEP 427 wheel URL,
     so a user copy-pasting the snippet gets a URL `uv tool install` accepts."""

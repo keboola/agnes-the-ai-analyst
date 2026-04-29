@@ -133,6 +133,69 @@ def _url_for_shim(endpoint: str, **kw) -> str:
     return _URL_MAP.get(endpoint, f"/{endpoint}")
 
 
+def _read_agnes_ca_pem() -> Optional[str]:
+    """Read the Agnes server's TLS fullchain for inlining into the setup prompt.
+
+    Returns the PEM string when the cert needs trust-bootstrapping —
+    self-signed (subject == issuer of the leaf), private CA chain, or any
+    case where we can't cheaply prove the OS would trust it. Returns None
+    only for chains where the leaf's issuer matches a CA already in the
+    server's `certifi`-backed default trust store (publicly-trusted CA
+    like Let's Encrypt or a real corp PKI root that's distributed widely
+    enough to be in `certifi`).
+
+    Inlining a publicly-trusted cert is harmless (clients already trust
+    it via OS roots), but it bloats the prompt and steers users into
+    setting SSL_CERT_FILE unnecessarily, which narrows their Python TLS
+    trust to just this host. So skip when we can confirm broad trust.
+
+    Path is configurable via AGNES_TLS_FULLCHAIN_PATH (defaults to
+    `/data/state/certs/fullchain.pem`, the location `agnes-tls-rotate.sh`
+    writes on every VM and `docker-compose.host-mount.yml` rbinds into
+    the app container). Missing / unreadable / unparseable → None, and
+    the setup prompt falls back to its pre-cert behavior.
+    """
+    path = Path(os.environ.get("AGNES_TLS_FULLCHAIN_PATH", "/data/state/certs/fullchain.pem"))
+    try:
+        if not path.is_file():
+            return None
+        pem = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if "-----BEGIN CERTIFICATE-----" not in pem:
+        return None
+
+    try:
+        from cryptography import x509
+        # Parse just the first cert in the chain — that's the leaf, and
+        # leaf issuer/subject is what determines self-signed vs CA-signed.
+        first_block = pem.split("-----END CERTIFICATE-----", 1)[0] + "-----END CERTIFICATE-----\n"
+        leaf = x509.load_pem_x509_certificate(first_block.encode("utf-8"))
+
+        if leaf.issuer == leaf.subject:
+            # Self-signed — definitely needs bootstrap on the client.
+            return pem
+
+        # CA-signed leaf: check whether `certifi`'s trust store already
+        # contains the issuer. If yes, the user's `da`/uv (which both
+        # use `certifi` by default) will validate without our help.
+        try:
+            import certifi
+            with open(certifi.where(), "rb") as fh:
+                trust_pem = fh.read()
+        except Exception:
+            return pem  # can't enumerate trust → assume bootstrap needed
+
+        issuer_dn = leaf.issuer.rfc4514_string()
+        for ca in x509.load_pem_x509_certificates(trust_pem):
+            if ca.subject.rfc4514_string() == issuer_dn:
+                return None  # publicly trusted; client OS already accepts
+        return pem
+    except Exception:  # pragma: no cover — defensive: bad PEM / x509 error
+        logger.exception("Failed to evaluate Agnes TLS cert; skipping inline")
+        return None
+
+
 def _build_context(
     request: Request,
     user: Optional[dict] = None,
@@ -214,16 +277,20 @@ def _build_context(
     # `app/api/me_debug.py`, `app/web/router.py` template ConfigProxy).
     # When on, the setup prompt also disables host-scoped git TLS verify
     # so `claude plugin marketplace add` works against self-signed instances.
+    # Subsumed by the cert trust block when `ca_pem` is loaded below.
     self_signed_tls = os.environ.get("AGNES_DEBUG_AUTH", "").strip().lower() in (
         "1", "true", "yes",
     )
     server_host = request.url.netloc
+
+    ca_pem = _read_agnes_ca_pem()
 
     setup_instructions_lines = resolve_lines(
         _wheel_filename,
         plugin_install_names=plugin_install_names,
         self_signed_tls=self_signed_tls,
         server_host=server_host,
+        ca_pem=ca_pem,
     )
     ctx_server_url = str(request.base_url).rstrip("/")
 
