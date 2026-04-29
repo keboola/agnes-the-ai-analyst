@@ -554,11 +554,21 @@ def create_app() -> FastAPI:
     }
 
     def _wants_html(request) -> bool:
-        """True when the client looks like a browser (non-API path, html in Accept)."""
+        """True when the client looks like a browser (non-API path, explicit html).
+
+        We deliberately do NOT treat ``Accept: */*`` (curl's default) or an
+        empty Accept header as wanting HTML. curl-using operators were
+        getting JSON error bodies for non-API paths before this PR; matching
+        ``*/*`` here would silently flip them to HTML and break tooling that
+        parses ``{"detail": "..."}``. A real browser sends
+        ``Accept: text/html,application/xhtml+xml,...`` so the explicit
+        substring check below covers that case.
+        Devin ANALYSIS_0003 on PR #136 review.
+        """
         if request.url.path.startswith(_API_PATH_PREFIXES):
             return False
         accept = request.headers.get("accept", "")
-        return "text/html" in accept or "*/*" in accept or accept == ""
+        return "text/html" in accept
 
     async def _resolve_error_user(request) -> dict | None:
         """Best-effort user resolution for the error page header.

@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.20.0] — 2026-04-29
+
 ### Added
 - Dev debug toolbar gated by `DEBUG=1`. Mounts `fastapi-debug-toolbar` with panels
   for headers, routes, settings, versions, timer, logging, and a custom DuckDB
@@ -56,6 +58,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - Incoming `X-Request-ID` headers are now sanitized (alnum + `-` / `_`,
   truncated to 64 chars; falls back to a fresh uuid if nothing legal remains).
   Closes a CRLF log-forging vector when log handlers don't escape newlines.
+- `_wants_html` no longer treats `Accept: */*` (curl default) or empty Accept
+  as "wants HTML". Operators who curl non-API paths get JSON `{"detail": "..."}`
+  as before — only real browsers (with `Accept: text/html,...`) get HTML error
+  pages. (Devin ANALYSIS_0003 on PR #136 review.)
+- Subprocess extractor in `app/api/sync.py` re-installs `logging.basicConfig`
+  so INFO-level extraction progress from `connectors.keboola.extractor.run()`
+  reaches stderr again (was silently dropped by Python's `lastResort` handler
+  after the import-time `basicConfig` cleanup). (Devin BUG_0002.)
+- `.env.template` comment for `DEBUG=1` no longer claims to enable
+  `FastAPI debug=True` — that flag is intentionally NOT toggled (Starlette's
+  `ServerErrorMiddleware` would intercept unhandled exceptions before the
+  custom error handler runs). (Devin BUG_0001.)
 
 ### Internal
 - `pyproject.toml`: added `fastapi-debug-toolbar>=0.6.3` to dev optional deps.

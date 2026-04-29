@@ -120,8 +120,15 @@ def _run_sync(tables: Optional[List[str]] = None):
         # Subprocess does NOT open system.duckdb — no lock conflict
         env = {**os.environ}
         cmd = [sys.executable, "-c", """
-import json, sys, os
+import json, sys, os, logging
 from pathlib import Path
+
+# Subprocess inherits no logging config — without basicConfig, Python's
+# lastResort handler only surfaces WARNING+ to stderr and INFO-level
+# extraction progress from connectors.keboola.extractor.run() is silently
+# dropped. capture_output=True in the parent then swallows the rest.
+# Devin BUG_0002 on PR #136 review.
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 configs = json.load(sys.stdin)
 url = os.environ.get("KEBOOLA_STACK_URL", "")
