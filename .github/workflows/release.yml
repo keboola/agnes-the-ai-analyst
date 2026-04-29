@@ -25,6 +25,18 @@ permissions:
   contents: write
   packages: write
 
+# When a developer pushes a brand-new branch with code changes, GitHub fires
+# both a `create` and a `push` event for the same commit. Without
+# concurrency control, both runs would claim distinct CalVer version tags
+# (dev-YYYY.MM.N and dev-YYYY.MM.N+1) and race to push overlapping floating
+# tags (:dev, :dev-<slug>, :dev-<prefix>-latest). Group by ref and cancel
+# in-progress duplicates so only the most recent event survives — the
+# zero-diff case (only `create` fires, no `push`) is unaffected since
+# there's only one run.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     # Skip the `create` event for tags — those are owned by keboola-deploy.yml
