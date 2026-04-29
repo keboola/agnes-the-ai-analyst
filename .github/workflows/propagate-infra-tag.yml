@@ -51,7 +51,7 @@ jobs:
 
       - name: Checkout template repo
         if: steps.guard.outputs.proceed == 'true'
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           repository: keboola/agnes-infra-template
           token: ${{ secrets.TEMPLATE_REPO_TOKEN }}
