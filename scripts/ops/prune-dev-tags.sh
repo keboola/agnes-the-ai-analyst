@@ -165,7 +165,9 @@ for CHANNEL in stable dev; do
   # List versions whose run-number tag matches `<channel>-N`, paired with
   # the numeric run number. Versions with any protected tag are excluded
   # at jq filter time. Output: "<run_num> <version_id>" lines.
-  CANDIDATES=$(gh api \
+  # Capture exit status separately so an API failure (403, rate limit, etc.)
+  # surfaces as an error rather than being silently treated as "0 candidates".
+  if ! CANDIDATES=$(gh api \
     "/orgs/${ORG}/packages/container/${PKG_NAME}/versions" \
     --paginate \
     --jq "
@@ -177,9 +179,13 @@ for CHANNEL in stable dev; do
       | select(\$tags | map(test(\"${PROTECTED_TAG_RE}\")) | any | not)
       | (\$rn_tag | sub(\"^${CHANNEL}-\"; \"\") | tonumber) as \$num
       | \"\(\$num) \(\$v.id)\"
-    " \
-    || true)
+    " 2>&1); then
+    echo "  ERROR querying GHCR API for $CHANNEL — output above. Need read:packages scope or GHCR not reachable. Skipping channel."
+    continue
+  fi
 
+  # Strip whitespace-only / empty result.
+  CANDIDATES=$(echo "$CANDIDATES" | grep -E '^[0-9]+ ' || true)
   if [ -z "$CANDIDATES" ]; then
     echo "  no prunable $CHANNEL-N versions (none, or all protected by floating alias)."
     continue
