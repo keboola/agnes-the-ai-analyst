@@ -31,8 +31,15 @@ _BQ_DIALECT_HINTS = {
 
 
 def _fetch_bq_schema(project: str, dataset: str, table: str) -> list[dict]:
-    """Fetch column list via INFORMATION_SCHEMA.COLUMNS using DuckDB BQ extension."""
+    """Fetch column list via INFORMATION_SCHEMA.COLUMNS using DuckDB BQ extension.
+
+    Errors translated to HTTPException with the structured-body shape used across
+    all v2 endpoints. SQL here is server-constructed (queries INFORMATION_SCHEMA
+    with validated identifiers, no user-derived fragments), so BadRequest → 502
+    (`bq_upstream_error`), same as `/sample`, opposite of `/scan*`.
+    """
     import duckdb
+    from google.api_core import exceptions as gax
     from connectors.bigquery.auth import get_metadata_token
     from src.identifier_validation import validate_quoted_identifier
 
@@ -56,10 +63,41 @@ def _fetch_bq_schema(project: str, dataset: str, table: str) -> list[dict]:
             f"FROM `{project}.{dataset}.INFORMATION_SCHEMA.COLUMNS` "
             f"WHERE table_name = ? ORDER BY ordinal_position"
         )
-        rows = conn.execute(
-            "SELECT * FROM bigquery_query(?, ?, ?)",
-            [project, bq_sql, table],
-        ).fetchall()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM bigquery_query(?, ?, ?)",
+                [project, bq_sql, table],
+            ).fetchall()
+        except gax.Forbidden as e:
+            kind = "cross_project_forbidden" if "serviceusage" in str(e).lower() else "bq_forbidden"
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": kind,
+                    "message": str(e),
+                    "details": {
+                        "billing_project": project,
+                        "hint": (
+                            "Set data_source.bigquery.billing_project in instance.yaml to a project "
+                            "where the SA has serviceusage.services.use, or grant the SA that role "
+                            "on the data project."
+                        ) if kind == "cross_project_forbidden" else "",
+                    },
+                },
+            )
+        except gax.BadRequest as e:
+            # /schema SQL is server-constructed (INFORMATION_SCHEMA.COLUMNS with
+            # validated identifiers); a BadRequest here means registry corruption
+            # → upstream error, not user fault.
+            raise HTTPException(
+                status_code=502,
+                detail={"error": "bq_upstream_error", "message": str(e), "details": {}},
+            )
+        except gax.GoogleAPICallError as e:
+            raise HTTPException(
+                status_code=502,
+                detail={"error": "bq_upstream_error", "message": str(e), "details": {}},
+            )
         return [
             {
                 "name": r[0],
@@ -210,3 +248,41 @@ async def schema(
         raise HTTPException(status_code=404, detail=f"table {table_id!r} not found")
     except PermissionError:
         raise HTTPException(status_code=403, detail="not authorized for this table")
+    except HTTPException:
+        # Already-translated upstream error from _fetch_bq_schema — propagate.
+        raise
+    except Exception as e:
+        # TODO(#134 Phase 2): outer wrap exists because tests monkeypatch
+        # _fetch_bq_schema whole, replacing the inner translation. Will be
+        # removed when BqAccess facade centralizes translation in Phase 2.
+        # Inner block in _fetch_bq_schema is the source of truth for production.
+        # /schema SQL is server-constructed → BadRequest → 502 (not 400).
+        from google.api_core import exceptions as gax
+        if isinstance(e, gax.Forbidden):
+            kind = "cross_project_forbidden" if "serviceusage" in str(e).lower() else "bq_forbidden"
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": kind,
+                    "message": str(e),
+                    "details": {
+                        "billing_project": project_id,
+                        "hint": (
+                            "Set data_source.bigquery.billing_project in instance.yaml to a project "
+                            "where the SA has serviceusage.services.use, or grant the SA that role "
+                            "on the data project."
+                        ) if kind == "cross_project_forbidden" else "",
+                    },
+                },
+            )
+        if isinstance(e, gax.BadRequest):
+            raise HTTPException(
+                status_code=502,
+                detail={"error": "bq_upstream_error", "message": str(e), "details": {}},
+            )
+        if isinstance(e, gax.GoogleAPICallError):
+            raise HTTPException(
+                status_code=502,
+                detail={"error": "bq_upstream_error", "message": str(e), "details": {}},
+            )
+        raise
