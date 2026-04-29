@@ -51,6 +51,36 @@ def _prefixed_name(slug: str, plugin_name: str) -> str:
     return f"{slug}-{plugin_name}"
 
 
+def _resolve_manifest_name(plugin_dir: Path, fallback: str) -> str:
+    """Return the plugin's authoritative `name` from its `.claude-plugin/plugin.json`.
+
+    Claude Code resolves a loaded plugin back to its marketplace catalog
+    entry by the name declared in the plugin's own `plugin.json`. The synth
+    `marketplace.json` we serve must use that same name, otherwise the
+    `/plugin` UI Components panel can't link the loaded plugin to its
+    catalog entry and renders "Plugin <X> not found in marketplace".
+
+    Falls back to ``fallback`` (the upstream marketplace.json's plugin name)
+    when plugin.json is missing, unreadable, has no string `name`, or has
+    an empty/whitespace-only `name` — same defensive style as
+    ``src.marketplace.read_plugins``: never crash, always return a usable
+    value.
+    """
+    pj = plugin_dir / ".claude-plugin" / "plugin.json"
+    if not pj.is_file():
+        return fallback
+    try:
+        data = json.loads(pj.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return fallback
+    if not isinstance(data, dict):
+        return fallback
+    name = data.get("name")
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+    return fallback
+
+
 def resolve_allowed_plugins(
     conn: duckdb.DuckDBPyConnection, user: dict
 ) -> List[dict]:
@@ -60,8 +90,19 @@ def resolve_allowed_plugins(
         {
             "marketplace_id":   str,   # also the slug (they are the same)
             "marketplace_slug": str,
-            "original_name":    str,
-            "prefixed_name":    str,   # "<slug>-<original_name>"
+            "original_name":    str,   # name from upstream marketplace.json
+            "prefixed_name":    str,   # "<slug>-<original_name>" — drives
+                                       # the on-disk dir layout in the ZIP /
+                                       # git tree (cross-marketplace files
+                                       # don't collide).
+            "manifest_name":    str,   # name from the plugin's own
+                                       # .claude-plugin/plugin.json (or
+                                       # original_name fallback) — drives
+                                       # the `name` field in the synth
+                                       # marketplace.json we serve, so the
+                                       # Claude Code UI's catalog lookup
+                                       # matches the loaded plugin's
+                                       # namespace.
             "version":          str | None,
             "raw":              dict,  # parsed marketplace.json plugin entry
             "plugin_dir":       Path,  # ${DATA_DIR}/marketplaces/<slug>/plugins/<name>
@@ -99,15 +140,17 @@ def resolve_allowed_plugins(
     result: List[dict] = []
     for marketplace_id, name, version, raw in rows:
         slug = marketplace_id  # registry.id IS the slug (see src/marketplace.py)
+        plugin_dir = root / slug / "plugins" / name
         result.append(
             {
                 "marketplace_id": marketplace_id,
                 "marketplace_slug": slug,
                 "original_name": name,
                 "prefixed_name": _prefixed_name(slug, name),
+                "manifest_name": _resolve_manifest_name(plugin_dir, fallback=name),
                 "version": version,
                 "raw": _resolve_raw(raw),
-                "plugin_dir": root / slug / "plugins" / name,
+                "plugin_dir": plugin_dir,
             }
         )
     return result

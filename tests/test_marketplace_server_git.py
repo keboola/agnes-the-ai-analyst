@@ -45,11 +45,18 @@ def git_env(e2e_env, monkeypatch):
 
     data_dir = e2e_env["data_dir"]
 
-    # Plugin folders on disk
+    # Plugin folders on disk — each ships a real .claude-plugin/plugin.json
+    # so the bare repo's synth marketplace.json picks up the plugin's
+    # authoritative name (matches what real upstream marketplaces do, and
+    # exercises the manifest_name resolution path).
     for slug, plug in [("mkt-a", "plug-x"), ("mkt-b", "plug-y")]:
         d = data_dir / "marketplaces" / slug / "plugins" / plug
         d.mkdir(parents=True, exist_ok=True)
         (d / "CLAUDE.md").write_text(f"# {plug}\n", encoding="utf-8")
+        (d / ".claude-plugin").mkdir()
+        (d / ".claude-plugin" / "plugin.json").write_text(
+            json.dumps({"name": plug, "version": "1.0"}), encoding="utf-8",
+        )
 
     conn = get_system_db()
     try:
@@ -248,3 +255,37 @@ class TestGitSmartHttp:
         # Two different cache entries (different RBAC views)
         entries = [p for p in cache.iterdir() if p.is_dir() and p.name.endswith(".git")]
         assert len(entries) == 2
+
+    def test_bare_repo_manifest_uses_plugin_json_name(self, git_env):
+        """The bare repo's .claude-plugin/marketplace.json must list each
+        plugin under the name declared in its own plugin.json (not the
+        slug-prefixed dir name). Otherwise Claude Code's /plugin UI can't
+        link the loaded plugin back to its catalog entry."""
+        from dulwich.repo import Repo
+
+        c = git_env["client"]
+        c.get(
+            "/marketplace.git/info/refs?service=git-upload-pack",
+            headers={"Authorization": _basic("x", git_env["admin_pat"])},
+        )
+        cache = git_env["data_dir"] / "marketplaces" / "git-cache"
+        bare = next(p for p in cache.iterdir() if p.is_dir() and p.name.endswith(".git"))
+
+        repo = Repo(str(bare))
+        try:
+            head = repo[repo.refs[b"HEAD"]]
+            tree = repo[head.tree]
+            # dulwich tree.items() yields TreeEntry tuples (path, mode, sha)
+            cp_entry = next(e for e in tree.items() if e.path == b".claude-plugin")
+            cp_subtree = repo[cp_entry.sha]
+            manifest_entry = next(
+                e for e in cp_subtree.items() if e.path == b"marketplace.json"
+            )
+            manifest = json.loads(repo[manifest_entry.sha].data.decode("utf-8"))
+        finally:
+            repo.close()
+
+        names = {p["name"] for p in manifest["plugins"]}
+        assert names == {"plug-x", "plug-y"}
+        sources = {p["source"] for p in manifest["plugins"]}
+        assert sources == {"./plugins/mkt-a-plug-x", "./plugins/mkt-b-plug-y"}
