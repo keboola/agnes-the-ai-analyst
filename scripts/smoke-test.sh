@@ -31,6 +31,22 @@ if [ "$HEALTH" = "unreachable" ]; then
 fi
 check "health ($HEALTH)" "true"
 
+# 1b. Unauthenticated DB-touching probe — exercises the system-DB path before
+# any token is acquired. /api/health does NOT open system.duckdb (deliberate, so
+# the LB probe stays cheap), so it can return 200 while every authed request
+# 500s on permission/IO errors. /auth/email/request opens the users table to
+# look up the email, which catches the foundryai-development class of
+# regression (host-mounted /data root-owned, USER agnes can't open the DB).
+# Accept anything in 200-499 — including 4xx for "email auth disabled" — but
+# fail loudly on 5xx.
+DB_PROBE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$HOST/auth/email/request" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"smoke-probe@test.local"}' 2>/dev/null || echo "000")
+case "$DB_PROBE" in
+    5*|000) check "db-touching probe (HTTP $DB_PROBE — expected non-5xx)" "false" ;;
+    *)      check "db-touching probe (HTTP $DB_PROBE)" "true" ;;
+esac
+
 # 2. Health detailed has version fields (requires auth, checked after bootstrap)
 
 # 3. Bootstrap (only works on fresh DB; 403 means users exist)
@@ -42,8 +58,14 @@ if [ "$BOOT_HTTP" = "200" ]; then
     TOKEN=$(python3 -c "import json; print(json.load(open('/tmp/smoke_boot.json'))['access_token'])" 2>/dev/null || echo "")
     check "bootstrap (new admin)" "true"
 elif [ "$BOOT_HTTP" = "403" ]; then
+    # Users exist — operator must supply SMOKE_TOKEN to validate the authed
+    # paths, otherwise the script would silently SKIP every regression.
     TOKEN="${SMOKE_TOKEN:-}"
-    echo "  SKIP bootstrap (users exist)"
+    if [ -z "$TOKEN" ]; then
+        check "bootstrap (users exist; SMOKE_TOKEN required to continue)" "false"
+    else
+        echo "  SKIP bootstrap (users exist; using SMOKE_TOKEN)"
+    fi
 else
     check "bootstrap (HTTP $BOOT_HTTP)" "false"
 fi

@@ -283,3 +283,90 @@ jobs:
       - name: Teardown
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.ci.yml down -v
+
+  # Reproduces the deploy shape that broke agnes-development on 2026-04-29:
+  # the production stack uses docker-compose.host-mount.yml to bind-mount /data
+  # from the host PD instead of using a Docker named volume. Docker initializes
+  # a fresh named volume from the image's /data dir (which the Dockerfile
+  # chowns to agnes:agnes BEFORE switching USER), so the existing smoke-test
+  # job above never reproduces the "host /data is root-owned, container is
+  # USER agnes" scenario. This job pre-creates a host dir, applies the same
+  # chown the startup-script does on the GCE VM, and asserts the smoke
+  # passes — locking in the chown contract so removing it from
+  # startup-script.sh.tpl or flipping the Dockerfile uid breaks CI.
+  e2e-bind-mount:
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Pre-create /data with root-owned subdirs (mimics fresh GCE PD)
+        run: |
+          sudo mkdir -p /tmp/agnes-data/{state,analytics,extracts}
+          sudo chown -R 0:0 /tmp/agnes-data
+          ls -la /tmp/agnes-data
+
+      - name: Negative test — image must fail to write before chown
+        run: |
+          IMAGE="ghcr.io/${{ github.repository }}:${{ needs.build-and-push.outputs.image_tag }}"
+          # USER agnes (uid 999) writing to root-owned dir must fail.
+          if docker run --rm -v /tmp/agnes-data:/data "$IMAGE" \
+               sh -c "touch /data/state/.probe" 2>/dev/null; then
+            echo "REGRESSION: write to root-owned /data unexpectedly succeeded"
+            echo "  Either USER agnes is no longer enforced, or uid pin changed."
+            exit 1
+          fi
+          echo "OK: write correctly fails — operator chown is required"
+
+      - name: Apply startup-script chown (uid:gid 999:999)
+        run: sudo chown -R 999:999 /tmp/agnes-data
+
+      - name: Boot stack with bind-mounted /data + run smoke
+        run: |
+          touch .env
+          export AGNES_TAG="${{ needs.build-and-push.outputs.image_tag }}"
+          # Override the `data` volume to bind-mount /tmp/agnes-data, mirroring
+          # the production host-mount.yml overlay shape.
+          cat > docker-compose.bind-test.yml <<'EOF'
+          volumes:
+            data:
+              driver: local
+              driver_opts:
+                type: none
+                o: bind,rbind
+                device: /tmp/agnes-data
+          EOF
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.prod.yml \
+            -f docker-compose.ci.yml \
+            -f docker-compose.bind-test.yml \
+            up -d app
+          timeout 60 bash -c 'until curl -sf http://localhost:8000/api/health | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d[\"status\"]!=\"unhealthy\" else 1)"; do sleep 3; done'
+          bash scripts/smoke-test.sh http://localhost:8000
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          docker compose \
+            -f docker-compose.yml -f docker-compose.prod.yml \
+            -f docker-compose.ci.yml -f docker-compose.bind-test.yml \
+            logs > bind-mount-logs.txt 2>&1 || true
+          ls -la /tmp/agnes-data /tmp/agnes-data/state 2>&1 | tee -a bind-mount-logs.txt
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-bind-mount-logs
+          path: bind-mount-logs.txt
+
+      - name: Teardown
+        if: always()
+        run: |
+          docker compose \
+            -f docker-compose.yml -f docker-compose.prod.yml \
+            -f docker-compose.ci.yml -f docker-compose.bind-test.yml \
+            down -v || true
+          sudo rm -rf /tmp/agnes-data || true

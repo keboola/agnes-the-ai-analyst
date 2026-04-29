@@ -40,6 +40,12 @@ if [ -b "$DATA_DEV" ]; then
     mountpoint -q "$DATA_MNT" || mount -o discard,defaults "$DATA_DEV" "$DATA_MNT"
     grep -qF "$DATA_DEV" /etc/fstab || echo "$DATA_DEV $DATA_MNT ext4 discard,defaults,nofail 0 2" >> /etc/fstab
     mkdir -p "$DATA_MNT/state" "$DATA_MNT/analytics" "$DATA_MNT/extracts"
+    # Match Dockerfile USER agnes (uid:gid 999:999). A freshly-attached PD is
+    # root-owned by default; without this chown the non-root container cannot
+    # write to /data/state/system.duckdb and every authed request 500s after
+    # the first upgrade that flips USER from root to agnes (regression hit
+    # agnes-development on 2026-04-29). Idempotent — safe on reboot.
+    chown -R 999:999 "$DATA_MNT"
 fi
 
 # --- 3. App directory + docker-compose files from public repo ---
