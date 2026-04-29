@@ -71,10 +71,9 @@ def _validate_config_version(config: dict) -> None:
 
     Reads config_version from the config dict. If missing, logs a warning
     and defaults to 0. If the version is not in SUPPORTED_CONFIG_VERSIONS,
-    raises an error with a clear message.
-
-    Raises:
-        ValueError: If config_version is not supported.
+    logs a warning but does NOT raise — existing deployments without the
+    field must not crash on upgrade. The operator is nudged to add the
+    field via the warning message.
     """
     version = config.get("config_version")
     if version is None:
@@ -84,10 +83,11 @@ def _validate_config_version(config: dict) -> None:
         )
         version = 0
     if version not in SUPPORTED_CONFIG_VERSIONS:
-        raise ValueError(
-            f"Unsupported config_version: {version}. "
-            f"Supported versions: {sorted(SUPPORTED_CONFIG_VERSIONS)}. "
-            f"Update your instance.yaml config_version field."
+        logger.warning(
+            "Unsupported config_version: %s. Supported versions: %s. "
+            "Update your instance.yaml config_version field.",
+            version,
+            sorted(SUPPORTED_CONFIG_VERSIONS),
         )
 
 
