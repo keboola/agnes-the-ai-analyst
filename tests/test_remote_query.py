@@ -1,15 +1,24 @@
 """Tests for RemoteQueryEngine — two-phase BQ registration + DuckDB execution."""
 
-import sys
 from datetime import date
 from decimal import Decimal
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import duckdb
 import pyarrow as pa
 import pytest
 
+from connectors.bigquery.access import BqAccess, BqAccessError, BqProjects
 from src.remote_query import RemoteQueryEngine, RemoteQueryError, _validate_bq_sql, _validate_sql
+
+
+def _make_bq_access(client):
+    """Build a BqAccess that yields the given mock client. Used by tests that
+    inject a fake BQ client into RemoteQueryEngine."""
+    return BqAccess(
+        BqProjects(billing="test-billing", data="test-data"),
+        client_factory=lambda projects: client,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +78,7 @@ class TestRemoteQueryEngineRegister:
 
         engine = RemoteQueryEngine(
             analytics_conn,
-            _bq_client_factory=lambda project: mock_client,
+            bq_access=_make_bq_access(mock_client),
             max_bq_registration_rows=500_000,
         )
 
@@ -92,7 +101,7 @@ class TestRemoteQueryEngineRegister:
 
         engine = RemoteQueryEngine(
             analytics_conn,
-            _bq_client_factory=lambda project: mock_client,
+            bq_access=_make_bq_access(mock_client),
             max_bq_registration_rows=500_000,
         )
 
@@ -124,17 +133,27 @@ class TestRemoteQueryEngineRegister:
             pass  # Expected — no BQ package in test env
 
     def test_register_bq_missing_package(self, analytics_conn):
-        """When google-cloud-bigquery is not installed, engine must raise RemoteQueryError."""
+        """When google-cloud-bigquery is not installed, BqAccess raises
+        BqAccessError(bq_lib_missing); the engine must translate that to
+        RemoteQueryError."""
+        def _missing_lib_factory(projects):
+            raise BqAccessError(
+                "bq_lib_missing",
+                "google-cloud-bigquery is not installed",
+            )
+
+        bq = BqAccess(
+            BqProjects(billing="test-billing", data="test-data"),
+            client_factory=_missing_lib_factory,
+        )
         engine = RemoteQueryEngine(
             analytics_conn,
-            # No factory — will try to import google.cloud.bigquery
-            _bq_client_factory=None,
+            bq_access=bq,
             max_bq_registration_rows=500_000,
         )
 
-        with patch.dict(sys.modules, {"google": None, "google.cloud": None, "google.cloud.bigquery": None}):
-            with pytest.raises(RemoteQueryError, match="google-cloud-bigquery"):
-                engine.register_bq("bq_alias", "SELECT 1")
+        with pytest.raises(RemoteQueryError, match="google-cloud-bigquery"):
+            engine.register_bq("bq_alias", "SELECT 1")
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +188,7 @@ class TestRemoteQueryEngineExecute:
 
         engine = RemoteQueryEngine(
             analytics_conn,
-            _bq_client_factory=lambda project: mock_client,
+            bq_access=_make_bq_access(mock_client),
             max_bq_registration_rows=500_000,
         )
         engine.register_bq("bq_labels", "SELECT id, label FROM bq.labels")
@@ -316,7 +335,7 @@ class TestHybridQueryBigQuery:
 
         engine = RemoteQueryEngine(
             analytics_conn,
-            _bq_client_factory=lambda project: mock_client,
+            bq_access=_make_bq_access(mock_client),
         )
 
         result = engine.register_bq("traffic", "SELECT date, views FROM bq.traffic")
@@ -341,7 +360,7 @@ class TestHybridQueryBigQuery:
 
         engine = RemoteQueryEngine(
             analytics_conn,
-            _bq_client_factory=lambda project: mock_client,
+            bq_access=_make_bq_access(mock_client),
         )
         engine.register_bq("traffic", "SELECT date, views FROM bq.traffic")
 
@@ -396,7 +415,7 @@ class TestHybridQueryBigQuery:
 
         engine = RemoteQueryEngine(
             analytics_conn,
-            _bq_client_factory=lambda project: mock_client,
+            bq_access=_make_bq_access(mock_client),
         )
 
         engine.register_bq("traffic", "SELECT date, views FROM bq.traffic")
@@ -423,18 +442,26 @@ class TestHybridQueryBigQuery:
         assert "blocked" in str(exc_info.value).lower() or "drop" in str(exc_info.value).lower()
 
     def test_missing_bigquery_credentials_returns_proper_error(self, analytics_conn):
-        """Missing BigQuery credentials (no BIGQUERY_PROJECT env var, no
-        google-cloud-bigquery installed) returns RemoteQueryError, not crash."""
-        engine = RemoteQueryEngine(
-            analytics_conn,
-            _bq_client_factory=None,  # No factory → tries default import
-        )
+        """Missing BigQuery credentials surface as RemoteQueryError, not a crash.
 
-        with patch.dict(sys.modules, {
-            "google": None, "google.cloud": None, "google.cloud.bigquery": None,
-        }):
-            with pytest.raises(RemoteQueryError) as exc_info:
-                engine.register_bq("bq_data", "SELECT 1")
+        Simulated by a BqAccess whose client_factory raises BqAccessError —
+        the same shape get_bq_access() would produce on bq_lib_missing /
+        not_configured in production.
+        """
+        def _missing_lib_factory(projects):
+            raise BqAccessError(
+                "bq_lib_missing",
+                "google-cloud-bigquery is not installed",
+            )
+
+        bq = BqAccess(
+            BqProjects(billing="test-billing", data="test-data"),
+            client_factory=_missing_lib_factory,
+        )
+        engine = RemoteQueryEngine(analytics_conn, bq_access=bq)
+
+        with pytest.raises(RemoteQueryError) as exc_info:
+            engine.register_bq("bq_data", "SELECT 1")
 
         assert exc_info.value.error_type == "bq_error"
         # Should mention the missing package or config, not a raw traceback
@@ -449,7 +476,7 @@ class TestHybridQueryBigQuery:
 
         engine = RemoteQueryEngine(
             analytics_conn,
-            _bq_client_factory=lambda project: mock_client,
+            bq_access=_make_bq_access(mock_client),
         )
 
         with pytest.raises(RemoteQueryError) as exc_info:
@@ -468,7 +495,7 @@ class TestHybridQueryBigQuery:
 
         engine = RemoteQueryEngine(
             analytics_conn,
-            _bq_client_factory=lambda project: mock_client,
+            bq_access=_make_bq_access(mock_client),
         )
 
         with pytest.raises(RemoteQueryError) as exc_info:
@@ -484,7 +511,7 @@ class TestHybridQueryBigQuery:
 
         engine = RemoteQueryEngine(
             analytics_conn,
-            _bq_client_factory=lambda project: mock_client,
+            bq_access=_make_bq_access(mock_client),
             max_bq_registration_rows=500_000,
         )
 
@@ -505,7 +532,7 @@ class TestHybridQueryBigQuery:
 
         engine = RemoteQueryEngine(
             analytics_conn,
-            _bq_client_factory=lambda project: mock_client,
+            bq_access=_make_bq_access(mock_client),
             max_memory_mb=0.001,  # tiny limit → guaranteed exceed
         )
 

@@ -23,24 +23,35 @@ def _seed_bq_table(conn, *, is_public=True):
     )
 
 
+def _bq(billing="billing-proj", data="data-proj"):
+    """Build a BqAccess wired to default factories. For tests that monkeypatch
+    `_fetch_bq_schema` / `_fetch_bq_table_options` whole, the inner factories
+    are never called."""
+    from connectors.bigquery.access import BqAccess, BqProjects
+    return BqAccess(BqProjects(billing=billing, data=data))
+
+
 class TestSchemaEndpoint:
     def test_bq_table_returns_columns_and_dialect_hints(self, reload_db, monkeypatch):
         from app.api import v2_schema
         # Stub the BQ schema fetch to avoid hitting real BQ
         monkeypatch.setattr(
             v2_schema, "_fetch_bq_schema",
-            lambda project, dataset, table: [
+            lambda bq, dataset, table: [
                 {"name": "event_date", "type": "DATE", "nullable": False, "description": ""},
                 {"name": "country_code", "type": "STRING", "nullable": True, "description": ""},
             ],
         )
-        monkeypatch.setattr(v2_schema, "_fetch_bq_table_options", lambda *a: {"partition_by": "event_date", "clustered_by": []})
+        monkeypatch.setattr(
+            v2_schema, "_fetch_bq_table_options",
+            lambda bq, dataset, table: {"partition_by": "event_date", "clustered_by": []},
+        )
 
         conn = reload_db.get_system_db()
         try:
             _seed_bq_table(conn)
             user = {"role": "admin", "email": "a@x.com"}
-            data = v2_schema.build_schema(conn, user, "bq_view", project_id="my-proj")
+            data = v2_schema.build_schema(conn, user, "bq_view", bq=_bq())
         finally:
             conn.close()
         assert data["table_id"] == "bq_view"
@@ -55,7 +66,7 @@ class TestSchemaEndpoint:
         try:
             user = {"role": "admin", "email": "a@x.com"}
             with pytest.raises(NotFound):
-                build_schema(conn, user, "missing", project_id="my-proj")
+                build_schema(conn, user, "missing", bq=_bq())
         finally:
             conn.close()
 
@@ -68,7 +79,7 @@ class TestSchemaEndpoint:
             v2_schema, "_fetch_bq_schema",
             lambda *a, **kw: [{"name": "x", "type": "STRING", "nullable": True, "description": ""}],
         )
-        monkeypatch.setattr(v2_schema, "_fetch_bq_table_options", lambda *a: {})
+        monkeypatch.setattr(v2_schema, "_fetch_bq_table_options", lambda *a, **kw: {})
         # Stub can_access_table to deny non-admins
         monkeypatch.setattr(
             "app.api.v2_schema.can_access_table",
@@ -81,11 +92,11 @@ class TestSchemaEndpoint:
             _seed_bq_table(conn, is_public=False)
             # Admin warms the cache.
             admin = {"role": "admin", "email": "admin@x.com"}
-            v2_schema.build_schema(conn, admin, "bq_view", project_id="p")
+            v2_schema.build_schema(conn, admin, "bq_view", bq=_bq())
             # Non-admin must hit RBAC denial — cache must NOT short-circuit.
             other = {"role": "viewer", "email": "viewer@x.com"}
             with pytest.raises(PermissionError):
-                v2_schema.build_schema(conn, other, "bq_view", project_id="p")
+                v2_schema.build_schema(conn, other, "bq_view", bq=_bq())
         finally:
             conn.close()
 
@@ -93,43 +104,49 @@ class TestSchemaEndpoint:
 class TestBqAccessErrors:
     """Issue #134: structured 502 translation on BQ errors in the strict /schema path.
 
+    These tests exercise the REAL translation path through `BqAccess` +
+    `translate_bq_error` by injecting a duckdb_session whose execute() raises
+    the Google API exception. That's the production path — Phase 1
+    monkeypatches of `_fetch_bq_schema` whole would skip the translation logic
+    and only test the outer wrap (which has been removed in Phase 2).
+
     `/schema` differs from `/scan` and `/scan/estimate`: the SQL is
     server-constructed (queries `INFORMATION_SCHEMA.COLUMNS` with validated
     identifiers, no user-derived fragments), so `BadRequest` → 502
     (`bq_upstream_error`) rather than 400. Same as `/sample`.
     """
 
-    def test_schema_returns_502_on_bq_forbidden_serviceusage(self, reload_db, monkeypatch):
-        """When `_fetch_bq_schema` raises Forbidden mentioning serviceusage, the
+    @pytest.fixture(autouse=True)
+    def _clear_schema_cache(self):
+        # Prevent payloads from earlier tests from short-circuiting the fetch.
+        from app.api import v2_schema
+        v2_schema._schema_cache.clear()
+        yield
+        v2_schema._schema_cache.clear()
+
+    def test_schema_returns_502_on_bq_forbidden_serviceusage(self, reload_db, bq_access):
+        """When the BQ extension raises Forbidden mentioning serviceusage, the
         endpoint must translate to HTTP 502 with `cross_project_forbidden`
         and a hint that mentions billing_project."""
         from app.api import v2_schema
         from google.api_core.exceptions import Forbidden
 
-        # Clear cache so a prior test's payload doesn't short-circuit the fetch.
-        v2_schema._schema_cache.clear()
-
-        def _raise_forbidden(project, dataset, table):
-            raise Forbidden("Permission denied: serviceusage.services.use on project foo")
-
-        monkeypatch.setattr(v2_schema, "_fetch_bq_schema", _raise_forbidden)
-        # Empty project would fail identifier validation before reaching the BQ
-        # call, so patch get_value to provide a non-empty project (mirrors
-        # Task 1.2/1.3 in test_v2_scan_estimate.py / test_v2_scan.py).
-        cfg = {
-            ("data_source", "bigquery", "project"): "data-proj",
-        }
-        monkeypatch.setattr(
-            "app.api.v2_schema.get_value",
-            lambda *keys, **kw: cfg.get(keys, kw.get("default", "")),
+        mock_conn = MagicMock()
+        mock_conn.execute.side_effect = Forbidden(
+            "Permission denied: serviceusage.services.use on project foo"
         )
+        bq = bq_access(duckdb_conn=mock_conn, billing="billing-proj", data="data-proj")
 
         conn = reload_db.get_system_db()
         try:
             _seed_bq_table(conn)
             user = {"role": "admin", "email": "a@x.com"}
+            # Endpoint is async — drive it directly. dependency_overrides only
+            # fires through TestClient/HTTP, so pass `bq=bq` explicitly.
             with pytest.raises(HTTPException) as exc_info:
-                asyncio.run(v2_schema.schema(table_id="bq_view", user=user, conn=conn))
+                asyncio.run(v2_schema.schema(
+                    table_id="bq_view", user=user, conn=conn, bq=bq,
+                ))
         finally:
             conn.close()
 
@@ -140,39 +157,33 @@ class TestBqAccessErrors:
         assert "hint" in detail["details"]
         assert "billing_project" in detail["details"]["hint"].lower()
 
-    def test_schema_returns_502_on_bq_forbidden_non_serviceusage(self, reload_db, monkeypatch):
+    def test_schema_returns_502_on_bq_forbidden_non_serviceusage(self, reload_db, bq_access):
         """A Forbidden that is NOT about serviceusage (e.g. dataset-level ACL)
-        still becomes a 502, but with `bq_forbidden` and an empty hint."""
+        still becomes a 502, but with `bq_forbidden`."""
         from app.api import v2_schema
         from google.api_core.exceptions import Forbidden
 
-        v2_schema._schema_cache.clear()
-
-        def _raise_forbidden(project, dataset, table):
-            raise Forbidden("Access Denied: Dataset foo.bar: User does not have permission")
-
-        monkeypatch.setattr(v2_schema, "_fetch_bq_schema", _raise_forbidden)
-        cfg = {
-            ("data_source", "bigquery", "project"): "data-proj",
-        }
-        monkeypatch.setattr(
-            "app.api.v2_schema.get_value",
-            lambda *keys, **kw: cfg.get(keys, kw.get("default", "")),
+        mock_conn = MagicMock()
+        mock_conn.execute.side_effect = Forbidden(
+            "Access Denied: Dataset foo.bar: User does not have permission"
         )
+        bq = bq_access(duckdb_conn=mock_conn, billing="billing-proj", data="data-proj")
 
         conn = reload_db.get_system_db()
         try:
             _seed_bq_table(conn)
             user = {"role": "admin", "email": "a@x.com"}
             with pytest.raises(HTTPException) as exc_info:
-                asyncio.run(v2_schema.schema(table_id="bq_view", user=user, conn=conn))
+                asyncio.run(v2_schema.schema(
+                    table_id="bq_view", user=user, conn=conn, bq=bq,
+                ))
         finally:
             conn.close()
 
         assert exc_info.value.status_code == 502
         assert exc_info.value.detail["error"] == "bq_forbidden"
 
-    def test_schema_returns_502_on_bq_bad_request(self, reload_db, monkeypatch):
+    def test_schema_returns_502_on_bq_bad_request(self, reload_db, bq_access):
         """`/schema` SQL is server-constructed (INFORMATION_SCHEMA.COLUMNS with
         validated identifiers); a BadRequest here means registry corruption →
         upstream error, not user fault. Translate to HTTP 502 (`bq_upstream_error`),
@@ -180,26 +191,18 @@ class TestBqAccessErrors:
         from app.api import v2_schema
         from google.api_core.exceptions import BadRequest
 
-        v2_schema._schema_cache.clear()
-
-        def _raise_bad_request(project, dataset, table):
-            raise BadRequest("Syntax error at line 1, column 5")
-
-        monkeypatch.setattr(v2_schema, "_fetch_bq_schema", _raise_bad_request)
-        cfg = {
-            ("data_source", "bigquery", "project"): "data-proj",
-        }
-        monkeypatch.setattr(
-            "app.api.v2_schema.get_value",
-            lambda *keys, **kw: cfg.get(keys, kw.get("default", "")),
-        )
+        mock_conn = MagicMock()
+        mock_conn.execute.side_effect = BadRequest("Syntax error at line 1, column 5")
+        bq = bq_access(duckdb_conn=mock_conn, billing="billing-proj", data="data-proj")
 
         conn = reload_db.get_system_db()
         try:
             _seed_bq_table(conn)
             user = {"role": "admin", "email": "a@x.com"}
             with pytest.raises(HTTPException) as exc_info:
-                asyncio.run(v2_schema.schema(table_id="bq_view", user=user, conn=conn))
+                asyncio.run(v2_schema.schema(
+                    table_id="bq_view", user=user, conn=conn, bq=bq,
+                ))
         finally:
             conn.close()
 
@@ -209,48 +212,39 @@ class TestBqAccessErrors:
         assert detail["error"] == "bq_upstream_error"
         assert "Syntax error" in detail["message"]
 
-    def test_schema_returns_200_with_empty_partition_on_table_options_failure(self, reload_db, monkeypatch):
-        """REGRESSION GUARD: `_fetch_bq_table_options` is best-effort (already
-        wrapped in `try/except Exception → return {}` with a logger.warning).
-        On internal failure the helper returns `{}`; the endpoint MUST still
-        return 200 with the column list and `partition_by=None, clustered_by=[]`.
+    def test_schema_returns_200_with_empty_partition_on_table_options_failure(
+        self, reload_db, monkeypatch,
+    ):
+        """REGRESSION GUARD: `_fetch_bq_table_options` is best-effort
+        (`try/except Exception → return {}` with a logger.warning). On internal
+        failure the helper returns `{}`; the endpoint MUST still return 200 with
+        the column list and `partition_by=None, clustered_by=[]`.
 
-        Phase 2 will refactor the helper to use BqAccess; it must preserve the
-        swallow-all contract. This test patches the helper to return the empty
-        dict it would yield on failure, and asserts the endpoint surfaces a
-        clean 200 — guards the swallow-all output contract end-to-end."""
+        Phase 2 preserved the swallow-all contract — this test verifies it
+        end-to-end with the helper patched to return the empty dict it would
+        yield on failure, AND a Phase-2-specific regression guard that exercises
+        the real helper raising an upstream error and confirms it's swallowed
+        (not surfaced as 502)."""
         from app.api import v2_schema
-
-        # Module-level schema cache survives across tests; clear it so an
-        # earlier test's (partition_by, clustered_by) doesn't poison this one.
-        v2_schema._schema_cache.clear()
 
         # Strict path returns real schema.
         monkeypatch.setattr(
             v2_schema, "_fetch_bq_schema",
-            lambda project, dataset, table: [
+            lambda bq, dataset, table: [
                 {"name": "event_date", "type": "DATE", "nullable": False, "description": ""},
                 {"name": "country_code", "type": "STRING", "nullable": True, "description": ""},
             ],
         )
         # Best-effort path returns `{}` (the documented swallow-all output).
-        # If a Phase 2 refactor accidentally lets HTTPException leak instead,
-        # this test stays the same and other coverage flags the regression.
-        monkeypatch.setattr(v2_schema, "_fetch_bq_table_options", lambda *a: {})
-
-        cfg = {
-            ("data_source", "bigquery", "project"): "data-proj",
-        }
-        monkeypatch.setattr(
-            "app.api.v2_schema.get_value",
-            lambda *keys, **kw: cfg.get(keys, kw.get("default", "")),
-        )
+        monkeypatch.setattr(v2_schema, "_fetch_bq_table_options", lambda bq, dataset, table: {})
 
         conn = reload_db.get_system_db()
         try:
             _seed_bq_table(conn)
             user = {"role": "admin", "email": "a@x.com"}
-            data = asyncio.run(v2_schema.schema(table_id="bq_view", user=user, conn=conn))
+            data = asyncio.run(v2_schema.schema(
+                table_id="bq_view", user=user, conn=conn, bq=_bq(),
+            ))
         finally:
             conn.close()
 
@@ -260,3 +254,63 @@ class TestBqAccessErrors:
         # Partition info absent or None (the swallow-all returns {} on failure).
         assert data.get("partition_by") is None
         assert data.get("clustered_by") == []
+
+    def test_table_options_swallows_bq_errors_returns_empty_dict(self, reload_db, bq_access):
+        """REGRESSION GUARD (Phase 2 production path): `_fetch_bq_table_options`
+        must swallow ANY exception from BQ and return `{}`. Calling it directly
+        with a bq whose duckdb_session().execute() raises Forbidden / BadRequest /
+        unknown — all must produce `{}`, NOT a BqAccessError that the endpoint
+        would 502 on. This is the load-bearing contract for `/schema` to keep
+        returning 200 on permissioned tables / cross-project misconfigurations."""
+        from app.api import v2_schema
+        from google.api_core.exceptions import Forbidden, BadRequest
+
+        for exc in [
+            Forbidden("Permission denied: serviceusage.services.use on project foo"),
+            Forbidden("Access Denied: Dataset foo.bar"),
+            BadRequest("Syntax error"),
+            RuntimeError("totally unexpected"),
+        ]:
+            mock_conn = MagicMock()
+            mock_conn.execute.side_effect = exc
+            bq = bq_access(duckdb_conn=mock_conn, billing="billing-proj", data="data-proj")
+            assert v2_schema._fetch_bq_table_options(bq, "ds", "bq_view") == {}, (
+                f"swallow-all contract violated for {type(exc).__name__}: {exc}"
+            )
+
+    def test_schema_passes_billing_project_to_bigquery_query(self, reload_db, bq_access):
+        """Regression guard: bq.projects.billing must be passed to bigquery_query()
+        as the billing project (positional arg 0), and the FROM clause must
+        reference bq.projects.data (NOT billing). Verifies the migration didn't
+        regress the cross-project bug fix from Phase 1."""
+        from app.api import v2_schema
+
+        captured = {}
+
+        def _fake_execute(sql, params):
+            if "bigquery_query" in sql:
+                # _fetch_bq_schema executes first; capture once.
+                if "bq_sql" not in captured:
+                    captured["billing_project"] = params[0]
+                    captured["bq_sql"] = params[1]
+            result = MagicMock()
+            result.fetchall.return_value = []
+            return result
+
+        mock_conn = MagicMock()
+        mock_conn.execute.side_effect = _fake_execute
+        bq = bq_access(duckdb_conn=mock_conn, billing="billing-proj", data="data-proj")
+
+        conn = reload_db.get_system_db()
+        try:
+            _seed_bq_table(conn)
+            user = {"role": "admin", "email": "a@x.com"}
+            asyncio.run(v2_schema.schema(
+                table_id="bq_view", user=user, conn=conn, bq=bq,
+            ))
+        finally:
+            conn.close()
+
+        assert captured["billing_project"] == "billing-proj"
+        # FROM clause uses data project (where INFORMATION_SCHEMA.COLUMNS lives)
+        assert "`data-proj.ds.INFORMATION_SCHEMA.COLUMNS`" in captured["bq_sql"]
