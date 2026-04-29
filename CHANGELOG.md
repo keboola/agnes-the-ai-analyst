@@ -29,7 +29,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Known limitations
 - **Stuck `last_status='running'`**: a scheduled script whose BackgroundTask crashes mid-run (process killed, OOM, gateway timeout) stays claimed forever. Recovery: `UPDATE script_registry SET last_status = NULL WHERE id = ?` from a DuckDB shell. Auto-recovery via max-runtime detection is intentionally out of scope for v0.19.0; revisit if it bites in practice.
-- **Sub-minute schedule quantization**: `SCHEDULER_*_INTERVAL` accepts seconds but the underlying schedule grammar is minute-grained, so values below 60 round up to `every 1m` (e.g. `SCHEDULER_DATA_REFRESH_INTERVAL=30` becomes a 1-minute cadence). Documented in `docs/DEPLOYMENT.md` → Scheduler tuning.
+- **Schedule quantization rounds up**: `SCHEDULER_*_INTERVAL` accepts seconds but the underlying schedule grammar is minute-grained. Non-multiples of 60 round UP to the next minute (90 s → `every 2m`, never `every 1m`) so a job never fires more often than the operator configured. Sub-minute values clamp to `every 1m`. Documented in `docs/DEPLOYMENT.md` → Scheduler tuning.
 
 ## [0.18.0] — 2026-04-29
 

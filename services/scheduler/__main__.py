@@ -103,10 +103,17 @@ def _read_positive_int(name: str) -> int:
 
 
 def _seconds_to_schedule(seconds: int) -> str:
-    """Convert a seconds value to the closest 'every Nm' / 'every Nh' string."""
+    """Convert a seconds value to the closest 'every Nm' / 'every Nh' string.
+
+    Uses ceiling division so a non-multiple-of-60 input never produces a
+    schedule that fires MORE often than the operator configured (90s →
+    'every 2m', not 'every 1m'). Sub-minute inputs clamp to 'every 1m'
+    because the schedule grammar has minute-level resolution.
+    """
     if seconds % 3600 == 0 and seconds >= 3600:
         return f"every {seconds // 3600}h"
-    minutes = max(1, seconds // 60)
+    # Ceiling division: -(-x // y) is the standard trick.
+    minutes = max(1, -(-seconds // 60))
     return f"every {minutes}m"
 
 

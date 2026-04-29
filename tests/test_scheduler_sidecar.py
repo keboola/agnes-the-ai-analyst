@@ -65,3 +65,29 @@ def test_build_jobs_includes_run_due_endpoint():
     name, schedule, endpoint, method, _timeout = target
     assert endpoint == "/api/scripts/run-due"
     assert method == "POST"
+
+
+@pytest.mark.parametrize("seconds,expected", [
+    # Exact multiples of 60 → unchanged.
+    (60,   "every 1m"),
+    (120,  "every 2m"),
+    (900,  "every 15m"),
+    # Exact multiples of 3600 → hour form.
+    (3600, "every 1h"),
+    (7200, "every 2h"),
+    # Non-multiples of 60 must round UP (ceiling), so the job never fires
+    # MORE often than the operator configured. Devin BUG_0001 on 1af2081.
+    (90,   "every 2m"),  # 90s asked → 120s scheduled, NOT 60s
+    (150,  "every 3m"),
+    (61,   "every 2m"),
+    (3601, "every 61m"),
+    # Sub-minute clamps to 1m (schedule grammar minute-grained).
+    (30,   "every 1m"),
+    (1,    "every 1m"),
+])
+def test_seconds_to_schedule_rounds_up_not_down(seconds, expected):
+    from services.scheduler.__main__ import _seconds_to_schedule
+    assert _seconds_to_schedule(seconds) == expected, (
+        f"_seconds_to_schedule({seconds}) must round UP — flooring would "
+        f"make jobs fire more often than the operator configured."
+    )

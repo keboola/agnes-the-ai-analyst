@@ -184,10 +184,11 @@ status. The endpoint requires admin auth (the sidecar's
 
 #### Caveats
 
-- **Sub-minute env values are quantized to 1 minute.** The schedule grammar
-  has minute-level resolution, so `SCHEDULER_DATA_REFRESH_INTERVAL=30`
-  silently becomes a 1-minute cadence rather than 30 seconds. Pick values
-  ≥ 60 to avoid surprise.
+- **Schedule quantization rounds up.** The schedule grammar has minute-
+  level resolution. Non-multiples of 60 seconds round UP to the next
+  minute (`SCHEDULER_DATA_REFRESH_INTERVAL=90` → `every 2m`, not `every 1m`)
+  so a job never fires more often than configured. Sub-minute values
+  clamp to `every 1m`. Use multiples of 60 for predictable cadence.
 - **A crashed BackgroundTask can leave a script stuck in `last_status='running'`.**
   The next sidecar tick will skip the stuck script forever. Recovery is
   manual: open a DuckDB shell on `system.duckdb` and run
