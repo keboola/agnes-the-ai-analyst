@@ -131,9 +131,18 @@ def _accessible_grants(
 ) -> List[Dict[str, Any]]:
     """Resource grants the user can reach via at least one of their groups.
     Distinct on (resource_type, resource_id) so a grant held by two of the
-    user's groups appears once."""
+    user's groups appears once.
+
+    The plain ``SELECT DISTINCT`` covers all SELECT-list columns, so listing
+    ``via_group`` would re-double a grant reachable through two groups (and
+    inflate the "Distinct N grant(s)" count rendered by ``me_debug.html``).
+    DuckDB supports PostgreSQL's ``DISTINCT ON`` to dedupe on the leading
+    columns; the ORDER BY picks the alphabetically-first group as the
+    representative ``via_group`` for the row.
+    """
     rows = conn.execute(
-        """SELECT DISTINCT rg.resource_type, rg.resource_id, g.name AS via_group
+        """SELECT DISTINCT ON (rg.resource_type, rg.resource_id)
+                  rg.resource_type, rg.resource_id, g.name AS via_group
              FROM resource_grants rg
              JOIN user_group_members m ON m.group_id = rg.group_id
              JOIN user_groups g ON g.id = rg.group_id
@@ -183,9 +192,21 @@ async def me_debug_page(
     # the shared chrome.
     from app.web.router import _build_context
     raw_token = _read_session_token(request)
+    # Strip sensitive columns before handing the row to the template. The
+    # current me_debug.html only renders id/email/name/active/created_at, but
+    # passing the full row would let a future template edit (e.g. an admin
+    # adding `{{ user_record | tojson }}` while debugging) accidentally leak
+    # the password hash. Defense-in-depth — the module docstring at line 13
+    # explicitly establishes "Never render password hashes" as an invariant.
+    _SENSITIVE_USER_COLUMNS = (
+        "password_hash", "setup_token", "reset_token",
+    )
+    user_record_safe = {
+        k: v for k, v in user.items() if k not in _SENSITIVE_USER_COLUMNS
+    }
     ctx = _build_context(
-        request, user=user,
-        user_record=user,
+        request, user=user_record_safe,
+        user_record=user_record_safe,
         claims=_decoded_claims(raw_token),
         token_fingerprint=_token_fingerprint(raw_token),
         memberships=_user_memberships(user["id"], conn),

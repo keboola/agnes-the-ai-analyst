@@ -157,7 +157,7 @@ class TestRefetchDryRun:
         # Mock fetch to return a deterministic list (no real Google call).
         monkeypatch.setenv(
             "GOOGLE_ADMIN_SDK_MOCK_GROUPS",
-            "grp_foundryai_admin@groupon.com,grp_foundryai_finance@groupon.com",
+            "grp_admin@example.com,grp_finance@example.com",
         )
 
         from src.db import get_system_db, close_system_db
