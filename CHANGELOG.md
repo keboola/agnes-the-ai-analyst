@@ -10,6 +10,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **Corporate-memory tree view + cross-axis filtering** on `/corporate-memory` and `/corporate-memory/admin`. Operators choose a grouping axis (domain / category / tag / audience) and combine it with chip filters (status, source_type, audience, has-duplicate-hint, search). Tree uses native `<details>`; localStorage persists open/closed state per axis; no new dependencies. Issue #62.
+- **Corporate-memory duplicate-candidate hints** — admin sees a "Duplicate Candidates" tab with likely-duplicate item pairs detected by entity overlap (Jaccard score, ≥2 shared entities, same domain). Resolution actions: `duplicate` / `different` / `dismissed`. Auto-merge intentionally not included. Issue #62.
+- **Bulk-edit endpoints**: `PATCH /api/memory/admin/{id}` (now accepts category/domain/tags/audience/title/content, was title+content only); `POST /api/memory/admin/bulk-update` for multi-id mutations with per-item audit rows; new "Move to category / domain / audience" + "Add/Remove tag" actions in the admin batch bar. Issue #62.
+- **`GET /api/memory/stats`** now includes `by_tag` (DuckDB `json_each` over tags) and `by_audience` aggregations to power chip-filter pickers. Issue #62.
+- **`GET /api/memory/tree?axis=...&...`** — server-side grouping endpoint that returns `{groups: [{key, label, count, items: [...]}]}`, RBAC-filtered, with chip filters (`status_filter`, `source_type`, `audience`, `q`, `has_duplicate`). Issue #62.
+- **`da admin memory {tree,edit,bulk-edit,stats,duplicates list,duplicates resolve}`** — full CLI parity for the new admin endpoints. Issue #62.
+- **Schema v17**: new `knowledge_item_relations` table for duplicate-candidate hints. PK `(item_a_id, item_b_id, relation_type)` with canonical `(min, max)` pair ordering at the repository layer; auto-migration v16→v17 idempotent. Issue #62.
+
+### Changed
+
+- **Audit action names for corporate-memory operations renamed** from `km_<action>` to `corporate_memory.<action>` to match the 0.15.0 CHANGELOG documentation. The audit-tab filter accepts both prefixes for back-compat with rows already in the audit log (no historical-row rewrite). Issue #62.
+- **`onDomainChange()` UX bug fixed** on `/corporate-memory`: domain and category filters now compose instead of resetting each other when either changes. Issue #62.
+- `POST /api/memory/admin/edit` continues to accept title/content as before; the new `PATCH /api/memory/admin/{id}` is the recommended path for everything else (including title/content). The legacy endpoint is kept one release for back-compat.
+
 ### Fixed
 
 - Corporate memory pages (`/corporate-memory`, `/corporate-memory/admin`) now render the shared app header at full viewport width, matching the dashboard. Previously the `_app_header.html` include sat inside `.container-memory` (max-width: 1000px) and was cropped on wide viewports.

@@ -624,6 +624,16 @@
                 <option value="{{ d }}">{{ d|title }}</option>
                 {% endfor %}
             </select>
+            <!-- Group-by select (issue #62) — switches the flat list to a tree
+                 grouped by the chosen axis. ``none`` keeps the existing flat
+                 render. -->
+            <select class="sort-select" id="groupBySelect" onchange="onGroupByChange()" title="Group items by axis">
+                <option value="none">No grouping</option>
+                <option value="domain">Group by domain</option>
+                <option value="category">Group by category</option>
+                <option value="tag">Group by tag</option>
+                <option value="audience">Group by audience</option>
+            </select>
         </div>
 
         <!-- Knowledge List -->
@@ -765,16 +775,19 @@
         btn.classList.add('active');
         currentCategory = btn.dataset.category;
         currentPage = 1;
-        // Reset domain filter when switching category to avoid confusing cross-filter empty results
-        document.getElementById('domainFilter').value = '';
+        // Issue #62: domain + category compose, do not reset each other.
         applyFilters();
     }
 
     function onDomainChange() {
-        // Reset category filter to "All" when changing domain
-        document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-        document.querySelector('.filter-btn[data-category=""]').classList.add('active');
-        currentCategory = '';
+        // Issue #62: domain + category compose. Previously this reset the
+        // category to "All" which silently dropped the operator's filter.
+        currentPage = 1;
+        applyFilters();
+    }
+
+    function onGroupByChange() {
+        // Issue #62: switch between flat list (current) and grouped tree.
         currentPage = 1;
         applyFilters();
     }
@@ -783,12 +796,88 @@
         const search = document.getElementById('searchInput').value;
         const sort = document.getElementById('sortSelect').value;
         const domain = document.getElementById('domainFilter').value;
-        await loadKnowledge(currentCategory, search, currentPage, sort, domain);
+        const groupBy = (document.getElementById('groupBySelect') || {}).value || 'none';
+        if (groupBy && groupBy !== 'none') {
+            await loadTree(groupBy, currentCategory, search, domain);
+        } else {
+            await loadKnowledge(currentCategory, search, currentPage, sort, domain);
+        }
     }
 
     async function goToPage(page) {
         currentPage = page;
         await applyFilters();
+    }
+
+    async function loadTree(axis, category, search, domain) {
+        // Issue #62 — operator's grouped view. Uses /api/memory/tree which
+        // applies the same RBAC + privacy filters as /api/memory.
+        const params = new URLSearchParams({ axis });
+        if (search) params.append('q', search);
+        params.append('_t', Date.now());
+        try {
+            const resp = await fetch(`/api/memory/tree?${params}`);
+            const data = await resp.json();
+            // Operator-level filters (category + domain) are applied
+            // client-side over the tree; the server does not currently take
+            // a category param for the tree endpoint to keep the SQL simple.
+            renderTree(data, category, domain);
+        } catch (e) {
+            console.error('Failed to load tree:', e);
+        }
+    }
+
+    function renderTree(data, categoryFilter, domainFilter) {
+        const list = document.getElementById('knowledgeList');
+        const pagination = document.getElementById('pagination');
+        pagination.innerHTML = '';
+        if (!data.groups || data.groups.length === 0) {
+            list.innerHTML = `<div class="empty-state"><p>No groups to show.</p></div>`;
+            return;
+        }
+        const stateKey = `cm_tree_open_${data.axis}`;
+        let openSet = new Set();
+        try { openSet = new Set(JSON.parse(localStorage.getItem(stateKey) || '[]')); } catch {}
+
+        const html = data.groups.map(g => {
+            const filtered = (g.items || []).filter(it => {
+                if (categoryFilter && categoryFilter !== 'my_rules' && it.category !== categoryFilter) return false;
+                if (domainFilter && it.domain !== domainFilter) return false;
+                return true;
+            });
+            if (filtered.length === 0) return '';
+            const isOpen = openSet.has(g.key);
+            const itemsHtml = filtered.map(item => `
+                <div class="knowledge-item" data-id="${escapeHtml(item.id)}" style="margin-bottom: var(--space-3);">
+                    <div class="knowledge-header">
+                        <div>
+                            <div class="knowledge-title">${escapeHtml(item.title || '')}</div>
+                            <div class="knowledge-meta">
+                                ${item.category ? `<span class="category-badge ${escapeHtml(item.category)}">${escapeHtml((item.category || '').replace('_', ' '))}</span>` : ''}
+                                ${item.domain ? `<span class="domain-badge">${escapeHtml(item.domain)}</span>` : ''}
+                                ${item.status === 'mandatory' ? '<span class="source-badge mandatory">Mandatory</span>' : ''}
+                            </div>
+                        </div>
+                    </div>
+                    <div class="knowledge-content">${escapeHtml(item.content || '')}</div>
+                </div>`).join('');
+            return `
+                <details ${isOpen ? 'open' : ''} data-key="${escapeHtml(g.key)}" onToggle="onTreeToggle(this, '${escapeHtml(stateKey)}')" style="margin-bottom: var(--space-4); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: var(--space-3);">
+                    <summary style="cursor: pointer; font-weight: var(--font-semibold);">
+                        ${escapeHtml(g.label)} <span style="color: var(--text-secondary); font-weight: normal;">(${filtered.length})</span>
+                    </summary>
+                    <div style="margin-top: var(--space-3);">${itemsHtml}</div>
+                </details>`;
+        }).join('');
+        list.innerHTML = html || `<div class="empty-state"><p>No matching items.</p></div>`;
+    }
+
+    function onTreeToggle(detailsEl, stateKey) {
+        const key = detailsEl.dataset.key;
+        let s = new Set();
+        try { s = new Set(JSON.parse(localStorage.getItem(stateKey) || '[]')); } catch {}
+        if (detailsEl.open) s.add(key); else s.delete(key);
+        try { localStorage.setItem(stateKey, JSON.stringify(Array.from(s))); } catch {}
     }
 
     async function loadKnowledge(category, search, page, sort, domain) {
