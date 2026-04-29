@@ -3,7 +3,6 @@
 Replicates all Flask webapp routes with DuckDB-backed data.
 """
 
-import json
 import logging
 import os
 from datetime import datetime
@@ -18,9 +17,8 @@ import duckdb
 
 import jinja2
 
-from app.auth.dependencies import get_current_user, get_optional_user, require_role, _get_db
-from app.api.memory import _is_privileged_viewer, _effective_groups
-from src.rbac import Role
+from app.auth.access import is_user_admin, require_admin
+from app.auth.dependencies import get_current_user, get_optional_user, _get_db
 from app.instance_config import (
     get_instance_name, get_instance_subtitle, get_datasets,
     get_theme, get_corporate_memory_config,
@@ -133,19 +131,6 @@ def _url_for_shim(endpoint: str, **kw) -> str:
         filename = kw.get("filename", "")
         return f"/static/{filename}"
     return _URL_MAP.get(endpoint, f"/{endpoint}")
-
-
-def _parse_json_fields(item: dict) -> None:
-    """Parse JSON string fields (tags, entities) into Python lists for templates."""
-    for field in ("tags", "entities"):
-        val = item.get(field)
-        if isinstance(val, str):
-            try:
-                item[field] = json.loads(val)
-            except (json.JSONDecodeError, TypeError):
-                item[field] = []
-        elif val is None:
-            item[field] = []
 
 
 def _build_context(request: Request, user: Optional[dict] = None, **extra) -> dict:
@@ -328,12 +313,17 @@ async def dashboard(
     total_rows = sum(s.get("rows", 0) or 0 for s in all_states)
 
     # Build user_info object expected by dashboard template
+    is_admin = is_user_admin(user["id"], conn)
+
     class UserInfo:
         def __init__(self):
             self.exists = True
-            self.is_admin = user.get("role") == "admin"
-            self.is_analyst = user.get("role") in ("analyst", "admin", "km_admin")
-            self.is_privileged = user.get("role") == "admin"
+            self.is_admin = is_admin
+            # Legacy fields kept so existing templates don't blow up — admin is
+            # implicitly analyst/privileged, non-admins are not. Granular roles
+            # collapsed in v12.
+            self.is_analyst = is_admin
+            self.is_privileged = is_admin
             self.username = user.get("email", "").split("@")[0]
             self.home_dir = ""
             self.groups = []
@@ -478,42 +468,20 @@ async def corporate_memory(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     repo = KnowledgeRepository(conn)
-    items = repo.list_items(statuses=["approved", "mandatory"], exclude_personal=True, user_groups=_effective_groups(user), limit=100)
+    items = repo.list_items(statuses=["approved", "mandatory"], limit=100)
 
-    # Enrich items for template rendering
+    # Enrich with votes
     for item in items:
         votes = repo.get_votes(item["id"])
         item["upvotes"] = votes["upvotes"]
         item["downvotes"] = votes["downvotes"]
-        # Parse JSON string fields into lists
-        _parse_json_fields(item)
-        # Default confidence for items missing it
-        if item.get("confidence") is None:
-            item["confidence"] = 0.50
-        # Build source_users_display from source_user field
-        su = item.get("source_user") or ""
-        if su:
-            name = su.split("@")[0].replace(".", " ").title()
-            initials = "".join(w[0].upper() for w in name.split()[:2])
-            item["source_users_display"] = [{"name": name, "initials": initials}]
-        else:
-            item["source_users_display"] = []
 
     cm_config = get_corporate_memory_config()
     governance_mode = cm_config.get("distribution_mode")
 
-    # Build stats — apply same privacy filters as /api/memory/stats
-    all_items = repo.list_items(
-        limit=10000,
-        exclude_personal=not _is_privileged_viewer(user),
-        user_groups=_effective_groups(user),
-    )
+    # Build stats
+    all_items = repo.list_items(limit=10000)
     categories = sorted(set(i.get("category", "") for i in all_items if i.get("category")))
-    domains = sorted(set(i.get("domain", "") for i in all_items if i.get("domain")))
-
-    # User contributions
-    user_email = user.get("email", "")
-    user_contributions = repo.get_user_contributions(user_email)
 
     ctx = _build_context(
         request, user=user,
@@ -521,17 +489,11 @@ async def corporate_memory(
         governance_mode=governance_mode,
         governance={"mode": governance_mode, "groups": cm_config.get("groups", {})},
         categories=categories,
-        domains=domains,
-        stats={
-            "total": len(all_items),
-            "knowledge_count": len(all_items),
-            "approved": len([i for i in all_items if i.get("status") == "approved"]),
-            "contributors": len(set(i.get("source_user", "") for i in all_items if i.get("source_user"))),
-        },
+        stats={"total": len(all_items), "approved": len([i for i in all_items if i.get("status") == "approved"])},
         user_votes={},
-        is_km_admin=user.get("role") in ("km_admin", "admin"),
-        user_stats={"authored": len(user_contributions), "votes_given": 0},
-        user_contributions=user_contributions,
+        is_km_admin=is_user_admin(user["id"], conn),
+        user_stats={"authored": 0, "votes_given": 0},
+        # Template expects knowledge as object with .items and .total_pages
         knowledge={"items": items, "total_pages": 1, "page": 1, "per_page": 100, "total": len(items)},
         total_pages=1,
         current_page=1,
@@ -544,52 +506,22 @@ async def corporate_memory(
 @router.get("/corporate-memory/admin", response_class=HTMLResponse)
 async def corporate_memory_admin(
     request: Request,
-    user: dict = Depends(require_role(Role.KM_ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     repo = KnowledgeRepository(conn)
     pending = repo.list_items(statuses=["pending"], limit=100)
     all_items = repo.list_items(limit=10000)
-    status_counts: dict = {}
-    domain_counts: dict = {}
-    source_type_counts: dict = {}
+    status_counts = {}
     for item in all_items:
         s = item.get("status", "unknown")
         status_counts[s] = status_counts.get(s, 0) + 1
-        d = item.get("domain") or "unset"
-        domain_counts[d] = domain_counts.get(d, 0) + 1
-        st = item.get("source_type") or "unknown"
-        source_type_counts[st] = source_type_counts.get(st, 0) + 1
-
-    # Contradictions
-    contradictions = repo.list_contradictions(resolved=False)
-    for c in contradictions:
-        c["item_a"] = repo.get_by_id(c["item_a_id"])
-        c["item_b"] = repo.get_by_id(c["item_b_id"])
-
-    _cm_cfg = get_corporate_memory_config()
-    _groups_raw = _cm_cfg.get("groups", {}) if _cm_cfg else {}
-    groups = list(_groups_raw.values()) if isinstance(_groups_raw, dict) else (_groups_raw or [])
-
     ctx = _build_context(
         request, user=user,
         pending_items=pending,
-        stats={
-            "total": len(all_items),
-            "knowledge_count": len(all_items),
-            "pending_count": status_counts.get("pending", 0),
-            "approved_count": status_counts.get("approved", 0),
-            "mandatory_count": status_counts.get("mandatory", 0),
-            "by_status": status_counts,
-            "by_domain": domain_counts,
-            "by_source_type": source_type_counts,
-            "pending": len(pending),
-            "contradictions": len(contradictions),
-        },
-        governance=_cm_cfg,
-        governance_mode=_cm_cfg.get("distribution_mode", "open") if _cm_cfg else "open",
-        groups=groups,
-        contradictions=contradictions,
+        stats={"total": len(all_items), "by_status": status_counts, "pending": len(pending)},
+        governance=get_corporate_memory_config(),
+        groups=get_corporate_memory_config().get("groups", {}),
         audit_entries=[],
     )
     return templates.TemplateResponse(request, "corporate_memory_admin.html", ctx)
@@ -633,7 +565,7 @@ async def install_page(
 @router.get("/admin/tables", response_class=HTMLResponse)
 async def admin_tables(
     request: Request,
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     from src.repositories.table_registry import TableRegistryRepository
@@ -643,10 +575,28 @@ async def admin_tables(
     return templates.TemplateResponse(request, "admin_tables.html", ctx)
 
 
+@router.get("/admin/server-config", response_class=HTMLResponse)
+async def admin_server_config_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Server configuration editor — instance.yaml fields grouped by section.
+
+    Shell-only page. The form is populated client-side from
+    GET /api/admin/server-config (which redacts secrets) and submitted
+    section-by-section to POST /api/admin/server-config. Auth/server
+    sections require an explicit confirmation dialog before save (see
+    ``_DANGER_SECTIONS`` in the API). Saves trigger the "restart required"
+    banner — hot-reload is out of scope for #91.
+    """
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_server_config.html", ctx)
+
+
 @router.get("/admin/permissions", response_class=HTMLResponse)
 async def admin_permissions_page(
     request: Request,
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Admin page for managing permissions and access requests."""
@@ -657,7 +607,7 @@ async def admin_permissions_page(
 @router.get("/admin/users", response_class=HTMLResponse)
 async def admin_users_page(
     request: Request,
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
 ):
     """Admin page for user management."""
     ctx = _build_context(request, user=user)
@@ -668,7 +618,7 @@ async def admin_users_page(
 async def admin_user_detail_page(
     user_id: str,
     request: Request,
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Per-user detail page — core role + module capabilities + effective-roles debug.
@@ -689,67 +639,66 @@ async def admin_user_detail_page(
     return templates.TemplateResponse(request, "admin_user_detail.html", ctx)
 
 
-@router.get("/admin/role-mapping", response_class=HTMLResponse)
-async def admin_role_mapping_page(
+@router.get("/admin/groups", response_class=HTMLResponse)
+async def admin_groups_page(
     request: Request,
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
+):
+    """Group list view — full-width table of user_groups with origin chips,
+    member/grant counts, and edit/delete affordances for non-system rows."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_groups.html", ctx)
+
+
+@router.get("/admin/groups/{group_id}", response_class=HTMLResponse)
+async def admin_group_detail_page(
+    group_id: str,
+    request: Request,
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Admin page for managing internal role definitions and group → role mappings.
+    """Single-group detail page — header + members table. Resource grants
+    live on /admin/grants (deep-linked from here)."""
+    from src.repositories.user_groups import UserGroupsRepository
+    g = UserGroupsRepository(conn).get(group_id)
+    if not g:
+        raise HTTPException(status_code=404, detail="Group not found")
+    ctx = _build_context(request, user=user, target_group=g)
+    return templates.TemplateResponse(request, "admin_group_detail.html", ctx)
 
-    Server-side renders the shell + a curated list of *known* external group
-    IDs the admin can pick from when creating a new mapping (so they don't
-    have to memorize Cloud Identity opaque IDs). Two sources are unioned:
 
-    1. **Session groups** — the current admin's own ``session.google_groups``
-       (populated by the OAuth callback or LOCAL_DEV_GROUPS). Carries
-       human-readable names alongside the IDs.
-    2. **Already-mapped groups** — distinct ``external_group_id`` values
-       from ``group_mappings``. ID-only because we don't re-fetch Cloud
-       Identity per page render; names show as the ID itself.
+@router.get("/admin/access", response_class=HTMLResponse)
+async def admin_access_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Resource access management — master-detail layout with the group list
+    on the left and per-resource-type checkbox tree on the right. Supports
+    ``?group=<id>`` deep-link from the group detail page.
 
-    Internal roles and the live mappings list are still fetched via the
-    admin REST API client-side so the table reflects sibling-tab changes
-    without a full reload.
-    """
-    from src.repositories.group_mappings import GroupMappingsRepository
+    Underlying entity is `resource_grants`; the UI label "Resource access"
+    matches what admins think about (who has access) rather than the table
+    name (grants)."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_access.html", ctx)
 
-    session_groups = request.session.get("google_groups", []) or []
-    mapping_rows = GroupMappingsRepository(conn).list_all()
 
-    # Merge sources, deduping by ID. Session entries win the name slot;
-    # mapping-only entries fall back to ID-as-name.
-    known: dict[str, dict] = {}
-    for g in session_groups:
-        if not isinstance(g, dict):
-            continue
-        gid = g.get("id")
-        if not gid:
-            continue
-        known[gid] = {
-            "id": gid,
-            "name": g.get("name") or gid,
-            "from_session": True,
-            "in_mappings": False,
-        }
-    for m in mapping_rows:
-        gid = m.get("external_group_id")
-        if not gid:
-            continue
-        if gid in known:
-            known[gid]["in_mappings"] = True
-        else:
-            known[gid] = {
-                "id": gid,
-                "name": gid,
-                "from_session": False,
-                "in_mappings": True,
-            }
+@router.get("/admin/grants", response_class=HTMLResponse)
+async def admin_grants_redirect(request: Request):
+    """Backward-compat redirect for the page's previous URL."""
+    qs = request.url.query
+    target = "/admin/access" + (f"?{qs}" if qs else "")
+    return RedirectResponse(url=target, status_code=308)
 
-    known_groups = sorted(known.values(), key=lambda g: g["name"].lower())
 
-    ctx = _build_context(request, user=user, known_groups=known_groups)
-    return templates.TemplateResponse(request, "admin_role_mapping.html", ctx)
+@router.get("/admin/marketplaces", response_class=HTMLResponse)
+async def admin_marketplaces_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Admin page for marketplace git repositories (register / sync / delete)."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_marketplaces.html", ctx)
 
 
 @router.get("/tokens", response_class=HTMLResponse)
@@ -769,7 +718,7 @@ async def my_tokens_page(
 @router.get("/admin/tokens", response_class=HTMLResponse)
 async def admin_tokens_page(
     request: Request,
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
 ):
     """Admin — list of ALL tokens for incident response + offboarding.
 
@@ -787,58 +736,27 @@ async def profile_page(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """User profile — self-service view of identity, groups, and effective roles.
+    """User profile — self-service view of identity and group memberships.
 
-    Renders four sections:
-
-    - **Account**: email, name, legacy role pill (hydrated from grants).
-    - **Google Workspace groups**: from the Starlette session, populated by
-      the Google OAuth callback. Empty for password/magic-link sign-in.
-    - **Direct role grants**: rows in ``user_role_grants`` (source label
-      indicates ``auto-seed`` from v8 migration, ``direct`` from explicit
-      admin grants, etc.).
-    - **Effective roles**: the resolver's authoritative output for the
-      current user — direct grants ∪ groups-via-mappings, then implies
-      expanded. Same logic the auth gate uses.
-
-    All four are computed server-side so non-admins see their own state
-    without needing access to the admin REST API. Admins additionally see
-    a deep-link to ``/admin/users/{id}`` for editing their own grants.
+    Renders the user's account info plus a list of group memberships joined
+    against ``user_groups`` (with the source label so users can tell which
+    were added by an admin, by Google sync, or seeded at deploy).
     """
-    from src.repositories.user_role_grants import UserRoleGrantsRepository
-    from src.repositories.group_mappings import GroupMappingsRepository
-    from app.auth.role_resolver import resolve_internal_roles
-
-    groups = request.session.get("google_groups", []) or []
-
-    direct_grants = UserRoleGrantsRepository(conn).list_for_user(user["id"])
-
-    # Group → role(s) mapping for the user's own google_groups. Surfaces
-    # *why* a particular role is effective ("you got core.admin via
-    # Local Dev Admins"). Best-effort: missing mappings → empty list.
-    group_roles: list[dict] = []
-    if groups:
-        mappings_repo = GroupMappingsRepository(conn)
-        for g in groups:
-            gid = g.get("id") if isinstance(g, dict) else None
-            if not gid:
-                continue
-            mapped = mappings_repo.list_by_external_group(gid)
-            if mapped:
-                group_roles.append({
-                    "group_id": gid,
-                    "group_name": g.get("name") or gid,
-                    "role_keys": [m["internal_role_key"] for m in mapped],
-                })
-
-    effective_roles = resolve_internal_roles(groups, conn, user_id=user["id"])
+    rows = conn.execute(
+        """SELECT g.id, g.name, g.description, g.is_system, m.source, m.added_at
+           FROM user_group_members m
+           JOIN user_groups g ON g.id = m.group_id
+           WHERE m.user_id = ?
+           ORDER BY g.is_system DESC, g.name""",
+        [user["id"]],
+    ).fetchall()
+    cols = [d[0] for d in conn.description]
+    memberships = [dict(zip(cols, r)) for r in rows]
 
     ctx = _build_context(
         request,
         user=user,
-        groups=groups,
-        direct_grants=direct_grants,
-        group_roles=group_roles,
-        effective_roles=effective_roles,
+        memberships=memberships,
+        is_admin=is_user_admin(user["id"], conn),
     )
     return templates.TemplateResponse(request, "profile.html", ctx)

@@ -12,11 +12,13 @@ from pathlib import Path
 
 import duckdb
 
+from connectors.bigquery.auth import get_metadata_token, BQMetadataAuthError
+
 logger = logging.getLogger(__name__)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 16
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -24,17 +26,13 @@ CREATE TABLE IF NOT EXISTS schema_version (
     applied_at TIMESTAMP DEFAULT current_timestamp
 );
 
--- v9: role assignments moved to user_role_grants (direct grants) and
--- group_mappings (Cloud Identity group → role). The four legacy values
--- (viewer/analyst/km_admin/admin) are seeded as core.* internal_roles with
--- an implies hierarchy and granted to existing users by the v8→v9 backfill —
--- see _seed_core_roles + _backfill_users_role_to_grants.
---
--- DEPRECATED v9: users.role column kept as NULL-able legacy artifact because
--- DuckDB rejects DROP COLUMN while a FK (user_role_grants.user_id → users.id)
--- references the table. UserRepository ignores it on reads + writes; the
--- column will be physically dropped in a future major release once DuckDB
--- ALTER w/ FK support stabilizes (or via a planned table-rebuild migration).
+-- v13: authorization is now via user_groups + user_group_members + resource_grants.
+-- DEPRECATED legacy column kept as NULL artifact:
+--   role: from v8/v9 enum (viewer/analyst/km_admin/admin); ignored by app
+-- The groups JSON column was dropped in v13 (replaced by user_group_members).
+-- DuckDB ALTER DROP COLUMN may be blocked by historic FKs on this table; legacy
+-- columns are NULL-ed in the migration and physically dropped in a future
+-- table-rebuild release.
 CREATE TABLE IF NOT EXISTS users (
     id VARCHAR PRIMARY KEY,
     email VARCHAR UNIQUE NOT NULL,
@@ -48,7 +46,6 @@ CREATE TABLE IF NOT EXISTS users (
     active BOOLEAN NOT NULL DEFAULT TRUE,
     deactivated_at TIMESTAMP,
     deactivated_by VARCHAR,
-    groups JSON,
     created_at TIMESTAMP DEFAULT current_timestamp,
     updated_at TIMESTAMP
 );
@@ -63,6 +60,19 @@ CREATE TABLE IF NOT EXISTS sync_state (
     hash VARCHAR,
     status VARCHAR DEFAULT 'ok',
     error TEXT
+);
+
+-- v10: view-name collision detection across connectors. The orchestrator
+-- writes views into the master analytics.duckdb under a flat namespace; two
+-- connectors with the same `_meta.table_name` would otherwise silently
+-- overwrite each other (last-write-wins). This table records the FIRST
+-- source to register a given view name; subsequent attempts from a different
+-- source are refused with a `name_collision` log line until the operator
+-- renames one side. Issue #81 Group C.
+CREATE TABLE IF NOT EXISTS view_ownership (
+    view_name     VARCHAR PRIMARY KEY,
+    source_name   VARCHAR NOT NULL,
+    registered_at TIMESTAMP NOT NULL DEFAULT current_timestamp
 );
 
 CREATE TABLE IF NOT EXISTS sync_history (
@@ -95,6 +105,12 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     contributors JSON,
     source_user VARCHAR,
     audience VARCHAR,
+    -- v15: context-engineering columns. Confidence is derived from verification
+    -- evidence (see services/corporate_memory/confidence.py); valid_from/until
+    -- carry the time-bounded validity for fact items; supersedes points to a
+    -- prior id this row replaces; sensitivity gates which audiences can see
+    -- the row; is_personal scopes the row to the contributor only (excluded
+    -- from /bundle, listed only when the contributor is the caller).
     confidence DOUBLE,
     domain VARCHAR,
     entities JSON,
@@ -109,6 +125,9 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     updated_at TIMESTAMP
 );
 
+-- v15: contradiction tracking — surfaced when two `mandatory`/`approved` items
+-- assert conflicting facts on overlapping audiences. Detected by the
+-- contradiction service; resolved by a curator (see app/api/memory.py).
 CREATE TABLE IF NOT EXISTS knowledge_contradictions (
     id VARCHAR PRIMARY KEY,
     item_a_id VARCHAR NOT NULL,
@@ -123,6 +142,9 @@ CREATE TABLE IF NOT EXISTS knowledge_contradictions (
     detected_at TIMESTAMP DEFAULT current_timestamp
 );
 
+-- v15: track which session JSONL files the verification detector has already
+-- processed so re-runs over the same session dir are idempotent and the
+-- detector can resume mid-batch on crash.
 CREATE TABLE IF NOT EXISTS session_extraction_state (
     session_file VARCHAR PRIMARY KEY,
     username VARCHAR NOT NULL,
@@ -131,6 +153,10 @@ CREATE TABLE IF NOT EXISTS session_extraction_state (
     file_hash VARCHAR
 );
 
+-- v16: per-detection evidence rows — one knowledge_item can accumulate
+-- multiple evidence rows over time (each new analyst confirmation adds one).
+-- Persisting user_quote + detection_type per row is what enables future
+-- Bayesian re-calibration and "additional verifiers" boost computation.
 CREATE TABLE IF NOT EXISTS verification_evidence (
     id VARCHAR PRIMARY KEY,
     item_id VARCHAR NOT NULL,
@@ -140,7 +166,6 @@ CREATE TABLE IF NOT EXISTS verification_evidence (
     user_quote TEXT,
     created_at TIMESTAMP DEFAULT current_timestamp
 );
-
 CREATE INDEX IF NOT EXISTS idx_verification_evidence_item ON verification_evidence(item_id);
 
 CREATE TABLE IF NOT EXISTS knowledge_votes (
@@ -278,63 +303,79 @@ CREATE TABLE IF NOT EXISTS personal_access_tokens (
     revoked_at   TIMESTAMP
 );
 
--- Internal roles: app-defined capabilities (e.g. 'context_admin', 'agent_operator').
--- `key` is the immutable lower_snake_case identifier referenced from code; modules
--- self-register their roles on import and the startup hook syncs the registry to
--- this table. Admins map external Cloud Identity groups onto these roles via
--- group_mappings — they don't create roles in the UI.
-CREATE TABLE IF NOT EXISTS internal_roles (
-    id           VARCHAR PRIMARY KEY,
-    key          VARCHAR UNIQUE NOT NULL,
-    display_name VARCHAR NOT NULL,
-    description  TEXT,
-    owner_module VARCHAR,
-    -- v9: implies is a JSON array of role keys this role transitively grants.
-    -- Example: core.admin.implies = ["core.km_admin"], core.km_admin.implies =
-    -- ["core.analyst"], core.analyst.implies = ["core.viewer"]. Resolver does
-    -- BFS expansion at lookup time. Stored as VARCHAR (DuckDB JSON-as-text)
-    -- because JSON typing on legacy DuckDB versions can be uneven; aplikační
-    -- vrstva serializes/deserializes via stdlib json. Refactor to native JSON
-    -- column is straightforward when we drop pre-1.0 compat.
-    implies      VARCHAR DEFAULT '[]',
-    -- v9: is_core distinguishes the seeded core.* hierarchy roles (viewer,
-    -- analyst, km_admin, admin — the legacy users.role enum) from
-    -- module-registered capability roles. UI uses this to render the user
-    -- detail page differently (single-select for core, multi-select for
-    -- module roles). Module authors should never set is_core=true.
-    is_core      BOOLEAN NOT NULL DEFAULT false,
-    created_at   TIMESTAMP NOT NULL DEFAULT current_timestamp,
-    updated_at   TIMESTAMP NOT NULL DEFAULT current_timestamp
+CREATE TABLE IF NOT EXISTS marketplace_registry (
+    id              VARCHAR PRIMARY KEY,
+    name            VARCHAR NOT NULL,
+    url             VARCHAR NOT NULL,
+    branch          VARCHAR,
+    token_env       VARCHAR,
+    description     TEXT,
+    registered_by   VARCHAR,
+    registered_at   TIMESTAMP DEFAULT current_timestamp,
+    last_synced_at  TIMESTAMP,
+    last_commit_sha VARCHAR,
+    last_error      TEXT
 );
 
--- External-to-internal group mapping: which Cloud Identity groups grant which
--- internal role. Many-to-many. The resolver joins this table at sign-in and
--- writes the resulting role keys into session.internal_roles for cheap lookup
--- on subsequent requests.
-CREATE TABLE IF NOT EXISTS group_mappings (
-    id                VARCHAR PRIMARY KEY,
-    external_group_id VARCHAR NOT NULL,
-    internal_role_id  VARCHAR NOT NULL REFERENCES internal_roles(id),
-    assigned_at       TIMESTAMP NOT NULL DEFAULT current_timestamp,
-    assigned_by       VARCHAR,
-    UNIQUE (external_group_id, internal_role_id)
+CREATE TABLE IF NOT EXISTS marketplace_plugins (
+    marketplace_id  VARCHAR NOT NULL,
+    name            VARCHAR NOT NULL,
+    description     TEXT,
+    version         VARCHAR,
+    author_name     VARCHAR,
+    homepage        VARCHAR,
+    category        VARCHAR,
+    source_type     VARCHAR,
+    source_spec     JSON,
+    raw             JSON,
+    updated_at      TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (marketplace_id, name)
 );
 
--- v9: direct user → internal role grants. Complementary to group_mappings:
--- group_mappings drives session-cached resolution at sign-in for OAuth users,
--- user_role_grants drives DB-backed resolution for PAT/headless callers and
--- persists across sessions. require_internal_role checks both paths.
--- The v8→v9 backfill seeds one row per existing user with source='auto-seed'
--- mirroring their pre-v9 users.role value; admin-issued grants use
--- source='direct'.
-CREATE TABLE IF NOT EXISTS user_role_grants (
-    id                VARCHAR PRIMARY KEY,
-    user_id           VARCHAR NOT NULL REFERENCES users(id),
-    internal_role_id  VARCHAR NOT NULL REFERENCES internal_roles(id),
-    granted_at        TIMESTAMP NOT NULL DEFAULT current_timestamp,
-    granted_by        VARCHAR,
-    source            VARCHAR DEFAULT 'direct',
-    UNIQUE (user_id, internal_role_id)
+CREATE TABLE IF NOT EXISTS user_groups (
+    id          VARCHAR PRIMARY KEY,
+    name        VARCHAR NOT NULL UNIQUE,
+    description TEXT,
+    is_system   BOOLEAN DEFAULT FALSE,
+    created_at  TIMESTAMP DEFAULT current_timestamp,
+    created_by  VARCHAR
+);
+
+-- v13: per-user group membership. Replaces the v12 users.groups JSON cache.
+-- The `source` column tracks who created the row so each source only mutates
+-- its own rows — Google sync's nightly DELETE+INSERT does NOT clobber
+-- admin-added members, and admin UI deletions don't fight the sync loop.
+--
+-- v14: group_id now FK→user_groups(id). DuckDB FK enforcement blocks the
+-- parent DELETE while children exist, so the application must delete
+-- members + resource_grants BEFORE the user_groups row (see
+-- app/api/access.py:delete_group). DuckDB does NOT support ON DELETE
+-- CASCADE, so we rely on explicit transactional cleanup at the call site
+-- and let the FK serve as a defense-in-depth invariant.
+CREATE TABLE IF NOT EXISTS user_group_members (
+    user_id   VARCHAR NOT NULL,
+    group_id  VARCHAR NOT NULL REFERENCES user_groups(id),
+    source    VARCHAR NOT NULL,  -- 'admin' | 'google_sync' | 'system_seed'
+    added_at  TIMESTAMP DEFAULT current_timestamp,
+    added_by  VARCHAR,
+    PRIMARY KEY (user_id, group_id)
+);
+
+-- v13: unified resource grants. Replaces both group_mappings (v8/v9) and
+-- plugin_access (v11). resource_type is a string identifier from
+-- app.resource_types.ResourceType enum (e.g. 'marketplace_plugin').
+-- resource_id is a path string whose format is owned by the module that
+-- registered the resource type (e.g. '<marketplace_slug>/<plugin_name>').
+--
+-- v14: group_id FK→user_groups(id), same rationale as user_group_members.
+CREATE TABLE IF NOT EXISTS resource_grants (
+    id            VARCHAR PRIMARY KEY,
+    group_id      VARCHAR NOT NULL REFERENCES user_groups(id),
+    resource_type VARCHAR NOT NULL,
+    resource_id   VARCHAR NOT NULL,
+    assigned_at   TIMESTAMP DEFAULT current_timestamp,
+    assigned_by   VARCHAR,
+    UNIQUE (group_id, resource_type, resource_id)
 );
 """
 
@@ -440,6 +481,17 @@ def _reattach_remote_extensions(
         except Exception:
             pass
 
+        # Issue #81 Group A — apply the same allowlist policy on the
+        # query path that the orchestrator's rebuild path uses. Without
+        # this, a malicious connector's _remote_attach row exfiltrates
+        # JWT_SECRET_KEY / SESSION_SECRET / OPENAI_API_KEY on every
+        # query, defeating the rebuild-path hardening entirely.
+        from src.orchestrator_security import (
+            escape_sql_string_literal,
+            is_extension_allowed,
+            is_token_env_allowed,
+        )
+
         for alias, extension, url, token_env in rows:
             if not _SAFE_IDENTIFIER.match(alias or ""):
                 logger.debug("Skipping unsafe remote_attach alias: %r", alias)
@@ -447,15 +499,64 @@ def _reattach_remote_extensions(
             if not _SAFE_IDENTIFIER.match(extension or ""):
                 logger.debug("Skipping unsafe remote_attach extension: %r", extension)
                 continue
+            if not is_extension_allowed(extension):
+                logger.error(
+                    "query-path remote_attach: extension %r not in allowlist; "
+                    "refusing to LOAD/ATTACH for source %s. Override via "
+                    "AGNES_REMOTE_ATTACH_EXTENSIONS if intended.",
+                    extension, alias,
+                )
+                continue
+            if token_env and not is_token_env_allowed(token_env):
+                logger.error(
+                    "query-path remote_attach: token_env %r not in allowlist; "
+                    "refusing for source %s. Override via "
+                    "AGNES_REMOTE_ATTACH_TOKEN_ENVS if intended.",
+                    token_env, alias,
+                )
+                continue
             if alias in attached_dbs:
                 logger.debug("Remote source %s already attached, skipping", alias)
                 continue
             try:
+                # LOAD only on the read-only query path — no INSTALL.
+                # Per the function docstring, this path runs on every
+                # query request and must not touch the network. The
+                # rebuild path (orchestrator) is responsible for INSTALL;
+                # by the time a query lands here, any community extension
+                # we'll see is already on disk. If LOAD fails because the
+                # extension isn't installed, log + skip (caller will see
+                # missing remote views and the operator will trigger a
+                # rebuild).
                 conn.execute(f"LOAD {extension};")
                 token = os.environ.get(token_env, "") if token_env else ""
-                safe_url = url.replace("'", "''")
-                if token:
-                    escaped_token = token.replace("'", "''")
+                safe_url = escape_sql_string_literal(url)
+
+                # BQ-specific: refresh token from GCE metadata, create session-scoped
+                # secret before ATTACH. Empty token_env (set by the BQ extractor)
+                # is the contract that signals "use built-in metadata path". The
+                # secret is created here on every readonly-connection open because
+                # secrets are session-scoped and don't persist with analytics.duckdb.
+                if extension == "bigquery":
+                    try:
+                        bq_token = get_metadata_token()
+                    except BQMetadataAuthError as e:
+                        logger.error(
+                            "Failed to fetch BQ metadata token for %s: %s — skipping ATTACH",
+                            alias, e,
+                        )
+                        continue
+                    escaped = escape_sql_string_literal(bq_token)
+                    secret_name = f"bq_secret_{alias}"
+                    conn.execute(
+                        f"CREATE OR REPLACE SECRET {secret_name} "
+                        f"(TYPE bigquery, ACCESS_TOKEN '{escaped}')"
+                    )
+                    conn.execute(
+                        f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)"
+                    )
+                elif token:
+                    escaped_token = escape_sql_string_literal(token)
                     conn.execute(
                         f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, TOKEN '{escaped_token}')"
                     )
@@ -593,9 +694,119 @@ _V8_TO_V9_MIGRATIONS = [
     """,
 ]
 
+# v10: view-name collision detection across connectors (issue #81 Group C).
+# The system schema above already CREATEs view_ownership; this migration is
+# the ALTER path for installs predating the bump.
 _V9_TO_V10_MIGRATIONS = [
-    # New columns on knowledge_items for context engineering
-    "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS audience VARCHAR",
+    """
+    CREATE TABLE IF NOT EXISTS view_ownership (
+        view_name     VARCHAR PRIMARY KEY,
+        source_name   VARCHAR NOT NULL,
+        registered_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+    )
+    """,
+]
+
+# v11: marketplace registry + plugin listing + group access mapping. Was
+# plugin-mapping's v7→v8 + v8→v9 before PR #73 took the v9 slot for role
+# management and #81 Group C took v10 for view_ownership; shifted up to v11.
+_V10_TO_V11_MIGRATIONS = [
+    """
+    CREATE TABLE IF NOT EXISTS marketplace_registry (
+        id              VARCHAR PRIMARY KEY,
+        name            VARCHAR NOT NULL,
+        url             VARCHAR NOT NULL,
+        branch          VARCHAR,
+        token_env       VARCHAR,
+        description     TEXT,
+        registered_by   VARCHAR,
+        registered_at   TIMESTAMP DEFAULT current_timestamp,
+        last_synced_at  TIMESTAMP,
+        last_commit_sha VARCHAR,
+        last_error      TEXT
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS marketplace_plugins (
+        marketplace_id  VARCHAR NOT NULL,
+        name            VARCHAR NOT NULL,
+        description     TEXT,
+        version         VARCHAR,
+        author_name     VARCHAR,
+        homepage        VARCHAR,
+        category        VARCHAR,
+        source_type     VARCHAR,
+        source_spec     JSON,
+        raw             JSON,
+        updated_at      TIMESTAMP DEFAULT current_timestamp,
+        PRIMARY KEY (marketplace_id, name)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS user_groups (
+        id          VARCHAR PRIMARY KEY,
+        name        VARCHAR NOT NULL UNIQUE,
+        description TEXT,
+        created_at  TIMESTAMP DEFAULT current_timestamp,
+        created_by  VARCHAR
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS plugin_access (
+        group_id       VARCHAR NOT NULL,
+        marketplace_id VARCHAR NOT NULL,
+        plugin_name    VARCHAR NOT NULL,
+        granted_at     TIMESTAMP DEFAULT current_timestamp,
+        granted_by     VARCHAR,
+        PRIMARY KEY (group_id, marketplace_id, plugin_name)
+    )
+    """,
+]
+
+# v12: users.groups + user_groups.is_system. Was plugin-mapping's v9→v10
+# (then v10→v11); shifted up to v12 after #81 Group C took v10.
+_V11_TO_V12_MIGRATIONS = [
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS groups JSON",
+    "ALTER TABLE user_groups ADD COLUMN IF NOT EXISTS is_system BOOLEAN DEFAULT FALSE",
+]
+
+# v13: replace internal_roles + group_mappings + user_role_grants + plugin_access
+# with a single (group, resource_type, resource_id) grant model and add
+# user_group_members to materialize membership (was users.groups JSON cache).
+# Schema-only steps here; backfill + drops are in _v12_to_v13_finalize so we
+# can run Python logic over the transitional state.
+_V12_TO_V13_MIGRATIONS = [
+    """
+    CREATE TABLE IF NOT EXISTS user_group_members (
+        user_id   VARCHAR NOT NULL,
+        group_id  VARCHAR NOT NULL,
+        source    VARCHAR NOT NULL,
+        added_at  TIMESTAMP DEFAULT current_timestamp,
+        added_by  VARCHAR,
+        PRIMARY KEY (user_id, group_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS resource_grants (
+        id            VARCHAR PRIMARY KEY,
+        group_id      VARCHAR NOT NULL,
+        resource_type VARCHAR NOT NULL,
+        resource_id   VARCHAR NOT NULL,
+        assigned_at   TIMESTAMP DEFAULT current_timestamp,
+        assigned_by   VARCHAR,
+        UNIQUE (group_id, resource_type, resource_id)
+    )
+    """,
+]
+
+
+# v15: corporate-memory context-engineering columns + contradiction tracking +
+# session-extraction state. The columns rename `knowledge_items.audience`'s
+# original semantics into a richer model: confidence + domain + entities +
+# source_type/ref + valid window + supersedes lineage + sensitivity tier +
+# is_personal flag. Pavel's branch had this as v9→v10 against a v9-era main;
+# the bump to v15 sequences after main's v14 (FK-on-grants).
+_V14_TO_V15_MIGRATIONS = [
     "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS confidence DOUBLE",
     "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS domain VARCHAR",
     "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS entities JSON",
@@ -606,9 +817,7 @@ _V9_TO_V10_MIGRATIONS = [
     "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS supersedes VARCHAR",
     "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS sensitivity VARCHAR DEFAULT 'internal'",
     "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS is_personal BOOLEAN DEFAULT FALSE",
-    # Backfill existing items
     "UPDATE knowledge_items SET source_type = 'claude_local_md' WHERE source_type IS NULL",
-    # Contradiction tracking
     """
     CREATE TABLE IF NOT EXISTS knowledge_contradictions (
         id VARCHAR PRIMARY KEY,
@@ -624,7 +833,6 @@ _V9_TO_V10_MIGRATIONS = [
         detected_at TIMESTAMP DEFAULT current_timestamp
     )
     """,
-    # Track processed session files for verification detector
     """
     CREATE TABLE IF NOT EXISTS session_extraction_state (
         session_file VARCHAR PRIMARY KEY,
@@ -634,6 +842,25 @@ _V9_TO_V10_MIGRATIONS = [
         file_hash VARCHAR
     )
     """,
+]
+
+# v16: per-detection evidence rows — many-to-one against knowledge_items.
+# Future Bayesian re-calibration uses (detection_type, user_quote, source_user)
+# triples; for now confidence.py walks them to compute "additional verifiers"
+# boosts. Index on item_id keeps the per-item walk O(evidence-per-item).
+_V15_TO_V16_MIGRATIONS = [
+    """
+    CREATE TABLE IF NOT EXISTS verification_evidence (
+        id VARCHAR PRIMARY KEY,
+        item_id VARCHAR NOT NULL,
+        source_user VARCHAR,
+        source_ref VARCHAR,
+        detection_type VARCHAR,
+        user_quote TEXT,
+        created_at TIMESTAMP DEFAULT current_timestamp
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_verification_evidence_item ON verification_evidence(item_id)",
 ]
 
 
@@ -661,6 +888,355 @@ _LEGACY_ROLE_TO_CORE_KEY = {
     "km_admin": "core.km_admin",
     "admin": "core.admin",
 }
+
+
+SYSTEM_ADMIN_GROUP = "Admin"
+SYSTEM_EVERYONE_GROUP = "Everyone"
+
+# Seed copy for the two hardcoded system groups. Names are referenced from
+# app.auth.access (admin short-circuit) and the OAuth callback (default
+# Everyone membership for new users); changing them is a breaking change.
+_SYSTEM_GROUPS_SEED = [
+    (SYSTEM_ADMIN_GROUP,
+     "System: full access to all data and admin actions"),
+    (SYSTEM_EVERYONE_GROUP,
+     "System: default group every user is implicitly a member of"),
+]
+
+
+def _seed_system_groups(conn: duckdb.DuckDBPyConnection) -> None:
+    """Idempotently insert/promote the Admin and Everyone system groups.
+
+    Replaces the v9-era _seed_core_roles tail call. Runs on every connect
+    once the DB is on a version this binary understands, so a manually-
+    deleted system group reappears next start. Promotes a manually-created
+    same-named group to is_system=TRUE without rewriting its description
+    (admin's description wins; we only set our default when creating).
+    """
+    import uuid as _uuid
+
+    for name, description in _SYSTEM_GROUPS_SEED:
+        existing = conn.execute(
+            "SELECT id, is_system FROM user_groups WHERE name = ?", [name]
+        ).fetchone()
+        if existing is None:
+            conn.execute(
+                """INSERT INTO user_groups (id, name, description, is_system, created_by)
+                   VALUES (?, ?, ?, TRUE, 'system:seed')""",
+                [str(_uuid.uuid4()), name, description],
+            )
+        elif not existing[1]:
+            # Promote pre-existing manual group to system without touching desc.
+            conn.execute(
+                "UPDATE user_groups SET is_system = TRUE WHERE id = ?",
+                [existing[0]],
+            )
+
+
+def _v12_to_v13_finalize(conn: duckdb.DuckDBPyConnection) -> None:
+    """Backfill user_group_members + resource_grants, then drop legacy tables.
+
+    Runs after _V12_TO_V13_MIGRATIONS created the new tables. Order matters:
+
+    1. Seed Admin/Everyone in user_groups so backfill targets exist.
+    2. Backfill user_group_members from users.groups JSON via name lookup
+       (source='google_sync' — Google was the v12 origin of those entries).
+    3. Backfill admin membership from user_role_grants.core.admin grants.
+    4. Add Everyone membership to every user (source='system_seed').
+    5. Backfill resource_grants from plugin_access.
+    6. DROP legacy tables in FK-correct order.
+    7. ALTER users DROP COLUMN groups (DuckDB ≥ 0.8 supports it).
+
+    Wrapped in an explicit transaction so an unhandled mid-flight failure
+    rolls the DB back to a clean v12 state. Per-step soft-fails on DROP
+    TABLE / ALTER (already caught and logged inline) do NOT abort the
+    transaction — only an unexpected exception from a backfill SELECT or
+    INSERT does. The outer caller in _ensure_schema then skips the
+    schema_version bump and the next start retries the whole step.
+    """
+    import uuid as _uuid
+
+    conn.execute("BEGIN TRANSACTION")
+    try:
+        _seed_system_groups(conn)
+
+        admin_group_id = conn.execute(
+            "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
+        ).fetchone()[0]
+        everyone_group_id = conn.execute(
+            "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_EVERYONE_GROUP]
+        ).fetchone()[0]
+
+        # 2. users.groups JSON → user_group_members (google_sync). Tolerant of the
+        # column having been physically dropped already (re-run safety) and of
+        # malformed JSON (caught row-by-row, skipped silently).
+        has_groups_col = conn.execute(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = 'users' AND column_name = 'groups'"
+        ).fetchone()
+        if has_groups_col:
+            rows = conn.execute(
+                "SELECT id, groups FROM users WHERE groups IS NOT NULL"
+            ).fetchall()
+            for user_id, groups_json in rows:
+                try:
+                    import json as _json
+                    names = _json.loads(groups_json) if isinstance(groups_json, str) else (groups_json or [])
+                except (ValueError, TypeError):
+                    names = []
+                if not isinstance(names, list):
+                    continue
+                for name in names:
+                    if not isinstance(name, str) or not name.strip():
+                        continue
+                    group_row = conn.execute(
+                        "SELECT id FROM user_groups WHERE name = ?", [name],
+                    ).fetchone()
+                    if not group_row:
+                        continue
+                    try:
+                        conn.execute(
+                            """INSERT INTO user_group_members
+                               (user_id, group_id, source, added_by)
+                               VALUES (?, ?, 'google_sync', 'system:v13-backfill')""",
+                            [user_id, group_row[0]],
+                        )
+                    except duckdb.ConstraintException:
+                        logger.debug(
+                            "v13 backfill step 2 (google_sync): skipped "
+                            "insert for user=%s group=%s — already present",
+                            user_id, name,
+                        )
+
+        # 3. core.admin grants → Admin membership. Tolerant of either table being
+        # absent (e.g. fresh install path that skipped v8→v9).
+        has_internal_roles = conn.execute(
+            "SELECT 1 FROM information_schema.tables WHERE table_name = 'internal_roles'"
+        ).fetchone()
+        has_user_role_grants = conn.execute(
+            "SELECT 1 FROM information_schema.tables WHERE table_name = 'user_role_grants'"
+        ).fetchone()
+        if has_internal_roles and has_user_role_grants:
+            admin_users = conn.execute(
+                """SELECT DISTINCT g.user_id
+                   FROM user_role_grants g
+                   JOIN internal_roles r ON r.id = g.internal_role_id
+                   WHERE r.key = 'core.admin'"""
+            ).fetchall()
+            for (user_id,) in admin_users:
+                try:
+                    conn.execute(
+                        """INSERT INTO user_group_members
+                           (user_id, group_id, source, added_by)
+                           VALUES (?, ?, 'system_seed', 'system:v13-backfill')""",
+                        [user_id, admin_group_id],
+                    )
+                except duckdb.ConstraintException:
+                    logger.debug(
+                        "v13 backfill step 3 (admin system_seed): skipped "
+                        "insert for user=%s — already in Admin group "
+                        "(possibly from step 2 google_sync of 'Admin' "
+                        "Workspace group; system_seed intent is dropped)",
+                        user_id,
+                    )
+
+        # 4. Everyone for every user (idempotent via UNIQUE PK).
+        user_rows = conn.execute("SELECT id FROM users").fetchall()
+        for (user_id,) in user_rows:
+            try:
+                conn.execute(
+                    """INSERT INTO user_group_members
+                       (user_id, group_id, source, added_by)
+                       VALUES (?, ?, 'system_seed', 'system:v13-backfill')""",
+                    [user_id, everyone_group_id],
+                )
+            except duckdb.ConstraintException:
+                logger.debug(
+                    "v13 backfill step 4 (everyone system_seed): skipped "
+                    "insert for user=%s — already in Everyone group "
+                    "(possibly from step 2 google_sync of 'Everyone' "
+                    "Workspace group; system_seed intent is dropped)",
+                    user_id,
+                )
+
+        # 5. plugin_access → resource_grants
+        has_plugin_access = conn.execute(
+            "SELECT 1 FROM information_schema.tables WHERE table_name = 'plugin_access'"
+        ).fetchone()
+        if has_plugin_access:
+            pa_rows = conn.execute(
+                """SELECT group_id, marketplace_id, plugin_name, granted_at, granted_by
+                   FROM plugin_access"""
+            ).fetchall()
+            for group_id, marketplace_id, plugin_name, granted_at, granted_by in pa_rows:
+                resource_id = f"{marketplace_id}/{plugin_name}"
+                try:
+                    conn.execute(
+                        """INSERT INTO resource_grants
+                           (id, group_id, resource_type, resource_id, assigned_at, assigned_by)
+                           VALUES (?, ?, 'marketplace_plugin', ?, ?, ?)""",
+                        [str(_uuid.uuid4()), group_id, resource_id, granted_at, granted_by],
+                    )
+                except duckdb.ConstraintException:
+                    logger.debug(
+                        "v13 backfill step 5 (resource_grants): skipped "
+                        "insert for group=%s resource=%s — already migrated",
+                        group_id, resource_id,
+                    )
+
+        # Audit: log any non-core capability grants before dropping the
+        # legacy tables. No production caller in this repo ever registered
+        # non-core roles via register_internal_role (verified across git
+        # history) — this is a safety net for forked installs that may
+        # have added custom rows. Operators see a warning naming each
+        # affected role + count, so they can re-issue the equivalent
+        # grants in the v13 group-based model.
+        if has_internal_roles and has_user_role_grants:
+            non_core_rows = conn.execute(
+                """SELECT r.key, COUNT(*) AS cnt
+                   FROM user_role_grants g
+                   JOIN internal_roles r ON r.id = g.internal_role_id
+                   WHERE r.key NOT LIKE 'core.%'
+                   GROUP BY r.key"""
+            ).fetchall()
+            for role_key, cnt in non_core_rows:
+                logger.warning(
+                    "v13 migration: dropping %d grant(s) for non-core role "
+                    "'%s' (no equivalent in the v13 group-based model). "
+                    "If this role was registered via register_internal_role(), "
+                    "the affected users need to be re-added to an "
+                    "appropriate user_group post-upgrade.",
+                    cnt, role_key,
+                )
+
+        # 6. Drop legacy tables in FK-correct order: dependent tables first.
+        for stmt in [
+            "DROP TABLE IF EXISTS plugin_access",
+            "DROP TABLE IF EXISTS user_role_grants",
+            "DROP TABLE IF EXISTS group_mappings",
+            "DROP TABLE IF EXISTS internal_roles",
+        ]:
+            try:
+                conn.execute(stmt)
+            except Exception as e:
+                logger.warning("v13 drop failed (%s): %s", stmt, e)
+
+        # 7. Drop users.groups column. DuckDB supports DROP COLUMN; silently no-op
+        # if it's already gone (fresh-install path or partial re-run).
+        if has_groups_col:
+            try:
+                conn.execute("ALTER TABLE users DROP COLUMN groups")
+            except Exception as e:
+                logger.warning("v13 ALTER users DROP COLUMN groups failed: %s", e)
+
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
+def _v13_to_v14_finalize(conn: duckdb.DuckDBPyConnection) -> None:
+    """Add FOREIGN KEY (group_id) → user_groups(id) on user_group_members
+    and resource_grants.
+
+    DuckDB does not support ALTER TABLE ADD CONSTRAINT for foreign keys, so
+    the migration recreates each table:
+
+        1. Pre-clean orphan rows (group_id no longer in user_groups).
+           These should not exist on a clean v13 DB but the app-layer
+           cascade was best-effort before this PR (see #3).
+        2. RENAME old table to *_v13_pre.
+        3. CREATE TABLE with the FK (matches the v14 _SYSTEM_SCHEMA).
+        4. INSERT … SELECT from *_v13_pre.
+        5. DROP *_v13_pre.
+
+    Wrapped in BEGIN TRANSACTION so a mid-flight failure rolls back to
+    a clean v13 state and the outer caller skips the schema_version bump.
+    DuckDB does NOT support ON DELETE CASCADE — see _SYSTEM_SCHEMA above
+    and app/api/access.py:delete_group for the explicit cascade.
+    """
+    orphan_members = conn.execute(
+        """SELECT COUNT(*) FROM user_group_members
+           WHERE group_id NOT IN (SELECT id FROM user_groups)"""
+    ).fetchone()[0]
+    orphan_grants = conn.execute(
+        """SELECT COUNT(*) FROM resource_grants
+           WHERE group_id NOT IN (SELECT id FROM user_groups)"""
+    ).fetchone()[0]
+    if orphan_members:
+        logger.warning(
+            "v14 migration: dropping %d orphan user_group_members rows "
+            "(group_id pointed at a deleted user_groups.id)",
+            orphan_members,
+        )
+    if orphan_grants:
+        logger.warning(
+            "v14 migration: dropping %d orphan resource_grants rows",
+            orphan_grants,
+        )
+
+    conn.execute("BEGIN TRANSACTION")
+    try:
+        # Orphan cleanup must happen inside the transaction so it rolls
+        # back together with the table swap on any failure.
+        conn.execute(
+            """DELETE FROM user_group_members
+               WHERE group_id NOT IN (SELECT id FROM user_groups)"""
+        )
+        conn.execute(
+            """DELETE FROM resource_grants
+               WHERE group_id NOT IN (SELECT id FROM user_groups)"""
+        )
+
+        # user_group_members rebuild
+        conn.execute(
+            "ALTER TABLE user_group_members RENAME TO user_group_members_v13_pre"
+        )
+        conn.execute(
+            """CREATE TABLE user_group_members (
+                user_id   VARCHAR NOT NULL,
+                group_id  VARCHAR NOT NULL REFERENCES user_groups(id),
+                source    VARCHAR NOT NULL,
+                added_at  TIMESTAMP DEFAULT current_timestamp,
+                added_by  VARCHAR,
+                PRIMARY KEY (user_id, group_id)
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO user_group_members
+               (user_id, group_id, source, added_at, added_by)
+               SELECT user_id, group_id, source, added_at, added_by
+               FROM user_group_members_v13_pre"""
+        )
+        conn.execute("DROP TABLE user_group_members_v13_pre")
+
+        # resource_grants rebuild
+        conn.execute(
+            "ALTER TABLE resource_grants RENAME TO resource_grants_v13_pre"
+        )
+        conn.execute(
+            """CREATE TABLE resource_grants (
+                id            VARCHAR PRIMARY KEY,
+                group_id      VARCHAR NOT NULL REFERENCES user_groups(id),
+                resource_type VARCHAR NOT NULL,
+                resource_id   VARCHAR NOT NULL,
+                assigned_at   TIMESTAMP DEFAULT current_timestamp,
+                assigned_by   VARCHAR,
+                UNIQUE (group_id, resource_type, resource_id)
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO resource_grants
+               (id, group_id, resource_type, resource_id, assigned_at, assigned_by)
+               SELECT id, group_id, resource_type, resource_id, assigned_at, assigned_by
+               FROM resource_grants_v13_pre"""
+        )
+        conn.execute("DROP TABLE resource_grants_v13_pre")
+
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
 
 
 def _seed_core_roles(conn: duckdb.DuckDBPyConnection) -> None:
@@ -749,29 +1325,6 @@ def _backfill_users_role_to_grants(conn: duckdb.DuckDBPyConnection) -> None:
             backfilled,
         )
 
-# Per-detection evidence rows — one knowledge_item can accumulate multiple
-# evidence rows over time (each new analyst confirmation adds one). Persisting
-# user_quote + detection_type per row is what enables future Bayesian re-
-# calibration and "additional verifiers" boost computation. See Q3 of
-# docs/pd-ps-comments.md.
-_V10_TO_V11_MIGRATIONS = [
-    """
-    CREATE TABLE IF NOT EXISTS verification_evidence (
-        id VARCHAR PRIMARY KEY,
-        item_id VARCHAR NOT NULL,
-        source_user VARCHAR,
-        source_ref VARCHAR,
-        detection_type VARCHAR,
-        user_quote TEXT,
-        created_at TIMESTAMP DEFAULT current_timestamp
-    )
-    """,
-    "CREATE INDEX IF NOT EXISTS idx_verification_evidence_item ON verification_evidence(item_id)",
-]
-
-_V11_TO_V12_MIGRATIONS = [
-    "ALTER TABLE users ADD COLUMN IF NOT EXISTS groups JSON",
-]
 
 _V3_TO_V4_MIGRATIONS = [
     """
@@ -816,8 +1369,36 @@ _V3_TO_V4_MIGRATIONS = [
 
 
 def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
-    """Create tables if they don't exist. Apply migrations if schema version changed."""
+    """Create tables if they don't exist. Apply migrations if schema version changed.
+
+    Self-heal pass for split-brain DBs runs only when ``current >=
+    SCHEMA_VERSION``. Scenario: a contributor's DB landed at
+    ``schema_version=N`` from a partial migration (crash mid-DDL,
+    parallel WIP branch with a different table set, etc.), but the
+    on-disk file is missing tables this binary expects. Without this
+    pass, the migration block below skips because we don't downgrade,
+    and every runtime query against the missing table crashes.
+
+    Because ``_SYSTEM_SCHEMA`` is all ``CREATE TABLE IF NOT EXISTS``,
+    running it is idempotent: existing tables stay untouched (columns +
+    data preserved), missing tables get created. Cost: dozens of no-op
+    DDLs per process start.
+
+    The self-heal explicitly does NOT run on the ``current <
+    SCHEMA_VERSION`` path so the pre-migration snapshot taken inside
+    that branch captures a true point-in-time state of the on-disk DB
+    *before* any DDL runs — operators reading the snapshot for rollback
+    debugging see exactly the tables the old schema had, not the
+    binary's full table set with extras tacked on.
+    """
     current = get_schema_version(conn)
+    if current >= SCHEMA_VERSION:
+        # Split-brain or same-version safety net: heal any tables this
+        # binary expects that aren't on disk. Migration block skipped
+        # because we don't downgrade — the version row is left at
+        # ``current`` so a later binary that understands ``current``
+        # picks up where the split-brain left off.
+        conn.execute(_SYSTEM_SCHEMA)
     if current < SCHEMA_VERSION:
         # Snapshot before migration for rollback support
         if current > 0:
@@ -899,29 +1480,33 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             if current < 12:
                 for sql in _V11_TO_V12_MIGRATIONS:
                     conn.execute(sql)
+            if current < 13:
+                for sql in _V12_TO_V13_MIGRATIONS:
+                    conn.execute(sql)
+                _v12_to_v13_finalize(conn)
+            if current < 14:
+                _v13_to_v14_finalize(conn)
+            if current < 15:
+                for sql in _V14_TO_V15_MIGRATIONS:
+                    conn.execute(sql)
+            if current < 16:
+                for sql in _V15_TO_V16_MIGRATIONS:
+                    conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
             )
 
-    # Always run the core-role seed when the DB is on a version this binary
-    # understands — the per-connect safety net the function's docstring
-    # promises. UPSERTs four rows; near-zero cost. Three reasons this lives
-    # OUTSIDE the migration guard:
-    #   1. recovery — if a row gets DELETEd manually (or a doc-tweak release
-    #      lands a new display_name), the next process start re-syncs without
-    #      operator action;
-    #   2. fresh installs — the (current == 0) branch above no longer needs
-    #      its own seed call;
-    #   3. v8→v9 migration — keeps its own _seed_core_roles call inside the
-    #      block because _backfill_users_role_to_grants depends on the rows
-    #      existing first; this tail call is the redundant-but-cheap follow-up.
-    #
-    # Skip when current > SCHEMA_VERSION — that's the future-version-is-noop
-    # rollback contract (future schema may not even have an internal_roles
-    # table; this binary leaves it alone).
+    # Always run the system-groups seed when the DB is on a version this binary
+    # understands — per-connect safety net so a manually-deleted Admin/Everyone
+    # row reappears next start. Two UPSERTs; near-zero cost. Lives outside the
+    # migration guard so:
+    #   1. recovery: deleted system group reappears on next start;
+    #   2. fresh installs: the (current == 0) branch above doesn't need its own
+    #      seed — _SYSTEM_SCHEMA created the user_groups table empty.
+    # Skip when current > SCHEMA_VERSION (future-version-noop rollback contract).
     if get_schema_version(conn) <= SCHEMA_VERSION:
-        _seed_core_roles(conn)
+        _seed_system_groups(conn)
 
 
 def get_schema_version(conn: duckdb.DuckDBPyConnection) -> int:

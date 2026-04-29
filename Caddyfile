@@ -1,9 +1,9 @@
 {$DOMAIN:localhost} {
 	# Cert provisioning. Driven by env var CADDY_TLS:
 	#   - unset (default) → cert-file mode for corporate PKI (rotated by
-	#     scripts/grpn/agnes-tls-rotate.sh into /data/state/certs/).
+	#     scripts/ops/agnes-tls-rotate.sh into /data/state/certs/).
 	#   - "tls <email>"   → Let's Encrypt auto-issue, e.g. "tls ops@example.com"
-	#                       (used by public-internet deployments like Keboola dev).
+	#                       (used by public-internet deployments).
 	#   - "tls internal"  → Caddy-managed self-signed cert (lab/dev only,
 	#                       browser warning on every visit).
 	#
@@ -17,11 +17,22 @@
 		protocols tls1.2 tls1.3
 	}
 
-	# HSTS: tell compliant browsers to refuse plain-HTTP for this host
-	# for a year. Skipping `preload` so we keep an escape hatch (preload
-	# submission is hard-bound and blocks rollback). Skipping
-	# `includeSubDomains` because we don't control subdomains.
-	header Strict-Transport-Security "max-age=31536000"
+	# Security headers
+	header {
+		# HSTS: tell compliant browsers to refuse plain-HTTP for this host
+		# for a year. Skipping `preload` so we keep an escape hatch (preload
+		# submission is hard-bound and blocks rollback). Skipping
+		# `includeSubDomains` because we don't control subdomains.
+		Strict-Transport-Security "max-age=31536000"
+		# Prevent clickjacking — dashboard is not embedded in iframes
+		X-Frame-Options "DENY"
+		# Prevent MIME-type sniffing — browser must honor declared Content-Type
+		X-Content-Type-Options "nosniff"
+		# Limit referrer leakage to origin on same-site navigations only
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# Strip Server header to avoid fingerprinting the reverse proxy
+		-Server
+	}
 
 	reverse_proxy app:8000 {
 		# App's uvicorn runs with --proxy-headers, so stamping these

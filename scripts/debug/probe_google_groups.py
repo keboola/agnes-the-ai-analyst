@@ -16,8 +16,8 @@ How to get an access token (Easiest path):
 
     Google's OAuth 2.0 Playground (https://developers.google.com/oauthplayground/)
         1. Click the gear icon (top right) → tick "Use your own OAuth credentials"
-        2. Paste your Client ID + Secret (from kids-ai-data-analysis project,
-           same OAuth client agnes-dev uses)
+        2. Paste your Client ID + Secret (the same OAuth client your Agnes
+           deployment uses)
         3. Step 1: pick scopes. For comparison test all of:
               https://www.googleapis.com/auth/cloud-identity.groups.readonly
               https://www.googleapis.com/auth/cloud-identity.groups

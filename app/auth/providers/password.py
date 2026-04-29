@@ -14,8 +14,17 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 
 from app.auth.jwt import create_access_token
-from app.auth.dependencies import _get_db, is_local_dev_mode, _hydrate_legacy_role
+from app.auth.access import is_user_admin
+from app.auth.dependencies import _get_db, is_local_dev_mode
 from src.repositories.users import UserRepository
+
+
+def _role_label(user: dict, conn: duckdb.DuckDBPyConnection) -> str:
+    """JWT/cookie role-claim label. ``admin`` for Admin group members,
+    otherwise the legacy column value (or ``user`` as fallback)."""
+    if is_user_admin(user["id"], conn):
+        return "admin"
+    return user.get("role") or "user"
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth/password", tags=["auth"])
@@ -23,6 +32,23 @@ router = APIRouter(prefix="/auth/password", tags=["auth"])
 RESET_TOKEN_TTL = timedelta(hours=24)
 SETUP_TOKEN_TTL = timedelta(days=7)
 MIN_PASSWORD_LEN = 8
+
+
+def _audit(user_id: str, action: str, result: str | None = None) -> None:
+    """Fire-and-forget audit log entry. Swallows all errors."""
+    try:
+        from src.db import get_system_db
+        from src.repositories.audit import AuditRepository
+        audit_conn = get_system_db()
+        AuditRepository(audit_conn).log(
+            user_id=user_id,
+            action=action,
+            resource="auth",
+            result=result,
+        )
+        audit_conn.close()
+    except Exception:
+        pass  # Audit failure must not block auth
 
 
 class PasswordLoginRequest(BaseModel):
@@ -180,9 +206,6 @@ async def password_login(
     user = repo.get_by_email(request.email)
     if not user or not user.get("password_hash"):
         raise HTTPException(status_code=401, detail="Invalid email or password")
-    # v9: legacy users.role is NULL after migration; hydrate from grants so
-    # create_access_token + the JSON response carry the correct enum value.
-    user = _hydrate_legacy_role(user, conn)
     if not bool(user.get("active", True)):
         raise HTTPException(status_code=401, detail="Account deactivated")
 
@@ -195,8 +218,9 @@ async def password_login(
         logger.exception("Unexpected error during password verification")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-    token = create_access_token(user["id"], user["email"], user["role"])
-    return {"access_token": token, "token_type": "bearer", "email": user["email"], "role": user["role"]}
+    role_label = _role_label(user, conn)
+    token = create_access_token(user["id"], user["email"], role_label)
+    return {"access_token": token, "token_type": "bearer", "email": user["email"], "role": role_label}
 
 
 @router.post("/login/web")
@@ -211,7 +235,6 @@ async def password_login_web(
     user = repo.get_by_email(email)
     if not user or not user.get("password_hash"):
         return RedirectResponse(url="/login/password?error=invalid", status_code=302)
-    user = _hydrate_legacy_role(user, conn)  # v9: NULL legacy column → grants
     if not bool(user.get("active", True)):
         return RedirectResponse(url="/login/password?error=deactivated", status_code=302)
 
@@ -219,6 +242,8 @@ async def password_login_web(
         ph = PasswordHasher()
         ph.verify(user["password_hash"], password)
     except VerifyMismatchError:
+        # M9: audit failed form-login attempts (mirrors /auth/token endpoint)
+        _audit(user["id"], "login_failed", result="invalid_password")
         return RedirectResponse(url="/login/password?error=invalid", status_code=302)
     except Exception:
         logger.exception("Unexpected error during web password verification for %s", email)
@@ -226,7 +251,7 @@ async def password_login_web(
 
     target = next if (next.startswith("/") and not next.startswith("//")) else "/dashboard"
     response = RedirectResponse(url=target, status_code=302)
-    _set_login_cookie(response, user["id"], user["email"], user["role"])
+    _set_login_cookie(response, user["id"], user["email"], _role_label(user, conn))
     return response
 
 
@@ -242,7 +267,6 @@ async def password_setup(
     user = repo.get_by_email(request_body.email)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    user = _hydrate_legacy_role(user, conn)  # v9: NULL legacy column → grants
 
     if user.get("setup_token") != request_body.token:
         raise HTTPException(status_code=400, detail="Invalid setup token")
@@ -258,7 +282,7 @@ async def password_setup(
     hashed = ph.hash(request_body.password)
 
     repo.update(id=user["id"], password_hash=hashed, setup_token=None, setup_token_created=None)
-    token = create_access_token(user["id"], user["email"], user["role"])
+    token = create_access_token(user["id"], user["email"], _role_label(user, conn))
     return {"access_token": token, "token_type": "bearer", "message": "Password set successfully"}
 
 
@@ -324,15 +348,46 @@ async def reset_confirm(
             error=f"Password must be at least {MIN_PASSWORD_LEN} characters.",
         )
 
+    # Atomic compare-and-swap to consume the reset token. Mirrors the
+    # magic-link CAS in app/auth/providers/email.py::_consume_token (issue
+    # #82/M10) — without it, two concurrent POSTs with the same valid token
+    # could both succeed in setting different new passwords. Lower
+    # severity than the magic-link race (attacker would need the reset
+    # token AND to race the legitimate user) but closes the asymmetry.
+    cutoff = datetime.now(timezone.utc) - RESET_TOKEN_TTL
+    consume_id = f"CONSUMED:{secrets.token_hex(16)}"
+    try:
+        conn.execute(
+            "UPDATE users SET reset_token = ?, reset_token_created = NULL "
+            "WHERE email = ? AND reset_token = ? AND reset_token_created IS NOT NULL "
+            "AND reset_token_created >= ? AND active = TRUE",
+            [consume_id, email, token, cutoff],
+        )
+    except Exception as exc:
+        err = str(exc).lower()
+        if "conflict" in err or "transaction" in err:
+            return _render_reset_form(request, email=email, token=token, error="Invalid or expired reset link.")
+        raise
+
+    # Verify OUR marker won the race. A concurrent winner will have a
+    # different consume_id (or NULL if they already cleared it).
+    row = conn.execute(
+        "SELECT reset_token FROM users WHERE email = ?",
+        [email],
+    ).fetchone()
+    if not row or row[0] != consume_id:
+        # Could be: token never matched, expired, account deactivated, or
+        # the race was lost. Single error keeps the UX simple and avoids
+        # leaking which condition tripped.
+        return _render_reset_form(request, email=email, token=token, error="Invalid or expired reset link.")
+
+    # Won the race — fetch the user (we need id/email for the response)
+    # and apply the password change. Clearing the marker happens as part
+    # of the same UPDATE.
     repo = UserRepository(conn)
     user = repo.get_by_email(email)
-    if not user or user.get("reset_token") != token:
+    if not user:
         return _render_reset_form(request, email=email, token=token, error="Invalid or expired reset link.")
-    user = _hydrate_legacy_role(user, conn)  # v9: NULL legacy column → grants
-    if not _token_is_fresh(user.get("reset_token_created"), RESET_TOKEN_TTL):
-        return _render_reset_form(request, email=email, token=token, error="Reset link has expired. Please request a new one.")
-    if not bool(user.get("active", True)):
-        return _render_reset_form(request, email=email, token=token, error="This account is deactivated.")
 
     ph = PasswordHasher()
     repo.update(
@@ -343,7 +398,7 @@ async def reset_confirm(
     )
 
     response = RedirectResponse(url="/login/password?msg=password_reset", status_code=302)
-    _set_login_cookie(response, user["id"], user["email"], user["role"])
+    _set_login_cookie(response, user["id"], user["email"], _role_label(user, conn))
     return response
 
 
@@ -419,7 +474,6 @@ async def setup_confirm(
     user = repo.get_by_email(email)
     if not user or user.get("setup_token") != token:
         return _render_setup_form(request, email=email, token=token, name=name, error="Invalid or expired setup link.")
-    user = _hydrate_legacy_role(user, conn)  # v9: NULL legacy column → grants
     if not _token_is_fresh(user.get("setup_token_created"), SETUP_TOKEN_TTL):
         return _render_setup_form(request, email=email, token=token, name=name, error="Setup link has expired. Ask an administrator for a new one.")
     if not bool(user.get("active", True)):
@@ -436,5 +490,5 @@ async def setup_confirm(
     repo.update(id=user["id"], **updates)
 
     response = RedirectResponse(url="/dashboard", status_code=302)
-    _set_login_cookie(response, user["id"], user["email"], user["role"])
+    _set_login_cookie(response, user["id"], user["email"], _role_label(user, conn))
     return response

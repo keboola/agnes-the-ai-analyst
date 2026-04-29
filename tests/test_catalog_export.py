@@ -298,7 +298,7 @@ class TestExportMetrics:
     def test_export_metrics_filter_tag_keeps_matching(self, tmp_path: Path, mock_client):
         """Only metrics with the filter_tag are exported."""
         tagged = _make_raw_metric(name="M1", fqn="M1", category_tag="MetricCategory.finance")
-        tagged["tags"].append({"tagFQN": "AIAgent.FoundryAI", "name": "FoundryAI"})
+        tagged["tags"].append({"tagFQN": "AIAgent.Example", "name": "Example"})
 
         untagged = _make_raw_metric(
             name="Live Deals", fqn="LiveDeals", category_tag="MetricCategory.supply"
@@ -307,7 +307,7 @@ class TestExportMetrics:
         mock_client.get_metrics.return_value = [tagged, untagged]
 
         docs = tmp_path / "docs"
-        count = export_metrics(mock_client, docs, CATALOG_URL, filter_tag="AIAgent.FoundryAI")
+        count = export_metrics(mock_client, docs, CATALOG_URL, filter_tag="AIAgent.Example")
 
         assert count == 1
         assert (docs / "metrics" / "finance" / "m1.yml").exists()
@@ -328,7 +328,7 @@ class TestExportMetrics:
     def test_export_metrics_filter_tag_cleans_stale_untagged(self, tmp_path: Path, mock_client):
         """Stale files from previously-exported untagged metrics get cleaned up."""
         tagged = _make_raw_metric(name="M1", fqn="M1", category_tag="MetricCategory.finance")
-        tagged["tags"].append({"tagFQN": "AIAgent.FoundryAI", "name": "FoundryAI"})
+        tagged["tags"].append({"tagFQN": "AIAgent.Example", "name": "Example"})
         mock_client.get_metrics.return_value = [tagged]
 
         docs = tmp_path / "docs"
@@ -337,7 +337,7 @@ class TestExportMetrics:
         stale = stale_dir / "livedeals.yml"
         stale.write_text(AUTO_GENERATED_MARKER + "\nname: livedeals\n")
 
-        export_metrics(mock_client, docs, CATALOG_URL, filter_tag="AIAgent.FoundryAI")
+        export_metrics(mock_client, docs, CATALOG_URL, filter_tag="AIAgent.Example")
 
         assert not stale.exists()
 

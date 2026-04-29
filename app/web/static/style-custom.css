@@ -2196,6 +2196,47 @@ a.app-header-logo:focus-visible {
 .app-user-menu-item:hover { background: var(--border-light, #f3f4f6); }
 .app-user-menu-item.is-active { background: rgba(0, 115, 209, 0.08); color: var(--primary, #0073D1); font-weight: 500; }
 
+/* ── Admin nav dropdown — same vocabulary as user menu, scoped under nav links ── */
+.app-nav-menu { position: relative; display: inline-flex; }
+.app-nav-menu-trigger {
+    display: inline-flex; align-items: center; gap: 4px;
+    background: none;
+    /* Strip the default <button> chrome — the .app-nav-link class above
+       supplies the visual; the button element only carries semantics. */
+    border: 0;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+}
+.app-nav-menu-trigger:focus { outline: none; }
+.app-nav-menu-trigger:focus-visible {
+    outline: 2px solid var(--primary, #0073D1);
+    outline-offset: 2px;
+}
+.app-nav-menu-trigger[aria-expanded="true"] {
+    background: var(--border-light, #f3f4f6);
+}
+.app-nav-menu-chevron { color: currentColor; transition: transform 0.15s ease; }
+.app-nav-menu-trigger[aria-expanded="true"] .app-nav-menu-chevron { transform: rotate(180deg); }
+.app-nav-menu-panel {
+    position: absolute; top: calc(100% + 8px); right: 0;
+    min-width: 200px;
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+    padding: 6px;
+    z-index: 50;
+}
+.app-nav-menu-panel[hidden] { display: none; }
+.app-nav-menu-item {
+    display: block; padding: 8px 12px;
+    font-size: 13px; color: var(--text-primary, #111827);
+    text-decoration: none; border-radius: 6px;
+}
+.app-nav-menu-item:hover { background: var(--border-light, #f3f4f6); }
+.app-nav-menu-item.is-active { background: rgba(0, 115, 209, 0.08); color: var(--primary, #0073D1); font-weight: 500; }
+
 @media (max-width: 720px) {
     .app-header { padding: 0 16px; gap: 8px; }
     .app-header-email { display: none; }

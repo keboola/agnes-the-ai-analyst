@@ -106,12 +106,19 @@ data_source:
     stack_url: ""                 # e.g., "https://connection.keboola.com"
     project_id: ""
   bigquery:
-    project: "${BIGQUERY_PROJECT}"       # GCP project for job execution/billing
+    project: "${BIGQUERY_PROJECT}"       # GCP project hosting the data (used in FROM clause)
     location: "${BIGQUERY_LOCATION}"     # BigQuery location (e.g., "us-central1", "US")
     # Uses ADC (Application Default Credentials) - VM service account on GCP
     # Data can live in a different project -- use fully-qualified table IDs in data_description.md
+    # billing_project: ""                # Optional: GCP project to bill BQ jobs to / submit jobs from.
+    #                                    # Defaults to `project`. Set this when the SA has bigquery.data.* on
+    #                                    # the data project but lacks serviceusage.services.use there (i.e.,
+    #                                    # cross-project read pattern). Submission/billing target must be a
+    #                                    # project the SA can use; data project just needs read.
+    # legacy_wrap_views: false           # Set true to restore pre-v2 wrap views for BQ VIEW/MATERIALIZED_VIEW
+    #                                    # tables in analytics.duckdb (migration escape hatch; default: false)
 
-# --- OpenMetadata catalog (optional - Groupon-specific) ---
+# --- OpenMetadata catalog (optional) ---
 # Enriches table and column metadata from OpenMetadata REST API.
 # If not configured, app works normally without catalog enrichment.
 # openmetadata:
@@ -353,3 +360,24 @@ catalog:
 #   max_bq_registration_rows: 500000  # Max rows per --register-bq sub-query
 #   default_format: "table"           # Default output format
 #   output_dir: "/tmp/remote_query"   # Directory for Parquet/CSV exports
+
+# --- v2 API knobs (optional) ---
+# Controls for the /api/v2/{catalog,schema,sample,scan,scan/estimate} endpoints.
+# All values are optional — the defaults shown below are applied if keys are absent.
+#
+# api:
+#   # --- Scan / fetch limits ---
+#   scan:
+#     max_limit: 10000000             # Hard row cap per /api/v2/scan request (default: 10 M)
+#     max_result_bytes: 2147483648    # Hard byte cap on Arrow stream response: 2 GB (default)
+#                                     # If exceeded, partial result returned with X-Agnes-Truncated header.
+#     max_concurrent_per_user: 5      # In-flight /api/v2/scan requests allowed per user (default: 5)
+#                                     # Note: quota is process-local; N replicas → effective N× cap.
+#     max_daily_bytes_per_user: 53687091200  # Per-user daily byte quota: 50 GB (default). Resets at UTC midnight.
+#     bq_cost_per_tb_usd: 5.00        # Cost rate shown in /api/v2/scan/estimate response (default: $5/TB)
+#     request_timeout_seconds: 300    # Server-side timeout for a single scan request (default: 300 s)
+#   # --- Discovery cache TTLs ---
+#   catalog_cache_ttl_seconds: 300    # /api/v2/catalog response cache lifetime (default: 5 min)
+#   schema_cache_ttl_seconds: 3600    # /api/v2/schema/{table_id} cache lifetime (default: 1 h)
+#   sample_cache_ttl_seconds: 3600    # /api/v2/sample/{table_id} cache lifetime (default: 1 h)
+#                                     # Admins can force-refresh via POST /api/v2/sample/{id}?refresh=true

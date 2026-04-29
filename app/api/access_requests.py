@@ -6,7 +6,8 @@ from pydantic import BaseModel
 from typing import Optional
 import duckdb
 
-from app.auth.dependencies import get_current_user, require_role, Role, _get_db
+from app.auth.access import require_admin
+from app.auth.dependencies import get_current_user, _get_db
 from src.repositories.access_requests import AccessRequestRepository
 
 logger = logging.getLogger(__name__)
@@ -58,7 +59,7 @@ async def my_requests(
 
 @router.get("/pending")
 async def pending_requests(
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """List all pending access requests (admin only)."""
@@ -74,7 +75,7 @@ async def pending_requests(
 @router.post("/{request_id}/approve")
 async def approve_request(
     request_id: str,
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Approve an access request (admin only). Auto-grants permission."""
@@ -87,7 +88,7 @@ async def approve_request(
 @router.post("/{request_id}/deny")
 async def deny_request(
     request_id: str,
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Deny an access request (admin only)."""

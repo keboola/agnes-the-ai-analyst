@@ -309,7 +309,7 @@ def reset_password(user_ref: str = typer.Argument(..., help="User id or email"))
     resp = api_post(f"/api/users/{uid}/reset-password")
     if resp.status_code == 200:
         data = resp.json()
-        typer.echo(f"Reset token: {data['reset_token']}")
+        typer.echo(f"Reset URL: {data['reset_url']}")
         typer.echo(f"Email sent: {data['email_sent']}")
     else:
         typer.echo(f"Failed: {resp.json().get('detail', resp.text)}", err=True)
@@ -334,20 +334,18 @@ def set_password(
         raise typer.Exit(1)
 
 
-# ---- Role management (v9 — internal_roles + group_mappings + user_role_grants) ----
+# ---- Access management (v12 — user_groups + members + resource_grants) ----
 #
-# Calls the role-management REST API under /api/admin (see app/api/role_management.py).
-# All endpoints require core.admin; PAT auth is supported uniformly via the v9
-# require_internal_role two-path resolver.
+# Calls the unified access REST API under /api/admin (see app/api/access.py).
+# Every endpoint requires Admin user_group membership.
 
-role_app = typer.Typer(help="Internal-role browsing (read-only)")
-mapping_app = typer.Typer(help="External group → internal role mapping CRUD")
-admin_app.add_typer(role_app, name="role")
-admin_app.add_typer(mapping_app, name="mapping")
+group_app = typer.Typer(help="User group + membership management")
+grant_app = typer.Typer(help="Resource grant CRUD")
+admin_app.add_typer(group_app, name="group")
+admin_app.add_typer(grant_app, name="grant")
 
 
 def _fail(resp, prefix: str = "Failed") -> None:
-    """Print API failure detail and raise typer.Exit(1)."""
     try:
         detail = resp.json().get("detail", resp.text)
     except Exception:
@@ -357,10 +355,6 @@ def _fail(resp, prefix: str = "Failed") -> None:
 
 
 def _print_rows(rows: list, columns: list[tuple[str, str, int]]) -> None:
-    """Render a list of dicts as a fixed-width table.
-
-    columns: list of (key, header, width) — order matches the column display.
-    """
     header = "  " + "  ".join(f"{h:<{w}s}" for _, h, w in columns)
     typer.echo(header)
     typer.echo("  " + "-" * (len(header) - 2))
@@ -372,233 +366,269 @@ def _print_rows(rows: list, columns: list[tuple[str, str, int]]) -> None:
         typer.echo("  " + "  ".join(cells))
 
 
-@role_app.command("list")
-def role_list(as_json: bool = typer.Option(False, "--json", help="Output as JSON")):
-    """List all internal roles (registered capability keys)."""
-    resp = api_get("/api/admin/internal-roles")
+def _resolve_group_id(ref: str) -> str:
+    """Accept group id (UUID-ish) or name; look up via /api/admin/groups."""
+    resp = api_get("/api/admin/groups")
+    if resp.status_code != 200:
+        _fail(resp, prefix="Could not list groups")
+    for g in resp.json():
+        if g["id"] == ref or g["name"] == ref:
+            return g["id"]
+    typer.echo(f"Group not found: {ref}", err=True)
+    raise typer.Exit(1)
+
+
+@group_app.command("list")
+def group_list(as_json: bool = typer.Option(False, "--json")):
+    """List all user groups."""
+    resp = api_get("/api/admin/groups")
     if resp.status_code != 200:
         _fail(resp)
-    data = resp.json()
-    # Endpoint may return a list or {roles: [...]} — accept either shape.
-    roles = data["roles"] if isinstance(data, dict) and "roles" in data else data
+    rows = resp.json()
     if as_json:
-        typer.echo(json.dumps(roles, indent=2))
-        return
-    if not roles:
-        typer.echo("No internal roles registered.")
-        return
-    typer.echo(f"Internal roles: {len(roles)}")
-    _print_rows(roles, [
-        ("key", "KEY", 30),
-        ("display_name", "DISPLAY NAME", 28),
-        ("owner_module", "OWNER", 16),
-        ("is_core", "CORE", 5),
+        typer.echo(json.dumps(rows, indent=2)); return
+    typer.echo(f"User groups: {len(rows)}")
+    _print_rows(rows, [
+        ("name", "NAME", 24),
+        ("description", "DESCRIPTION", 40),
+        ("is_system", "SYSTEM", 7),
+        ("member_count", "MEMBERS", 8),
+        ("grant_count", "GRANTS", 7),
     ])
 
 
-@role_app.command("show")
-def role_show(
-    role_key: str = typer.Argument(..., help="Role key, e.g. core.admin"),
-    as_json: bool = typer.Option(False, "--json", help="Output as JSON"),
+@group_app.command("create")
+def group_create(
+    name: str = typer.Argument(..., help="Group name"),
+    description: str = typer.Option("", help="Description"),
 ):
-    """Show a single role detail with mapping + grant counts."""
-    # The list endpoint is the canonical reader; iterate to find the key.
-    resp = api_get("/api/admin/internal-roles")
-    if resp.status_code != 200:
+    """Create a new user group."""
+    resp = api_post("/api/admin/groups", json={"name": name, "description": description or None})
+    if resp.status_code != 201:
         _fail(resp)
-    data = resp.json()
-    roles = data["roles"] if isinstance(data, dict) and "roles" in data else data
-    role = next((r for r in roles if r.get("key") == role_key), None)
-    if role is None:
-        typer.echo(f"Role not found: {role_key}", err=True)
-        raise typer.Exit(1)
-
-    mappings_resp = api_get("/api/admin/group-mappings")
-    if mappings_resp.status_code != 200:
-        _fail(mappings_resp)
-    mdata = mappings_resp.json()
-    mappings = mdata["mappings"] if isinstance(mdata, dict) and "mappings" in mdata else mdata
-    matching_mappings = [
-        m for m in mappings
-        if m.get("role_key") == role_key or m.get("internal_role_key") == role_key
-    ]
-
-    # Grants are exposed per-user in the API contract; we summarize what's
-    # cheaply visible here (matched mappings) and leave per-user grants to
-    # `da admin effective-roles <email>`.
-    payload = {
-        "role": role,
-        "mapping_count": len(matching_mappings),
-        "mappings": matching_mappings,
-    }
-    if as_json:
-        typer.echo(json.dumps(payload, indent=2))
-        return
-
-    typer.echo(f"Role: {role.get('key')}")
-    typer.echo(f"  display_name : {role.get('display_name', '')}")
-    typer.echo(f"  description  : {role.get('description', '') or ''}")
-    typer.echo(f"  owner_module : {role.get('owner_module', '') or ''}")
-    typer.echo(f"  is_core      : {bool(role.get('is_core'))}")
-    implies = role.get("implies")
-    if isinstance(implies, str):
-        try:
-            implies = json.loads(implies)
-        except (TypeError, ValueError):
-            implies = []
-    typer.echo(f"  implies      : {', '.join(implies) if implies else '(none)'}")
-    typer.echo(f"  mappings     : {len(matching_mappings)}")
+    typer.echo(f"Created group: {name} (id={resp.json()['id']})")
 
 
-@mapping_app.command("list")
-def mapping_list(as_json: bool = typer.Option(False, "--json", help="Output as JSON")):
-    """List all external-group → internal-role mappings."""
-    resp = api_get("/api/admin/group-mappings")
-    if resp.status_code != 200:
-        _fail(resp)
-    data = resp.json()
-    mappings = data["mappings"] if isinstance(data, dict) and "mappings" in data else data
-    if as_json:
-        typer.echo(json.dumps(mappings, indent=2))
-        return
-    if not mappings:
-        typer.echo("No group mappings configured.")
-        return
-    # Normalize role_key (some API shapes nest it under `internal_role_key`).
-    for m in mappings:
-        if "role_key" not in m and "internal_role_key" in m:
-            m["role_key"] = m["internal_role_key"]
-    typer.echo(f"Group mappings: {len(mappings)}")
-    _print_rows(mappings, [
-        ("external_group_id", "EXTERNAL GROUP", 40),
-        ("role_key", "ROLE KEY", 28),
-        ("assigned_by", "ASSIGNED BY", 24),
-        ("id", "MAPPING ID", 36),
-    ])
-
-
-@mapping_app.command("create")
-def mapping_create(
-    external_group_id: str = typer.Argument(..., help="Cloud Identity group ID"),
-    role_key: str = typer.Argument(..., help="Internal role key, e.g. core.admin"),
-    as_json: bool = typer.Option(False, "--json", help="Output as JSON"),
-):
-    """Map an external group to an internal role."""
-    resp = api_post(
-        "/api/admin/group-mappings",
-        json={"external_group_id": external_group_id, "role_key": role_key},
-    )
-    if resp.status_code not in (200, 201):
-        _fail(resp)
-    created = resp.json()
-    if as_json:
-        typer.echo(json.dumps(created, indent=2))
-        return
-    typer.echo(
-        f"Created mapping: {created.get('external_group_id')} → "
-        f"{created.get('role_key') or created.get('internal_role_key')} "
-        f"(id={created.get('id')})"
-    )
-
-
-@mapping_app.command("delete")
-def mapping_delete(
-    mapping_id: str = typer.Argument(..., help="Mapping ID to delete"),
-):
-    """Delete a group mapping by ID."""
-    resp = api_delete(f"/api/admin/group-mappings/{mapping_id}")
+@group_app.command("delete")
+def group_delete(group_ref: str = typer.Argument(..., help="Group id or name")):
+    """Delete a user group (and its members + grants)."""
+    gid = _resolve_group_id(group_ref)
+    resp = api_delete(f"/api/admin/groups/{gid}")
     if resp.status_code in (200, 204):
-        typer.echo(f"Deleted mapping {mapping_id}")
-        return
+        typer.echo(f"Deleted group {group_ref}"); return
     _fail(resp)
 
 
-@admin_app.command("grant-role")
-def grant_role(
-    user_email: str = typer.Argument(..., help="User email"),
-    role_key: str = typer.Argument(..., help="Internal role key, e.g. core.admin"),
-    as_json: bool = typer.Option(False, "--json", help="Output as JSON"),
-):
-    """Grant an internal role directly to a user (PAT-friendly flow)."""
-    uid = _resolve_user_id(user_email)
-    resp = api_post(
-        f"/api/admin/users/{uid}/role-grants",
-        json={"role_key": role_key},
-    )
-    if resp.status_code not in (200, 201):
-        _fail(resp)
-    granted = resp.json()
-    if as_json:
-        typer.echo(json.dumps(granted, indent=2))
-        return
-    typer.echo(
-        f"Granted {role_key} to {user_email} (grant_id={granted.get('id')})"
-    )
-
-
-@admin_app.command("revoke-role")
-def revoke_role(
-    user_email: str = typer.Argument(..., help="User email"),
-    role_key: str = typer.Argument(..., help="Internal role key to revoke"),
-):
-    """Revoke a previously-granted internal role from a user."""
-    uid = _resolve_user_id(user_email)
-    list_resp = api_get(f"/api/admin/users/{uid}/role-grants")
-    if list_resp.status_code != 200:
-        _fail(list_resp, prefix="Failed to list grants")
-    data = list_resp.json()
-    grants = data["grants"] if isinstance(data, dict) and "grants" in data else data
-    matching = [
-        g for g in grants
-        if g.get("role_key") == role_key or g.get("internal_role_key") == role_key
-    ]
-    if not matching:
-        typer.echo(
-            f"No active grant for {user_email} with role_key={role_key}", err=True,
-        )
-        raise typer.Exit(1)
-    grant_id = matching[0].get("id")
-    if not grant_id:
-        typer.echo(f"Grant row missing id: {matching[0]!r}", err=True)
-        raise typer.Exit(1)
-    del_resp = api_delete(f"/api/admin/users/{uid}/role-grants/{grant_id}")
-    if del_resp.status_code in (200, 204):
-        typer.echo(f"Revoked {role_key} from {user_email}")
-        return
-    _fail(del_resp)
-
-
-@admin_app.command("effective-roles")
-def effective_roles(
-    user_email: str = typer.Argument(..., help="User email"),
-    as_json: bool = typer.Option(False, "--json", help="Output as JSON"),
-):
-    """Show the user's effective roles (direct + group + expanded)."""
-    uid = _resolve_user_id(user_email)
-    resp = api_get(f"/api/admin/users/{uid}/effective-roles")
+@group_app.command("members")
+def group_members(group_ref: str = typer.Argument(..., help="Group id or name")):
+    """List members of a group."""
+    gid = _resolve_group_id(group_ref)
+    resp = api_get(f"/api/admin/groups/{gid}/members")
     if resp.status_code != 200:
         _fail(resp)
-    data = resp.json()
+    rows = resp.json()
+    typer.echo(f"Members: {len(rows)}")
+    _print_rows(rows, [
+        ("email", "EMAIL", 30),
+        ("name", "NAME", 20),
+        ("source", "SOURCE", 14),
+        ("active", "ACTIVE", 7),
+    ])
+
+
+@group_app.command("add-member")
+def group_add_member(
+    group_ref: str = typer.Argument(..., help="Group id or name"),
+    email: str = typer.Argument(..., help="User email"),
+):
+    """Add a user to a group (source='admin' — survives Google sync)."""
+    gid = _resolve_group_id(group_ref)
+    resp = api_post(f"/api/admin/groups/{gid}/members", json={"email": email})
+    if resp.status_code != 201:
+        _fail(resp)
+    typer.echo(f"Added {email} to {group_ref}")
+
+
+@group_app.command("remove-member")
+def group_remove_member(
+    group_ref: str = typer.Argument(..., help="Group id or name"),
+    email: str = typer.Argument(..., help="User email"),
+):
+    """Remove a user from a group (only admin-source rows can be removed this way)."""
+    gid = _resolve_group_id(group_ref)
+    user_id = _resolve_user_id(email)
+    resp = api_delete(f"/api/admin/groups/{gid}/members/{user_id}")
+    if resp.status_code in (200, 204):
+        typer.echo(f"Removed {email} from {group_ref}"); return
+    _fail(resp)
+
+
+@grant_app.command("list")
+def grant_list(
+    resource_type: str = typer.Option("", "--type", help="Filter by resource type"),
+    group_ref: str = typer.Option("", "--group", help="Filter by group id or name"),
+    as_json: bool = typer.Option(False, "--json"),
+):
+    """List resource grants."""
+    params = {}
+    if resource_type:
+        params["resource_type"] = resource_type
+    if group_ref:
+        params["group_id"] = _resolve_group_id(group_ref)
+    resp = api_get("/api/admin/grants", params=params)
+    if resp.status_code != 200:
+        _fail(resp)
+    rows = resp.json()
     if as_json:
-        typer.echo(json.dumps(data, indent=2))
-        return
+        typer.echo(json.dumps(rows, indent=2)); return
+    typer.echo(f"Resource grants: {len(rows)}")
+    _print_rows(rows, [
+        ("group_name", "GROUP", 20),
+        ("resource_type", "RESOURCE TYPE", 22),
+        ("resource_id", "RESOURCE ID", 40),
+        ("assigned_by", "ASSIGNED BY", 24),
+    ])
 
-    typer.echo(f"Effective roles for {user_email}:")
-    direct = data.get("direct") or data.get("direct_roles") or []
-    group = data.get("group") or data.get("group_roles") or []
-    expanded = data.get("expanded") or data.get("effective") or data.get("effective_roles") or []
 
-    # API response shape: direct/group are List[Dict] (RoleGrantResponse-like
-    # with role_key + grant metadata), expanded is List[str]. Render uniformly
-    # by extracting role_key from dicts and falling back to str() for legacy
-    # mock shapes that yield bare strings.
-    def _names(items):
-        return ", ".join(
-            (it.get("role_key") or it.get("key") or str(it))
-            if isinstance(it, dict) else str(it)
-            for it in items
+@grant_app.command("create")
+def grant_create(
+    group_ref: str = typer.Argument(..., help="Group id or name"),
+    resource_type: str = typer.Argument(..., help="Resource type (e.g. marketplace_plugin)"),
+    resource_id: str = typer.Argument(..., help="Resource path (e.g. foundry-ai/metrics-plugin)"),
+):
+    """Grant a group access to a specific resource."""
+    gid = _resolve_group_id(group_ref)
+    resp = api_post("/api/admin/grants", json={
+        "group_id": gid,
+        "resource_type": resource_type,
+        "resource_id": resource_id,
+    })
+    if resp.status_code != 201:
+        _fail(resp)
+    typer.echo(f"Granted {group_ref}: {resource_type}/{resource_id}")
+
+
+@grant_app.command("delete")
+def grant_delete(grant_id: str = typer.Argument(..., help="Grant id")):
+    """Delete a grant by id."""
+    resp = api_delete(f"/api/admin/grants/{grant_id}")
+    if resp.status_code in (200, 204):
+        typer.echo(f"Deleted grant {grant_id}"); return
+    _fail(resp)
+
+
+@grant_app.command("resource-types")
+def grant_resource_types(as_json: bool = typer.Option(False, "--json")):
+    """List the resource types modules have registered."""
+    resp = api_get("/api/admin/resource-types")
+    if resp.status_code != 200:
+        _fail(resp)
+    rows = resp.json()
+    if as_json:
+        typer.echo(json.dumps(rows, indent=2)); return
+    _print_rows(rows, [
+        ("key", "KEY", 28),
+        ("display_name", "DISPLAY NAME", 28),
+        ("id_format", "ID FORMAT", 36),
+    ])
+
+
+# ---------------------------------------------------------------------------
+# Break-glass: out-of-band admin grant.
+#
+# Talks directly to system.duckdb — no HTTP, no auth dependency. The whole
+# point is recovery for the case where the running server's authorization
+# layer is broken or there is no admin left to authenticate as. Requires
+# filesystem access to ${DATA_DIR}/state/system.duckdb and is therefore
+# restricted to operators with shell access on the host.
+# ---------------------------------------------------------------------------
+
+
+breakglass_app = typer.Typer(
+    help="Out-of-band recovery (talks directly to system.duckdb)",
+)
+admin_app.add_typer(breakglass_app, name="break-glass")
+
+
+@breakglass_app.command("grant-admin")
+def break_glass_grant_admin(
+    email: str = typer.Argument(..., help="Email of the user to promote"),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Skip confirmation prompt"
+    ),
+) -> None:
+    """Grant Admin-group membership to a user without going through the API.
+
+    Operates directly on system.duckdb. Use when the server is up but the
+    Admin group has no live members (race, mistake, accidental DELETE) or
+    when bootstrapping a brand-new install before any admin exists. Membership
+    is recorded with source='cli_break_glass' so it's distinguishable from
+    google_sync / admin / system_seed in audits.
+
+    The DuckDB file must not be locked by a running app process — stop the
+    app or use a separate replica before running this.
+    """
+    import uuid as _uuid
+
+    from src.db import SYSTEM_ADMIN_GROUP, get_system_db
+    from src.repositories.user_groups import UserGroupsRepository
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    from src.repositories.users import UserRepository
+
+    if not yes:
+        confirm = typer.confirm(
+            f"Grant Admin-group membership to {email!r} (break-glass)?",
+            default=False,
         )
+        if not confirm:
+            typer.echo("Aborted.")
+            raise typer.Exit(1)
 
-    typer.echo(f"  direct   : {_names(direct) if direct else '(none)'}")
-    typer.echo(f"  group    : {_names(group) if group else '(none)'}")
-    typer.echo(f"  expanded : {', '.join(expanded) if expanded else '(none)'}")
+    conn = get_system_db()
+    try:
+        users = UserRepository(conn)
+        groups = UserGroupsRepository(conn)
+        members = UserGroupMembersRepository(conn)
+
+        admin_group = groups.get_by_name(SYSTEM_ADMIN_GROUP)
+        if admin_group is None:
+            typer.echo(
+                f"FATAL: '{SYSTEM_ADMIN_GROUP}' group missing. Start the app "
+                "once so _seed_system_groups can recreate it, then retry.",
+                err=True,
+            )
+            raise typer.Exit(2)
+
+        existing = users.get_by_email(email)
+        if existing is None:
+            user_id = _uuid.uuid4().hex
+            users.create(
+                id=user_id,
+                email=email,
+                name=email.split("@", 1)[0],
+                role="admin",
+            )
+            typer.echo(f"Created user {email} (id={user_id[:8]}…)")
+        else:
+            user_id = existing["id"]
+
+        if members.has_membership(user_id, admin_group["id"]):
+            typer.echo(
+                f"{email} is already a member of '{SYSTEM_ADMIN_GROUP}'."
+            )
+            return
+
+        members.add_member(
+            user_id=user_id,
+            group_id=admin_group["id"],
+            source="cli_break_glass",
+            added_by="cli:break-glass",
+        )
+        typer.echo(
+            f"Granted Admin to {email}. Audit source='cli_break_glass'."
+        )
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass

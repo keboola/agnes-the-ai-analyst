@@ -10,8 +10,442 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-<!-- Add bullets here. Group: Added / Changed / Fixed / Removed / Internal.
-     Mark breaking changes with **BREAKING** at the start of the bullet. -->
+## [0.14.0] — 2026-04-29
+
+### Added
+
+- **v2 fetch primitives — discovery + scoped fetch** for analytical workflows. Replaces the BigQuery wrap-view pattern (which caused "Response too large" on multi-hundred-million-row source views) with a Claude-session-driven toolkit. Server exposes `GET /api/v2/catalog` (RBAC-filtered table list with flavor + fetch-via hints), `GET /api/v2/schema/{table_id}` (column metadata + BQ flavor hints), `GET /api/v2/sample/{table_id}` (N sample rows), `POST /api/v2/scan` (validator + RBAC + quota + max_result_bytes guard, Arrow IPC stream), `POST /api/v2/scan/estimate` (BigQuery dryRun, no execution). CLI gains `da catalog`, `da schema`, `da describe`, `da fetch <table> --select … --where … --limit N [--estimate] [--as <name>]`, `da snapshot list/refresh/drop/prune`, `da disk-info`. WHERE-clause validator at `app/api/where_validator.py` is sqlglot-backed with structural rejects + function allow-list + column-existence enforcement. Process-local quota tracker (concurrent + daily bytes per user). New `cli/skills/agnes-data-querying.md` standalone skill + CLAUDE.md addendum tells Claude to discover → estimate → fetch a filtered subset locally → analyze. 11 new `instance.yaml` knobs (`api.scan_max_concurrent_per_user`, `api.scan_daily_bytes_per_user`, `api.scan_max_result_bytes`, `api.where_clause_max_length`, `api.catalog_cache_ttl_seconds`, `api.schema_cache_ttl_seconds`, `api.sample_cache_ttl_seconds`, `data_source.bigquery.billing_project`, `data_source.bigquery.legacy_wrap_views`, `snapshots.dir`, `snapshots.cache_size_limit_gb`). Issue #101.
+- `data_source.bigquery.billing_project` config knob — explicit billing project for BQ scan + estimate. Defaults to `data_source.bigquery.project`. Matters for cross-project read patterns where the VM service account has `bigquery.data.*` on the data project but lacks `serviceusage.services.use` there; setting this to a project where the SA holds `serviceusage.services.use` fixes the dry-run 403.
+
+### Changed
+
+- **BREAKING**: `connectors/bigquery/extractor.py` no longer creates a wrap view (`SELECT * FROM bigquery_query(...)`) for VIEW / MATERIALIZED_VIEW entities by default. Operators relying on the old behavior must set `data_source.bigquery.legacy_wrap_views: true` in `instance.yaml` for one release cycle. BASE TABLE entities are unchanged. The new `da fetch` workflow replaces wrap views for analytical queries — see CLAUDE.md "Querying Agnes data — agent rails".
+- `RegisterTableRequest.primary_key` and `UpdateTableRequest.primary_key` accept `Optional[List[str]]` for composite keys (session-grain MSA tables key on `(session_id, event_date)`, browse rows on more); a bare string remains accepted for backward compat via a `field_validator(mode="before")` that wraps it in a one-element list. Old CLI scripts posting `"primary_key": "session_id"` continue to work.
+- `GET /api/v2/catalog` now caches the underlying `repo.list_all()` rows globally with the documented `api.catalog_cache_ttl_seconds` default (300s) and runs RBAC fresh per request. The previous per-user cache served stale RBAC-filtered results for up to TTL after a permission flip — `v2_schema.py` and `v2_sample.py` already had this pattern; `v2_catalog.py` now matches.
+
+## [0.13.0] — 2026-04-29
+
+### Added
+
+- **Windows/PowerShell wrapper for local dev.** New `scripts/run-local-dev.ps1` mirrors `scripts/run-local-dev.sh` for operators on Windows where GNU Make / bash aren't available — same compose stack (`docker-compose.yml` + `docker-compose.dev.yml` + `docker-compose.local-dev.yml`), same `LOCAL_DEV_GROUPS` default seeding, same `up` / `down` / `logs` actions. Run `.\scripts\run-local-dev.ps1` for the fast path (reuses existing image) or `.\scripts\run-local-dev.ps1 -Build` to force `--build` after `pyproject.toml` / `Dockerfile` changes. Verified on Docker Desktop for Windows. See `docs/local-development.md`.
+- **Admin server configuration editor** at `/admin/server-config` — admins can now view and edit `instance.yaml` from the web UI without SSHing into the host. Two new endpoints (`GET /api/admin/server-config` returns the current config with secret-looking values masked; `POST /api/admin/server-config` deep-merges a section patch into `DATA_DIR/state/instance.yaml`). The page lists the editable sections (`instance`, `data_source`, `email`, `telegram`, `jira`, `theme`, `server`, `auth`) and renders a per-field form. Saves touching `auth.*` or `server.*` ("danger zone" — can lock operators out) require an explicit confirmation step. Every save writes an `instance_config.update` row to `audit_log` with a per-field diff (secret values masked as `***`, field paths preserved so a rotation is recorded as `email.smtp_password: *** → ***`). Issue #91.
+
+### Fixed
+
+- `app/instance_config.py:load_instance_config` now deep-merges the static `CONFIG_DIR/instance.yaml` with the writable overlay at `DATA_DIR/state/instance.yaml` instead of returning the overlay verbatim when present. Pre-fix, the first save through the new server-config editor (which writes only the section the operator actually touched) caused every consumer of static-only sections (corporate memory, dataset list, OpenMetadata client) to fall through to empty defaults until the overlay was deleted. Issue #91.
+- `POST /api/admin/configure` now uses the same narrow-overlay write strategy as the new server-config editor: it reads the overlay verbatim (no static fallback), patches only `instance` / `auth` / `data_source`, and writes atomically via tmp + `os.replace`. Pre-fix it seeded `existing` from the env-resolved merged config when no overlay file was present and dumped the whole thing back, persisting cleartext `${ENV_VAR}` values (e.g. `smtp_password`) into the writable overlay even though the wizard never touched those sections. Issue #91.
+- `POST /api/admin/server-config` now strips redaction sentinels (`***` / `<empty>`) out of every secret-keyed leaf in the incoming patch before the deep-merge. The companion GET endpoint masks secret-keyed children inside nested objects (e.g. `data_source.keboola.token_env`), and the form renders those nested objects as JSON textareas — without the scrub, a no-op save would round-trip the masked JSON back and overwrite the real overlay value (`token_env: "KEBOOLA_STORAGE_TOKEN"` → `"***"`), silently breaking the next sync. Defense-in-depth on both sides: the client form scrubs before posting, and the server scrubs before merge so an API caller (CLI / script) can't corrupt secrets either. Issue #91.
+
+## [0.12.1] — 2026-04-28
+
+Patch release. Hotfixes the pre-migration snapshot-integrity bug shipped in [v0.12.0](https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.12.0) and bundles the security/ops hardening from issue groups #82 (auth hardening), #85 (API validation), #87 (deploy posture), plus #46 (SSRF) and #90 (memory stats blocking).
+
+### Added
+
+- Path-traversal validation on `/api/data/{table_id}/download` — `table_id` is
+  now checked against `_SAFE_QUOTED_IDENTIFIER` regex (allows dots and hyphens
+  for Keboola-style IDs like `in.c-crm.orders`) before any filesystem or DB
+  operation; unsafe values return 404 (no info leakage). See issue #85/C2.
+- SSRF protection on `POST /api/admin/configure` — `keboola_url` is validated
+  against private/reserved networks (127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12,
+  192.168.0.0/16, localhost, IPv6 loopback/link-local/unique-local). Uses
+  DNS resolution + `ipaddress` module for robust IPv6 handling (catches
+  abbreviated forms like `fe80::1`, `fc00::1`). See issue #46.
+- Caddyfile security headers: `X-Frame-Options DENY`,
+  `X-Content-Type-Options nosniff`,
+  `Referrer-Policy strict-origin-when-cross-origin`, `-Server` (strip).
+  See issue #87/M22.
+- Container runs as non-root user `agnes` — `USER` directive added to
+  Dockerfile with `useradd` + `chown`. See issue #87/C13.
+- Docker resource limits: `mem_limit: 4g`, `mem_reservation: 1g`,
+  `cpus: 2.0` on `app`; `mem_limit: 2g`, `cpus: 1.0` on `scheduler`.
+  See issue #87/M21.
+- Startup warning when no user has `password_hash` — alerts operators that
+  `/auth/bootstrap` is reachable. See issue #82/C8.
+- Audit logging for failed web form login attempts (`/auth/password/login/web`)
+  — mirrors the existing `/auth/token` audit trail. See issue #82/M9.
+- `/api/health/detailed` endpoint (authenticated) — returns full diagnostics
+  (version, schema, sync state, user count). Minimal `/api/health` (unauth)
+  returns only `{"status": "ok"}` for load balancers. See issue #87/M17.
+- Health endpoint monitoring guide in `docs/DEPLOYMENT.md` — documents both
+  endpoints and how to wire external monitoring tools (Datadog, Prometheus,
+  UptimeRobot) to `/api/health/detailed` with a PAT.
+
+### Changed
+
+- **BREAKING** `docker-compose.override.yml` renamed to `docker-compose.dev.yml`.
+  Docker Compose auto-merges `docker-compose.override.yml` on every host with
+  the repo, silently enabling dev mode (source mount + `--reload`) on
+  production. The new name requires explicit `-f docker-compose.dev.yml`,
+  eliminating the foot-gun. Update any scripts or workflows that relied on
+  auto-merge. `scripts/run-local-dev.sh` and `Makefile` updated accordingly.
+  See issue #87/M23.
+- **BREAKING** `/api/health` now returns a minimal `{"status": "ok"}` payload
+  (unauthenticated, for load balancers). Full diagnostics moved to
+  `/api/health/detailed` (requires authentication). Scripts that parsed
+  `/api/health` for version, sync state, or user count must switch to
+  `/api/health/detailed` with an `Authorization` header. CLI commands
+  (`da setup test-connection`, `da setup verify`, `da diagnose`, `da status`)
+  updated to call `/api/health/detailed` for service-level checks, with
+  graceful fallback to the minimal endpoint when auth is not configured.
+  See issue #87/M17.
+- `release.yml` CI workflow: `build-and-push` job now only runs on `main`
+  pushes or manual `workflow_dispatch` triggers. Non-main branch pushes run
+  tests only. Added `paths-ignore` for `docs/**`, `*.md`, `LICENSE`.
+  See issue #87/M26.
+
+### Fixed
+
+- **Pre-migration snapshot integrity** — the snapshot file written
+  before a v(N-k)→vN migration now captures the true on-disk state
+  *before* any DDL runs, instead of the post-self-heal state the
+  0.12.0 hoist (#106) introduced. With the unconditional
+  `conn.execute(_SYSTEM_SCHEMA)` at the top of `_ensure_schema`, the
+  full set of modern-binary tables (`view_ownership`,
+  `marketplace_registry`, `user_groups`, `resource_grants`, etc.) was
+  materialized first, then `CHECKPOINT` flushed them to disk, and
+  `shutil.copy2` copied the already-modified DB as the
+  "pre-migration" snapshot — so an operator inspecting the snapshot
+  for rollback debugging saw the binary's full table set instead of
+  the old schema. Functionally rollback still worked (extra empty
+  tables are harmless and re-running migration is idempotent), but
+  the snapshot was misleading. Fix: gate the self-heal call on
+  `current >= SCHEMA_VERSION`. The split-brain (`current >
+  SCHEMA_VERSION`) and same-version safety-net (`current ==
+  SCHEMA_VERSION`) paths still self-heal as before; the migration
+  path (`current < SCHEMA_VERSION`) takes its snapshot first and
+  then runs `_SYSTEM_SCHEMA` from inside the existing migration
+  block.
+- `reset_token` no longer leaks in the JSON response body of
+  `POST /api/users/{id}/reset-password`. The `reset_url` still contains the
+  token (as intended), but the raw secret is no longer exposed to DevTools,
+  proxy logs, or CLI stdout. CLI `admin reset-password` now prints the URL
+  instead of the bare token. See issue #82/C5.
+- `/api/memory/stats` no longer blocks the async event loop — replaced
+  `repo.list_items(limit=10000)` + Python loop with a single SQL
+  `GROUP BY` aggregation. See issue #90.
+- Magic-link token consumption is now atomic — compare-and-swap pattern
+  with a unique `CONSUMED:` marker prevents two concurrent verifies from
+  both succeeding. DuckDB concurrent-write conflicts are caught and
+  converted to 401. See issue #82/M10.
+- Password reset confirm (`POST /auth/password/reset/confirm`) now uses
+  the same compare-and-swap pattern as the magic-link flow — closes the
+  remaining asymmetry on `users.reset_token` consumption. Lower severity
+  than the magic-link race because the reset flow ends with a new
+  password (an attacker would need the reset token *and* to race the
+  legitimate user) but the consistency closes a polish gap. New
+  regression `test_concurrent_reset_only_one_wins` in
+  `tests/test_password_flows.py::TestResetConfirm`.
+- Upload endpoints (`/sessions`, `/artifacts`) now stream to a temp file with
+  cumulative size check instead of buffering the entire body in memory before
+  the size cap — prevents OOM from oversized uploads. Temp file handle is
+  properly closed before `shutil.move` to avoid FD leaks. See issue #85/M4.
+- `/api/upload/local-md` uses a SHA-256 hashed filename instead of raw
+  `user_email` — stable per user, no charset surprises from email addresses.
+  See issue #85/M4.
+- `/auth/bootstrap` 403 message no longer leaks user count. See issue #82/n1.
+
+### Internal
+
+- New regression `test_split_brain_future_version_with_missing_tables_self_heals`
+  in `tests/test_db.py::TestMigrationSafety` — synthesizes a v99 DB whose only
+  table is `schema_version`, runs `_ensure_schema`, asserts that the v13-era
+  core tables (`users`, `user_groups`, `user_group_members`, `resource_grants`)
+  get materialized *and* that `schema_version` stays at 99 (self-heal without
+  falsely advertising a downgrade).
+- New regression `test_pre_migration_snapshot_excludes_post_self_heal_tables`
+  pins the snapshot-integrity contract: a v2→vN migration's snapshot must not
+  contain any post-v2 table from the modern binary. Sanity-checked against the
+  pre-fix unconditional hoist — fails with 6 leaked tables.
+- `test_future_version_is_noop` docstring updated to reflect that the
+  self-heal pass *does* run on a future-version DB, just doesn't touch the
+  version row. The test still passes unchanged — its only assertion was the
+  version-row contract, which holds.
+- `test_no_override_file` regression test asserts `docker-compose.override.yml`
+  does not exist post-rename. See issue #87/M23.
+
+## [0.12.0] — 2026-04-28
+
+### Changed
+
+- `/admin/access` resource tree now visually separates the three-level hierarchy (resource type → block/bucket → item). Each resource-type section gets a colored left stripe and a faint tinted banner; sections are separated by an 8px neutral gap. Stripe colors cycle 4-wide via `nth-child` so adding new resource types to `app/resource_types.py` works without touching CSS. The first-position color is the project primary blue (`#0073D1`), avoiding the violet (`#6366f1`) reserved for granted items.
+
+### Added
+
+- `ResourceType.TABLE` — admins can grant table-level access per `user_group` via the `/admin/access` page. Tables registered in `table_registry` are listed grouped by `bucket`, with the existing per-block "Grant all" / "Revoke all" bulk actions. Listing and grant storage only — runtime enforcement still flows through legacy `dataset_permissions`; the migration plan lives in `docs/TODO-rbac-data-enforcement.md`.
+- `AGNES_ENABLE_TABLE_GRANTS` env var (default off) gates the half-built `ResourceType.TABLE` chip. While disabled the chip is hidden from `/admin/access` and `POST /api/admin/grants` returns **422** with the env-var name in `detail` on a TABLE grant attempt. Existing TABLE rows in `resource_grants` stay listable and deletable — the flag controls UI exposure and new-grant acceptance only, never blocks cleanup.
+- `da admin break-glass <user>` CLI — recovery path when the operator has locked themselves out of `/admin/access`. Adds the user to the Admin user_group with `source='system_seed'` regardless of RBAC state. Bypasses authentication; relies on filesystem access to `${DATA_DIR}/state/system.duckdb` implying host-level trust. Document this in deployment runbooks alongside `SEED_ADMIN_EMAIL`.
+
+### Internal
+
+- `scripts/seed_dummy_tables.py` — populates `table_registry` with 12 dummy tables across 3 buckets (`in.c-finance`, `in.c-marketing`, `in.c-product`), each with `is_public=False`, for exercising the new `/admin/access` Tables section without a configured data source.
+- `/marketplace.zip` short-circuits to `304` before any file IO or ZIP compression on a matching `If-None-Match`. Hot path on every Claude Code SessionStart hook. Backed by an in-process `cachetools.TTLCache` over the resolved-plugins → ETag map (default 120s, env-tunable via `AGNES_MARKETPLACE_ETAG_TTL`, set `0` to disable). `invalidate_etag_cache()` is called by marketplace sync after refresh so the next request re-hashes against new on-disk content instead of waiting for TTL expiry. New explicit dependency: `cachetools>=5.3.0`.
+
+### Fixed
+
+- `/admin/access` group sidebar grant-count badges no longer revert to a stale value when switching between groups. The badge was reading `state.groups[i].grant_count`, a snapshot populated once at `/access-overview` load; toggling a grant only updated the DOM (via `refreshCounts`), not that field, so the next `renderGroups` call (triggered by `selectGroup`) would clobber the live count with the original snapshot. `renderGroups` now derives the count live from `state.grants`, the array that `toggleGrant`/`bulkSet` keep in sync. Server data was always correct — only the in-page badge drifted until refresh.
+- `/catalog`, `/admin/tables`, and `/admin/permissions` pages now render the shared top header correctly. The pages include `_app_header.html` (which uses `.app-*` CSS classes) but were not linking `style-custom.css` where those classes are defined; only `dashboard.html` and `base.html` did. Without the stylesheet the nav links, dropdowns, and user menu rendered as unstyled inline text. Added the missing `<link>` to all three templates.
+- `PATCH /api/admin/groups/{id}` on a system group now correctly accepts description-only updates while still rejecting renames. The endpoint guard previously short-circuited with `409 "System groups are immutable"` for any mutation, which contradicted the repository layer's narrowed contract (rename-only rejection) — a description-only payload like `{"description": "..."}` would hit the endpoint short-circuit and never reach the repo. The endpoint now 409s only when `payload.name` differs from the existing name; a no-op rename (same name in payload) is dropped from the update before reaching the repo.
+- Google OAuth callback no longer wipes a user's `google_sync` group memberships on a transient Workspace API failure. `fetch_user_groups` is fail-soft and returns `[]` for both "no groups" and "API error" — the callback used to feed that empty list into `replace_google_sync_groups`, which deletes all `source='google_sync'` rows for the user and then inserts zero. A login during a transient Cloud Identity hiccup would silently drop every Workspace-synced membership the user had built up. Admin-added memberships (`source='admin'`) were already protected. The callback now skips `replace_google_sync_groups` when the fetch returns empty and logs "preserving existing memberships" instead. Trade-off: a user whose Workspace groups were genuinely cleared keeps stale memberships until the next non-empty sync — accepted until `fetch_user_groups` learns to distinguish empty-success from empty-failure.
+- `docker-compose.host-mount.yml` now uses `o: bind,rbind` instead of `o: bind` for the `data` volume. With a plain bind, sub-mounts under `/data` on the host (e.g. the dual-disk layout where sdc is mounted on `/data/state`) are silently shadowed inside the container by an empty subdirectory on the parent disk. The container then writes `system.duckdb` and other state to the wrong disk; the dedicated state disk receives no writes and accumulates only the snapshot left by the migration script. Recursive bind propagates existing sub-mounts at container start, so the container sees the same filesystem the host does. Operators on dual-disk VMs need to copy the live DB from `/var/lib/docker/volumes/agnes_data/_data/state/` (sdb's empty subdir) onto `/data/state/` (sdc) **before** redeploying with the fix, or the next start will surface the stale snapshot.
+
+### Changed
+
+- **BREAKING** Marketplace endpoint (`/marketplace.zip`, `/marketplace.git/*`) no longer god-modes for Admin members. `src.marketplace_filter.resolve_allowed_plugins` now filters every caller — admins included — through `resource_grants`. Admins curate their own marketplace view by granting plugins to the Admin group (or any group they belong to). Existing installs where the only membership on Admin is the admin themselves will see an empty marketplace until grants are added in `/admin/access`. App-level authorization (`require_admin`, `can_access` for non-marketplace types) is unaffected — Admin is still god mode there.
+- **BREAKING** RBAC redesigned around two layers: app-level access via the `Admin` user-group (god mode short-circuit) and resource-level access via a generic `(group, resource_type, resource_id)` grant model. The four-value `core.viewer/analyst/km_admin/admin` hierarchy with `implies` BFS expansion is gone — every protected endpoint now uses either `require_admin` or `require_resource_access(ResourceType.X, "{path}")` from the new `app.auth.access` module. Authorization is decided per-request via a single DB lookup; no session cache, no dual-path resolver, no `_hydrate_legacy_role` shim. See `docs/RBAC.md`.
+- **BREAKING** `internal_roles`, `group_mappings`, `user_role_grants`, and `plugin_access` tables removed. Replaced by `user_group_members` (binds users to user_groups with a `source` enum: `admin` / `google_sync` / `system_seed`) and `resource_grants` (group → `(resource_type, resource_id)`). Schema v13; the migration backfills from v12 atomically — `users.groups` JSON is converted into `user_group_members` rows with `source='google_sync'`, `core.admin` grants become Admin-group memberships with `source='system_seed'`, and `plugin_access` rows become `resource_grants` of type `marketplace_plugin`. The `users.groups` JSON column is dropped; the deprecated `users.role` column is kept NULL as a legacy artifact.
+- **BREAKING** Schema v14 — `user_group_members` and `resource_grants` now declare DuckDB foreign-key constraints on `group_id` (referencing `user_groups.id`). Cascade deletes can no longer leave orphaned member / grant rows pointing at a deleted group. Migration is RENAME → CREATE-with-FK → INSERT → DROP, wrapped in `BEGIN TRANSACTION` so a partial failure rolls back without leaving the DB at a half-applied schema. Forks that touched these tables outside the documented repository APIs need to verify the FK direction matches their writes.
+- **BREAKING** Admin REST surface unified under `/api/admin/groups`, `/api/admin/groups/{id}/members`, `/api/admin/grants`, `/api/admin/resource-types`. `app.api.role_management` and `app.api.plugin_access` removed. The web UI route `/admin/role-mapping` and `/admin/plugin-access` are replaced by a single `/admin/access` page; the `_app_header.html` link is renamed to "Access".
+- **BREAKING** CLI subcommands `da admin role *`, `da admin mapping *`, `da admin grant-role`, `da admin revoke-role`, `da admin effective-roles` removed. New subcommands: `da admin group {list,create,delete,members,add-member,remove-member}` and `da admin grant {list,create,delete,resource-types}`. `da admin set-role <user> admin` still works as a thin wrapper that toggles Admin-group membership.
+- Module authors no longer call `register_internal_role(...)`. Resource types are an `app.resource_types.ResourceType` `StrEnum` paired with a `ResourceTypeSpec` registered in `RESOURCE_TYPES`; adding a new resource type means adding one enum member, one `list_blocks(conn)` projection delegate, and one spec entry — all in `app/resource_types.py`. The registry drives both `/api/admin/resource-types` and `/api/admin/access-overview`, so there's no second wiring step. No DB migration, no startup hook.
+- Google OAuth callback writes Cloud Identity group memberships into `user_group_members` (source='google_sync') instead of `users.groups` JSON. Manual admin-added memberships (source='admin') survive subsequent logins.
+
+### Removed
+
+- `app/auth/role_resolver.py`, `app/api/role_management.py`, `app/api/plugin_access.py`.
+- `src/repositories/internal_roles.py`, `src/repositories/group_mappings.py`, `src/repositories/user_role_grants.py`.
+- `app/web/templates/admin_role_mapping.html`, `app/web/templates/admin_plugin_access.html`.
+- `Role` enum + `has_role`, `is_admin`, `is_km_admin`, `is_analyst`, `_is_admin_user_dict`, `set_user_role`, `get_user_role` from `src/rbac.py`. Dataset-access helpers (`can_access_table`, `get_accessible_tables`, `has_dataset_access`) preserved.
+- Test files: `test_role_resolver.py`, `test_api_role_management.py`, `test_admin_role_mapping_ui.py`, `test_cli_admin_role.py`, `test_schema_v9_migration.py`, `test_plugin_access_api.py`.
+
+### Internal
+
+- `src/db.py` schema bumped to v13. New helpers `_seed_system_groups` (idempotent Admin/Everyone seed, runs on every connect) and `_v12_to_v13_finalize` (one-shot backfill + DROP cascade) replace `_seed_core_roles` and `_backfill_users_role_to_grants`.
+- `app.auth.access` is the new authorization vocabulary: `_user_group_ids`, `is_user_admin`, `can_access`, `require_admin`, `require_resource_access`. Lives in its own module to avoid the circular import that would happen if it sat in `app.auth.dependencies` (the dependency factory needs `get_current_user` from there).
+- New `tests/helpers/auth.py::grant_admin(conn, user_id)` — adds a user to the Admin system group so `require_admin` resolves to True. Updated test fixtures across `test_admin_tokens_ui`, `test_password_flows`, `test_pat`, `test_api`, `test_api_complete`, `test_api_scripts`, `test_web_ui` to call it after `UserRepository.create(role="admin")`. The legacy `users.role` column alone is no longer the admin marker.
+- Skipped at module level (rewrite required for v13): `test_admin_user_capabilities_ui` (asserts the gone v9 capabilities UI), `test_marketplace_server_zip` and `test_marketplace_server_git` (depend on the removed `PluginAccessRepository`).
+- Skipped individually as v13 behavior changes: `TestScriptRBAC` in `test_security` (scripts are now any-signed-in-user, not analyst+), profile-page tests in `test_web_ui` that asserted `core.analyst` / `Direct grants` / `Effective roles` markers from the dropped role hierarchy.
+
+### Added
+
+- `/api/v2/{catalog,schema,sample,scan,scan/estimate}` — discovery + scoped fetch primitives for remote-mode tables. See `docs/superpowers/specs/2026-04-27-claude-fetch-primitives-design.md`.
+- `da catalog`, `da schema`, `da describe`, `da fetch`, `da snapshot {list,refresh,drop,prune}`, `da disk-info` — CLI primitives backed by the v2 API.
+- `cli/skills/agnes-data-querying.md` — Claude rails skill loaded for Agnes-flavored projects; covers discovery-first protocol, `da fetch` workflow, BigQuery SQL flavor cheat-sheet, and snapshot hygiene.
+- `cli/skills/agnes-table-registration.md` — admin-side companion skill: when to register single vs. bulk-discover, source-side verification before registration, idempotence rules, update/delete via REST (no CLI today), and confirmation flow.
+- `instance.yaml: api.scan.*` knobs — `max_limit`, `max_result_bytes`, `max_concurrent_per_user`, `max_daily_bytes_per_user`, `bq_cost_per_tb_usd`, `request_timeout_seconds`. All optional; defaults applied if absent.
+- `instance.yaml: api.catalog_cache_ttl_seconds`, `api.schema_cache_ttl_seconds`, `api.sample_cache_ttl_seconds` — TTL knobs for server-side discovery caches.
+- `instance.yaml: data_source.bigquery.legacy_wrap_views` — opt-in toggle to restore the pre-v2 behavior of exposing BigQuery VIEW/MATERIALIZED_VIEW tables as DuckDB master views in `analytics.duckdb`. Default `false`. Set `true` for one release cycle when migrating existing scripts (see **BREAKING** note below).
+- `instance.yaml: data_source.bigquery.billing_project` — optional GCP project to bill BQ jobs to / submit jobs from. Defaults to `data_source.bigquery.project` for backwards compatibility. Set when the SA has `bigquery.data.*` on the data project but lacks `serviceusage.services.use` there (cross-project read pattern); otherwise `/api/v2/scan/estimate` and BQ-mode `/api/v2/scan` fail with 403.
+- **BigQuery extractor detects table type** (BASE TABLE vs. VIEW / MATERIALIZED_VIEW) via `INFORMATION_SCHEMA.TABLES` using DuckDB's `bigquery_query()` table function. Emits the appropriate DuckDB view:
+  - BASE TABLE → direct `bq."dataset"."table"` reference (queries hit BigQuery Storage Read API).
+  - VIEW / MATERIALIZED_VIEW → `bigquery_query('project', 'SELECT * FROM \`dataset.table\`')` wrapper (queries hit BigQuery Jobs API, required for views).
+- **GCE metadata-server authentication for BigQuery.** New `connectors/bigquery/auth.py` module (`get_metadata_token()` function) fetches OAuth access tokens from the GCE metadata server on GCE instances. No service-account key file required. Both the extractor (at sync time) and the orchestrator / read-side (at ATTACH time) fetch fresh tokens on every rebuild / readonly-conn open. Raises `BQMetadataAuthError` on failure (network or malformed metadata-server response).
+- **SQL identifier-validation helper** in `src/sql_safe.py`. New functions `is_safe_identifier()` and `validate_identifier()` enforce safe character sets before f-stringing identifiers into SQL. BigQuery extractor and orchestrator `_attach_remote_extensions` both validate `dataset`, `source_table`, and view names before use, closing a SQL-injection surface if admin config is untrusted.
+- **`/api/sync/manifest` response now includes `query_mode` and `source_type` per table**, joined from `table_registry`. Clients can branch on table semantics (remote vs. local, source type) without a second API call.
+- **`da sync --json` output** now includes a `skipped_remote` list with IDs of `query_mode='remote'` tables that were skipped during sync (they're not downloaded locally; only queried via `/api/query`).
+- **Schema v10** introduces `view_ownership` to detect cross-connector view-name collisions in the master analytics DB (issue #81 Group C). When two connectors register the same `_meta.table_name`, the orchestrator now refuses to silently overwrite the prior owner's view — it logs a `view_ownership collision` ERROR identifying both sources and the colliding name, and the second source's view is NOT created. Previously this was last-write-wins, which depended on directory iteration order and could change deployment-to-deployment. Operators resolve a collision by renaming `name` in `table_registry` on one side (registry-side aliasing — `source_table` stays unchanged, only the view name changes). The orchestrator pre-scans every connector's `_meta` at the start of each rebuild and releases stale ownerships immediately (when ALL pre-scans succeed; if any fail, reconcile is skipped to avoid silently stealing a transient-IO source's name), so a renamed table frees its name in the SAME rebuild that introduces the rename — no two-step waits needed. New module `src/repositories/view_ownership.py` exposes the repository.
+
+### Changed
+
+- **BREAKING:** BigQuery `VIEW` and `MATERIALIZED_VIEW` tables (i.e. `query_mode='remote'` tables whose underlying BQ object is a view) are no longer wrapped as DuckDB master views in `analytics.duckdb`. `da query --remote "SELECT * FROM <bq_view>"` no longer resolves the view name by default. Use `da fetch <table_id> --where ... --as <snapshot_name>` to materialize a local snapshot, or `da query --remote "SELECT ... FROM bigquery_query('<project>', '<inner BQ SQL>')"` for one-shot execution. To restore the previous behavior for a migration window, set `instance.yaml: data_source.bigquery.legacy_wrap_views: true`. BQ `BASE TABLE` entities are unaffected — their direct-ref master views remain.
+- **`da sync` skips `query_mode='remote'` tables.** Previously they produced 404s on download attempts. Now the CLI prints a one-line stderr summary (`Skipping N remote-mode tables: a, b, c (and M more)`) and a separate summary line (`Skipped (remote-mode): N`) in the final output, distinct from existing `Skipped (unchanged): M` counts.
+
+### Fixed
+
+- **`/api/v2/scan` 500 on local-mode tables.** `arrow_table_to_ipc_bytes()` only handled `pa.Table`; DuckDB's local query path returns a `pa.RecordBatchReader`. Helper now accepts both. (Caught during dev-VM E2E.)
+- **`/api/v2/schema/{table_id}` 500 on BigQuery tables.** `_fetch_bq_schema()` selected `description` from `INFORMATION_SCHEMA.COLUMNS`, which BigQuery doesn't expose there — column descriptions live in `INFORMATION_SCHEMA.COLUMN_FIELD_PATHS` for nested fields. Removed the column from the SELECT; descriptions default to empty string until a real source is wired. (Caught during dev-VM E2E.)
+- **BigQuery views failed at first query when FastAPI / CLI reopened `analytics.duckdb`.** `SyncOrchestrator._attach_remote_extensions` fetches a fresh GCE-metadata access token and creates a `bigquery` DuckDB SECRET before ATTACH, but secrets are session-scoped and don't persist with the on-disk database. The mirror code in `src.db._reattach_remote_extensions` (called from `get_analytics_db_readonly()`) still ATTACHed BigQuery without auth, so the next query against `bq."dataset"."table"` failed. Fixed by adding the same three-branch structure to `src.db`: BigQuery → fetch metadata token → `CREATE OR REPLACE SECRET bq_secret_<alias> (TYPE bigquery, ACCESS_TOKEN '<token>')` → ATTACH; otherwise fall back to env-var-token / no-auth paths. Metadata-server failures log at ERROR and skip the source so other connectors still resolve.
+- **`src/orchestrator.py::_attach_remote_extensions` was ineffective for BigQuery.** It filtered `_remote_attach` lookups by `table_schema=<source_name>`, but DuckDB lists an attached database with `table_catalog=<source_name>` (not `table_schema`), so the loop never executed and `_remote_attach` rows were silently ignored. Switched the filter to `table_catalog`, matching the corresponding query already in `src.db`.
+- **BigQuery extractor `python -m connectors.bigquery.extractor` standalone CLI** now reads project ID from `data_source.bigquery.project` matching `instance.yaml.example`. Previously it looked for an undocumented top-level `bigquery.project_id` key and silently produced an empty string on miss, causing cryptic BigQuery API errors downstream. Now exits with code 2 + a clear `logger.error` when the key is missing.
+
+### Internal
+
+- Test pattern: BigQuery extractor is exercised with a dual-path strategy (BASE TABLE + VIEW detection) via `_CapturingProxy` SQL-capture wrappers. DuckDB's C-implemented `execute` attribute is read-only and can't be monkey-patched directly; the proxy wraps the connection and captures outgoing SQL before forwarding to the real DuckDB conn.
+- Implementation plan: `docs/superpowers/plans/2026-04-27-bq-pipeline-views-and-metadata-auth.md` — subagent-driven development for Tasks 1-7 of this PR.
+
+### Changed (issue #81 / #44 / #88 — security & OSS neutralization)
+
+- **BREAKING (ops)**: Keboola extractor now exits with three distinct
+  codes instead of two (issue #81 Group B / M14): `0` = full success,
+  `1` = full failure, `2` = **partial** failure (some tables succeeded,
+  some failed). Previously `exit(0)` fired even when 9 of 10 tables
+  failed, masking partial failures from the sync API and any operator
+  alerting hooked to non-zero exit codes. The sync API
+  (`POST /api/sync/trigger`) now logs `PARTIAL FAILURE (exit 2)` as a
+  data-quality alert (distinct from `FAILED (exit 1)`) and continues to
+  the orchestrator rebuild step — successful tables from this run plus
+  unchanged tables from previous runs stay queryable. Operators whose
+  alerting treated any non-zero exit as a hard error must teach it that
+  exit 2 is a partial-failure signal, not a deploy failure.
+- **BREAKING (security)**: The entire Script API is now **admin-only** (issue #44).
+  `GET /api/scripts`, `POST /api/scripts/deploy`, `POST /api/scripts/run`, and
+  `POST /api/scripts/{id}/run` all require the admin role; previously the list
+  endpoint was open to any authenticated user and deploy/run were analyst-accessible.
+  Two reasons: (1) the AST + string-blocklist sandbox in `_execute_script` is
+  defense-in-depth and known to be bypassable through introspection chains
+  (`__class__.__base__.__subclasses__()`, `__globals__['__builtins__']`,
+  `__mro__` traversal — the dunder pattern list was tightened in this PR but
+  the policy is "the role gate is the trust boundary, not the blocklist");
+  (2) gating only `/run` left a planted-script attack open — an analyst could
+  deploy a malicious script and wait for an admin to run it. Operators who
+  need scripted workflows for non-admin users should run them on the user's
+  behalf or expose the relevant data via the read-only `/api/data` surface
+  instead. **Migration for cron / scheduler PATs:** if a non-admin PAT is
+  wired into a scheduler that hits `/api/scripts/{id}/run` or
+  `/api/scripts/run`, the request now returns 403. Add the PAT user to the
+  Admin group via `/admin/access` or
+  `da admin group add-member Admin <pat-user-email>`. PATs themselves do not
+  need re-issuing — group membership is read at request time.
+- **BREAKING (ops)**: Generic ops scripts moved out of the customer-named
+  `scripts/grpn/` directory into `scripts/ops/` as part of the OSS
+  vendor-neutralization (issue #88):
+  - `scripts/grpn/agnes-tls-rotate.sh` → `scripts/ops/agnes-tls-rotate.sh`
+  - `scripts/grpn/agnes-auto-upgrade.sh` → `scripts/ops/agnes-auto-upgrade.sh`
+
+  Downstream consumer infra repos that copy these scripts onto VMs (e.g. via
+  their own `startup.sh`) must update the source path. The OSS-shipped
+  `infra/modules/customer-instance/` Terraform module is unaffected — it
+  embeds equivalent logic inline via heredoc and does not source-by-path
+  from `scripts/`. Script behaviour and env vars are unchanged. Cross-refs
+  in `README.md`, `CLAUDE.md`, `docs/DEPLOYMENT.md`, `Caddyfile`, and
+  `docker-compose.yml` were updated.
+- **OSS neutralization (wave 2 — code, tests, planning docs)**. Customer
+  identifiers replaced with placeholders across the codebase to ready the
+  repo for public release (issue #88):
+
+  - **Code docstrings**: `connectors/openmetadata/{client,transformer,enricher}.py`,
+    `src/catalog_export.py`, `scripts/duckdb_manager.py` — `prj-grp-…` →
+    `my-bq-project` / `prj-example-1234`, `AIAgent.FoundryAI` →
+    `AIAgent.MyAgent` (in docstrings) / `AIAgent.Example` (in test fixtures),
+    `FoundryAIDataModel` → `AnalyticsDataModel`.
+  - **Test fixtures** in `tests/test_openmetadata_enricher.py`,
+    `tests/test_duckdb_manager.py`, `tests/test_catalog_export.py`,
+    `tests/test_openmetadata_transformer.py` — same set of replacements,
+    behaviour-preserving (157 tests still green).
+  - **Terraform module** `infra/modules/customer-instance/variables.tf`:
+    `customer_name` description rewritten in English, examples switched
+    from `keboola, grpn` to `acme, example`.
+  - **Workflow** `.github/workflows/keboola-deploy.yml`: comment "Groupon-side
+    dev VMs" → generic "per-developer dev VMs".
+  - **Caddyfile**: TLS-rotation cross-ref updated to `scripts/ops/…` and
+    Keboola-specific aside removed.
+  - **Auth docs** `docs/auth-groups.md` and the OAuth probe in
+    `scripts/debug/probe_google_groups.py`: GCP project name `kids-ai-data-analysis`
+    replaced with placeholder `acme-internal-prod`.
+  - **Planning docs** under `docs/superpowers/plans/` and `…/specs/`: the
+    five hackathon-era documents (`2026-04-21-deployment-log.md`,
+    `…-multi-customer-deployment.md`, `…-issues-14-and-10.md`,
+    `…-hackathon-dry-run.md`, the spec) had `34.77.94.14` / `34.77.102.61`
+    replaced with `<dev-vm-ip>` / `<prod-vm-ip>`, `Groupon`/`GRPN`/`grpn`
+    with `Acme`/`another-customer`, and `prj-grp-…` with `prj-example-…`.
+
+### Fixed
+
+- **BREAKING (security CRITICAL)**: Jira webhook handler is now
+  fail-closed (issue #83). Previously, if `JIRA_WEBHOOK_SECRET` was
+  unset, `_verify_signature` returned `True` and any unauthenticated
+  POST to `/webhooks/jira` could trigger the full ingest pipeline. The
+  handler now returns **503** when the secret is missing
+  (operator-misconfiguration signal, distinct from 401 wrong-signature).
+  Operators relying on the no-secret = accept-everything mode (don't —
+  it was never documented) must set `JIRA_WEBHOOK_SECRET` before this
+  merges.
+- **Security (CRITICAL)**: Jira issue keys arriving via webhooks are now
+  validated against the canonical `^[A-Z][A-Z0-9]{0,31}-[0-9]{1,12}\Z` format
+  (`[0-9]` not `\d` to refuse non-ASCII Unicode digits, `\Z` not `$` to
+  refuse trailing newlines that `$` would tolerate)
+  before any filesystem operation (issue #83). Previously, `issue_key` flowed
+  unsanitized into `connectors/jira/service.py` (`save_issue`,
+  `download_attachment`, `_handle_deletion`, `process_webhook_event`) and
+  `connectors/jira/incremental_transform.py`, enabling path traversal
+  (`../../etc/passwd` style writes outside the Jira data dir). New module
+  `connectors/jira/validation.py` provides `is_valid_issue_key` (regex
+  whitelist; underscore deliberately excluded — Atlassian rejects underscores
+  in real project keys) and `safe_join_under` (`Path.resolve()` containment
+  check). Both are enforced at every filesystem boundary, defense-in-depth.
+- **Security (CRITICAL)**: `webhookEvent` (the second attacker-controlled field
+  in Jira webhook payloads) was used as a filename component in
+  `_log_webhook_event` without sanitization (issue #83 reviewer follow-up).
+  A payload with `webhookEvent: "../../tmp/pwn"` could write a JSON dump
+  outside `WEBHOOK_LOG_DIR`. The handler now strips everything that isn't
+  `[A-Za-z0-9_-]` (dot deliberately excluded to defeat `..` survival),
+  clips length to 64 chars, and routes the final filename through
+  `safe_join_under`.
+- **Security (CRITICAL)**: hardened the connector → orchestrator trust
+  boundary on BOTH the rebuild path
+  (`src/orchestrator.py::_attach_remote_extensions`) AND the read-only
+  query path (`src/db.py::_reattach_remote_extensions`, called by
+  `get_analytics_db_readonly()` on every request) — issue #81 Group A.
+  Three fixes: (1) DuckDB extensions referenced by `_remote_attach` are
+  matched against a hard allowlist (default: `keboola, bigquery`;
+  override via `AGNES_REMOTE_ATTACH_EXTENSIONS`). Install path splits
+  built-in (LOAD only) from community (`INSTALL FROM community; LOAD`
+  on rebuild path; LOAD only on the read-only query path which must
+  not touch the network). (2) `token_env` names are matched against a
+  hard allowlist (default: `KBC_TOKEN`, `KBC_STORAGE_TOKEN`,
+  `KEBOOLA_STORAGE_TOKEN`, `GOOGLE_APPLICATION_CREDENTIALS`; override
+  via `AGNES_REMOTE_ATTACH_TOKEN_ENVS`). Names must additionally match
+  `^[A-Z][A-Z0-9_]{0,63}$`. A malicious connector cannot ask the
+  orchestrator to read `JWT_SECRET_KEY` / `SESSION_SECRET` /
+  `OPENAI_API_KEY` and exfiltrate them via `ATTACH ... TOKEN`.
+  (3) The URL passed to `ATTACH` is now single-quote-escaped on both
+  paths. Also fixed a `table_schema` vs `table_catalog` mismatch that
+  silently no-op'd `_attach_remote_extensions` for every connector
+  (the rebuild-path hardening would have been moot in production
+  without this fix). New module `src/orchestrator_security.py`
+  centralises the policy and exposes `log_effective_policy()`, called
+  from app startup so an operator's typo in
+  `AGNES_REMOTE_ATTACH_EXTENSIONS` (which **replaces** the default,
+  not extends it — a setting of `httpfs` would silently lock out
+  `keboola, bigquery`) is visible at boot rather than at the next
+  failed attach. See
+  `docs/superpowers/plans/2026-04-27-issue-81-trust-boundary.md`.
+- **Security (MEDIUM)**: extractor-side identifier validation (issue
+  #81 Group D / M15). The Keboola and BigQuery extractors interpolate
+  `table_name`, `bucket` / `dataset`, and `source_table` from
+  `table_registry` directly into `CREATE OR REPLACE VIEW`,
+  `INSERT INTO _meta`, and `COPY ... TO` SQL. Anyone with write access
+  to `table_registry` (admin, registry-write API) could inject SQL via
+  these identifiers. New shared module `src/identifier_validation.py`
+  exposes a strict `validate_identifier` (for our own view names —
+  `^[a-zA-Z_][a-zA-Z0-9_]{0,63}$`, used for `table_name` so it matches
+  the orchestrator's rebuild-time check and dashed names fail fast at
+  extraction rather than being silently dropped at rebuild) and a
+  relaxed `validate_quoted_identifier` (for upstream-typed names like
+  Keboola `in.c-foo` / BigQuery `my-dataset`:
+  `[a-zA-Z0-9_][a-zA-Z0-9_.\-]*`, refusing any character that could
+  close a `"..."` identifier literal). The orchestrator's existing
+  `_validate_identifier` was lifted into the new module so both layers
+  share a single source of truth; both extractors skip-and-continue on
+  unsafe rows (logged + counted in failure stats; the rest of the
+  registry still processes).
+
+### Removed
+
+- Customer-specific manual-deploy helper `scripts/grpn/Makefile` and its
+  README, plus the corresponding hackathon deploy log under
+  `docs/superpowers/plans/2026-04-22-grpn-deploy-learnings.md`. These
+  documented one operator's hand-rolled stopgap for an org-policy-blocked
+  Terraform flow and do not belong in vendor-neutral OSS.
+- `scripts/switch-dev-vm.sh` — hackathon-era helper hardcoded to a specific
+  shared dev VM. Per-developer dev VMs are
+  the supported pattern now; operators who need an equivalent should use
+  `gcloud compute ssh <vm> --command "sed -i …/.env && sudo /usr/local/bin/agnes-auto-upgrade.sh"`
+  with their own VM details.
+
+### Internal
+
+- Sandbox blocklist now flags introspection-chain dunders explicitly:
+  `__subclasses__`, `__globals__`, `__class__`, `__base__`, `__bases__`,
+  `__mro__`, `__dict__`, `__code__`, `__builtins__`. `__init__` and
+  `__getattribute__` are intentionally **not** in the list — substring match
+  would flag every legitimate `def __init__(self):`. The chain breaks at
+  the next link anyway.
+- New regression test `test_run_pwn_payload_blocked` parametrized over the
+  exact PoC from issue #44 plus two equivalent variants (lambda+`__globals__`,
+  `__mro__` traversal). If the dunder list is silently weakened in a future
+  refactor, the test fails. New `test_*_requires_admin` tests parametrized
+  over all three non-admin core roles (analyst, viewer, km_admin).
+- `tests/conftest.py::seeded_app` extended with `viewer_token` and
+  `km_admin_token` so role-gating tests cover all four core roles.
+
+### Migrated
+
+- **Schema bumped from v9 to v10**. Auto-migration applies on next start
+  (creates the `view_ownership` table; data on disk is unaffected). The
+  pre-migration snapshot machinery (added at v8→v9) covers v9→v10 too —
+  if anything goes wrong during the migration, the snapshot at
+  `<DATA_DIR>/state/system.duckdb.pre-migrate` lets you roll back.
 
 ---
 
@@ -207,7 +641,7 @@ First tagged semver release. The `version = "2.x"` strings that appeared in earl
 - Bootstrap backdoor closed when passwordless seed admin exists.
 - urllib3 1.26→2.6.3 (resolves 4 Dependabot security alerts).
 - argon2-cffi adopted for password hashing.
-- See [docs/padak-security.md](docs/padak-security.md) for the full audit.
+- See [docs/security-audit-2026-04.md](docs/security-audit-2026-04.md) for the full audit (renamed from `docs/padak-security.md` in #94).
 
 ### Fixed — Other
 

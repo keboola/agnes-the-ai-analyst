@@ -33,7 +33,7 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compos
     --profile tls up -d
 ```
 
-See `docs/DEPLOYMENT.md` → **TLS** for cert provisioning + `scripts/grpn/agnes-tls-rotate.sh` (daily refetch from `TLS_FULLCHAIN_URL`, `SIGUSR1` reload on diff, no-op when unchanged). The infra repo's `startup.sh` installs this as a systemd timer automatically.
+See `docs/DEPLOYMENT.md` → **TLS** for cert provisioning + `scripts/ops/agnes-tls-rotate.sh` (daily refetch from `TLS_FULLCHAIN_URL`, `SIGUSR1` reload on diff, no-op when unchanged). The infra repo's `startup.sh` installs this as a systemd timer automatically.
 
 ## Project Structure
 
@@ -81,13 +81,17 @@ CREATE TABLE _remote_attach (
     alias     VARCHAR,  -- DuckDB alias used in views, e.g. 'kbc'
     extension VARCHAR,  -- Extension name, e.g. 'keboola'
     url       VARCHAR,  -- Connection URL
-    token_env VARCHAR   -- Env-var name holding the auth token (NOT the token itself)
+    token_env VARCHAR   -- Env-var name holding the auth token, OR empty for
+                        -- extensions with built-in auth (e.g. BigQuery uses the
+                        -- GCE metadata server — see `connectors/bigquery/auth.py`).
 );
 ```
 
-The orchestrator reads this table, installs/loads the extension, reads the token from the
-environment, and ATTACHes the external source. Views referencing `kbc."bucket"."table"` then
-resolve correctly. This mechanism is generic — any connector can use it.
+The orchestrator reads this table, installs/loads the extension, fetches the token
+(via `token_env` lookup, or via the extension-specific auth path when `token_env=''`),
+creates a session-scoped DuckDB SECRET when the extension requires one (BigQuery), and
+ATTACHes the external source. Views referencing `kbc."bucket"."table"` then resolve correctly.
+This mechanism is generic — any connector can plug in.
 
 The SyncOrchestrator scans `/data/extracts/*/extract.duckdb`, ATTACHes each into master `analytics.duckdb`, and creates views.
 
@@ -160,6 +164,171 @@ Before computing any business metric, look up the canonical definition:
 
 Never invent metric calculations — always use the canonical definitions.
 
+## Querying Agnes data — agent rails
+
+When asked about ANY data in Agnes, follow this protocol.
+
+### Discovery first
+
+Before writing ANY query against a table, run:
+
+    da catalog --json | jq <filter>     # know what's available
+    da schema <table>                   # learn columns + types
+    da describe <table> -n 5            # see real values for shape
+
+NEVER write `SELECT * FROM <table>` blindly. For local-mode tables it's
+wasteful; for remote-mode tables it can blow up at 225M rows.
+
+### Choose the right tool
+
+Tables in `da catalog` have a `query_mode`:
+
+- **`local`**: data is on the laptop as parquet (synced via `da sync`).
+  Query directly with `da query "SELECT … FROM <table>"`.
+
+- **`remote`** (typically BigQuery): the parquet does NOT exist on the laptop.
+  You MUST either:
+  1. **`da fetch`** a filtered subset → query the local snapshot, OR
+  2. **`da query --remote`** for one-shot server-side execution, OR
+  3. **`da query --register-bq`** for hybrid joins (rarely needed).
+
+### `da fetch` workflow (preferred for remote tables)
+
+    # 1. estimate first
+    da fetch web_sessions_example \
+        --select event_date,country_code,session_id \
+        --where "event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY) 
+                 AND country_code = 'CZ'" \
+        --estimate
+    # → "estimated_scan_bytes: 4.2 GB, result: ~250k rows, 12 MB locally"
+
+    # 2. if reasonable, fetch
+    da fetch web_sessions_example ... --as cz_recent
+
+    # 3. query the local snapshot
+    da query "SELECT event_date, COUNT(*) FROM cz_recent GROUP BY 1 ORDER BY 1"
+
+### Heuristics for `da fetch`
+
+- ALWAYS list specific columns in `--select`. Avoid implicit SELECT *.
+- ALWAYS include a `--where` for remote tables; otherwise add `--limit`.
+- ALWAYS run `--estimate` first when:
+  - You're not sure of the data shape
+  - The table has `partition_by` or `clustered_by` set (per `da schema`)
+  - The fetch could plausibly exceed 1 GB local bytes
+- Reuse `da snapshot list` before fetching — if a snapshot covers your
+  query already, skip the fetch.
+
+### BigQuery SQL flavor for `--where`
+
+For `source_type=bigquery` (per `da catalog`):
+
+- Date literal: `DATE '2026-01-01'` (NOT `'2026-01-01'::date`)
+- Timestamp literal: `TIMESTAMP '2026-01-01 00:00:00 UTC'`
+- Now: `CURRENT_DATE()`, `CURRENT_TIMESTAMP()`
+- Date arithmetic: `DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)`
+- Regex: `REGEXP_CONTAINS(col, r'pattern')` (raw string!)
+- NULL: `col IS NOT NULL` (standard)
+- Cast: `CAST(x AS INT64)` (NOT `INT`)
+
+For `source_type=keboola` / `source_type=jira` (local), use DuckDB SQL flavor
+in your `da query` calls — there's no `--where` on local since fetch is implicit.
+
+### Snapshot hygiene
+
+- Reuse snapshots across questions in the same conversation.
+- Use descriptive names: `cz_recent`, `orders_q1_us`, `sessions_today`.
+- Drop with `da snapshot drop <name>` when done with a topic.
+- `da disk-info` to see total cache size.
+
+### When NOT to use `da fetch`
+
+- Single aggregate on remote table (`SELECT COUNT(*) FROM remote`):
+  use `da query --remote "SELECT COUNT(*) FROM web_sessions_example"`.
+  No materialization needed; cheap.
+- Throwaway exploration with raw BQ syntax: `da query --remote`.
+- Cross-table JOIN with both tables remote: combine `da fetch` for one
+  side + `da query --remote` for the other; full cross-remote JOIN
+  requires more thought (see #101 for design space).
+
+## Marketplace Repositories
+
+Admin-managed git repos cloned nightly to `${DATA_DIR}/marketplaces/<slug>/`
+so FastAPI can read their contents from disk.
+
+- Register via `/admin/marketplaces` (admin UI) or `POST /api/marketplaces`.
+- Scheduler calls `src.marketplace.sync_marketplaces()` in-process at `daily 03:00` UTC — no HTTP round-trip to the main app.
+- Manual re-sync from the UI ("Sync now") hits `POST /api/marketplaces/{id}/sync`.
+- PATs for private repos persist to `${DATA_DIR}/state/.env_overlay` (chmod 600) as `AGNES_MARKETPLACE_<SLUG>_TOKEN`. DuckDB stores only the env-var name (`token_env`), never the secret.
+- Registry lives in DuckDB table `marketplace_registry` (schema v9).
+- After each successful sync, `src/marketplace.py` parses `.claude-plugin/marketplace.json`
+  from the cloned repo and caches the plugin list in `marketplace_plugins`
+  (keyed by `(marketplace_id, plugin_name)`).
+- `src/marketplace.py` handles clone/fetch/reset with token redaction in any surfaced error message.
+
+## Access control (v13)
+
+Two layers, no role hierarchy. Full reference: [`docs/RBAC.md`](docs/RBAC.md).
+
+- `user_groups` — named groups. Two seeded as `is_system=TRUE` at startup:
+  `Admin` (god-mode short-circuit on every authorization check) and
+  `Everyone` (auto-membership for every user).
+- `user_group_members` — `(user_id, group_id, source)`. `source ∈
+  {admin, google_sync, system_seed}` so each writer only manipulates its own
+  rows; Google's nightly DELETE+INSERT does not clobber admin-added members.
+- `resource_grants` — generic `(group, resource_type, resource_id)` triple.
+  Replaces `plugin_access` from v12; the same shape now covers any future
+  entity-scoped grant (datasets, knowledge categories, …).
+
+Resource types are an `app.resource_types.ResourceType` `StrEnum` paired with
+a `ResourceTypeSpec` registered in `RESOURCE_TYPES` — adding a new one is one
+enum member, one `list_blocks(conn)` delegate (projects domain tables into the
+`(block → items)` shape the /admin/access tree renders), and one spec entry.
+No DB migration, no second wiring step. Endpoints gate with either
+`require_admin` (app-level) or `require_resource_access(ResourceType.X,
+"{path}")` (entity-level), both from `app.auth.access`.
+
+Admin UI: `/admin/access`. CLI: `da admin group {list,create,delete,members,
+add-member,remove-member}` and `da admin grant {list,create,delete}`.
+
+## Claude Code marketplace endpoint
+
+Agnes serves a single aggregated Claude Code marketplace over two channels,
+both gated by PAT auth and filtered per caller:
+
+- `GET /marketplace.zip` — deterministic ZIP download with `ETag` /
+  `If-None-Match` (304 when content unchanged). Consumed by a client-side
+  SessionStart hook.
+- `GET /marketplace.git/*` — git smart-HTTP (dulwich via a2wsgi). Registered
+  in Claude Code once, then Claude Code owns the clone/fetch cycle.
+
+Auth: ZIP uses `Authorization: Bearer <PAT>`. Git uses HTTP Basic where the
+password field carries the PAT (`https://x:<PAT>@host/marketplace.git/`) —
+git CLI does not speak Bearer.
+
+Content: filtered via `src.marketplace_filter.resolve_allowed_plugins` which
+joins `resource_grants ↔ marketplace_plugins` (matching
+`mp.marketplace_id || '/' || mp.name = rg.resource_id`) scoped to the
+caller's `user_group_members`. Admin is treated as a regular group here —
+no god-mode shortcut for the marketplace feed, so admins curate their own
+view by granting plugins to the Admin group (or any group they belong to).
+Plugin names are prefixed with marketplace slug (`<slug>-<plugin>`) so two
+marketplaces with the same plugin name don't collide in the aggregated view.
+
+Cache: content-addressed bare repos at `${DATA_DIR}/marketplaces/git-cache/`
+keyed by sha256(filtered content). Two users with the same RBAC view share
+one repo; content change → new repo next to the old one. No TTL / prune yet.
+
+User registration inside Claude Code:
+
+```
+# ZIP channel (typically via a SessionStart hook that unpacks into ./marketplace/)
+curl -H "Authorization: Bearer $AGNES_PAT" https://agnes.example.com/marketplace.zip
+
+# Git channel — one-time registration
+/plugin marketplace add https://x:$AGNES_PAT@agnes.example.com/marketplace.git/
+```
+
 ## Hybrid Queries (BigQuery + Local)
 
 For tables too large to sync locally, use hybrid queries that JOIN local data with on-demand BigQuery results:
@@ -189,11 +358,9 @@ Auth providers in `app/auth/` (FastAPI-based):
 - **Email**: Email magic link (itsdangerous token)
 - **Desktop**: JWT for API
 
-### RBAC (role-based access control)
+### RBAC
 
-Three-layer model: external Cloud Identity groups → admin-curated `group_mappings` → internal roles (`internal_roles` table) → resolved into `session["internal_roles"]` at sign-in OR fetched from `user_role_grants` per request for PAT/headless callers. `core.*` roles (viewer/analyst/km_admin/admin) carry the legacy hierarchy via `implies` JSON; module authors register their own keys (e.g. `corporate_memory.curator`) at import time and gate endpoints with `Depends(require_internal_role("<key>"))`.
-
-**Contributors building a new module or capability — read [`docs/RBAC.md`](docs/RBAC.md) before adding endpoints.** It covers: picking a role key (naming convention, namespace), `register_internal_role` lifecycle, gating with `require_internal_role` vs. the `require_admin` / `require_role(Role.X)` thin wrappers, declaring implies hierarchies inside your module, the `_hydrate_legacy_role` shim that keeps `user["role"]` reads working, and the admin workflows (UI / CLI / REST) for binding groups and granting roles. Quickstart sections by audience: operator, end-user, module author.
+See **[Access control (v13)](#access-control-v13)** above and [`docs/RBAC.md`](docs/RBAC.md) for the full reference. TL;DR for module authors: gate endpoints with `Depends(require_admin)` for app-level mutations or `Depends(require_resource_access(ResourceType.X, "{path}"))` for entity-scoped grants. Add a new resource type by extending the `ResourceType` `StrEnum` and registering a `ResourceTypeSpec` (with a `list_blocks` projection delegate) in `app/resource_types.py`.
 
 ## Release & deploy workflows
 
@@ -238,7 +405,7 @@ Module sets `lifecycle { ignore_changes = [metadata_startup_script] }` on `googl
 ## Key Implementation Details
 
 ### DuckDB Schema (src/db.py)
-- Schema v12 with auto-migration v1→…→v12 (v5 adds `users.active`, v6 adds `personal_access_tokens`, v7 adds `personal_access_tokens.last_used_ip`, v8 adds `internal_roles` + `group_mappings`, v9 adds `user_role_grants` + `internal_roles.implies/is_core` and seeds `core.*` hierarchy, v10 adds `knowledge_items` context-engineering columns incl. `audience`, `is_personal`, `sensitivity` + `knowledge_contradictions` + `session_extraction_state`, v11 adds `verification_evidence`, v12 adds `users.groups`)
+- Schema v13 with auto-migration v1→…→v13 (v5 adds `users.active`, v6 adds `personal_access_tokens`, v7 adds `personal_access_tokens.last_used_ip`, v8/v9 added the legacy internal_roles/role-grants tables, v10 added `view_ownership` for cross-connector view-name collision detection (issue #81 Group C), v11 added marketplace_registry + marketplace_plugins + user_groups + plugin_access, v12 added users.groups JSON + user_groups.is_system, **v13 replaces internal_roles/group_mappings/user_role_grants/plugin_access with user_group_members + resource_grants and drops users.groups JSON** — see CHANGELOG and docs/RBAC.md)
 - `table_registry`: id, name, source_type, bucket, source_table, query_mode, sync_schedule, etc.
 - `sync_state`, `sync_history`: track extraction progress
 - `users`, `dataset_permissions`, `audit_log`: auth + RBAC

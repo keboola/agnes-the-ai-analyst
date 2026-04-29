@@ -11,8 +11,11 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 
 from app.auth.jwt import create_access_token
-from app.auth.dependencies import _get_db, _hydrate_legacy_role
+from app.auth.access import is_user_admin
+from app.auth.dependencies import _get_db
+from src.db import SYSTEM_ADMIN_GROUP
 from src.repositories.users import UserRepository
+from src.repositories.user_group_members import UserGroupMembersRepository
 
 logger = logging.getLogger(__name__)
 
@@ -65,10 +68,6 @@ async def create_token(
     user = repo.get_by_email(request.email)
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
-    # v9: legacy users.role is NULL for migrated users; hydrate from grants
-    # before TokenResponse (role: str) or create_access_token reads it.
-    # Without this, POST /auth/token raises Pydantic ValidationError → 500.
-    user = _hydrate_legacy_role(user, conn)
     if not bool(user.get("active", True)):
         _audit(user["id"], "login_failed", result="deactivated")
         raise HTTPException(status_code=401, detail="Account deactivated")
@@ -93,17 +92,18 @@ async def create_token(
             detail="This account uses external authentication. Please log in via your configured provider.",
         )
 
+    role_label = "admin" if is_user_admin(user["id"], conn) else (user.get("role") or "user")
     token = create_access_token(
         user_id=user["id"],
         email=user["email"],
-        role=user["role"],
+        role=role_label,
     )
     _audit(user["id"], "token_created")
     return TokenResponse(
         access_token=token,
         user_id=user["id"],
         email=user["email"],
-        role=user["role"],
+        role=role_label,
     )
 
 
@@ -134,7 +134,7 @@ async def bootstrap(
     if users_with_password:
         raise HTTPException(
             status_code=403,
-            detail=f"Bootstrap disabled — {len(users_with_password)} user(s) already have passwords set. Use /auth/password/login.",
+            detail="Bootstrap disabled — a user with a password already exists. Use /auth/password/login.",
         )
 
     password_hash = PasswordHasher().hash(request.password) if request.password else None
@@ -155,6 +155,19 @@ async def bootstrap(
             password_hash=password_hash,
         )
         _audit(user_id, "bootstrap_completed")
+
+    # Promote the bootstrap user to the Admin system group — replaces the v9
+    # ``user_role_grants`` write that the old bootstrap path relied on.
+    admin_group = conn.execute(
+        "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP],
+    ).fetchone()
+    if admin_group:
+        UserGroupMembersRepository(conn).add_member(
+            user_id=user_id,
+            group_id=admin_group[0],
+            source="system_seed",
+            added_by="auth.bootstrap",
+        )
 
     token = create_access_token(user_id=user_id, email=request.email, role="admin")
     return TokenResponse(

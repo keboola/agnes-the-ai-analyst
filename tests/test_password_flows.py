@@ -70,10 +70,12 @@ def _seed_admin() -> str:
     from src.db import get_system_db
     from src.repositories.users import UserRepository
     from app.auth.jwt import create_access_token
+    from tests.helpers.auth import grant_admin
     conn = get_system_db()
     try:
         uid = str(uuid.uuid4())
         UserRepository(conn).create(id=uid, email="admin@test", name="Admin", role="admin")
+        grant_admin(conn, uid)
         return create_access_token(user_id=uid, email="admin@test", role="admin")
     finally:
         conn.close()
@@ -215,6 +217,61 @@ class TestResetConfirm:
         assert resp.status_code == 200
         assert "at least 8" in resp.text
 
+    def test_concurrent_reset_only_one_wins(self, app_client, fresh_db):
+        """Two concurrent reset/confirm POSTs — exactly one must succeed.
+
+        Mirrors `test_concurrent_verify_only_one_wins` for the magic-link
+        flow. Without the CAS pattern at `_atomic_consume_reset_token`,
+        two concurrent POSTs with the same valid token could both write
+        different new passwords for the same user (last-write-wins
+        semantics). With the CAS, the loser gets the "Invalid or expired"
+        form back instead of silently overwriting.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import threading
+
+        _seed_user(
+            "race@test.com",
+            reset_token="race-tok",
+            reset_token_created=datetime.now(timezone.utc),
+        )
+
+        results: list[tuple[int, str]] = []
+        barrier = threading.Barrier(2, timeout=5)
+
+        def confirm(payload_password: str):
+            barrier.wait()  # both threads hit the endpoint at the same instant
+            resp = app_client.post(
+                "/auth/password/reset/confirm",
+                data={
+                    "email": "race@test.com",
+                    "token": "race-tok",
+                    "password": payload_password,
+                    "confirm_password": payload_password,
+                },
+            )
+            results.append((resp.status_code, resp.text))
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [
+                pool.submit(confirm, "winner-password"),
+                pool.submit(confirm, "loser-password"),
+            ]
+            for f in as_completed(futures):
+                f.result()
+
+        # Exactly one 302 (winner — redirected to login) and one 200
+        # (loser — got the reset form back with the standard error).
+        redirects = [r for r in results if r[0] == 302]
+        rejects = [r for r in results if r[0] == 200]
+        assert len(redirects) == 1, (
+            f"Expected exactly 1 winner, got {len(redirects)} (results: {results})"
+        )
+        assert len(rejects) == 1, (
+            f"Expected exactly 1 loser, got {len(rejects)} (results: {results})"
+        )
+        assert "Invalid or expired" in rejects[0][1]
+
 
 # ---- POST /auth/password/setup/request ----
 
@@ -301,12 +358,12 @@ class TestAdminInviteFlow:
         )
         assert resp.status_code == 200
         data = resp.json()
-        assert data["reset_token"]
         assert "reset_url" in data
         assert "/auth/password/reset" in data["reset_url"]
-        assert f"email=target%40test.com" in data["reset_url"]
-        assert f"token={data['reset_token']}" in data["reset_url"]
+        assert "token=" in data["reset_url"]  # URL still contains the token
+        assert "email_sent" in data
         assert data["email_sent"] is False  # no SMTP configured in tests
+        assert "reset_token" not in data  # raw token must NOT be in response
 
     def test_create_user_with_send_invite_returns_invite_url(self, app_client, fresh_db):
         token = _seed_admin()

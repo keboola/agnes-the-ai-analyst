@@ -131,6 +131,8 @@ def test_revoked_pat_is_rejected(fresh_db, monkeypatch):
     try:
         uid = str(uuid.uuid4())
         UserRepository(conn).create(id=uid, email="u@t", name="U", role="admin")
+        from tests.helpers.auth import grant_admin
+        grant_admin(conn, uid)
         token_id = str(uuid.uuid4())
         raw = "secretXX" + "a" * 32
         AccessTokenRepository(conn).create(
@@ -171,6 +173,8 @@ def test_expired_pat_is_rejected_from_db(fresh_db):
     try:
         uid = str(uuid.uuid4())
         UserRepository(conn).create(id=uid, email="u@t", name="U", role="admin")
+        from tests.helpers.auth import grant_admin
+        grant_admin(conn, uid)
         tid = str(uuid.uuid4())
         # Past-dated expiry in DB
         AccessTokenRepository(conn).create(
@@ -208,6 +212,8 @@ def test_create_pat_returns_raw_once(fresh_db):
     try:
         uid = str(uuid.uuid4())
         UserRepository(conn).create(id=uid, email="u@t", name="U", role="admin")
+        from tests.helpers.auth import grant_admin
+        grant_admin(conn, uid)
         sess_token = create_access_token(user_id=uid, email="u@t", role="admin")  # typ=session
     finally:
         conn.close()
@@ -253,6 +259,8 @@ def test_pat_cannot_create_pat(fresh_db):
     try:
         uid = str(uuid.uuid4())
         UserRepository(conn).create(id=uid, email="u@t", name="U", role="admin")
+        from tests.helpers.auth import grant_admin
+        grant_admin(conn, uid)
         tid = str(uuid.uuid4())
         # Create the JWT first so we can store its sha256 as token_hash (otherwise
         # the defense-in-depth check in get_current_user would reject it with 401
@@ -299,6 +307,8 @@ def test_pat_first_use_from_new_ip_audits(fresh_db):
     try:
         uid = str(uuid.uuid4())
         UserRepository(conn).create(id=uid, email="u@t", name="U", role="admin")
+        from tests.helpers.auth import grant_admin
+        grant_admin(conn, uid)
         tid = str(uuid.uuid4())
         pat = create_access_token(
             user_id=uid, email="u@t", role="admin", token_id=tid, typ="pat",
@@ -358,6 +368,8 @@ def test_pat_same_ip_does_not_audit(fresh_db):
     try:
         uid = str(uuid.uuid4())
         UserRepository(conn).create(id=uid, email="u@t", name="U", role="admin")
+        from tests.helpers.auth import grant_admin
+        grant_admin(conn, uid)
         tid = str(uuid.uuid4())
         pat = create_access_token(
             user_id=uid, email="u@t", role="admin", token_id=tid, typ="pat",
@@ -510,6 +522,8 @@ def test_create_token_rejects_expires_in_days_above_cap(fresh_db):
     try:
         uid = str(uuid.uuid4())
         UserRepository(conn).create(id=uid, email="u@t", name="U", role="admin")
+        from tests.helpers.auth import grant_admin
+        grant_admin(conn, uid)
         sess_token = create_access_token(user_id=uid, email="u@t", role="admin")
     finally:
         conn.close()
@@ -549,6 +563,8 @@ def test_pat_first_ever_use_does_not_audit(fresh_db):
     try:
         uid = str(uuid.uuid4())
         UserRepository(conn).create(id=uid, email="u@t", name="U", role="admin")
+        from tests.helpers.auth import grant_admin
+        grant_admin(conn, uid)
         tid = str(uuid.uuid4())
         pat = create_access_token(
             user_id=uid, email="u@t", role="admin", token_id=tid, typ="pat",
@@ -604,6 +620,8 @@ def test_pat_null_expiry_jwt_has_no_exp_claim(fresh_db):
     try:
         uid = str(uuid.uuid4())
         UserRepository(conn).create(id=uid, email="u@t", name="U", role="admin")
+        from tests.helpers.auth import grant_admin
+        grant_admin(conn, uid)
         sess_token = create_access_token(user_id=uid, email="u@t", role="admin")
     finally:
         conn.close()
@@ -661,6 +679,8 @@ def test_pat_null_expiry_end_to_end_allows_authenticated_request(fresh_db):
     try:
         uid = str(uuid.uuid4())
         UserRepository(conn).create(id=uid, email="u@t", name="U", role="admin")
+        from tests.helpers.auth import grant_admin
+        grant_admin(conn, uid)
         sess_token = create_access_token(user_id=uid, email="u@t", role="admin")
     finally:
         conn.close()

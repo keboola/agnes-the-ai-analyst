@@ -124,7 +124,7 @@ Both modes converge: once the CA publishes the signed chain at `TLS_FULLCHAIN_UR
 
 #### Automatic rotation
 
-`scripts/grpn/agnes-tls-rotate.sh` is the single entry point — it handles fetch, self-signed fallback, auto-generation on missing key, atomic cert swap, and Caddy reload. Env vars it reads:
+`scripts/ops/agnes-tls-rotate.sh` is the single entry point — it handles fetch, self-signed fallback, auto-generation on missing key, atomic cert swap, and Caddy reload. Env vars it reads:
 
 | Var | Required | Schemes | Notes |
 |---|---|---|---|
@@ -145,6 +145,17 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 ```
 
 Or set up a cron job — see `infra/modules/customer-instance/startup-script.sh.tpl` for the reference implementation.
+
+### Health checks & external monitoring
+
+Two health endpoints serve different audiences:
+
+| Endpoint | Auth | Response | Use for |
+|---|---|---|---|
+| `GET /api/health` | None | `{"status": "ok"}` | Load balancers, Docker `healthcheck`, uptime pings |
+| `GET /api/health/detailed` | Bearer token | `{"status", "version", "services": {...}}` | Dashboards, alerting rules, `da diagnose`/`da status` CLI |
+
+The Docker Compose `healthcheck` uses the minimal endpoint (`curl -sf http://localhost:8000/api/health`). For external monitoring tools (Datadog, Prometheus, UptimeRobot, etc.) that need service-level detail (DuckDB status, sync freshness, user count), point them at `/api/health/detailed` with an `Authorization: Bearer <token>` header. Any authenticated user can call it; a personal access token (`da admin create-pat`) works well for service accounts.
 
 ## Which path should I pick?
 

@@ -10,7 +10,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 import duckdb
 
-from app.auth.dependencies import get_current_user, require_role, Role, _get_db
+from app.auth.dependencies import get_current_user, _get_db
+from app.auth.access import require_admin, is_user_admin
 from src.repositories.knowledge import KnowledgeRepository
 from src.repositories.audit import AuditRepository
 
@@ -25,35 +26,56 @@ BUNDLE_TOKEN_BUDGET = 6000
 _CHARS_PER_TOKEN = 4
 VALID_DOMAINS = ["finance", "engineering", "product", "data", "operations", "infrastructure"]
 
-# Roles allowed to see is_personal=true items they did not contribute.
-# Role.ADMIN included: platform admins have full visibility for operational support
-_PRIVILEGED_VIEWER_ROLES = {Role.KM_ADMIN.value, Role.ADMIN.value}
+
+def _is_privileged_viewer(user: dict, conn: duckdb.DuckDBPyConnection) -> bool:
+    """Admins (members of the Admin system group, per RBAC v13) are the
+    privileged viewer tier. Pre-v13 the schema also had a km_admin role; v13
+    collapsed the role hierarchy into groups, so the corporate-memory admin
+    capability now lives on top of plain admin membership. Module authors
+    needing a finer-grained gate (curator-only, etc.) should add a
+    ``ResourceType.CORPORATE_MEMORY_ADMIN`` resource type and gate with
+    ``require_resource_access`` instead of extending this helper."""
+    user_id = user.get("id")
+    if not user_id:
+        return False
+    return is_user_admin(user_id, conn)
 
 
-def _is_privileged_viewer(user: dict) -> bool:
-    return user.get("role") in _PRIVILEGED_VIEWER_ROLES
+def _effective_groups(
+    user: dict, conn: duckdb.DuckDBPyConnection
+) -> Optional[List[str]]:
+    """Audience-filter group list for the caller, or ``None`` for admins
+    (no filter — see all items regardless of audience).
 
-
-def _effective_groups(user: dict) -> Optional[List[str]]:
-    """Return audience-filter group list for the caller, or None for admins (no filter)."""
-    if _is_privileged_viewer(user):
+    Reads from ``user_group_members`` JOIN ``user_groups`` (the v13 model).
+    Pre-v13 this read ``users.groups`` JSON; that column was dropped in v13
+    and the membership is now materialized in ``user_group_members`` with a
+    ``source`` discriminator (admin / google_sync / system_seed).
+    """
+    if _is_privileged_viewer(user, conn):
         return None
-    raw = user.get("groups") or []
-    if isinstance(raw, str):
-        try:
-            raw = json.loads(raw)
-        except json.JSONDecodeError:
-            logger.warning("Failed to parse users.groups for user %s: %s", user.get("id"), raw)
-            raw = []
-    return [f"group:{g}" for g in raw]
+    user_id = user.get("id")
+    if not user_id:
+        return []
+    rows = conn.execute(
+        """SELECT g.name FROM user_group_members m
+           JOIN user_groups g ON m.group_id = g.id
+           WHERE m.user_id = ?""",
+        [user_id],
+    ).fetchall()
+    return [f"group:{r[0]}" for r in rows]
 
 
-def _can_view_item(user: dict, item: dict) -> bool:
-    """Personal items are visible only to the contributor and privileged viewers (km_admin/admin).
-    Non-personal items are visible to any authenticated user."""
+def _can_view_item(user: dict, item: dict, is_priv: bool) -> bool:
+    """Personal items are visible only to the contributor and privileged
+    viewers. Non-personal items are visible to any authenticated user.
+
+    ``is_priv`` is pre-computed by the caller (one DB hit per request) so
+    a per-item loop doesn't re-query ``user_group_members`` for every row.
+    """
     if not item.get("is_personal"):
         return True
-    if _is_privileged_viewer(user):
+    if is_priv:
         return True
     return item.get("source_user") == user.get("email")
 
@@ -127,8 +149,8 @@ async def list_knowledge(
     offset = (page - 1) * per_page
     # Privacy: non-privileged viewers can never opt out of the personal filter.
     # Their own personal contributions are visible via /my-contributions, not here.
-    effective_exclude_personal = True if not _is_privileged_viewer(user) else exclude_personal
-    effective_groups = _effective_groups(user)
+    effective_exclude_personal = True if not _is_privileged_viewer(user, conn) else exclude_personal
+    effective_groups = _effective_groups(user, conn)
     statuses = [status_filter] if status_filter else None
     if search:
         items = repo.search(
@@ -198,8 +220,8 @@ async def get_stats(
     repo = KnowledgeRepository(conn)
     all_items = repo.list_items(
         limit=10000,
-        exclude_personal=not _is_privileged_viewer(user),
-        user_groups=_effective_groups(user),
+        exclude_personal=not _is_privileged_viewer(user, conn),
+        user_groups=_effective_groups(user, conn),
     )
     status_counts: dict = {}
     categories: set = set()
@@ -284,7 +306,7 @@ async def vote_knowledge(
         raise HTTPException(status_code=400, detail="Vote must be 1, -1, or 0 (retract)")
     repo = KnowledgeRepository(conn)
     item = repo.get_by_id(item_id)
-    if not item or not _can_view_item(user, item):
+    if not item or not _can_view_item(user, item, _is_privileged_viewer(user, conn)):
         raise HTTPException(status_code=404, detail="Knowledge item not found")
     if request.vote == 0:
         repo.unvote(item_id, user["id"])
@@ -349,7 +371,7 @@ async def get_provenance(
     """Get source provenance for a knowledge item."""
     repo = KnowledgeRepository(conn)
     item = repo.get_by_id(item_id)
-    if not item or not _can_view_item(user, item):
+    if not item or not _can_view_item(user, item, _is_privileged_viewer(user, conn)):
         raise HTTPException(status_code=404, detail="Knowledge item not found")
     return {
         "id": item_id,
@@ -383,7 +405,7 @@ def _audit_action(conn, admin_email: str, action: str, item_id: str, details: di
 @router.post("/admin/approve")
 async def admin_approve(
     item_id: str,
-    user: dict = Depends(require_role(Role.KM_ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     repo = KnowledgeRepository(conn)
@@ -397,7 +419,7 @@ async def admin_approve(
 async def admin_reject(
     item_id: str,
     request: AdminActionRequest,
-    user: dict = Depends(require_role(Role.KM_ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     repo = KnowledgeRepository(conn)
@@ -411,7 +433,7 @@ async def admin_reject(
 async def admin_mandate(
     item_id: str,
     request: AdminActionRequest,
-    user: dict = Depends(require_role(Role.KM_ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     repo = KnowledgeRepository(conn)
@@ -429,7 +451,7 @@ async def admin_mandate(
 async def admin_revoke(
     item_id: str,
     request: AdminActionRequest,
-    user: dict = Depends(require_role(Role.KM_ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     repo = KnowledgeRepository(conn)
@@ -443,7 +465,7 @@ async def admin_revoke(
 async def admin_edit(
     item_id: str,
     request: EditRequest,
-    user: dict = Depends(require_role(Role.KM_ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     repo = KnowledgeRepository(conn)
@@ -462,7 +484,7 @@ async def admin_edit(
 @router.post("/admin/batch")
 async def admin_batch(
     request: BatchActionRequest,
-    user: dict = Depends(require_role(Role.KM_ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Batch governance action on multiple items."""
@@ -499,7 +521,7 @@ async def admin_pending(
     category: Optional[str] = None,
     page: int = 1,
     per_page: int = 50,
-    user: dict = Depends(require_role(Role.KM_ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Get pending items queue for admin review."""
@@ -515,7 +537,7 @@ async def admin_audit(
     page: int = 1,
     per_page: int = 50,
     action: Optional[str] = None,
-    user: dict = Depends(require_role(Role.KM_ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Get governance audit log."""
@@ -543,7 +565,7 @@ async def admin_audit(
 async def admin_contradictions(
     resolved: Optional[bool] = None,
     exclude_personal: bool = True,
-    user: dict = Depends(require_role(Role.KM_ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """List knowledge contradictions for admin review.
@@ -577,7 +599,7 @@ async def admin_contradictions(
 @router.post("/admin/contradictions")
 async def admin_create_contradiction(
     request: CreateContradictionRequest,
-    user: dict = Depends(require_role(Role.KM_ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Admin endpoint for manually recording a contradiction between two knowledge items."""
@@ -601,7 +623,7 @@ async def admin_create_contradiction(
 async def admin_resolve_contradiction(
     contradiction_id: str,
     request: ResolveContradictionRequest,
-    user: dict = Depends(require_role(Role.KM_ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Resolve a knowledge contradiction."""
@@ -645,7 +667,7 @@ async def get_bundle(
     from datetime import datetime, timezone
 
     repo = KnowledgeRepository(conn)
-    effective_groups = _effective_groups(user)
+    effective_groups = _effective_groups(user, conn)
 
     mandatory = repo.list_items(
         statuses=["mandatory"],

@@ -12,10 +12,12 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 import duckdb
 
-from app.auth.dependencies import get_current_user, require_role, Role, _get_db
+from app.auth.access import require_admin
+from app.auth.dependencies import get_current_user, _get_db
 from app.utils import get_data_dir as _get_data_dir
 from src.repositories.sync_state import SyncStateRepository
 from src.repositories.sync_settings import SyncSettingsRepository, DatasetPermissionRepository
+from src.repositories.table_registry import TableRegistryRepository
 from src.rbac import can_access_table
 
 logger = logging.getLogger(__name__)
@@ -110,10 +112,13 @@ if not url or not token:
     print("ERROR: Missing KEBOOLA_STACK_URL or KEBOOLA_STORAGE_TOKEN", file=sys.stderr)
     sys.exit(1)
 
-from connectors.keboola.extractor import run
+from connectors.keboola.extractor import run, compute_exit_code
 data_dir = Path(os.environ.get("DATA_DIR", "./data"))
 result = run(str(data_dir / "extracts" / "keboola"), configs, url, token)
 print(json.dumps(result))
+# Issue #81 Group B: surface partial-failure as exit 2 so the API
+# caller can distinguish "every table failed" from "9/10 succeeded".
+sys.exit(compute_exit_code(result, len(configs)))
 """]
 
         import sys as _sys
@@ -129,10 +134,22 @@ print(json.dumps(result))
             print(f"[SYNC] Extractor stdout: {result.stdout.strip()[-500:]}", file=_sys.stderr, flush=True)
         if result.stderr:
             print(f"[SYNC] Extractor stderr: {result.stderr[-500:]}", file=_sys.stderr, flush=True)
-        if result.returncode != 0:
-            print(f"[SYNC] Extractor FAILED (exit {result.returncode})", file=_sys.stderr, flush=True)
-        else:
+        # Issue #81 Group B: three exit codes. 0 = full success,
+        # 1 = full failure, 2 = partial. Partial is a data-quality
+        # alert, not a crash — the orchestrator's per-table _meta
+        # machinery already captured which tables succeeded; we just
+        # need to log loudly so operator alerting can pick it up.
+        if result.returncode == 0:
             print(f"[SYNC] Extractor OK", file=_sys.stderr, flush=True)
+        elif result.returncode == 2:
+            print(
+                f"[SYNC] Extractor PARTIAL FAILURE (exit 2) — some tables "
+                f"succeeded, some failed; see stderr for per-table errors. "
+                f"Successful tables will still be published by the orchestrator.",
+                file=_sys.stderr, flush=True,
+            )
+        else:
+            print(f"[SYNC] Extractor FAILED (exit {result.returncode})", file=_sys.stderr, flush=True)
 
         # Run custom connectors (Tier A: local mount)
         connectors_dir = Path(os.environ.get("CONNECTORS_DIR", str(Path(__file__).parent.parent.parent / "connectors" / "custom")))
@@ -202,28 +219,49 @@ print(json.dumps(result))
 
 # ---- Manifest ----
 
-@router.get("/manifest")
-async def sync_manifest(
-    user: dict = Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
-):
-    """Return hash-based manifest of all synced data, filtered per user."""
-    repo = SyncStateRepository(conn)
-    all_states = repo.get_all_states()
+def _build_manifest_for_user(conn, user: dict) -> dict:
+    """Build manifest dict filtered by user's accessible tables.
 
-    # Filter by user's accessible tables (admin sees all)
+    Joins ``sync_state`` with ``table_registry`` so each table entry exposes
+    ``query_mode`` and ``source_type``. The CLI uses these to decide whether
+    to download a parquet (local) or skip it (remote, e.g. BigQuery views).
+
+    Defensive defaults: if a sync_state row has no matching registry entry
+    (race / manual deletion), fall back to ``query_mode='local'`` and
+    ``source_type=''`` so the manifest still serializes cleanly.
+    """
+    sync_repo = SyncStateRepository(conn)
+    table_repo = TableRegistryRepository(conn)
+    all_states = sync_repo.get_all_states()
+    # `sync_state.table_id` is sourced from `_meta.table_name` which equals
+    # `table_registry.name`, NOT `table_registry.id`. Auto-discovered Keboola
+    # tables and manually-registered ones with mixed-case/spaced names produce
+    # id != name; an id-keyed lookup would miss them and silently default to
+    # `query_mode=local`, causing the CLI to try downloading remote tables.
+    registry_by_name = {t["name"]: t for t in table_repo.list_all()}
+
+    # Filter by user's accessible tables (admin sees all). `can_access_table`
+    # internally does a registry lookup BY ID, but `s["table_id"]` is sourced
+    # from `_meta.table_name` = registry `name`. When id != name we need to
+    # translate name→id first, or the RBAC lookup misses and falls through.
     if user.get("role") != "admin":
-        all_states = [s for s in all_states if can_access_table(user, s["table_id"], conn)]
+        def _id_for(state):
+            reg = registry_by_name.get(state["table_id"])
+            return reg["id"] if reg else state["table_id"]
+        all_states = [s for s in all_states if can_access_table(user, _id_for(s), conn)]
 
     data_dir = _get_data_dir()
     tables = {}
     for state in all_states:
         table_id = state["table_id"]
+        reg = registry_by_name.get(table_id, {})
         tables[table_id] = {
             "hash": state.get("hash", ""),
             "updated": state.get("last_sync").isoformat() if state.get("last_sync") else None,
             "size_bytes": state.get("file_size_bytes", 0),
             "rows": state.get("rows", 0),
+            "query_mode": reg.get("query_mode") or "local",
+            "source_type": reg.get("source_type") or "",
         }
 
     # Asset hashes
@@ -250,13 +288,22 @@ async def sync_manifest(
     }
 
 
+@router.get("/manifest")
+async def sync_manifest(
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Return hash-based manifest of all synced data, filtered per user."""
+    return _build_manifest_for_user(conn, user)
+
+
 # ---- Trigger ----
 
 @router.post("/trigger")
 async def trigger_sync(
     background_tasks: BackgroundTasks,
     tables: Optional[List[str]] = None,
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
 ):
     """Trigger data sync from configured source. Admin only. Runs in background."""
     background_tasks.add_task(_run_sync, tables)

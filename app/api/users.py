@@ -9,8 +9,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from argon2 import PasswordHasher
 
-from app.auth.dependencies import require_role, Role, _get_db, _hydrate_legacy_role
+from app.auth.access import is_user_admin, require_admin
+from app.auth.dependencies import _get_db
+from src.db import SYSTEM_ADMIN_GROUP
 from src.repositories.users import UserRepository
+from src.repositories.user_group_members import UserGroupMembersRepository
 from src.repositories.audit import AuditRepository
 
 router = APIRouter(prefix="/api/users", tags=["users"])
@@ -54,16 +57,49 @@ class SetPasswordRequest(BaseModel):
     password: str
 
 
+class GroupBrief(BaseModel):
+    id: str
+    name: str
+    is_system: bool = False
+
+
 class UserResponse(BaseModel):
     id: str
     email: str
     name: Optional[str]
     role: str
+    is_admin: bool = False
+    groups: List[GroupBrief] = []
     active: bool = True
     created_at: Optional[str]
     deactivated_at: Optional[str] = None
     invite_url: Optional[str] = None
     invite_email_sent: Optional[bool] = None
+
+
+def _resolve_role(u: dict, conn: duckdb.DuckDBPyConnection) -> str:
+    """Derive a label for the response. ``admin`` if the user is in the Admin
+    system group, otherwise ``user`` — the legacy 4-value enum collapsed to
+    a binary in v12 (admin / non-admin). The DB column ``users.role`` is a
+    deprecated artifact; we ignore it."""
+    return "admin" if is_user_admin(u["id"], conn) else "user"
+
+
+def _user_groups(user_id: str, conn: duckdb.DuckDBPyConnection) -> List[GroupBrief]:
+    """Groups the user is a member of, sorted with system groups first.
+
+    Inlined into ``/api/users`` responses so the admin list view can show
+    membership chips per row without an N+1 fetch.
+    """
+    rows = conn.execute(
+        """SELECT g.id, g.name, g.is_system
+           FROM user_group_members m
+           JOIN user_groups g ON g.id = m.group_id
+           WHERE m.user_id = ?
+           ORDER BY g.is_system DESC, g.name""",
+        [user_id],
+    ).fetchall()
+    return [GroupBrief(id=r[0], name=r[1], is_system=bool(r[2])) for r in rows]
 
 
 def _to_response(
@@ -72,16 +108,14 @@ def _to_response(
     invite_url: Optional[str] = None,
     invite_email_sent: Optional[bool] = None,
 ) -> UserResponse:
-    # v9 schema NULLs the legacy users.role column for migrated users — derive
-    # role from user_role_grants so list/get endpoints don't 500 on Pydantic
-    # validation (UserResponse.role is required str). Same shim used by
-    # get_current_user for the authenticated caller.
-    u = _hydrate_legacy_role(u, conn)
+    groups = _user_groups(u["id"], conn)
     return UserResponse(
         id=u["id"],
         email=u["email"],
         name=u.get("name"),
-        role=u["role"],
+        role=_resolve_role(u, conn),
+        is_admin=any(g.name == SYSTEM_ADMIN_GROUP for g in groups),
+        groups=groups,
         active=bool(u.get("active", True)),
         created_at=str(u.get("created_at", "")),
         deactivated_at=str(u["deactivated_at"]) if u.get("deactivated_at") else None,
@@ -90,31 +124,65 @@ def _to_response(
     )
 
 
+def _set_admin_membership(
+    user_id: str,
+    is_admin: bool,
+    actor_email: Optional[str],
+    conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """Add or remove the user's Admin group membership. Idempotent."""
+    admin_group = conn.execute(
+        "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP],
+    ).fetchone()
+    if not admin_group:
+        return
+    members = UserGroupMembersRepository(conn)
+    if is_admin:
+        members.add_member(user_id, admin_group[0], "admin", actor_email)
+    else:
+        members.remove_member(user_id, admin_group[0])
+
+
 @router.get("", response_model=List[UserResponse])
 async def list_users(
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     return [_to_response(u, conn) for u in UserRepository(conn).list_all()]
+
+
+@router.get("/{user_id}", response_model=UserResponse)
+async def get_user(
+    user_id: str,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Single-user payload used by the /admin/users/{id} detail page header
+    and the account-status block. Same shape as the list endpoint, so the
+    page can reuse the same response shape."""
+    target = UserRepository(conn).get_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    return _to_response(target, conn)
 
 
 @router.post("", response_model=UserResponse, status_code=201)
 async def create_user(
     payload: CreateUserRequest,
     request: Request,
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     repo = UserRepository(conn)
     if repo.get_by_email(payload.email):
         raise HTTPException(status_code=409, detail="User with this email already exists")
-    try:
-        Role(payload.role)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Unknown role: {payload.role}")
     import secrets
     user_id = str(uuid.uuid4())
     repo.create(id=user_id, email=payload.email, name=payload.name, role=payload.role)
+    # If the requested role is admin, add to Admin group. Anything else is just
+    # a member of Everyone (added implicitly by repo.create).
+    if (payload.role or "").lower() == "admin":
+        _set_admin_membership(user_id, True, user.get("email"), conn)
     _audit(conn, user["id"], "user.create", user_id, {"email": payload.email, "role": payload.role})
 
     invite_url: Optional[str] = None
@@ -140,44 +208,39 @@ async def update_user(
     user_id: str,
     payload: UpdateUserRequest,
     request: Request,
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     repo = UserRepository(conn)
     target = repo.get_by_id(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
-    # v9: legacy users.role is NULL for migrated users — hydrate from grants
-    # before the role-based protection short-circuits run, otherwise checks
-    # like ``target["role"] == "admin"`` silently skip and let the caller
-    # demote/deactivate the last admin.
-    target = _hydrate_legacy_role(target, conn)
+    target_is_admin = is_user_admin(target["id"], conn)
 
     updates: dict = {}
     if payload.name is not None:
         updates["name"] = payload.name
+
+    role_change: Optional[bool] = None  # None = no change; True = make admin; False = demote
     if payload.role is not None:
-        # Validate role is a known value
-        try:
-            Role(payload.role)
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"Unknown role: {payload.role}")
-        # Protect: don't let admin demote themselves if they are the last admin
+        wants_admin = payload.role.lower() == "admin"
         if (
             target["id"] == user["id"]
-            and target["role"] == "admin"
-            and payload.role != "admin"
+            and target_is_admin
+            and not wants_admin
             and repo.count_admins(active_only=True) <= 1
         ):
             raise HTTPException(status_code=409, detail="Cannot demote the last active admin")
+        if wants_admin != target_is_admin:
+            role_change = wants_admin
+        # Persist the legacy label on users.role for any reader still inspecting it.
         updates["role"] = payload.role
+
     if payload.active is not None:
-        # Protect: cannot self-deactivate
         if target["id"] == user["id"] and payload.active is False:
             raise HTTPException(status_code=409, detail="Cannot deactivate yourself")
-        # Protect: cannot deactivate the last active admin
         if (
-            target.get("role") == "admin"
+            target_is_admin
             and payload.active is False
             and repo.count_admins(active_only=True) <= 1
         ):
@@ -193,6 +256,8 @@ async def update_user(
     if updates:
         repo.update(id=user_id, **updates)
         _audit(conn, user["id"], "user.update", user_id, {k: v for k, v in updates.items() if k != "deactivated_at"})
+    if role_change is not None:
+        _set_admin_membership(user_id, role_change, user.get("email"), conn)
     return _to_response(repo.get_by_id(user_id), conn)
 
 
@@ -200,19 +265,16 @@ async def update_user(
 async def delete_user(
     user_id: str,
     request: Request,
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     repo = UserRepository(conn)
     target = repo.get_by_id(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
-    # v9: hydrate role from grants so the last-admin guard below doesn't
-    # silently no-op on migrated users with NULL legacy role.
-    target = _hydrate_legacy_role(target, conn)
     if target["id"] == user["id"]:
         raise HTTPException(status_code=409, detail="Cannot delete yourself")
-    if target.get("role") == "admin" and repo.count_admins(active_only=True) <= 1:
+    if is_user_admin(target["id"], conn) and repo.count_admins(active_only=True) <= 1:
         raise HTTPException(status_code=409, detail="Cannot delete the last active admin")
     repo.delete(user_id)
     _audit(conn, user["id"], "user.delete", user_id, {"email": target["email"]})
@@ -222,7 +284,7 @@ async def delete_user(
 async def reset_password(
     user_id: str,
     request: Request,
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Generate a reset token and (best-effort) email it to the user."""
@@ -245,7 +307,6 @@ async def reset_password(
     reset_url = build_reset_url(request, target["email"], token)
     email_sent = send_reset_email(request, target["email"], token)
     return {
-        "reset_token": token,
         "reset_url": reset_url,
         "email_sent": email_sent,
     }
@@ -256,7 +317,7 @@ async def set_password(
     user_id: str,
     payload: SetPasswordRequest,
     request: Request,
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     if not payload.password or len(payload.password) < 8:
@@ -274,7 +335,7 @@ async def set_password(
 async def deactivate_user(
     user_id: str,
     request: Request,
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     return await update_user(
@@ -288,7 +349,7 @@ async def deactivate_user(
 async def activate_user(
     user_id: str,
     request: Request,
-    user: dict = Depends(require_role(Role.ADMIN)),
+    user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     return await update_user(

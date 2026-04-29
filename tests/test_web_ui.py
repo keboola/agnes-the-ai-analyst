@@ -26,6 +26,7 @@ def admin_cookie(web_client, tmp_path, monkeypatch):
     from argon2 import PasswordHasher
     from src.db import get_system_db
     from src.repositories.users import UserRepository
+    from tests.helpers.auth import grant_admin
     password = "AdminPass1!"
     password_hash = PasswordHasher().hash(password)
     conn = get_system_db()
@@ -33,6 +34,7 @@ def admin_cookie(web_client, tmp_path, monkeypatch):
         id="admin1", email="admin@test.com", name="Admin", role="admin",
         password_hash=password_hash,
     )
+    grant_admin(conn, "admin1")
     conn.close()
     resp = web_client.post("/auth/token", json={"email": "admin@test.com", "password": password})
     assert resp.status_code == 200, f"Bootstrap failed: {resp.text}"
@@ -96,20 +98,19 @@ class TestWebUISmoke:
         resp = web_client.get("/admin/users", cookies=admin_cookie)
         assert resp.status_code == 200
         body = resp.text
-        # New shared header chrome
+        # Shared header chrome
         assert "app-header" in body
-        # Nav after split: "Tokens" (own) for every signed-in user +
-        # admin-only "All tokens" link pointing at /admin/tokens.
-        # Profile link added with the Google-Workspace-groups feature
-        # (cherry-pick of zs/google-groups-display + dropdown wiring).
+        # Nav: "My tokens" (own) is in the user-menu dropdown; admin-only
+        # "All tokens" link is in the top nav. Admin dropdown holds the
+        # Users / Groups / Resource access links — /admin/users is reached
+        # through it.
         assert 'href="/tokens"' in body
         assert 'href="/admin/tokens"' in body
         assert 'href="/profile"' in body
         assert 'href="/admin/users"' in body
-        # New modern UI markers
+        # v12 modern UI markers — Role column was replaced by Groups chips,
+        # so role-pill is gone. Confirm-modal pattern is shared by both.
         assert 'class="users-page"' in body
-        assert 'role-pill' in body
-        assert 'class="toggle"' in body
         assert 'id="confirm-modal"' in body
 
     def test_nav_shows_tokens_link_for_non_admin(self, web_client, analyst_cookie):
@@ -141,16 +142,19 @@ class TestWebUISmoke:
         assert ">All tokens<" in body
 
     def test_profile_renders_account_details(self, web_client, admin_cookie):
-        """/profile renders a real profile page with email, name, role."""
+        """/profile renders a real profile page with email + tokens link.
+
+        v12 changes: role-pill is replaced by an Admin-pill driven by Admin
+        user_group membership; ``session.google_groups`` is gone (the
+        OAuth callback writes Workspace memberships into
+        ``user_group_members`` instead), so the "No Google groups available"
+        empty state is no longer rendered.
+        """
         resp = web_client.get("/profile", cookies=admin_cookie)
         assert resp.status_code == 200
         body = resp.text
         assert "admin@test.com" in body
-        # Role pill + link to /tokens for PAT management
-        assert 'class="role-pill"' in body
         assert 'href="/tokens"' in body
-        # Empty-state copy when no Google groups in session
-        assert "No Google groups available" in body
 
     def test_profile_requires_auth(self, web_client):
         """/profile requires auth (was a 302 back-compat redirect before)."""
@@ -158,39 +162,47 @@ class TestWebUISmoke:
         # Auth dep raises 401; some configs may redirect to /login — accept either.
         assert resp.status_code in (401, 302)
 
+    @pytest.mark.skip(
+        reason=(
+            "v12: /profile no longer renders an admin-self-management link. "
+            "Admin can navigate to /admin/users/{id} from the top-nav Admin "
+            "dropdown directly. Drop or rewrite this test once the profile "
+            "page settles."
+        )
+    )
     def test_profile_shows_admin_detail_link_for_admin(self, web_client, admin_cookie):
-        """Admins see a self-service link to /admin/users/{their_id} so they
-        can manage their own capabilities/role-grants from the profile page —
-        the page is admin-gated, but admins viewing it for themselves is the
-        natural entry point for self-management."""
         resp = web_client.get("/profile", cookies=admin_cookie)
         assert resp.status_code == 200
-        # Link includes the admin's own user id (admin1 from fixture).
         assert 'href="/admin/users/admin1"' in resp.text
 
+    @pytest.mark.skip(
+        reason=(
+            "v12: profile page no longer surfaces /admin/users/* link at all, "
+            "so the negative-assertion is moot. Header chrome unrelated to "
+            "the profile body now contains the admin dropdown."
+        )
+    )
     def test_profile_hides_admin_detail_link_for_non_admin(self, web_client, analyst_cookie):
-        """Non-admins must NOT see the /admin/users/{id} link — the target
-        page 403s for non-admins, so surfacing the link would just generate
-        a confusing dead-end click."""
         resp = web_client.get("/profile", cookies=analyst_cookie)
         assert resp.status_code == 200
         assert "/admin/users/" not in resp.text
 
+    @pytest.mark.skip(
+        reason=(
+            "v12: the four-level core.viewer/analyst/km_admin/admin hierarchy "
+            "is gone. Profile now shows group memberships (user_group_members) "
+            "and effective resource access (resource_grants), not internal "
+            "role keys. Rewrite against the new sections — see "
+            "templates/profile.html."
+        )
+    )
     def test_profile_shows_effective_roles_for_non_admin(self, web_client, analyst_cookie):
-        """Self-service: every signed-in user sees the resolver's authoritative
-        view of their internal roles on /profile (not just admins). For an
-        analyst, that's core.analyst expanded to include core.viewer via
-        the implies hierarchy."""
         resp = web_client.get("/profile", cookies=analyst_cookie)
         assert resp.status_code == 200
         body = resp.text
-        # Effective-roles section header + chip for the analyst's role.
         assert "Effective roles" in body
         assert "core.analyst" in body
-        # Implies expansion: viewer must appear too because analyst → viewer.
         assert "core.viewer" in body
-        # Direct-grants section is also surfaced (auto-seed source from
-        # UserRepository.create's _grant_core_role).
         assert "Direct grants" in body
 
 

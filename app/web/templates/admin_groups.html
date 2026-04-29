@@ -1,0 +1,442 @@
+{% extends "base.html" %}
+{% block title %}Groups — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block content %}
+<style>
+  .container:has(.gp-page) { max-width: none; padding: 24px 16px; }
+  .gp-page { max-width: 1400px; margin: 0 auto; padding: 0; }
+
+  .gp-toolbar {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 12px; margin-bottom: 18px; flex-wrap: wrap;
+  }
+  .gp-title { margin: 0; font-size: 22px; font-weight: 600; }
+  .gp-sub { margin: 0; font-size: 13px; color: var(--text-secondary, #6b7280); }
+  .gp-search {
+    padding: 8px 12px 8px 32px; min-width: 280px;
+    border: 1px solid var(--border, #e5e7eb); border-radius: 8px;
+    font-size: 13px;
+    background: #fff url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2'><circle cx='11' cy='11' r='8'/><path d='m21 21-4.35-4.35'/></svg>") no-repeat 10px center;
+  }
+
+  .gp-table-wrap {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .gp-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .gp-table thead th {
+    text-align: left; padding: 12px 16px;
+    background: var(--border-light, #f9fafb);
+    border-bottom: 1px solid var(--border, #e5e7eb);
+    font-weight: 600; color: var(--text-secondary, #6b7280);
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .gp-table tbody td {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+    vertical-align: middle;
+  }
+  .gp-table tbody tr:last-child td { border-bottom: none; }
+  .gp-table tbody tr { cursor: pointer; }
+  .gp-table tbody tr:hover { background: var(--border-light, #fafafa); }
+
+  .gp-name {
+    font-weight: 500; color: var(--text-primary, #111827);
+    text-decoration: none;
+  }
+  .gp-name:hover { color: var(--primary, #4338ca); text-decoration: underline; }
+  .gp-desc {
+    color: var(--text-secondary, #6b7280); font-size: 12px;
+    max-width: 380px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .count-cell { text-align: right; font-variant-numeric: tabular-nums; color: var(--text-secondary, #4b5563); font-weight: 500; }
+  .date-cell { color: var(--text-secondary, #6b7280); font-size: 12px; white-space: nowrap; }
+
+  .origin-chip {
+    display: inline-block;
+    padding: 3px 10px; border-radius: 999px;
+    font-size: 10px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .origin-system     { background: #fef3c7; color: #92400e; }
+  .origin-admin      { background: #ede9fe; color: #6d28d9; }
+  .origin-google_sync { background: #dcfce7; color: #166534; }
+
+  .gp-actions { display: flex; gap: 6px; justify-content: flex-end; }
+  .icon-btn {
+    padding: 5px 10px; border-radius: 6px; font-size: 12px;
+    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
+    cursor: pointer; color: var(--text-primary, #111827);
+    text-decoration: none;
+  }
+  .icon-btn:hover { background: var(--border-light, #f9fafb); }
+  .icon-btn.danger { color: #b91c1c; border-color: #fecaca; }
+  .icon-btn.danger:hover { background: #fef2f2; }
+  .icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .gp-loading, .gp-empty {
+    padding: 40px 16px; text-align: center;
+    color: var(--text-secondary, #6b7280); font-size: 13px;
+  }
+  .gp-empty .big { font-size: 15px; font-weight: 600; color: var(--text-primary, #111827); margin-bottom: 4px; }
+
+  .gp-btn {
+    padding: 8px 14px; border-radius: 8px;
+    font-size: 13px; font-weight: 500;
+    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
+    cursor: pointer;
+  }
+  .gp-btn:hover { background: var(--border-light, #f9fafb); }
+  .gp-btn.primary {
+    background: var(--primary, #6366f1); color: #fff;
+    border-color: var(--primary, #6366f1);
+  }
+  .gp-btn.primary:hover { filter: brightness(1.05); }
+
+  /* Modal — same vocabulary as the rest of the admin pages */
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55);
+    display: none; align-items: center; justify-content: center; z-index: 1000;
+    padding: 16px;
+  }
+  .modal-backdrop.is-open { display: flex; }
+  .modal-card {
+    background: var(--surface, #fff); border-radius: 12px;
+    padding: 24px; width: 100%; max-width: 480px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+    max-height: 90vh; overflow-y: auto;
+  }
+  .modal-card h3 { margin: 0 0 6px; font-size: 17px; font-weight: 600; }
+  .modal-card p.sub { margin: 0 0 18px; font-size: 13px; color: var(--text-secondary, #6b7280); }
+  .modal-card label { display: block; font-size: 12px; font-weight: 500; color: var(--text-secondary, #6b7280); margin: 12px 0 6px; }
+  .modal-card input[type="text"], .modal-card textarea {
+    width: 100%; padding: 9px 12px; border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px; font-size: 13px; box-sizing: border-box;
+    background: var(--surface, #fff); color: var(--text-primary, #111827);
+    font-family: inherit;
+  }
+  .modal-card textarea { min-height: 60px; resize: vertical; }
+
+  /* Suggested groups from Google Workspace (admin's own membership) */
+  .suggest-block { display: none; margin: 0 0 4px; }
+  .suggest-block.is-visible { display: block; }
+  .suggest-label {
+    font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px;
+    color: var(--text-secondary, #6b7280); margin: 4px 0 8px;
+  }
+  .suggest-help { text-transform: none; letter-spacing: 0; font-weight: 400; margin-left: 6px; }
+  .suggest-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .suggest-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border-radius: 999px;
+    background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534;
+    font-size: 12px; cursor: pointer; font-family: inherit;
+    transition: background 0.12s, border-color 0.12s, transform 0.05s;
+  }
+  .suggest-chip:hover { background: #dcfce7; border-color: #86efac; }
+  .suggest-chip:active { transform: translateY(1px); }
+  .suggest-chip .src-tag {
+    font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.4px;
+    background: rgba(22,101,52,0.12); color: #166534;
+    padding: 1px 6px; border-radius: 3px; font-weight: 600;
+  }
+
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
+  .modal-btn {
+    padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 500;
+    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
+    cursor: pointer;
+  }
+  .modal-btn.primary { background: var(--primary, #6366f1); color: #fff; border-color: var(--primary, #6366f1); }
+  .modal-btn.danger  { background: #dc2626; color: #fff; border-color: #dc2626; }
+
+  .toast-stack {
+    position: fixed; bottom: 24px; right: 24px; z-index: 2000;
+    display: flex; flex-direction: column; gap: 8px; pointer-events: none;
+  }
+  .toast {
+    background: #111827; color: #fff; padding: 10px 16px;
+    border-radius: 8px; font-size: 13px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+    opacity: 0; transform: translateY(8px); transition: opacity 0.2s, transform 0.2s;
+    pointer-events: auto; max-width: 380px;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast.success { background: #047857; }
+  .toast.error { background: #b91c1c; }
+</style>
+
+<div class="gp-page">
+  <div class="gp-toolbar">
+    <div>
+      <h2 class="gp-title">Groups</h2>
+      <p class="gp-sub">Named buckets that hold members and resource grants.
+        Manage who has access to what on <a href="/admin/access">Resource access</a>.</p>
+    </div>
+    <div style="display:flex; gap:10px; align-items:center;">
+      <input id="search" type="search" class="gp-search" placeholder="Filter by name or description…" autocomplete="off">
+      <button class="gp-btn primary" id="open-create-btn">+ New group</button>
+    </div>
+  </div>
+
+  <div class="gp-table-wrap">
+    <table class="gp-table" id="groups-table">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Description</th>
+          <th>Origin</th>
+          <th class="count-cell">Members</th>
+          <th class="count-cell">Resources</th>
+          <th>Created</th>
+          <th style="text-align:right">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="groups-tbody"></tbody>
+    </table>
+    <div id="groups-loading" class="gp-loading">Loading groups…</div>
+    <div id="groups-empty" class="gp-empty" style="display:none;">
+      <div class="big">No groups yet</div>
+      <div>Click <strong>+ New group</strong> to create one. <code>Admin</code> and <code>Everyone</code> are seeded automatically.</div>
+    </div>
+  </div>
+</div>
+
+<!-- Create / edit modal -->
+<div class="modal-backdrop" id="group-modal" role="dialog" aria-modal="true">
+  <div class="modal-card">
+    <h3 id="group-modal-title">New group</h3>
+    <p class="sub">Pick a name that identifies a logical audience (e.g. <code>data-team</code>, <code>engineers</code>).</p>
+
+    <div class="suggest-block" id="suggest-block">
+      <div class="suggest-label">
+        Suggested from your Google account
+        <span class="suggest-help">Click a chip to use the name.</span>
+      </div>
+      <div class="suggest-chips" id="suggest-chips"></div>
+    </div>
+
+    <label for="group-name">Name</label>
+    <input id="group-name" type="text" autocomplete="off" placeholder="data-team">
+    <label for="group-desc">Description (optional)</label>
+    <textarea id="group-desc" autocomplete="off"></textarea>
+    <div class="modal-actions">
+      <button class="modal-btn" data-close-modal="group-modal">Cancel</button>
+      <button class="modal-btn primary" id="group-save-btn">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Confirm delete modal -->
+<div class="modal-backdrop" id="confirm-modal" role="dialog" aria-modal="true">
+  <div class="modal-card">
+    <h3 id="confirm-title">Delete group?</h3>
+    <p class="sub" id="confirm-text"></p>
+    <div class="modal-actions">
+      <button class="modal-btn" data-close-modal="confirm-modal">Cancel</button>
+      <button class="modal-btn danger" id="confirm-ok-btn">Delete</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+
+<script>
+const API = "/api/admin/groups";
+
+function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+function fmtDate(s) { return s ? String(s).slice(0, 16).replace("T", " ") : "-"; }
+
+function toast(msg, kind = "") {
+  const el = document.createElement("div");
+  el.className = "toast " + kind;
+  el.textContent = msg;
+  document.getElementById("toast-stack").appendChild(el);
+  requestAnimationFrame(() => el.classList.add("show"));
+  setTimeout(() => { el.classList.remove("show"); setTimeout(() => el.remove(), 250); }, 3500);
+}
+
+function openModal(id) { document.getElementById(id).classList.add("is-open"); }
+function closeModal(id) { document.getElementById(id).classList.remove("is-open"); }
+document.querySelectorAll("[data-close-modal]").forEach(el =>
+  el.addEventListener("click", () => closeModal(el.dataset.closeModal)));
+document.querySelectorAll(".modal-backdrop").forEach(el => {
+  el.addEventListener("click", e => { if (e.target === el) el.classList.remove("is-open"); });
+});
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") document.querySelectorAll(".modal-backdrop.is-open").forEach(m => m.classList.remove("is-open"));
+});
+
+let allGroups = [];
+let editingId = null;
+
+async function loadGroups() {
+  const r = await fetch(API, { credentials: "include" });
+  document.getElementById("groups-loading").style.display = "none";
+  if (!r.ok) {
+    toast("Failed to load: HTTP " + r.status, "error");
+    return;
+  }
+  allGroups = await r.json();
+  render();
+}
+
+function render() {
+  const tbody = document.getElementById("groups-tbody");
+  const empty = document.getElementById("groups-empty");
+  const filter = document.getElementById("search").value.trim().toLowerCase();
+  const filtered = !filter ? allGroups : allGroups.filter(g =>
+    (g.name || "").toLowerCase().includes(filter) ||
+    (g.description || "").toLowerCase().includes(filter)
+  );
+  if (filtered.length === 0) {
+    tbody.innerHTML = "";
+    empty.style.display = "block";
+    if (allGroups.length > 0) {
+      empty.querySelector(".big").textContent = "No matching groups";
+      empty.querySelector("div:last-child").textContent = "Try a different search.";
+    }
+    return;
+  }
+  empty.style.display = "none";
+
+  tbody.innerHTML = "";
+  for (const g of filtered) {
+    const tr = document.createElement("tr");
+    tr.dataset.id = g.id;
+    tr.style.cursor = "pointer";
+    const origin = g.origin || "admin";
+    const actions = g.is_system
+      ? `<span style="color:#9ca3af;font-size:11px">read-only</span>`
+      : `<button class="icon-btn" data-action="edit">Edit</button>
+         <button class="icon-btn danger" data-action="delete">Delete</button>`;
+    tr.innerHTML = `
+      <td><a class="gp-name" href="/admin/groups/${encodeURIComponent(g.id)}">${esc(g.name)}</a></td>
+      <td><span class="gp-desc">${esc(g.description || "")}</span></td>
+      <td><span class="origin-chip origin-${esc(origin)}">${esc(origin.replace("_"," "))}</span></td>
+      <td class="count-cell">${g.member_count || 0}</td>
+      <td class="count-cell">
+        ${g.grant_count || 0}
+        ${g.grant_count > 0 ? `<a class="icon-btn" style="margin-left:6px" href="/admin/access?group=${encodeURIComponent(g.id)}" data-action="grants">→</a>` : ""}
+      </td>
+      <td class="date-cell">${fmtDate(g.created_at)}</td>
+      <td><div class="gp-actions">${actions}</div></td>
+    `;
+    // Row click → detail (unless action button)
+    tr.addEventListener("click", e => {
+      if (e.target.closest("[data-action]")) return;
+      window.location.href = `/admin/groups/${encodeURIComponent(g.id)}`;
+    });
+    const editBtn = tr.querySelector('[data-action="edit"]');
+    if (editBtn) editBtn.addEventListener("click", e => { e.stopPropagation(); openEdit(g); });
+    const delBtn = tr.querySelector('[data-action="delete"]');
+    if (delBtn) delBtn.addEventListener("click", e => { e.stopPropagation(); openDelete(g); });
+    tbody.appendChild(tr);
+  }
+}
+
+document.getElementById("search").addEventListener("input", render);
+
+async function loadGroupSuggestions() {
+  const block = document.getElementById("suggest-block");
+  const wrap  = document.getElementById("suggest-chips");
+  block.classList.remove("is-visible");
+  wrap.innerHTML = "";
+  try {
+    const r = await fetch("/api/admin/group-suggestions", { credentials: "include" });
+    if (!r.ok) return;
+    const items = await r.json();
+    if (!Array.isArray(items) || items.length === 0) return;
+    for (const it of items) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "suggest-chip";
+      btn.title = `Use "${it.name}" as the group name`;
+      btn.innerHTML = `${esc(it.name)} <span class="src-tag">Google</span>`;
+      btn.addEventListener("click", () => {
+        const input = document.getElementById("group-name");
+        input.value = it.name;
+        input.focus();
+      });
+      wrap.appendChild(btn);
+    }
+    block.classList.add("is-visible");
+  } catch (_) { /* fail-soft — suggestions are a hint, not required */ }
+}
+
+document.getElementById("open-create-btn").addEventListener("click", () => {
+  editingId = null;
+  document.getElementById("group-modal-title").textContent = "New group";
+  document.getElementById("group-name").value = "";
+  document.getElementById("group-desc").value = "";
+  openModal("group-modal");
+  setTimeout(() => document.getElementById("group-name").focus(), 50);
+  loadGroupSuggestions();
+});
+
+function openEdit(g) {
+  editingId = g.id;
+  document.getElementById("group-modal-title").textContent = "Edit group";
+  document.getElementById("group-name").value = g.name;
+  document.getElementById("group-desc").value = g.description || "";
+  // Suggestions are only useful when creating; hide on edit.
+  document.getElementById("suggest-block").classList.remove("is-visible");
+  document.getElementById("suggest-chips").innerHTML = "";
+  openModal("group-modal");
+}
+
+document.getElementById("group-save-btn").addEventListener("click", async () => {
+  const name = document.getElementById("group-name").value.trim();
+  const description = document.getElementById("group-desc").value.trim();
+  if (!name) { toast("Name is required", "error"); return; }
+  try {
+    if (editingId) {
+      const r = await fetch(`${API}/${encodeURIComponent(editingId)}`, {
+        method: "PATCH", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, description: description || null }),
+      });
+      if (!r.ok) throw new Error((await r.json()).detail || r.status);
+      toast("Group updated", "success");
+    } else {
+      const r = await fetch(API, {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, description: description || null }),
+      });
+      if (!r.ok) throw new Error((await r.json()).detail || r.status);
+      toast("Group created", "success");
+    }
+    closeModal("group-modal");
+    loadGroups();
+  } catch (e) {
+    toast("Save failed: " + e.message, "error");
+  }
+});
+
+function openDelete(g) {
+  document.getElementById("confirm-title").textContent = `Delete group "${g.name}"?`;
+  document.getElementById("confirm-text").textContent =
+    `Removes the group, its ${g.member_count || 0} member${g.member_count === 1 ? "" : "s"} and ${g.grant_count || 0} grant${g.grant_count === 1 ? "" : "s"}. Cannot be undone.`;
+  const ok = document.getElementById("confirm-ok-btn");
+  ok.onclick = async () => {
+    try {
+      const r = await fetch(`${API}/${encodeURIComponent(g.id)}`, {
+        method: "DELETE", credentials: "include",
+      });
+      if (!r.ok) throw new Error(r.status);
+      toast("Group deleted", "success");
+      closeModal("confirm-modal");
+      loadGroups();
+    } catch (e) {
+      toast("Delete failed: " + e.message, "error");
+    }
+  };
+  openModal("confirm-modal");
+}
+
+loadGroups();
+</script>
+{% endblock %}

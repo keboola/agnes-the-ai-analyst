@@ -360,3 +360,74 @@ class TestSyncDryRun:
         assert result.exit_code == 0
         assert mock_post.call_count == 0
         assert "Dry run" in result.output or "would upload" in result.output.lower()
+
+
+class TestSyncRespectsQueryMode:
+    """`da sync` must skip query_mode='remote' tables — they have no parquet on the server."""
+
+    def test_sync_skips_remote_query_mode_tables(self, tmp_config):
+        """Mix of local + remote tables: only local downloaded, remote skipped with stderr summary."""
+        manifest = {
+            "tables": {
+                "orders": {"hash": _FAKE_PARQUET_MD5, "query_mode": "local", "source_type": "keboola"},
+                "bq_view": {"hash": "", "query_mode": "remote", "source_type": "bigquery"},
+                "bq_table": {"hash": "", "query_mode": "remote", "source_type": "bigquery"},
+            },
+            "assets": {},
+            "server_time": "2026-04-27T00:00:00Z",
+        }
+
+        called_downloads = []
+
+        def fake_stream_download(path, target, *args, **kwargs):
+            called_downloads.append(path)
+            with open(target, "wb") as f:
+                f.write(_FAKE_PARQUET_BYTES)
+
+        with patch("cli.commands.sync.api_get", return_value=_resp(200, manifest)):
+            with patch("cli.commands.sync.stream_download", side_effect=fake_stream_download):
+                with patch("cli.commands.sync._rebuild_duckdb_views"):
+                    result = runner.invoke(app, ["sync"])
+
+        # Only 'orders' should be downloaded
+        downloaded_ids = [p.split("/")[-2] for p in called_downloads]
+        assert "orders" in downloaded_ids, f"local 'orders' must be downloaded; got {called_downloads}"
+        assert "bq_view" not in downloaded_ids, f"remote 'bq_view' must not be downloaded; got {called_downloads}"
+        assert "bq_table" not in downloaded_ids, f"remote 'bq_table' must not be downloaded; got {called_downloads}"
+
+        # Stderr/output should mention skipped remote tables
+        out = result.output or ""
+        assert "skip" in out.lower() or "remote" in out.lower(), \
+            f"expected stderr summary mentioning skipped/remote tables; got: {out!r}"
+
+        # Summary count separates unchanged vs remote-mode (Fix 1)
+        assert "Skipped (remote-mode)" in out, \
+            f"expected separate remote-mode summary line; got: {out!r}"
+
+    def test_sync_json_includes_skipped_remote(self, tmp_config):
+        """--json output must include skipped_remote list for programmatic consumers (Fix 2)."""
+        manifest = {
+            "tables": {
+                "orders": {"hash": _FAKE_PARQUET_MD5, "query_mode": "local", "source_type": "keboola"},
+                "bq_view": {"hash": "", "query_mode": "remote", "source_type": "bigquery"},
+            },
+            "assets": {},
+            "server_time": "2026-04-27T00:00:00Z",
+        }
+
+        with patch("cli.commands.sync.api_get", return_value=_resp(200, manifest)):
+            with patch("cli.commands.sync.stream_download", side_effect=_fake_stream_download):
+                with patch("cli.commands.sync._rebuild_duckdb_views"):
+                    result = runner.invoke(app, ["sync", "--json"])
+        assert result.exit_code == 0, f"sync --json failed: {result.output}"
+
+        # Rich Progress may emit a spinner line before the JSON block; match the
+        # pattern used by test_sync_json_output above.
+        output = result.output
+        json_start = output.find("{")
+        assert json_start >= 0, f"No JSON found in output: {output!r}"
+        data, _ = json.JSONDecoder().raw_decode(output[json_start:])
+
+        assert "skipped_remote" in data, f"--json output missing skipped_remote key: {data}"
+        assert "bq_view" in data["skipped_remote"], \
+            f"expected bq_view in skipped_remote; got: {data['skipped_remote']}"

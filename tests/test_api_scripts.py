@@ -17,10 +17,13 @@ def client(tmp_path, monkeypatch):
     from src.repositories.sync_settings import DatasetPermissionRepository
     from app.auth.jwt import create_access_token
 
+    from tests.helpers.auth import grant_admin
+
     conn = get_system_db()
     user_repo = UserRepository(conn)
     user_repo.create(id="admin1", email="admin@acme.com", name="Admin", role="admin")
     user_repo.create(id="analyst1", email="analyst@acme.com", name="Analyst", role="analyst")
+    grant_admin(conn, "admin1")
 
     perm_repo = DatasetPermissionRepository(conn)
     perm_repo.grant("analyst1", "sales", "read")
@@ -37,14 +40,14 @@ def client(tmp_path, monkeypatch):
 
 class TestScriptsAPI:
     def test_list_scripts_empty(self, client):
-        c, _, analyst_token = client
-        resp = c.get("/api/scripts", headers={"Authorization": f"Bearer {analyst_token}"})
+        c, admin_token, _ = client
+        resp = c.get("/api/scripts", headers={"Authorization": f"Bearer {admin_token}"})
         assert resp.status_code == 200
         assert resp.json()["count"] == 0
 
     def test_deploy_and_list(self, client):
-        c, _, analyst_token = client
-        headers = {"Authorization": f"Bearer {analyst_token}"}
+        c, admin_token, _ = client
+        headers = {"Authorization": f"Bearer {admin_token}"}
 
         resp = c.post("/api/scripts/deploy", json={
             "name": "hello", "source": "print('hello world')",
@@ -56,8 +59,8 @@ class TestScriptsAPI:
         assert resp.json()["count"] == 1
 
     def test_run_script(self, client):
-        c, _, analyst_token = client
-        headers = {"Authorization": f"Bearer {analyst_token}"}
+        c, admin_token, _ = client
+        headers = {"Authorization": f"Bearer {admin_token}"}
 
         resp = c.post("/api/scripts/run", json={
             "source": "print('hello from script')", "name": "test",
@@ -68,8 +71,8 @@ class TestScriptsAPI:
         assert "hello from script" in data["stdout"]
 
     def test_run_blocked_import(self, client):
-        c, _, analyst_token = client
-        headers = {"Authorization": f"Bearer {analyst_token}"}
+        c, admin_token, _ = client
+        headers = {"Authorization": f"Bearer {admin_token}"}
 
         resp = c.post("/api/scripts/run", json={
             "source": "import subprocess; subprocess.run(['ls'])", "name": "bad",
@@ -79,18 +82,15 @@ class TestScriptsAPI:
         assert "disallowed" in detail or "Blocked" in detail
 
     def test_deploy_run_undeploy(self, client):
-        c, admin_token, analyst_token = client
-        analyst_headers = {"Authorization": f"Bearer {analyst_token}"}
+        c, admin_token, _ = client
         admin_headers = {"Authorization": f"Bearer {admin_token}"}
 
-        # Deploy
         resp = c.post("/api/scripts/deploy", json={
             "name": "calc", "source": "print(2+2)", "schedule": "0 8 * * MON",
-        }, headers=analyst_headers)
+        }, headers=admin_headers)
         script_id = resp.json()["id"]
 
-        # Run
-        resp = c.post(f"/api/scripts/{script_id}/run", headers=analyst_headers)
+        resp = c.post(f"/api/scripts/{script_id}/run", headers=admin_headers)
         assert resp.status_code == 200
         assert "4" in resp.json()["stdout"]
 

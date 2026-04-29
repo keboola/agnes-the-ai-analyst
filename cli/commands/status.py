@@ -33,8 +33,23 @@ def status(
         return
 
     try:
+        # Minimal health ping first
         resp = api_get("/api/health")
-        data = resp.json()
+        minimal = resp.json()
+        if minimal.get("status") != "ok":
+            if as_json:
+                typer.echo(json.dumps(minimal, indent=2))
+            else:
+                typer.echo(f"Status: {minimal.get('status', 'unknown')}")
+            return
+
+        # Detailed health (auth required) for service-level info
+        try:
+            resp = api_get("/api/health/detailed")
+            data = resp.json()
+        except Exception:
+            data = minimal
+
         if as_json:
             typer.echo(json.dumps(data, indent=2))
         else:

@@ -1,0 +1,9 @@
+# Development overrides — auto-reload + source mount
+# This file must be explicitly loaded with: docker compose -f docker-compose.yml -f docker-compose.dev.yml ...
+# (Renamed from docker-compose.override.yml to avoid auto-merge on every host — see issue #87/M23)
+services:
+  app:
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --proxy-headers --forwarded-allow-ips='*'
+    volumes:
+      - .:/app
+      - data:/data

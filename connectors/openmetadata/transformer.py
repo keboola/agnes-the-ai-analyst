@@ -184,7 +184,7 @@ def has_tag(tags: List[Dict[str, Any]], tag_fqn: str) -> bool:
 
     Args:
         tags: List of tag dicts from OpenMetadata
-        tag_fqn: Fully qualified tag name to check (e.g., "AIAgent.FoundryAI")
+        tag_fqn: Fully qualified tag name to check (e.g., "AIAgent.MyAgent")
 
     Returns:
         True if the tag is found

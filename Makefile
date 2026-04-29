@@ -1,6 +1,6 @@
 # Agnes AI Data Analyst — Development Makefile
 
-LOCAL_DEV_COMPOSE := -f docker-compose.yml -f docker-compose.override.yml -f docker-compose.local-dev.yml
+LOCAL_DEV_COMPOSE := -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.local-dev.yml
 
 .PHONY: help test lint dev docker local-dev local-dev-down local-dev-logs update-openapi-snapshot
 

@@ -5,6 +5,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+def _auth(token):
+    return {"Authorization": f"Bearer {token}"}
+
+
 @pytest.fixture
 def app_client(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
@@ -27,12 +31,15 @@ def seeded_client(tmp_path, monkeypatch):
     from argon2 import PasswordHasher
     ph = PasswordHasher()
 
+    from tests.helpers.auth import grant_admin
+
     conn = get_system_db()
     repo = UserRepository(conn)
     repo.create(id="admin1", email="admin@acme.com", name="Admin", role="admin",
                 password_hash=ph.hash("adminpass"))
     repo.create(id="analyst1", email="analyst@acme.com", name="Analyst", role="analyst",
                 password_hash=ph.hash("analystpass"))
+    grant_admin(conn, "admin1")
     conn.close()
 
     app = create_app()
@@ -51,12 +58,19 @@ class TestHealth:
         resp = app_client.get("/api/health")
         assert resp.status_code == 200
         data = resp.json()
+        assert data["status"] == "ok"
+
+    def test_health_detailed_requires_auth(self, app_client):
+        resp = app_client.get("/api/health/detailed")
+        assert resp.status_code in (401, 403)
+
+    def test_health_detailed_has_duckdb_check(self, seeded_app):
+        c = seeded_app["client"]
+        resp = c.get("/api/health/detailed", headers=_auth(seeded_app["admin_token"]))
+        assert resp.status_code == 200
+        data = resp.json()
         assert data["status"] in ("healthy", "degraded", "unhealthy")
         assert "services" in data
-
-    def test_health_has_duckdb_check(self, app_client):
-        resp = app_client.get("/api/health")
-        data = resp.json()
         assert "duckdb_state" in data["services"]
         assert data["services"]["duckdb_state"]["status"] == "ok"
 
