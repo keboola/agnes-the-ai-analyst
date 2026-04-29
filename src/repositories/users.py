@@ -75,10 +75,15 @@ class UserRepository:
                 pass  # already a member (re-create after delete?)
 
     def update(self, id: str, **kwargs) -> None:
+        # `groups` was a v12-era column dropped in v13; fresh installs run
+        # `_SYSTEM_SCHEMA` only and never have it, so listing it here would
+        # break update calls on those installs with a CatalogException. Group
+        # membership is now materialized in `user_group_members`; writers
+        # there go through `UserGroupMembersRepository` instead of `update`.
         allowed = {
             "email", "name", "role", "password_hash", "setup_token",
             "setup_token_created", "reset_token", "reset_token_created",
-            "active", "deactivated_at", "deactivated_by", "groups",
+            "active", "deactivated_at", "deactivated_by",
         }
         updates = {k: v for k, v in kwargs.items() if k in allowed}
         if not updates:

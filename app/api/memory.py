@@ -230,12 +230,13 @@ async def get_stats(
     where_clauses: List[str] = []
     params: list = []
     if not is_priv:
-        # Personal-item privacy: only the contributor sees their own personals.
-        # _can_view_item is the per-item analogue; here we hoist it into SQL.
-        where_clauses.append(
-            "(COALESCE(is_personal, FALSE) = FALSE OR source_user = ?)"
-        )
-        params.append(user.get("email"))
+        # Personal-item privacy: non-privileged callers see no personal items
+        # in the aggregate, even their own. /my-contributions is the canonical
+        # surface for a user's personal contributions; including them here
+        # would make /api/memory/stats.total disagree with the count visible
+        # via GET /api/memory (which forces exclude_personal=True for non-
+        # admins regardless of source_user).
+        where_clauses.append("(is_personal IS NULL OR is_personal = FALSE)")
 
     if groups is not None:
         # groups is None for admins → no audience filter; otherwise restrict to
