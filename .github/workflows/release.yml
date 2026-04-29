@@ -9,14 +9,39 @@ on:
       - "docs/**"
       - "*.md"
       - "LICENSE"
+  # Branch creation. Required because `paths-ignore` on the `push` event
+  # diffs the new ref against the default branch — a branch created from
+  # main with no extra commits has zero diff, so every file matches
+  # paths-ignore and the workflow is skipped. Devs spinning up a personal
+  # branch off main to deploy main's exact state to their dev VM
+  # (`:dev-<user>-latest` floating tag) need an image to be published, so
+  # we trigger explicitly on branch create. Tag creates are filtered out
+  # at the job level so we don't double-build with `keboola-deploy.yml`
+  # (which owns `keboola-deploy-*` tag pushes).
+  create:
   workflow_dispatch:  # manual trigger for explicit dev-<slug> builds
 
 permissions:
   contents: write
   packages: write
 
+# When a developer pushes a brand-new branch with code changes, GitHub fires
+# both a `create` and a `push` event for the same commit. Without
+# concurrency control, both runs would claim distinct CalVer version tags
+# (dev-YYYY.MM.N and dev-YYYY.MM.N+1) and race to push overlapping floating
+# tags (:dev, :dev-<slug>, :dev-<prefix>-latest). Group by ref and cancel
+# in-progress duplicates so only the most recent event survives — the
+# zero-diff case (only `create` fires, no `push`) is unaffected since
+# there's only one run.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
+    # Skip the `create` event for tags — those are owned by keboola-deploy.yml
+    # and shouldn't double-build here. Branch creates DO run.
+    if: github.event_name != 'create' || github.event.ref_type == 'branch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -38,10 +63,18 @@ jobs:
 
   build-and-push:
     needs: test
-    # Only publish images from main pushes or manual triggers.
-    # Non-main branch pushes run tests only; use workflow_dispatch
-    # for explicit dev-<slug> image builds when needed.
-    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    # Publish on:
+    #   - any push (main → :stable-* / non-main → :dev-* + :dev-<slug>);
+    #   - branch creation (a fresh branch off main with no extra commits
+    #     should still produce a `:dev-<slug>` + `:dev-<prefix>-latest`
+    #     image so the developer's VM, which pins to that floating tag,
+    #     can deploy main's exact state without manually changing code);
+    #   - manual workflow_dispatch.
+    # Tag creates are excluded — `keboola-deploy.yml` owns tag pushes.
+    if: |
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'create' && github.event.ref_type == 'branch')
     runs-on: ubuntu-latest
     outputs:
       image_tag: ${{ steps.meta.outputs.versioned_tag }}
