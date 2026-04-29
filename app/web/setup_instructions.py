@@ -17,71 +17,77 @@ the real versioned filename inlined.
 `{server_host}` is server-pre-substituted because the `git config` and
 `claude plugin marketplace add` lines need the bare host (no scheme), and
 the click-time JS only knows the full origin (`{server_url}`).
+
+## Cross-platform trust strategy (when `ca_pem` is supplied)
+
+The trust block (step 0) is the load-bearing piece. Three things bit us in
+practice and the design here exists to dodge each one:
+
+1. **rustls rejects the Agnes leaf cert as `CaUsedAsEndEntity`.** The Agnes
+   server's self-signed cert is simultaneously its own CA (basicConstraints
+   `CA:TRUE`) AND the leaf served on the wire — a setup OpenSSL tolerates
+   but webpki/rustls strictly refuses. So `uv tool install <https-url>`
+   never works against the Agnes wheel endpoint. We download the wheel via
+   curl first (curl uses OpenSSL, accepts the cert), then `uv tool install
+   --native-tls --force <local-file>` lets rustls reuse the OS trust store
+   for PyPI dependency resolution. No HTTPS hop through rustls touches the
+   Agnes host.
+
+2. **`SSL_CERT_FILE` REPLACES the trust store, it doesn't append.** Pointing
+   it at `~/.agnes/ca.pem` alone breaks every Python tool that needs to
+   reach a public host (PyPI, GitHub) — `da` works fine because it only
+   talks to Agnes, but `uv run --with <pkg>` immediately fails with
+   `UnknownIssuer`. We materialize a combined bundle at
+   `~/.agnes/ca-bundle.pem` (system roots + Agnes CA) and point all
+   `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE` / `GIT_SSL_CAINFO` at it.
+   `NODE_EXTRA_CA_CERTS` keeps pointing at just `ca.pem` because Node's
+   semantics is *additive* (appends to bundled roots), so a single-cert
+   file is correct there.
+
+3. **Native binaries (claude.exe on Windows, claude on macOS) ignore both
+   `NODE_EXTRA_CA_CERTS` and our env vars** — they have a bundled CA list
+   and/or use the OS trust store directly. Registering the cert in the OS
+   trust store (Windows: `certutil -user -addstore Root`; macOS: `security
+   add-trusted-cert`; Linux: `update-ca-certificates`/`update-ca-trust`) is
+   what makes those binaries trust the host. Even with that registered,
+   we observed claude.exe on Windows still failing the marketplace HTTPS
+   add — it appears to use a fully bundled CA list that isn't refreshable
+   from the OS store. So the marketplace step goes straight to a system-`git
+   clone` fallback on Windows (system git honors `GIT_SSL_CAINFO`), and only
+   tries the direct HTTPS path on macOS/Linux.
+
+## Step ordering
+
+The numbered steps are arranged so that:
+  - All installation work (CLI, plugins) happens first, in one go.
+  - The interactive question (skills copy vs on-demand) is the LAST step
+    before Confirm — by that point everything else is done, the user only
+    needs to decide one thing, and the assistant blocks on their answer.
+  - `da diagnose` runs late so it doubles as a final smoke test after
+    plugins are in place, instead of gating them.
+
+Layout (with marketplace plugins to install):
+  0  TLS trust block (only when ca_pem is supplied)
+  1  Install CLI
+  2  Login
+  3  Verify
+  4  Git check
+  5  Marketplace + plugins
+  6  Diagnose
+  7  Skills (interactive — assistant waits for user)
+  8  Confirm
+
+Layout (no plugins): steps 4-5 collapse out, diagnose/skills/confirm
+renumber to 4-5-6.
+
+The combined-bundle source uses a fallback chain so the prompt still works
+on machines without the system Python `certifi`: we try (a) `python3 -c
+'import certifi'`, (b) the platform's curl/openssl bundle path, (c)
+`uv run --with certifi` as a network last-resort. The user explicitly
+permitted that fallback chain — it's not improvising-around-a-TLS-error.
 """
 
 from __future__ import annotations
-
-# Steps 1-5: install CLI, login, verify, diagnose, skills. Static.
-_PROLOGUE_LINES: list[str] = [
-    "Set up the Agnes CLI on this machine.",
-    "",
-    "Server: {server_url}",
-    "Personal access token: {token}",
-    "(Just generated; treat it as a secret.)",
-    "",
-    "Run these, in order. If any step fails, paste the exact error back and stop.",
-    "",
-    "1) Install the CLI:",
-    "   uv tool install --force {server_url}/cli/wheel/{wheel_filename}",
-    "",
-    "   If uv is not installed yet:",
-    "     curl -LsSf https://astral.sh/uv/install.sh | sh",
-    "",
-    "   If `da --version` fails after install because ~/.local/bin is not on PATH:",
-    "     export PATH=\"$HOME/.local/bin:$PATH\"",
-    "     # persist: append the same line to your ~/.zshrc or ~/.bashrc",
-    "",
-    "2) Log in (also saves the server URL):",
-    "   da auth import-token --token \"{token}\" --server \"{server_url}\"",
-    "",
-    "3) Verify the login:",
-    "   da auth whoami",
-    "",
-    "4) Run diagnostics:",
-    "   da diagnose",
-    "",
-    "   This should print \"Overall: healthy\" and a list of green checks. If",
-    "   anything is yellow/red, paste the full output back.",
-    "",
-    "5) Skills (ask the user first):",
-    "   The CLI ships with reusable markdown skills (setup, connectors,",
-    "   corporate-memory, deploy, notifications, security, troubleshoot),",
-    "   listable via `da skills list` and readable via `da skills show <name>`.",
-    "",
-    "   Ask the user verbatim: \"Do you want me to copy the Agnes skills into",
-    "   ~/.claude/skills/agnes/ so they are always loaded in Claude Code,",
-    "   or should I pull them on-demand via `da skills show <name>` when",
-    "   needed?\"",
-    "",
-    "   If they say copy:",
-    "     mkdir -p ~/.claude/skills/agnes",
-    "     for s in $(da skills list | awk '{print $1}'); do",
-    "       da skills show \"$s\" > ~/.claude/skills/agnes/\"$s\".md",
-    "     done",
-    "     echo \"Copied skills to ~/.claude/skills/agnes/\"",
-]
-
-# Final step: confirm. The leading number is filled in at render time
-# (6 when no marketplace block was inserted, 7 when it was) so the prompt
-# stays sequentially numbered.
-_FINALE_LINES_TEMPLATE: list[str] = [
-    "{confirm_step_num}) Confirm:",
-    "   Tell me \"Agnes CLI is ready\" and summarize:",
-    "   - `da --version` output",
-    "   - `da auth whoami` output (email + role)",
-    "   - Whether skills were copied or left on-demand",
-    "   - The `da diagnose` overall status",
-]
 
 # Marketplace name as published by app.marketplace_server.packager.
 # Hard-coded here (rather than imported) to keep this module dependency-free
@@ -91,38 +97,57 @@ _MARKETPLACE_NAME = "agnes"
 
 
 def _tls_trust_block(ca_pem: str) -> list[str]:
-    """Step 0 — install the Agnes server's TLS cert into a per-user trust file.
+    """Step 0 — cross-platform TLS trust bootstrap for the Agnes server.
 
-    Emitted only when the server has a non-publicly-trusted cert (self-signed
-    bring-up cert, or a corp-CA chain whose root isn't in the user's OS trust
-    store). The PEM body is inlined in a single-quoted heredoc so `$`/backtick
-    chars in cert PEM never get shell-expanded.
+    Emitted only when the server has a non-publicly-trusted cert. Does four
+    things in a single numbered block (see module docstring for the full
+    rationale):
 
-    Trust path is `~/.agnes/ca.pem`. Three env vars cover every TLS client
-    later in the prompt:
-
-      - SSL_CERT_FILE       — Python (httpx/requests/uv-via-rustls), `da`
-      - NODE_EXTRA_CA_CERTS — `claude plugin marketplace add` (Node `https`).
-                              Note: NODE_EXTRA_CA_CERTS *adds* to system
-                              trust, so public HTTPS keeps working.
-      - GIT_SSL_CAINFO      — `git clone` of the marketplace repo
-
-    The exports are also appended to ~/.bashrc / ~/.zshrc so `da` in newly
-    spawned terminals keeps trusting the host. Idempotent: a `grep` guard
-    skips the append when the marker line is already present, so re-running
-    setup doesn't duplicate the block.
-
-    Trust scope caveat: SSL_CERT_FILE *replaces* Python's default trust
-    store, so Python apps that talk to public hosts after this is set will
-    fail unless their target's root is in `ca.pem`. Acceptable here because
-    `da` only ever talks to the Agnes host; users running unrelated Python
-    work in the same shell can `unset SSL_CERT_FILE` to opt out.
+      (a) Detect platform (Windows Git Bash / macOS / Linux) and pick the
+          shell rc file that the user's login shell actually reads.
+          `$SHELL`-driven, NOT existence-of-rc-driven — old setups put a
+          legacy `.bashrc` next to a default zsh shell on macOS, and the
+          `[ -f .bashrc ]` heuristic silently writes to the wrong file.
+      (b) Write the cert PEM to `~/.agnes/ca.pem` via single-quoted heredoc
+          (so `$` / backtick chars in real-world certs never shell-expand).
+      (c) Register the cert in the OS trust store (so native binaries that
+          bypass our env vars — claude.exe, system git's Schannel backend,
+          Python apps using `truststore` — still trust the host).
+          Idempotent: re-running just re-affirms the entry.
+      (d) Build a *combined* CA bundle (system roots + Agnes CA) at
+          `~/.agnes/ca-bundle.pem`, with a fallback chain for the system
+          roots source. Persist `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE` /
+          `GIT_SSL_CAINFO` pointing at the bundle, plus
+          `NODE_EXTRA_CA_CERTS` pointing at just `ca.pem` (Node
+          appends-not-replaces). Persistence is idempotent via a grep
+          guard for the `AGNES_CA_PEM_TRUST` marker.
     """
     pem = ca_pem.strip()
     lines: list[str] = [
-        "0) Trust the Agnes TLS certificate (this server uses a private CA / self-signed cert):",
-        "     mkdir -p ~/.agnes",
-        "     cat > ~/.agnes/ca.pem <<'AGNES_CA_PEM'",
+        "0) Trust the Agnes TLS certificate — cross-platform setup for a self-signed / private-CA host.",
+        "",
+        "   (a) Detect platform + pick the shell rc file your login shell actually reads.",
+        "       Driven by $SHELL + uname (NOT by which rc files happen to exist on disk).",
+        "",
+        "       case \"$(uname -s)\" in",
+        "         Darwin)               PLATFORM=macos ;;",
+        "         Linux)                PLATFORM=linux ;;",
+        "         MINGW*|MSYS*|CYGWIN*) PLATFORM=windows ;;",
+        "         *) echo \"Unsupported OS: $(uname -s)\" >&2; exit 1 ;;",
+        "       esac",
+        "       SHELL_NAME=\"$(basename \"${SHELL:-bash}\")\"",
+        "       case \"${SHELL_NAME}:${PLATFORM}\" in",
+        "         zsh:*)                   RC=\"$HOME/.zshrc\" ;;",
+        "         bash:macos)              RC=\"$HOME/.bash_profile\" ;;",
+        "         bash:windows|bash:linux) RC=\"$HOME/.bashrc\" ;;",
+        "         *)                       RC=\"$HOME/.profile\" ;;",
+        "       esac",
+        "       echo \"Platform: $PLATFORM, shell: $SHELL_NAME, rc: $RC\"",
+        "",
+        "   (b) Write the cert (single-quoted heredoc so $/backticks in the body don't expand):",
+        "",
+        "       mkdir -p ~/.agnes",
+        "       cat > ~/.agnes/ca.pem <<'AGNES_CA_PEM'",
     ]
     # PEM body is flush-left: `<<'DELIM'` heredocs preserve leading whitespace,
     # and any indent inside the cert breaks `openssl x509` / Python ssl parsers.
@@ -130,48 +155,244 @@ def _tls_trust_block(ca_pem: str) -> list[str]:
     lines.extend([
         "AGNES_CA_PEM",
         "",
-        "     # Trust this CA in the current shell — uv / da / claude (Node) / git:",
-        "     export SSL_CERT_FILE=\"$HOME/.agnes/ca.pem\"",
-        "     export NODE_EXTRA_CA_CERTS=\"$HOME/.agnes/ca.pem\"",
-        "     export GIT_SSL_CAINFO=\"$HOME/.agnes/ca.pem\"",
+        "   (c) Register the cert in the OS trust store. Native binaries (claude.exe,",
+        "       system git's Schannel/Security.framework backends) read the OS store and",
+        "       ignore our env vars — without this, step 7's marketplace add fails.",
+        "       No admin rights needed (user-store only). Idempotent.",
         "",
-        "     # Persist for new shells (so `da` keeps trusting the host after you reopen the terminal).",
-        "     # Idempotent: the grep guard prevents duplicate appends on re-run.",
-        "     RC=\"$HOME/.zshrc\"; [ -f \"$HOME/.bashrc\" ] && RC=\"$HOME/.bashrc\"",
-        "     if ! grep -q 'AGNES_CA_PEM_TRUST' \"$RC\" 2>/dev/null; then",
-        "       cat >> \"$RC\" <<'AGNES_RC_BLOCK'",
+        "       case \"$PLATFORM\" in",
+        "         windows)",
+        "           WIN_CA=\"$(cygpath -w ~/.agnes/ca.pem)\"",
+        "           certutil.exe -user -addstore \"Root\" \"$WIN_CA\"",
+        "           ;;",
+        "         macos)",
+        "           # Will prompt once for the keychain password.",
+        "           security add-trusted-cert -r trustRoot \\",
+        "             -k \"$HOME/Library/Keychains/login.keychain-db\" \\",
+        "             ~/.agnes/ca.pem",
+        "           ;;",
+        "         linux)",
+        "           if command -v update-ca-certificates >/dev/null 2>&1; then",
+        "             sudo cp ~/.agnes/ca.pem /usr/local/share/ca-certificates/agnes.crt",
+        "             sudo update-ca-certificates",
+        "           elif command -v update-ca-trust >/dev/null 2>&1; then",
+        "             sudo cp ~/.agnes/ca.pem /etc/pki/ca-trust/source/anchors/agnes.crt",
+        "             sudo update-ca-trust",
+        "           else",
+        "             echo \"WARN: install ~/.agnes/ca.pem into your distro's trust store manually\" >&2",
+        "           fi",
+        "           ;;",
+        "       esac",
         "",
-        "# AGNES_CA_PEM_TRUST — added by `da` setup; trusts the Agnes server's private CA",
-        "export SSL_CERT_FILE=\"$HOME/.agnes/ca.pem\"",
+        "   (d) Build a COMBINED CA bundle (system roots + Agnes CA) for Python tools",
+        "       and curl. SSL_CERT_FILE *replaces* the trust store, so pointing it at",
+        "       the Agnes CA alone would break public hosts (PyPI etc.). Source the",
+        "       system roots from a fallback chain — the first source that produces",
+        "       a non-empty, existing path wins. Don't abort on the first miss; that's",
+        "       what the chain is for.",
+        "",
+        "       CERTIFI_PATH=\"$(python3 -c 'import certifi; print(certifi.where())' 2>/dev/null || true)\"",
+        "       [ -z \"$CERTIFI_PATH\" ] && CERTIFI_PATH=\"$(python -c 'import certifi; print(certifi.where())' 2>/dev/null || true)\"",
+        "       if [ -z \"$CERTIFI_PATH\" ]; then",
+        "         for p in /mingw64/ssl/certs/ca-bundle.crt /usr/ssl/certs/ca-bundle.crt \\",
+        "                  /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt \\",
+        "                  /etc/ssl/cert.pem; do",
+        "           [ -f \"$p\" ] && CERTIFI_PATH=\"$p\" && break",
+        "         done",
+        "       fi",
+        "       if [ -z \"$CERTIFI_PATH\" ]; then",
+        "         CERTIFI_PATH=\"$(uv run --native-tls --with certifi --no-project python -c 'import certifi; print(certifi.where())' 2>/dev/null || true)\"",
+        "       fi",
+        "       if [ -z \"$CERTIFI_PATH\" ] || [ ! -f \"$CERTIFI_PATH\" ]; then",
+        "         echo \"ERROR: locate a system CA bundle. Install Python 3 + certifi and re-run.\" >&2",
+        "         exit 1",
+        "       fi",
+        "       echo \"Base CA bundle: $CERTIFI_PATH\"",
+        "       cat \"$CERTIFI_PATH\" ~/.agnes/ca.pem > ~/.agnes/ca-bundle.pem",
+        "",
+        "   (e) Persist env vars in the rc file picked in (a). Idempotent — won't",
+        "       duplicate on re-run thanks to the AGNES_CA_PEM_TRUST grep guard.",
+        "       Note the asymmetry: SSL_CERT_FILE (and REQUESTS_CA_BUNDLE, GIT_SSL_CAINFO)",
+        "       point at the COMBINED bundle because those tools REPLACE trust.",
+        "       NODE_EXTRA_CA_CERTS points at just ca.pem because Node APPENDS to its",
+        "       bundled roots.",
+        "",
+        "       if ! grep -q 'AGNES_CA_PEM_TRUST' \"$RC\" 2>/dev/null; then",
+        "         cat >> \"$RC\" <<'AGNES_RC_BLOCK'",
+        "",
+        "# AGNES_CA_PEM_TRUST — added by Agnes setup",
+        "# Combined bundle (system roots + Agnes CA) for tools that REPLACE trust:",
+        "export SSL_CERT_FILE=\"$HOME/.agnes/ca-bundle.pem\"",
+        "export REQUESTS_CA_BUNDLE=\"$HOME/.agnes/ca-bundle.pem\"",
+        "export GIT_SSL_CAINFO=\"$HOME/.agnes/ca-bundle.pem\"",
+        "# Single-cert file for Node (APPENDS to bundled roots):",
         "export NODE_EXTRA_CA_CERTS=\"$HOME/.agnes/ca.pem\"",
-        "export GIT_SSL_CAINFO=\"$HOME/.agnes/ca.pem\"",
+        "export PATH=\"$HOME/.local/bin:$PATH\"",
         "AGNES_RC_BLOCK",
-        "     fi",
+        "       fi",
+        "       # Apply for THIS shell too:",
+        "       export SSL_CERT_FILE=\"$HOME/.agnes/ca-bundle.pem\"",
+        "       export REQUESTS_CA_BUNDLE=\"$HOME/.agnes/ca-bundle.pem\"",
+        "       export GIT_SSL_CAINFO=\"$HOME/.agnes/ca-bundle.pem\"",
+        "       export NODE_EXTRA_CA_CERTS=\"$HOME/.agnes/ca.pem\"",
+        "       export PATH=\"$HOME/.local/bin:$PATH\"",
+        "",
+        "   IMPORTANT for the Bash tool: env vars do NOT persist between separate",
+        "   Bash invocations. Re-export the four lines above (SSL_CERT_FILE,",
+        "   REQUESTS_CA_BUNDLE, GIT_SSL_CAINFO, NODE_EXTRA_CA_CERTS) plus PATH at",
+        "   the top of every later step's bash block that talks to Agnes.",
         "",
     ])
     return lines
 
 
-def _git_check_block() -> list[str]:
-    """Step 6 — ensure git is on PATH before the marketplace step clones.
+def _install_cli_lines(*, has_ca: bool, server_url_placeholder: str = "{server_url}") -> list[str]:
+    """Step 1 — install the `da` CLI.
 
-    `claude plugin marketplace add` shells out to `git clone` under the
-    hood, so a missing git binary fails step 7 with a confusing error.
-    Cross-platform install commands cover the two supported workstation
-    OSes:
+    When the trust block was emitted (`has_ca=True`), we MUST avoid
+    `uv tool install <https-url>` against the Agnes wheel endpoint:
+    rustls rejects the Agnes leaf cert with `CaUsedAsEndEntity`, regardless
+    of `--native-tls` (the rejection is at chain validation, not at trust
+    lookup — putting the cert in the OS store doesn't fix it). Solution:
+    download the wheel with `curl --cacert` (curl uses OpenSSL, no rustls),
+    then `uv tool install --native-tls` from the local file. PyPI deps
+    still resolve over HTTPS, but `--native-tls` makes uv use the OS trust
+    store for that path, which is fine because PyPI's CA chain is public.
+
+    When `has_ca=False`, we trust the server's cert is publicly valid, so
+    the simple direct install works.
+    """
+    if has_ca:
+        return [
+            "1) Install the CLI.",
+            "   The Agnes server's self-signed cert trips rustls' CaUsedAsEndEntity check,",
+            "   so direct `uv tool install <https-url>` against the wheel endpoint fails",
+            "   (even with --native-tls). Workaround: curl-then-local-install.",
+            "",
+            "   If uv is missing first:",
+            "     curl -LsSf https://astral.sh/uv/install.sh | sh",
+            "     export PATH=\"$HOME/.local/bin:$PATH\"",
+            "",
+            "   WHEEL=/tmp/{wheel_filename}",
+            f"   curl -fsSL --cacert ~/.agnes/ca.pem -o \"$WHEEL\" {server_url_placeholder}/cli/wheel/{{wheel_filename}}",
+            "   uv tool install --native-tls --force \"$WHEEL\"",
+            "",
+            "   If `da --version` fails after install because ~/.local/bin is not on PATH:",
+            "     export PATH=\"$HOME/.local/bin:$PATH\"",
+            "     # persist: append the same line to your ~/.zshrc or ~/.bashrc",
+            "     # (the trust block in step 0 already does this for you on first run).",
+        ]
+    return [
+        "1) Install the CLI:",
+        f"   uv tool install --force {server_url_placeholder}/cli/wheel/{{wheel_filename}}",
+        "",
+        "   If uv is not installed yet:",
+        "     curl -LsSf https://astral.sh/uv/install.sh | sh",
+        "",
+        "   If `da --version` fails after install because ~/.local/bin is not on PATH:",
+        "     export PATH=\"$HOME/.local/bin:$PATH\"",
+        "     # persist: append the same line to your ~/.zshrc or ~/.bashrc",
+    ]
+
+
+# Steps 2-3: login + verify. Static — these always come right after install.
+_LOGIN_VERIFY_LINES: list[str] = [
+    "",
+    "2) Log in (also saves the server URL):",
+    "   da auth import-token --token \"{token}\" --server \"{server_url}\"",
+    "",
+    "3) Verify the login:",
+    "   da auth whoami",
+]
+
+
+def _diagnose_skills_lines(*, diagnose_num: str, skills_num: str) -> list[str]:
+    """Diagnose + skills steps — moved AFTER the marketplace block.
+
+    Putting these last (instead of right after `whoami`) means: by the time
+    we ask the user the skills question, all installation work is finished —
+    the only thing the prompt is still waiting on is one human-loop answer.
+    `da diagnose` then doubles as a server-health smoke test that runs after
+    plugins are in place, not as a gate before them. With the new ordering
+    skills is the LAST step before Confirm, so the assistant must wait for
+    the user's answer before finalizing — there's no "run other steps in
+    parallel" affordance any more (and it isn't needed).
+
+    Step numbers are filled in by the caller because they shift between
+    the no-marketplace layout (4, 5) and the marketplace layout (6, 7).
+    """
+    return [
+        "",
+        f"{diagnose_num}) Run diagnostics:",
+        "   da diagnose",
+        "",
+        "   This should print \"Overall: healthy\". On a fresh install, expect",
+        "   `db_schema: unknown` and `data: 0 tables` — those are NORMAL on an",
+        "   empty instance, not errors. Only flag actual yellow/red checks.",
+        "",
+        f"{skills_num}) Skills (ask the user — this is the last interactive step before Confirm):",
+        "   The CLI ships with reusable markdown skills (setup, connectors,",
+        "   corporate-memory, deploy, notifications, security, troubleshoot),",
+        "   listable via `da skills list` and readable via `da skills show <name>`.",
+        "",
+        "   Ask the user verbatim: \"Do you want me to copy the Agnes skills into",
+        "   ~/.claude/skills/agnes/ so they are always loaded in Claude Code,",
+        "   or should I pull them on-demand via `da skills show <name>` when",
+        "   needed?\"",
+        "",
+        "   Wait for the user's answer before moving to Confirm.",
+        "",
+        "   If they say copy:",
+        "     mkdir -p ~/.claude/skills/agnes",
+        "     for s in $(da skills list | awk '{print $1}'); do",
+        "       da skills show \"$s\" > ~/.claude/skills/agnes/\"$s\".md",
+        "     done",
+        "     echo \"Copied skills to ~/.claude/skills/agnes/\"",
+    ]
+
+
+# Final step: confirm. The leading number is filled in at render time
+# (6 when no marketplace block was inserted, 8 when it was) so the prompt
+# stays sequentially numbered. Skills is now the previous step (no
+# "awaiting answer" hedge — Confirm only runs after the user answers).
+_FINALE_LINES_TEMPLATE: list[str] = [
+    "{confirm_step_num}) Confirm:",
+    "   Tell me \"Agnes CLI is ready\" and summarize:",
+    "   - `da --version` output",
+    "   - `da auth whoami` output (email + role)",
+    "   - Whether skills were copied or left on-demand",
+    "   - The `da diagnose` overall status",
+    "   - Which CA bundle source got picked in step 0(d) (system Python certifi / system curl bundle / uv-fetched)",
+    "   - Whether the marketplace add went via direct HTTPS or via the git-clone fallback (and on which platform)",
+]
+
+
+def _git_check_block(step_num: str) -> list[str]:
+    """Git pre-flight check — runs before the marketplace clone.
+
+    `claude plugin marketplace add` (and our git-clone fallback) shells out
+    to `git`, so a missing git binary fails the marketplace step with a
+    confusing error. Cross-platform install commands cover the three
+    supported workstation OSes:
       - macOS: Homebrew (`brew install git`). The Xcode CLT bundle also
         ships git; we prefer brew because it's non-interactive.
       - Windows: winget (`winget install --id Git.Git -e ...`). Bundled
         with Windows 10 1809+ and Windows 11; non-interactive with --silent.
+      - Linux: apt or dnf, depending on distro family.
+
+    `step_num` is parameterized because step ordering shifted between
+    layouts (the marketplace block now runs before diagnose/skills, so
+    git-check + marketplace are steps 4-5 instead of 6-7).
     """
     return [
         "",
-        "6) Make sure git is installed (required for the marketplace clone):",
+        f"{step_num}) Make sure git is installed (required for the marketplace clone):",
         "     git --version",
         "",
         "   If that fails (\"command not found\" or similar), install git:",
         "     - macOS:   brew install git",
         "     - Windows: winget install --id Git.Git -e --source winget --silent",
+        "     - Linux:   sudo apt-get install git    OR    sudo dnf install git",
         "",
         "   Then re-run `git --version` to confirm before continuing.",
     ]
@@ -180,14 +401,83 @@ def _git_check_block() -> list[str]:
 def _marketplace_block(
     plugin_install_names: list[str],
     self_signed_tls: bool,
+    has_ca: bool,
+    step_num: str,
 ) -> list[str]:
-    """Build the optional step-7 block.
+    """Build the marketplace + plugin-install block.
 
     Pre-condition: `plugin_install_names` is non-empty (caller checks).
+
+    `step_num` is parameterized because step ordering shifted between
+    layouts (this block now runs before diagnose/skills, so it's step 5
+    instead of the old step 7).
+
+    With `has_ca=True`: the user has the trust block from step 0, so we know
+    the cert is in the OS store and our env vars are set. Strategy:
+      - Windows: claude.exe has been observed to ignore both the Windows
+        trust store AND NODE_EXTRA_CA_CERTS for marketplace HTTPS (it errors
+        with "unable to verify the first certificate"). Skip the direct
+        attempt and go straight to a system-`git clone` fallback. System git
+        honors GIT_SSL_CAINFO (= the combined bundle) so the clone works.
+      - macOS / Linux: try direct HTTPS first; claude on these platforms
+        often uses the OS-trusted cert path. Fall back to git clone if it
+        fails.
+
+    With `has_ca=False`: the legacy path. If `self_signed_tls=True` we emit
+    the host-scoped `git config sslVerify=false` downgrade so the marketplace
+    git-clone (under claude's hood) works against an untrusted endpoint.
     """
-    lines: list[str] = [
+    if has_ca:
+        lines: list[str] = [
+            "",
+            f"{step_num}) Register the Agnes Claude Code marketplace and install plugins.",
+            "",
+            "   Strategy depends on platform:",
+            "     - Windows: claude.exe has been observed to ignore both the OS trust",
+            "       store and NODE_EXTRA_CA_CERTS for marketplace HTTPS. Skip the direct",
+            "       attempt and go straight to the git-clone fallback (system git honors",
+            "       GIT_SSL_CAINFO from step 0).",
+            "     - macOS / Linux: try direct HTTPS first; claude on those platforms",
+            "       usually picks up the OS-trusted cert. Fall back to git clone on failure.",
+            "",
+            "   case \"$PLATFORM\" in",
+            "     windows)",
+            "       MARKETPLACE_VIA=clone",
+            "       ;;",
+            "     *)",
+            "       if claude plugin marketplace add \"https://x:{token}@{server_host}/marketplace.git/\" 2>/dev/null; then",
+            "         MARKETPLACE_VIA=direct",
+            "       else",
+            "         MARKETPLACE_VIA=clone",
+            "       fi",
+            "       ;;",
+            "   esac",
+            "",
+            "   if [ \"$MARKETPLACE_VIA\" = \"clone\" ]; then",
+            "     # Heads-up: 'git: credential-manager-core is not a git command' is a",
+            "     # harmless warning from a stale git config — the clone itself succeeds.",
+            "     rm -rf ~/.agnes/marketplace",
+            "     git clone \"https://x:{token}@{server_host}/marketplace.git/\" ~/.agnes/marketplace",
+            "     claude plugin marketplace add ~/.agnes/marketplace",
+            "   fi",
+            "",
+        ]
+        for name in plugin_install_names:
+            lines.append(f"   claude plugin install {name}@{_MARKETPLACE_NAME} --scope project")
+        lines.extend([
+            "",
+            "   These run non-interactively. After they finish, tell the user to /exit",
+            "   and run `claude` again so the new plugins load.",
+        ])
+        return lines
+
+    # Legacy path: no ca_pem on disk. Keep the old behavior verbatim
+    # (host-scoped sslVerify=false when self_signed_tls is set, otherwise
+    # plain direct HTTPS) so existing AGNES_DEBUG_AUTH instances keep
+    # working until they roll a fullchain.pem.
+    lines = [
         "",
-        "7) Register the Agnes Claude Code marketplace and install plugins:",
+        f"{step_num}) Register the Agnes Claude Code marketplace and install plugins:",
     ]
     if self_signed_tls:
         lines.extend([
@@ -207,6 +497,26 @@ def _marketplace_block(
     return lines
 
 
+def _preamble_lines() -> list[str]:
+    """Static header that opens the prompt before the numbered steps."""
+    return [
+        "Set up the Agnes CLI on this machine.",
+        "",
+        "Server: {server_url}",
+        "Personal access token: {token}",
+        "(Just generated; treat it as a secret.)",
+        "",
+        "Run these, in order. The script is idempotent — safe to re-run if a step",
+        "fails partway through. If a step fails with an unfamiliar error, paste the",
+        "exact error back and stop. Do NOT improvise around TLS errors by disabling",
+        "verification (`-k`, `NODE_TLS_REJECT_UNAUTHORIZED=0`,",
+        "`git -c http.sslVerify=false`, etc.) — those are dead ends that hide the",
+        "real problem. The fallback chain inside step 0(d) is documented and OK to",
+        "use; that's what fallback chains are for.",
+        "",
+    ]
+
+
 def resolve_lines(
     wheel_filename: str,
     *,
@@ -223,19 +533,15 @@ def resolve_lines(
 
     When `plugin_install_names` is empty/None, the output matches the
     original 6-step layout (Confirm = step 6). When non-empty, a step-6
-    marketplace block is inserted and Confirm becomes step 7.
+    git-check + step-7 marketplace block are inserted and Confirm becomes
+    step 8.
 
     `ca_pem` (PEM-encoded fullchain of the Agnes server's TLS cert) gates
-    the step-0 trust-bootstrap block. When supplied, the prompt:
-      - Inlines the cert into `~/.agnes/ca.pem` via heredoc (no TOFU,
-        no `openssl s_client` against the very server we don't trust).
-      - Sets SSL_CERT_FILE / NODE_EXTRA_CA_CERTS / GIT_SSL_CAINFO so every
-        TLS client later in the prompt accepts the server.
-      - Suppresses the legacy `git config sslVerify=false` line — with
-        the cert trusted, full TLS validation is back on the table.
-    Caller decides whether the cert needs the bootstrap (typically: skip
-    for publicly-trusted certs like Let's Encrypt, emit for self-signed
-    or private corp CA).
+    the cross-platform step-0 trust-bootstrap block AND switches step 1 to
+    the curl-then-local-install pattern AND switches step 7 to the
+    platform-aware marketplace strategy. Caller decides whether the cert
+    needs the bootstrap (typically: skip for publicly-trusted certs like
+    Let's Encrypt, emit for self-signed or private corp CA).
 
     `self_signed_tls=True` is the legacy fallback when no `ca_pem` is
     available — it prepends a host-scoped
@@ -253,21 +559,41 @@ def resolve_lines(
     has_marketplace = bool(names)
     has_ca = bool(ca_pem and ca_pem.strip())
     # Trust block subsumes the legacy sslVerify-off downgrade. Don't emit
-    # both: with `~/.agnes/ca.pem` wired into GIT_SSL_CAINFO, git already
+    # both: with `~/.agnes/ca-bundle.pem` wired into GIT_SSL_CAINFO, git already
     # trusts the host without disabling verification.
     effective_self_signed = self_signed_tls and not has_ca
+
+    # Step layout. Marketplace goes BEFORE diagnose/skills, so the human-loop
+    # skills question is the last step before Confirm. Numbers shift between
+    # the no-marketplace layout (only 4 = diagnose, 5 = skills, 6 = confirm)
+    # and the marketplace layout (4 = git, 5 = marketplace, 6 = diagnose,
+    # 7 = skills, 8 = confirm).
+    if has_marketplace:
+        git_step, marketplace_step = "4", "5"
+        diagnose_step, skills_step, confirm_step = "6", "7", "8"
+    else:
+        git_step = marketplace_step = ""  # unused; here just for symmetry
+        diagnose_step, skills_step, confirm_step = "4", "5", "6"
 
     lines: list[str] = []
     if has_ca:
         lines.extend(_tls_trust_block(ca_pem))  # type: ignore[arg-type]
-    lines.extend(_PROLOGUE_LINES)
+    lines.extend(_preamble_lines())
+    lines.extend(_install_cli_lines(has_ca=has_ca))   # 1
+    lines.extend(_LOGIN_VERIFY_LINES)                  # 2, 3
     if has_marketplace:
-        lines.extend(_git_check_block())
-        lines.extend(_marketplace_block(names, effective_self_signed))
-    confirm_step_num = "8" if has_marketplace else "6"
+        lines.extend(_git_check_block(git_step))       # 4
+        lines.extend(_marketplace_block(              # 5
+            names, effective_self_signed, has_ca=has_ca, step_num=marketplace_step,
+        ))
+    # Diagnose + skills come AFTER the marketplace block (or right after
+    # whoami if there's no marketplace step at all).
+    lines.extend(_diagnose_skills_lines(
+        diagnose_num=diagnose_step, skills_num=skills_step,
+    ))
     lines.append("")
     for fl in _FINALE_LINES_TEMPLATE:
-        lines.append(fl.replace("{confirm_step_num}", confirm_step_num))
+        lines.append(fl.replace("{confirm_step_num}", confirm_step))
 
     return [
         line.replace("{wheel_filename}", wheel_filename).replace("{server_host}", server_host)

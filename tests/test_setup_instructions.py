@@ -2,7 +2,15 @@
 
 `uv tool install` validates the PEP 427 filename in the URL path before
 fetching, so our setup snippet cannot use a stable alias like `agnes.whl`.
-These tests pin the wheel-filename substitution behavior.
+These tests pin the wheel-filename substitution behavior, the marketplace
+block layout, and the cross-platform TLS trust block (`ca_pem` path).
+
+The trust-block tests assert behaviors that came out of a real-world
+multi-machine setup pass — see the v2 design notes in the module docstring
+of `app/web/setup_instructions.py` for the rationale behind each assertion
+(combined CA bundle vs. single-cert SSL_CERT_FILE, OS-trust-store
+registration for native binaries, platform-aware marketplace strategy,
+curl-then-local-install around rustls' `CaUsedAsEndEntity`).
 """
 
 
@@ -46,12 +54,22 @@ def test_resolve_lines_no_plugins_keeps_six_step_layout():
     joined = "\n".join(resolve_lines("agnes.whl"))
     assert "6) Confirm:" in joined
     assert "7) Confirm:" not in joined
+    assert "8) Confirm:" not in joined
     assert "claude plugin marketplace add" not in joined
     assert "claude plugin install" not in joined
-    assert "sslVerify" not in joined
+    # Legacy `git config sslVerify=false` downgrade must NOT be emitted.
+    # Match the specific config line, not the bare substring (which appears
+    # in the preamble as a "don't do this" example).
+    assert "git config --global" not in joined
+    # Trust block isn't emitted without ca_pem either.
+    assert "0) Trust the Agnes TLS certificate" not in joined
 
 
-def test_resolve_lines_with_plugins_inserts_git_check_marketplace_and_renumbers_confirm():
+def test_resolve_lines_with_plugins_uses_install_first_diagnose_last_layout():
+    """Marketplace layout puts install/login/git/marketplace BEFORE diagnose
+    and skills, so the human-loop skills question is the final blocking
+    step before Confirm. Step numbers: 4 git, 5 marketplace, 6 diagnose,
+    7 skills, 8 confirm."""
     from app.web.setup_instructions import resolve_lines
 
     lines = resolve_lines(
@@ -60,29 +78,40 @@ def test_resolve_lines_with_plugins_inserts_git_check_marketplace_and_renumbers_
         server_host="agnes.example.com",
     )
     joined = "\n".join(lines)
-    # Step 6 — git pre-flight, with both Mac + Windows install commands.
-    assert "6) Make sure git is installed" in joined
+    # Step 4 — git pre-flight, with all three platforms' install commands.
+    assert "4) Make sure git is installed" in joined
     assert "git --version" in joined
     assert "brew install git" in joined
     assert "winget install --id Git.Git -e --source winget --silent" in joined
-    # Step 7 — marketplace + plugins.
-    assert "7) Register the Agnes Claude Code marketplace and install plugins:" in joined
+    assert "sudo apt-get install git" in joined or "sudo dnf install git" in joined
+    # Step 5 — marketplace + plugins.
+    assert "5) Register the Agnes Claude Code marketplace and install plugins" in joined
     assert (
         'claude plugin marketplace add "https://x:{token}@agnes.example.com/marketplace.git/"'
         in joined
     )
     assert "claude plugin install foo@agnes --scope project" in joined
     assert "claude plugin install bar@agnes --scope project" in joined
-    # Step 8 — Confirm renumbered (no stray 6/7 Confirm).
+    # Step 6 — diagnose now AFTER marketplace (used to be step 4 right after whoami).
+    assert "6) Run diagnostics:" in joined
+    # Step 7 — skills, the last interactive step before Confirm.
+    assert "7) Skills" in joined
+    # Step 8 — Confirm renumbered (no stray Confirms at other positions).
     assert "8) Confirm:" in joined
-    assert "6) Confirm:" not in joined
-    assert "7) Confirm:" not in joined
-    # Git pre-flight must come BEFORE marketplace add inside the script.
-    assert joined.index("6) Make sure git is installed") < joined.index(
-        "7) Register the Agnes Claude Code marketplace"
-    )
-    # No git-config sslVerify line unless self_signed_tls is set.
-    assert "sslVerify" not in joined
+    for stray in ("4) Confirm:", "5) Confirm:", "6) Confirm:", "7) Confirm:"):
+        assert stray not in joined
+    # Crucial ordering invariants for the new layout.
+    install_idx = joined.index("1) Install the CLI")
+    login_idx = joined.index("2) Log in")
+    verify_idx = joined.index("3) Verify the login:")
+    git_idx = joined.index("4) Make sure git is installed")
+    market_idx = joined.index("5) Register the Agnes Claude Code marketplace")
+    diag_idx = joined.index("6) Run diagnostics:")
+    skills_idx = joined.index("7) Skills")
+    confirm_idx = joined.index("8) Confirm:")
+    assert install_idx < login_idx < verify_idx < git_idx < market_idx < diag_idx < skills_idx < confirm_idx
+    # No git-config sslVerify=false line unless self_signed_tls is set.
+    assert "git config --global" not in joined
     # server_host is server-side substituted; the placeholder must be gone.
     assert "{server_host}" not in joined
     # server_url + token are still placeholders for click-time JS substitution.
@@ -90,7 +119,10 @@ def test_resolve_lines_with_plugins_inserts_git_check_marketplace_and_renumbers_
     assert "{token}" in joined
 
 
-def test_resolve_lines_self_signed_adds_git_config_line():
+def test_resolve_lines_self_signed_legacy_path_adds_git_config_line():
+    """Legacy fallback (no ca_pem on disk + self_signed_tls=True): the host-scoped
+    `git config sslVerify=false` downgrade is still emitted so existing
+    AGNES_DEBUG_AUTH instances keep working until they roll a fullchain.pem."""
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(
@@ -102,7 +134,8 @@ def test_resolve_lines_self_signed_adds_git_config_line():
         )
     )
     assert 'git config --global http."{server_url}/".sslVerify false' in joined
-    # The git-config line must come BEFORE the marketplace add inside step 6.
+    # The git-config line must come BEFORE the marketplace add inside the
+    # marketplace step (regardless of which step number it lands on).
     git_idx = joined.index('git config --global')
     add_idx = joined.index('claude plugin marketplace add')
     assert git_idx < add_idx
@@ -115,7 +148,8 @@ def test_resolve_lines_self_signed_no_op_without_plugins():
     joined = "\n".join(
         resolve_lines("agnes.whl", plugin_install_names=[], self_signed_tls=True)
     )
-    assert "sslVerify" not in joined
+    # Legacy downgrade line not present.
+    assert "git config --global" not in joined
     assert "claude plugin" not in joined
     # No git pre-flight either when there's no marketplace step.
     assert "Make sure git is installed" not in joined
@@ -162,7 +196,10 @@ def test_resolve_lines_with_ca_pem_emits_step_zero_trust_block():
 
     # Step 0 header (must come BEFORE step 1 in the rendered prompt).
     assert "0) Trust the Agnes TLS certificate" in joined
-    assert joined.index("0) Trust the Agnes TLS certificate") < joined.index("1) Install the CLI:")
+    # The "1) Install the CLI" line wording differs between the ca_pem and
+    # no-ca_pem paths; the ca_pem path leads with "1) Install the CLI."
+    # (period). Ordering is what matters.
+    assert joined.index("0) Trust the Agnes TLS certificate") < joined.index("1) Install the CLI")
 
     # PEM body inlined verbatim, flush-left (heredoc would corrupt indented content).
     assert "-----BEGIN CERTIFICATE-----" in joined
@@ -172,15 +209,118 @@ def test_resolve_lines_with_ca_pem_emits_step_zero_trust_block():
     assert "MIIBkTCB+wIJAKf9$x`cNotARealCert" in joined
     assert "<<'AGNES_CA_PEM'" in joined
 
-    # All three trust env vars exported in the current shell.
-    assert 'export SSL_CERT_FILE="$HOME/.agnes/ca.pem"' in joined
+
+def test_resolve_lines_with_ca_pem_emits_cross_platform_substeps():
+    """Step 0 must contain the v2 cross-platform sub-blocks: platform detection,
+    OS-trust-store registration, combined CA bundle build, env persistence."""
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(resolve_lines("agnes.whl", ca_pem=_FAKE_CA_PEM))
+
+    # (a) Platform detection — uname-driven, with all three families covered.
+    assert "case \"$(uname -s)\" in" in joined
+    assert "Darwin" in joined and "PLATFORM=macos" in joined
+    assert "Linux" in joined and "PLATFORM=linux" in joined
+    # MINGW/MSYS/CYGWIN cover Git Bash on Windows.
+    assert "MINGW*|MSYS*|CYGWIN*" in joined and "PLATFORM=windows" in joined
+    # Shell rc selection driven by $SHELL, not file existence.
+    assert 'SHELL_NAME="$(basename "${SHELL:-bash}")"' in joined
+    assert "bash:macos)" in joined and ".bash_profile" in joined  # macOS bash → .bash_profile
+
+    # (c) OS trust store registration — one command per platform.
+    assert "certutil.exe -user -addstore" in joined  # Windows
+    assert "security add-trusted-cert -r trustRoot" in joined  # macOS
+    assert "update-ca-certificates" in joined  # Linux Debian
+    assert "update-ca-trust" in joined  # Linux RHEL
+
+    # (d) Combined CA bundle — multi-source fallback chain.
+    assert "ca-bundle.pem" in joined  # the combined bundle path
+    assert "import certifi; print(certifi.where())" in joined  # system Python source
+    # System curl bundle paths covering Git-for-Windows, macOS Homebrew, Debian, RHEL.
+    assert "/mingw64/ssl/certs/ca-bundle.crt" in joined
+    assert "/etc/ssl/certs/ca-certificates.crt" in joined
+    assert "/etc/ssl/cert.pem" in joined
+    # uv-fetched as last resort.
+    assert "uv run --native-tls --with certifi --no-project" in joined
+
+
+def test_resolve_lines_with_ca_pem_uses_combined_bundle_for_replace_envs():
+    """SSL_CERT_FILE/REQUESTS_CA_BUNDLE/GIT_SSL_CAINFO must point at the
+    COMBINED bundle (~/.agnes/ca-bundle.pem), not at the single Agnes cert.
+    Pointing them at the single cert would replace the trust store and
+    break PyPI / public-host access for any Python tool in the same shell.
+    NODE_EXTRA_CA_CERTS keeps pointing at just ca.pem because Node's
+    semantics is additive (appends to bundled roots)."""
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(resolve_lines("agnes.whl", ca_pem=_FAKE_CA_PEM))
+
+    # REPLACE-semantics envs → combined bundle.
+    assert 'export SSL_CERT_FILE="$HOME/.agnes/ca-bundle.pem"' in joined
+    assert 'export REQUESTS_CA_BUNDLE="$HOME/.agnes/ca-bundle.pem"' in joined
+    assert 'export GIT_SSL_CAINFO="$HOME/.agnes/ca-bundle.pem"' in joined
+    # APPEND-semantics env → single-cert file.
     assert 'export NODE_EXTRA_CA_CERTS="$HOME/.agnes/ca.pem"' in joined
-    assert 'export GIT_SSL_CAINFO="$HOME/.agnes/ca.pem"' in joined
 
     # Persisted to shell rc behind an idempotent grep guard so re-running
     # setup doesn't duplicate the block.
     assert "AGNES_CA_PEM_TRUST" in joined  # marker grep-checks for
     assert "AGNES_RC_BLOCK" in joined  # the rc-append heredoc delimiter
+
+
+def test_resolve_lines_with_ca_pem_switches_step_one_to_curl_then_local_install():
+    """Step 1's install path differs by has_ca:
+      - has_ca=True  → curl-then-local-install (avoids rustls CaUsedAsEndEntity)
+      - has_ca=False → direct `uv tool install <https-url>` (legacy)
+    """
+    from app.web.setup_instructions import resolve_lines
+
+    joined_ca = "\n".join(resolve_lines("agnes-1.0-py3-none-any.whl", ca_pem=_FAKE_CA_PEM))
+    # curl-with-cacert downloads the wheel locally...
+    assert "curl -fsSL --cacert ~/.agnes/ca.pem" in joined_ca
+    assert 'WHEEL=/tmp/agnes-1.0-py3-none-any.whl' in joined_ca
+    # ...then uv installs from the local file with --native-tls.
+    assert 'uv tool install --native-tls --force "$WHEEL"' in joined_ca
+    # The direct `uv tool install <server-url>` form must NOT appear in the ca_pem path.
+    assert "uv tool install --force {server_url}/cli/wheel/" not in joined_ca
+
+    # No-ca_pem path keeps the legacy direct install.
+    joined_plain = "\n".join(resolve_lines("agnes-1.0-py3-none-any.whl"))
+    assert "uv tool install --force {server_url}/cli/wheel/agnes-1.0-py3-none-any.whl" in joined_plain
+    assert "curl -fsSL --cacert" not in joined_plain
+    assert "uv tool install --native-tls" not in joined_plain
+
+
+def test_resolve_lines_with_ca_pem_marketplace_is_platform_aware():
+    """When ca_pem is set + plugins requested, step 7 emits a platform branch:
+    Windows → straight to git-clone fallback (claude.exe ignores OS trust);
+    macOS/Linux → try direct first, fall back to git clone on failure."""
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(
+        resolve_lines(
+            "agnes.whl",
+            plugin_install_names=["foo"],
+            server_host="agnes.example.com",
+            ca_pem=_FAKE_CA_PEM,
+        )
+    )
+    # The platform branch + MARKETPLACE_VIA selector.
+    assert 'case "$PLATFORM" in' in joined
+    assert "MARKETPLACE_VIA=clone" in joined
+    assert "MARKETPLACE_VIA=direct" in joined
+    # Direct attempt is tried (with stderr suppressed) on non-Windows.
+    assert (
+        'claude plugin marketplace add "https://x:{token}@agnes.example.com/marketplace.git/" 2>/dev/null'
+        in joined
+    )
+    # Git-clone fallback writes to ~/.agnes/marketplace and adds it as a local path.
+    assert 'git clone "https://x:{token}@agnes.example.com/marketplace.git/" ~/.agnes/marketplace' in joined
+    assert "claude plugin marketplace add ~/.agnes/marketplace" in joined
+    # Harmless credential-manager-core warning is called out.
+    assert "credential-manager-core" in joined
+    # Plugin install line stays unchanged.
+    assert "claude plugin install foo@agnes --scope project" in joined
 
 
 def test_resolve_lines_with_ca_pem_suppresses_legacy_sslverify_line():
@@ -198,9 +338,9 @@ def test_resolve_lines_with_ca_pem_suppresses_legacy_sslverify_line():
             ca_pem=_FAKE_CA_PEM,
         )
     )
-    assert "sslVerify" not in joined
+    # Legacy git-config sslVerify=false downgrade is suppressed when ca_pem is set.
+    assert "git config --global" not in joined
     # But the marketplace step itself still renders.
-    assert "claude plugin marketplace add" in joined
     assert "claude plugin install foo@agnes --scope project" in joined
     # And the trust block is present.
     assert "0) Trust the Agnes TLS certificate" in joined
@@ -234,6 +374,8 @@ def test_resolve_lines_ca_pem_empty_string_is_treated_as_absent():
     for empty in ("", "   ", "\n\n"):
         joined = "\n".join(resolve_lines("agnes.whl", ca_pem=empty))
         assert "0) Trust the Agnes TLS certificate" not in joined
+        # Also: the no-ca install path is used, not the curl-first one.
+        assert "curl -fsSL --cacert" not in joined
 
 
 def test_resolve_lines_ca_pem_works_without_plugins():
@@ -263,11 +405,72 @@ def test_render_setup_instructions_propagates_ca_pem():
     assert "0) Trust the Agnes TLS certificate" in out
     assert "-----BEGIN CERTIFICATE-----" in out
     # ca_pem masks legacy sslVerify=false.
-    assert "sslVerify" not in out
+    assert "git config --global" not in out
     # Other placeholders still substituted.
     assert "{server_url}" not in out
     assert "{token}" not in out
     assert "T-CA" in out
+    # Curl-then-local-install path is rendered (with placeholders resolved).
+    assert "https://agnes.example.com/cli/wheel/agnes-1.0-py3-none-any.whl" in out
+    assert 'uv tool install --native-tls --force "$WHEEL"' in out
+
+
+def test_diagnose_step_documents_normal_states():
+    """Step 4 (diagnose) must call out that `db_schema: unknown` and
+    `data: 0 tables` are normal on a fresh install — without that the
+    operator running the prompt may chase phantom 'errors'."""
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(resolve_lines("agnes.whl"))
+    assert "db_schema: unknown" in joined
+    assert "0 tables" in joined
+    assert "NORMAL" in joined or "normal" in joined
+
+
+def test_skills_step_is_last_blocking_step_before_confirm():
+    """In the new layout, skills is the LAST interactive step before Confirm
+    (it used to come right after diagnose and before git/marketplace, which
+    invited the assistant to "do the rest in parallel"). We've moved the
+    install work earlier, so the skills question is now a single clear gate
+    — there's nothing left to do in parallel and the assistant must wait
+    for the user's answer.
+
+    Assert two things:
+      (a) The prompt explicitly tells the assistant to wait for the answer.
+      (b) The skills step appears AFTER the marketplace step in the rendered
+          line order — i.e., the legacy "skills before marketplace" flow
+          isn't accidentally back."""
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(resolve_lines("agnes.whl", plugin_install_names=["foo"], server_host="h"))
+    flattened = " ".join(joined.split())
+
+    # (a) The prompt must instruct the assistant to wait — and must NOT
+    # contain the obsolete "you can continue in parallel" hint.
+    assert "Wait for the user's answer" in joined
+    assert "don't depend on the answer" not in flattened
+    assert "do not depend on the answer" not in flattened
+
+    # (b) Skills comes after marketplace in the rendered line order.
+    market_idx = joined.index("Register the Agnes Claude Code marketplace")
+    skills_idx = joined.index("Skills (ask the user")
+    assert market_idx < skills_idx
+
+
+def test_no_marketplace_layout_keeps_diagnose_before_skills():
+    """Without plugins, the layout collapses to: install → login → verify →
+    diagnose → skills → confirm. (No git or marketplace steps to interleave.)
+    Step numbers: 4 diagnose, 5 skills, 6 confirm."""
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(resolve_lines("agnes.whl"))
+    assert "4) Run diagnostics:" in joined
+    assert "5) Skills" in joined
+    assert "6) Confirm:" in joined
+    diag_idx = joined.index("4) Run diagnostics:")
+    skills_idx = joined.index("5) Skills")
+    confirm_idx = joined.index("6) Confirm:")
+    assert diag_idx < skills_idx < confirm_idx
 
 
 def test_install_page_uses_versioned_wheel_url(monkeypatch, tmp_path):
