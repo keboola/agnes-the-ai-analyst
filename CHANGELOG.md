@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-04-29
+
 ### Added
 
 - **Shared-secret auth path for the in-cluster scheduler service** (`SCHEDULER_API_TOKEN`). Both the `app` and `scheduler` containers source the same `/opt/agnes/.env` via Docker Compose `env_file:`, so a 256-bit secret generated once at VM provisioning serves both sides symmetrically. The app validates incoming `Authorization: Bearer <secret>` against the env var (constant-time compare; minimum length 32 chars; rejected when env is empty) and resolves matches to a synthetic `scheduler@system.local` user that is a member of the `Admin` system group — every existing RBAC gate (`require_admin`, `require_resource_access`) works unchanged. Audit-log entries from the scheduler are attributed to this user. Rotation: edit `.env`, `docker compose restart app scheduler`. See `app/auth/scheduler_token.py` for the threat model.
@@ -29,56 +31,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Internal
 
 - `release.yml` adds an `e2e-bind-mount` job that boots the freshly built image against a host-bind-mounted `/data` directory (instead of the named volume the existing `smoke-test` job uses). Docker initializes a fresh named volume by copying from the image's `/data` — which the Dockerfile chowns to `agnes:agnes` before flipping USER — so the named-volume path always works. The bind-mount path mirrors what GCE VMs run via `docker-compose.host-mount.yml`, and includes a negative assertion (write must fail on root-owned `/data` before the operator chown) plus a positive assertion (smoke passes after the chown). Locks in the contract that broke `agnes-development`: removing `chown 999:999` from `startup-script.sh.tpl` or changing the Dockerfile uid pin breaks CI.
-
-## [0.15.0] — 2026-04-29
-
-### Added
-
-- **Corporate-memory v1 + v1.5 — confidence, contradictions, audience distribution, and rule sync.** Issue #72.
-  - Schema v15: `knowledge_items` gains context-engineering columns (`confidence`, `domain`, `entities`, `source_type`, `source_ref`, `valid_from`, `valid_until`, `supersedes`, `sensitivity`, `is_personal`); new `knowledge_contradictions` table for surfacing conflicting facts and `session_extraction_state` for the verification detector's idempotent resume.
-  - Schema v16: `verification_evidence` table — one row per analyst confirmation, indexed on `item_id`, drives the `confidence` calculation in `services/corporate_memory/confidence.py` (linear-decay with floor + additional-verifier boost; configurable via `instance.yaml`).
-  - **Server**: `GET /api/memory/bundle` returns mandatory + ranked-approved items within a token budget (default 6000 ≈ 24KB) — drives `da sync`'s rule write. `GET /api/memory/stats` now uses SQL aggregation (no full-list materialization, doesn't block the event loop). `POST /api/memory/admin/mandate` and `POST /api/memory/admin/batch` accept an `audience` field; the audience is matched against the caller's `user_group_members` JOIN `user_groups` on read so a user in group `finance` sees `audience='group:finance'` items, and admins see all. Verification-detector endpoint extracts knowledge candidates from session JSONL files and merges evidence into the existing item when a fact is re-asserted.
-  - **CLI**: `da sync` step 7 (`_fetch_and_write_rules`) calls `/api/memory/bundle`, writes `mandatory` items to `.claude/rules/km_<id>.md` (one file per item) and concatenates `approved` into `.claude/rules/km_approved.md`. Stale `km_*.md` files from a previous run are pruned. Best-effort: any HTTP/JSON failure is logged and sync continues.
-  - **Auto-tagging**: `services/corporate_memory/tagger.py` runs an LLM extraction pass on knowledge create/update when `ai:` is configured in `instance.yaml`. Wrapped in `asyncio.to_thread` so it doesn't block the event loop. Best-effort: missing config or LLM error → item created with no auto-tags.
-  - **Per-item privacy**: `is_personal` items are visible only to the contributor and platform admins (members of the `Admin` system group). The `_can_view_item` helper takes a pre-computed `is_priv` flag so list endpoints don't re-query `user_group_members` per item.
-  - **Audit log**: every admin action (mandate / approve / reject / revoke / mandate-batch / contradiction resolve) writes a row tagged `corporate_memory.<action>` with the affected item ids and reason field.
-- `/me/debug` — self-only auth diagnostic page. Shows the logged-in user their own decoded JWT claims (no raw token), group memberships with sources and bound `external_id` when present, resource grants effective via those memberships, and a "Refetch from Google (dry-run)" button that issues a fresh `fetch_user_groups` call and reports the diff against the cached `user_group_members` snapshot without writing anything. Gated by `AGNES_DEBUG_AUTH=true` env var (default off → route returns 404 and the navbar item is not rendered). Intended for dev / staging VMs; do not enable on customer-facing instances. Issue #116.
-
-### Changed
-
-- **`POST /api/memory/{id}/vote` accepts `vote=0`** to retract a previous vote (toggle un-vote from the UI). Pre-fix the API rejected vote=0 with 400 and the UI's toggle logic silently no-op'd on un-toggle.
-- **`/admin/corporate-memory` and `/corporate-memory/admin` are gated by `require_admin`** (admin-group membership) instead of the v9-era `require_role(Role.KM_ADMIN)`. The km_admin role was collapsed into admin in main's RBAC v13; module authors needing finer-grained corporate-memory curation should use a `resource_grants` row of type `corporate_memory_admin`.
-
-### Internal
-
-- `_effective_groups` in `app/api/memory.py` queries `user_group_members JOIN user_groups` instead of reading the `users.groups` JSON column (dropped in v13). The audience-distribution tests in `tests/test_memory_api.py` use a `_add_user_to_group` helper that inserts into `user_group_members` + `user_groups` directly.
-- `jsonschema` added to dev dependencies for the corporate-memory schema-validation fixtures (`tests/test_corporate_memory_v1.py::TestSchemaValidation`). Production code does not import it.
-
-## [0.14.0] — 2026-04-29
-
-### Added
-
-- **v2 fetch primitives — discovery + scoped fetch** for analytical workflows. Replaces the BigQuery wrap-view pattern (which caused "Response too large" on multi-hundred-million-row source views) with a Claude-session-driven toolkit. Server exposes `GET /api/v2/catalog` (RBAC-filtered table list with flavor + fetch-via hints), `GET /api/v2/schema/{table_id}` (column metadata + BQ flavor hints), `GET /api/v2/sample/{table_id}` (N sample rows), `POST /api/v2/scan` (validator + RBAC + quota + max_result_bytes guard, Arrow IPC stream), `POST /api/v2/scan/estimate` (BigQuery dryRun, no execution). CLI gains `da catalog`, `da schema`, `da describe`, `da fetch <table> --select … --where … --limit N [--estimate] [--as <name>]`, `da snapshot list/refresh/drop/prune`, `da disk-info`. WHERE-clause validator at `app/api/where_validator.py` is sqlglot-backed with structural rejects + function allow-list + column-existence enforcement. Process-local quota tracker (concurrent + daily bytes per user). New `cli/skills/agnes-data-querying.md` standalone skill + CLAUDE.md addendum tells Claude to discover → estimate → fetch a filtered subset locally → analyze. 11 new `instance.yaml` knobs (`api.scan_max_concurrent_per_user`, `api.scan_daily_bytes_per_user`, `api.scan_max_result_bytes`, `api.where_clause_max_length`, `api.catalog_cache_ttl_seconds`, `api.schema_cache_ttl_seconds`, `api.sample_cache_ttl_seconds`, `data_source.bigquery.billing_project`, `data_source.bigquery.legacy_wrap_views`, `snapshots.dir`, `snapshots.cache_size_limit_gb`). Issue #101.
-- `data_source.bigquery.billing_project` config knob — explicit billing project for BQ scan + estimate. Defaults to `data_source.bigquery.project`. Matters for cross-project read patterns where the VM service account has `bigquery.data.*` on the data project but lacks `serviceusage.services.use` there; setting this to a project where the SA holds `serviceusage.services.use` fixes the dry-run 403.
-
-### Changed
-
-- **BREAKING**: `connectors/bigquery/extractor.py` no longer creates a wrap view (`SELECT * FROM bigquery_query(...)`) for VIEW / MATERIALIZED_VIEW entities by default. Operators relying on the old behavior must set `data_source.bigquery.legacy_wrap_views: true` in `instance.yaml` for one release cycle. BASE TABLE entities are unchanged. The new `da fetch` workflow replaces wrap views for analytical queries — see CLAUDE.md "Querying Agnes data — agent rails".
-- `RegisterTableRequest.primary_key` and `UpdateTableRequest.primary_key` accept `Optional[List[str]]` for composite keys (session-grain MSA tables key on `(session_id, event_date)`, browse rows on more); a bare string remains accepted for backward compat via a `field_validator(mode="before")` that wraps it in a one-element list. Old CLI scripts posting `"primary_key": "session_id"` continue to work.
-- `GET /api/v2/catalog` now caches the underlying `repo.list_all()` rows globally with the documented `api.catalog_cache_ttl_seconds` default (300s) and runs RBAC fresh per request. The previous per-user cache served stale RBAC-filtered results for up to TTL after a permission flip — `v2_schema.py` and `v2_sample.py` already had this pattern; `v2_catalog.py` now matches.
-
-## [0.13.0] — 2026-04-29
-
-### Added
-
-- **Windows/PowerShell wrapper for local dev.** New `scripts/run-local-dev.ps1` mirrors `scripts/run-local-dev.sh` for operators on Windows where GNU Make / bash aren't available — same compose stack (`docker-compose.yml` + `docker-compose.dev.yml` + `docker-compose.local-dev.yml`), same `LOCAL_DEV_GROUPS` default seeding, same `up` / `down` / `logs` actions. Run `.\scripts\run-local-dev.ps1` for the fast path (reuses existing image) or `.\scripts\run-local-dev.ps1 -Build` to force `--build` after `pyproject.toml` / `Dockerfile` changes. Verified on Docker Desktop for Windows. See `docs/local-development.md`.
-- **Admin server configuration editor** at `/admin/server-config` — admins can now view and edit `instance.yaml` from the web UI without SSHing into the host. Two new endpoints (`GET /api/admin/server-config` returns the current config with secret-looking values masked; `POST /api/admin/server-config` deep-merges a section patch into `DATA_DIR/state/instance.yaml`). The page lists the editable sections (`instance`, `data_source`, `email`, `telegram`, `jira`, `theme`, `server`, `auth`) and renders a per-field form. Saves touching `auth.*` or `server.*` ("danger zone" — can lock operators out) require an explicit confirmation step. Every save writes an `instance_config.update` row to `audit_log` with a per-field diff (secret values masked as `***`, field paths preserved so a rotation is recorded as `email.smtp_password: *** → ***`). Issue #91.
-
-### Fixed
-
-- `app/instance_config.py:load_instance_config` now deep-merges the static `CONFIG_DIR/instance.yaml` with the writable overlay at `DATA_DIR/state/instance.yaml` instead of returning the overlay verbatim when present. Pre-fix, the first save through the new server-config editor (which writes only the section the operator actually touched) caused every consumer of static-only sections (corporate memory, dataset list, OpenMetadata client) to fall through to empty defaults until the overlay was deleted. Issue #91.
-- `POST /api/admin/configure` now uses the same narrow-overlay write strategy as the new server-config editor: it reads the overlay verbatim (no static fallback), patches only `instance` / `auth` / `data_source`, and writes atomically via tmp + `os.replace`. Pre-fix it seeded `existing` from the env-resolved merged config when no overlay file was present and dumped the whole thing back, persisting cleartext `${ENV_VAR}` values (e.g. `smtp_password`) into the writable overlay even though the wizard never touched those sections. Issue #91.
-- `POST /api/admin/server-config` now strips redaction sentinels (`***` / `<empty>`) out of every secret-keyed leaf in the incoming patch before the deep-merge. The companion GET endpoint masks secret-keyed children inside nested objects (e.g. `data_source.keboola.token_env`), and the form renders those nested objects as JSON textareas — without the scrub, a no-op save would round-trip the masked JSON back and overwrite the real overlay value (`token_env: "KEBOOLA_STORAGE_TOKEN"` → `"***"`), silently breaking the next sync. Defense-in-depth on both sides: the client form scrubs before posting, and the server scrubs before merge so an API caller (CLI / script) can't corrupt secrets either. Issue #91.
 
 ## [0.16.0] — 2026-04-29
 
