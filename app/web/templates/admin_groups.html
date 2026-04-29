@@ -253,7 +253,7 @@
 const API = "/api/admin/groups";
 // Server-injected env: empty string = no prefix configured. Used to derive a
 // friendly display name from the full Workspace email stored as the group's
-// `name` (e.g. "grp_foundryai_finance@groupon.com" → "Finance").
+// `name` (e.g. "grp_acme_finance@example.com" → "Finance").
 const GOOGLE_GROUP_PREFIX = {{ config.AGNES_GOOGLE_GROUP_PREFIX | tojson }};
 
 function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }

@@ -97,7 +97,7 @@
 
                 {% set _err = request.query_params.get('error') %}
                 {% set _err_messages = {
-                    'not_in_foundryai_group': "Your Google account isn't a member of any group permitted to use this Agnes instance. Ask your Agnes administrator to grant you access.",
+                    'not_in_allowed_group': "Your Google account isn't a member of any group permitted to use this Agnes instance. Ask your Agnes administrator to grant you access.",
                     'group_check_unavailable': "We couldn't verify your group membership with Google right now. Please try signing in again in a moment.",
                     'deactivated': "This account has been deactivated. Contact your Agnes administrator if you believe this is in error.",
                     'oauth_failed': "Google sign-in failed. Please try again.",

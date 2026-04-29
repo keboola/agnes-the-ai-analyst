@@ -50,7 +50,7 @@ Two identities are involved:
 What the OAuth callback does with the list returned by `fetch_user_groups`:
 
 1. **Prefix filter.** If `AGNES_GOOGLE_GROUP_PREFIX` is set (e.g.
-   `grp_foundryai_`), only emails whose local part starts with the prefix
+   `grp_acme_`), only emails whose local part starts with the prefix
    survive into Agnes; the rest are discarded. If unset, every fetched
    group is mirrored (legacy behavior).
 2. **System-group mapping.** Two optional env vars route specific
@@ -61,12 +61,12 @@ What the OAuth callback does with the list returned by `fetch_user_groups`:
    - `AGNES_GROUP_EVERYONE_EMAIL` — same, for `Everyone`.
 
    This lets operators have a Workspace group like
-   `grp_foundryai_admin@example.com` show up in Agnes as the canonical
+   `grp_acme_admin@example.com` show up in Agnes as the canonical
    `Admin` system group (with the same `is_system=TRUE` semantics, the
    same membership-table id) — no parallel "near-Admin" row.
 3. **Login gate.** If `AGNES_GOOGLE_GROUP_PREFIX` is set AND the fetch
    returned a non-empty list AND none of those groups match the prefix →
-   the callback redirects to `/login?error=not_in_foundryai_group`. The
+   the callback redirects to `/login?error=not_in_allowed_group`. The
    prefix gate fires only on a real, prefix-mismatched answer; if the
    Admin SDK returned an empty list (transient failure or genuine
    no-membership), the previous cached snapshot is preserved (fail-soft)
@@ -77,7 +77,7 @@ What the OAuth callback does with the list returned by `fetch_user_groups`:
    the **full Workspace email** (no separate `external_id` column — the
    email IS the canonical identifier), `created_by='system:google-sync'`.
    Admin UI strips the prefix and `@domain` for display
-   ("grp_foundryai_finance@example.com" → "Finance" big + email subtitle
+   ("grp_acme_finance@example.com" → "Finance" big + email subtitle
    small).
 5. **Refresh semantics.** The previous Google-sync set is wholesale
    replaced (DELETE + INSERT for `source='google_sync'` rows) so a removed
@@ -153,9 +153,9 @@ SDK even with DWD in place.
 ## Optional env
 
 ```env
-AGNES_GOOGLE_GROUP_PREFIX=grp_foundryai_
-AGNES_GROUP_ADMIN_EMAIL=grp_foundryai_admin@example.com
-AGNES_GROUP_EVERYONE_EMAIL=grp_foundryai_everyone@example.com
+AGNES_GOOGLE_GROUP_PREFIX=grp_acme_
+AGNES_GROUP_ADMIN_EMAIL=grp_acme_admin@example.com
+AGNES_GROUP_EVERYONE_EMAIL=grp_acme_everyone@example.com
 GOOGLE_ADMIN_SDK_SA_EMAIL=explicit-sa@project.iam.gserviceaccount.com
 ```
 

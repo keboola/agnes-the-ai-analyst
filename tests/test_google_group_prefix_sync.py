@@ -1,7 +1,7 @@
 """Tests for the Google-prefix mapping + system-group routing.
 
 Covers:
-- prefix filter (only `grp_foundryai_*` rows survive into user_group_members)
+- prefix filter (only `grp_acme_*` rows survive into user_group_members)
 - login gate (302 when prefix is set and no Workspace group matches)
 - system-group mapping (admin/everyone Workspace email → seeded
   Admin/Everyone row instead of a fresh user_groups insert)
@@ -24,7 +24,7 @@ def google_callback_env(tmp_path, monkeypatch):
 
     Patches `is_available`, `oauth.google.authorize_access_token`, and
     `app.auth.group_sync.fetch_user_groups` so no real network traffic is
-    required. The callback's domain check accepts `tester@groupon.com`
+    required. The callback's domain check accepts `tester@example.com`
     because no `allowed_domains` is configured by default in tests.
 
     Per-test setup: monkeypatch the prefix/admin/everyone env vars and the
@@ -41,7 +41,7 @@ def google_callback_env(tmp_path, monkeypatch):
         authorize_access_token=AsyncMock(
             return_value={
                 "userinfo": {
-                    "email": "tester@groupon.com",
+                    "email": "tester@example.com",
                     "name": "Tester",
                 }
             }
@@ -70,13 +70,13 @@ def _system_db():
 class TestPrefixFilter:
     def test_prefix_filter_keeps_only_matching_groups(self, google_callback_env):
         env = google_callback_env
-        env["monkeypatch"].setenv("AGNES_GOOGLE_GROUP_PREFIX", "grp_foundryai_")
+        env["monkeypatch"].setenv("AGNES_GOOGLE_GROUP_PREFIX", "grp_acme_")
         _set_fetch(env["monkeypatch"], [
-            "grp_foundryai_finance@groupon.com",
-            "grp_foundryai_eng@groupon.com",
-            "grp_other@groupon.com",
-            "groupon-everyone@groupon.com",
-            "drinks@groupon.com",
+            "grp_acme_finance@example.com",
+            "grp_acme_eng@example.com",
+            "grp_other@example.com",
+            "acme-everyone@example.com",
+            "drinks@example.com",
         ])
 
         resp = env["client"].get("/auth/google/callback?code=x&state=y")
@@ -91,7 +91,7 @@ class TestPrefixFilter:
                 UserGroupMembersRepository,
             )
 
-            user = UserRepository(conn).get_by_email("tester@groupon.com")
+            user = UserRepository(conn).get_by_email("tester@example.com")
             assert user is not None
 
             group_ids = UserGroupMembersRepository(conn).list_groups_for_user(
@@ -100,8 +100,8 @@ class TestPrefixFilter:
             ug = UserGroupsRepository(conn)
             names = sorted(ug.get(gid)["name"] for gid in group_ids)
             assert names == [
-                "grp_foundryai_eng@groupon.com",
-                "grp_foundryai_finance@groupon.com",
+                "grp_acme_eng@example.com",
+                "grp_acme_finance@example.com",
             ]
             for n in names:
                 assert ug.get_by_name(n)["created_by"] == "system:google-sync"
@@ -112,17 +112,17 @@ class TestPrefixFilter:
         self, google_callback_env
     ):
         env = google_callback_env
-        env["monkeypatch"].setenv("AGNES_GOOGLE_GROUP_PREFIX", "grp_foundryai_")
+        env["monkeypatch"].setenv("AGNES_GOOGLE_GROUP_PREFIX", "grp_acme_")
         _set_fetch(env["monkeypatch"], [
-            "drinks@groupon.com",
-            "groupon-everyone@groupon.com",
+            "drinks@example.com",
+            "acme-everyone@example.com",
         ])
 
         resp = env["client"].get("/auth/google/callback?code=x&state=y")
         # Bare RedirectResponse defaults to 307 (matches the other error
         # redirects in google.py — domain_not_allowed, oauth_failed, etc.).
         assert resp.status_code in (302, 307)
-        assert resp.headers["location"] == "/login?error=not_in_foundryai_group"
+        assert resp.headers["location"] == "/login?error=not_in_allowed_group"
 
         # No group memberships were written for the user (the gate fired
         # before replace_google_sync_groups). The user row may exist
@@ -136,7 +136,7 @@ class TestPrefixFilter:
                 UserGroupMembersRepository,
             )
 
-            user = UserRepository(conn).get_by_email("tester@groupon.com")
+            user = UserRepository(conn).get_by_email("tester@example.com")
             if user:
                 groups = UserGroupMembersRepository(conn).list_groups_for_user(
                     user["id"]
@@ -150,8 +150,8 @@ class TestPrefixFilter:
         env = google_callback_env
         env["monkeypatch"].delenv("AGNES_GOOGLE_GROUP_PREFIX", raising=False)
         _set_fetch(env["monkeypatch"], [
-            "grp_a@groupon.com",
-            "grp_b@groupon.com",
+            "grp_a@example.com",
+            "grp_b@example.com",
         ])
 
         resp = env["client"].get("/auth/google/callback?code=x&state=y")
@@ -166,14 +166,14 @@ class TestPrefixFilter:
                 UserGroupMembersRepository,
             )
 
-            user = UserRepository(conn).get_by_email("tester@groupon.com")
+            user = UserRepository(conn).get_by_email("tester@example.com")
             group_ids = UserGroupMembersRepository(conn).list_groups_for_user(
                 user["id"]
             )
             names = sorted(
                 UserGroupsRepository(conn).get(gid)["name"] for gid in group_ids
             )
-            assert names == ["grp_a@groupon.com", "grp_b@groupon.com"]
+            assert names == ["grp_a@example.com", "grp_b@example.com"]
         finally:
             conn.close()
 
@@ -181,13 +181,13 @@ class TestPrefixFilter:
 class TestSystemMapping:
     def test_admin_email_routes_to_seeded_admin_row(self, google_callback_env):
         env = google_callback_env
-        env["monkeypatch"].setenv("AGNES_GOOGLE_GROUP_PREFIX", "grp_foundryai_")
+        env["monkeypatch"].setenv("AGNES_GOOGLE_GROUP_PREFIX", "grp_acme_")
         env["monkeypatch"].setenv(
-            "AGNES_GROUP_ADMIN_EMAIL", "grp_foundryai_admin@groupon.com"
+            "AGNES_GROUP_ADMIN_EMAIL", "grp_acme_admin@example.com"
         )
         _set_fetch(env["monkeypatch"], [
-            "grp_foundryai_admin@groupon.com",
-            "grp_foundryai_finance@groupon.com",
+            "grp_acme_admin@example.com",
+            "grp_acme_finance@example.com",
         ])
 
         env["client"].get("/auth/google/callback?code=x&state=y")
@@ -204,19 +204,19 @@ class TestSystemMapping:
             # Crucially: no separate user_groups row was created with the
             # full admin email as `name`. Membership lands in the seeded
             # Admin row instead.
-            assert ug.get_by_name("grp_foundryai_admin@groupon.com") is None
+            assert ug.get_by_name("grp_acme_admin@example.com") is None
 
             admin_row = ug.get_by_name("Admin")
             assert admin_row is not None and admin_row["is_system"] is True
 
-            user = UserRepository(conn).get_by_email("tester@groupon.com")
+            user = UserRepository(conn).get_by_email("tester@example.com")
             group_ids = UserGroupMembersRepository(conn).list_groups_for_user(
                 user["id"]
             )
             assert admin_row["id"] in group_ids
 
             # Finance group still goes through ensure() and creates a fresh row.
-            finance = ug.get_by_name("grp_foundryai_finance@groupon.com")
+            finance = ug.get_by_name("grp_acme_finance@example.com")
             assert finance is not None
             assert finance["is_system"] is False
             assert finance["created_by"] == "system:google-sync"
@@ -228,12 +228,12 @@ class TestSystemMapping:
         self, google_callback_env
     ):
         env = google_callback_env
-        env["monkeypatch"].setenv("AGNES_GOOGLE_GROUP_PREFIX", "grp_foundryai_")
+        env["monkeypatch"].setenv("AGNES_GOOGLE_GROUP_PREFIX", "grp_acme_")
         env["monkeypatch"].setenv(
-            "AGNES_GROUP_EVERYONE_EMAIL", "grp_foundryai_everyone@groupon.com"
+            "AGNES_GROUP_EVERYONE_EMAIL", "grp_acme_everyone@example.com"
         )
         _set_fetch(env["monkeypatch"], [
-            "grp_foundryai_everyone@groupon.com",
+            "grp_acme_everyone@example.com",
         ])
 
         env["client"].get("/auth/google/callback?code=x&state=y")
@@ -247,13 +247,13 @@ class TestSystemMapping:
             )
 
             ug = UserGroupsRepository(conn)
-            assert ug.get_by_name("grp_foundryai_everyone@groupon.com") is None
+            assert ug.get_by_name("grp_acme_everyone@example.com") is None
 
             everyone_row = ug.get_by_name("Everyone")
             assert everyone_row is not None
             assert everyone_row["is_system"] is True
 
-            user = UserRepository(conn).get_by_email("tester@groupon.com")
+            user = UserRepository(conn).get_by_email("tester@example.com")
             group_ids = UserGroupMembersRepository(conn).list_groups_for_user(
                 user["id"]
             )
@@ -265,9 +265,9 @@ class TestSystemMapping:
 class TestIdempotency:
     def test_second_login_does_not_duplicate_groups(self, google_callback_env):
         env = google_callback_env
-        env["monkeypatch"].setenv("AGNES_GOOGLE_GROUP_PREFIX", "grp_foundryai_")
+        env["monkeypatch"].setenv("AGNES_GOOGLE_GROUP_PREFIX", "grp_acme_")
         _set_fetch(env["monkeypatch"], [
-            "grp_foundryai_finance@groupon.com",
+            "grp_acme_finance@example.com",
         ])
 
         env["client"].get("/auth/google/callback?code=x&state=y")
@@ -280,7 +280,7 @@ class TestIdempotency:
                 UserGroupMembersRepository,
             )
 
-            user = UserRepository(conn).get_by_email("tester@groupon.com")
+            user = UserRepository(conn).get_by_email("tester@example.com")
             group_ids = UserGroupMembersRepository(conn).list_groups_for_user(
                 user["id"]
             )
@@ -292,7 +292,7 @@ class TestIdempotency:
             # get-or-create, the second login picks up the existing row).
             count = conn.execute(
                 "SELECT COUNT(*) FROM user_groups WHERE name = ?",
-                ["grp_foundryai_finance@groupon.com"],
+                ["grp_acme_finance@example.com"],
             ).fetchone()[0]
             assert count == 1
         finally:
@@ -307,7 +307,7 @@ class TestIsGoogleManagedFlag:
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         from app.api.access import _is_google_managed
         g = {
-            "name": "grp_foundryai_x@groupon.com",
+            "name": "grp_acme_x@example.com",
             "is_system": False,
             "created_by": "system:google-sync",
         }
@@ -316,7 +316,7 @@ class TestIsGoogleManagedFlag:
     def test_system_admin_with_env_mapping_is_managed(self, tmp_path, monkeypatch):
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         monkeypatch.setenv(
-            "AGNES_GROUP_ADMIN_EMAIL", "grp_foundryai_admin@groupon.com"
+            "AGNES_GROUP_ADMIN_EMAIL", "grp_acme_admin@example.com"
         )
         from app.api.access import _is_google_managed
         g = {"name": "Admin", "is_system": True, "created_by": "system:seed"}
@@ -351,7 +351,7 @@ class TestApiGuard:
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-32chars-minimum!!!!!")
         monkeypatch.setenv(
-            "AGNES_GROUP_ADMIN_EMAIL", "grp_foundryai_admin@groupon.com"
+            "AGNES_GROUP_ADMIN_EMAIL", "grp_acme_admin@example.com"
         )
 
         from app.main import create_app
@@ -374,7 +374,7 @@ class TestApiGuard:
                 "admin1", admin_id, source="system_seed",
             )
             # A google-sync group to act on.
-            ug.ensure("grp_foundryai_finance@groupon.com")
+            ug.ensure("grp_acme_finance@example.com")
         finally:
             conn.close()
 
@@ -394,7 +394,7 @@ class TestApiGuard:
             conn.close()
 
     def test_patch_google_managed_returns_409(self, admin_client):
-        gid = self._gid("grp_foundryai_finance@groupon.com")
+        gid = self._gid("grp_acme_finance@example.com")
         r = admin_client.patch(
             f"/api/admin/groups/{gid}",
             json={"name": "renamed"},
@@ -406,13 +406,13 @@ class TestApiGuard:
         assert body["detail"]["code"] == "google_managed_readonly"
 
     def test_delete_google_managed_returns_409(self, admin_client):
-        gid = self._gid("grp_foundryai_finance@groupon.com")
+        gid = self._gid("grp_acme_finance@example.com")
         r = admin_client.delete(f"/api/admin/groups/{gid}")
         assert r.status_code == 409
         assert r.json()["detail"]["code"] == "google_managed_readonly"
 
     def test_add_member_to_google_managed_returns_409(self, admin_client):
-        gid = self._gid("grp_foundryai_finance@groupon.com")
+        gid = self._gid("grp_acme_finance@example.com")
         r = admin_client.post(
             f"/api/admin/groups/{gid}/members",
             json={"email": "u1@x"},

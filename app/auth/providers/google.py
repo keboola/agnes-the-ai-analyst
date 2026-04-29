@@ -169,7 +169,7 @@ async def google_callback(request: Request):
                             email, prefix, fetched,
                         )
                         return RedirectResponse(
-                            url="/login?error=not_in_foundryai_group"
+                            url="/login?error=not_in_allowed_group"
                         )
 
                     ug_repo = UserGroupsRepository(conn)
