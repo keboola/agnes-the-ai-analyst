@@ -1236,6 +1236,123 @@ class TestTreeEndpoint:
         resp = c.get("/api/memory/tree?axis=domain")
         assert resp.status_code == 401
 
+    @staticmethod
+    def _seed_item_direct(conn, item_id, title, *, audience=None, source_type="user_verification",
+                           status="approved", domain=None, category="business_logic",
+                           source_user="admin@test.com"):
+        """Direct insert — POST /api/memory doesn't accept audience/source_type/status."""
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        conn.execute(
+            """INSERT INTO knowledge_items
+               (id, title, content, category, domain, source_user, audience,
+                status, source_type, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [item_id, title, f"content {title}", category, domain, source_user,
+             audience, status, source_type, now, now],
+        )
+
+    def test_tree_audience_axis_privacy_non_admin(self, seeded_app):
+        """Non-admin tree on audience axis sees only their own group buckets +
+        null/'all'; group:engineering bucket must not surface for a finance user."""
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        from app.auth.jwt import create_access_token
+
+        conn = get_system_db()
+        self._seed_item_direct(conn, "tree_aud_fin", "Finance fact",
+                               audience="group:finance", domain="finance")
+        self._seed_item_direct(conn, "tree_aud_eng", "Eng fact",
+                               audience="group:engineering", domain="engineering")
+        self._seed_item_direct(conn, "tree_aud_all", "All-users fact",
+                               audience="all", domain="data")
+        self._seed_item_direct(conn, "tree_aud_null", "Null-audience fact",
+                               audience=None, domain="data")
+        repo = UserRepository(conn)
+        repo.create(id="tree_fin_user", email="treefin@test.com",
+                    name="Tree Finance User", role="analyst")
+        TestAudienceDistribution._add_user_to_group(conn, "tree_fin_user", "finance")
+        conn.close()
+
+        token = create_access_token("tree_fin_user", "treefin@test.com", "analyst")
+        c = seeded_app["client"]
+        resp = c.get("/api/memory/tree?axis=audience", headers=_auth(token))
+        assert resp.status_code == 200, resp.text
+        keys = {g["key"] for g in resp.json()["groups"]}
+        # Finance user sees their own group + null/all; never the eng bucket.
+        assert "group:finance" in keys
+        assert "all" in keys  # both null and 'all' values bucket here
+        assert "group:engineering" not in keys
+
+        # Admin, by contrast, sees every audience bucket including engineering.
+        admin_resp = c.get(
+            "/api/memory/tree?axis=audience",
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert admin_resp.status_code == 200
+        admin_keys = {g["key"] for g in admin_resp.json()["groups"]}
+        assert "group:finance" in admin_keys
+        assert "group:engineering" in admin_keys
+
+    def test_tree_has_duplicate_filter(self, seeded_app):
+        """``has_duplicate=true`` narrows to items present in an unresolved
+        likely_duplicate relation; items without a relation drop out."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        a = self._seed(c, token, title="Dup A", domain="finance")
+        b = self._seed(c, token, title="Dup B", domain="finance")
+        c_id = self._seed(c, token, title="Solo C", domain="finance")
+        _seed_relation_via_repo(seeded_app, a, b)
+
+        resp = c.get(
+            "/api/memory/tree?axis=domain&has_duplicate=true",
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+        ids_in_groups = {
+            item["id"]
+            for g in resp.json()["groups"]
+            for item in g.get("items", [])
+        }
+        # The duplicated pair surfaces; the solo item does not.
+        assert a in ids_in_groups
+        assert b in ids_in_groups
+        assert c_id not in ids_in_groups
+
+    def test_tree_chip_filter_composition(self, seeded_app):
+        """``status_filter`` + ``source_type`` apply together — only items
+        matching both end up in the response."""
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        # Two items differing on each chip dimension; only one matches both.
+        self._seed_item_direct(conn, "tree_chip_match", "Both match",
+                               status="approved", source_type="user_verification",
+                               domain="finance")
+        self._seed_item_direct(conn, "tree_chip_status_only", "Approved but wrong source",
+                               status="approved", source_type="claude_local_md",
+                               domain="finance")
+        self._seed_item_direct(conn, "tree_chip_source_only", "Right source but pending",
+                               status="pending", source_type="user_verification",
+                               domain="finance")
+        conn.close()
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get(
+            "/api/memory/tree?axis=domain&status_filter=approved&source_type=user_verification",
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+        ids_in_groups = {
+            item["id"]
+            for g in resp.json()["groups"]
+            for item in g.get("items", [])
+        }
+        assert "tree_chip_match" in ids_in_groups
+        assert "tree_chip_status_only" not in ids_in_groups
+        assert "tree_chip_source_only" not in ids_in_groups
+
 
 class TestPatchAndBulkUpdate:
     def _create(self, c, token, title="Patch test"):

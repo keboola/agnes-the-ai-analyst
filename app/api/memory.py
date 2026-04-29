@@ -787,7 +787,7 @@ def _strip_personal(item: Optional[dict], hide: bool) -> Optional[dict]:
 
 @router.get("/admin/duplicate-candidates")
 async def admin_duplicate_candidates(
-    resolved: Optional[bool] = False,
+    resolved: Optional[bool] = None,
     exclude_personal: bool = True,
     limit: int = 100,
     user: dict = Depends(require_admin),
@@ -795,7 +795,10 @@ async def admin_duplicate_candidates(
 ):
     """List duplicate-candidate relations for admin review.
 
-    Default ``resolved=false`` so the UI surfaces the actionable backlog.
+    Pass ``resolved=true`` or ``resolved=false`` to filter; omit both to fetch
+    every state (the original UI default). The web UI keeps surfacing the
+    actionable backlog by passing ``resolved=false`` explicitly.
+
     With ``exclude_personal=true`` (default) personal items in the pair are
     replaced with ``{id, hidden: true}`` — the relation row is still visible
     so admins can resolve it, but content stays inside the personal-item

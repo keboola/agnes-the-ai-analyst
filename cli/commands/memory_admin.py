@@ -107,42 +107,51 @@ def edit(
     if audience is not None:
         body["audience"] = audience
 
+    # ``--set-tags`` is a hard replacement and goes through the PATCH path
+    # alongside the other full-replacement fields.
     if set_tags is not None:
         body["tags"] = [t.strip() for t in set_tags.split(",") if t.strip()]
-    elif add_tag or remove_tag:
-        # PATCH only takes ``tags`` (full replacement). Compose against the
-        # existing tags client-side so single --add-tag / --remove-tag flags
-        # don't wipe the rest of the tag set.
-        cur = api_get(f"/api/memory")
-        existing: list[str] = []
-        if cur.status_code == 200:
-            for it in cur.json().get("items", []):
-                if it.get("id") == item_id:
-                    raw = it.get("tags") or []
-                    if isinstance(raw, str):
-                        try:
-                            raw = _json.loads(raw)
-                        except Exception:
-                            raw = []
-                    existing = [str(t) for t in raw] if isinstance(raw, list) else []
-                    break
-        merged = list(existing)
-        for t in add_tag:
-            if t not in merged:
-                merged.append(t)
-        if remove_tag:
-            rm = set(remove_tag)
-            merged = [t for t in merged if t not in rm]
-        body["tags"] = merged
 
-    if not body:
+    nothing_to_do = not body and not add_tag and not remove_tag and set_tags is None
+    if nothing_to_do:
         typer.echo("Nothing to update — pass at least one --title/--content/--category/--domain/--audience/--add-tag/--remove-tag/--set-tags option.", err=True)
         raise typer.Exit(2)
 
-    resp = api_patch(f"/api/memory/admin/{item_id}", json=body)
-    if resp.status_code != 200:
-        _fail(resp, "patch item")
-    typer.echo(f"Updated {item_id}: {', '.join(resp.json().get('updated', []))}")
+    updated_fields: list[str] = []
+    if body:
+        resp = api_patch(f"/api/memory/admin/{item_id}", json=body)
+        if resp.status_code != 200:
+            _fail(resp, "patch item")
+        updated_fields.extend(resp.json().get("updated", []))
+
+    # ``--add-tag`` / ``--remove-tag`` route through the bulk-update endpoint
+    # so the merge-with-existing-tags step happens server-side. The previous
+    # client-side GET-then-PATCH had a silent-data-loss bug when the item id
+    # lived past page 1 of /api/memory: existing tags came back empty and got
+    # overwritten by the partial set. The bulk-update endpoint accepts a
+    # single-id array and supports tags_add / tags_remove natively.
+    if (add_tag or remove_tag) and set_tags is None:
+        updates: dict = {}
+        if add_tag:
+            updates["tags_add"] = list(add_tag)
+        if remove_tag:
+            updates["tags_remove"] = list(remove_tag)
+        bulk_resp = api_post(
+            "/api/memory/admin/bulk-update",
+            json={"item_ids": [item_id], "updates": updates},
+        )
+        if bulk_resp.status_code != 200:
+            _fail(bulk_resp, "update tags")
+        body_b = bulk_resp.json()
+        if item_id in (body_b.get("not_found") or []):
+            typer.echo(f"Item not found: {item_id}", err=True)
+            raise typer.Exit(1)
+        if item_id in (body_b.get("errors") or {}):
+            typer.echo(f"Failed to update tags: {body_b['errors'][item_id]}", err=True)
+            raise typer.Exit(1)
+        updated_fields.append("tags")
+
+    typer.echo(f"Updated {item_id}: {', '.join(updated_fields)}")
 
 
 # ----- bulk-edit -----
@@ -231,15 +240,19 @@ def duplicates_list(
     resolved: Optional[bool] = typer.Option(
         None,
         "--resolved/--unresolved",
-        help="Filter by resolution state (default: unresolved)",
+        help="Filter by resolution state (omit both flags to fetch all)",
     ),
     limit: int = typer.Option(100, "--limit"),
     as_json: bool = typer.Option(False, "--json"),
 ):
     """List duplicate-candidate relations."""
     params: dict = {"limit": limit}
-    # Default to unresolved when neither flag is set, matching the API.
-    params["resolved"] = "true" if resolved is True else "false"
+    # Only forward ``resolved`` when the user passed --resolved/--unresolved
+    # explicitly. Omitting it lets the API return both states (the API treats
+    # ``resolved=None`` as "no filter"). The API's own default is False, so
+    # the no-flag CLI invocation now matches the bare ``GET`` against the API.
+    if resolved is not None:
+        params["resolved"] = "true" if resolved else "false"
     resp = api_get("/api/memory/admin/duplicate-candidates", params=params)
     if resp.status_code != 200:
         _fail(resp, "list duplicates")
