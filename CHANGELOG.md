@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.23.0] — 2026-04-30
+
 ### Added
 - **Single-item Edit button on every memory item card** in `/corporate-memory/admin`. Surfaces the per-item `PATCH /api/memory/admin/{id}` endpoint added in #126 — until now it was only reachable via the CLI (`da admin memory edit <id>`) or by selecting one item in the bulk batch bar. The modal pre-fills from the item's current title / content / category / domain (dropdown matching `VALID_DOMAINS` + `(unset)`) / audience / tags (comma-separated). Authorisation: same `require_admin` gate as the rest of the memory admin surface.
 - **`ai` section editable in `/admin/server-config`**. The `ai:` block in `instance.yaml` (provider / api_key / model / base_url / structured_output for the corporate-memory extractor) was missing from `_EDITABLE_SECTIONS` and `SECTION_META`, so admins had no UI path to view or set the LLM token without editing `instance.yaml` directly. `api_key` is auto-masked via the existing `_SECRET_KEY_PATTERNS` (substring matches "api_key"), so the input renders as a password field and audit-log diffs redact the value.
