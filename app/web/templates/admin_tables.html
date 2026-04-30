@@ -859,21 +859,45 @@
             </div>
             <div class="modal-body">
                 {% if data_source_type == 'bigquery' %}
-                {# BigQuery path — registers a remote view that queries BQ directly. #}
+                {# BigQuery path — `Mode` controls remote-view vs. materialized-parquet.
+                   `bqQueryMode` toggles between the dataset/source-table fields
+                   (remote) and the source_query textarea (materialized). #}
                 <div class="form-group">
+                    <label class="form-label" for="bqQueryMode">Mode</label>
+                    <select class="form-select" id="bqQueryMode" onchange="onBqModeChange()">
+                        <option value="remote">Remote — view, queries go to BQ on demand</option>
+                        <option value="materialized">Materialized — scheduled SQL writes parquet, distributed via da sync</option>
+                    </select>
+                    <div class="form-hint">
+                        <strong>Remote</strong>: pick an existing BQ table; analysts query it through the view (each query roundtrips to BQ).<br>
+                        <strong>Materialized</strong>: write SQL; the scheduler runs it on the cron schedule and ships the parquet to analysts (queries are local, sub-100 ms).
+                    </div>
+                </div>
+                <div class="form-group bq-mode-remote">
                     <label class="form-label" for="bqDataset">Dataset</label>
                     <input type="text" class="form-input" id="bqDataset" placeholder="e.g. analytics">
                     <div class="form-hint">BigQuery dataset name (no project prefix — that's read from instance.yaml)</div>
                 </div>
-                <div class="form-group">
+                <div class="form-group bq-mode-remote">
                     <label class="form-label" for="bqSourceTable">Source Table</label>
                     <input type="text" class="form-input" id="bqSourceTable" placeholder="e.g. orders">
                     <div class="form-hint">BigQuery table or view name within the dataset</div>
                 </div>
+                <div class="form-group bq-mode-materialized" style="display:none;">
+                    <label class="form-label" for="bqSourceQuery">SQL</label>
+                    <textarea class="form-textarea" id="bqSourceQuery" rows="8"
+                        placeholder="SELECT date, SUM(revenue) AS revenue&#10;FROM `project.dataset.orders`&#10;WHERE date >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)&#10;GROUP BY 1"></textarea>
+                    <div class="form-hint">
+                        SELECT statement, no trailing semicolon. Native BQ identifiers
+                        (<code>`project.dataset.table`</code>) recommended — DuckDB three-part
+                        names like <code>bq."ds"."t"</code> work for the COPY but disable the
+                        cost guardrail's BQ dry-run.
+                    </div>
+                </div>
                 <div class="form-group">
                     <label class="form-label" for="bqViewName">View Name</label>
-                    <input type="text" class="form-input" id="bqViewName" placeholder="defaults to source table">
-                    <div class="form-hint">DuckDB view name analysts will use; defaults to the source table</div>
+                    <input type="text" class="form-input" id="bqViewName" placeholder="orders_90d">
+                    <div class="form-hint">DuckDB view name analysts will use. Required for materialized; defaults to the source table for remote.</div>
                 </div>
                 <div class="form-group">
                     <label class="form-label" for="bqDescription">Description <span class="optional">(optional)</span></label>
@@ -1290,23 +1314,55 @@
     }
 
     function _buildBigQueryPayload() {
+        var mode = document.getElementById('bqQueryMode').value || 'remote';
+        var viewName = document.getElementById('bqViewName').value.trim();
+        var description = document.getElementById('bqDescription').value.trim() || null;
+        var folder = document.getElementById('bqFolder').value.trim() || null;
+        var syncSchedule = document.getElementById('bqSyncSchedule').value.trim() || null;
+
+        if (mode === 'materialized') {
+            return {
+                name: viewName,
+                source_type: 'bigquery',
+                query_mode: 'materialized',
+                source_query: document.getElementById('bqSourceQuery').value.trim(),
+                profile_after_sync: false,
+                description: description,
+                folder: folder,
+                sync_schedule: syncSchedule,
+            };
+        }
+
+        // Remote (default) path — bucket + source_table, viewName defaults
+        // to source_table when empty (preserves pre-existing UX).
         var dataset = document.getElementById('bqDataset').value.trim();
         var sourceTable = document.getElementById('bqSourceTable').value.trim();
-        var viewName = document.getElementById('bqViewName').value.trim() || sourceTable;
         return {
-            name: viewName,
+            name: viewName || sourceTable,
             source_type: 'bigquery',
             bucket: dataset,
             source_table: sourceTable,
-            // The server forces these for BQ rows, but we set them explicitly
-            // so the network log + audit-log entry reflect the operator's
-            // intent rather than a server-side mutation.
             query_mode: 'remote',
             profile_after_sync: false,
-            description: document.getElementById('bqDescription').value.trim() || null,
-            folder: document.getElementById('bqFolder').value.trim() || null,
-            sync_schedule: document.getElementById('bqSyncSchedule').value.trim() || null,
+            description: description,
+            folder: folder,
+            sync_schedule: syncSchedule,
         };
+    }
+
+    function onBqModeChange() {
+        // Show / hide the per-mode field groups. Remote uses bqDataset +
+        // bqSourceTable; materialized uses bqSourceQuery. Both modes share
+        // bqViewName, bqDescription, bqFolder, bqSyncSchedule.
+        var mode = document.getElementById('bqQueryMode').value;
+        var remoteFields = document.querySelectorAll('.bq-mode-remote');
+        var matFields = document.querySelectorAll('.bq-mode-materialized');
+        remoteFields.forEach(function(el) {
+            el.style.display = (mode === 'remote') ? '' : 'none';
+        });
+        matFields.forEach(function(el) {
+            el.style.display = (mode === 'materialized') ? '' : 'none';
+        });
     }
 
     function registerTable() {
