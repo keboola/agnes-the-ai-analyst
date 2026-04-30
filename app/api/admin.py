@@ -163,6 +163,7 @@ _EDITABLE_SECTIONS: tuple[str, ...] = (
     "theme",
     "server",
     "auth",
+    "ai",
 )
 
 # "Danger-zone" sections — flipping these can lock operators out (auth.*) or
