@@ -95,16 +95,25 @@ def _run_materialized_pass(conn: duckdb.DuckDBPyConnection, bq) -> dict:
         if row.get("query_mode") != "materialized":
             continue
 
-        last = state.get_last_sync(row["id"])
+        # Convention across connectors: sync_state.table_id and the parquet
+        # filename are keyed by `table_registry.name` (matches Keboola's
+        # `_meta.table_name`) so the manifest's `registry_by_name` lookup
+        # at `_build_manifest_for_user` resolves cleanly. Without this,
+        # admins who register `name="Orders_90d"` (id slugified to
+        # `orders_90d`) would see `query_mode` default to `"local"` in the
+        # manifest because the lookup misses on `id`.
+        ref_name = row["name"]
+
+        last = state.get_last_sync(ref_name)
         last_iso = last.isoformat() if last else None
         schedule = row.get("sync_schedule") or "every 1h"
         if not is_table_due(schedule, last_iso):
-            summary["skipped"].append(row["id"])
+            summary["skipped"].append(ref_name)
             continue
 
         try:
             stats = _materialize_table(
-                table_id=row["id"],
+                table_id=ref_name,
                 sql=row["source_query"],
                 bq=bq,
                 output_dir=output_dir,
@@ -116,15 +125,15 @@ def _run_materialized_pass(conn: duckdb.DuckDBPyConnection, bq) -> dict:
                 e.table_id, f"{e.current:,}", f"{e.limit:,}",
             )
             summary["errors"].append({
-                "table": row["id"],
+                "table": ref_name,
                 "error": str(e),
                 "current": e.current,
                 "limit": e.limit,
             })
             continue
         except Exception as e:
-            logger.exception("Materialize failed for %s", row["id"])
-            summary["errors"].append({"table": row["id"], "error": str(e)})
+            logger.exception("Materialize failed for %s", ref_name)
+            summary["errors"].append({"table": ref_name, "error": str(e)})
             continue
 
         # `materialize_query` returns the parquet's MD5 inline — hashing
@@ -133,15 +142,15 @@ def _run_materialized_pass(conn: duckdb.DuckDBPyConnection, bq) -> dict:
         # reason the stats dict didn't carry it (defensive).
         parquet_hash = stats.get("hash")
         if not parquet_hash:
-            parquet_path = Path(output_dir) / "data" / f"{row['id']}.parquet"
+            parquet_path = Path(output_dir) / "data" / f"{ref_name}.parquet"
             parquet_hash = _file_hash(parquet_path)
         state.update_sync(
-            table_id=row["id"],
+            table_id=ref_name,
             rows=stats["rows"],
             file_size_bytes=stats["size_bytes"],
             hash=parquet_hash,
         )
-        summary["materialized"].append(row["id"])
+        summary["materialized"].append(ref_name)
 
     return summary
 

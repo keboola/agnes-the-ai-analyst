@@ -513,6 +513,15 @@ def _sync_quiet(table, docs_only, as_json, dry_run):
                  "skipped_remote": skipped_remote},
                 indent=2,
             ))
+        else:
+            # Single stderr line keeps stdout clean for hooks while still
+            # giving an interactive operator running `da sync --quiet
+            # --dry-run` a sign that something happened.
+            typer.echo(
+                f"sync (dry-run): would download {len(to_download)} tables, "
+                f"skip {len(skipped_remote)} remote-mode",
+                err=True,
+            )
         return
 
     local_dir = _local_data_dir()

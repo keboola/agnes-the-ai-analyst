@@ -24,12 +24,15 @@ Minor release. Adds **smart local sync** so analysts get RBAC-filtered parquets 
   --sync-schedule "every 6h"`; the sync trigger pass runs it through the
   DuckDB BigQuery extension via the `BqAccess` facade on each tick that's
   due (per-table `sync_schedule` honored via `is_table_due()`) and writes
-  the result to `/data/extracts/bigquery/data/<id>.parquet`. The
-  orchestrator picks the parquet up via standard local-parquet discovery
-  and the existing manifest + `da sync` flow distributes it to analysts.
-  Per-user RBAC filtering is unchanged: a materialized table is just
-  another row in `table_registry` with `resource_grants` controlling
-  which groups see it.
+  the result to `/data/extracts/bigquery/data/<name>.parquet`. The
+  manifest endpoint exposes the row to `da sync`, which distributes the
+  parquet to analysts; analysts query it through their **local** DuckDB
+  view. The server-side orchestrator does **not** create a master view
+  for materialized tables — they are intentionally local-only for
+  analyst distribution, mirroring the v2 fetch primitives' "queryable
+  via `da fetch` not via remote" contract. Per-user RBAC filtering is
+  unchanged: a materialized table is just another row in
+  `table_registry` with `resource_grants` controlling which groups see it.
 - **Schema v19** adds `source_query TEXT` column to `table_registry` to
   back the materialized mode. NULL for existing rows. The
   `materialize_query()` function in the BigQuery extractor performs the

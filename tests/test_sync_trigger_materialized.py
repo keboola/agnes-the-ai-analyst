@@ -185,6 +185,54 @@ def test_materialized_pass_records_parquet_hash(system_db, stub_bq, tmp_path):
     assert row["hash"] == expected
 
 
+def test_materialized_pass_keys_sync_state_by_name_not_id(
+    system_db, stub_bq, tmp_path,
+):
+    """Devin review: when admin registers a name with mixed case (e.g.
+    "Orders_90d") the slug-derived id ("orders_90d") differs from name.
+    sync_state must be keyed by `name` so the manifest's `registry_by_name`
+    lookup resolves and `query_mode='materialized'` flows through to the
+    client. Otherwise CLI sees `query_mode='local'` and downloads the
+    wrong file or skips the row."""
+    repo = TableRegistryRepository(system_db)
+    # Mixed-case name — id will be slugified to lowercase by the API path,
+    # but at the repo level we control both directly.
+    repo.register(
+        id="orders_90d", name="Orders_90d",
+        source_type="bigquery", query_mode="materialized",
+        source_query="SELECT 1",
+        sync_schedule="every 1m",
+    )
+
+    # Pre-create the parquet at the NAME-keyed path.
+    parquet_dir = tmp_path / "data" / "extracts" / "bigquery" / "data"
+    parquet_dir.mkdir(parents=True, exist_ok=True)
+    (parquet_dir / "Orders_90d.parquet").write_bytes(
+        b"PAR1" + b"\x00" * 16 + b"PAR1"
+    )
+
+    from app.api import sync as sync_mod
+
+    captured = {}
+
+    def _spy(table_id, sql, bq, output_dir, max_bytes):
+        captured["table_id"] = table_id
+        return {"rows": 1, "size_bytes": 100, "query_mode": "materialized"}
+
+    with patch("app.api.sync._materialize_table", side_effect=_spy):
+        sync_mod._run_materialized_pass(system_db, stub_bq)
+
+    # materialize_query was called with the NAME, not the id.
+    assert captured["table_id"] == "Orders_90d"
+
+    # sync_state row keyed by name.
+    state = SyncStateRepository(system_db)
+    name_row = state.get_table_state("Orders_90d")
+    id_row = state.get_table_state("orders_90d")
+    assert name_row is not None, "sync_state should be keyed by name"
+    assert id_row is None, "sync_state should NOT be keyed by id"
+
+
 def test_materialized_pass_zero_max_bytes_disables_guardrail(
     system_db, stub_bq, tmp_path, monkeypatch
 ):

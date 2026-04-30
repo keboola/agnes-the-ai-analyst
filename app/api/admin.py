@@ -1388,6 +1388,28 @@ def register_table_precheck(
     # checks identifier safety, validates project_id from instance.yaml).
     _validate_bigquery_register_payload(request)
 
+    # Materialized BQ rows have no `dataset.source_table` to round-trip —
+    # the SQL body is the contract. Skip the BQ-jobs-API call and return a
+    # validation-only precheck so the CLI's `--dry-run --query-mode
+    # materialized` path doesn't crash on an empty fully-qualified name.
+    if request.query_mode == "materialized":
+        return {
+            "ok": True,
+            "table": {
+                "name": request.name,
+                "source_type": "bigquery",
+                "query_mode": "materialized",
+                "source_query": request.source_query,
+                "rows": None,
+                "size_bytes": None,
+                "columns": [],
+                "note": (
+                    "materialized precheck is validation-only — the SQL is "
+                    "evaluated for cost on each scheduled materialize tick"
+                ),
+            },
+        }
+
     # Round-trip the BQ jobs API to confirm the table exists and the SA can
     # see it. Imports kept local to avoid pulling google-cloud-bigquery into
     # the import chain on non-BQ instances.
