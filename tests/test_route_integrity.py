@@ -134,6 +134,7 @@ def test_admin_submenu_links_present_in_header():
         "/admin/access",
         "/admin/tables",
         "/admin/sync",
+        "/admin/settings",
         "/admin/marketplaces",
         "/admin/tokens",
     }
