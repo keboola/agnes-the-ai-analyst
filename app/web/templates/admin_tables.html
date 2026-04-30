@@ -748,7 +748,7 @@
     <div class="content">
 
         {% if data_source_type == 'bigquery' %}
-        <!-- ── BigQuery Register Panel (M1: no discovery, manual entry) ── -->
+        <!-- ── BigQuery Register Panel ── -->
         <div class="panel" data-test="bq-register-panel">
             <div class="panel-header">
                 <div class="panel-header-left">
@@ -760,7 +760,7 @@
                     </div>
                     <div>
                         <div class="panel-title">Register BigQuery Table</div>
-                        <div class="panel-subtitle">Manually register a BQ table or view as a remote DuckDB view</div>
+                        <div class="panel-subtitle">Register a BQ table, view, or custom SQL query for analyst access</div>
                     </div>
                 </div>
                 <button class="btn btn-primary" onclick="openBigQueryRegisterModal()">
@@ -768,7 +768,11 @@
                 </button>
             </div>
             <div class="panel-body-empty">
-                BigQuery dataset/table discovery lands in Milestone 2 of issue #108. For now, enter the dataset + table by hand.
+                Pick the entity type in the modal — <strong>Table</strong> (a BQ table queried on demand),
+                <strong>View</strong> (a BQ view, same trade-off),
+                or <strong>Custom SQL Query</strong> (a scheduled SELECT that materializes to a local parquet
+                analysts download via <code>da sync</code>). Dataset + table autocomplete is not implemented yet —
+                type them by hand.
             </div>
         </div>
         {% else %}
@@ -863,28 +867,40 @@
                    `bqQueryMode` toggles between the dataset/source-table fields
                    (remote) and the source_query textarea (materialized). #}
                 <div class="form-group">
-                    <label class="form-label" for="bqQueryMode">Mode</label>
-                    <select class="form-select" id="bqQueryMode" onchange="onBqModeChange()">
-                        <option value="remote">Remote — view, queries go to BQ on demand</option>
-                        <option value="materialized">Materialized — scheduled SQL writes parquet, distributed via da sync</option>
+                    <label class="form-label" for="bqEntityType">Type</label>
+                    <select class="form-select" id="bqEntityType" onchange="onBqTypeChange()">
+                        <option value="table">Table — query a BQ table on demand (no local copy)</option>
+                        <option value="view">View — query a BQ view on demand (jobs API)</option>
+                        <option value="query">Custom SQL Query — scheduled SELECT writes parquet, distributed via da sync</option>
                     </select>
-                    <div class="form-hint">
-                        <strong>Remote</strong>: pick an existing BQ table; analysts query it through the view (each query roundtrips to BQ).<br>
-                        <strong>Materialized</strong>: write SQL; the scheduler runs it on the cron schedule and ships the parquet to analysts (queries are local, sub-100 ms).
+                    <div class="form-hint" id="bqEntityHint">
+                        <!-- Filled by onBqTypeChange() — describes trade-offs for the
+                             selected entity type. Default text matches `table`. -->
+                        <strong>Table:</strong> latency ~seconds (BQ roundtrip per query); 0 disk;
+                        cost = bytes scanned per analyst-query. Best for tables that fit on disk
+                        but you want to avoid sync overhead, or tables analysts only touch
+                        occasionally.
                     </div>
                 </div>
-                <div class="form-group bq-mode-remote">
+                <div class="form-group bq-type-table bq-type-view">
                     <label class="form-label" for="bqDataset">Dataset</label>
                     <input type="text" class="form-input" id="bqDataset" placeholder="e.g. analytics">
-                    <div class="form-hint">BigQuery dataset name (no project prefix — that's read from instance.yaml)</div>
+                    <div class="form-hint">BigQuery dataset name (no project prefix — read from instance.yaml).</div>
                 </div>
-                <div class="form-group bq-mode-remote">
-                    <label class="form-label" for="bqSourceTable">Source Table</label>
+                <div class="form-group bq-type-table bq-type-view">
+                    <label class="form-label" for="bqSourceTable">Source Table / View</label>
                     <input type="text" class="form-input" id="bqSourceTable" placeholder="e.g. orders">
-                    <div class="form-hint">BigQuery table or view name within the dataset</div>
+                    <div class="form-hint">Table or view name within the dataset. The server detects which it is at registration time.</div>
                 </div>
-                <div class="form-group bq-mode-materialized" style="display:none;">
-                    <label class="form-label" for="bqSourceQuery">SQL</label>
+                <div class="form-group bq-type-query" style="display:none;">
+                    <label class="form-label" for="bqSourceQuery">
+                        SQL
+                        <button type="button" class="btn btn-secondary btn-sm"
+                                onclick="prefillFromTable()" style="float:right; margin-top:-3px;"
+                                title="Prefill SELECT * FROM `project.dataset.table` so you only edit the WHERE / projection">
+                            Use table as base
+                        </button>
+                    </label>
                     <textarea class="form-textarea" id="bqSourceQuery" rows="8"
                         placeholder="SELECT date, SUM(revenue) AS revenue&#10;FROM `project.dataset.orders`&#10;WHERE date >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)&#10;GROUP BY 1"></textarea>
                     <div class="form-hint">
@@ -897,7 +913,7 @@
                 <div class="form-group">
                     <label class="form-label" for="bqViewName">View Name</label>
                     <input type="text" class="form-input" id="bqViewName" placeholder="orders_90d">
-                    <div class="form-hint">DuckDB view name analysts will use. Required for materialized; defaults to the source table for remote.</div>
+                    <div class="form-hint">DuckDB view name analysts will use. Required for Custom SQL; defaults to the source table for Table/View.</div>
                 </div>
                 <div class="form-group">
                     <label class="form-label" for="bqDescription">Description <span class="optional">(optional)</span></label>
@@ -909,9 +925,12 @@
                     <div class="form-hint">Logical grouping for catalog organization</div>
                 </div>
                 <div class="form-group">
-                    <label class="form-label" for="bqSyncSchedule">Sync Schedule <span class="optional">(optional)</span></label>
-                    <input type="text" class="form-input" id="bqSyncSchedule" placeholder="e.g. 0 6 * * *">
-                    <div class="form-hint">Cron expression. Note: scheduler does not yet evaluate this — see #79; addressed in M3 of #108.</div>
+                    <label class="form-label" for="bqSyncSchedule">Sync Schedule <span class="optional">(optional, default <code>every 1h</code> for Custom SQL)</span></label>
+                    <input type="text" class="form-input" id="bqSyncSchedule" placeholder="every 6h">
+                    <div class="form-hint">
+                        Examples: <code>every 15m</code>, <code>every 6h</code>, <code>daily 03:00</code>, <code>daily 07:00,13:00,18:00</code> (UTC).
+                        Honored by Custom SQL (materialized) — Table/View are queried live and ignore this field.
+                    </div>
                 </div>
                 <div class="form-group" id="bqPrecheckSummary" style="display:none;">
                     <div class="form-label">Source check</div>
@@ -1314,13 +1333,20 @@
     }
 
     function _buildBigQueryPayload() {
-        var mode = document.getElementById('bqQueryMode').value || 'remote';
+        // The UI's Type selector is operator-facing UX (Table / View / Custom
+        // SQL Query); the backend payload maps it onto query_mode (remote
+        // vs materialized). Table and View both go to query_mode='remote' —
+        // the BQ extractor auto-detects the entity type via INFORMATION_SCHEMA
+        // at register time and routes BASE TABLE through the Storage Read
+        // API while VIEW goes through bigquery_query() (jobs API). Query
+        // is materialized.
+        var entityType = document.getElementById('bqEntityType').value || 'table';
         var viewName = document.getElementById('bqViewName').value.trim();
         var description = document.getElementById('bqDescription').value.trim() || null;
         var folder = document.getElementById('bqFolder').value.trim() || null;
         var syncSchedule = document.getElementById('bqSyncSchedule').value.trim() || null;
 
-        if (mode === 'materialized') {
+        if (entityType === 'query') {
             return {
                 name: viewName,
                 source_type: 'bigquery',
@@ -1333,8 +1359,10 @@
             };
         }
 
-        // Remote (default) path — bucket + source_table, viewName defaults
-        // to source_table when empty (preserves pre-existing UX).
+        // Table / View — query_mode='remote', server auto-detects entity
+        // shape on register. The frontend doesn't send entity_type because
+        // we don't trust an operator-asserted type (a typo'd "view" on a
+        // BASE TABLE would silently route the wrong way).
         var dataset = document.getElementById('bqDataset').value.trim();
         var sourceTable = document.getElementById('bqSourceTable').value.trim();
         return {
@@ -1350,19 +1378,74 @@
         };
     }
 
-    function onBqModeChange() {
-        // Show / hide the per-mode field groups. Remote uses bqDataset +
-        // bqSourceTable; materialized uses bqSourceQuery. Both modes share
-        // bqViewName, bqDescription, bqFolder, bqSyncSchedule.
-        var mode = document.getElementById('bqQueryMode').value;
-        var remoteFields = document.querySelectorAll('.bq-mode-remote');
-        var matFields = document.querySelectorAll('.bq-mode-materialized');
-        remoteFields.forEach(function(el) {
-            el.style.display = (mode === 'remote') ? '' : 'none';
+    var _BQ_HINT_BY_TYPE = {
+        'table':
+            "<strong>Table:</strong> latency ~seconds (BQ roundtrip per query); 0 disk; "
+            + "cost = bytes scanned per analyst-query. Best for tables that fit on disk "
+            + "but you want to avoid sync overhead, or tables analysts only touch "
+            + "occasionally. Server uses BQ Storage Read API for full-table scans.",
+        'view':
+            "<strong>View:</strong> same on-demand semantics as Table, but the server "
+            + "routes through <code>bigquery_query()</code> (jobs API) instead of the "
+            + "Storage Read API — required because BQ views can't be attached as "
+            + "tables. Latency slightly higher than Table; cost the same per query.",
+        'query':
+            "<strong>Custom SQL:</strong> the scheduler runs your SELECT on "
+            + "<code>sync_schedule</code> and writes the result as a parquet that "
+            + "<code>da sync</code> distributes to analysts. Latency on the analyst "
+            + "side is <100 ms (local read); cost = one BQ scan per schedule tick "
+            + "regardless of how many analysts query it. Cap via "
+            + "<code>data_source.bigquery.max_bytes_per_materialize</code> "
+            + "(default 10 GiB).",
+    };
+
+    function onBqTypeChange() {
+        // Show / hide the per-type field groups. Table and View share
+        // bqDataset + bqSourceTable (both have the same input shape, server
+        // auto-detects which is which). Query swaps in bqSourceQuery + the
+        // "Use table as base" prefill button. View Name + Description +
+        // Folder + Sync Schedule are shared.
+        var entityType = document.getElementById('bqEntityType').value;
+        var byClass = {
+            'table': document.querySelectorAll('.bq-type-table'),
+            'view': document.querySelectorAll('.bq-type-view'),
+            'query': document.querySelectorAll('.bq-type-query'),
+        };
+        // A field with both `bq-type-table` and `bq-type-view` shows for
+        // either selection. Resolve via "is this element tagged for the
+        // current type?".
+        Object.keys(byClass).forEach(function(t) {
+            byClass[t].forEach(function(el) {
+                el.style.display = el.classList.contains('bq-type-' + entityType) ? '' : 'none';
+            });
         });
-        matFields.forEach(function(el) {
-            el.style.display = (mode === 'materialized') ? '' : 'none';
-        });
+        var hint = document.getElementById('bqEntityHint');
+        if (hint) hint.innerHTML = _BQ_HINT_BY_TYPE[entityType] || '';
+    }
+
+    function prefillFromTable() {
+        // Convenience for the Custom SQL path: prompt for project.dataset.table
+        // and prefill `SELECT * FROM \`...\`` so the operator only edits the
+        // WHERE / projection. We can't know the project from the form (it's
+        // server-side config), so the prompt accepts both `dataset.table` and
+        // `project.dataset.table`. Empty / cancel → no change.
+        var existing = document.getElementById('bqSourceQuery').value.trim();
+        if (existing && !confirm('SQL field is not empty — overwrite with prefill?')) {
+            return;
+        }
+        var ref = window.prompt(
+            'Enter the source table as `dataset.table` or `project.dataset.table` '
+            + '(it will be wrapped in backticks):',
+            ''
+        );
+        if (!ref) return;
+        ref = ref.trim().replace(/^`|`$/g, '');
+        var stub =
+            'SELECT *\n'
+            + 'FROM `' + ref + '`\n'
+            + 'WHERE -- TODO: filter or aggregate before the COPY runs (10 GiB cap)\n'
+            + 'LIMIT 1000';
+        document.getElementById('bqSourceQuery').value = stub;
     }
 
     function registerTable() {
