@@ -65,6 +65,8 @@ Cost: `materialized` runs once per `sync_schedule` regardless of how many analys
 
 Guardrail: `data_source.bigquery.max_bytes_per_materialize` (default 10 GiB) blocks the COPY when BQ's dry-run estimate exceeds the cap. Set it explicitly per environment in `instance.yaml`. The default 10 GiB cap applies when the knob is missing OR set to YAML `null`. To explicitly disable the guardrail, use `max_bytes_per_materialize: 0`.
 
+**Guardrail limitation:** the dry-run uses the native `google-cloud-bigquery` client, which does **not** understand DuckDB's three-part identifier syntax `bq."dataset"."table"`. Queries written that way fall through fail-open (the warning shows up in scheduler logs as `BQ dry-run failed for cost guardrail`). To make the guardrail engage, write the materialized SQL with native BQ identifiers — e.g. `` `project.dataset.table` `` — even though the connector resolves both forms at COPY time. We expect to revisit this once DuckDB exposes its own dry-run primitive.
+
 Register a materialized table:
 
 ```bash

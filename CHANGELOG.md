@@ -79,6 +79,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   cost / guardrail / registration example.
 - `docs/architecture.md` — diagram refreshed to show the two BigQuery lanes
   (remote view + materialized parquet).
+- BQ cost guardrail dry-run is performed via the native `google-cloud-bigquery`
+  client, which does not parse DuckDB three-part identifiers (`bq."ds"."t"`).
+  Queries written in DuckDB syntax fall through fail-open and log a warning
+  instead of engaging the cap. Operators who need the cap to be enforceable
+  must register the materialized SQL using native BQ identifiers
+  (`` `project.ds.t` ``). Documented in `cli/skills/connectors.md`.
 
 ## [0.12.1] — 2026-04-28
 
