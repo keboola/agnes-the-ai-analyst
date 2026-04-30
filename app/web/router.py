@@ -715,6 +715,20 @@ async def admin_settings(
     return templates.TemplateResponse(request, "admin_settings.html", ctx)
 
 
+@router.get("/admin/audit", response_class=HTMLResponse)
+async def admin_audit(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Browser surface for the ``audit_log`` table. All data loads
+    client-side from ``GET /api/audit`` so filter changes don't reload
+    the page. Replaces the deleted ``/activity-center`` route — instead
+    of rendering against undefined stub fields, this shows the real
+    audit trail produced by the per-module ``_audit()`` instrumentation."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_audit.html", ctx)
+
+
 @router.get("/admin/sync", response_class=HTMLResponse)
 async def admin_sync(
     request: Request,

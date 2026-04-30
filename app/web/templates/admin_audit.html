@@ -1,0 +1,283 @@
+{% extends "base.html" %}
+{% block title %}Audit log — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block content %}
+<style>
+  .audit-page { max-width: 1400px; margin: 0 auto; padding: 24px 32px 48px; }
+  .audit-page h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; }
+  .audit-page .subtitle { color: var(--text-secondary); font-size: 13px; margin: 0 0 24px; }
+
+  .audit-card {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border-light, #e5e7eb);
+    border-radius: 10px;
+    margin-bottom: 16px;
+    overflow: hidden;
+  }
+  .audit-card-head {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+    display: flex; align-items: center; justify-content: space-between;
+    flex-wrap: wrap; gap: 12px;
+  }
+  .audit-card-head h2 {
+    font-size: 13px; font-weight: 600; margin: 0;
+    text-transform: uppercase; letter-spacing: 0.4px;
+    color: var(--text-secondary, #6b7280);
+  }
+  .audit-card-head .meta { font-size: 12px; color: var(--text-secondary, #9ca3af); }
+
+  .filter-row {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+  }
+  .filter-row label {
+    font-size: 11px; font-weight: 500;
+    text-transform: uppercase; letter-spacing: 0.4px;
+    color: var(--text-secondary);
+  }
+  .filter-row input,
+  .filter-row select {
+    padding: 6px 10px; border-radius: 6px;
+    border: 1px solid var(--border, #e5e7eb);
+    background: var(--surface, #fff);
+    font-size: 12px;
+    font-family: inherit;
+    min-width: 140px;
+  }
+  .filter-row input:focus,
+  .filter-row select:focus { outline: 2px solid var(--primary, #0073D1); outline-offset: -1px; }
+  .filter-row button {
+    padding: 6px 14px; border-radius: 6px;
+    background: var(--primary, #0073D1); color: #fff; border: none;
+    font-size: 12px; font-weight: 500; cursor: pointer; font-family: inherit;
+  }
+  .filter-row button:hover { filter: brightness(0.95); }
+  .filter-row button.secondary {
+    background: var(--border-light, #f3f4f6);
+    color: var(--text-primary, #111827);
+    border: 1px solid var(--border, #e5e7eb);
+  }
+
+  .action-pill {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.4px;
+    background: var(--border-light, #f3f4f6);
+    color: var(--text-secondary, #6b7280);
+  }
+  .action-pill.is-script { background: #fee2e2; color: #991b1b; }
+  .action-pill.is-metric { background: #dcfce7; color: #166534; }
+  .action-pill.is-sync { background: #dbeafe; color: #1e40af; }
+  .action-pill.is-upload { background: #fef3c7; color: #92400e; }
+  .action-pill.is-registry,
+  .action-pill.is-instance { background: #ede9fe; color: #6d28d9; }
+  .action-pill.is-permission,
+  .action-pill.is-access_request { background: #ffedd5; color: #9a3412; }
+  .action-pill.is-metadata,
+  .action-pill.is-catalog { background: #cffafe; color: #155e75; }
+  .action-pill.is-km { background: #fce7f3; color: #9d174d; }
+
+  .empty-state {
+    padding: 48px 20px; text-align: center;
+    color: var(--text-secondary, #6b7280); font-size: 13px;
+  }
+
+  .params-cell pre {
+    margin: 0; padding: 0; background: none;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 60px; overflow: hidden;
+  }
+</style>
+
+<div class="audit-page">
+  <h1>Audit log</h1>
+  <p class="subtitle">Every admin/user-mutating action across the system. Use the filters to slice by category, actor, or specific resource.</p>
+
+  <div class="audit-card">
+    <div class="audit-card-head">
+      <h2>Filters</h2>
+      <span class="meta" id="result-meta"></span>
+    </div>
+    <div class="filter-row">
+      <label for="flt-category">Category</label>
+      <select id="flt-category">
+        <option value="">All</option>
+        <option value="script.">Scripts</option>
+        <option value="metric.">Metrics</option>
+        <option value="sync.">Sync</option>
+        <option value="upload.">Uploads</option>
+        <option value="registry.">Registry</option>
+        <option value="instance.">Instance config</option>
+        <option value="permission.">Permissions</option>
+        <option value="access_request.">Access requests</option>
+        <option value="metadata.">Metadata</option>
+        <option value="catalog.">Catalog</option>
+        <option value="km_">Knowledge memory</option>
+      </select>
+
+      <label for="flt-action">Action</label>
+      <select id="flt-action">
+        <option value="">All</option>
+      </select>
+
+      <label for="flt-user">User</label>
+      <input type="text" id="flt-user" placeholder="user_id or email">
+
+      <label for="flt-resource">Resource</label>
+      <input type="text" id="flt-resource" placeholder="e.g. script:abc123">
+
+      <label for="flt-limit">Limit</label>
+      <input type="number" id="flt-limit" value="100" min="1" max="500">
+
+      <button id="apply-btn" type="button">Apply</button>
+      <button id="reset-btn" type="button" class="secondary">Reset</button>
+    </div>
+  </div>
+
+  <div class="audit-card">
+    <div class="audit-card-head">
+      <h2>Recent activity</h2>
+      <span class="meta" id="row-count">Loading…</span>
+    </div>
+    <div id="audit-content">
+      <div class="empty-state">Loading…</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const AUDIT_API = "/api/audit";
+const ACTIONS_API = "/api/audit/actions";
+
+function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+function fmtTs(s) {
+  if (!s) return "—";
+  const t = String(s);
+  return t.length >= 19 ? t.slice(0, 19).replace("T", " ") : t;
+}
+function actionCategory(action) {
+  if (!action) return "";
+  if (action.startsWith("km_")) return "km";
+  const dot = action.indexOf(".");
+  return dot > 0 ? action.slice(0, dot) : action;
+}
+function fmtParams(p) {
+  if (p == null || p === "") return "";
+  if (typeof p === "string") {
+    try { p = JSON.parse(p); } catch (_) { return esc(p); }
+  }
+  try {
+    return esc(JSON.stringify(p, null, 0));
+  } catch (_) {
+    return "";
+  }
+}
+
+async function loadActions() {
+  try {
+    const r = await fetch(ACTIONS_API, { credentials: "include" });
+    if (!r.ok) return;
+    const actions = await r.json();
+    const sel = document.getElementById("flt-action");
+    for (const a of actions) {
+      const opt = document.createElement("option");
+      opt.value = a;
+      opt.textContent = a;
+      sel.appendChild(opt);
+    }
+  } catch (_) { /* fail-soft — filter is a hint, not required */ }
+}
+
+function buildQuery() {
+  const params = new URLSearchParams();
+  const cat = document.getElementById("flt-category").value;
+  const action = document.getElementById("flt-action").value;
+  const user = document.getElementById("flt-user").value.trim();
+  const resource = document.getElementById("flt-resource").value.trim();
+  const limit = document.getElementById("flt-limit").value || "100";
+  if (cat) params.set("action_prefix", cat);
+  if (action) params.set("action", action);
+  if (user) params.set("user", user);
+  if (resource) params.set("resource", resource);
+  params.set("limit", limit);
+  return params.toString();
+}
+
+async function loadAudit() {
+  const host = document.getElementById("audit-content");
+  const meta = document.getElementById("row-count");
+  const resultMeta = document.getElementById("result-meta");
+  host.innerHTML = `<div class="empty-state">Loading…</div>`;
+  try {
+    const r = await fetch(`${AUDIT_API}?${buildQuery()}`, { credentials: "include" });
+    if (!r.ok) {
+      host.innerHTML = `<div class="empty-state" style="color:#b91c1c;">Failed to load: ${esc(r.status)}</div>`;
+      meta.textContent = "";
+      return;
+    }
+    const rows = await r.json();
+    if (!rows.length) {
+      host.innerHTML = `<div class="empty-state">No audit entries match the current filters.</div>`;
+      meta.textContent = "0 rows";
+      resultMeta.textContent = "";
+      return;
+    }
+    meta.textContent = `${rows.length} row${rows.length === 1 ? "" : "s"}`;
+    resultMeta.textContent = "newest first";
+    let html = `<table class="data-table">
+      <colgroup>
+        <col style="width: 14%;">
+        <col style="width: 14%;">
+        <col style="width: 16%;">
+        <col style="width: 22%;">
+        <col style="width: 28%;">
+        <col style="width: 6%;">
+      </colgroup>
+      <thead><tr>
+        <th>Timestamp</th><th>Action</th><th>User</th><th>Resource</th><th>Params</th><th>Dur (ms)</th>
+      </tr></thead><tbody>`;
+    for (const row of rows) {
+      const cat = actionCategory(row.action);
+      const cls = cat ? `is-${esc(cat)}` : "";
+      html += `<tr>
+        <td class="cell-mono" title="${esc(row.timestamp)}">${esc(fmtTs(row.timestamp))}</td>
+        <td><span class="action-pill ${cls}">${esc(row.action || "")}</span></td>
+        <td class="cell-mono" title="${esc(row.user_id || '')}">${esc(row.user_id || '—')}</td>
+        <td class="cell-mono" title="${esc(row.resource || '')}">${esc(row.resource || '—')}</td>
+        <td class="params-cell"><pre>${fmtParams(row.params)}</pre></td>
+        <td class="cell-mono" style="text-align:right;">${row.duration_ms == null ? "—" : esc(row.duration_ms)}</td>
+      </tr>`;
+    }
+    html += `</tbody></table>`;
+    host.innerHTML = html;
+  } catch (e) {
+    host.innerHTML = `<div class="empty-state" style="color:#b91c1c;">Network error: ${esc(e.message)}</div>`;
+    meta.textContent = "";
+    resultMeta.textContent = "";
+  }
+}
+
+document.getElementById("apply-btn").addEventListener("click", loadAudit);
+document.getElementById("reset-btn").addEventListener("click", () => {
+  document.getElementById("flt-category").value = "";
+  document.getElementById("flt-action").value = "";
+  document.getElementById("flt-user").value = "";
+  document.getElementById("flt-resource").value = "";
+  document.getElementById("flt-limit").value = "100";
+  loadAudit();
+});
+// Submit on Enter inside any text input
+document.querySelectorAll(".filter-row input").forEach(el => {
+  el.addEventListener("keydown", (e) => { if (e.key === "Enter") loadAudit(); });
+});
+
+loadActions();
+loadAudit();
+</script>
+{% endblock %}
