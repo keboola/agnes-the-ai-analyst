@@ -10,6 +10,35 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.25.0] — 2026-04-30
+
+### Fixed
+- `scripts/ops/agnes-auto-upgrade.sh`: fail-fast guard before any `docker
+  compose` action — when the VM has a config disk attached
+  (`/dev/disk/by-id/google-config-disk` exists), `/data/state` MUST be backed
+  by it. Three retry attempts with backoff, then exit non-zero. Prevents the
+  silent regression where docker host-mount propagation unmounts the config
+  disk and the app writes user state (DuckDB, marketplaces, session secret)
+  onto `/data` (sdb) — wiped on the next container recreate. Re-applies
+  `mount --make-rprivate /data /data/state` on every run to defend against
+  propagation regressions.
+- `infra/modules/customer-instance/startup-script.sh.tpl`: replaced the
+  inline heredoc copy of the auto-upgrade script with a `curl` from
+  `raw.githubusercontent.com/keboola/agnes-the-ai-analyst/main/scripts/ops/agnes-auto-upgrade.sh`
+  — single source of truth eliminates drift (the inline copy had fallen
+  behind on TLS overlay detection, array-form compose files, and the new
+  config-disk guard). VMs re-fetch on every boot, so script-only fixes
+  propagate without an infra recreate. Also: `docker-compose.tls.yml` is
+  now fetched unconditionally (not only when `tls_mode=caddy`), because
+  the canonical auto-upgrade script detects TLS at runtime via cert files
+  on disk — certs can appear after boot via `agnes-tls-rotate.sh` or
+  manual provisioning, and the cron job would otherwise fail every 5 min
+  until the file was placed. Same reasoning extends to `Caddyfile`:
+  fetched unconditionally now, plus `agnes-auto-upgrade.sh` skips the
+  tls overlay when `Caddyfile` is missing/empty (defensive — without
+  it the caddy service crash-loops while the overlay closes `:8000`,
+  net effect "app unreachable").
+
 ## [0.24.0] — 2026-04-30
 
 ### Changed
