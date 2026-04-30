@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.25.0] — 2026-04-30
+
 ### Fixed
 - `scripts/ops/agnes-auto-upgrade.sh`: fail-fast guard before any `docker
   compose` action — when the VM has a config disk attached
