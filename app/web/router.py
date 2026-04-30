@@ -669,6 +669,39 @@ async def admin_tables(
     return templates.TemplateResponse(request, "admin_tables.html", ctx)
 
 
+@router.get("/admin/metrics", response_class=HTMLResponse)
+async def admin_metrics_list(
+    request: Request,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Read-only browser surface for ``metric_definitions`` rows. Reuses
+    the catalog's ``_build_metrics_data`` helper so the grouping +
+    category-CSS logic stays in lock-step with the inline accordion.
+    Editing remains via ``da metrics import``."""
+    ctx = _build_context(
+        request, user=user,
+        metrics_data=_build_metrics_data(conn),
+    )
+    return templates.TemplateResponse(request, "admin_metrics.html", ctx)
+
+
+@router.get("/admin/metrics/{metric_id:path}", response_class=HTMLResponse)
+async def admin_metric_detail(
+    metric_id: str,
+    request: Request,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Detail view for one metric. ``metric_id`` is ``category/name`` —
+    the ``:path`` converter on the route lets the slash through."""
+    metric = MetricRepository(conn).get(metric_id)
+    if metric is None:
+        raise HTTPException(status_code=404, detail=f"Metric '{metric_id}' not found")
+    ctx = _build_context(request, user=user, metric=metric)
+    return templates.TemplateResponse(request, "admin_metric_detail.html", ctx)
+
+
 @router.get("/admin/settings", response_class=HTMLResponse)
 async def admin_settings(
     request: Request,

@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% block title %}{{ metric.display_name or metric.name }} — Metrics — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block content %}
+<style>
+  .metric-page { max-width: 1100px; margin: 0 auto; padding: 24px 32px 48px; }
+  .metric-back {
+    display: inline-block; font-size: 13px; color: var(--text-secondary);
+    text-decoration: none; margin-bottom: 16px;
+  }
+  .metric-back:hover { color: var(--text-primary); }
+
+  .metric-page h1 { font-size: 24px; font-weight: 700; margin: 0 0 6px; }
+  .metric-page .id { font-family: var(--font-mono); font-size: 13px; color: var(--text-secondary); margin: 0 0 16px; }
+
+  .metric-chips {
+    display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 24px;
+  }
+  .metric-chip {
+    font-size: 11px; font-weight: 600;
+    padding: 3px 10px; border-radius: 999px;
+    background: var(--border-light); color: var(--text-secondary);
+    text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .metric-chip.category { background: rgba(0, 115, 209, 0.1); color: #0073D1; }
+  .metric-chip.grain    { background: rgba(16, 183, 127, 0.1); color: #0d9668; }
+  .metric-chip.unit     { background: rgba(245, 159, 10, 0.1); color: #b45309; }
+
+  .metric-section {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border-light, #e5e7eb);
+    border-radius: 10px;
+    padding: 18px 20px;
+    margin-bottom: 16px;
+  }
+  .metric-section h2 {
+    font-size: 13px; font-weight: 600; margin: 0 0 12px;
+    text-transform: uppercase; letter-spacing: 0.4px;
+    color: var(--text-secondary, #6b7280);
+  }
+  .metric-section p { font-size: 14px; line-height: 1.55; margin: 0 0 8px; color: var(--text-primary); }
+  .metric-section pre {
+    margin: 0;
+    background: #1e293b;
+    color: #e2e8f0;
+    padding: 16px;
+    border-radius: 8px;
+    overflow-x: auto;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 1.55;
+  }
+  .metric-section .none { color: var(--text-secondary); font-style: italic; font-size: 13px; }
+
+  .meta-grid { display: grid; grid-template-columns: 140px 1fr; gap: 8px 16px; font-size: 13px; }
+  .meta-grid .k { color: var(--text-secondary); font-weight: 500; }
+  .meta-grid .v { color: var(--text-primary); font-family: var(--font-mono); word-break: break-all; }
+
+  .managed-notice {
+    background: rgba(245, 159, 10, 0.08);
+    border: 1px solid rgba(245, 159, 10, 0.3);
+    color: #92400E;
+    padding: 12px 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    margin: 0 0 24px;
+  }
+  .managed-notice code {
+    font-family: var(--font-mono);
+    background: rgba(255,255,255,0.6);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 12px;
+  }
+</style>
+
+<div class="metric-page">
+  <a href="/admin/metrics" class="metric-back">← Back to metrics</a>
+
+  <h1>{{ metric.display_name or metric.name }}</h1>
+  <p class="id">{{ metric.id }}</p>
+
+  <div class="metric-chips">
+    {% if metric.category %}<span class="metric-chip category">{{ metric.category }}</span>{% endif %}
+    {% if metric.grain %}<span class="metric-chip grain">{{ metric.grain }}</span>{% endif %}
+    {% if metric.unit %}<span class="metric-chip unit">{{ metric.unit }}</span>{% endif %}
+    {% if metric.type %}<span class="metric-chip">{{ metric.type }}</span>{% endif %}
+  </div>
+
+  <div class="managed-notice">
+    Read-only. Edit via <code>{{ metric.id }}.yml</code> in your metrics source tree, then re-run <code>da metrics import</code>.
+  </div>
+
+  {% if metric.description %}
+  <div class="metric-section">
+    <h2>Description</h2>
+    <p>{{ metric.description }}</p>
+  </div>
+  {% endif %}
+
+  <div class="metric-section">
+    <h2>SQL</h2>
+    {% if metric.sql %}
+    <pre><code>{{ metric.sql }}</code></pre>
+    {% else %}
+    <p class="none">No SQL defined.</p>
+    {% endif %}
+  </div>
+
+  {% if metric.notes %}
+  <div class="metric-section">
+    <h2>Notes</h2>
+    {% for note in metric.notes %}
+    <p>{{ note }}</p>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if metric.synonyms %}
+  <div class="metric-section">
+    <h2>Synonyms</h2>
+    <p>{% for s in metric.synonyms %}{{ s }}{% if not loop.last %}, {% endif %}{% endfor %}</p>
+  </div>
+  {% endif %}
+
+  <div class="metric-section">
+    <h2>Technical</h2>
+    <div class="meta-grid">
+      {% if metric.table_name %}<span class="k">Primary table</span><span class="v">{{ metric.table_name }}</span>{% endif %}
+      {% if metric.tables %}<span class="k">Tables</span><span class="v">{% for t in metric.tables %}{{ t }}{% if not loop.last %}, {% endif %}{% endfor %}</span>{% endif %}
+      {% if metric.expression %}<span class="k">Expression</span><span class="v">{{ metric.expression }}</span>{% endif %}
+      {% if metric.time_column %}<span class="k">Time column</span><span class="v">{{ metric.time_column }}</span>{% endif %}
+      {% if metric.dimensions %}<span class="k">Dimensions</span><span class="v">{% for d in metric.dimensions %}{{ d }}{% if not loop.last %}, {% endif %}{% endfor %}</span>{% endif %}
+      {% if metric.filters %}<span class="k">Filters</span><span class="v">{% for f in metric.filters %}{{ f }}{% if not loop.last %}; {% endif %}{% endfor %}</span>{% endif %}
+      {% if metric.source %}<span class="k">Source</span><span class="v">{{ metric.source }}</span>{% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

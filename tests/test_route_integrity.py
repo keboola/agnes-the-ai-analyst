@@ -47,6 +47,7 @@ ALLOWLIST = {
     # Detail pages reached from list views — never linked from the nav.
     "/admin/users/{user_id}",
     "/admin/groups/{group_id}",
+    "/admin/metrics/{metric_id:path}",
     "/admin/grants",
     # Reached from /corporate-memory's "Manage knowledge" admin link.
     "/corporate-memory/admin",
@@ -134,6 +135,7 @@ def test_admin_submenu_links_present_in_header():
         "/admin/access",
         "/admin/tables",
         "/admin/sync",
+        "/admin/metrics",
         "/admin/settings",
         "/admin/marketplaces",
         "/admin/tokens",
