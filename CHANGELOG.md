@@ -10,6 +10,145 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+<!-- Add bullets here. Group: Added / Changed / Fixed / Removed / Internal.
+     Mark breaking changes with **BREAKING** at the start of the bullet. -->
+
+## [0.25.0] — 2026-04-30
+
+Minor release. Adds **smart local sync** so analysts get RBAC-filtered parquets pulled at every Claude Code SessionStart and session logs pushed at SessionEnd, plus a new **BigQuery `query_mode='materialized'`** that lets admins register a scheduled SQL query whose result rides the same auto-sync flow as Keboola tables. The auto-sync set per analyst is the intersection of `query_mode IN ('local', 'materialized')` and the `resource_grants` rows — admins curate it via the existing RBAC layer, no new endpoints. The materialize path uses the `BqAccess` facade from #138 so cost-estimate logic and DuckDB-extension session setup live in one place. Devin review iteration during PR #145 surfaced and fixed a `null`-disable trap on the cost guardrail, an empty-hash re-download bug on materialized parquets, and a stale-`source_query` data-integrity gap on PUT — all baked in before this PR was opened.
+
+### Added
+
+- **BigQuery `query_mode='materialized'`** — admin registers a SQL query
+  via `da admin register-table --query-mode materialized --query @file.sql
+  --sync-schedule "every 6h"`; the sync trigger pass runs it through the
+  DuckDB BigQuery extension via the `BqAccess` facade on each tick that's
+  due (per-table `sync_schedule` honored via `is_table_due()`) and writes
+  the result to `/data/extracts/bigquery/data/<id>.parquet`. The
+  orchestrator picks the parquet up via standard local-parquet discovery
+  and the existing manifest + `da sync` flow distributes it to analysts.
+  Per-user RBAC filtering is unchanged: a materialized table is just
+  another row in `table_registry` with `resource_grants` controlling
+  which groups see it.
+- **Schema v19** adds `source_query TEXT` column to `table_registry` to
+  back the materialized mode. NULL for existing rows. The
+  `materialize_query()` function in the BigQuery extractor performs the
+  COPY atomically (`<id>.parquet.tmp` → `os.replace`) so a failed query
+  never leaves a half-written parquet.
+- BigQuery cost guardrail for `query_mode='materialized'` tables: before
+  each COPY the scheduler runs a BQ dry-run (reusing
+  `app.api.v2_scan._bq_dry_run_bytes` so cost-estimate logic lives in
+  exactly one place) and raises `MaterializeBudgetError` (skips the row)
+  when the estimate exceeds `data_source.bigquery.max_bytes_per_materialize`.
+  Default 10 GiB; explicit `0` disables (YAML `null` falls through to
+  the default — documented in `config/instance.yaml.example`).
+  Fail-open when the dry-run itself errors (library missing, DuckDB
+  three-part syntax the native BQ client can't parse, transient API
+  failure) — logs a warning instead of blocking the COPY.
+- Admin API: `POST /api/admin/register-table` and
+  `PUT /api/admin/registry/{id}` accept `source_query` field. Validator
+  enforces that `query_mode='materialized'` requires `source_query` and
+  `query_mode in ('local', 'remote')` forbids it. PUT also rejects
+  `source_query` set without `query_mode` in the same request body and
+  clears the stale `source_query` when switching the merged record away
+  from materialized mode.
+- CLI: `da admin register-table --query <SQL>` accepts inline SQL or
+  `@path/to.sql` shorthand for reading from disk. Reuses the existing
+  `--sync-schedule` flag for the cron string.
+- `da sync --quiet` flag suppresses Rich progress + multi-line summary,
+  intended for use from Claude Code SessionStart/SessionEnd hooks and
+  cron jobs. Errors still surface on stderr; the no-op case is silent.
+  The terse summary line in `--quiet` mode (`sync: N tables, M errors`)
+  lands on stderr so stdout stays clean for hook callers.
+- `da analyst setup` now installs `SessionStart` (pull) and `SessionEnd`
+  (upload) hooks into `<workspace>/.claude/settings.json`, idempotently,
+  preserving any existing user-owned hooks. Workspace-level (not
+  user-home) so the hooks fire only when Claude Code is opened in the
+  analyst workspace, not in unrelated sessions on the same machine.
+  Hooks assume `da` is on `PATH`. If the CLI is not installed system-wide
+  (e.g. via `pipx` or `pip install -e .`), the hooks no-op silently —
+  expected graceful degradation, never blocks a session.
+- `docs/setup/claude_settings.json` ships the same two hooks so operators
+  bootstrapping a fresh Claude Code workspace get auto-sync out of the box.
+
+### Changed
+
+- BigQuery `init_extract` no longer creates remote views for rows with
+  `query_mode='materialized'`; those live as parquets and surface via
+  the orchestrator's standard local-parquet discovery. Skipped rows do
+  not appear in `_meta` so cross-source view-name collisions remain
+  impossible.
+
+### Fixed
+
+- `docs/setup/claude_settings.json` no longer references the deleted
+  `server/scripts/collect_session.py` — the dead `SessionEnd` hook had
+  silently failed in every Claude Code session since the v1→v2 server
+  purge. Replaced with `da sync --upload-only --quiet`.
+
+### Internal
+
+- README mode-first source table; new "Local sync & auto-update" section
+  covering `da sync`, hooks, and admin RBAC for auto-sync membership.
+- `CLAUDE.md` schema chain extended to v19 with the `source_query`
+  description; four source modes documented in Connector Pattern (added
+  Materialized SQL); new "Local sync & Claude Code hooks" subsection
+  under Development.
+- `cli/skills/connectors.md` — "BigQuery: pick a mode" decision table
+  with cost / guardrail / registration example.
+- `docs/architecture.md` — new "BigQuery — Materialized SQL" subsection
+  describing the COPY pipeline, BqAccess integration, and cost guardrail.
+- BQ cost guardrail dry-run is performed via the native
+  `google-cloud-bigquery` client (through `BqAccess.client()`), which
+  does not parse DuckDB three-part identifiers (`bq."ds"."t"`). Queries
+  written in DuckDB syntax fall through fail-open and log a warning
+  instead of engaging the cap. Operators who need the cap to be
+  enforceable must register the materialized SQL using native BQ
+  identifiers (`\`project.ds.t\``).
+- Hardenings landed during devil's-advocate review of PR #145:
+  - `materialize_query` computes the parquet MD5 inline (after COPY,
+    before `os.replace`) instead of re-reading the file in
+    `_run_materialized_pass` — saves a full sequential read on the
+    request thread for multi-GB parquets.
+  - 0-row materializations log a `WARNING` so an empty result set
+    can't masquerade as "the SQL is fine, today there's nothing".
+  - The ATTACH-tolerated `except duckdb.Error: pass` is narrowed to
+    the "alias already attached" case; real errors (cross-project
+    permission, malformed project_id) propagate so the per-row
+    aggregator records them correctly instead of surfacing a
+    confusing downstream "bq is not attached".
+
+### Known limitations
+
+Operators should be aware of these production-only behaviours; tests
+cannot exercise them and they will be revisited in follow-up PRs:
+
+- **GCE metadata token expiry mid-COPY (catastrophic for very long
+  scans).** The DuckDB BQ extension caches the token in a session
+  SECRET created at session-open. A `materialize_query` call that
+  takes longer than the token's remaining lifetime (~1h) will see
+  silent 401s downstream and may produce a truncated parquet. No
+  current mitigation; if your materialized SQL scans more than ~30
+  GiB on a single COPY, run it via the BQ console / Storage Read
+  API offline and `da fetch` the result instead until token refresh
+  is wired into the BQ extension's session.
+- **DuckDB `bigquery` community extension is unpinned** —
+  `INSTALL bigquery FROM community; LOAD bigquery;` picks up the
+  latest published version on every cold start. A breaking change
+  upstream surfaces as a production failure with no test signal.
+- **Schema drift after a SQL edit silently breaks analyst queries.**
+  Editing `source_query` to drop a column writes a new parquet with
+  the new shape; analysts' queries that referenced the dropped
+  column 500 on the next sync without warning. No diff or version
+  field surfaces this. Workaround: announce changes in the team
+  channel before editing materialized SQL.
+- **`materialize_query` is not concurrency-locked.** Two concurrent
+  `/api/sync/trigger` calls for the same materialized row race on
+  `<id>.parquet.tmp`. `init_extract` has `_INIT_EXTRACT_LOCK` for
+  the remote-attach path, but the materialized path does not yet.
+  In practice: the cron scheduler is single-threaded and manual
+  triggers are rare, so the race window is small.
+
 ## [0.24.0] — 2026-04-30
 
 ### Changed
