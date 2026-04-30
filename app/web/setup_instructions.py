@@ -170,8 +170,10 @@ def _tls_trust_block(ca_pem: str) -> list[str]:
         "AGNES_CA_PEM",
         "",
         "   (c) Register the cert in the OS trust store. Native binaries (claude.exe,",
-        "       system git's Schannel/Security.framework backends) read the OS store and",
-        "       ignore our env vars — without this, step 7's marketplace add fails.",
+        "       system git's Schannel/Security.framework backends) read the OS store",
+        "       and ignore our env vars — without this, the later marketplace `git",
+        "       clone` (when plugins are configured) and any user-side git/native",
+        "       tooling against the Agnes host will fail.",
         "       No admin rights needed (user-store only). Idempotent.",
         "",
         "       case \"$PLATFORM\" in",
@@ -368,20 +370,36 @@ def _diagnose_skills_lines(*, diagnose_num: str, skills_num: str) -> list[str]:
     ]
 
 
-# Final step: confirm. The leading number is filled in at render time
-# (6 when no marketplace block was inserted, 8 when it was) so the prompt
-# stays sequentially numbered. Skills is now the previous step (no
-# "awaiting answer" hedge — Confirm only runs after the user answers).
-_FINALE_LINES_TEMPLATE: list[str] = [
-    "{confirm_step_num}) Confirm:",
-    "   Tell me \"Agnes CLI is ready\" and summarize:",
-    "   - `da --version` output",
-    "   - `da auth whoami` output (email + role)",
-    "   - Whether skills were copied or left on-demand",
-    "   - The `da diagnose` overall status",
-    "   - Which CA bundle source got picked in step 0(d) (system Python certifi / system curl bundle / uv-fetched)",
-    "   - Whether the marketplace add went via direct HTTPS or via the git-clone fallback (and on which platform)",
-]
+def _finale_lines(*, confirm_step_num: str, has_ca: bool, has_marketplace: bool) -> list[str]:
+    """Final Confirm step. Bullets it asks the assistant to report on must
+    only reference earlier steps that were actually emitted, otherwise the
+    assistant either hallucinates an answer or asks the user about a
+    non-existent step. The CA-bundle-source bullet only makes sense when
+    the trust block ran (`has_ca`); the marketplace direct-vs-clone bullet
+    only makes sense when the marketplace block ran (`has_marketplace`).
+    Skills + diagnose + version + whoami always render, so their bullets
+    are unconditional."""
+    bullets = [
+        "   - `da --version` output",
+        "   - `da auth whoami` output (email + role)",
+        "   - Whether skills were copied or left on-demand",
+        "   - The `da diagnose` overall status",
+    ]
+    if has_ca:
+        bullets.append(
+            "   - Which CA bundle source got picked in step 0(d) "
+            "(system Python certifi / system curl bundle / uv-fetched)"
+        )
+    if has_marketplace:
+        bullets.append(
+            "   - Whether the marketplace add went via direct HTTPS or via the "
+            "git-clone fallback (and on which platform)"
+        )
+    return [
+        f"{confirm_step_num}) Confirm:",
+        "   Tell me \"Agnes CLI is ready\" and summarize:",
+        *bullets,
+    ]
 
 
 def _git_check_block(step_num: str) -> list[str]:
@@ -549,9 +567,14 @@ def _marketplace_block(
     return lines
 
 
-def _preamble_lines() -> list[str]:
-    """Static header that opens the prompt before the numbered steps."""
-    return [
+def _preamble_lines(*, has_ca: bool) -> list[str]:
+    """Header that opens the prompt before the numbered steps. The
+    `step 0(d) fallback chain` reference is only emitted when the trust
+    block actually exists (`has_ca`); without it the line points at a
+    non-existent step. The "don't disable TLS verification" advice itself
+    stays unconditional — it's good guidance regardless of whether the
+    server runs with a private CA."""
+    lines = [
         "Set up the Agnes CLI on this machine.",
         "",
         "Server: {server_url}",
@@ -563,10 +586,15 @@ def _preamble_lines() -> list[str]:
         "exact error back and stop. Do NOT improvise around TLS errors by disabling",
         "verification (`-k`, `NODE_TLS_REJECT_UNAUTHORIZED=0`,",
         "`git -c http.sslVerify=false`, etc.) — those are dead ends that hide the",
-        "real problem. The fallback chain inside step 0(d) is documented and OK to",
-        "use; that's what fallback chains are for.",
-        "",
+        "real problem.",
     ]
+    if has_ca:
+        lines.append(
+            "The fallback chain inside step 0(d) is documented and OK to "
+            "use; that's what fallback chains are for."
+        )
+    lines.append("")
+    return lines
 
 
 def resolve_lines(
@@ -630,7 +658,7 @@ def resolve_lines(
     lines: list[str] = []
     if has_ca:
         lines.extend(_tls_trust_block(ca_pem))  # type: ignore[arg-type]
-    lines.extend(_preamble_lines())
+    lines.extend(_preamble_lines(has_ca=has_ca))
     lines.extend(_install_cli_lines(has_ca=has_ca))   # 1
     lines.extend(_LOGIN_VERIFY_LINES)                  # 2, 3
     if has_marketplace:
@@ -644,8 +672,11 @@ def resolve_lines(
         diagnose_num=diagnose_step, skills_num=skills_step,
     ))
     lines.append("")
-    for fl in _FINALE_LINES_TEMPLATE:
-        lines.append(fl.replace("{confirm_step_num}", confirm_step))
+    lines.extend(_finale_lines(
+        confirm_step_num=confirm_step,
+        has_ca=has_ca,
+        has_marketplace=has_marketplace,
+    ))
 
     return [
         line.replace("{wheel_filename}", wheel_filename).replace("{server_host}", server_host)

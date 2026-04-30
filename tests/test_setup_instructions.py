@@ -63,6 +63,95 @@ def test_resolve_lines_no_plugins_keeps_six_step_layout():
     assert "git config --global" not in joined
     # Trust block isn't emitted without ca_pem either.
     assert "0) Trust the Agnes TLS certificate" not in joined
+    # Confirm step's CA bundle / marketplace bullets must NOT appear when
+    # those steps weren't emitted — otherwise the assistant is told to
+    # report on phantom steps.
+    assert "step 0(d)" not in joined
+    assert "Which CA bundle source got picked" not in joined
+    assert "Whether the marketplace add went via direct HTTPS" not in joined
+
+
+def test_preamble_step_zero_d_reference_only_when_trust_block_emitted():
+    """The preamble's "fallback chain inside step 0(d)" line is only
+    correct when step 0 actually exists. Without ca_pem the reference
+    points at a non-existent step."""
+    from app.web.setup_instructions import resolve_lines
+
+    no_ca = "\n".join(resolve_lines("agnes.whl"))
+    assert "step 0(d)" not in no_ca
+    # The "don't disable TLS verification" guidance still appears (it's
+    # generic safety advice, valid regardless of trust block).
+    assert "NODE_TLS_REJECT_UNAUTHORIZED" in no_ca
+
+    fake_ca = (
+        "-----BEGIN CERTIFICATE-----\n"
+        "FAKEFAKEFAKE\n"
+        "-----END CERTIFICATE-----\n"
+    )
+    with_ca = "\n".join(resolve_lines("agnes.whl", ca_pem=fake_ca))
+    # Trust block emits step 0 → preamble's step 0(d) reference is now valid.
+    assert "step 0(d)" in with_ca
+
+
+def test_finale_bullets_match_emitted_steps():
+    """The Confirm step's bullets must reference only steps that were
+    actually emitted. CA bundle bullet only when has_ca=True; marketplace
+    direct-vs-clone bullet only when plugins are configured."""
+    from app.web.setup_instructions import resolve_lines
+
+    fake_ca = (
+        "-----BEGIN CERTIFICATE-----\n"
+        "FAKE\n"
+        "-----END CERTIFICATE-----\n"
+    )
+
+    # No ca, no plugins: neither bullet present.
+    plain = "\n".join(resolve_lines("agnes.whl"))
+    assert "Which CA bundle source got picked" not in plain
+    assert "Whether the marketplace add went via direct HTTPS" not in plain
+
+    # ca only: CA bullet yes, marketplace bullet no.
+    ca_only = "\n".join(resolve_lines("agnes.whl", ca_pem=fake_ca))
+    assert "Which CA bundle source got picked" in ca_only
+    assert "Whether the marketplace add went via direct HTTPS" not in ca_only
+
+    # plugins only: marketplace bullet yes, CA bullet no.
+    pl_only = "\n".join(
+        resolve_lines("agnes.whl", plugin_install_names=["foo"], server_host="h")
+    )
+    assert "Which CA bundle source got picked" not in pl_only
+    assert "Whether the marketplace add went via direct HTTPS" in pl_only
+
+    # Both: both bullets present.
+    both = "\n".join(
+        resolve_lines(
+            "agnes.whl",
+            plugin_install_names=["foo"],
+            server_host="h",
+            ca_pem=fake_ca,
+        )
+    )
+    assert "Which CA bundle source got picked" in both
+    assert "Whether the marketplace add went via direct HTTPS" in both
+
+
+def test_trust_block_step_0c_does_not_reference_stale_step_number():
+    """Step 0(c) used to say 'without this, step 7's marketplace add fails'
+    but after the layout reordering, marketplace is step 5 (when plugins
+    exist) or doesn't exist at all (when no plugins). The reference must
+    not name a stale step number."""
+    from app.web.setup_instructions import resolve_lines
+
+    fake_ca = (
+        "-----BEGIN CERTIFICATE-----\n"
+        "FAKE\n"
+        "-----END CERTIFICATE-----\n"
+    )
+    joined = "\n".join(resolve_lines("agnes.whl", ca_pem=fake_ca))
+    # The stale "step 7's marketplace add" string must be gone.
+    assert "step 7's marketplace add" not in joined
+    # Replacement text describes the consequence without a step number.
+    assert "marketplace `git" in joined and "clone`" in joined
 
 
 def test_resolve_lines_with_plugins_uses_install_first_diagnose_last_layout():
