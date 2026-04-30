@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- **Single-item Edit button on every memory item card** in `/corporate-memory/admin`. Surfaces the per-item `PATCH /api/memory/admin/{id}` endpoint added in #126 — until now it was only reachable via the CLI (`da admin memory edit <id>`) or by selecting one item in the bulk batch bar. The modal pre-fills from the item's current title / content / category / domain (dropdown matching `VALID_DOMAINS` + `(unset)`) / audience / tags (comma-separated). Authorisation: same `require_admin` gate as the rest of the memory admin surface.
+
 ## [0.22.0] — 2026-04-30
 
 ### Fixed
