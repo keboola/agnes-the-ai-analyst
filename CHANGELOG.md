@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.24.0] — 2026-04-30
+
 ### Changed
 
 - **Effective-access readout no longer short-circuits for admin users on `/admin/users/{id}` and `/profile`.** Both `GET /api/admin/users/{id}/effective-access` and `GET /api/me/effective-access` previously returned `is_admin=true, items=[]` when the target was in the Admin group, and the UI rendered a flat "Full access via Admin" gold pill — which hid the underlying grant graph. Now both endpoints always run the JOIN, return the explicit per-resource breakdown, and surface `is_admin` only as informational metadata on the response. The UI drops the special pill on both surfaces and renders the same per-resource table everyone else sees. Authorization at runtime still gives Admin god-mode regardless of this list (see `app.auth.access.is_user_admin`); this is purely an audit/debug surface for admins to see *which* Admin-group grants exist via *which* sibling groups.
