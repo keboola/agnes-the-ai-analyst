@@ -96,11 +96,15 @@ def _run_materialized_pass(
                 output_dir=output_dir,
                 max_bytes=effective_max,
             )
+            # Compute hash inline so the manifest can serve it immediately
+            # and `da sync` honors the delta-skip on unchanged tables.
+            parquet_path = Path(output_dir) / "data" / f"{row['id']}.parquet"
+            parquet_hash = _file_hash(parquet_path) if parquet_path.exists() else ""
             state.update_sync(
                 table_id=row["id"],
                 rows=stats["rows"],
                 file_size_bytes=stats["size_bytes"],
-                hash="",  # filled by manifest pass via _file_hash on next /api/sync/manifest
+                hash=parquet_hash,
             )
             summary["materialized"].append(row["id"])
         except Exception as e:

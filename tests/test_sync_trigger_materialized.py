@@ -160,3 +160,41 @@ def test_run_materialized_pass_zero_max_bytes_disables_guardrail(system_db, tmp_
 
     # max_bytes=0 in the config → None passed to materialize_query (no dry-run)
     assert captured["max_bytes"] is None
+
+
+def test_run_materialized_pass_records_parquet_hash(system_db, tmp_path, monkeypatch):
+    """After a successful materialize, sync_state.hash must be the MD5 of
+    the parquet file — otherwise the manifest reports an empty hash and
+    every da sync re-downloads the table."""
+    repo = TableRegistryRepository(system_db)
+    repo.register(
+        id="hashed", name="hashed",
+        source_type="bigquery", query_mode="materialized",
+        source_query="SELECT 1",
+        sync_schedule="every 1m",
+    )
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    parquet_dir = tmp_path / "data" / "extracts" / "bigquery" / "data"
+    parquet_dir.mkdir(parents=True, exist_ok=True)
+    parquet_path = parquet_dir / "hashed.parquet"
+
+    def _fake_materialize(**kwargs):
+        # Simulate the real flow: write a real (small) parquet on disk
+        # so _file_hash sees the same bytes the materialize would have.
+        parquet_path.write_bytes(b"PAR1" + b"\x00" * 16 + b"PAR1")
+        return {"rows": 1, "size_bytes": 24, "query_mode": "materialized"}
+
+    from app.api import sync as sync_mod
+
+    with patch("app.api.sync._materialize_table", side_effect=_fake_materialize):
+        sync_mod._run_materialized_pass(system_db, project_id="p", max_bytes=None)
+
+    state = SyncStateRepository(system_db)
+    row = state.get_table_state("hashed")
+    assert row is not None
+    assert row["hash"] != "", "Expected non-empty hash after materialize"
+    # MD5 of the test bytes
+    import hashlib
+    expected = hashlib.md5(b"PAR1" + b"\x00" * 16 + b"PAR1").hexdigest()
+    assert row["hash"] == expected
