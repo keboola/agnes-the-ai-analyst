@@ -24,6 +24,11 @@ on:
 permissions:
   contents: write
   packages: write
+  # `issues: write` lets the smoke-test job's rollback step open a
+  # GitHub issue alerting operators when an auto-rollback fires. Without
+  # this, the `gh issue create` call hits 403 and the `|| echo` fallback
+  # silently swallows it — operators see :stable revert with no alert.
+  issues: write
 
 # When a developer pushes a brand-new branch with code changes, GitHub fires
 # both a `create` and a `push` event for the same commit. Without
