@@ -84,20 +84,6 @@
     word-break: break-word;
   }
 
-  .role-pill {
-    display: inline-flex;
-    align-items: center;
-    padding: 3px 10px;
-    border-radius: 999px;
-    font-size: 11.5px;
-    font-weight: 600;
-    text-transform: capitalize;
-    letter-spacing: 0.2px;
-    background: rgba(0, 115, 209, 0.10);
-    color: #0073D1;
-    border: 1px solid rgba(0, 115, 209, 0.25);
-  }
-
   .groups-list {
     list-style: none;
     padding: 0;
@@ -129,6 +115,19 @@
     word-break: break-all;
     flex: 1 1 auto;
   }
+  /* Same chip vocabulary as /admin/users + /admin/users/{id}. Name match
+     wins over origin so an env-mapped Admin/Everyone keeps the canonical
+     color even when their server-side origin is google_sync. */
+  .group-chip {
+    display: inline-block;
+    padding: 3px 10px; border-radius: 999px;
+    font-size: 12px; font-weight: 500;
+    background: #ede9fe; color: #6d28d9;  /* default = custom (purple) */
+  }
+  .group-chip.is-admin       { background: #fef3c7; color: #92400e; font-weight: 600; }
+  .group-chip.is-everyone    { background: #f3f4f6; color: #4b5563; }
+  .group-chip.is-google_sync { background: #dcfce7; color: #166534; }
+  .group-chip.is-custom      { background: #ede9fe; color: #6d28d9; }
 
   .empty-state {
     padding: 20px 0 4px;
@@ -251,14 +250,6 @@
       <span class="v">{{ user.email or "—" }}</span>
       <span class="k">Name</span>
       <span class="v">{{ user.name or "—" }}</span>
-      <span class="k">Status</span>
-      <span class="v">
-        {% if is_admin %}
-          <span class="role-pill is-core">Admin</span>
-        {% else %}
-          User
-        {% endif %}
-      </span>
     </div>
     <div class="tokens-link-row">
       Manage personal access tokens at <a href="/tokens">/tokens</a>.
@@ -270,11 +261,20 @@
     {% if memberships and memberships | length > 0 %}
     <ul class="groups-list" role="list">
       {% for m in memberships %}
+      {# Color rule mirrors /admin/users + /admin/users/{id}: name match
+         on the seeded Admin/Everyone wins over origin so an env-mapped
+         system row keeps its canonical color. Hover over the chip
+         reveals the full Workspace email for shortened google_sync
+         display names. #}
+      {% if m.name == "Admin" %}
+        {% set chip_class = "is-admin" %}
+      {% elif m.name == "Everyone" %}
+        {% set chip_class = "is-everyone" %}
+      {% else %}
+        {% set chip_class = "is-" ~ (m.origin or "custom") %}
+      {% endif %}
       <li class="group-row" role="listitem">
-        <span class="group-name">
-          {{ m.name }}
-          {% if m.is_system %}<span class="role-chip is-core" style="margin-left:6px;">system</span>{% endif %}
-        </span>
+        <span class="group-chip {{ chip_class }}" title="{{ m.name }}">{{ m.display_name or m.name }}</span>
         <span class="group-id">via {{ m.source }}{% if m.added_at %} · added {{ m.added_at|string|truncate(16, true, '') }}{% endif %}</span>
       </li>
       {% endfor %}
@@ -310,13 +310,11 @@
         </div>`;
         return;
       }
-      if (data.is_admin) {
-        host.innerHTML = `<div class="empty-state" style="background:linear-gradient(135deg,#fef3c7,#fde68a);border:1px solid #f59e0b;color:#78350f;">
-          <div class="empty-title" style="color:#422006;">🔑 Full access via Admin</div>
-          <div>You can read and write everything in Agnes regardless of explicit grants.</div>
-        </div>`;
-        return;
-      }
+      // Admins get the same explicit grant breakdown as everyone else —
+      // the runtime still gives Admin god-mode at authorization time, but
+      // this readout audits the actual grant graph (which Admin-group
+      // grants exist, which sibling groups carry them) instead of a flat
+      // "Full access" pill that hid the wiring.
       if (!data.items || data.items.length === 0) {
         host.innerHTML = `<div class="empty-state">
           <div class="empty-title">No resource access yet</div>

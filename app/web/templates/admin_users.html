@@ -44,7 +44,18 @@
   .users-table tbody tr.is-deactivated { opacity: 0.55; }
   .users-table tbody tr:hover { background: var(--border-light, #fafafa); }
 
-  .user-cell { display: flex; align-items: center; gap: 10px; }
+  /* Whole user-info cell is the click target for the detail page —
+     anchor wraps avatar + name + email so the entire block lights up
+     on hover, not just one line. Defaults to inheriting text color so
+     the cell doesn't render in browser link blue; .name turns primary
+     blue on hover as the affordance cue. */
+  .user-cell {
+    display: flex; align-items: center; gap: 10px;
+    color: inherit; text-decoration: none;
+    cursor: pointer;
+  }
+  .user-cell:hover .user-meta .name,
+  .user-cell.no-name:hover .email { color: var(--primary, #4338ca); }
   .user-avatar {
     width: 32px; height: 32px; border-radius: 50%;
     display: flex; align-items: center; justify-content: center;
@@ -456,13 +467,13 @@ function renderUsers() {
         }</div>`;
     tr.innerHTML = `
       <td>
-        <div class="user-cell ${hasName ? "" : "no-name"}">
+        <a class="user-cell ${hasName ? "" : "no-name"}" href="/admin/users/${encodeURIComponent(u.id)}">
           <div class="user-avatar" style="background:${avatarColor(u.email || u.id)}">${esc(initials(u))}</div>
           <div class="user-meta">
             <span class="name">${esc(u.name || "")}</span>
             <span class="email">${esc(u.email)}</span>
           </div>
-        </div>
+        </a>
       </td>
       <td>${chipsHtml}</td>
       <td>
