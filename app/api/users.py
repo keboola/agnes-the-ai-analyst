@@ -150,7 +150,7 @@ def _is_sso_user(user_id: str, conn: duckdb.DuckDBPyConnection) -> bool:
     don't have to restart the process.
     """
     rows = conn.execute(
-        """SELECT g.name, g.is_system, g.created_by
+        """SELECT g.name, g.is_system, g.created_by, m.source
            FROM user_group_members m
            JOIN user_groups g ON g.id = m.group_id
            WHERE m.user_id = ?""",
@@ -160,12 +160,26 @@ def _is_sso_user(user_id: str, conn: duckdb.DuckDBPyConnection) -> bool:
         return False
     admin_mapped = bool(os.environ.get("AGNES_GROUP_ADMIN_EMAIL", "").strip())
     everyone_mapped = bool(os.environ.get("AGNES_GROUP_EVERYONE_EMAIL", "").strip())
-    for name, is_system, created_by in rows:
+    for name, is_system, created_by, source in rows:
         if created_by == "system:google-sync":
+            # google-sync groups are always SSO-managed regardless of how
+            # the individual membership was created — the group itself
+            # only exists because of Google sync.
             return True
-        if is_system and name == SYSTEM_ADMIN_GROUP and admin_mapped:
+        # System-group branches (Admin / Everyone): the group accepts
+        # memberships from MULTIPLE sources (system_seed for v13 backfill,
+        # admin for manual adds, google_sync from OAuth callback). The
+        # group being env-mapped to Workspace tells us SSO is *configured*,
+        # but only memberships whose source is 'google_sync' are actually
+        # owned by the upstream IdP. system_seed / admin memberships in
+        # the same group are local-only and must stay locally manageable.
+        # (Devin BUG_0002 on PR #142: without this check, the v13 migration's
+        # blanket Everyone backfill flips every local user to SSO the moment
+        # AGNES_GROUP_EVERYONE_EMAIL is set, locking admins out of password
+        # reset / delete on accounts the IdP doesn't actually own.)
+        if is_system and name == SYSTEM_ADMIN_GROUP and admin_mapped and source == "google_sync":
             return True
-        if is_system and name == SYSTEM_EVERYONE_GROUP and everyone_mapped:
+        if is_system and name == SYSTEM_EVERYONE_GROUP and everyone_mapped and source == "google_sync":
             return True
     return False
 

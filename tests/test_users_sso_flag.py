@@ -210,6 +210,51 @@ def test_everyone_system_group_alone_is_not_sso_without_env_mapping(fresh_db):
     assert payload["is_sso_user"] is False
 
 
+def test_system_seed_membership_in_env_mapped_everyone_is_not_sso(fresh_db, monkeypatch):
+    """Devin BUG_0002 on PR #142: the v13 migration backfills every existing
+    user into the Everyone system group with source='system_seed'. If an
+    operator later sets AGNES_GROUP_EVERYONE_EMAIL, the system-group branch
+    of _is_sso_user would (without the source check) flip every backfilled
+    user to is_sso_user=True — locking the admin out of password reset /
+    delete on accounts the IdP doesn't actually own. The source='google_sync'
+    requirement on the system-group branches keeps system_seed memberships
+    locally manageable even when the group is env-mapped."""
+    from app.main import app
+    from src.db import SYSTEM_EVERYONE_GROUP
+
+    monkeypatch.setenv("AGNES_GROUP_EVERYONE_EMAIL", "everyone@workspace.test")
+
+    client = TestClient(app)
+    _, token = _seed_admin()
+    uid = _create_user("v13-backfilled@test")
+    # The v13 migration uses source='system_seed' for the Everyone backfill.
+    _add_to_group(uid, _system_group_id(SYSTEM_EVERYONE_GROUP), source="system_seed")
+
+    payload = _user_payload(client, token, uid)
+    assert payload["is_sso_user"] is False, (
+        "system_seed membership in an env-mapped Everyone group must not "
+        "flip is_sso_user — the IdP doesn't own this membership"
+    )
+
+
+def test_admin_source_membership_in_env_mapped_admin_is_not_sso(fresh_db, monkeypatch):
+    """Mirror of the Everyone case for the Admin system group: a manually-
+    added (source='admin') membership in env-mapped Admin must not be
+    treated as SSO — only google_sync source is owned by the IdP."""
+    from app.main import app
+    from src.db import SYSTEM_ADMIN_GROUP
+
+    monkeypatch.setenv("AGNES_GROUP_ADMIN_EMAIL", "admins@workspace.test")
+
+    client = TestClient(app)
+    _, token = _seed_admin()
+    uid = _create_user("local-admin-in-mapped@test")
+    _add_to_group(uid, _system_group_id(SYSTEM_ADMIN_GROUP), source="admin")
+
+    payload = _user_payload(client, token, uid)
+    assert payload["is_sso_user"] is False
+
+
 def test_admin_users_template_gates_password_buttons_on_is_sso_user(fresh_db):
     """Pin the JS-side guard: list-view template must wrap the Reset /
     Set pwd / Delete buttons in a ``u.is_sso_user`` ternary so a renderer
