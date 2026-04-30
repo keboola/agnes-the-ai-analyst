@@ -11,11 +11,13 @@
     <div class="app-header-right">
         {% set _path = request.url.path %}
         <a class="app-nav-link {% if _path == '/dashboard' or _path == '/' %}is-active{% endif %}" href="/dashboard">Dashboard</a>
+        <a class="app-nav-link {% if _path.startswith('/catalog') %}is-active{% endif %}" href="/catalog">Catalog</a>
+        <a class="app-nav-link {% if _path.startswith('/corporate-memory') %}is-active{% endif %}" href="/corporate-memory">Corporate Memory</a>
         <a class="app-nav-link {% if _path.startswith('/setup') or _path.startswith('/install') %}is-active{% endif %}" href="/setup">Setup local agent</a>
         <a class="app-nav-link {% if _path.startswith('/store') %}is-active{% endif %}" href="/store">Store</a>
         <a class="app-nav-link {% if _path.startswith('/my-ai-stack') %}is-active{% endif %}" href="/my-ai-stack">My AI Stack</a>
         {% if session.user.is_admin %}
-        {% set _admin_active = _path.startswith('/admin/tables') or _path.startswith('/admin/tokens') or _path.startswith('/admin/users') or _path.startswith('/admin/groups') or _path.startswith('/admin/access') or _path.startswith('/admin/server-config') or _path.startswith('/admin/agent-prompt') or _path.startswith('/admin/workspace-prompt') or _path.startswith('/admin/marketplaces') or _path.startswith('/admin/scheduler-runs') %}
+        {% set _admin_active = _path.startswith('/admin/') %}
         <div class="app-nav-menu" id="adminNavMenu">
             <button type="button"
                     class="app-nav-link app-nav-menu-trigger {% if _admin_active %}is-active{% endif %}"
