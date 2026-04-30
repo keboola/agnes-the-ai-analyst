@@ -78,7 +78,6 @@ class TestDetectExistingProject:
              patch("cli.commands.analyst._download_metadata"), \
              patch("cli.commands.analyst._download_data", return_value=0), \
              patch("cli.commands.analyst._initialize_duckdb", return_value=0), \
-             patch("cli.commands.analyst._get_instance_name", return_value="Acme"), \
              patch("cli.commands.analyst._generate_claude_md"):
             result = runner.invoke(
                 app,
@@ -121,38 +120,36 @@ class TestCreateWorkspace:
 # ---------------------------------------------------------------------------
 
 class TestGenerateClaudeMd:
-    def test_template_substitution(self, tmp_workspace):
+    """Server-side render flow: _generate_claude_md fetches /api/welcome.
+
+    The local-fallback path is exercised by tests/test_cli_analyst_welcome.py.
+    These tests cover the side-effects on the workspace (CLAUDE.local.md,
+    settings.json) and verify the new signature is honored.
+    """
+
+    def _patch_httpx_404(self, monkeypatch):
+        """Stub httpx.get to return 404 so _generate_claude_md falls back to embedded text."""
+        import httpx
+
+        def fake_get(url, headers=None, timeout=None):
+            return httpx.Response(
+                status_code=404, json={}, request=httpx.Request("GET", url)
+            )
+
+        monkeypatch.setattr("cli.commands.analyst.httpx", type("_M", (), {"get": fake_get}))
+
+    def test_creates_claude_local_md_when_absent(self, tmp_workspace, monkeypatch):
         from cli.commands.analyst import _create_workspace, _generate_claude_md
 
         _create_workspace(tmp_workspace)
-        _generate_claude_md(
-            tmp_workspace,
-            instance_name="Acme Corp",
-            server_url="https://data.acme.com",
-            sync_interval="2 hours",
-        )
-
-        content = (tmp_workspace / "CLAUDE.md").read_text(encoding="utf-8")
-        assert "Acme Corp" in content
-        assert "https://data.acme.com" in content
-        assert "2 hours" in content
-
-    def test_creates_claude_local_md_when_absent(self, tmp_workspace):
-        from cli.commands.analyst import _create_workspace, _generate_claude_md
-
-        _create_workspace(tmp_workspace)
-        _generate_claude_md(
-            tmp_workspace,
-            instance_name="Acme",
-            server_url="http://localhost:8000",
-            sync_interval="1 hour",
-        )
+        self._patch_httpx_404(monkeypatch)
+        _generate_claude_md(tmp_workspace, server_url="http://localhost:8000", token="t")
 
         local_md = tmp_workspace / ".claude" / "CLAUDE.local.md"
         assert local_md.exists()
         assert local_md.read_text(encoding="utf-8").strip() != ""
 
-    def test_does_not_overwrite_existing_local_md(self, tmp_workspace):
+    def test_does_not_overwrite_existing_local_md(self, tmp_workspace, monkeypatch):
         from cli.commands.analyst import _create_workspace, _generate_claude_md
 
         _create_workspace(tmp_workspace)
@@ -160,36 +157,24 @@ class TestGenerateClaudeMd:
         original_content = "# My custom notes\n\nDo not overwrite me.\n"
         local_md.write_text(original_content, encoding="utf-8")
 
-        _generate_claude_md(
-            tmp_workspace,
-            instance_name="Acme",
-            server_url="http://localhost:8000",
-            sync_interval="1 hour",
-        )
+        self._patch_httpx_404(monkeypatch)
+        _generate_claude_md(tmp_workspace, server_url="http://localhost:8000", token="t")
 
         assert local_md.read_text(encoding="utf-8") == original_content
 
-    def test_uses_template_file_if_available(self, tmp_workspace):
-        """Smoke-test that the real template file is found and substituted."""
+    def test_writes_settings_json(self, tmp_workspace, monkeypatch):
         from cli.commands.analyst import _create_workspace, _generate_claude_md
+        import json as _json
 
         _create_workspace(tmp_workspace)
-        _generate_claude_md(
-            tmp_workspace,
-            instance_name="TestCo",
-            server_url="https://test.example.com",
-            sync_interval="30 minutes",
-        )
+        self._patch_httpx_404(monkeypatch)
+        _generate_claude_md(tmp_workspace, server_url="http://localhost:8000", token="t")
 
-        content = (tmp_workspace / "CLAUDE.md").read_text(encoding="utf-8")
-        # Template contains these literals after substitution
-        assert "TestCo" in content
-        assert "https://test.example.com" in content
-        assert "30 minutes" in content
-        # Ensure placeholders are gone
-        assert "{instance_name}" not in content
-        assert "{server_url}" not in content
-        assert "{sync_interval}" not in content
+        settings = _json.loads(
+            (tmp_workspace / ".claude" / "settings.json").read_text(encoding="utf-8")
+        )
+        assert settings["model"] == "sonnet"
+        assert "Read" in settings["permissions"]["allow"]
 
 
 # ---------------------------------------------------------------------------
