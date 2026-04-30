@@ -36,6 +36,17 @@ set -a; . /opt/agnes/.env; set +a
 
 CERT_DIR=/data/state/certs
 mkdir -p "$CERT_DIR"
+# Match the agnes UID baked into the app image (Dockerfile: useradd --uid 999).
+# Without this, whoever happens to win the create race (this script as root
+# vs. the app container's first volume-init touch as 999) decides ownership;
+# when root wins, mode 700 leaves the container unable to read its own certs
+# and `_read_agnes_ca_pem()` silently returns None, suppressing the trust-
+# bootstrap block in the /install setup prompt. `|| true` keeps the script
+# resilient on hosts where the GID is reserved (chgrp on a non-existent
+# numeric GID is fine on Linux but pedantically fails on some BSD-derived
+# tooling); if the chown itself fails we keep going and surface the
+# resulting permission error from the next refetch step instead.
+chown 999:999 "$CERT_DIR" || true
 chmod 700 "$CERT_DIR"
 
 CHANGED=0

@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **`scripts/ops/agnes-tls-rotate.sh` now chowns `/data/state/certs/` to UID 999 (the `agnes` user inside the app image) on every run.** Previously the script only `mkdir -p`'d and `chmod 700`'d the directory, leaving ownership to whoever happened to create it first — root when systemd fired the timer before docker-compose-up, or UID 999 when the container's volume init touched it first. Race-dependent. When root won, the resulting `drwx------ root:root` directory was unreadable by the UID-999 container, `_read_agnes_ca_pem()` returned `None`, and the `/install` setup prompt silently dropped the cross-platform TLS trust block (Step 0 from #137) — operators on those VMs ended up with no client-side cert bootstrap and a broken `claude plugin marketplace add` against the self-signed host. The chown is unconditional + idempotent (`|| true` for hosts where the numeric GID can't be set), so re-running the timer self-heals existing VMs without manual `chown` on the operator's part. Files inside the directory keep their existing modes — `fullchain.pem` is `0644` (world-readable, so root- or 999-owned both work for the agnes container) and `privkey.pem` is `0600` (only Caddy reads it, and Caddy's container runs as root).
+
 ## [0.23.0] — 2026-04-30
 
 ### Added
