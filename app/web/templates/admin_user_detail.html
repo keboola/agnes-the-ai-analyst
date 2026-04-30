@@ -378,7 +378,7 @@ function renderMemberships() {
     const cls = m.group_name === "Admin"    ? "is-admin"
               : m.group_name === "Everyone" ? "is-everyone"
               : `is-${m.origin || "custom"}`;
-    const display = m.origin === "google_sync"
+    const display = (m.origin === "google_sync" && m.group_name !== "Admin" && m.group_name !== "Everyone")
       ? deriveDisplayName(m.group_name) : m.group_name;
     tr.innerHTML = `
       <td><a class="group-chip ${cls}" href="/admin/groups/${encodeURIComponent(m.group_id)}" title="${esc(m.group_name)}">${esc(display)}</a></td>
