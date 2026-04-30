@@ -41,7 +41,6 @@ from pathlib import Path
 
 import httpx
 import pandas as pd
-from dotenv import load_dotenv
 
 # Add project root to sys.path for imports
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
@@ -55,20 +54,16 @@ from connectors.jira.scripts.backfill_sla import (
 from connectors.jira.incremental_transform import transform_single_issue
 from connectors.jira.file_lock import issue_json_lock
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+from app.logging_config import setup_logging
+
+setup_logging(__name__)
 logger = logging.getLogger(__name__)
 
 # Additional fields to fetch for self-healing stale status
 STATUS_FIELDS = ["status", "resolution", "resolutiondate", "updated"]
 
 
-def fetch_sla_and_status(
-    base_url: str, auth: tuple[str, str], issue_key: str
-) -> dict | None:
+def fetch_sla_and_status(base_url: str, auth: tuple[str, str], issue_key: str) -> dict | None:
     """
     Fetch SLA fields AND status/resolution fields for a single issue.
 
@@ -101,10 +96,7 @@ def fetch_sla_and_status(
             time.sleep(retry_after)
             return fetch_sla_and_status(base_url, auth, issue_key)
         else:
-            logger.warning(
-                f"Failed to fetch SLA+status for {issue_key}: "
-                f"{response.status_code} {response.text[:200]}"
-            )
+            logger.warning(f"Failed to fetch SLA+status for {issue_key}: {response.status_code} {response.text[:200]}")
             return None
 
     except httpx.RequestError as e:
@@ -292,9 +284,7 @@ def main():
 
     config = load_config()
     raw_dir = config["data_dir"]
-    parquet_dir = Path(os.environ.get(
-        "JIRA_PARQUET_DIR", "/data/src_data/parquet/jira"
-    ))
+    parquet_dir = Path(os.environ.get("JIRA_PARQUET_DIR", "/data/src_data/parquet/jira"))
     base_url = config["base_url"]
     auth = (config["email"], config["api_token"])
 

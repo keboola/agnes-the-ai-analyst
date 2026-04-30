@@ -197,10 +197,7 @@ def format_candidates_block(candidates: list[dict]) -> str:
         title = (c.get("title") or "").replace("</item>", "&lt;/item&gt;")
         content = (c.get("content") or "").replace("</item>", "&lt;/item&gt;")
         lines.append(
-            f'<item id="{c.get("id", "")}">\n'
-            f"  <title>{title}</title>\n"
-            f"  <content>{content}</content>\n"
-            f"</item>"
+            f'<item id="{c.get("id", "")}">\n  <title>{title}</title>\n  <content>{content}</content>\n</item>'
         )
     return "\n".join(lines)
 

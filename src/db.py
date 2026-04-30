@@ -16,6 +16,27 @@ from connectors.bigquery.auth import get_metadata_token, BQMetadataAuthError
 
 logger = logging.getLogger(__name__)
 
+# Dev-only DuckDB query capture. When DEBUG=1 in the environment, every
+# connection returned from get_system_db / get_analytics_db /
+# get_analytics_db_readonly is wrapped with an InstrumentedConnection that
+# records `.execute()` calls into a contextvar buffer the debug toolbar reads
+# at response time. In prod (DEBUG unset), `_maybe_instrument` is a no-op pass-
+# through, so the wrapper is never even constructed on the hot path.
+
+
+def _maybe_instrument(con, db_tag: str):
+    """Wrap a duckdb connection with InstrumentedConnection when DEBUG=1, else return as-is.
+
+    DEBUG is read on each call so tests can toggle it via monkeypatch.setenv
+    without reloading this module. Connection creation is not a hot path.
+    """
+    if os.environ.get("DEBUG", "").lower() not in ("1", "true", "yes"):
+        return con
+    from app.debug.duckdb_panel import InstrumentedConnection
+
+    return InstrumentedConnection(con, db_tag)
+
+
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
 SCHEMA_VERSION = 17
@@ -435,14 +456,14 @@ def get_system_db() -> duckdb.DuckDBPyConnection:
             _system_db_conn = duckdb.connect(db_path)
             _system_db_path = db_path
             _ensure_schema(_system_db_conn)
-        return _system_db_conn.cursor()
+        return _maybe_instrument(_system_db_conn.cursor(), "system")
 
 
 def get_analytics_db() -> duckdb.DuckDBPyConnection:
     """Get a connection to the analytics database (parquet views)."""
     db_path = _get_data_dir() / "analytics" / "server.duckdb"
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    return duckdb.connect(str(db_path))
+    return _maybe_instrument(duckdb.connect(str(db_path)), "analytics")
 
 
 def _reattach_remote_extensions(
@@ -605,7 +626,7 @@ def get_analytics_db_readonly() -> duckdb.DuckDBPyConnection:
             conn.execute("SET enable_external_access = false")
         except Exception:
             pass
-        return conn
+        return _maybe_instrument(conn, "analytics_ro")
     conn = duckdb.connect(str(db_path), read_only=True)
     # ATTACH extract.duckdb files FIRST so views referencing them work
     extracts_dir = _get_data_dir() / "extracts"
@@ -623,7 +644,7 @@ def get_analytics_db_readonly() -> duckdb.DuckDBPyConnection:
     _reattach_remote_extensions(conn, extracts_dir)
     # Note: external_access stays enabled because views use read_parquet() on local files.
     # File-path-based attacks are blocked by the SQL blocklist in app/api/query.py.
-    return conn
+    return _maybe_instrument(conn, "analytics_ro")
 
 
 _V1_TO_V2_MIGRATIONS = [

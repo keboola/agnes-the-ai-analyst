@@ -59,8 +59,7 @@ _TOPIC_TAG_SCHEMA: dict[str, Any] = {
 def _build_prompt(items: list[dict], vocabulary: list[str]) -> str:
     vocab_list = ", ".join(f'"{t}"' for t in vocabulary)
     items_text = "\n".join(
-        f"- id={item['id']} | title={item.get('title','')} | content={item.get('content','')[:200]}"
-        for item in items
+        f"- id={item['id']} | title={item.get('title', '')} | content={item.get('content', '')[:200]}" for item in items
     )
     return (
         f"Assign topics from the vocabulary to each knowledge item.\n\n"

@@ -26,19 +26,16 @@ from datetime import datetime, timezone
 
 import httpx
 
+from app.logging_config import setup_logging
 from src.scheduler import is_table_due
 
-logging.basicConfig(
-    level=os.environ.get("LOG_LEVEL", "INFO").upper(),
-    format="%(asctime)s %(levelname)s [scheduler] %(message)s",
-)
+setup_logging(__name__)
 logger = logging.getLogger(__name__)
 
 API_URL = os.environ.get("API_URL", "http://localhost:8000")
 SCHEDULER_API_TOKEN = os.environ.get("SCHEDULER_API_TOKEN", "")
 
 _token_warning_emitted = False
-
 
 
 def _get_auth_token() -> str:
@@ -69,24 +66,82 @@ def _get_auth_token() -> str:
     return ""
 
 
-# Schedule definitions: (name, schedule_string, endpoint, method, timeout_sec).
-# All jobs are HTTP — see the module docstring for why nothing runs
-# in-process anymore. ``daily 03:00`` for marketplaces matches the cadence
-# the previous in-process job used; the endpoint is admin-only and
-# idempotent (it iterates the registry and per-marketplace errors do not
-# abort the run).
-#
-# timeout_sec: per-job override for the httpx call. Marketplaces gets a
-# generous 15 min because the app handler iterates every registered
-# marketplace under a single lock with up to 300s of git timeout per
-# entry — at 120s (the default that data-refresh uses) a real-world
-# registry of more than 2-3 slow repos times out the scheduler call,
-# which then re-fires on the next 30s tick and queues a redundant sync.
-JOBS = [
-    ("data-refresh",    "every 15m",   "/api/sync/trigger",          "POST", 120),
-    ("health-check",    "every 5m",    "/api/health",                "GET",   30),
-    ("marketplaces",    "daily 03:00", "/api/marketplaces/sync-all", "POST", 900),
-]
+# --- Env parsing ------------------------------------------------------------
+
+_DEFAULTS = {
+    "SCHEDULER_DATA_REFRESH_INTERVAL": 15 * 60,   # seconds
+    "SCHEDULER_HEALTH_CHECK_INTERVAL": 5 * 60,
+    "SCHEDULER_SCRIPT_RUN_INTERVAL":   1 * 60,
+    "SCHEDULER_TICK_SECONDS":          30,
+}
+
+
+def _read_positive_int(name: str) -> int:
+    """Read an env var as a positive integer or fall back to the default.
+
+    Treats unset env (``None``) as "use default". Treats explicitly empty
+    string (``""``) as an operator typo and raises — silently defaulting
+    on a literal ``FOO=`` in the env_file would mask configuration bugs.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        if name not in _DEFAULTS:
+            raise ValueError(f"Unknown scheduler env var: {name}")
+        return _DEFAULTS[name]
+    if raw == "":
+        raise ValueError(f"{name}='' must be a positive integer (seconds)")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name}={raw!r} must be a positive integer (seconds)")
+    if value <= 0:
+        raise ValueError(f"{name}={value} must be > 0 (seconds)")
+    return value
+
+
+def _seconds_to_schedule(seconds: int) -> str:
+    """Convert a seconds value to the closest 'every Nm' / 'every Nh' string.
+
+    Uses ceiling division so a non-multiple-of-60 input never produces a
+    schedule that fires MORE often than the operator configured (90s →
+    'every 2m', not 'every 1m'). Sub-minute inputs clamp to 'every 1m'
+    because the schedule grammar has minute-level resolution.
+    """
+    if seconds % 3600 == 0 and seconds >= 3600:
+        return f"every {seconds // 3600}h"
+    # Ceiling division: -(-x // y) is the standard trick.
+    minutes = max(1, -(-seconds // 60))
+    return f"every {minutes}m"
+
+
+def resolved_tick_seconds() -> int:
+    """Read + validate SCHEDULER_TICK_SECONDS in isolation (test helper)."""
+    return _read_positive_int("SCHEDULER_TICK_SECONDS")
+
+
+def build_jobs() -> list[tuple[str, str, str, str, int]]:
+    """Build the JOBS list from env, applying defaults and validation.
+
+    Tuple shape: (name, schedule_string, endpoint, method, http_timeout_sec).
+    Marketplaces stays hardcoded — promoting it to env is out of #77 scope.
+    """
+    refresh = _read_positive_int("SCHEDULER_DATA_REFRESH_INTERVAL")
+    health  = _read_positive_int("SCHEDULER_HEALTH_CHECK_INTERVAL")
+    scripts = _read_positive_int("SCHEDULER_SCRIPT_RUN_INTERVAL")
+    tick    = _read_positive_int("SCHEDULER_TICK_SECONDS")
+    smallest = min(refresh, health, scripts)
+    if tick > smallest:
+        raise ValueError(
+            f"SCHEDULER_TICK_SECONDS={tick} must be <= the smallest job "
+            f"interval ({smallest}s) so jobs don't consistently miss their "
+            f"cadence by up to one tick"
+        )
+    return [
+        ("data-refresh",  _seconds_to_schedule(refresh), "/api/sync/trigger",          "POST", 120),
+        ("health-check",  _seconds_to_schedule(health),  "/api/health",                "GET",   30),
+        ("script-runner", _seconds_to_schedule(scripts), "/api/scripts/run-due",       "POST", 600),
+        ("marketplaces",  "daily 03:00",                 "/api/marketplaces/sync-all", "POST", 900),
+    ]
 
 _running = True
 
@@ -124,24 +179,26 @@ def run():
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 
-    logger.info(f"Scheduler started. API_URL={API_URL}, {len(JOBS)} jobs configured.")
+    jobs = build_jobs()
+    tick = resolved_tick_seconds()
+    logger.info(
+        "Scheduler started. API_URL=%s, %d jobs, tick=%ds. Schedules: %s",
+        API_URL, len(jobs), tick,
+        {name: schedule for name, schedule, *_ in jobs},
+    )
 
-    # Track last successful run per job as ISO string — matches what
-    # src.scheduler.is_table_due expects.
-    last_run: dict[str, str | None] = {name: None for name, *_ in JOBS}
+    last_run: dict[str, str | None] = {name: None for name, *_ in jobs}
 
     while _running:
         now_iso = datetime.now(timezone.utc).isoformat()
-        for name, schedule, endpoint, method, timeout_sec in JOBS:
+        for name, schedule, endpoint, method, timeout_sec in jobs:
             if not is_table_due(schedule, last_run[name]):
                 continue
             logger.info("Running job: %s (%s)", name, schedule)
             ok = _call_api(endpoint, method, timeout_sec)
             if ok:
                 last_run[name] = now_iso
-        # 30s tick is plenty: interval jobs have minute-level resolution,
-        # daily jobs have a ~24 h retry window.
-        time.sleep(30)
+        time.sleep(tick)
 
     logger.info("Scheduler stopped.")
 

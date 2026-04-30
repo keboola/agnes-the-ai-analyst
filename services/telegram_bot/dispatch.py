@@ -10,7 +10,6 @@ import os
 import time
 import uuid
 
-from . import config
 
 logger = logging.getLogger(__name__)
 

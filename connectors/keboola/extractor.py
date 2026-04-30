@@ -9,7 +9,6 @@ from typing import List, Dict, Any
 import duckdb
 
 from src.identifier_validation import (
-    is_safe_identifier,
     is_safe_quoted_identifier,
     validate_identifier,
     validate_quoted_identifier,
@@ -31,9 +30,7 @@ def _create_meta_table(conn: duckdb.DuckDBPyConnection) -> None:
     )""")
 
 
-def _create_remote_attach_table(
-    conn: duckdb.DuckDBPyConnection, keboola_url: str
-) -> None:
+def _create_remote_attach_table(conn: duckdb.DuckDBPyConnection, keboola_url: str) -> None:
     """Write _remote_attach so orchestrator can re-ATTACH the Keboola extension."""
     conn.execute("DROP TABLE IF EXISTS _remote_attach")
     conn.execute("""CREATE TABLE _remote_attach (
@@ -117,26 +114,23 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
             # caught early and visible in tables_failed.
             if not validate_identifier(table_name, "Keboola table_name"):
                 stats["tables_failed"] += 1
-                stats["errors"].append(
-                    {"table": table_name, "error": "unsafe identifier"}
-                )
+                stats["errors"].append({"table": table_name, "error": "unsafe identifier"})
                 continue
 
             if query_mode == "remote":
                 # Create view pointing to kbc extension (requires re-ATTACH at query time)
                 bucket = tc.get("bucket", "")
                 source_table = tc.get("source_table", table_name)
-                if not (validate_quoted_identifier(bucket, "Keboola bucket") and
-                        validate_quoted_identifier(source_table, "Keboola source_table")):
+                if not (
+                    validate_quoted_identifier(bucket, "Keboola bucket")
+                    and validate_quoted_identifier(source_table, "Keboola source_table")
+                ):
                     stats["tables_failed"] += 1
-                    stats["errors"].append(
-                        {"table": table_name, "error": "unsafe bucket/source_table"}
-                    )
+                    stats["errors"].append({"table": table_name, "error": "unsafe bucket/source_table"})
                     continue
                 if use_extension and bucket:
                     conn.execute(
-                        f'CREATE OR REPLACE VIEW "{table_name}" AS '
-                        f'SELECT * FROM kbc."{bucket}"."{source_table}"'
+                        f'CREATE OR REPLACE VIEW "{table_name}" AS SELECT * FROM kbc."{bucket}"."{source_table}"'
                     )
                 conn.execute(
                     "INSERT INTO _meta VALUES (?, ?, 0, 0, ?, 'remote')",
@@ -157,16 +151,11 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
                 # validated table_name above, but escape the parquet path
                 # literal for defense-in-depth.
                 safe_pq_lit = pq_path.replace("'", "''")
-                rows = conn.execute(
-                    f"SELECT count(*) FROM read_parquet('{safe_pq_lit}')"
-                ).fetchone()[0]
+                rows = conn.execute(f"SELECT count(*) FROM read_parquet('{safe_pq_lit}')").fetchone()[0]
                 size = os.path.getsize(pq_path)
 
                 # Create view and register in _meta
-                conn.execute(
-                    f'CREATE OR REPLACE VIEW "{table_name}" AS '
-                    f'SELECT * FROM read_parquet(\'{safe_pq_lit}\')'
-                )
+                conn.execute(f"CREATE OR REPLACE VIEW \"{table_name}\" AS SELECT * FROM read_parquet('{safe_pq_lit}')")
                 conn.execute(
                     "INSERT INTO _meta VALUES (?, ?, ?, ?, ?, 'local')",
                     [table_name, tc.get("description", ""), rows, size, now],
@@ -192,6 +181,7 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
 
     # Atomic replace: swap temp DB into place, cleaning up any WAL files
     import shutil
+
     old_wal = Path(str(db_path) + ".wal")
     if old_wal.exists():
         old_wal.unlink()
@@ -206,9 +196,7 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
     return stats
 
 
-def _extract_via_extension(
-    conn: duckdb.DuckDBPyConnection, tc: Dict[str, Any], pq_path: str
-) -> None:
+def _extract_via_extension(conn: duckdb.DuckDBPyConnection, tc: Dict[str, Any], pq_path: str) -> None:
     """Extract a table using the DuckDB Keboola extension."""
     bucket = tc.get("bucket", "")
     source_table = tc.get("source_table", tc["name"])
@@ -216,25 +204,20 @@ def _extract_via_extension(
     # refuse here too in case a future caller forgets. Use the relaxed
     # quoted-identifier check that accepts Keboola's `in.c-foo` form.
     if not (is_safe_quoted_identifier(bucket) and is_safe_quoted_identifier(source_table)):
-        raise ValueError(
-            f"unsafe bucket/source_table: {bucket!r}/{source_table!r}"
-        )
+        raise ValueError(f"unsafe bucket/source_table: {bucket!r}/{source_table!r}")
     safe_pq_lit = pq_path.replace("'", "''")
-    conn.execute(
-        f'COPY (SELECT * FROM kbc."{bucket}"."{source_table}") '
-        f'TO \'{safe_pq_lit}\' (FORMAT PARQUET)'
-    )
+    conn.execute(f'COPY (SELECT * FROM kbc."{bucket}"."{source_table}") TO \'{safe_pq_lit}\' (FORMAT PARQUET)')
 
 
-def _extract_via_legacy(
-    tc: Dict[str, Any], pq_path: str, keboola_url: str, keboola_token: str
-) -> None:
+def _extract_via_legacy(tc: Dict[str, Any], pq_path: str, keboola_url: str, keboola_token: str) -> None:
     """Fallback: extract using legacy Keboola client (kbcstorage SDK)."""
     from connectors.keboola.client import KeboolaClient
+
     client = KeboolaClient(token=keboola_token, url=keboola_url)
 
     # Export to CSV temp file, then convert to parquet via DuckDB
     import tempfile
+
     with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as tmp:
         csv_path = tmp.name
 
@@ -248,7 +231,9 @@ def _extract_via_legacy(
         # Convert CSV to Parquet using DuckDB — all_varchar avoids type inference errors
         # (e.g. columns with mostly numeric values but some strings like "Non-Manager")
         conv_conn = duckdb.connect()
-        conv_conn.execute(f"COPY (SELECT * FROM read_csv('{csv_path}', all_varchar=true)) TO '{pq_path}' (FORMAT PARQUET)")
+        conv_conn.execute(
+            f"COPY (SELECT * FROM read_csv('{csv_path}', all_varchar=true)) TO '{pq_path}' (FORMAT PARQUET)"
+        )
         conv_conn.close()
     finally:
         if os.path.exists(csv_path):
@@ -285,8 +270,9 @@ if __name__ == "__main__":
     Used by sync trigger subprocess. Reads KEBOOLA_STORAGE_TOKEN and
     KEBOOLA_STACK_URL from environment, table list from DuckDB registry.
     """
-    import logging as _logging
-    _logging.basicConfig(level=_logging.INFO, format="%(levelname)s: %(message)s")
+    from app.logging_config import setup_logging
+
+    setup_logging(__name__)
 
     # Read Keboola credentials — env first, then instance.yaml fallback
     url = os.environ.get("KEBOOLA_STACK_URL", "")
@@ -295,6 +281,7 @@ if __name__ == "__main__":
     if not url or not token:
         try:
             from config.loader import load_instance_config
+
             config = load_instance_config()
             kbc_config = config.get("keboola", {})
             url = url or kbc_config.get("url", "")
@@ -329,9 +316,7 @@ if __name__ == "__main__":
 
     code = compute_exit_code(result, len(tables))
     if code == 2:
-        logger.error(
-            "Partial failure: %d of %d tables failed", result.get("tables_failed", 0), len(tables)
-        )
+        logger.error("Partial failure: %d of %d tables failed", result.get("tables_failed", 0), len(tables))
     elif code == 1:
         logger.error("All %d tables failed", len(tables))
     exit(code)

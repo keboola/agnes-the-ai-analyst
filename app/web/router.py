@@ -961,3 +961,49 @@ async def profile_page(
         is_admin=is_user_admin(user["id"], conn),
     )
     return templates.TemplateResponse(request, "profile.html", ctx)
+
+
+@router.get("/_debug/throw/http/{code:int}", response_class=HTMLResponse, include_in_schema=False)
+async def _debug_throw_http(request: Request, code: int):
+    """Dev helper — raise an HTTPException with the given status code.
+
+    Only mounted when DEBUG=1 (gated below). Lets you eyeball the error
+    page chrome + debug-toolbar panels for any HTTP status code:
+      /_debug/throw/http/404  → 404 page
+      /_debug/throw/http/418  → 418 page (custom title falls back to "Error")
+      /_debug/throw/http/500  → 500 page rendered via the StarletteHTTPException
+                                handler (NOT the unhandled-exception handler —
+                                use /_debug/throw/exc for that)
+    """
+    if not _is_debug():
+        raise HTTPException(status_code=404, detail="Not found")
+    raise HTTPException(status_code=code, detail=f"Forced {code} via /_debug/throw/http/{code}")
+
+
+@router.get("/_debug/throw/exc", response_class=HTMLResponse, include_in_schema=False)
+async def _debug_throw_exc(request: Request):
+    """Dev helper — raise an unhandled exception to exercise the 500 path."""
+    if not _is_debug():
+        raise HTTPException(status_code=404, detail="Not found")
+    # Force a real traceback so the DEBUG-only `<details>Traceback</details>`
+    # block in error.html shows something interesting (not just "RuntimeError").
+    payload = {"a": 1}
+    return payload["nope"]  # KeyError with a useful traceback
+
+
+def _is_debug() -> bool:
+    return os.environ.get("DEBUG", "").lower() in ("1", "true", "yes")
+
+
+@router.get("/{full_path:path}", response_class=HTMLResponse, include_in_schema=False)
+async def _catch_all_404(request: Request, full_path: str):
+    """Catch-all 404 for unmatched routes.
+
+    Provides a matched route so fastapi-debug-toolbar can inject its panels —
+    the toolbar bails out of injection when ``matched_route(request)`` is None
+    (the case on truly unrouted paths). The actual rendering is delegated to
+    ``app.main._html_auth_redirect_handler`` via the raised ``HTTPException``,
+    which routes API paths to JSON and HTML paths to the ``error.html``
+    template.
+    """
+    raise HTTPException(status_code=404, detail="Page not found")

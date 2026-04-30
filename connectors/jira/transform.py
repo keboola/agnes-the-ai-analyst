@@ -17,7 +17,6 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -267,7 +266,7 @@ def parse_datetime(dt_str: str | None) -> datetime | None:
     try:
         # Jira format: "2026-02-03T12:06:52.829+0100"
         # Remove milliseconds and parse
-        dt_str = re.sub(r'\.\d+', '', dt_str)
+        dt_str = re.sub(r"\.\d+", "", dt_str)
         return datetime.fromisoformat(dt_str)
     except (ValueError, TypeError):
         return None
@@ -329,20 +328,19 @@ def transform_issue(raw_issue: dict) -> dict:
         "issue_key": raw_issue.get("key"),
         "issue_id": raw_issue.get("id"),
         "issue_url": f"https://{os.environ.get('JIRA_DOMAIN', 'your-org.atlassian.net')}/browse/{raw_issue.get('key')}",
-
         # Standard fields
         "summary": fields.get("summary"),
         "description": extract_text_from_adf(fields.get("description")),
         "issue_type": fields.get("issuetype", {}).get("name") if fields.get("issuetype") else None,
         "status": fields.get("status", {}).get("name") if fields.get("status") else None,
-        "status_category": fields.get("status", {}).get("statusCategory", {}).get("name") if fields.get("status") else None,
+        "status_category": fields.get("status", {}).get("statusCategory", {}).get("name")
+        if fields.get("status")
+        else None,
         "priority": fields.get("priority", {}).get("name") if fields.get("priority") else None,
         "resolution": fields.get("resolution", {}).get("name") if fields.get("resolution") else None,
-
         # Project
         "project_key": fields.get("project", {}).get("key") if fields.get("project") else None,
         "project_name": fields.get("project", {}).get("name") if fields.get("project") else None,
-
         # People
         "creator_email": creator["email"],
         "creator_name": creator["name"],
@@ -350,33 +348,27 @@ def transform_issue(raw_issue: dict) -> dict:
         "reporter_name": reporter["name"],
         "assignee_email": assignee["email"],
         "assignee_name": assignee["name"],
-
         # Dates
         "created_at": parse_datetime(fields.get("created")),
         "updated_at": parse_datetime(fields.get("updated")),
         "resolved_at": parse_datetime(fields.get("resolutiondate")),
         "due_date": fields.get("duedate"),
-
         # Arrays as JSON strings for Parquet compatibility
         "labels": json.dumps(fields.get("labels", [])),
-
         # Counts
         "attachment_count": len(fields.get("attachment", [])),
         "comment_count": fields.get("comment", {}).get("total", 0),
         "issuelink_count": len(fields.get("issuelinks", [])),
-
         # Service Desk specific
         "request_type": request_type.get("name"),
         "request_status": current_status.get("status"),
-
         # Custom fields (verified against Jira field configuration Feb 2026)
         "severity": extract_option_value(fields.get("customfield_10004")),
         "triage": json.dumps(extract_option_list(fields.get("customfield_10323"))),
         "configuration_item": json.dumps(extract_option_list(fields.get("customfield_10511"))),
-        "participants": json.dumps([
-            extract_user_info(u).get("email")
-            for u in (fields.get("customfield_10156") or [])
-        ]),
+        "participants": json.dumps(
+            [extract_user_info(u).get("email") for u in (fields.get("customfield_10156") or [])]
+        ),
         "organizations": json.dumps(extract_option_list(fields.get("customfield_10002"))),
         "spam": extract_option_value(fields.get("customfield_10365")),
         "context": extract_text_from_adf(fields.get("customfield_10330")) or None,
@@ -384,11 +376,12 @@ def transform_issue(raw_issue: dict) -> dict:
         "slack_link": extract_option_value(fields.get("customfield_10350")),
         "technical_issue_category": extract_option_value(fields.get("customfield_10676")),
         "email_address": extract_option_value(fields.get("customfield_10475")),
-        "satisfaction": fields.get("customfield_10157", {}).get("rating") if isinstance(fields.get("customfield_10157"), dict) else None,
+        "satisfaction": fields.get("customfield_10157", {}).get("rating")
+        if isinstance(fields.get("customfield_10157"), dict)
+        else None,
         **{f"first_response_{k}": v for k, v in extract_sla_metrics(fields.get("customfield_10328")).items()},
         **{f"time_to_resolution_{k}": v for k, v in extract_sla_metrics(fields.get("customfield_10161")).items()},
         "l3_team": extract_option_value(fields.get("customfield_11831")),
-
         # Metadata
         "_synced_at": raw_issue.get("_synced_at"),
         "_raw_file": None,  # Will be set by caller
@@ -409,16 +402,18 @@ def transform_comments(raw_issue: dict) -> list[dict]:
         author = extract_user_info(comment.get("author"))
         update_author = extract_user_info(comment.get("updateAuthor"))
 
-        records.append({
-            "comment_id": comment.get("id"),
-            "issue_key": issue_key,
-            "author_email": author["email"],
-            "author_name": author["name"],
-            "body": extract_text_from_adf(comment.get("body")),
-            "created_at": parse_datetime(comment.get("created")),
-            "updated_at": parse_datetime(comment.get("updated")),
-            "update_author_email": update_author["email"],
-        })
+        records.append(
+            {
+                "comment_id": comment.get("id"),
+                "issue_key": issue_key,
+                "author_email": author["email"],
+                "author_name": author["name"],
+                "body": extract_text_from_adf(comment.get("body")),
+                "created_at": parse_datetime(comment.get("created")),
+                "updated_at": parse_datetime(comment.get("updated")),
+                "update_author_email": update_author["email"],
+            }
+        )
 
     return records
 
@@ -442,18 +437,20 @@ def transform_attachments(raw_issue: dict, attachments_dir: Path | None = None) 
             if expected_path.exists():
                 local_path = str(expected_path)
 
-        records.append({
-            "attachment_id": att_id,
-            "issue_key": issue_key,
-            "filename": filename,
-            "local_path": local_path,
-            "size_bytes": att.get("size"),
-            "mime_type": att.get("mimeType"),
-            "author_email": author["email"],
-            "created_at": parse_datetime(att.get("created")),
-            "content_url": att.get("content"),
-            "thumbnail_url": att.get("thumbnail"),
-        })
+        records.append(
+            {
+                "attachment_id": att_id,
+                "issue_key": issue_key,
+                "filename": filename,
+                "local_path": local_path,
+                "size_bytes": att.get("size"),
+                "mime_type": att.get("mimeType"),
+                "author_email": author["email"],
+                "created_at": parse_datetime(att.get("created")),
+                "content_url": att.get("content"),
+                "thumbnail_url": att.get("thumbnail"),
+            }
+        )
 
     return records
 
@@ -470,17 +467,19 @@ def transform_changelog(raw_issue: dict) -> list[dict]:
         changed_at = parse_datetime(history.get("created"))
 
         for item in history.get("items", []):
-            records.append({
-                "change_id": history.get("id"),
-                "issue_key": issue_key,
-                "author_email": author["email"],
-                "author_name": author["name"],
-                "field_name": item.get("field"),
-                "field_type": item.get("fieldtype"),
-                "from_value": item.get("fromString"),
-                "to_value": item.get("toString"),
-                "changed_at": changed_at,
-            })
+            records.append(
+                {
+                    "change_id": history.get("id"),
+                    "issue_key": issue_key,
+                    "author_email": author["email"],
+                    "author_name": author["name"],
+                    "field_name": item.get("field"),
+                    "field_type": item.get("fieldtype"),
+                    "from_value": item.get("fromString"),
+                    "to_value": item.get("toString"),
+                    "changed_at": changed_at,
+                }
+            )
 
     return records
 
@@ -507,16 +506,22 @@ def transform_issuelinks(raw_issue: dict) -> list[dict]:
             continue
 
         linked_fields = linked.get("fields", {})
-        records.append({
-            "issue_key": issue_key,
-            "link_id": link.get("id"),
-            "link_type": link_type_name,
-            "direction": direction,
-            "linked_issue_key": linked.get("key"),
-            "linked_issue_summary": linked_fields.get("summary"),
-            "linked_issue_status": linked_fields.get("status", {}).get("name") if linked_fields.get("status") else None,
-            "linked_issue_priority": linked_fields.get("priority", {}).get("name") if linked_fields.get("priority") else None,
-        })
+        records.append(
+            {
+                "issue_key": issue_key,
+                "link_id": link.get("id"),
+                "link_type": link_type_name,
+                "direction": direction,
+                "linked_issue_key": linked.get("key"),
+                "linked_issue_summary": linked_fields.get("summary"),
+                "linked_issue_status": linked_fields.get("status", {}).get("name")
+                if linked_fields.get("status")
+                else None,
+                "linked_issue_priority": linked_fields.get("priority", {}).get("name")
+                if linked_fields.get("priority")
+                else None,
+            }
+        )
 
     return records
 
@@ -534,14 +539,16 @@ def transform_remote_links(raw_issue: dict) -> list[dict]:
     for rl in remote_links:
         obj = rl.get("object", {})
         app = rl.get("application", {})
-        records.append({
-            "issue_key": issue_key,
-            "remote_link_id": str(rl.get("id", "")),
-            "url": obj.get("url"),
-            "title": obj.get("title"),
-            "application_name": app.get("name"),
-            "application_type": app.get("type"),
-        })
+        records.append(
+            {
+                "issue_key": issue_key,
+                "remote_link_id": str(rl.get("id", "")),
+                "url": obj.get("url"),
+                "title": obj.get("title"),
+                "application_name": app.get("name"),
+                "application_type": app.get("type"),
+            }
+        )
 
     return records
 
@@ -560,7 +567,7 @@ def get_attachment_path(issue_key: str, attachment_id: str, filename: str) -> st
     SUPPORT-14991 -> 14/991/54908_files.zip
     """
     # Extract number from issue key (e.g., "SUPPORT-14991" -> "14991")
-    match = re.search(r'(\d+)$', issue_key)
+    match = re.search(r"(\d+)$", issue_key)
     if not match:
         return f"other/{issue_key}/{attachment_id}_{filename}"
 
@@ -651,9 +658,7 @@ def transform_all(
                 # Update local_path to hierarchical structure
                 if att_record.get("local_path"):
                     att_record["hierarchical_path"] = get_attachment_path(
-                        issue_key,
-                        att_record["attachment_id"],
-                        att_record["filename"]
+                        issue_key, att_record["attachment_id"], att_record["filename"]
                     )
                 attachments_by_month[month_key].append(att_record)
 
