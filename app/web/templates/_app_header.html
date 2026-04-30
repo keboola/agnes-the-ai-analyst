@@ -36,7 +36,7 @@
            Prompts). The primary nav no longer carries an admin-only
            entry — primary nav stays consistently visible to all
            authenticated users. #}
-        {% set _admin_active = _path.startswith('/admin/tables') or _path.startswith('/admin/tokens') or _path.startswith('/admin/users') or _path.startswith('/admin/groups') or _path.startswith('/admin/access') or _path.startswith('/admin/server-config') or _path.startswith('/admin/agent-prompt') or _path.startswith('/admin/workspace-prompt') or _path.startswith('/admin/marketplaces') or _path.startswith('/admin/store') or _path.startswith('/admin/scheduler-runs') or _path.startswith('/admin/activity') or _path.startswith('/admin/telemetry') or _path.startswith('/admin/usage') or _path.startswith('/admin/sessions') or _path.startswith('/admin/sync') or _path.startswith('/admin/settings') or _path.startswith('/corporate-memory') %}
+        {% set _admin_active = _path.startswith('/admin/tables') or _path.startswith('/admin/tokens') or _path.startswith('/admin/users') or _path.startswith('/admin/groups') or _path.startswith('/admin/access') or _path.startswith('/admin/server-config') or _path.startswith('/admin/agent-prompt') or _path.startswith('/admin/workspace-prompt') or _path.startswith('/admin/marketplaces') or _path.startswith('/admin/store') or _path.startswith('/admin/scheduler-runs') or _path.startswith('/admin/activity') or _path.startswith('/admin/telemetry') or _path.startswith('/admin/usage') or _path.startswith('/admin/sessions') or _path.startswith('/admin/sync') or _path.startswith('/admin/settings') or _path.startswith('/admin/audit') or _path.startswith('/corporate-memory') %}
         <div class="app-nav-menu" id="adminNavMenu">
             <button type="button"
                     class="app-nav-link app-nav-menu-trigger {% if _admin_active %}is-active{% endif %}"
@@ -70,6 +70,7 @@
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/tables') %}is-active{% endif %}" role="menuitem" href="/admin/tables">Tables</a>
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/sync') %}is-active{% endif %}" role="menuitem" href="/admin/sync">Sync</a>
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/metrics') %}is-active{% endif %}" role="menuitem" href="/admin/metrics">Metrics</a>
+                <a class="app-nav-menu-item {% if _path.startswith('/admin/audit') %}is-active{% endif %}" role="menuitem" href="/admin/audit">Audit log</a>
 
                 {# "Agent Experience" groups everything the admin curates
                    for what an analyst's AI agent sees / can do: which
