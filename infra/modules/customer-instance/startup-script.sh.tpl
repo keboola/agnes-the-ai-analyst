@@ -48,30 +48,36 @@ if [ -b "$DATA_DEV" ]; then
     chown -R 999:999 "$DATA_MNT"
 fi
 
-# --- 3. App directory + docker-compose files from public repo ---
+# --- 3. App directory + extract host artifacts from the pinned image ---
 APP_DIR="/opt/agnes"
 mkdir -p "$APP_DIR"
 cd "$APP_DIR"
 
-# Fetch docker-compose files pinned to $COMPOSE_REF (defaults to `main`; pin to a
-# stable-YYYY.MM.N tag for reproducibility across VM rebuilds).
-RAW_BASE="https://raw.githubusercontent.com/keboola/agnes-the-ai-analyst/$${COMPOSE_REF}"
-curl -fsSL "$${RAW_BASE}/docker-compose.yml" -o docker-compose.yml
-curl -fsSL "$${RAW_BASE}/docker-compose.prod.yml" -o docker-compose.prod.yml
-# Overlay which binds `data` volume to host /data (persistent disk mounted above)
-curl -fsSL "$${RAW_BASE}/docker-compose.host-mount.yml" -o docker-compose.host-mount.yml
-# TLS overlay + Caddyfile — fetched unconditionally because agnes-auto-upgrade.sh
-# (curled from main below) detects TLS at runtime via cert files on disk,
-# regardless of TLS_MODE. Certs can appear after boot via agnes-tls-rotate.sh
-# or manual provisioning, and:
-#   - the cron job would fail under `set -euo pipefail` every 5 min if
-#     docker-compose.tls.yml were missing, and
-#   - the caddy service in docker-compose.yml bind-mounts ./Caddyfile:ro,
-#     so without it on disk Docker auto-creates an empty directory there
-#     and Caddy crash-loops while the overlay has already closed :8000.
-# Cheap to keep on disk either way.
-curl -fsSL "$${RAW_BASE}/docker-compose.tls.yml" -o docker-compose.tls.yml
-curl -fsSL "$${RAW_BASE}/Caddyfile" -o Caddyfile
+# Pull the pinned image first so we can extract host-side artifacts from it.
+# Everything we need on the host (compose files, Caddyfile, agnes-auto-upgrade.sh)
+# ships baked into the image at /opt/agnes-host/, released atomically with
+# the app. AGNES_TAG is the single version pin for both — no split-brain
+# with main-branch curl.
+#
+# Why image-extract beats curling raw.githubusercontent.com:
+#   - Version pin: customer pins AGNES_TAG → extracted artifacts match the
+#     same tag. main-branch curls would break that pin silently.
+#   - Egress: image is already pulled from the private registry; the public
+#     internet is no longer required for boot.
+#   - Rollback: revert is one tag bump. Curl-from-main has no per-customer
+#     rollback path.
+docker pull "$${IMAGE_REPO}:$${IMAGE_TAG}"
+EXTRACT_CONTAINER=$(docker create "$${IMAGE_REPO}:$${IMAGE_TAG}")
+trap "docker rm '$EXTRACT_CONTAINER' >/dev/null 2>&1 || true" EXIT
+docker cp "$EXTRACT_CONTAINER:/opt/agnes-host/." "$APP_DIR/"
+docker cp "$EXTRACT_CONTAINER:/opt/agnes-host/agnes-auto-upgrade.sh" /usr/local/bin/agnes-auto-upgrade.sh
+chmod +x /usr/local/bin/agnes-auto-upgrade.sh
+
+# docker-compose.tls.yml + Caddyfile land regardless of TLS_MODE. agnes-auto-upgrade.sh
+# detects TLS at runtime via cert files on disk; certs can appear after boot via
+# agnes-tls-rotate.sh or manual provisioning. The caddy service bind-mounts
+# ./Caddyfile, so it must exist on disk before any `docker compose up` even when
+# the tls overlay is currently inactive. Cheap to keep them on disk either way.
 
 # --- 4. Fetch secrets from Secret Manager — fail loudly if missing ---
 KEBOOLA_TOKEN=""
@@ -168,24 +174,10 @@ docker compose $COMPOSE_FILES $COMPOSE_PROFILES_ARG up -d
 
 # --- 6. Auto-upgrade via cron (pulls new image digest every 5 min) ---
 if [ "$UPGRADE_MODE" = "auto" ]; then
-    # Single-source the cron script from the OSS repo's main branch instead
-    # of inlining a copy here. Two reasons:
-    #   1. Drift prevention — earlier inline copy missed several iterations
-    #      of the canonical script (TLS overlay detection, array-form compose
-    #      files, config-disk fail-fast guard).
-    #   2. Re-fetched on every VM boot, so script-only fixes propagate
-    #      without an infra recreate. For immediate rollout to running VMs,
-    #      operators can also re-run this fetch by hand.
-    #
-    # Coupling note: this URL is pinned to `main` while compose files above
-    # honor $COMPOSE_REF. If a future canonical script references a NEW
-    # compose file, the fetch list above MUST be updated to match — pinned-
-    # ref VMs would otherwise break on the next cron tick. Treat the docker-
-    # compose.* fetch list as the contract that agnes-auto-upgrade.sh relies
-    # on; new compose files referenced from main need a corresponding fetch.
-    SCRIPT_URL="https://raw.githubusercontent.com/keboola/agnes-the-ai-analyst/main/scripts/ops/agnes-auto-upgrade.sh"
-    curl -fsSL --retry 3 --retry-delay 2 "$SCRIPT_URL" -o /usr/local/bin/agnes-auto-upgrade.sh
-    chmod +x /usr/local/bin/agnes-auto-upgrade.sh
+    # agnes-auto-upgrade.sh was already extracted to /usr/local/bin/ in
+    # section 3 alongside the compose files — the host artifacts ship
+    # together from the pinned image. Nothing more to fetch here.
+    :
 
     # Install cron entry idempotently: remove any prior agnes-auto-upgrade line, then append ours.
     CRON_LINE="*/5 * * * * /usr/local/bin/agnes-auto-upgrade.sh >> /var/log/agnes-auto-upgrade.log 2>&1"
