@@ -185,6 +185,53 @@ def test_materialized_pass_records_parquet_hash(system_db, stub_bq, tmp_path):
     assert row["hash"] == expected
 
 
+@pytest.mark.parametrize("yaml_value, expected_max", [
+    (10737418240, 10737418240),       # int — canonical
+    (10737418240.0, 10737418240),     # float — YAML often parses as float
+    (1e10, 10000000000),              # scientific notation
+    ("10737418240", 10737418240),     # string — coerced
+    (0, None),                        # explicit disable sentinel
+    (None, None),                     # missing key
+    ("not-a-number", None),           # malformed → fail-open + warn
+])
+def test_materialized_pass_max_bytes_yaml_coercion(
+    system_db, stub_bq, tmp_path, monkeypatch, yaml_value, expected_max,
+):
+    """`max_bytes_per_materialize` YAML value is coerced to int regardless of
+    the YAML scalar type (int / float / scientific / string). Devin found
+    that an `isinstance(raw, int)` guard silently disabled the guardrail
+    on float values."""
+    repo = TableRegistryRepository(system_db)
+    repo.register(
+        id="t", name="t", source_type="bigquery",
+        query_mode="materialized", source_query="SELECT 1",
+        sync_schedule="every 1m",
+    )
+
+    parquet_dir = tmp_path / "data" / "extracts" / "bigquery" / "data"
+    parquet_dir.mkdir(parents=True, exist_ok=True)
+    (parquet_dir / "t.parquet").write_bytes(b"PAR1" + b"\x00" * 16 + b"PAR1")
+
+    captured = {}
+
+    def _spy(table_id, sql, bq, output_dir, max_bytes):
+        captured["max_bytes"] = max_bytes
+        return {"rows": 1, "size_bytes": 100, "query_mode": "materialized"}
+
+    from app.api import sync as sync_mod
+
+    with patch(
+        "app.instance_config.get_value",
+        side_effect=lambda *a, **kw: (
+            yaml_value if a[-1] == "max_bytes_per_materialize"
+            else kw.get("default", "")
+        ),
+    ), patch("app.api.sync._materialize_table", side_effect=_spy):
+        sync_mod._run_materialized_pass(system_db, stub_bq)
+
+    assert captured["max_bytes"] == expected_max
+
+
 def test_materialized_pass_keys_sync_state_by_name_not_id(
     system_db, stub_bq, tmp_path,
 ):

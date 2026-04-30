@@ -78,14 +78,23 @@ def _run_materialized_pass(conn: duckdb.DuckDBPyConnection, bq) -> dict:
     # Sentinel: max_bytes <= 0 (or None) disables the guardrail. `get_value()`
     # treats YAML `null` as "missing" → returns the default; operators must use
     # the explicit `0` sentinel to disable. See config/instance.yaml.example.
+    # YAML accepts floats too (e.g. `10737418240.0`), and operators may
+    # write `1e10` for readability; coerce to int and tolerate non-numeric
+    # entries by falling through to the disable path with a warning.
     raw_max = get_value(
         "data_source", "bigquery", "max_bytes_per_materialize",
         default=10 * 2**30,
     )
-    bq_max_bytes = (
-        raw_max if (raw_max is not None and isinstance(raw_max, int) and raw_max > 0)
-        else None
-    )
+    try:
+        n = int(raw_max) if raw_max is not None else 0
+    except (TypeError, ValueError):
+        logger.warning(
+            "data_source.bigquery.max_bytes_per_materialize is not numeric "
+            "(%r); cost guardrail disabled. Set an integer or 0 to disable.",
+            raw_max,
+        )
+        n = 0
+    bq_max_bytes = n if n > 0 else None
 
     registry = TableRegistryRepository(conn)
     state = SyncStateRepository(conn)
