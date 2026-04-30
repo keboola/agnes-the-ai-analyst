@@ -61,24 +61,63 @@ def register_table(
     source_type: str = typer.Option("keboola", help="Source type"),
     bucket: str = typer.Option("", help="Source bucket/dataset"),
     source_table: str = typer.Option("", help="Source table name"),
-    query_mode: str = typer.Option("local", help="Query mode: local or remote"),
+    query_mode: str = typer.Option("local",
+        help="Query mode: local | remote | materialized"),
+    query: str = typer.Option("", "--query",
+        help="SQL for materialized mode. `@path/to.sql` reads from disk."),
+    schedule: str = typer.Option("", "--schedule",
+        help="e.g. 'every 6h' or 'daily 03:00' (UTC)"),
     description: str = typer.Option("", help="Table description"),
 ):
     """Register a single table."""
-    resp = api_post("/api/admin/register-table", json={
+    from pathlib import Path
+
+    # Resolve --query @file.sql shorthand
+    source_query = ""
+    if query:
+        if query.startswith("@"):
+            sql_path = Path(query[1:])
+            if not sql_path.exists():
+                typer.echo(f"Error: SQL file not found: {sql_path}", err=True)
+                raise typer.Exit(2)
+            source_query = sql_path.read_text(encoding="utf-8").strip()
+        else:
+            source_query = query.strip()
+
+    if query_mode == "materialized" and not source_query:
+        typer.echo(
+            "Error: --query-mode materialized requires --query (literal SQL or @path.sql)",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    # Build payload — omit empty optional fields so the server-side validator
+    # doesn't see them (e.g. "" for source_query in local mode would trigger
+    # the "source_query forbidden" branch).
+    payload = {
         "name": name,
         "source_type": source_type,
         "bucket": bucket,
         "source_table": source_table or name,
         "query_mode": query_mode,
         "description": description,
-    })
+    }
+    if source_query:
+        payload["source_query"] = source_query
+    if schedule:
+        payload["sync_schedule"] = schedule
+
+    resp = api_post("/api/admin/register-table", json=payload)
     if resp.status_code == 201:
-        typer.echo(f"Registered: {name}")
+        typer.echo(f"Registered: {name} (mode={query_mode})")
     elif resp.status_code == 409:
         typer.echo(f"Already exists: {name}")
     else:
-        typer.echo(f"Failed: {resp.json().get('detail', resp.text)}", err=True)
+        try:
+            detail = resp.json().get("detail", resp.text)
+        except Exception:
+            detail = resp.text
+        typer.echo(f"Failed: {detail}", err=True)
         raise typer.Exit(1)
 
 
