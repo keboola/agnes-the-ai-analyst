@@ -137,6 +137,11 @@ def get_instance_subtitle() -> str:
     return get_value("instance", "subtitle", default="")
 
 
+def get_sync_interval() -> str:
+    """Human-readable refresh cadence shown in the analyst welcome prompt."""
+    return get_value("instance", "sync_interval", default="1 hour")
+
+
 def get_allowed_domains() -> list:
     domain = get_value("auth", "allowed_domain", default="")
     if domain:
