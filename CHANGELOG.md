@@ -12,6 +12,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+- BigQuery cost guardrail for `query_mode='materialized'` tables: before each
+  COPY the scheduler runs a BQ dry-run and raises `MaterializeBudgetError`
+  (skips the row) when the estimate exceeds `data_source.bigquery.max_bytes_per_materialize`.
+  Fail-open when the dry-run itself errors (library missing, transient API
+  failure) — see `config/instance.yaml.example` for the knob.
 - `da sync --quiet` flag suppresses Rich progress + multi-line summary,
   intended for use from Claude Code SessionStart/SessionEnd hooks and cron
   jobs. Errors still surface on stderr; the no-op case is silent. The

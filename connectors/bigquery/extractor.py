@@ -8,13 +8,44 @@ import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 import duckdb
 
 from src.identifier_validation import validate_identifier, validate_quoted_identifier
 
 logger = logging.getLogger(__name__)
+
+
+class MaterializeBudgetError(RuntimeError):
+    """Raised when the BigQuery dry-run estimate exceeds the configured cap.
+
+    The materialize trigger logs this and skips the row; the next scheduled
+    tick re-tries (in case the underlying table size dropped or the operator
+    raised the cap).
+    """
+
+
+def _dry_run_bytes(sql: str, project_id: str) -> int:
+    """Estimate bytes scanned by `sql` against `project_id` via BigQuery
+    dry-run. Returns 0 when the dry-run cannot be performed (library missing,
+    auth failure, etc.) — caller treats 0 as "unknown" and does NOT trigger
+    the cap (fail-open). Operators who want hard-fail should monitor for
+    repeated 0-byte estimates as a signal the guardrail is degraded.
+    """
+    try:
+        from google.cloud import bigquery
+        from google.cloud.bigquery import QueryJobConfig
+    except ImportError:
+        return 0
+
+    try:
+        client = bigquery.Client(project=project_id)
+        cfg = QueryJobConfig(dry_run=True, use_query_cache=False)
+        job = client.query(sql, job_config=cfg)
+        return int(job.total_bytes_processed or 0)
+    except Exception:
+        return 0
 
 
 def _create_meta_table(conn: duckdb.DuckDBPyConnection) -> None:
@@ -154,6 +185,7 @@ def materialize_query(
     project_id: str,
     output_dir: str,
     *,
+    max_bytes: Optional[int] = None,
     skip_attach: bool = False,
 ) -> Dict[str, Any]:
     """Run an SQL query through the DuckDB BigQuery extension and write the
@@ -171,6 +203,10 @@ def materialize_query(
         project_id: GCP project ID for the ATTACH.
         output_dir: connector root, e.g. `/data/extracts/bigquery`. Parquet
             lands in `<output_dir>/data/<table_id>.parquet`.
+        max_bytes: Optional cap on BigQuery bytes scanned. When set, a
+            dry-run runs first; if the estimate exceeds the cap, raises
+            MaterializeBudgetError without touching disk. None disables
+            the guardrail (default — preserves backwards compat).
         skip_attach: Test-only — skip INSTALL/LOAD/ATTACH so a stubbed schema
             can stand in. Never True in production.
 
@@ -179,10 +215,19 @@ def materialize_query(
 
     Raises:
         ValueError: if `table_id` is unsafe.
+        MaterializeBudgetError: if `max_bytes` is set and dry-run exceeds it.
         duckdb.Error: if the COPY fails (e.g. bad SQL, missing table).
     """
     if not validate_identifier(table_id, "table_id"):
         raise ValueError(f"unsafe table_id: {table_id!r}")
+
+    if max_bytes is not None:
+        estimated = _dry_run_bytes(sql, project_id)
+        if estimated > max_bytes:
+            raise MaterializeBudgetError(
+                f"dry-run estimate {estimated:,} bytes exceeds cap "
+                f"{max_bytes:,} for table {table_id!r}"
+            )
 
     out_path = Path(output_dir)
     data_dir = out_path / "data"
