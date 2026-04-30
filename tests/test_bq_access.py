@@ -351,6 +351,29 @@ class TestGetBqAccess:
         b = get_bq_access()
         assert a is b
 
+    def test_instance_config_reset_cache_invalidates_get_bq_access(self, monkeypatch):
+        """admin /api/admin/server-config save → instance_config.reset_cache() →
+        must also clear get_bq_access cache so v2 endpoints pick up new
+        BigQuery project IDs without container restart. Devin ANALYSIS_0004
+        on PR #138 review: pre-Phase-2 each request re-read get_value(), so
+        admin hot-reload worked. functools.cache on get_bq_access would have
+        broken that contract — this test guards against regressing it."""
+        from connectors.bigquery.access import get_bq_access
+        from app.instance_config import reset_cache
+
+        monkeypatch.setenv("BIGQUERY_PROJECT", "first")
+        bq1 = get_bq_access()
+        assert bq1.projects.billing == "first"
+
+        # Operator updates config and triggers reset_cache via admin API
+        monkeypatch.setenv("BIGQUERY_PROJECT", "second")
+        reset_cache()
+
+        bq2 = get_bq_access()
+        assert bq2.projects.billing == "second", \
+            "get_bq_access must re-resolve after instance_config.reset_cache()"
+        assert bq2 is not bq1
+
     def test_sentinel_is_cached_per_process(self, monkeypatch):
         """The sentinel BqAccess is cached like any other return value. Operators
         fixing instance.yaml at runtime must restart the container to pick up the

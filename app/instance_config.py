@@ -13,9 +13,23 @@ _instance_config: Optional[dict] = None
 def reset_cache() -> None:
     """Drop the in-process instance.yaml cache; the next ``load_instance_config``
     call re-reads from disk. Used by `/api/admin/server-config` after a save.
-    Public alias so callers don't have to reach into the private global."""
+    Public alias so callers don't have to reach into the private global.
+
+    Also clears ``connectors.bigquery.access.get_bq_access`` so the v2 endpoints
+    pick up new BigQuery project IDs after an admin saves `instance.yaml` —
+    without this, `get_bq_access`'s `@functools.cache` would freeze the projects
+    at first call and require a container restart to pick up changes (Devin
+    ANALYSIS_0004 on PR #138). Lazy-imported so this module stays usable in
+    environments where the connectors package can't be imported (e.g. unit
+    tests of instance_config in isolation)."""
     global _instance_config
     _instance_config = None
+    try:
+        from connectors.bigquery.access import get_bq_access
+        get_bq_access.cache_clear()
+    except Exception:
+        # Connectors module not loaded yet, or BQ deps missing — both fine.
+        pass
 
 
 def _deep_merge(base: dict, patch: dict) -> dict:
