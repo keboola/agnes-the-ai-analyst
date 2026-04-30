@@ -15,6 +15,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+- **`/admin/settings` page** (admin-only) under the Admin sub-menu: dataset sync toggles + per-table subscriptions for the calling user, loaded live from the existing `/api/settings`, `/api/settings/dataset`, and `/api/sync/table-subscriptions` endpoints. Phase 5 of the UI overhaul plan — surfaces in-browser the per-user preferences that were previously API/CLI-only.
 - **`/admin/sync` page** (admin-only) under the Admin sub-menu: per-table sync state (last sync, status, rows, size, columns), recent runs (loaded live from `GET /api/sync/history`), and a "Sync now" trigger button that POSTs to the existing `/api/sync/trigger`. Replaces the ad-hoc Telegram-style sync controls scattered across the dashboard with a single console.
 - **`GET /api/sync/history?limit=&table_id=`** endpoint (admin-only) returning rows from the `sync_history` table newest-first. The optional `table_id` filter narrows to a single table; `limit` is clamped to 1–500. Powers the recent-runs table on `/admin/sync`.
 - `tests/test_admin_sync.py` — 7 tests pinning the page render + endpoint contract (admin/analyst/unauthenticated, table_id filter, limit clamp).

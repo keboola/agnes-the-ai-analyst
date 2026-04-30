@@ -1,0 +1,222 @@
+{% extends "base.html" %}
+{% block title %}Settings — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block content %}
+<style>
+  .settings-page { max-width: 1100px; margin: 0 auto; padding: 24px 32px 48px; }
+  .settings-page h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; }
+  .settings-page .subtitle { color: var(--text-secondary); font-size: 13px; margin: 0 0 24px; }
+
+  .settings-card {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border-light, #e5e7eb);
+    border-radius: 10px;
+    margin-bottom: 24px;
+    overflow: hidden;
+  }
+  .settings-card-head {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+  }
+  .settings-card-head h2 {
+    font-size: 14px; font-weight: 600; margin: 0 0 4px;
+    text-transform: uppercase; letter-spacing: 0.4px;
+    color: var(--text-secondary, #6b7280);
+  }
+  .settings-card-head .help { font-size: 12px; color: var(--text-secondary, #9ca3af); margin: 0; }
+
+  .toggle-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+  }
+  .toggle-row:last-child { border-bottom: none; }
+  .toggle-row .name { font-weight: 500; font-size: 14px; }
+  .toggle-row .access { font-size: 12px; color: var(--text-secondary); margin-left: 8px; }
+  .toggle-row .name-cell { display: flex; align-items: center; flex: 1; min-width: 0; }
+
+  .toggle-switch {
+    position: relative; width: 44px; height: 24px;
+    flex-shrink: 0;
+  }
+  .toggle-switch input { opacity: 0; width: 0; height: 0; }
+  .toggle-switch .slider {
+    position: absolute; cursor: pointer; inset: 0;
+    background: var(--border, #d1d5db); border-radius: 24px;
+    transition: 0.15s;
+  }
+  .toggle-switch .slider::before {
+    content: ""; position: absolute; height: 18px; width: 18px;
+    left: 3px; top: 3px; background: #fff; border-radius: 50%;
+    transition: 0.15s;
+  }
+  .toggle-switch input:checked + .slider { background: var(--primary, #0073D1); }
+  .toggle-switch input:checked + .slider::before { transform: translateX(20px); }
+  .toggle-switch input:disabled + .slider { opacity: 0.5; cursor: progress; }
+
+  .empty-state {
+    padding: 32px 20px; text-align: center;
+    color: var(--text-secondary); font-size: 13px;
+  }
+  .toast-zone {
+    position: fixed; bottom: 24px; right: 24px; z-index: 100;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .toast {
+    padding: 10px 16px; border-radius: 8px;
+    background: #1f2937; color: #fff; font-size: 13px;
+    box-shadow: 0 6px 16px rgba(0,0,0,0.18);
+    animation: slide-up 0.18s ease-out;
+  }
+  .toast.error { background: #b91c1c; }
+  .toast.success { background: #166534; }
+  @keyframes slide-up {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+</style>
+
+<div class="settings-page">
+  <h1>Settings</h1>
+  <p class="subtitle">Your dataset sync preferences and per-table subscriptions. Settings are scoped to your account; admins manage other users from <a href="/admin/users">Users</a>.</p>
+
+  <!-- Datasets the user has permission for, with toggles -->
+  <div class="settings-card">
+    <div class="settings-card-head">
+      <h2>Dataset sync</h2>
+      <p class="help">Toggle which datasets the orchestrator should sync to your local mirror. Disabling a dataset stops new pulls; existing data stays until the next rebuild.</p>
+    </div>
+    <div id="datasets-list">
+      <div class="empty-state">Loading…</div>
+    </div>
+  </div>
+
+  <!-- Per-table subscriptions -->
+  <div class="settings-card">
+    <div class="settings-card-head">
+      <h2>Table subscriptions</h2>
+      <p class="help">Per-table opt-in/opt-out. Useful when a dataset is enabled but you only want a subset of its tables. Empty list = subscribe to all tables in enabled datasets.</p>
+    </div>
+    <div id="tables-list">
+      <div class="empty-state">Loading…</div>
+    </div>
+  </div>
+</div>
+
+<div class="toast-zone" id="toast-zone"></div>
+
+<script>
+const SETTINGS_API = "/api/settings";
+const DATASET_API = "/api/settings/dataset";
+const SUBS_API = "/api/sync/table-subscriptions";
+
+function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+function toast(msg, kind) {
+  const z = document.getElementById("toast-zone");
+  const t = document.createElement("div");
+  t.className = "toast " + (kind || "");
+  t.textContent = msg;
+  z.appendChild(t);
+  setTimeout(() => t.remove(), 3000);
+}
+
+async function loadDatasets() {
+  const host = document.getElementById("datasets-list");
+  try {
+    const r = await fetch(SETTINGS_API, { credentials: "include" });
+    if (!r.ok) {
+      host.innerHTML = `<div class="empty-state" style="color:#b91c1c;">Failed to load: ${esc(r.status)}</div>`;
+      return;
+    }
+    const data = await r.json();
+    const perms = data.permissions || [];
+    const enabledNames = new Set((data.sync_settings || []).filter(s => s.enabled).map(s => s.dataset));
+    if (!perms.length) {
+      host.innerHTML = `<div class="empty-state">You don't have access to any datasets yet. Ask an admin to grant access via /admin/access.</div>`;
+      return;
+    }
+    let html = "";
+    for (const p of perms) {
+      const name = p.dataset || p.name || "(unnamed)";
+      const access = p.access || "read";
+      const checked = enabledNames.has(name) ? "checked" : "";
+      html += `<div class="toggle-row">
+        <div class="name-cell">
+          <span class="name">${esc(name)}</span>
+          <span class="access">${esc(access)}</span>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" data-dataset="${esc(name)}" ${checked}>
+          <span class="slider"></span>
+        </label>
+      </div>`;
+    }
+    host.innerHTML = html;
+    host.querySelectorAll('input[type="checkbox"]').forEach(input => {
+      input.addEventListener("change", async (e) => {
+        e.target.disabled = true;
+        try {
+          const r = await fetch(DATASET_API, {
+            method: "PUT",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ dataset: e.target.dataset.dataset, enabled: e.target.checked }),
+          });
+          if (!r.ok) {
+            const err = await r.json().catch(() => ({}));
+            e.target.checked = !e.target.checked;
+            toast("Save failed: " + (err.detail || r.status), "error");
+          } else {
+            toast(e.target.checked ? "Enabled" : "Disabled", "success");
+          }
+        } catch (err) {
+          e.target.checked = !e.target.checked;
+          toast("Network error: " + err.message, "error");
+        } finally {
+          e.target.disabled = false;
+        }
+      });
+    });
+  } catch (e) {
+    host.innerHTML = `<div class="empty-state" style="color:#b91c1c;">Network error: ${esc(e.message)}</div>`;
+  }
+}
+
+async function loadSubs() {
+  const host = document.getElementById("tables-list");
+  try {
+    const r = await fetch(SUBS_API, { credentials: "include" });
+    if (!r.ok) {
+      host.innerHTML = `<div class="empty-state" style="color:#b91c1c;">Failed to load: ${esc(r.status)}</div>`;
+      return;
+    }
+    const data = await r.json();
+    const subs = data.subscriptions || [];
+    if (!subs.length) {
+      host.innerHTML = `<div class="empty-state">No per-table preferences set. All tables in your enabled datasets sync by default.</div>`;
+      return;
+    }
+    let html = "";
+    for (const s of subs) {
+      const name = s.dataset || s.name || s.table || "(unnamed)";
+      const enabled = s.enabled !== false;
+      html += `<div class="toggle-row">
+        <div class="name-cell">
+          <span class="name">${esc(name)}</span>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" data-table="${esc(name)}" ${enabled ? "checked" : ""}>
+          <span class="slider"></span>
+        </label>
+      </div>`;
+    }
+    host.innerHTML = html;
+  } catch (e) {
+    host.innerHTML = `<div class="empty-state" style="color:#b91c1c;">Network error: ${esc(e.message)}</div>`;
+  }
+}
+
+loadDatasets();
+loadSubs();
+</script>
+{% endblock %}

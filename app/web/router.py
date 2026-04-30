@@ -669,6 +669,19 @@ async def admin_tables(
     return templates.TemplateResponse(request, "admin_tables.html", ctx)
 
 
+@router.get("/admin/settings", response_class=HTMLResponse)
+async def admin_settings(
+    request: Request,
+    user: dict = Depends(require_admin),
+):
+    """Per-user dataset sync preferences and per-table subscriptions.
+    All data is loaded client-side from the existing /api/settings,
+    /api/settings/dataset, and /api/sync/table-subscriptions endpoints,
+    so the route stays a thin shell."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "admin_settings.html", ctx)
+
+
 @router.get("/admin/sync", response_class=HTMLResponse)
 async def admin_sync(
     request: Request,
