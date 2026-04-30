@@ -36,6 +36,112 @@ def _file_hash(path: Path) -> str:
     return h.hexdigest()
 
 
+def _materialize_table(
+    *,
+    table_id: str,
+    sql: str,
+    bq,
+    output_dir: str,
+    max_bytes: Optional[int],
+) -> dict:
+    """Thin wrapper around `connectors.bigquery.extractor.materialize_query`
+    so the trigger pass can be unit-tested by patching this seam without
+    touching the real BqAccess factory or the duckdb import."""
+    from connectors.bigquery.extractor import materialize_query
+    return materialize_query(
+        table_id=table_id, sql=sql, bq=bq,
+        output_dir=output_dir, max_bytes=max_bytes,
+    )
+
+
+def _run_materialized_pass(conn: duckdb.DuckDBPyConnection, bq) -> dict:
+    """Walk `table_registry` for `query_mode='materialized'` rows and run any
+    that are due. Honors per-table `sync_schedule` via `is_table_due()`,
+    writes the parquet via `_materialize_table`, computes the file hash
+    inline, and updates `sync_state` so the manifest can serve the row to
+    `da sync` without re-hashing on every request.
+
+    Returns:
+        ``{"materialized": [ids], "skipped": [ids], "errors": [{table, error}]}``
+
+    Errors are aggregated per row — one budget-blown table doesn't stop a
+    healthy sibling. ``MaterializeBudgetError`` is caught and rendered with
+    its structured fields so operator alerting can pick out the cap-vs-actual
+    bytes from the log line.
+    """
+    from src.scheduler import is_table_due
+    from app.instance_config import get_value
+    from connectors.bigquery.extractor import MaterializeBudgetError
+
+    output_dir = str(Path(_get_data_dir()) / "extracts" / "bigquery")
+
+    # Sentinel: max_bytes <= 0 (or None) disables the guardrail. `get_value()`
+    # treats YAML `null` as "missing" → returns the default; operators must use
+    # the explicit `0` sentinel to disable. See config/instance.yaml.example.
+    raw_max = get_value(
+        "data_source", "bigquery", "max_bytes_per_materialize",
+        default=10 * 2**30,
+    )
+    bq_max_bytes = (
+        raw_max if (raw_max is not None and isinstance(raw_max, int) and raw_max > 0)
+        else None
+    )
+
+    registry = TableRegistryRepository(conn)
+    state = SyncStateRepository(conn)
+
+    summary = {"materialized": [], "skipped": [], "errors": []}
+    for row in registry.list_all():
+        if row.get("query_mode") != "materialized":
+            continue
+
+        last = state.get_last_sync(row["id"])
+        last_iso = last.isoformat() if last else None
+        schedule = row.get("sync_schedule") or "every 1h"
+        if not is_table_due(schedule, last_iso):
+            summary["skipped"].append(row["id"])
+            continue
+
+        try:
+            stats = _materialize_table(
+                table_id=row["id"],
+                sql=row["source_query"],
+                bq=bq,
+                output_dir=output_dir,
+                max_bytes=bq_max_bytes,
+            )
+        except MaterializeBudgetError as e:
+            logger.warning(
+                "Materialize cap exceeded for %s: %s bytes > %s bytes",
+                e.table_id, f"{e.current:,}", f"{e.limit:,}",
+            )
+            summary["errors"].append({
+                "table": row["id"],
+                "error": str(e),
+                "current": e.current,
+                "limit": e.limit,
+            })
+            continue
+        except Exception as e:
+            logger.exception("Materialize failed for %s", row["id"])
+            summary["errors"].append({"table": row["id"], "error": str(e)})
+            continue
+
+        # Compute hash inline so the manifest can serve it immediately
+        # and `da sync` honors the delta-skip on unchanged tables.
+        parquet_path = Path(output_dir) / "data" / f"{row['id']}.parquet"
+        parquet_hash = _file_hash(parquet_path)
+        state.update_sync(
+            table_id=row["id"],
+            rows=stats["rows"],
+            file_size_bytes=stats["size_bytes"],
+            hash=parquet_hash,
+        )
+        summary["materialized"].append(row["id"])
+
+    return summary
+
+
 def _run_sync(tables: Optional[List[str]] = None):
     """Run extractor as subprocess + orchestrator rebuild.
 
@@ -199,6 +305,43 @@ sys.exit(compute_exit_code(result, len(configs)))
                         logger.info("Custom connector %s completed", connector_dir.name)
                 except subprocess.TimeoutExpired:
                     logger.error("Custom connector %s timed out", connector_dir.name)
+
+        # Materialized BigQuery pass — runs admin-registered SQL through the
+        # DuckDB BQ extension (via BqAccess) and writes parquet for due rows.
+        # The orchestrator rebuild below picks the parquets up via the
+        # standard local-parquet discovery. Wrapped so a misconfigured BQ
+        # facade doesn't kill the Keboola path.
+        try:
+            from app.instance_config import get_value as _get_value
+            bq_project = _get_value(
+                "data_source", "bigquery", "project", default=""
+            ) or ""
+            if bq_project:
+                from connectors.bigquery.access import get_bq_access
+                from src.db import get_system_db as _get_system_db
+                bq_access = get_bq_access()
+                mat_conn = _get_system_db()
+                try:
+                    mat_summary = _run_materialized_pass(mat_conn, bq_access)
+                finally:
+                    mat_conn.close()
+                print(
+                    f"[SYNC] Materialized BQ: {len(mat_summary['materialized'])} ok, "
+                    f"{len(mat_summary['skipped'])} skipped, "
+                    f"{len(mat_summary['errors'])} errors",
+                    file=_sys.stderr, flush=True,
+                )
+                for err in mat_summary["errors"]:
+                    print(
+                        f"[SYNC]   {err['table']}: {err['error']}",
+                        file=_sys.stderr, flush=True,
+                    )
+        except Exception as e:
+            print(
+                f"[SYNC] Materialized BQ pass FAILED: {e}",
+                file=_sys.stderr, flush=True,
+            )
+            traceback.print_exc()
 
         # Rebuild master views (reads extract.duckdb files, no write conflict)
         from src.orchestrator import SyncOrchestrator
