@@ -323,7 +323,7 @@
 <script>
 const API = "/api/users";
 // Server-injected env: empty string = no prefix configured. Used to
-// shorten google-sync group chips (e.g. "grp_foundryai_legal@groupon.com"
+// shorten google-sync group chips (e.g. "grp_acme_legal@workspace.example.com"
 // → "Legal") so the membership cell stays readable. Same shape used on
 // /admin/groups; keeping the surface identical.
 const GOOGLE_GROUP_PREFIX = {{ config.AGNES_GOOGLE_GROUP_PREFIX | tojson }};
