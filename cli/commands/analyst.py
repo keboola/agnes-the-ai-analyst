@@ -275,6 +275,45 @@ def _get_instance_name(server_url: str, token: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Helper: install SessionStart/End hooks into a Claude settings file
+# ---------------------------------------------------------------------------
+
+def _install_claude_hooks(settings_path: Path) -> None:
+    """Add SessionStart/SessionEnd hooks calling `da sync` to a Claude settings file.
+
+    Idempotent: replaces our prior `da sync` entries (matched by command substring
+    `da sync`) but preserves anyone else's hooks. Creates the file when missing.
+
+    The settings file is workspace-level (`<workspace>/.claude/settings.json`) so
+    the hooks only fire in this analyst workspace, not in unrelated Claude Code
+    sessions on the same machine.
+    """
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if settings_path.exists():
+        cfg = json.loads(settings_path.read_text(encoding="utf-8"))
+    else:
+        cfg = {}
+
+    hooks = cfg.setdefault("hooks", {})
+
+    def _replace_or_add(event: str, command: str) -> None:
+        existing = hooks.setdefault(event, [])
+        # Drop any prior entry whose every command is a `da sync` invocation.
+        # Third-party entries (PreToolUse: echo hi) and mixed entries are left alone.
+        for entry in list(existing):
+            entry_cmds = [h.get("command", "") for h in entry.get("hooks", [])]
+            if entry_cmds and all("da sync" in c for c in entry_cmds):
+                existing.remove(entry)
+        existing.append({"hooks": [{"type": "command", "command": command}]})
+
+    _replace_or_add("SessionStart", "da sync --quiet 2>/dev/null || true")
+    _replace_or_add("SessionEnd",   "da sync --upload-only --quiet 2>/dev/null || true")
+
+    settings_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
 # Helper: generate CLAUDE.md from template
 # ---------------------------------------------------------------------------
 
@@ -319,8 +358,12 @@ def _generate_claude_md(
 
     settings_path = workspace / ".claude" / "settings.json"
     if not settings_path.exists():
+        # First-run defaults: model + permissions. _install_claude_hooks below
+        # will merge in the SessionStart/End hooks on top of these.
         settings = {"model": "sonnet", "permissions": {"allow": ["Read", "Bash", "Grep", "Glob"]}}
         settings_path.write_text(json.dumps(settings, indent=2))
+
+    _install_claude_hooks(settings_path)
 
 
 # ---------------------------------------------------------------------------
@@ -400,6 +443,7 @@ def setup(
     typer.echo(f"  Server   : {server_url}")
     typer.echo(f"  Tables   : {n_downloaded} downloaded, {total_rows} total rows")
     typer.echo(f"  Workspace: {workspace}")
+    typer.echo(f"  Hooks    : SessionStart/End installed in {workspace}/.claude/settings.json")
     typer.echo("")
     typer.echo("Next steps:")
     typer.echo("  da sync          — refresh data")
