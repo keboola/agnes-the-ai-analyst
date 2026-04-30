@@ -136,17 +136,21 @@ else
     echo "  SKIP catalog (no token)"
 fi
 
-# 8. Admin tables endpoint (authenticated)
+# 8. Admin registry endpoint (authenticated)
+# NOTE: was /api/admin/tables until that endpoint was renamed to
+# /api/admin/registry; this assertion went stale and only surfaced when the
+# auto-rollback workflow first fired (smoke test was failing for many
+# releases without anyone noticing).
 if [ -n "$TOKEN" ]; then
-    TABLES_HTTP=$(curl -s -o /tmp/smoke_tables.json -w "%{http_code}" "$HOST/api/admin/tables" \
+    TABLES_HTTP=$(curl -s -o /tmp/smoke_tables.json -w "%{http_code}" "$HOST/api/admin/registry" \
       -H "Authorization: Bearer $TOKEN" 2>/dev/null || echo "000")
     if [[ "$TABLES_HTTP" =~ ^(200|403)$ ]]; then
-        check "admin tables endpoint (HTTP $TABLES_HTTP)" "true"
+        check "admin registry endpoint (HTTP $TABLES_HTTP)" "true"
     else
-        check "admin tables endpoint (HTTP $TABLES_HTTP)" "false"
+        check "admin registry endpoint (HTTP $TABLES_HTTP)" "false"
     fi
 else
-    echo "  SKIP admin tables (no token)"
+    echo "  SKIP admin registry (no token)"
 fi
 
 # 9. Marketplace.zip endpoint (with PAT auth if available)

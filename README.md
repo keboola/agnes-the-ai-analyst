@@ -125,7 +125,7 @@ pytest tests/ -v
 |------|---------|
 | `config/instance.yaml` | Instance-specific settings: branding, data source type, auth provider, Google domain |
 | `.env` | Secrets and environment variables — never committed |
-| `system.duckdb` `table_registry` table | Table definitions managed via `POST /api/admin/tables/{id}` or the web UI |
+| `system.duckdb` `table_registry` table | Table definitions managed via `POST /api/admin/register-table` (or `PUT /api/admin/registry/{id}` to update) or the web UI |
 
 Copy the example to get started:
 

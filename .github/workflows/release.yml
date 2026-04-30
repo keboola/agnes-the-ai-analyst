@@ -24,6 +24,11 @@ on:
 permissions:
   contents: write
   packages: write
+  # `issues: write` lets the smoke-test job's rollback step open a
+  # GitHub issue alerting operators when an auto-rollback fires. Without
+  # this, the `gh issue create` call hits 403 and the `|| echo` fallback
+  # silently swallows it — operators see :stable revert with no alert.
+  issues: write
 
 # When a developer pushes a brand-new branch with code changes, GitHub fires
 # both a `create` and a `push` event for the same commit. Without
@@ -224,6 +229,19 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      # Required for the rollback step's `docker push` to GHCR. The
+      # `build-and-push` job logs in for itself; this job needs its own
+      # login since GitHub Actions tokens are scoped per-job. Without it,
+      # the rollback hits "unauthenticated: User cannot be authenticated
+      # with the token provided" and silently leaves :stable pointing at
+      # the broken image (real incident: PR #137 / 4ec5ff44).
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Start Agnes from built image
         run: |
           # Create empty .env (docker-compose.yml requires env_file: .env, gitignored)
@@ -239,6 +257,12 @@ jobs:
 
       - name: Automatic rollback on failure
         if: failure()
+        env:
+          # Required for the `gh issue create` call below — without GH_TOKEN
+          # the gh CLI fails the auth check and the issue creation falls
+          # through the `|| echo` fallback, so an operator never sees the
+          # rollback alert.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           IMAGE_TAG="${{ needs.build-and-push.outputs.image_tag }}"
           VERSION="${{ needs.build-and-push.outputs.version }}"
