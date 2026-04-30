@@ -79,6 +79,38 @@ def _effective_groups(
     return [f"group:{r[0]}" for r in rows]
 
 
+def _caller_granted_memory_domains(
+    user: dict,
+    conn: duckdb.DuckDBPyConnection,
+) -> Optional[List[str]]:
+    """Domains the caller has been granted access to via resource_grants.
+
+    The grant model is generic — admins assign ``MEMORY_DOMAIN`` resources
+    (e.g. ``finance``) to ``user_groups`` rows via ``/admin/access``. This
+    helper resolves the caller's group memberships against
+    ``resource_grants`` and returns the union of domain strings.
+
+    Returns ``None`` for privileged viewers (admins see everything regardless
+    of grants — same convention as ``_effective_groups``). Returns an
+    empty list when the caller has no grants — the SQL filter then treats
+    this as a no-op (the ``OR domain IN ()`` clause is skipped).
+    """
+    if _is_privileged_viewer(user, conn):
+        return None
+    user_id = user.get("id")
+    if not user_id:
+        return []
+    rows = conn.execute(
+        """SELECT DISTINCT rg.resource_id
+           FROM resource_grants rg
+           JOIN user_group_members m ON m.group_id = rg.group_id
+           WHERE m.user_id = ?
+             AND rg.resource_type = 'memory_domain'""",
+        [user_id],
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
 def _can_view_item(user: dict, item: dict, is_priv: bool) -> bool:
     """Personal items are visible only to the contributor and privileged
     viewers. Non-personal items are visible to any authenticated user.
@@ -195,12 +227,14 @@ async def list_knowledge(
     # Their own personal contributions are visible via /my-contributions, not here.
     effective_exclude_personal = True if not _is_privileged_viewer(user, conn) else exclude_personal
     effective_groups = _effective_groups(user, conn)
+    granted_domains = _caller_granted_memory_domains(user, conn)
     statuses = [status_filter] if status_filter else None
     if search:
         items = repo.search(
             search,
             exclude_personal=effective_exclude_personal,
             user_groups=effective_groups,
+            granted_domains=granted_domains,
             statuses=statuses,
             category=category,
             domain=domain,
@@ -216,6 +250,7 @@ async def list_knowledge(
             source_type=source_type,
             exclude_personal=effective_exclude_personal,
             user_groups=effective_groups,
+            granted_domains=granted_domains,
             limit=per_page,
             offset=offset,
         )
@@ -236,6 +271,7 @@ async def list_knowledge(
         source_type=source_type,
         exclude_personal=effective_exclude_personal,
         user_groups=effective_groups,
+        granted_domains=granted_domains,
     )
     total_pages = math.ceil(total_count / per_page) if per_page > 0 else 1
 
@@ -270,6 +306,7 @@ async def get_stats(
     """
     is_priv = _is_privileged_viewer(user, conn)
     groups = _effective_groups(user, conn)
+    granted_domains = _caller_granted_memory_domains(user, conn)
 
     where_clauses: List[str] = []
     params: list = []
@@ -283,16 +320,20 @@ async def get_stats(
         where_clauses.append("(is_personal IS NULL OR is_personal = FALSE)")
 
     if groups is not None:
-        # groups is None for admins → no audience filter; otherwise restrict to
-        # null/'all' or one of the caller's group audiences.
+        # Mirror the visibility composition KnowledgeRepository.list_items
+        # uses: audience match OR MEMORY_DOMAIN grant. Without this the
+        # stats `total` diverges from the list endpoint's `total_count` for
+        # non-admin users with grants (Devin BUG_0001 on PR #141 5f649a4).
+        visibility = ["audience IS NULL", "audience = 'all'"]
         if groups:
             placeholders = ",".join(["?"] * len(groups))
-            where_clauses.append(
-                f"(audience IS NULL OR audience = 'all' OR audience IN ({placeholders}))"
-            )
+            visibility.append(f"audience IN ({placeholders})")
             params.extend(groups)
-        else:
-            where_clauses.append("(audience IS NULL OR audience = 'all')")
+        if granted_domains:
+            domain_placeholders = ",".join(["?"] * len(granted_domains))
+            visibility.append(f"domain IN ({domain_placeholders})")
+            params.extend(granted_domains)
+        where_clauses.append("(" + " OR ".join(visibility) + ")")
 
     where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
@@ -336,10 +377,12 @@ async def get_stats(
     by_tag = repo.count_by_tag(
         exclude_personal=exclude_personal_for_caller,
         user_groups=groups,
+        granted_domains=granted_domains,
     )
     by_audience = repo.count_by_audience(
         exclude_personal=exclude_personal_for_caller,
         user_groups=groups,
+        granted_domains=granted_domains,
     )
 
     return {
@@ -1129,12 +1172,14 @@ async def get_tree(
     # Audience-axis privacy (decision 13): non-admins only see their own
     # group buckets + null/all. Use the audience pre-filter on the SQL side
     # so non-admins never accidentally see another group's bucket count.
+    granted_domains = _caller_granted_memory_domains(user, conn)
     statuses = [status_filter] if status_filter else None
     items = repo.list_items(
         statuses=statuses,
         source_type=source_type,
         exclude_personal=effective_exclude_personal,
         user_groups=effective_groups,
+        granted_domains=granted_domains,
         limit=10000,
         offset=0,
     )
@@ -1228,11 +1273,13 @@ async def get_bundle(
 
     repo = KnowledgeRepository(conn)
     effective_groups = _effective_groups(user, conn)
+    granted_domains = _caller_granted_memory_domains(user, conn)
 
     mandatory = repo.list_items(
         statuses=["mandatory"],
         exclude_personal=True,
         user_groups=effective_groups,
+        granted_domains=granted_domains,
         limit=1000,
         offset=0,
     )
@@ -1241,6 +1288,7 @@ async def get_bundle(
         statuses=["approved"],
         exclude_personal=True,
         user_groups=effective_groups,
+        granted_domains=granted_domains,
         limit=1000,
         offset=0,
     )

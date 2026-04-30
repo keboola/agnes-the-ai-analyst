@@ -1069,6 +1069,57 @@
             </div>
         </div>
 
+        <!-- Single-item edit modal — surfaces PATCH /api/memory/admin/{id}.
+             #126 added the endpoint + bulk batch bar but no per-item Edit
+             affordance, so admins had no UI path for "fix one item's
+             category / domain / audience / tags / title / content" without
+             dropping to the CLI. -->
+        <div id="editItemModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:2000;">
+            <div style="background: var(--surface); max-width: 640px; margin: 60px auto; padding: var(--space-5); border-radius: var(--radius-lg); border: 1px solid var(--border); max-height: 80vh; overflow-y: auto;">
+                <h3 style="margin-bottom: var(--space-3);">Edit item</h3>
+                <div id="editItemBody" style="display: flex; flex-direction: column; gap: var(--space-3);">
+                    <label style="display: flex; flex-direction: column; gap: 4px;">
+                        <span style="font-size: 12px; color: var(--text-muted);">Title</span>
+                        <input id="editItemTitle" type="text" style="padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
+                    </label>
+                    <label style="display: flex; flex-direction: column; gap: 4px;">
+                        <span style="font-size: 12px; color: var(--text-muted);">Content</span>
+                        <textarea id="editItemContent" rows="6" style="padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text); font-family: inherit; resize: vertical;"></textarea>
+                    </label>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3);">
+                        <label style="display: flex; flex-direction: column; gap: 4px;">
+                            <span style="font-size: 12px; color: var(--text-muted);">Category</span>
+                            <input id="editItemCategory" type="text" placeholder="e.g. metric, dataset" style="padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
+                        </label>
+                        <label style="display: flex; flex-direction: column; gap: 4px;">
+                            <span style="font-size: 12px; color: var(--text-muted);">Domain</span>
+                            <select id="editItemDomain" style="padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
+                                <option value="">(unset)</option>
+                                <option value="finance">finance</option>
+                                <option value="engineering">engineering</option>
+                                <option value="product">product</option>
+                                <option value="data">data</option>
+                                <option value="operations">operations</option>
+                                <option value="infrastructure">infrastructure</option>
+                            </select>
+                        </label>
+                        <label style="display: flex; flex-direction: column; gap: 4px;">
+                            <span style="font-size: 12px; color: var(--text-muted);">Audience</span>
+                            <input id="editItemAudience" type="text" placeholder="e.g. all or group:finance" style="padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
+                        </label>
+                        <label style="display: flex; flex-direction: column; gap: 4px;">
+                            <span style="font-size: 12px; color: var(--text-muted);">Tags (comma-separated)</span>
+                            <input id="editItemTags" type="text" placeholder="tag1, tag2" style="padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text);">
+                        </label>
+                    </div>
+                </div>
+                <div style="display: flex; gap: var(--space-2); justify-content: flex-end; margin-top: var(--space-4);">
+                    <button class="btn" onclick="closeEditItemModal()">Cancel</button>
+                    <button class="btn btn-mandate" onclick="submitEditItem()">Save</button>
+                </div>
+            </div>
+        </div>
+
         <!-- Audit Log Tab -->
         <div id="tab-audit" class="tab-content">
             <div class="filter-bar">
@@ -1393,6 +1444,87 @@
     }
 
     // ─────────────────────────────────────────────────────────────
+    // Single-item edit (PATCH /api/memory/admin/{id})
+    // Surfaces the per-item edit endpoint added in #126; previously the
+    // only UI affordance was the bulk batch bar, which made "fix one
+    // item" awkward. Pre-fills from `_itemsById` (populated during card
+    // render) — no extra GET round-trip.
+    // ─────────────────────────────────────────────────────────────
+
+    let _editingItemId = null;
+
+    function openEditItemModal(itemId) {
+        const item = _itemsById.get(itemId);
+        if (!item) {
+            showToast('Item data unavailable — refresh and try again', 'error');
+            return;
+        }
+        _editingItemId = itemId;
+        document.getElementById('editItemTitle').value = item.title || '';
+        document.getElementById('editItemContent').value = item.content || '';
+        document.getElementById('editItemCategory').value = item.category || '';
+        document.getElementById('editItemDomain').value = item.domain || '';
+        document.getElementById('editItemAudience').value = item.audience || '';
+        const tagsArr = parseJsonField(item.tags);
+        document.getElementById('editItemTags').value = tagsArr.join(', ');
+        document.getElementById('editItemModal').style.display = 'block';
+    }
+
+    function closeEditItemModal() {
+        document.getElementById('editItemModal').style.display = 'none';
+        _editingItemId = null;
+    }
+
+    async function submitEditItem() {
+        if (!_editingItemId) return closeEditItemModal();
+        const title = document.getElementById('editItemTitle').value.trim();
+        if (!title) {
+            showToast('Title is required', 'error');
+            return;
+        }
+        // Convert empty strings to JSON null so the backend writes NULL,
+        // not an empty string. The audience filter in
+        // src/repositories/knowledge.py uses `audience IS NULL OR audience
+        // = 'all' OR audience IN (...)`, so an empty-string audience would
+        // silently make the item invisible to non-admin viewers (Devin
+        // BUG_0001 on PR #141 5f649a4 review). Same NULL-preservation
+        // applies to content / category / domain so unmodified fields
+        // round-trip correctly. Title is required so we never send null.
+        // Domain dropdown's "(unset)" option also funnels through this
+        // empty-string → null path.
+        const orNull = (s) => (s && s.trim() ? s.trim() : null);
+        const content = document.getElementById('editItemContent').value || null;
+        const category = orNull(document.getElementById('editItemCategory').value);
+        const domain = orNull(document.getElementById('editItemDomain').value);
+        const audience = orNull(document.getElementById('editItemAudience').value);
+        const tagsStr = document.getElementById('editItemTags').value;
+        const tags = tagsStr
+            .split(',')
+            .map(t => t.trim())
+            .filter(t => t.length > 0);
+
+        const body = { title, content, category, domain, audience, tags };
+        try {
+            const resp = await fetch(`/api/memory/admin/${encodeURIComponent(_editingItemId)}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            if (resp.ok) {
+                showToast('Item updated', 'success');
+                closeEditItemModal();
+                refreshCurrentTab();
+            } else {
+                const data = await resp.json().catch(() => ({}));
+                showToast(data.detail || `Update failed (HTTP ${resp.status})`, 'error');
+            }
+        } catch (e) {
+            console.error('Edit failed:', e);
+            showToast('Network error: edit failed', 'error');
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────
     // Data loading
     // ─────────────────────────────────────────────────────────────
 
@@ -1555,7 +1687,13 @@
     // Rendering: Shared Item Card
     // ─────────────────────────────────────────────────────────────
 
+    // Lookup map populated as items render — backs `openEditItemModal(id)`
+    // so the modal can pre-fill from the same payload the card was built
+    // from, without a fresh GET round-trip.
+    const _itemsById = new Map();
+
     function renderItemCard(item, idx, isReview) {
+        _itemsById.set(item.id, item);
         const status = item.status || 'pending';
         const categoryDisplay = (item.category || 'general').replace(/_/g, ' ');
         const dateStr = (item.created_at || item.extracted_at || '').substring(0, 10) || 'recently';
@@ -1587,6 +1725,7 @@
                         </svg>
                         Reject <span class="shortcut-hint">R</span>
                     </button>
+                    <button class="btn" onclick="openEditItemModal('${esc(item.id)}')">Edit</button>
                 </div>`;
         } else {
             actionsHtml = buildStatusActions(item);
@@ -1668,6 +1807,10 @@
             buttons.push(`<button class="btn btn-approve" onclick="adminAction('approve', '${esc(item.id)}')">Re-approve</button>`);
             buttons.push(`<button class="btn btn-mandate" onclick="showMandateForm('${esc(item.id)}')">Make Mandatory</button>`);
         }
+
+        // Edit is always available regardless of status — admins fix
+        // category/domain/tags/audience/title/content via PATCH /admin/{id}.
+        buttons.push(`<button class="btn" onclick="openEditItemModal('${esc(item.id)}')">Edit</button>`);
 
         if (buttons.length === 0) return '';
         return `<div class="item-actions">${buttons.join('')}</div>`;

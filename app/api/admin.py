@@ -109,6 +109,14 @@ def _normalize_primary_key(v):
 # tuple is `(section, *intermediate_keys, leaf_key)` — same SSRF gate the
 # /configure wizard applies to keboola_url, so an admin can't sneak
 # http://169.254.169.254/ in via the server-config editor's data_source patch.
+#
+# Intentionally NOT included: ``("ai", "base_url")``. The openai_compat
+# provider legitimately points at internal services (LiteLLM proxy on a
+# private network, on-cluster vLLM endpoint, etc.) — see
+# config/instance.yaml.example "LiteLLM proxy" example. SSRF blocking
+# would break those valid setups. Operators with stricter posture should
+# enforce the constraint upstream (firewall / egress proxy allowlist).
+# Devin ANALYSIS_0001 on PR #141 5f649a4 review.
 _URL_BEARING_FIELDS: tuple[tuple[str, ...], ...] = (
     ("data_source", "keboola", "stack_url"),
 )
@@ -163,6 +171,7 @@ _EDITABLE_SECTIONS: tuple[str, ...] = (
     "theme",
     "server",
     "auth",
+    "ai",
 )
 
 # "Danger-zone" sections — flipping these can lock operators out (auth.*) or

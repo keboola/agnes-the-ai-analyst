@@ -184,6 +184,7 @@ const SECTION_META = {
   theme: { title: "Theme", help: "Brand colors and typography." },
   server: { title: "Server", help: "Hostname and host. Changing these can break OAuth callbacks." },
   auth: { title: "Authentication", help: "Allowed sign-in domain and Google OAuth keys. Misconfiguration can lock everyone out." },
+  ai: { title: "AI / LLM", help: "Provider + API key for the corporate-memory extractor. provider=anthropic|openai_compat; api_key uses ${ENV_VAR} so the secret stays in .env." },
 };
 const DANGER_SECTIONS = new Set(["auth", "server"]);
 

@@ -10,6 +10,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.23.0] — 2026-04-30
+
+### Added
+- **Single-item Edit button on every memory item card** in `/corporate-memory/admin`. Surfaces the per-item `PATCH /api/memory/admin/{id}` endpoint added in #126 — until now it was only reachable via the CLI (`da admin memory edit <id>`) or by selecting one item in the bulk batch bar. The modal pre-fills from the item's current title / content / category / domain (dropdown matching `VALID_DOMAINS` + `(unset)`) / audience / tags (comma-separated). Authorisation: same `require_admin` gate as the rest of the memory admin surface.
+- **`ai` section editable in `/admin/server-config`**. The `ai:` block in `instance.yaml` (provider / api_key / model / base_url / structured_output for the corporate-memory extractor) was missing from `_EDITABLE_SECTIONS` and `SECTION_META`, so admins had no UI path to view or set the LLM token without editing `instance.yaml` directly. `api_key` is auto-masked via the existing `_SECRET_KEY_PATTERNS` (substring matches "api_key"), so the input renders as a password field and audit-log diffs redact the value.
+- **`MEMORY_DOMAIN` RBAC resource type** for corporate-memory items. Admins use `/admin/access` to grant `user_groups` access to specific domains (one of `finance` / `engineering` / `product` / `data` / `operations` / `infrastructure`). Members of granted groups see all `knowledge_items` in that domain regardless of the existing `audience` string filter. The two filters compose with OR semantics, so the existing `audience='group:X'` convention keeps working unchanged for ad-hoc per-item targeting; pre-grant deployments behave identically (when no MEMORY_DOMAIN grants exist, the OR clause collapses to a no-op). Wired in `KnowledgeRepository.list_items` / `search` / `count_items` / `count_by_tag` / `count_by_audience` and in the inline SQL of `GET /api/memory/stats` via a new `granted_domains` parameter resolved from `resource_grants` by `_caller_granted_memory_domains`. **Note**: a MEMORY_DOMAIN grant is a parallel visibility path that pierces the `audience` field — an item with `audience='group:admins-only'` and `domain='finance'` becomes visible to anyone with a `MEMORY_DOMAIN/finance` grant. Operators who relied on `audience` as a hard access boundary should be aware (Devin ANALYSIS_0003 on PR #141).
+
+### Fixed
+- **Edit modal NULL→empty-string preservation** in `/corporate-memory/admin`. `submitEditItem` was sending `audience=""` for items whose stored audience was NULL, which silently broke visibility (the audience filter checks `audience IS NULL OR audience = 'all'`, neither of which matches empty string). Now empty form values for `audience`/`category`/`domain`/`content` are sent as JSON `null` so the backend stores NULL. (Devin BUG_0001 on PR #141 5f649a4 review.)
+
 ## [0.22.0] — 2026-04-30
 
 ### Fixed
