@@ -397,14 +397,22 @@ def materialize_query(
 
     # COPY through a BqAccess-managed session.
     with bq.duckdb_session() as conn:
-        # ATTACH the data project. Tolerated-fail when the session already
-        # has `bq` attached (test stubs may pre-populate; rare in production).
+        # ATTACH the data project. Test stubs pre-populate `bq` as an
+        # in-memory schema; production uses the real BQ extension. The
+        # only tolerated failure is "alias already in use" — anything else
+        # (auth, permission, malformed project_id) must surface so the
+        # caller's per-row try/except can record it. Devil's-advocate
+        # review found that swallowing the error blindly hid
+        # cross-project permission errors behind a confusing
+        # "bq is not attached" downstream message.
         try:
             conn.execute(
                 f"ATTACH 'project={bq.projects.data}' AS bq (TYPE bigquery, READ_ONLY)"
             )
-        except duckdb.Error:
-            pass
+        except duckdb.Error as e:
+            msg = str(e).lower()
+            if "already" not in msg and "in use" not in msg:
+                raise
 
         try:
             safe_path = str(tmp_path).replace("'", "''")
@@ -417,10 +425,40 @@ def materialize_query(
                 tmp_path.unlink()
             raise
 
+    # Compute the parquet hash inline before the atomic swap. The caller used
+    # to re-read the file in `_run_materialized_pass` to hash it via
+    # `_file_hash`, but that's a synchronous full-read on the FastAPI worker
+    # thread — a 10 GiB parquet means 50+ seconds of disk I/O blocking other
+    # requests. Hashing here keeps the open-file handle hot from the COPY
+    # round and removes the second read. Devil's-advocate review item.
+    import hashlib
+    h = hashlib.md5()
+    with open(tmp_path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    parquet_hash = h.hexdigest()
+
     size_bytes = tmp_path.stat().st_size
     os.replace(tmp_path, parquet_path)
 
-    return {"rows": int(rows), "size_bytes": size_bytes, "query_mode": "materialized"}
+    rows = int(rows)
+    if rows == 0:
+        # 0 rows is indistinguishable from "the SQL is wrong and nobody
+        # noticed" — surface it loudly so operators see it in the scheduler
+        # log line and the per-row error aggregation. Caller decides whether
+        # to alert.
+        logger.warning(
+            "Materialized %s produced 0 rows — verify the SQL filter is "
+            "intentional. Parquet written: %s",
+            table_id, parquet_path,
+        )
+
+    return {
+        "rows": rows,
+        "size_bytes": size_bytes,
+        "query_mode": "materialized",
+        "hash": parquet_hash,
+    }
 
 
 def _resolve_bq_project_id() -> str:

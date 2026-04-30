@@ -1,6 +1,11 @@
 """Admin API accepts source_query when query_mode='materialized', rejects
 mismatches between mode and query field.
 
+Tests that hit the remote-mode register path require `stub_bq_extractor`
+to bypass the post-register rebuild's real-BQ traffic. Materialized-only
+tests skip the BG path (the 201 fast-path returns before any rebuild
+fires) so they don't need the stub.
+
 Covers PR #145 (re-implementation against 0.24.0 base):
 - RegisterTableRequest + UpdateTableRequest model_validators
 - _validate_bigquery_register_payload materialized branch (skips bucket/
@@ -20,6 +25,26 @@ import pytest
 
 def _auth(token):
     return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+def stub_bq_extractor(monkeypatch):
+    """Mirror tests/test_admin_bq_register.py — bypasses real-BQ traffic
+    in the post-register rebuild path so the test stays offline. Required
+    whenever the test seeds a remote-mode BQ row via the HTTP API."""
+    rebuild_mock = MagicMock(return_value={
+        "project_id": "my-test-project",
+        "tables_registered": 1, "errors": [], "skipped": False,
+    })
+    monkeypatch.setattr(
+        "connectors.bigquery.extractor.rebuild_from_registry",
+        rebuild_mock,
+    )
+    monkeypatch.setattr(
+        "src.orchestrator.SyncOrchestrator",
+        lambda *a, **kw: MagicMock(),
+    )
+    return rebuild_mock
 
 
 @pytest.fixture
@@ -135,7 +160,7 @@ def test_register_materialized_with_empty_source_query_rejected(seeded_app, bq_i
     assert 400 <= r.status_code < 500, r.json()
 
 
-def test_update_source_query_alone_requires_query_mode(seeded_app, bq_instance):
+def test_update_source_query_alone_requires_query_mode(seeded_app, bq_instance, stub_bq_extractor):
     """PUT body with source_query but no query_mode is incoherent — reject
     so non-materialized rows can't carry an orphan source_query."""
     c = seeded_app["client"]
@@ -164,7 +189,9 @@ def test_update_source_query_alone_requires_query_mode(seeded_app, bq_instance):
     assert 400 <= r2.status_code < 500, r2.json()
 
 
-def test_update_materialized_to_remote_clears_source_query(seeded_app, bq_instance):
+def test_update_materialized_to_remote_clears_source_query(
+    seeded_app, bq_instance, stub_bq_extractor,
+):
     """When admin switches a materialized table to remote/local, the stale
     source_query must be cleared in the DB — otherwise the registry shows
     a non-materialized row carrying an orphan SQL body."""

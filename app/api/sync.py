@@ -127,10 +127,14 @@ def _run_materialized_pass(conn: duckdb.DuckDBPyConnection, bq) -> dict:
             summary["errors"].append({"table": row["id"], "error": str(e)})
             continue
 
-        # Compute hash inline so the manifest can serve it immediately
-        # and `da sync` honors the delta-skip on unchanged tables.
-        parquet_path = Path(output_dir) / "data" / f"{row['id']}.parquet"
-        parquet_hash = _file_hash(parquet_path)
+        # `materialize_query` returns the parquet's MD5 inline — hashing
+        # there means we don't re-read a multi-GB file on the request
+        # thread. Fallback to `_file_hash(parquet_path)` if for some
+        # reason the stats dict didn't carry it (defensive).
+        parquet_hash = stats.get("hash")
+        if not parquet_hash:
+            parquet_path = Path(output_dir) / "data" / f"{row['id']}.parquet"
+            parquet_hash = _file_hash(parquet_path)
         state.update_sync(
             table_id=row["id"],
             rows=stats["rows"],
