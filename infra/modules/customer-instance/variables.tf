@@ -25,7 +25,17 @@ variable "customer_name" {
 }
 
 variable "prod_instance" {
-  description = "Production VM configuration."
+  description = <<-EOT
+    Production VM configuration.
+
+    `image_tag` MUST point to an image that contains `/opt/agnes-host/`
+    (this directory was added in v0.26.0). Older tags will fail at first
+    boot with `docker cp: No such file or directory` because the startup
+    script extracts host artifacts from the image instead of curling
+    them. Existing VMs are unaffected by this constraint — the module
+    sets `lifecycle { ignore_changes = [metadata_startup_script] }` so
+    the new script only runs on freshly-created VMs.
+  EOT
   type = object({
     name         = string
     machine_type = optional(string, "e2-small")
@@ -45,6 +55,9 @@ variable "dev_instances" {
     tls_mode + domain are optional and default to plain HTTP on :8000. Set
     tls_mode = "caddy" + domain to enable Caddy + Let's Encrypt (or whatever
     CADDY_TLS env var is configured to in the Caddyfile — see Caddyfile docs).
+
+    Same `image_tag >= v0.26.0` constraint as `prod_instance` — older tags
+    lack `/opt/agnes-host/` and the startup `docker cp` fails-loud.
   EOT
   type = list(object({
     name         = string
@@ -93,7 +106,7 @@ variable "image_repo" {
 }
 
 variable "compose_ref" {
-  description = "Git ref to fetch docker-compose.yml and overlays from (in keboola/agnes-the-ai-analyst). Use `main` for latest, or a tag like `stable-2026.04.47` for reproducibility."
+  description = "DEPRECATED — no longer used. Compose files now ship inside the docker image at /opt/agnes-host/ and are extracted via `docker cp` from the same `image_tag` the operator pinned. Pin `image_tag` instead. Variable retained for one release cycle to avoid breaking existing terraform plans; will be removed in a future major bump."
   type        = string
   default     = "main"
 }
