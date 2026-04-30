@@ -896,17 +896,54 @@ class UpdateTableRequest(BaseModel):
 
     @model_validator(mode="after")
     def _check_mode_query_coherence(self):
-        """Same invariant as RegisterTableRequest, but only fires when at
-        least one of query_mode / source_query is being touched in this
-        PUT — fields not in the body stay None and don't trigger anything."""
+        """PUT semantics — only the fields explicitly in the body are
+        validated. The body is overlaid on the existing row at the handler
+        level (see ``update_table``), so omitted fields keep their stored
+        values and the synthetic ``RegisterTableRequest`` constructed against
+        the merged record runs the strict cross-field check before persist.
+
+        The only invariants enforceable from the PUT body alone:
+
+        - explicit ``source_query='SELECT ...'`` paired with ``query_mode``
+          that isn't materialized → coherent reject (the SQL would be dead);
+        - explicit ``source_query='SELECT ...'`` without any ``query_mode``
+          in the body → reject; the operator must commit to materialized;
+        - explicit empty/whitespace ``source_query=''`` paired with
+          ``query_mode='materialized'`` → reject (operator clearly
+          mistyped — they sent the field).
+
+        Pre-fix this validator also rejected ``{"query_mode": "materialized",
+        "sync_schedule": "every 12h"}`` because ``source_query`` was None
+        — but that's the canonical "edit the schedule on a materialized
+        row" use-case from the Edit modal, which always sends
+        ``query_mode`` to indicate intent. Devin BUG_0002 on PR #148
+        commit 2219255.
+        """
         if self.query_mode is None and self.source_query is None:
             return self
-        sq = (self.source_query or "").strip() or None
-        if self.query_mode == "materialized" and not sq:
+
+        sq_raw = self.source_query
+        sq = (sq_raw or "").strip() or None
+
+        # Operator explicitly sent source_query as empty/whitespace while
+        # claiming materialized — typo / bad form data, reject.
+        if (
+            self.query_mode == "materialized"
+            and sq_raw is not None
+            and not sq
+        ):
             raise ValueError(
                 "query_mode='materialized' requires a non-empty source_query"
             )
-        if self.query_mode is not None and self.query_mode != "materialized" and sq:
+
+        # source_query only makes sense with materialized mode. Allow None
+        # (omitted) to flow through; only reject when explicitly set with
+        # the wrong mode.
+        if (
+            self.query_mode is not None
+            and self.query_mode != "materialized"
+            and sq
+        ):
             raise ValueError(
                 "source_query is only valid when query_mode='materialized'"
             )
@@ -915,7 +952,12 @@ class UpdateTableRequest(BaseModel):
                 "source_query requires query_mode='materialized' to be set "
                 "in the same request"
             )
-        self.source_query = sq
+
+        # Normalise: drop whitespace-only strings to None so the persisted
+        # column is clean. Don't touch when source_query was None to begin
+        # with — that signals "PUT didn't touch this field, keep existing".
+        if sq_raw is not None:
+            self.source_query = sq
         return self
 
     @field_validator("primary_key", mode="before")

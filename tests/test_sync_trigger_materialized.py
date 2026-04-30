@@ -185,6 +185,87 @@ def test_materialized_pass_records_parquet_hash(system_db, stub_bq, tmp_path):
     assert row["hash"] == expected
 
 
+def test_run_sync_keboola_timeout_does_not_skip_materialized(tmp_path, monkeypatch):
+    """REGRESSION (Devin BUG_0001 on 2219255): when the Keboola extractor
+    subprocess raises TimeoutExpired, the materialized BQ pass and the
+    orchestrator rebuild must still fire. Pre-fix the timeout propagated
+    to the outer except handler and skipped the rest of _run_sync — on
+    a dual-source deployment a slow Keboola extractor would silently
+    block all materialized parquets and the master-view rebuild until
+    the next trigger."""
+    import duckdb
+    import subprocess as _sp
+    from src.db import _ensure_schema
+
+    db_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+
+    repo = TableRegistryRepository(conn)
+    # One Keboola row (drives the extractor subprocess) + one materialized
+    # BQ row (must still run after the Keboola timeout).
+    repo.register(
+        id="kbc_a", name="kbc_a", source_type="keboola",
+        query_mode="local", bucket="in.c-foo", source_table="a",
+    )
+    repo.register(
+        id="m1", name="m1", source_type="bigquery",
+        query_mode="materialized",
+        source_query="SELECT 1",
+        sync_schedule="every 1m",
+    )
+    conn.close()
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("KEBOOLA_STACK_URL", "https://example.invalid")
+    monkeypatch.setenv("KEBOOLA_STORAGE_TOKEN", "fake")
+
+    from app.api import sync as sync_mod
+
+    # Subprocess raises TimeoutExpired the moment _run_sync calls it.
+    def _timeout(*a, **kw):
+        raise _sp.TimeoutExpired(cmd=["fake"], timeout=1)
+
+    monkeypatch.setattr(sync_mod.subprocess, "run", _timeout)
+
+    materialized_called = {"count": 0}
+    orchestrator_called = {"count": 0}
+
+    def _spy_materialized(_conn, _bq):
+        materialized_called["count"] += 1
+        return {"materialized": ["m1"], "skipped": [], "errors": []}
+
+    class _OrchStub:
+        def rebuild(self):
+            orchestrator_called["count"] += 1
+            return {}
+
+    monkeypatch.setattr("app.api.sync._run_materialized_pass", _spy_materialized)
+    monkeypatch.setattr(
+        "src.orchestrator.SyncOrchestrator", lambda *a, **kw: _OrchStub(),
+    )
+    monkeypatch.setattr(
+        "app.instance_config.get_data_source_type", lambda: "keboola",
+    )
+    monkeypatch.setattr(
+        "app.instance_config.get_value",
+        lambda *args, **kw: (
+            "my-bq-proj" if (args and args[-1] == "project")
+            else kw.get("default", "")
+        ),
+    )
+
+    sync_mod._run_sync()
+
+    assert materialized_called["count"] == 1, (
+        "materialized pass must run even when Keboola subprocess timed out"
+    )
+    assert orchestrator_called["count"] == 1, (
+        "orchestrator rebuild must run after Keboola timeout to publish "
+        "any partial / materialized parquets that did land"
+    )
+
+
 def test_run_sync_runs_materialized_pass_on_bq_only_deployment(
     tmp_path, monkeypatch,
 ):

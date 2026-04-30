@@ -295,32 +295,49 @@ sys.exit(compute_exit_code(result, len(configs)))
 
             print(f"[SYNC] Starting extractor subprocess for {len(table_configs)} tables", file=_sys.stderr, flush=True)
 
-            result = subprocess.run(
-                cmd, input=_json.dumps(serializable), capture_output=True, text=True,
-                timeout=1800, env=env,
-                cwd=str(Path(__file__).parent.parent.parent),
-            )
-
-            if result.stdout:
-                print(f"[SYNC] Extractor stdout: {result.stdout.strip()[-500:]}", file=_sys.stderr, flush=True)
-            if result.stderr:
-                print(f"[SYNC] Extractor stderr: {result.stderr[-500:]}", file=_sys.stderr, flush=True)
-            # Issue #81 Group B: three exit codes. 0 = full success,
-            # 1 = full failure, 2 = partial. Partial is a data-quality
-            # alert, not a crash — the orchestrator's per-table _meta
-            # machinery already captured which tables succeeded; we just
-            # need to log loudly so operator alerting can pick it up.
-            if result.returncode == 0:
-                print(f"[SYNC] Extractor OK", file=_sys.stderr, flush=True)
-            elif result.returncode == 2:
+            try:
+                result = subprocess.run(
+                    cmd, input=_json.dumps(serializable), capture_output=True, text=True,
+                    timeout=1800, env=env,
+                    cwd=str(Path(__file__).parent.parent.parent),
+                )
+            except subprocess.TimeoutExpired:
+                # Catch the timeout LOCALLY so the materialized BQ pass and
+                # orchestrator rebuild below still fire. Pre-fix the timeout
+                # propagated to the outer except handler and skipped the rest
+                # of `_run_sync` — on a dual-source deployment a slow Keboola
+                # extractor would silently block all materialized parquets +
+                # master-view rebuild until the next trigger. Devin BUG_0001
+                # on PR #148 commit 2219255. Mirrors the per-custom-connector
+                # timeout pattern below (line ~347).
                 print(
-                    f"[SYNC] Extractor PARTIAL FAILURE (exit 2) — some tables "
-                    f"succeeded, some failed; see stderr for per-table errors. "
-                    f"Successful tables will still be published by the orchestrator.",
+                    "[SYNC] Extractor timed out after 1800s — continuing to "
+                    "materialized pass + orchestrator rebuild",
                     file=_sys.stderr, flush=True,
                 )
-            else:
-                print(f"[SYNC] Extractor FAILED (exit {result.returncode})", file=_sys.stderr, flush=True)
+                result = None
+
+            if result is not None:
+                if result.stdout:
+                    print(f"[SYNC] Extractor stdout: {result.stdout.strip()[-500:]}", file=_sys.stderr, flush=True)
+                if result.stderr:
+                    print(f"[SYNC] Extractor stderr: {result.stderr[-500:]}", file=_sys.stderr, flush=True)
+                # Issue #81 Group B: three exit codes. 0 = full success,
+                # 1 = full failure, 2 = partial. Partial is a data-quality
+                # alert, not a crash — the orchestrator's per-table _meta
+                # machinery already captured which tables succeeded; we just
+                # need to log loudly so operator alerting can pick it up.
+                if result.returncode == 0:
+                    print(f"[SYNC] Extractor OK", file=_sys.stderr, flush=True)
+                elif result.returncode == 2:
+                    print(
+                        f"[SYNC] Extractor PARTIAL FAILURE (exit 2) — some tables "
+                        f"succeeded, some failed; see stderr for per-table errors. "
+                        f"Successful tables will still be published by the orchestrator.",
+                        file=_sys.stderr, flush=True,
+                    )
+                else:
+                    print(f"[SYNC] Extractor FAILED (exit {result.returncode})", file=_sys.stderr, flush=True)
 
             # Run custom connectors (Tier A: local mount) — only when there
             # were local-mode tables to drive the extractor. Custom connectors

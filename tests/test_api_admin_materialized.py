@@ -189,6 +189,78 @@ def test_update_source_query_alone_requires_query_mode(seeded_app, bq_instance, 
     assert 400 <= r2.status_code < 500, r2.json()
 
 
+def test_update_schedule_only_on_materialized_row_succeeds(
+    seeded_app, bq_instance, stub_bq_extractor,
+):
+    """REGRESSION (Devin BUG_0002 on 2219255): an admin editing only the
+    sync_schedule of a materialized row sends `{query_mode: 'materialized',
+    sync_schedule: '...'}` (the Edit modal always sends query_mode for BQ
+    rows). Pre-fix the UpdateTableRequest validator rejected this with 422
+    because source_query wasn't in the body — even though the existing row
+    already had one.
+
+    The PUT semantics overlay the body on the existing row, so omitted
+    source_query keeps the stored value. The synthetic RegisterTableRequest
+    constructed against the merged record at the handler still runs the
+    strict cross-field check, so the truly-broken case (materialized
+    without ANY source_query, even on existing) is still caught."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+
+    # Seed a materialized row with a real source_query.
+    r = c.post("/api/admin/register-table", json={
+        "name": "schedule_edit_target",
+        "source_type": "bigquery",
+        "query_mode": "materialized",
+        "source_query": "SELECT 1",
+        "sync_schedule": "every 1h",
+    }, headers=_auth(token))
+    assert r.status_code == 201, r.json()
+    table_id = r.json()["id"]
+
+    # Edit ONLY the schedule. UI's saveTableEdit sends query_mode for BQ
+    # rows even when the operator didn't change it.
+    r2 = c.put(f"/api/admin/registry/{table_id}", json={
+        "query_mode": "materialized",
+        "sync_schedule": "every 12h",
+    }, headers=_auth(token))
+    assert r2.status_code == 200, r2.json()
+
+    # Verify the schedule changed and source_query survived.
+    r3 = c.get("/api/admin/registry", headers=_auth(token))
+    row = next((t for t in r3.json()["tables"] if t["id"] == table_id), None)
+    assert row is not None
+    assert row["sync_schedule"] == "every 12h"
+    assert row["source_query"] == "SELECT 1"  # preserved across edit
+    assert row["query_mode"] == "materialized"
+
+
+def test_update_materialized_with_explicit_empty_source_query_rejected(
+    seeded_app, bq_instance, stub_bq_extractor,
+):
+    """The fix above relaxes the validator for OMITTED source_query, but
+    explicitly setting it to an empty / whitespace string while claiming
+    materialized is still a typo and must be rejected (not silently
+    persisted as NULL)."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+
+    r = c.post("/api/admin/register-table", json={
+        "name": "explicit_empty",
+        "source_type": "bigquery",
+        "query_mode": "materialized",
+        "source_query": "SELECT 1",
+    }, headers=_auth(token))
+    assert r.status_code == 201, r.json()
+    table_id = r.json()["id"]
+
+    r2 = c.put(f"/api/admin/registry/{table_id}", json={
+        "query_mode": "materialized",
+        "source_query": "",  # explicitly empty
+    }, headers=_auth(token))
+    assert 400 <= r2.status_code < 500, r2.json()
+
+
 def test_update_materialized_to_remote_clears_source_query(
     seeded_app, bq_instance, stub_bq_extractor,
 ):
