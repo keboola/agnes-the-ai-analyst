@@ -10,8 +10,27 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-<!-- Add bullets here. Group: Added / Changed / Fixed / Removed / Internal.
-     Mark breaking changes with **BREAKING** at the start of the bullet. -->
+### Added
+
+- `da sync --quiet` flag suppresses Rich progress + multi-line summary,
+  intended for use from Claude Code SessionStart/SessionEnd hooks and cron
+  jobs. Errors still surface on stderr; the no-op case is silent. The
+  terse summary line in `--quiet` mode (`sync: N tables, M errors`) lands
+  on stderr so stdout stays clean for hook callers.
+- `da analyst setup` now installs `SessionStart` (pull) and `SessionEnd`
+  (upload) hooks into `<workspace>/.claude/settings.json`, idempotently,
+  preserving any existing user-owned hooks. Workspace-level (not
+  user-home) so the hooks fire only when Claude Code is opened in the
+  analyst workspace, not in unrelated sessions on the same machine.
+- `docs/setup/claude_settings.json` ships the same two hooks so operators
+  bootstrapping a fresh Claude Code workspace get auto-sync out of the box.
+
+### Fixed
+
+- `docs/setup/claude_settings.json` no longer references the deleted
+  `server/scripts/collect_session.py` — the dead `SessionEnd` hook had
+  silently failed in every Claude Code session since the v1→v2 server
+  purge. Replaced with `da sync --upload-only --quiet`.
 
 ## [0.12.1] — 2026-04-28
 
