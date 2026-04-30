@@ -6,11 +6,12 @@
 - DELETE /api/admin/welcome-template : reset to default (admin)
 """
 
+import datetime
 from typing import Optional
 
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from jinja2 import TemplateSyntaxError
+from jinja2 import Environment, StrictUndefined, TemplateError, TemplateSyntaxError
 from pydantic import BaseModel, Field
 
 from app.auth.access import require_admin
@@ -20,6 +21,29 @@ from src.welcome_template import _load_default_template, render_welcome
 
 
 router = APIRouter(tags=["welcome"])
+
+# Stub context used to validate that a saved template renders end-to-end,
+# not just that it parses. Mirrors the shape of build_context() output.
+_VALIDATION_STUB_CONTEXT = {
+    "instance": {"name": "Example", "subtitle": "Example Org"},
+    "server": {"url": "https://example.com", "hostname": "example.com"},
+    "sync_interval": "1 hour",
+    "data_source": {"type": "local"},
+    "tables": [{"name": "example", "description": "", "query_mode": "local"}],
+    "metrics": {"count": 0, "categories": []},
+    "marketplaces": [
+        {"slug": "example", "name": "Example Marketplace", "plugins": [{"name": "x"}]}
+    ],
+    "user": {
+        "id": "u",
+        "email": "user@example.com",
+        "name": "User",
+        "is_admin": False,
+        "groups": ["Everyone"],
+    },
+    "now": datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc),
+    "today": "2026-01-01",
+}
 
 
 class WelcomeResponse(BaseModel):
@@ -46,10 +70,10 @@ async def get_welcome(
     """Render the welcome prompt for the calling user. Returns rendered markdown."""
     try:
         rendered = render_welcome(conn, user=user, server_url=server_url)
-    except TemplateSyntaxError as e:
+    except TemplateError as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Welcome template has a syntax error: {e.message}. Reset via /admin/welcome.",
+            detail=f"Welcome template render failed: {e}. An admin can reset it via /admin/welcome.",
         )
     return WelcomeResponse(content=rendered)
 
@@ -74,11 +98,14 @@ async def admin_put_template(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    from jinja2 import Environment, StrictUndefined
+    env = Environment(undefined=StrictUndefined)
     try:
-        Environment(undefined=StrictUndefined).parse(payload.content)
-    except TemplateSyntaxError as e:
-        raise HTTPException(status_code=400, detail=f"Jinja2 syntax error: {e.message}")
+        template = env.from_string(payload.content)
+        # Render against a stub context so undefined placeholders or runtime
+        # errors are caught here, not when an analyst calls /api/welcome.
+        template.render(**_VALIDATION_STUB_CONTEXT)
+    except TemplateError as e:
+        raise HTTPException(status_code=400, detail=f"Template invalid: {e}")
     WelcomeTemplateRepository(conn).set(payload.content, updated_by=user["email"])
     return {"status": "ok"}
 
