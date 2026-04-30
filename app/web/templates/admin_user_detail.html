@@ -249,7 +249,7 @@ const MEMBERSHIPS_API = `/api/admin/users/${encodeURIComponent(USER_ID)}/members
 const EFFECTIVE_API = `/api/admin/users/${encodeURIComponent(USER_ID)}/effective-access`;
 // Server-injected env: empty string = no prefix configured. Same shape as
 // /admin/groups + /admin/users — used to shorten google-sync chip text
-// (`grp_foundryai_legal@groupon.com` → `Legal`) so the membership cell
+// (`grp_acme_legal@workspace.example.com` → `Legal`) so the membership cell
 // stays readable.
 const GOOGLE_GROUP_PREFIX = {{ config.AGNES_GOOGLE_GROUP_PREFIX | tojson }};
 const GROUPS_API = "/api/admin/groups";
