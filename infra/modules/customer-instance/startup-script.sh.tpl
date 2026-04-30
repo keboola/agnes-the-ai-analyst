@@ -60,8 +60,14 @@ curl -fsSL "$${RAW_BASE}/docker-compose.yml" -o docker-compose.yml
 curl -fsSL "$${RAW_BASE}/docker-compose.prod.yml" -o docker-compose.prod.yml
 # Overlay which binds `data` volume to host /data (persistent disk mounted above)
 curl -fsSL "$${RAW_BASE}/docker-compose.host-mount.yml" -o docker-compose.host-mount.yml
+# TLS overlay — fetched unconditionally because agnes-auto-upgrade.sh (curled
+# from main below) detects TLS at runtime via cert files on disk, regardless
+# of TLS_MODE. Certs can appear after boot via agnes-tls-rotate.sh or manual
+# provisioning, and the cron job would then fail under `set -euo pipefail`
+# every 5 min until the file is present. Cheap to keep on disk either way.
+curl -fsSL "$${RAW_BASE}/docker-compose.tls.yml" -o docker-compose.tls.yml
 
-# TLS overlay (Caddy + Let's Encrypt) — fetch only when actually needed; surface failures
+# Caddyfile only when actually serving over Caddy
 if [ "$TLS_MODE" = "caddy" ] && [ -n "$DOMAIN" ]; then
     curl -fsSL "$${RAW_BASE}/Caddyfile" -o Caddyfile
 fi
@@ -169,6 +175,13 @@ if [ "$UPGRADE_MODE" = "auto" ]; then
     #   2. Re-fetched on every VM boot, so script-only fixes propagate
     #      without an infra recreate. For immediate rollout to running VMs,
     #      operators can also re-run this fetch by hand.
+    #
+    # Coupling note: this URL is pinned to `main` while compose files above
+    # honor $COMPOSE_REF. If a future canonical script references a NEW
+    # compose file, the fetch list above MUST be updated to match — pinned-
+    # ref VMs would otherwise break on the next cron tick. Treat the docker-
+    # compose.* fetch list as the contract that agnes-auto-upgrade.sh relies
+    # on; new compose files referenced from main need a corresponding fetch.
     SCRIPT_URL="https://raw.githubusercontent.com/keboola/agnes-the-ai-analyst/main/scripts/ops/agnes-auto-upgrade.sh"
     curl -fsSL --retry 3 --retry-delay 2 "$SCRIPT_URL" -o /usr/local/bin/agnes-auto-upgrade.sh
     chmod +x /usr/local/bin/agnes-auto-upgrade.sh

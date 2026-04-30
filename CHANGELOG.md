@@ -26,7 +26,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   — single source of truth eliminates drift (the inline copy had fallen
   behind on TLS overlay detection, array-form compose files, and the new
   config-disk guard). VMs re-fetch on every boot, so script-only fixes
-  propagate without an infra recreate.
+  propagate without an infra recreate. Also: `docker-compose.tls.yml` is
+  now fetched unconditionally (not only when `tls_mode=caddy`), because
+  the canonical auto-upgrade script detects TLS at runtime via cert files
+  on disk — certs can appear after boot via `agnes-tls-rotate.sh` or
+  manual provisioning, and the cron job would otherwise fail every 5 min
+  until the file was placed.
 
 ## [0.24.0] — 2026-04-30
 
