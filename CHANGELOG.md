@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.22.0] — 2026-04-30
+
 ### Fixed
 
 - **`/api/v2/sample/{table_id}`, `/api/v2/schema/{table_id}`, `/api/v2/scan/estimate`, and `/api/v2/scan` now return structured 502/400 instead of bare 500 when BigQuery raises `Forbidden`/`BadRequest`.** Issue #134. Previously, `_fetch_bq_sample`, `_fetch_bq_schema`, `_bq_dry_run_bytes`, and `_run_bq_scan` had no `try/except`, so a cross-project SA without `serviceusage.services.use` on the data project surfaced as an empty HTTP 500 — operators got no diagnostic. All four call sites now translate `google.api_core.exceptions.Forbidden` to HTTP 502 with `error: "cross_project_forbidden"` (when the message mentions `serviceusage`) plus a `details.hint` pointing at `data_source.bigquery.billing_project` in `instance.yaml`, or `error: "bq_forbidden"` for non-serviceusage ACL denials. `BadRequest` translates to HTTP 400 (`bq_bad_request`) on `/scan/estimate` and `/scan` since their SQL is user-derived (built from `req.select`/`where`/`order_by`), and to HTTP 502 (`bq_upstream_error`) on `/sample` and `/schema` where SQL is server-constructed (server-built `SELECT * … LIMIT n` and `INFORMATION_SCHEMA.COLUMNS` queries respectively). The strict `_fetch_bq_schema` path is wrapped; the best-effort `_fetch_bq_table_options` path retains its existing `try/except → return {}` so `/schema` still returns 200 with empty partition info if BQ metadata is unreachable. `/api/v2/sample` additionally falls back to `data_source.bigquery.billing_project` (with `data_source.bigquery.project` as the default) — `/scan/estimate` and `/scan` already had this fallback.
