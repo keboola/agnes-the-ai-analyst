@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -155,6 +155,7 @@ CREATE TABLE IF NOT EXISTS table_registry (
     source_type VARCHAR,
     bucket VARCHAR,
     source_table VARCHAR,
+    source_query TEXT,
     sync_strategy VARCHAR DEFAULT 'full_refresh',
     query_mode VARCHAR DEFAULT 'local',
     sync_schedule VARCHAR,
@@ -712,6 +713,13 @@ _V12_TO_V13_MIGRATIONS = [
         UNIQUE (group_id, resource_type, resource_id)
     )
     """,
+]
+
+# v15: source_query column backs query_mode='materialized' for BigQuery.
+# Admin-registered SQL stored verbatim; scheduler runs it through DuckDB BQ
+# extension and writes the result to /data/extracts/bigquery/data/<id>.parquet.
+_V14_TO_V15_MIGRATIONS = [
+    "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS source_query TEXT",
 ]
 
 
@@ -1337,6 +1345,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v12_to_v13_finalize(conn)
             if current < 14:
                 _v13_to_v14_finalize(conn)
+            if current < 15:
+                for sql in _V14_TO_V15_MIGRATIONS:
+                    conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
