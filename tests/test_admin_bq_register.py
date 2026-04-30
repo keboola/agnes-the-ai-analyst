@@ -705,9 +705,10 @@ class TestAdminTablesUI:
         assert 'id="bqSourceTable"' in body
         assert 'id="bqViewName"' in body
         assert 'id="bqSyncSchedule"' in body
-        # Inline hint about scheduler-not-yet-wired (Decision 3).
-        assert "scheduler" in body.lower()
-        # BQ-specific panel (no discovery for BQ in M1).
+        # Cron-style schedule examples are surfaced near the field
+        # (operator-facing copy explains the syntax).
+        assert "every 6h" in body or "daily 03:00" in body
+        # BQ-specific panel (Keboola-style discovery panel must not appear).
         assert 'data-test="bq-register-panel"' in body
         # Keboola-only inputs must NOT be present.
         assert 'id="regTableId"' not in body

@@ -37,7 +37,12 @@ def bq_instance(monkeypatch):
     reset_cache()
 
 
-def test_admin_tables_renders_bq_type_selector(seeded_app, bq_instance):
+def test_admin_tables_renders_two_question_radio_form(seeded_app, bq_instance):
+    """Q1 = how should analysts access this data? (live / synced).
+    Q2 = (only when synced) what to sync? (whole / custom).
+    Replaces the earlier flat 4-option dropdown that mixed source-kind +
+    distribution-mode into one selector — both UX reviewers (info-arch +
+    analyst persona) flagged the conflation as the core confusion."""
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
 
@@ -45,24 +50,36 @@ def test_admin_tables_renders_bq_type_selector(seeded_app, bq_instance):
     assert r.status_code == 200, r.text
     html = r.text
 
-    # Type selector with three operator-facing options. Backend payload
-    # maps these onto query_mode (table+view → remote, query → materialized).
-    assert 'id="bqEntityType"' in html
-    assert 'value="table"' in html
-    assert 'value="view"' in html
-    assert 'value="query"' in html
-    assert "onBqTypeChange" in html
+    # Q1 radio group.
+    assert 'name="bqAccessMode"' in html
+    assert 'value="live"' in html
+    assert 'value="synced"' in html
+    assert "onBqAccessModeChange" in html
 
-    # Custom-SQL field + the "Use table as base" prefill button.
+    # Q2 radio group (conditional on Q1).
+    assert 'name="bqSyncMode"' in html
+    assert 'value="whole"' in html
+    assert 'value="custom"' in html
+    assert "onBqSyncModeChange" in html
+
+    # Custom-SQL textarea + "Use table as base" prefill button.
     assert 'id="bqSourceQuery"' in html
     assert "prefillFromTable" in html
-    assert "bq-type-query" in html
+    assert "bq-source-custom" in html
 
-    # Table/View shared inputs.
+    # Table/dataset inputs reused across live + synced/whole.
     assert 'id="bqDataset"' in html
     assert 'id="bqSourceTable"' in html
-    assert "bq-type-table" in html
-    assert "bq-type-view" in html
+    assert "bq-source-table" in html
+    assert "bq-access-synced" in html
+
+    # Discover + List tables buttons.
+    assert "discoverBqDatasets" in html
+    assert "discoverBqTables" in html
+
+    # No leftover jargon labels from the prior Type-selector iterations.
+    assert "Direct query" not in html
+    assert "Sync to parquet" not in html
 
     # Vendor-agnostic — no internal issue refs in operator-facing UI text.
     assert "Milestone 2" not in html
@@ -70,12 +87,11 @@ def test_admin_tables_renders_bq_type_selector(seeded_app, bq_instance):
 
 
 def test_edit_modal_has_bq_parity_fields(seeded_app, bq_instance):
-    """Edit modal must expose the same BQ controls as Register so an
-    operator can change the source/SQL/schedule without dropping & re-adding
-    the row. Pre-fix, Edit only had sync_strategy + primary_key + description
-    + folder — missing query_mode, bucket, source_table, source_query,
-    sync_schedule. Tested against the rendered template (the JS branch on
-    `source_type` is structural, not server-side)."""
+    """Edit modal mirrors Register's two-question radio model (Q1 access
+    mode: live/synced; Q2 sync mode: whole/custom). Pre-fix Edit had only
+    sync_strategy+primary_key+description+folder — missing all BQ-specific
+    edit surface. Operator now can flip access mode, change dataset/table,
+    rewrite SQL, and tweak the schedule without dropping & re-adding."""
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
 
@@ -83,24 +99,34 @@ def test_edit_modal_has_bq_parity_fields(seeded_app, bq_instance):
     assert r.status_code == 200, r.text
     html = r.text
 
-    # Edit modal Type selector mirrors Register's three-way (Table/View/Query).
-    assert 'id="editBqEntityType"' in html
-    assert "onEditBqTypeChange" in html
+    # Edit Q1 + Q2 radios.
+    assert 'name="editBqAccessMode"' in html
+    assert 'name="editBqSyncMode"' in html
+    assert "onEditBqAccessModeChange" in html
+    assert "onEditBqSyncModeChange" in html
+
     # BQ-specific edit fields.
     assert 'id="editBqDataset"' in html
     assert 'id="editBqSourceTable"' in html
     assert 'id="editBqSourceQuery"' in html
     assert 'id="editBqSyncSchedule"' in html
-    # Visibility classes for adaptive show/hide on type switch.
-    assert "bq-edit-type-table" in html
-    assert "bq-edit-type-view" in html
-    assert "bq-edit-type-query" in html
-    # Mode-switch warning surface (filled by JS when operator flips
-    # query_mode mid-edit).
+
+    # Visibility classes for adaptive show/hide on access/sync mode switch.
+    assert "bq-edit-access-synced" in html
+    assert "bq-edit-source-table" in html
+    assert "bq-edit-source-custom" in html
+
+    # Mode-switch warning surface (filled by JS when operator flips access
+    # mode mid-edit).
     assert 'id="editBqModeWarning"' in html
+
     # Source-type badge so the JS branch knows whether to render BQ vs
     # Keboola fields without a second round-trip.
     assert 'id="editSourceTypeBadge"' in html
+
+    # No leftover Type-selector remnants.
+    assert 'id="editBqEntityType"' not in html
+    assert "onEditBqTypeChange" not in html
 
 
 def test_admin_tables_keboola_branch_unchanged(seeded_app, monkeypatch):

@@ -760,7 +760,7 @@
                     </div>
                     <div>
                         <div class="panel-title">Register BigQuery Table</div>
-                        <div class="panel-subtitle">Register a BQ table, view, or custom SQL query for analyst access</div>
+                        <div class="panel-subtitle">Make a BQ table or query available to analysts</div>
                     </div>
                 </div>
                 <button class="btn btn-primary" onclick="openBigQueryRegisterModal()">
@@ -768,11 +768,14 @@
                 </button>
             </div>
             <div class="panel-body-empty">
-                Pick the entity type in the modal — <strong>Table</strong> (a BQ table queried on demand),
-                <strong>View</strong> (a BQ view, same trade-off),
-                or <strong>Custom SQL Query</strong> (a scheduled SELECT that materializes to a local parquet
-                analysts download via <code>da sync</code>). Dataset + table autocomplete is not implemented yet —
-                type them by hand.
+                The form starts with one question — <strong>Live from BigQuery</strong> (each
+                analyst query goes straight to BQ; always current) or <strong>Synced
+                locally</strong> (Agnes runs a SELECT on a schedule and serves a local copy;
+                sub-100&nbsp;ms queries). Synced gives you a follow-up: full table or your
+                own SQL.
+                Dataset and table inputs autocomplete from your BQ project — click
+                <strong>Discover</strong> to populate the dataset list and
+                <strong>List tables</strong> for the per-dataset table list.
             </div>
         </div>
         {% else %}
@@ -863,26 +866,65 @@
             </div>
             <div class="modal-body">
                 {% if data_source_type == 'bigquery' %}
-                {# BigQuery path — `Mode` controls remote-view vs. materialized-parquet.
-                   `bqQueryMode` toggles between the dataset/source-table fields
-                   (remote) and the source_query textarea (materialized). #}
+                {# Two orthogonal questions: (1) live vs synced, (2) when synced,
+                   whole table vs custom SQL. Visibility classes:
+                     bq-access-live    — only when accessMode='live'
+                     bq-access-synced  — only when accessMode='synced'
+                     bq-source-table   — only when accessMode='live' OR
+                                         (accessMode='synced' AND syncMode='whole')
+                     bq-source-custom  — only when accessMode='synced' AND syncMode='custom'
+                   Backend payload: live → query_mode='remote'; synced/whole →
+                   query_mode='materialized' with auto-built SELECT *; synced/custom
+                   → query_mode='materialized' with admin SQL. Server auto-detects
+                   BASE TABLE vs VIEW at register time, so the UI doesn't ask. #}
                 <div class="form-group">
-                    <label class="form-label" for="bqEntityType">Type</label>
-                    <select class="form-select" id="bqEntityType" onchange="onBqTypeChange()">
-                        <option value="table">Table — query a BQ table on demand (no local copy)</option>
-                        <option value="view">View — query a BQ view on demand (jobs API)</option>
-                        <option value="query">Custom SQL Query — scheduled SELECT writes parquet, distributed via da sync</option>
-                    </select>
-                    <div class="form-hint" id="bqEntityHint">
-                        <!-- Filled by onBqTypeChange() — describes trade-offs for the
-                             selected entity type. Default text matches `table`. -->
-                        <strong>Table:</strong> latency ~seconds (BQ roundtrip per query); 0 disk;
-                        cost = bytes scanned per analyst-query. Best for tables that fit on disk
-                        but you want to avoid sync overhead, or tables analysts only touch
-                        occasionally.
+                    <label class="form-label">How should analysts access this data?</label>
+                    <div class="bq-access-radio-group" style="display:flex; gap:12px; margin-top:6px;">
+                        <label style="flex:1; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                            <input type="radio" name="bqAccessMode" value="live" checked onchange="onBqAccessModeChange()">
+                            <strong>Live from BigQuery</strong>
+                            <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
+                                Each analyst query goes straight to BQ. Always current.
+                                Latency ≈ seconds; 0 disk on the analyst machine; cost =
+                                bytes scanned per query. Best for huge tables or when
+                                freshness matters.
+                            </div>
+                        </label>
+                        <label style="flex:1; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                            <input type="radio" name="bqAccessMode" value="synced" onchange="onBqAccessModeChange()">
+                            <strong>Synced locally</strong>
+                            <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
+                                Agnes runs a SELECT on a schedule and ships a parquet
+                                to analysts. Analyst-side latency &lt;100&nbsp;ms; disk =
+                                snapshot size. Best when analysts hit the same data
+                                often and speed beats freshness.
+                            </div>
+                        </label>
                     </div>
                 </div>
-                <div class="form-group bq-type-table bq-type-view">
+                <div class="form-group bq-access-synced" style="display:none;">
+                    <label class="form-label">What to sync?</label>
+                    <div class="bq-sync-radio-group" style="display:flex; gap:12px; margin-top:6px;">
+                        <label style="flex:1; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                            <input type="radio" name="bqSyncMode" value="whole" checked onchange="onBqSyncModeChange()">
+                            <strong>Whole table</strong>
+                            <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
+                                Agnes runs <code>SELECT *</code> automatically. No SQL
+                                required. Disk + sync cost = full table size.
+                            </div>
+                        </label>
+                        <label style="flex:1; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                            <input type="radio" name="bqSyncMode" value="custom" onchange="onBqSyncModeChange()">
+                            <strong>Custom query</strong>
+                            <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
+                                You write the SELECT — filter, project, or aggregate
+                                before the sync. Cuts disk + cost; cap via
+                                <code>max_bytes_per_materialize</code> guardrail.
+                            </div>
+                        </label>
+                    </div>
+                </div>
+                <div class="form-group bq-source-table">
                     <label class="form-label" for="bqDataset">
                         Dataset
                         <button type="button" class="btn btn-secondary btn-sm"
@@ -895,7 +937,7 @@
                     <div class="form-hint">BigQuery dataset name (no project prefix — read from instance.yaml).
                         Click <strong>Discover</strong> to populate the autocomplete from the BQ project's dataset list.</div>
                 </div>
-                <div class="form-group bq-type-table bq-type-view">
+                <div class="form-group bq-source-table">
                     <label class="form-label" for="bqSourceTable">
                         Source Table / View
                         <button type="button" class="btn btn-secondary btn-sm"
@@ -905,11 +947,11 @@
                     </label>
                     <input type="text" class="form-input" id="bqSourceTable" list="bqTableList" placeholder="e.g. orders">
                     <datalist id="bqTableList"></datalist>
-                    <div class="form-hint">Table or view name within the dataset. The server auto-detects
-                        BASE TABLE vs VIEW at registration time. Click <strong>List tables</strong> after
-                        filling Dataset to populate the autocomplete from BQ.</div>
+                    <div class="form-hint">Table or view name within the dataset. Agnes auto-detects whether
+                        it's a BASE TABLE or a VIEW and routes the query path accordingly. Click
+                        <strong>List tables</strong> after filling Dataset to populate the autocomplete.</div>
                 </div>
-                <div class="form-group bq-type-query" style="display:none;">
+                <div class="form-group bq-source-custom" style="display:none;">
                     <label class="form-label" for="bqSourceQuery">
                         SQL
                         <button type="button" class="btn btn-secondary btn-sm"
@@ -930,7 +972,9 @@
                 <div class="form-group">
                     <label class="form-label" for="bqViewName">View Name</label>
                     <input type="text" class="form-input" id="bqViewName" placeholder="orders_90d">
-                    <div class="form-hint">DuckDB view name analysts will use. Required for Custom SQL; defaults to the source table for Table/View.</div>
+                    <div class="form-hint">Name analysts use to query the data (e.g.
+                        <code>SELECT * FROM orders_90d</code>). Required for Custom query; defaults
+                        to the source table for the other modes.</div>
                 </div>
                 <div class="form-group">
                     <label class="form-label" for="bqDescription">Description <span class="optional">(optional)</span></label>
@@ -941,12 +985,13 @@
                     <input type="text" class="form-input" id="bqFolder" placeholder="e.g. crm, finance, marketing">
                     <div class="form-hint">Logical grouping for catalog organization</div>
                 </div>
-                <div class="form-group">
-                    <label class="form-label" for="bqSyncSchedule">Sync Schedule <span class="optional">(optional, default <code>every 1h</code> for Custom SQL)</span></label>
+                <div class="form-group bq-access-synced" style="display:none;">
+                    <label class="form-label" for="bqSyncSchedule">Sync Schedule <span class="optional">(optional, default <code>every 1h</code>)</span></label>
                     <input type="text" class="form-input" id="bqSyncSchedule" placeholder="every 6h">
                     <div class="form-hint">
-                        Examples: <code>every 15m</code>, <code>every 6h</code>, <code>daily 03:00</code>, <code>daily 07:00,13:00,18:00</code> (UTC).
-                        Honored by Custom SQL (materialized) — Table/View are queried live and ignore this field.
+                        How often Agnes refreshes the local copy. Examples:
+                        <code>every 15m</code>, <code>every 6h</code>,
+                        <code>daily 03:00</code>, <code>daily 07:00,13:00,18:00</code> (UTC).
                     </div>
                 </div>
                 <div class="form-group" id="bqPrecheckSummary" style="display:none;">
@@ -1033,39 +1078,71 @@
                      Table/View, SQL textarea for Query). Hidden for Keboola
                      rows. Wired by populateEditModal(table). -->
                 <div class="form-group bq-edit-only" style="display:none;">
-                    <label class="form-label" for="editBqEntityType">Type</label>
-                    <select class="form-select" id="editBqEntityType" onchange="onEditBqTypeChange()">
-                        <option value="table">Table — query a BQ table on demand</option>
-                        <option value="view">View — query a BQ view on demand (jobs API)</option>
-                        <option value="query">Custom SQL Query — scheduled SELECT writes parquet</option>
-                    </select>
+                    <label class="form-label">How should analysts access this data?</label>
+                    <div style="display:flex; gap:12px; margin-top:6px;">
+                        <label style="flex:1; padding:10px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                            <input type="radio" name="editBqAccessMode" value="live" onchange="onEditBqAccessModeChange()">
+                            <strong>Live from BigQuery</strong>
+                            <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
+                                Each query goes to BQ. No local copy.
+                            </div>
+                        </label>
+                        <label style="flex:1; padding:10px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                            <input type="radio" name="editBqAccessMode" value="synced" onchange="onEditBqAccessModeChange()">
+                            <strong>Synced locally</strong>
+                            <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
+                                Scheduled SELECT → parquet, queried locally.
+                            </div>
+                        </label>
+                    </div>
                     <div class="form-hint" id="editBqModeWarning" style="display:none;
-                         color:#EA580C;background:rgba(234,88,12,.08);padding:8px;border-radius:6px;">
-                        <!-- Filled by onEditBqTypeChange() when switching mode
-                             on an existing row — warns that parquet/source data
-                             will be discarded. -->
+                         color:#EA580C;background:rgba(234,88,12,.08);padding:8px;border-radius:6px;margin-top:8px;">
+                        <!-- Filled by onEditBqAccessModeChange() when switching
+                             modes on an existing row — warns about parquet
+                             drop / scheduling impact. -->
                     </div>
                 </div>
-                <div class="form-group bq-edit-only bq-edit-type-table bq-edit-type-view" style="display:none;">
+                <div class="form-group bq-edit-only bq-edit-access-synced" style="display:none;">
+                    <label class="form-label">What to sync?</label>
+                    <div style="display:flex; gap:12px; margin-top:6px;">
+                        <label style="flex:1; padding:10px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                            <input type="radio" name="editBqSyncMode" value="whole" onchange="onEditBqSyncModeChange()">
+                            <strong>Whole table</strong>
+                            <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
+                                <code>SELECT *</code> on a schedule.
+                            </div>
+                        </label>
+                        <label style="flex:1; padding:10px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                            <input type="radio" name="editBqSyncMode" value="custom" onchange="onEditBqSyncModeChange()">
+                            <strong>Custom query</strong>
+                            <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
+                                Filter / aggregate before sync.
+                            </div>
+                        </label>
+                    </div>
+                </div>
+                <div class="form-group bq-edit-only bq-edit-source-table" style="display:none;">
                     <label class="form-label" for="editBqDataset">Dataset</label>
                     <input type="text" class="form-input" id="editBqDataset" placeholder="e.g. analytics">
                 </div>
-                <div class="form-group bq-edit-only bq-edit-type-table bq-edit-type-view" style="display:none;">
+                <div class="form-group bq-edit-only bq-edit-source-table" style="display:none;">
                     <label class="form-label" for="editBqSourceTable">Source Table / View</label>
                     <input type="text" class="form-input" id="editBqSourceTable" placeholder="e.g. orders">
+                    <div class="form-hint">Agnes auto-detects whether this is a table or a view.</div>
                 </div>
-                <div class="form-group bq-edit-only bq-edit-type-query" style="display:none;">
+                <div class="form-group bq-edit-only bq-edit-source-custom" style="display:none;">
                     <label class="form-label" for="editBqSourceQuery">SQL</label>
                     <textarea class="form-textarea" id="editBqSourceQuery" rows="8"></textarea>
                     <div class="form-hint">SELECT statement, no trailing semicolon. Native BQ
                         identifiers recommended for the cost guardrail to engage.</div>
                 </div>
-                <div class="form-group bq-edit-only" style="display:none;">
+                <div class="form-group bq-edit-only bq-edit-access-synced" style="display:none;">
                     <label class="form-label" for="editBqSyncSchedule">Sync Schedule
-                        <span class="optional">(optional, materialized only)</span></label>
+                        <span class="optional">(optional)</span></label>
                     <input type="text" class="form-input" id="editBqSyncSchedule" placeholder="every 6h">
-                    <div class="form-hint"><code>every 15m</code>, <code>every 6h</code>,
-                        <code>daily 03:00</code> (UTC). Honored by Custom SQL.</div>
+                    <div class="form-hint">How often Agnes refreshes the local copy.
+                        <code>every 15m</code>, <code>every 6h</code>,
+                        <code>daily 03:00</code> (UTC).</div>
                 </div>
 
                 <!-- Keboola-only fields (existing). Hidden for BQ rows. -->
@@ -1395,21 +1472,34 @@
         };
     }
 
+    function _getBqAccessMode() {
+        // Q1 radio. Default 'live' if nothing's checked yet (model-validator
+        // safety net for the initial render).
+        var el = document.querySelector('input[name="bqAccessMode"]:checked');
+        return el ? el.value : 'live';
+    }
+
+    function _getBqSyncMode() {
+        // Q2 radio (only meaningful when access mode is 'synced').
+        var el = document.querySelector('input[name="bqSyncMode"]:checked');
+        return el ? el.value : 'whole';
+    }
+
     function _buildBigQueryPayload() {
-        // The UI's Type selector is operator-facing UX (Table / View / Custom
-        // SQL Query); the backend payload maps it onto query_mode (remote
-        // vs materialized). Table and View both go to query_mode='remote' —
-        // the BQ extractor auto-detects the entity type via INFORMATION_SCHEMA
-        // at register time and routes BASE TABLE through the Storage Read
-        // API while VIEW goes through bigquery_query() (jobs API). Query
-        // is materialized.
-        var entityType = document.getElementById('bqEntityType').value || 'table';
+        // Two-question form maps to backend `query_mode`:
+        //   live          → query_mode='remote'        (server auto-detects
+        //                                               BASE TABLE vs VIEW)
+        //   synced/whole  → query_mode='materialized'  (auto SELECT *)
+        //   synced/custom → query_mode='materialized'  (admin SQL)
+        // The UI never asks "Table vs View" — that's a server-side detail.
+        var accessMode = _getBqAccessMode();
+        var syncMode = _getBqSyncMode();
         var viewName = document.getElementById('bqViewName').value.trim();
         var description = document.getElementById('bqDescription').value.trim() || null;
         var folder = document.getElementById('bqFolder').value.trim() || null;
         var syncSchedule = document.getElementById('bqSyncSchedule').value.trim() || null;
 
-        if (entityType === 'query') {
+        if (accessMode === 'synced' && syncMode === 'custom') {
             return {
                 name: viewName,
                 source_type: 'bigquery',
@@ -1422,12 +1512,31 @@
             };
         }
 
-        // Table / View — query_mode='remote', server auto-detects entity
-        // shape on register. The frontend doesn't send entity_type because
-        // we don't trust an operator-asserted type (a typo'd "view" on a
-        // BASE TABLE would silently route the wrong way).
         var dataset = document.getElementById('bqDataset').value.trim();
         var sourceTable = document.getElementById('bqSourceTable').value.trim();
+
+        if (accessMode === 'synced' && syncMode === 'whole') {
+            // Whole-table sync. We don't ship the project to the browser, so
+            // the SQL uses DuckDB three-part syntax against the materialize
+            // session's ATTACH alias. Native BQ dry-run can't parse this form
+            // (DuckDB identifier quoting), so the cost guardrail falls
+            // fail-open with a warning — operator who needs the cap to engage
+            // picks Custom query and writes backtick-quoted native BQ
+            // identifiers.
+            return {
+                name: viewName || sourceTable,
+                source_type: 'bigquery',
+                query_mode: 'materialized',
+                source_query: 'SELECT * FROM bq."' + dataset + '"."' + sourceTable + '"',
+                profile_after_sync: false,
+                description: description,
+                folder: folder,
+                sync_schedule: syncSchedule,
+            };
+        }
+
+        // Live access — server auto-detects BASE TABLE vs VIEW at register
+        // time, so the UI doesn't make the operator pick.
         return {
             name: viewName || sourceTable,
             source_type: 'bigquery',
@@ -1441,49 +1550,47 @@
         };
     }
 
-    var _BQ_HINT_BY_TYPE = {
-        'table':
-            "<strong>Table:</strong> latency ~seconds (BQ roundtrip per query); 0 disk; "
-            + "cost = bytes scanned per analyst-query. Best for tables that fit on disk "
-            + "but you want to avoid sync overhead, or tables analysts only touch "
-            + "occasionally. Server uses BQ Storage Read API for full-table scans.",
-        'view':
-            "<strong>View:</strong> same on-demand semantics as Table, but the server "
-            + "routes through <code>bigquery_query()</code> (jobs API) instead of the "
-            + "Storage Read API — required because BQ views can't be attached as "
-            + "tables. Latency slightly higher than Table; cost the same per query.",
-        'query':
-            "<strong>Custom SQL:</strong> the scheduler runs your SELECT on "
-            + "<code>sync_schedule</code> and writes the result as a parquet that "
-            + "<code>da sync</code> distributes to analysts. Latency on the analyst "
-            + "side is <100 ms (local read); cost = one BQ scan per schedule tick "
-            + "regardless of how many analysts query it. Cap via "
-            + "<code>data_source.bigquery.max_bytes_per_materialize</code> "
-            + "(default 10 GiB).",
-    };
-
-    function onBqTypeChange() {
-        // Show / hide the per-type field groups. Table and View share
-        // bqDataset + bqSourceTable (both have the same input shape, server
-        // auto-detects which is which). Query swaps in bqSourceQuery + the
-        // "Use table as base" prefill button. View Name + Description +
-        // Folder + Sync Schedule are shared.
-        var entityType = document.getElementById('bqEntityType').value;
-        var byClass = {
-            'table': document.querySelectorAll('.bq-type-table'),
-            'view': document.querySelectorAll('.bq-type-view'),
-            'query': document.querySelectorAll('.bq-type-query'),
-        };
-        // A field with both `bq-type-table` and `bq-type-view` shows for
-        // either selection. Resolve via "is this element tagged for the
-        // current type?".
-        Object.keys(byClass).forEach(function(t) {
-            byClass[t].forEach(function(el) {
-                el.style.display = el.classList.contains('bq-type-' + entityType) ? '' : 'none';
-            });
+    function onBqAccessModeChange() {
+        // Q1: toggle live ↔ synced. Q2 (sync mode) is meaningful only when
+        // synced; default it to 'whole' on first reveal so the form stays
+        // consistent without forcing the operator to click twice.
+        var accessMode = _getBqAccessMode();
+        var liveFields = document.querySelectorAll('.bq-access-live');
+        var syncedFields = document.querySelectorAll('.bq-access-synced');
+        liveFields.forEach(function(el) {
+            el.style.display = (accessMode === 'live') ? '' : 'none';
         });
-        var hint = document.getElementById('bqEntityHint');
-        if (hint) hint.innerHTML = _BQ_HINT_BY_TYPE[entityType] || '';
+        syncedFields.forEach(function(el) {
+            el.style.display = (accessMode === 'synced') ? '' : 'none';
+        });
+        // Q2 is fresh on first reveal; trigger its handler to apply the
+        // source-table vs source-custom visibility rules.
+        if (accessMode === 'synced') {
+            onBqSyncModeChange();
+        } else {
+            // Live mode: show source-table fields, hide custom-SQL textarea.
+            document.querySelectorAll('.bq-source-table').forEach(function(el) {
+                el.style.display = '';
+            });
+            document.querySelectorAll('.bq-source-custom').forEach(function(el) {
+                el.style.display = 'none';
+            });
+        }
+    }
+
+    function onBqSyncModeChange() {
+        // Q2: toggle whole-table ↔ custom-SQL. Whole reuses the
+        // dataset/source-table inputs (server-side SELECT *), Custom shows
+        // the SQL textarea. Only fires when access mode is already 'synced'.
+        var syncMode = _getBqSyncMode();
+        var tableFields = document.querySelectorAll('.bq-source-table');
+        var customFields = document.querySelectorAll('.bq-source-custom');
+        tableFields.forEach(function(el) {
+            el.style.display = (syncMode === 'whole') ? '' : 'none';
+        });
+        customFields.forEach(function(el) {
+            el.style.display = (syncMode === 'custom') ? '' : 'none';
+        });
     }
 
     function discoverBqDatasets() {
@@ -1719,10 +1826,26 @@
 
     // ── Edit Modal ──────────────────────────────────────────────
 
-    // Original mode captured at openEditModal-time so onEditBqTypeChange can
-    // detect "operator just switched it" vs "loaded from registry" and only
-    // surface the destructive-edit warning on a real change.
+    // Original mode captured at openEditModal-time so the access-mode
+    // change handler can detect "operator just switched it" vs "loaded
+    // from registry" and only surface the destructive-edit warning on a
+    // real change.
     let _editOriginalQueryMode = null;
+
+    function _getEditBqAccessMode() {
+        var el = document.querySelector('input[name="editBqAccessMode"]:checked');
+        return el ? el.value : 'live';
+    }
+
+    function _getEditBqSyncMode() {
+        var el = document.querySelector('input[name="editBqSyncMode"]:checked');
+        return el ? el.value : 'whole';
+    }
+
+    function _setEditBqRadio(name, value) {
+        var el = document.querySelector('input[name="' + name + '"][value="' + value + '"]');
+        if (el) el.checked = true;
+    }
 
     function openEditModal(table) {
         currentEditTableId = table.id;
@@ -1744,21 +1867,35 @@
         document.getElementById('editFolder').value = table.folder || '';
 
         if (isBigQuery) {
-            // Map registry's query_mode back onto the operator-facing Type
-            // selector. We can't distinguish Table from View at the registry
-            // level (the entity_type the extractor detects isn't persisted),
-            // so a remote row defaults to Table; operator can flip to View if
-            // the underlying BQ entity is actually a view.
+            // Map registry's query_mode back onto the two-question radio:
+            //   query_mode='remote'       → access=live
+            //   query_mode='materialized' → access=synced. We can't recover
+            //     whether the row was originally registered as Whole or
+            //     Custom (registry doesn't store that distinction — both
+            //     produce a `source_query`), so we default to Custom when
+            //     a non-empty source_query exists; operator can flip to
+            //     Whole if it was auto-generated SELECT *.
             var qmode = (table.query_mode || 'remote');
-            var entityType = (qmode === 'materialized') ? 'query' : 'table';
-            document.getElementById('editBqEntityType').value = entityType;
+            var sq = (table.source_query || '');
+
+            if (qmode === 'materialized') {
+                _setEditBqRadio('editBqAccessMode', 'synced');
+                // Heuristic: treat `SELECT * FROM bq."ds"."t"` (whole-table
+                // auto-build) as Whole; anything else as Custom.
+                var isAutoSelectStar = /^\s*SELECT\s+\*\s+FROM\s+bq\.".+"\.".+"\s*$/i.test(sq);
+                _setEditBqRadio('editBqSyncMode', isAutoSelectStar ? 'whole' : 'custom');
+            } else {
+                _setEditBqRadio('editBqAccessMode', 'live');
+                _setEditBqRadio('editBqSyncMode', 'whole');
+            }
+
             document.getElementById('editBqDataset').value = table.bucket || '';
             document.getElementById('editBqSourceTable').value = table.source_table || '';
-            document.getElementById('editBqSourceQuery').value = table.source_query || '';
+            document.getElementById('editBqSourceQuery').value = sq;
             document.getElementById('editBqSyncSchedule').value = table.sync_schedule || '';
             document.getElementById('editBqModeWarning').style.display = 'none';
             _editOriginalQueryMode = qmode;
-            onEditBqTypeChange();  // fire to set field visibility
+            onEditBqAccessModeChange();  // fire to set field visibility
         } else {
             document.getElementById('editStrategy').value = table.sync_strategy || 'full_refresh';
             document.getElementById('editPrimaryKey').value = (table.primary_key || []).join(', ');
@@ -1769,36 +1906,50 @@
         document.getElementById('editModal').classList.add('active');
     }
 
-    function onEditBqTypeChange() {
-        var entityType = document.getElementById('editBqEntityType').value;
-        var byClass = {
-            'table': document.querySelectorAll('.bq-edit-type-table'),
-            'view': document.querySelectorAll('.bq-edit-type-view'),
-            'query': document.querySelectorAll('.bq-edit-type-query'),
-        };
-        Object.keys(byClass).forEach(function(t) {
-            byClass[t].forEach(function(el) {
-                el.style.display = el.classList.contains('bq-edit-type-' + entityType) ? '' : 'none';
-            });
+    function onEditBqAccessModeChange() {
+        var accessMode = _getEditBqAccessMode();
+        document.querySelectorAll('.bq-edit-access-synced').forEach(function(el) {
+            el.style.display = (accessMode === 'synced') ? '' : 'none';
         });
 
-        // Mode-switch warning: surfacing the cost of a destructive edit so
-        // an operator who just wanted to fix a typo doesn't accidentally
-        // discard their materialized parquet.
-        var newMode = (entityType === 'query') ? 'materialized' : 'remote';
+        if (accessMode === 'synced') {
+            onEditBqSyncModeChange();
+        } else {
+            // Live: dataset+table inputs visible, SQL textarea hidden.
+            document.querySelectorAll('.bq-edit-source-table').forEach(function(el) {
+                el.style.display = '';
+            });
+            document.querySelectorAll('.bq-edit-source-custom').forEach(function(el) {
+                el.style.display = 'none';
+            });
+        }
+
+        // Mode-switch warning: only fire when the operator actually flipped
+        // access mode from what was loaded — typo-fix edits stay quiet.
+        var newMode = (accessMode === 'synced') ? 'materialized' : 'remote';
         var warn = document.getElementById('editBqModeWarning');
         if (_editOriginalQueryMode && newMode !== _editOriginalQueryMode) {
             var msg;
             if (_editOriginalQueryMode === 'materialized' && newMode === 'remote') {
-                msg = '⚠ Switching from Custom SQL → Table/View will drop the materialized parquet on next sync. Analysts who synced this table will get a remote view instead of a local file. The cron schedule field becomes ignored.';
+                msg = '⚠ Switching Synced locally → Live from BigQuery will drop the materialized parquet on the next sync. Analysts who already pulled this table will start getting live BQ queries instead of a local copy; the sync schedule becomes ignored.';
             } else {
-                msg = '⚠ Switching from Table/View → Custom SQL: the next scheduled sync runs your SQL and writes a parquet. Analysts will start receiving local data on their next da sync; the dataset/source-table fields become ignored. Remember to set a sync_schedule.';
+                msg = '⚠ Switching Live from BigQuery → Synced locally: the next scheduled sync runs a SELECT and writes a parquet. Analysts will start reading the local copy on their next `da sync`. Remember to set a sync schedule.';
             }
             warn.textContent = msg;
             warn.style.display = '';
         } else {
             warn.style.display = 'none';
         }
+    }
+
+    function onEditBqSyncModeChange() {
+        var syncMode = _getEditBqSyncMode();
+        document.querySelectorAll('.bq-edit-source-table').forEach(function(el) {
+            el.style.display = (syncMode === 'whole') ? '' : 'none';
+        });
+        document.querySelectorAll('.bq-edit-source-custom').forEach(function(el) {
+            el.style.display = (syncMode === 'custom') ? '' : 'none';
+        });
     }
 
     function closeEditModal() {
@@ -1821,7 +1972,15 @@
         var payload;
 
         if (sourceType === 'bigquery') {
-            var entityType = document.getElementById('editBqEntityType').value;
+            // Two-question state machine — same as Register modal:
+            //   live          → query_mode='remote'
+            //   synced/whole  → materialized + auto SELECT *
+            //   synced/custom → materialized + admin SQL
+            var accessMode = _getEditBqAccessMode();
+            var syncMode = _getEditBqSyncMode();
+            var dataset = document.getElementById('editBqDataset').value.trim();
+            var sourceTable = document.getElementById('editBqSourceTable').value.trim();
+
             payload = {
                 description: document.getElementById('editDescription').value.trim() || null,
                 folder: document.getElementById('editFolder').value.trim() || null,
@@ -1829,21 +1988,30 @@
                 sync_schedule:
                     document.getElementById('editBqSyncSchedule').value.trim() || null,
             };
-            if (entityType === 'query') {
+
+            if (accessMode === 'synced' && syncMode === 'custom') {
                 payload.query_mode = 'materialized';
                 payload.source_query =
                     document.getElementById('editBqSourceQuery').value.trim();
-                // Server validator clears bucket/source_table when mode is
-                // materialized (UpdateTableRequest), but be explicit so the
-                // PATCH semantics don't carry stale fields forward.
+                // PUT semantics: an explicit null clears the prior value so
+                // a remote→materialized switch doesn't carry stale
+                // bucket/source_table forward through the synthetic
+                // RegisterTableRequest validator.
                 payload.bucket = null;
                 payload.source_table = null;
+            } else if (accessMode === 'synced' && syncMode === 'whole') {
+                payload.query_mode = 'materialized';
+                payload.source_query =
+                    'SELECT * FROM bq."' + dataset + '"."' + sourceTable + '"';
+                // Keep bucket/source_table on the row so a future
+                // Whole→Custom switch can prefill from them.
+                payload.bucket = dataset || null;
+                payload.source_table = sourceTable || null;
             } else {
+                // Live.
                 payload.query_mode = 'remote';
-                payload.bucket =
-                    document.getElementById('editBqDataset').value.trim() || null;
-                payload.source_table =
-                    document.getElementById('editBqSourceTable').value.trim() || null;
+                payload.bucket = dataset || null;
+                payload.source_table = sourceTable || null;
                 payload.source_query = null;
             }
         } else {
