@@ -1008,8 +1008,51 @@
                 <div class="form-group">
                     <label class="form-label" for="editTableId">Table ID</label>
                     <input type="text" class="form-input" id="editTableId" readonly>
+                    <div class="form-hint">Slugified id, immutable. Source type:
+                        <strong id="editSourceTypeBadge">—</strong></div>
                 </div>
-                <div class="form-group">
+
+                <!-- BQ-only fields (Type selector + Dataset/Source Table for
+                     Table/View, SQL textarea for Query). Hidden for Keboola
+                     rows. Wired by populateEditModal(table). -->
+                <div class="form-group bq-edit-only" style="display:none;">
+                    <label class="form-label" for="editBqEntityType">Type</label>
+                    <select class="form-select" id="editBqEntityType" onchange="onEditBqTypeChange()">
+                        <option value="table">Table — query a BQ table on demand</option>
+                        <option value="view">View — query a BQ view on demand (jobs API)</option>
+                        <option value="query">Custom SQL Query — scheduled SELECT writes parquet</option>
+                    </select>
+                    <div class="form-hint" id="editBqModeWarning" style="display:none;
+                         color:#EA580C;background:rgba(234,88,12,.08);padding:8px;border-radius:6px;">
+                        <!-- Filled by onEditBqTypeChange() when switching mode
+                             on an existing row — warns that parquet/source data
+                             will be discarded. -->
+                    </div>
+                </div>
+                <div class="form-group bq-edit-only bq-edit-type-table bq-edit-type-view" style="display:none;">
+                    <label class="form-label" for="editBqDataset">Dataset</label>
+                    <input type="text" class="form-input" id="editBqDataset" placeholder="e.g. analytics">
+                </div>
+                <div class="form-group bq-edit-only bq-edit-type-table bq-edit-type-view" style="display:none;">
+                    <label class="form-label" for="editBqSourceTable">Source Table / View</label>
+                    <input type="text" class="form-input" id="editBqSourceTable" placeholder="e.g. orders">
+                </div>
+                <div class="form-group bq-edit-only bq-edit-type-query" style="display:none;">
+                    <label class="form-label" for="editBqSourceQuery">SQL</label>
+                    <textarea class="form-textarea" id="editBqSourceQuery" rows="8"></textarea>
+                    <div class="form-hint">SELECT statement, no trailing semicolon. Native BQ
+                        identifiers recommended for the cost guardrail to engage.</div>
+                </div>
+                <div class="form-group bq-edit-only" style="display:none;">
+                    <label class="form-label" for="editBqSyncSchedule">Sync Schedule
+                        <span class="optional">(optional, materialized only)</span></label>
+                    <input type="text" class="form-input" id="editBqSyncSchedule" placeholder="every 6h">
+                    <div class="form-hint"><code>every 15m</code>, <code>every 6h</code>,
+                        <code>daily 03:00</code> (UTC). Honored by Custom SQL.</div>
+                </div>
+
+                <!-- Keboola-only fields (existing). Hidden for BQ rows. -->
+                <div class="form-group keboola-edit-only">
                     <label class="form-label" for="editStrategy">Sync Strategy</label>
                     <select class="form-select" id="editStrategy">
                         <option value="full_refresh">Full Refresh</option>
@@ -1017,17 +1060,20 @@
                         <option value="partitioned">Partitioned</option>
                     </select>
                 </div>
-                <div class="form-group">
+                <div class="form-group keboola-edit-only">
                     <label class="form-label" for="editPrimaryKey">Primary Key</label>
                     <input type="text" class="form-input" id="editPrimaryKey" placeholder="e.g. id">
                 </div>
+
+                <!-- Shared between BQ + Keboola -->
                 <div class="form-group">
                     <label class="form-label" for="editDescription">Description <span class="optional">(optional)</span></label>
                     <textarea class="form-textarea" id="editDescription" placeholder="Brief description of the table contents..."></textarea>
                 </div>
                 <div class="form-group">
-                    <label class="form-label" for="editDataset">Dataset Group <span class="optional">(optional)</span></label>
-                    <input type="text" class="form-input" id="editDataset" placeholder="e.g. crm, finance, marketing">
+                    <label class="form-label" for="editFolder">Folder <span class="optional">(optional)</span></label>
+                    <input type="text" class="form-input" id="editFolder" placeholder="e.g. crm, finance, marketing">
+                    <div class="form-hint">Logical grouping for catalog organization (does not affect storage).</div>
                 </div>
             </div>
             <div class="modal-footer">
@@ -1590,20 +1636,92 @@
 
     // ── Edit Modal ──────────────────────────────────────────────
 
+    // Original mode captured at openEditModal-time so onEditBqTypeChange can
+    // detect "operator just switched it" vs "loaded from registry" and only
+    // surface the destructive-edit warning on a real change.
+    let _editOriginalQueryMode = null;
+
     function openEditModal(table) {
         currentEditTableId = table.id;
         document.getElementById('editTableId').value = table.id || '';
-        document.getElementById('editStrategy').value = table.sync_strategy || 'full_refresh';
-        document.getElementById('editPrimaryKey').value = (table.primary_key || []).join(', ');
+
+        var sourceType = (table.source_type || '').toLowerCase();
+        document.getElementById('editSourceTypeBadge').textContent = sourceType || '—';
+
+        var isBigQuery = (sourceType === 'bigquery');
+        document.querySelectorAll('.bq-edit-only').forEach(function(el) {
+            el.style.display = isBigQuery ? '' : 'none';
+        });
+        document.querySelectorAll('.keboola-edit-only').forEach(function(el) {
+            el.style.display = isBigQuery ? 'none' : '';
+        });
+
+        // Shared fields.
         document.getElementById('editDescription').value = table.description || '';
-        document.getElementById('editDataset').value = table.dataset || '';
+        document.getElementById('editFolder').value = table.folder || '';
+
+        if (isBigQuery) {
+            // Map registry's query_mode back onto the operator-facing Type
+            // selector. We can't distinguish Table from View at the registry
+            // level (the entity_type the extractor detects isn't persisted),
+            // so a remote row defaults to Table; operator can flip to View if
+            // the underlying BQ entity is actually a view.
+            var qmode = (table.query_mode || 'remote');
+            var entityType = (qmode === 'materialized') ? 'query' : 'table';
+            document.getElementById('editBqEntityType').value = entityType;
+            document.getElementById('editBqDataset').value = table.bucket || '';
+            document.getElementById('editBqSourceTable').value = table.source_table || '';
+            document.getElementById('editBqSourceQuery').value = table.source_query || '';
+            document.getElementById('editBqSyncSchedule').value = table.sync_schedule || '';
+            document.getElementById('editBqModeWarning').style.display = 'none';
+            _editOriginalQueryMode = qmode;
+            onEditBqTypeChange();  // fire to set field visibility
+        } else {
+            document.getElementById('editStrategy').value = table.sync_strategy || 'full_refresh';
+            document.getElementById('editPrimaryKey').value = (table.primary_key || []).join(', ');
+            _editOriginalQueryMode = null;
+        }
+
         document.getElementById('editSubmitBtn').disabled = false;
         document.getElementById('editModal').classList.add('active');
+    }
+
+    function onEditBqTypeChange() {
+        var entityType = document.getElementById('editBqEntityType').value;
+        var byClass = {
+            'table': document.querySelectorAll('.bq-edit-type-table'),
+            'view': document.querySelectorAll('.bq-edit-type-view'),
+            'query': document.querySelectorAll('.bq-edit-type-query'),
+        };
+        Object.keys(byClass).forEach(function(t) {
+            byClass[t].forEach(function(el) {
+                el.style.display = el.classList.contains('bq-edit-type-' + entityType) ? '' : 'none';
+            });
+        });
+
+        // Mode-switch warning: surfacing the cost of a destructive edit so
+        // an operator who just wanted to fix a typo doesn't accidentally
+        // discard their materialized parquet.
+        var newMode = (entityType === 'query') ? 'materialized' : 'remote';
+        var warn = document.getElementById('editBqModeWarning');
+        if (_editOriginalQueryMode && newMode !== _editOriginalQueryMode) {
+            var msg;
+            if (_editOriginalQueryMode === 'materialized' && newMode === 'remote') {
+                msg = '⚠ Switching from Custom SQL → Table/View will drop the materialized parquet on next sync. Analysts who synced this table will get a remote view instead of a local file. The cron schedule field becomes ignored.';
+            } else {
+                msg = '⚠ Switching from Table/View → Custom SQL: the next scheduled sync runs your SQL and writes a parquet. Analysts will start receiving local data on their next da sync; the dataset/source-table fields become ignored. Remember to set a sync_schedule.';
+            }
+            warn.textContent = msg;
+            warn.style.display = '';
+        } else {
+            warn.style.display = 'none';
+        }
     }
 
     function closeEditModal() {
         document.getElementById('editModal').classList.remove('active');
         currentEditTableId = null;
+        _editOriginalQueryMode = null;
     }
 
     function saveTableEdit() {
@@ -1613,20 +1731,52 @@
         btn.disabled = true;
         btn.textContent = 'Saving...';
 
-        var pk = document.getElementById('editPrimaryKey').value.trim();
-        var primaryKey = pk ? pk.split(',').map(function(s) { return s.trim(); }).filter(Boolean) : [];
+        // Branch on whether this row is a BigQuery row. Source-type is
+        // immutable post-register (no UI control to flip it), so we can
+        // trust the badge text we set in openEditModal.
+        var sourceType = document.getElementById('editSourceTypeBadge').textContent;
+        var payload;
 
-        // UpdateTableRequest contract: no `dataset` field (it's `folder` for
-        // catalog grouping in the registry), no `version` (the API has no
-        // optimistic-concurrency layer). Pre-fix the modal posted `dataset`
-        // + `version` and the API silently dropped them, so the operator's
-        // dataset edit looked saved but never persisted.
-        var payload = {
-            sync_strategy: document.getElementById('editStrategy').value,
-            primary_key: primaryKey,
-            description: document.getElementById('editDescription').value.trim() || null,
-            folder: document.getElementById('editDataset').value.trim() || null,
-        };
+        if (sourceType === 'bigquery') {
+            var entityType = document.getElementById('editBqEntityType').value;
+            payload = {
+                description: document.getElementById('editDescription').value.trim() || null,
+                folder: document.getElementById('editFolder').value.trim() || null,
+                source_type: 'bigquery',
+                sync_schedule:
+                    document.getElementById('editBqSyncSchedule').value.trim() || null,
+            };
+            if (entityType === 'query') {
+                payload.query_mode = 'materialized';
+                payload.source_query =
+                    document.getElementById('editBqSourceQuery').value.trim();
+                // Server validator clears bucket/source_table when mode is
+                // materialized (UpdateTableRequest), but be explicit so the
+                // PATCH semantics don't carry stale fields forward.
+                payload.bucket = null;
+                payload.source_table = null;
+            } else {
+                payload.query_mode = 'remote';
+                payload.bucket =
+                    document.getElementById('editBqDataset').value.trim() || null;
+                payload.source_table =
+                    document.getElementById('editBqSourceTable').value.trim() || null;
+                payload.source_query = null;
+            }
+        } else {
+            // Keboola path — keeps the existing field set.
+            var pk = document.getElementById('editPrimaryKey').value.trim();
+            var primaryKey = pk
+                ? pk.split(',').map(function(s) { return s.trim(); }).filter(Boolean)
+                : [];
+            payload = {
+                sync_strategy: document.getElementById('editStrategy').value,
+                primary_key: primaryKey,
+                description:
+                    document.getElementById('editDescription').value.trim() || null,
+                folder: document.getElementById('editFolder').value.trim() || null,
+            };
+        }
 
         fetch('/api/admin/registry/' + encodeURIComponent(currentEditTableId), {
             method: 'PUT',

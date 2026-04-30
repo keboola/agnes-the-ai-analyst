@@ -69,6 +69,40 @@ def test_admin_tables_renders_bq_type_selector(seeded_app, bq_instance):
     assert "issue #108" not in html
 
 
+def test_edit_modal_has_bq_parity_fields(seeded_app, bq_instance):
+    """Edit modal must expose the same BQ controls as Register so an
+    operator can change the source/SQL/schedule without dropping & re-adding
+    the row. Pre-fix, Edit only had sync_strategy + primary_key + description
+    + folder — missing query_mode, bucket, source_table, source_query,
+    sync_schedule. Tested against the rendered template (the JS branch on
+    `source_type` is structural, not server-side)."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+
+    r = c.get("/admin/tables", headers=_auth(token))
+    assert r.status_code == 200, r.text
+    html = r.text
+
+    # Edit modal Type selector mirrors Register's three-way (Table/View/Query).
+    assert 'id="editBqEntityType"' in html
+    assert "onEditBqTypeChange" in html
+    # BQ-specific edit fields.
+    assert 'id="editBqDataset"' in html
+    assert 'id="editBqSourceTable"' in html
+    assert 'id="editBqSourceQuery"' in html
+    assert 'id="editBqSyncSchedule"' in html
+    # Visibility classes for adaptive show/hide on type switch.
+    assert "bq-edit-type-table" in html
+    assert "bq-edit-type-view" in html
+    assert "bq-edit-type-query" in html
+    # Mode-switch warning surface (filled by JS when operator flips
+    # query_mode mid-edit).
+    assert 'id="editBqModeWarning"' in html
+    # Source-type badge so the JS branch knows whether to render BQ vs
+    # Keboola fields without a second round-trip.
+    assert 'id="editSourceTypeBadge"' in html
+
+
 def test_admin_tables_keboola_branch_unchanged(seeded_app, monkeypatch):
     """Negative — when `data_source.type` is NOT bigquery, the BQ form
     fields don't appear at all (the Jinja `{% if %}` block guards them)."""
