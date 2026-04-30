@@ -1,0 +1,60 @@
+{# Profiler overlay structural shell — included from catalog.html.
+
+  The overlay opens when an analyst clicks a table row in the catalog
+  list; ``openProfiler(table)`` (defined inline in catalog.html) toggles
+  ``.profiler-overlay.active`` and populates the per-section divs via
+  ``innerHTML`` from ``GET /api/catalog/profile/{table}``.
+
+  Page-specific CSS (``.profiler-overlay``, ``.profiler-modal``,
+  ``.profiler-tabs``, ``.profiler-section``, …) lives in catalog.html's
+  ``<style>`` block; that hoist is tracked separately so this partial
+  stays a pure markup extraction with zero behavior change.
+#}
+<div id="profilerOverlay" class="profiler-overlay" onclick="if(event.target===this)closeProfiler()">
+    <div class="profiler-modal">
+        <div class="profiler-header">
+            <div class="profiler-header-left">
+                <h2 id="profilerTitle">-</h2>
+                <span id="profilerQuality" class="quality-badge"></span>
+                <span id="profilerAlertSummary"></span>
+            </div>
+            <button class="profiler-close" onclick="closeProfiler()">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M18 6L6 18M6 6l12 12"/>
+                </svg>
+            </button>
+        </div>
+        {# Tabs sit outside the scrollable body so they stay fixed when
+           sections grow tall. #}
+        <div class="profiler-tabs" id="profilerTabs" style="display:none;">
+            <button class="profiler-tab active" onclick="switchTab('overview')">Overview</button>
+            <button class="profiler-tab" onclick="switchTab('variables')" id="tabVariables">Columns</button>
+            <button class="profiler-tab" onclick="switchTab('alerts')" id="tabAlerts">Insights</button>
+            <button class="profiler-tab" onclick="switchTab('missing')" id="tabMissing">Missing Values</button>
+            <button class="profiler-tab" onclick="switchTab('relationships')" id="tabRelationships">Relationships</button>
+            <button class="profiler-tab" onclick="switchTab('sample')" id="tabSample">Sample</button>
+        </div>
+        <div class="profiler-body">
+            <div id="profilerLoading" class="profiler-loading">
+                <div class="spinner"></div>
+                <span>Loading profile data...</span>
+            </div>
+            <div id="profilerContent" style="display:none;">
+                <div id="sectionOverview" class="profiler-section active"></div>
+                <div id="sectionVariables" class="profiler-section"></div>
+                <div id="sectionAlerts" class="profiler-section"></div>
+                <div id="sectionMissing" class="profiler-section">
+                    <div class="missing-chart-container">
+                        <canvas id="missingChart"></canvas>
+                    </div>
+                </div>
+                <div id="sectionRelationships" class="profiler-section"></div>
+                <div id="sectionSample" class="profiler-section"></div>
+            </div>
+            <div id="profilerError" class="profiler-empty" style="display:none;">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary)" stroke-width="1.5" opacity="0.5"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+                <p id="profilerErrorMsg">Profile data not available for this table.</p>
+            </div>
+        </div>
+    </div>
+</div>

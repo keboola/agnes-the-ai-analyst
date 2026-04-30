@@ -1675,66 +1675,10 @@
 
     </div>
 
-    <!-- ═══════════════ PROFILER MODAL (preserved 1:1) ═══════════════ -->
-    <div id="profilerOverlay" class="profiler-overlay" onclick="if(event.target===this)closeProfiler()">
-        <div class="profiler-modal">
-            <div class="profiler-header">
-                <div class="profiler-header-left">
-                    <h2 id="profilerTitle">-</h2>
-                    <span id="profilerQuality" class="quality-badge"></span>
-                    <span id="profilerAlertSummary"></span>
-                </div>
-                <button class="profiler-close" onclick="closeProfiler()">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M18 6L6 18M6 6l12 12"/>
-                    </svg>
-                </button>
-            </div>
-            <!-- Tabs (outside scrollable body so they stay fixed) -->
-            <div class="profiler-tabs" id="profilerTabs" style="display:none;">
-                <button class="profiler-tab active" onclick="switchTab('overview')">Overview</button>
-                <button class="profiler-tab" onclick="switchTab('variables')" id="tabVariables">Columns</button>
-                <button class="profiler-tab" onclick="switchTab('alerts')" id="tabAlerts">Insights</button>
-                <button class="profiler-tab" onclick="switchTab('missing')" id="tabMissing">Missing Values</button>
-                <button class="profiler-tab" onclick="switchTab('relationships')" id="tabRelationships">Relationships</button>
-                <button class="profiler-tab" onclick="switchTab('sample')" id="tabSample">Sample</button>
-            </div>
-            <div class="profiler-body">
-                <div id="profilerLoading" class="profiler-loading">
-                    <div class="spinner"></div>
-                    <span>Loading profile data...</span>
-                </div>
-                <div id="profilerContent" style="display:none;">
-
-                    <!-- Overview Section -->
-                    <div id="sectionOverview" class="profiler-section active"></div>
-
-                    <!-- Variables Section -->
-                    <div id="sectionVariables" class="profiler-section"></div>
-
-                    <!-- Alerts Section -->
-                    <div id="sectionAlerts" class="profiler-section"></div>
-
-                    <!-- Missing Values Section -->
-                    <div id="sectionMissing" class="profiler-section">
-                        <div class="missing-chart-container">
-                            <canvas id="missingChart"></canvas>
-                        </div>
-                    </div>
-
-                    <!-- Relationships Section -->
-                    <div id="sectionRelationships" class="profiler-section"></div>
-
-                    <!-- Sample Section -->
-                    <div id="sectionSample" class="profiler-section"></div>
-                </div>
-                <div id="profilerError" class="profiler-empty" style="display:none;">
-                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary)" stroke-width="1.5" opacity="0.5"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
-                    <p id="profilerErrorMsg">Profile data not available for this table.</p>
-                </div>
-            </div>
-        </div>
-    </div>
+    {# Profiler overlay markup extracted to a partial (Phase 8 of the
+       UI overhaul). CSS + JS still live in catalog.html for now —
+       splitting those is a separate refactor. #}
+    {% include "_profiler_overlay.html" %}
 
     <footer class="footer">
         <p>&copy; {{ config.INSTANCE_COPYRIGHT or 'AI Data Analyst' }} &middot; Updated daily</p>

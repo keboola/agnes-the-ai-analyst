@@ -15,6 +15,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+- Tablet breakpoint (`@media (max-width: 1024px)`) in `style-custom.css`: tightens container padding, shrinks `.data-table` density, and reduces modal padding. Fills the gap between the desktop layout and the existing 720 px mobile rules.
+
+### Changed
+
+- **Modal CSS hoisted to `style-custom.css`** (`.modal-backdrop`, `.modal-card`, `.modal-btn`, `.modal-actions`). Four admin templates (`admin_users`, `admin_access`, `admin_groups`, `admin_marketplaces`) had near-identical inline copies; canonical version (480 px max-width, `max-height: 90vh; overflow-y: auto`, full input-type coverage including `text/email/password/url/number/select/textarea`) now lives in one place. `admin_tokens` and `my_tokens` keep their custom modal treatment (backdrop-filter, slide-in animation, larger padding) — those modals are visually distinct on purpose.
+- **Catalog profiler overlay markup extracted to `_profiler_overlay.html`** Jinja partial. Pure structural extraction — no behavior change. CSS + JS still live in `catalog.html`; full hoist of those tracked separately because the JS references shared `catalog.html` state.
+
+### Internal
+
+- `style.css` retirement is partially complete: the body font-family duplicate was removed in Phase 3a and the cascade order means `style-custom.css` already wins on every overlapping rule. Full deletion + `-v2` suffix rename across 93 markup sites is deferred — too much surface area to verify without per-page browser sweep. Tracked as a follow-up.
+
 - **`/admin/metrics` and `/admin/metrics/{id}` pages** (admin-only): read-only browser surface for `metric_definitions`. List page groups metrics by category (reuses the catalog's `_build_metrics_data` helper); detail page shows display name, ID, description, SQL block, notes/synonyms, and technical metadata (table_name, dimensions, filters, source). Editing remains via `da metrics import`; the page surfaces a "managed via CLI" notice. Phase 6 of the UI overhaul plan.
 - **`/admin/settings` page** (admin-only) under the Admin sub-menu: dataset sync toggles + per-table subscriptions for the calling user, loaded live from the existing `/api/settings`, `/api/settings/dataset`, and `/api/sync/table-subscriptions` endpoints. Phase 5 of the UI overhaul plan — surfaces in-browser the per-user preferences that were previously API/CLI-only.
 - **`/admin/sync` page** (admin-only) under the Admin sub-menu: per-table sync state (last sync, status, rows, size, columns), recent runs (loaded live from `GET /api/sync/history`), and a "Sync now" trigger button that POSTs to the existing `/api/sync/trigger`. Replaces the ad-hoc Telegram-style sync controls scattered across the dashboard with a single console.
