@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}Metrics — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block content %}
+<style>
+  .metrics-page { max-width: 1280px; margin: 0 auto; padding: 24px 32px 48px; }
+  .metrics-page h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; }
+  .metrics-page .subtitle { color: var(--text-secondary); font-size: 13px; margin: 0 0 24px; }
+
+  .metrics-card {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border-light, #e5e7eb);
+    border-radius: 10px;
+    margin-bottom: 16px;
+    overflow: hidden;
+  }
+  .metrics-card-head {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .metrics-card-head h2 {
+    font-size: 13px; font-weight: 600; margin: 0;
+    text-transform: uppercase; letter-spacing: 0.4px;
+    color: var(--text-secondary, #6b7280);
+  }
+  .metrics-card-head .count { font-size: 12px; color: var(--text-secondary, #9ca3af); }
+
+  .managed-notice {
+    background: rgba(245, 159, 10, 0.08);
+    border: 1px solid rgba(245, 159, 10, 0.3);
+    color: #92400E;
+    padding: 12px 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    margin-bottom: 24px;
+  }
+  .managed-notice code {
+    font-family: var(--font-mono);
+    background: rgba(255,255,255,0.6);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 12px;
+  }
+
+  .empty-state { padding: 32px 20px; text-align: center; color: var(--text-secondary); font-size: 13px; }
+</style>
+
+<div class="metrics-page">
+  <h1>Metrics</h1>
+  <p class="subtitle">Canonical metric definitions used by AI agents and the data catalog. Read-only here — definitions are versioned in YAML and applied via the CLI.</p>
+
+  <div class="managed-notice">
+    Metrics are managed via <code>da metrics import docs/metrics/</code>. This page is a read-only browser view; in-place editing lives on the backlog (see the UI overhaul plan).
+  </div>
+
+  {% if metrics_data %}
+    {% for category in metrics_data %}
+    <div class="metrics-card">
+      <div class="metrics-card-head">
+        <h2>{{ category.label }}</h2>
+        <span class="count">{{ category.metrics | length }} metric{{ 's' if category.metrics | length != 1 }}</span>
+      </div>
+      <table class="data-table">
+        <colgroup>
+          <col style="width: 26%;">
+          <col style="width: 14%;">
+          <col style="width: 50%;">
+          <col style="width: 10%;">
+        </colgroup>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Grain</th>
+            <th>Description</th>
+            <th>ID</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for m in category.metrics %}
+          <tr style="cursor: pointer;" onclick="window.location.href='/admin/metrics/{{ m.path }}'">
+            <td><strong>{{ m.display_name }}</strong></td>
+            <td>{{ m.grain or '—' }}</td>
+            <td class="cell-truncate-2" title="{{ m.description }}">{{ m.description }}</td>
+            <td class="cell-mono" title="{{ m.path }}">{{ m.path }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endfor %}
+  {% else %}
+  <div class="metrics-card">
+    <div class="empty-state">
+      No metric definitions yet. Run <code>da metrics import docs/metrics/</code> to load the starter pack.
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
