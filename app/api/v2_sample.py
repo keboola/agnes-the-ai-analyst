@@ -29,6 +29,13 @@ def _fetch_bq_sample(bq, dataset: str, table: str, n: int) -> list[dict]:
     from connectors.bigquery.access import translate_bq_error
     from src.identifier_validation import validate_quoted_identifier
 
+    # Surface "BQ not configured" as the structured 500 BqAccessError(not_configured)
+    # with hint pointing at instance.yaml, NOT as the misleading 400 unsafe_identifier
+    # the empty-string sentinel BqAccess would otherwise trigger from
+    # validate_quoted_identifier below. Devin BUG_0002 on PR #138.
+    if not bq.projects.data:
+        bq.client()  # raises BqAccessError(not_configured); endpoint catches it
+
     # Defense in depth: registry already validates these, but the v2 API
     # endpoints are downstream of admin REST writes that might bypass that
     # gate. A `source_table` containing a backtick would otherwise break
