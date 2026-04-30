@@ -90,6 +90,15 @@ def test_relative_time_iso_string_input():
     assert _format_relative_time(iso) == "10 minutes ago"
 
 
+def test_relative_time_future_timestamp_renders_just_now():
+    """Clock skew between the writer and the web pod can produce a sync
+    timestamp slightly in the future. Without clamping, the helper would
+    floor-divide the negative delta into "0 minutes ago" or worse — pin
+    that future timestamps render as ``just now`` instead."""
+    ts = datetime.now(timezone.utc) + timedelta(minutes=30)
+    assert _format_relative_time(ts) == "just now"
+
+
 # ── _build_metrics_data ──────────────────────────────────────────────────
 
 
