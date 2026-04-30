@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+
+- **SSO-managed accounts are read-only for password / delete operations, both in UI and at the API layer.** Detection is in `app.api.users._is_sso_user`: a user counts as SSO-managed if they belong to any group whose `created_by = 'system:google-sync'`, OR they belong to the seeded `Admin` system group while `AGNES_GROUP_ADMIN_EMAIL` is set, OR the seeded `Everyone` system group while `AGNES_GROUP_EVERYONE_EMAIL` is set. Users with no groups, or only admin-created custom groups, are unaffected. The flag surfaces as `is_sso_user: bool` on every `/api/users` and `/api/users/{id}` response. UI: the `/admin/users` row actions and the `/admin/users/{id}` Account section suppress the Reset / Set pwd / Delete buttons for those rows. Server: `POST /api/users/{id}/reset-password`, `POST /api/users/{id}/set-password`, and `DELETE /api/users/{id}` now return **409** with `detail: "User is managed by an external SSO provider; …"` for SSO targets — so a curl-savvy admin who bypasses the UI guard still cannot reset / set / wipe a Google Workspace account locally. Deactivate stays available so admins can gate access locally even when the upstream account is managed elsewhere. Name is provider-neutral so a future provider (Cloudflare Access, Okta, …) plugs into the same flag without churning the API.
+
 ## [0.21.0] — 2026-04-30
 
 ### Internal
