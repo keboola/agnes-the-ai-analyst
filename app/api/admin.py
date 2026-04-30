@@ -11,7 +11,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from typing import Optional, List
 import duckdb
 
@@ -81,9 +81,22 @@ class RegisterTableRequest(BaseModel):
     source_type: Optional[str] = None
     bucket: Optional[str] = None
     source_table: Optional[str] = None
+    source_query: Optional[str] = None
     query_mode: str = "local"
     sync_schedule: Optional[str] = None
     profile_after_sync: bool = True
+
+    @model_validator(mode="after")
+    def _check_mode_query_coherence(self):
+        # Treat empty string as not provided.
+        sq = (self.source_query or "").strip() or None
+        if self.query_mode == "materialized" and not sq:
+            raise ValueError("query_mode='materialized' requires a non-empty source_query")
+        if self.query_mode != "materialized" and sq:
+            raise ValueError("source_query is only valid when query_mode='materialized'")
+        # Normalize: store the trimmed value (or None) in the model.
+        self.source_query = sq
+        return self
 
 
 class UpdateTableRequest(BaseModel):
@@ -94,9 +107,24 @@ class UpdateTableRequest(BaseModel):
     source_type: Optional[str] = None
     bucket: Optional[str] = None
     source_table: Optional[str] = None
+    source_query: Optional[str] = None
     query_mode: Optional[str] = None
     sync_schedule: Optional[str] = None
     profile_after_sync: Optional[bool] = None
+
+    @model_validator(mode="after")
+    def _check_mode_query_coherence(self):
+        # Only validate when mode is being set in this PATCH/PUT. If both
+        # fields are None, we're not touching either — leave it alone.
+        if self.query_mode is None and self.source_query is None:
+            return self
+        sq = (self.source_query or "").strip() or None
+        if self.query_mode == "materialized" and not sq:
+            raise ValueError("query_mode='materialized' requires a non-empty source_query")
+        if self.query_mode is not None and self.query_mode != "materialized" and sq:
+            raise ValueError("source_query is only valid when query_mode='materialized'")
+        self.source_query = sq
+        return self
 
 
 class ConfigureRequest(BaseModel):
@@ -172,6 +200,7 @@ async def register_table(
         source_type=request.source_type,
         bucket=request.bucket,
         source_table=request.source_table,
+        source_query=request.source_query,
         query_mode=request.query_mode,
         sync_schedule=request.sync_schedule,
         profile_after_sync=request.profile_after_sync,
