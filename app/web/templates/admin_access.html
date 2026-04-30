@@ -47,14 +47,25 @@
     background: #cbd5e1; flex-shrink: 0;
   }
   .group-item.is-active .group-dot { background: var(--primary, #6366f1); }
-  .group-item.is-system .group-dot { background: #f59e0b; }
   .group-meta { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
   .group-name { font-size: 13px; font-weight: 500; color: var(--text-primary, #111827); }
-  .group-name .system-tag {
-    font-size: 9px; padding: 1px 5px; border-radius: 3px;
-    background: #fef3c7; color: #92400e; margin-left: 6px;
-    text-transform: uppercase; font-weight: 600; letter-spacing: 0.4px;
+  .group-name-sub {
+    display: block;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+    font-size: 10px; color: var(--text-secondary, #6b7280);
+    margin-top: 2px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
+  .origin-chip {
+    display: inline-block;
+    padding: 1px 6px; border-radius: 999px;
+    font-size: 9px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.4px;
+    margin-left: 6px; vertical-align: middle;
+  }
+  .origin-system     { background: #fef3c7; color: #92400e; }
+  .origin-custom     { background: #ede9fe; color: #6d28d9; }
+  .origin-google_sync { background: #dcfce7; color: #166534; }
   .group-desc {
     font-size: 11px; color: var(--text-secondary, #6b7280);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -337,8 +348,11 @@
     <!-- RIGHT: Group detail with tabs -->
     <div class="ax-card" id="detail-card">
       <div class="ax-card-head">
-        <h3 id="detail-title">Select a group</h3>
-        <span id="detail-sub" style="font-size:11px; color: var(--text-secondary, #6b7280);"></span>
+        <div style="display:flex; flex-direction:column; gap:2px; min-width:0; flex:1;">
+          <h3 id="detail-title" style="display:flex; align-items:center;">Select a group</h3>
+          <span id="detail-mapped" class="group-name-sub" style="display:none;"></span>
+        </div>
+        <span id="detail-sub" style="font-size:11px; color: var(--text-secondary, #6b7280); flex-shrink:0;"></span>
       </div>
 
       <!-- Resources panel (no tab strip — this page is grants-only) -->
@@ -367,8 +381,23 @@
 const OVERVIEW_API = "/api/admin/access-overview";
 const GROUPS_API = "/api/admin/groups";
 const GRANTS_API = "/api/admin/grants";
+// Server-injected so the sidebar can derive a friendly display name from
+// google-sync groups whose `name` is the raw Workspace email — same trick
+// /admin/groups uses; keeping the surface identical here.
+const GOOGLE_GROUP_PREFIX = {{ config.AGNES_GOOGLE_GROUP_PREFIX | tojson }};
 
 function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+
+function deriveDisplayName(fullEmail) {
+  if (!fullEmail) return "";
+  const local = String(fullEmail).split("@")[0] || String(fullEmail);
+  const px = (GOOGLE_GROUP_PREFIX || "").toLowerCase();
+  let s = local;
+  if (px && s.toLowerCase().startsWith(px)) s = s.slice(px.length);
+  s = s.replace(/^[_\-\s]+/, "");
+  if (!s) return local;
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
 
 function toast(msg, kind = "") {
   const el = document.createElement("div");
@@ -432,12 +461,15 @@ async function selectGroup(gid) {
 
 function renderDetail() {
   const title = document.getElementById("detail-title");
+  const mapped = document.getElementById("detail-mapped");
   const sub = document.getElementById("detail-sub");
   const empty = document.getElementById("detail-empty");
   const resourcesPane = document.querySelector('[data-pane="resources"]');
 
   if (!state.activeGroupId) {
     title.textContent = "Select a group";
+    mapped.style.display = "none";
+    mapped.textContent = "";
     sub.textContent = "";
     resourcesPane.style.display = "none";
     empty.style.display = "block";
@@ -447,7 +479,32 @@ function renderDetail() {
   resourcesPane.style.display = "block";
 
   const group = state.groups.find(g => g.id === state.activeGroupId);
-  title.textContent = group ? group.name : "Group";
+  if (group) {
+    // Mirror the sidebar's title rules: mapped_email present → big name
+    // stays canonical, email goes to the subtitle line. Plain google-sync
+    // group → derive a friendly name and put the raw email below.
+    let bigName = group.name;
+    let subtitleText = "";
+    if (group.mapped_email) {
+      subtitleText = group.mapped_email;
+    } else if (group.is_google_managed) {
+      bigName = deriveDisplayName(group.name);
+      subtitleText = group.name;
+    }
+    const origin = group.origin || (group.is_system ? "system" : "custom");
+    title.innerHTML = `<span>${esc(bigName)}</span><span class="origin-chip origin-${esc(origin)}">${esc(origin.replace("_"," "))}</span>`;
+    if (subtitleText) {
+      mapped.textContent = subtitleText;
+      mapped.style.display = "block";
+    } else {
+      mapped.style.display = "none";
+      mapped.textContent = "";
+    }
+  } else {
+    title.textContent = "Group";
+    mapped.style.display = "none";
+    mapped.textContent = "";
+  }
   const grantedCount = state.grants.filter(g => g.group_id === state.activeGroupId).length;
   sub.textContent = `${grantedCount} resource${grantedCount === 1 ? "" : "s"} granted`;
 
@@ -467,10 +524,29 @@ function renderGroups() {
   for (const g of state.groups) {
     const li = document.createElement("li");
     li.className = "group-item"
-      + (state.activeGroupId === g.id ? " is-active" : "")
-      + (g.is_system ? " is-system" : "");
+      + (state.activeGroupId === g.id ? " is-active" : "");
     li.dataset.id = g.id;
-    const sysTag = g.is_system ? '<span class="system-tag">system</span>' : '';
+    // Origin pill — single chip mirroring /admin/groups treatment. Mapped
+    // Admin/Everyone report origin='google_sync' so the chip color matches
+    // their actual source of truth (Workspace), not the seed mechanism.
+    const origin = g.origin || (g.is_system ? "system" : "custom");
+    const originPill = `<span class="origin-chip origin-${esc(origin)}">${esc(origin.replace("_"," "))}</span>`;
+    // Big-title / subtitle rules — same logic as the /admin/groups list:
+    //   - mapped_email present → big = canonical name, subtitle = mapped_email
+    //   - google_managed user-created group → big = derived friendly name,
+    //     subtitle = full Workspace email stored as `name`
+    //   - everything else → big = name, subtitle = description (or none)
+    let bigName, subtitle;
+    if (g.mapped_email) {
+      bigName = esc(g.name);
+      subtitle = `<span class="group-name-sub">${esc(g.mapped_email)}</span>`;
+    } else if (g.is_google_managed) {
+      bigName = esc(deriveDisplayName(g.name));
+      subtitle = `<span class="group-name-sub">${esc(g.name)}</span>`;
+    } else {
+      bigName = esc(g.name);
+      subtitle = g.description ? `<span class="group-desc">${esc(g.description)}</span>` : "";
+    }
     // Compute live from state.grants — g.grant_count is a server-side
     // snapshot from /access-overview that goes stale as soon as the user
     // toggles a checkbox; reading it here would clobber refreshCounts()
@@ -479,8 +555,8 @@ function renderGroups() {
     li.innerHTML = `
       <span class="group-dot"></span>
       <div class="group-meta">
-        <span class="group-name">${esc(g.name)}${sysTag}</span>
-        ${g.description ? `<span class="group-desc">${esc(g.description)}</span>` : ""}
+        <span class="group-name">${bigName}${originPill}</span>
+        ${subtitle}
       </div>
       <span class="group-count" title="Resources granted to this group">${liveCount}</span>
     `;

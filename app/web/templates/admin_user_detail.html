@@ -94,6 +94,22 @@
   }
   .group-link:hover { color: var(--primary, #4338ca); text-decoration: underline; }
 
+  /* Chip styling for the group cell — same color vocabulary as
+     /admin/users membership chips. Built as <a> so a click on the
+     chip lands the admin on the group's detail page. */
+  .group-chip {
+    display: inline-block;
+    padding: 3px 10px; border-radius: 999px;
+    font-size: 12px; font-weight: 500;
+    text-decoration: none;
+    background: #ede9fe; color: #6d28d9;  /* default = custom (purple) */
+  }
+  .group-chip:hover { filter: brightness(0.97); }
+  .group-chip.is-admin       { background: #fef3c7; color: #92400e; font-weight: 600; }
+  .group-chip.is-everyone    { background: #f3f4f6; color: #4b5563; }
+  .group-chip.is-google_sync { background: #dcfce7; color: #166534; }
+  .group-chip.is-custom      { background: #ede9fe; color: #6d28d9; }
+
   .add-member-row {
     padding: 12px 18px;
     background: var(--border-light, #f9fafb);
@@ -244,10 +260,29 @@ const USER_ID = document.querySelector("[data-user-id]").dataset.userId;
 const USER_API = `/api/users/${encodeURIComponent(USER_ID)}`;
 const MEMBERSHIPS_API = `/api/admin/users/${encodeURIComponent(USER_ID)}/memberships`;
 const EFFECTIVE_API = `/api/admin/users/${encodeURIComponent(USER_ID)}/effective-access`;
+// Server-injected env: empty string = no prefix configured. Same shape as
+// /admin/groups + /admin/users — used to shorten google-sync chip text
+// (`grp_foundryai_legal@groupon.com` → `Legal`) so the membership cell
+// stays readable.
+const GOOGLE_GROUP_PREFIX = {{ config.AGNES_GOOGLE_GROUP_PREFIX | tojson }};
 const GROUPS_API = "/api/admin/groups";
 
 function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
 function fmtDate(s) { return s ? String(s).slice(0, 16).replace("T", " ") : "-"; }
+
+// Same logic as /admin/groups + /admin/users: only safe to call on
+// google_sync rows whose `name` is the raw Workspace email; calling it
+// on a custom group name like "data-team" would over-capitalize it.
+function deriveDisplayName(fullEmail) {
+  if (!fullEmail) return "";
+  const local = String(fullEmail).split("@")[0] || String(fullEmail);
+  const px = (GOOGLE_GROUP_PREFIX || "").toLowerCase();
+  let s = local;
+  if (px && s.toLowerCase().startsWith(px)) s = s.slice(px.length);
+  s = s.replace(/^[_\-\s]+/, "");
+  if (!s) return local;
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
 
 function toast(msg, kind = "") {
   const el = document.createElement("div");
@@ -351,8 +386,19 @@ function renderMemberships() {
     })[m.source] || m.source;
     const addedFragment = m.added_at
       ? `<span class="added">· ${esc(fmtDate(m.added_at))}</span>` : "";
+    // Same chip color + name-shortening rules as the user list:
+    //   - name match (Admin / Everyone) wins over origin so env-mapped
+    //     system rows keep their canonical color
+    //   - google_sync chip text runs through deriveDisplayName ("Legal"
+    //     instead of "grp_foundryai_legal@groupon.com"), full email in
+    //     the title attribute for hover reveal
+    const cls = m.group_name === "Admin"    ? "is-admin"
+              : m.group_name === "Everyone" ? "is-everyone"
+              : `is-${m.origin || "custom"}`;
+    const display = m.origin === "google_sync"
+      ? deriveDisplayName(m.group_name) : m.group_name;
     tr.innerHTML = `
-      <td><a class="group-link" href="/admin/groups">${esc(m.group_name)}</a></td>
+      <td><a class="group-chip ${cls}" href="/admin/groups/${encodeURIComponent(m.group_id)}" title="${esc(m.group_name)}">${esc(display)}</a></td>
       <td><span class="source-meta"><span class="label">${esc(sourceLabel)}</span>${addedFragment}</span></td>
       <td style="text-align:right">${removable}</td>
     `;

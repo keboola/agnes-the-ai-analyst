@@ -219,6 +219,13 @@ async def access_overview(
             "name": g["name"],
             "description": g.get("description"),
             "is_system": bool(g.get("is_system", False)),
+            "created_by": g.get("created_by"),
+            # Same origin / google-management surface as `/api/admin/groups`
+            # so the /admin/access sidebar can render the identical pill +
+            # subtitle treatment without a second source of truth.
+            "origin": _derive_origin(g),
+            "is_google_managed": _is_google_managed(g),
+            "mapped_email": _mapped_email(g),
             "member_count": members_repo.count_members(g["id"]),
             "grant_count": grants_repo.count_for_group(g["id"]),
         })
@@ -261,7 +268,14 @@ class GroupResponse(BaseModel):
     name: str
     description: Optional[str] = None
     is_system: bool = False
-    origin: str = "admin"  # 'system' | 'admin' | 'google_sync'
+    # 'system' | 'custom' | 'google_sync'. ``custom`` = created by an admin
+    # via the UI/CLI (no system marker, no google-sync marker on
+    # ``created_by``). Mapped Admin/Everyone (system row wired to a
+    # Workspace group via AGNES_GROUP_{ADMIN,EVERYONE}_EMAIL) report
+    # 'google_sync' here — Workspace is the authoritative source of
+    # membership for those rows, so the chip should advertise that, not
+    # the seed mechanism. Unmapped Admin/Everyone stay 'system'.
+    origin: str = "custom"
     created_at: Optional[str] = None
     created_by: Optional[str] = None
     member_count: int = 0
@@ -269,6 +283,14 @@ class GroupResponse(BaseModel):
     # True iff the row is owned by Google sync — admin UI hides edit/delete
     # affordances and the API rejects mutations with 409 google_managed_readonly.
     is_google_managed: bool = False
+    # When the row is the seeded Admin / Everyone system group AND the
+    # corresponding env-mapping is configured, this is the upstream
+    # Workspace group email that funnels members in. The admin UI renders
+    # it as a subtitle under the canonical name (`Admin / admins@...`)
+    # so operators can see *which* Workspace group is wired to the system
+    # row. Null for regular google_sync rows (their email is already in
+    # `name`) and for unmapped system rows.
+    mapped_email: Optional[str] = None
 
 
 class CreateGroupRequest(BaseModel):
@@ -282,24 +304,57 @@ class UpdateGroupRequest(BaseModel):
 
 
 def _derive_origin(g: dict) -> str:
-    """Project a 3-value origin tag from the existing user_groups columns.
+    """Project a 3-value origin tag from existing user_groups columns.
 
-    - ``is_system=TRUE``                       → 'system'  (Admin / Everyone)
-    - ``created_by`` starts with 'system:'     → 'google_sync' (or other auto)
-    - else                                     → 'admin' (created via UI/CLI)
-
-    The OAuth callback stamps ``created_by='system:google-sync'`` when it
-    auto-creates a group from a Cloud Identity claim, so the origin is
-    derivable without a new column.
+      - mapped via ``AGNES_GROUP_{ADMIN,EVERYONE}_EMAIL`` → 'google_sync'
+        (the seed badge is suppressed when the row is wired to Workspace —
+        Workspace is the authoritative source of membership)
+      - ``is_system=TRUE`` (otherwise)                   → 'system'
+      - ``created_by`` starts with 'system:google'       → 'google_sync'
+      - other ``system:`` prefixed creator               → 'system'
+      - else                                             → 'custom'
+        (admin-created via UI/CLI — the value is named after the *origin*,
+        not the creator's role, so it doesn't visually clash with the
+        seeded `Admin` system row in the chip layer)
     """
-    if g.get("is_system"):
-        return "system"
+    is_system = bool(g.get("is_system"))
     cb = g.get("created_by") or ""
+    name = g.get("name") or ""
+    if is_system:
+        from src.db import SYSTEM_ADMIN_GROUP, SYSTEM_EVERYONE_GROUP
+        admin_email = os.environ.get("AGNES_GROUP_ADMIN_EMAIL", "").strip()
+        everyone_email = os.environ.get("AGNES_GROUP_EVERYONE_EMAIL", "").strip()
+        if (admin_email and name == SYSTEM_ADMIN_GROUP) or (
+            everyone_email and name == SYSTEM_EVERYONE_GROUP
+        ):
+            return "google_sync"
+        return "system"
     if cb.startswith("system:google"):
         return "google_sync"
     if cb.startswith("system:"):
         return "system"
-    return "admin"
+    return "custom"
+
+
+def _mapped_email(g: dict) -> Optional[str]:
+    """The Workspace group email that funnels members into a system row.
+
+    Only returns a value when the row is the seeded ``Admin`` / ``Everyone``
+    system group AND the matching env var is configured. Null otherwise —
+    regular google_sync rows already carry the email in ``name``, and
+    unmapped system rows have nothing to show.
+    """
+    if not g.get("is_system"):
+        return None
+    from src.db import SYSTEM_ADMIN_GROUP, SYSTEM_EVERYONE_GROUP
+    name = g.get("name")
+    if name == SYSTEM_ADMIN_GROUP:
+        v = os.environ.get("AGNES_GROUP_ADMIN_EMAIL", "").strip()
+        return v or None
+    if name == SYSTEM_EVERYONE_GROUP:
+        v = os.environ.get("AGNES_GROUP_EVERYONE_EMAIL", "").strip()
+        return v or None
+    return None
 
 
 def _group_to_response(
@@ -318,6 +373,7 @@ def _group_to_response(
         member_count=members_repo.count_members(g["id"]),
         grant_count=grants_repo.count_for_group(g["id"]),
         is_google_managed=_is_google_managed(g),
+        mapped_email=_mapped_email(g),
     )
 
 
@@ -703,6 +759,10 @@ class UserMembershipResponse(BaseModel):
     group_id: str
     group_name: str
     is_system: bool = False
+    # 'system' | 'custom' | 'google_sync' — same shared helper as
+    # /api/admin/groups + /api/users so the user detail page colors the
+    # membership chips identically to the user list and the groups page.
+    origin: str = "custom"
     source: str
     added_at: Optional[str] = None
     added_by: Optional[str] = None
@@ -731,7 +791,7 @@ async def list_user_memberships(
         raise HTTPException(status_code=404, detail="User not found")
     rows = conn.execute(
         """SELECT m.group_id, g.name AS group_name, g.is_system,
-                  m.source, m.added_at, m.added_by
+                  g.created_by, m.source, m.added_at, m.added_by
            FROM user_group_members m
            JOIN user_groups g ON g.id = m.group_id
            WHERE m.user_id = ?
@@ -743,9 +803,12 @@ async def list_user_memberships(
             group_id=r[0],
             group_name=r[1],
             is_system=bool(r[2]),
-            source=r[3],
-            added_at=str(r[4]) if r[4] else None,
-            added_by=r[5],
+            origin=_derive_origin(
+                {"is_system": bool(r[2]), "name": r[1], "created_by": r[3]}
+            ),
+            source=r[4],
+            added_at=str(r[5]) if r[5] else None,
+            added_by=r[6],
         )
         for r in rows
     ]

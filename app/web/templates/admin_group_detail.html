@@ -42,7 +42,7 @@
     vertical-align: middle; margin-left: 8px;
   }
   .origin-system     { background: #fef3c7; color: #92400e; }
-  .origin-admin      { background: #ede9fe; color: #6d28d9; }
+  .origin-custom     { background: #ede9fe; color: #6d28d9; }
   .origin-google_sync { background: #dcfce7; color: #166534; }
 
   .gd-section {
@@ -154,19 +154,31 @@
      data-group-name="{{ target_group.name }}"
      data-is-system="{{ 'true' if target_group.is_system else 'false' }}"
      data-is-google-managed="{{ 'true' if target_group.is_google_managed else 'false' }}"
+     data-mapped-email="{{ target_group.mapped_email or '' }}"
      data-google-prefix="{{ config.AGNES_GOOGLE_GROUP_PREFIX }}">
   <div class="gd-header">
     <a href="/admin/groups" class="gd-back">← Back to groups</a>
     <div class="gd-title-block">
       <h1 class="gd-title" id="header-title">
-        {% if target_group.is_google_managed %}
+        {# Big-title logic mirrors the list view:
+           - mapped_email set (Admin/Everyone wired to Workspace) → keep
+             canonical name as the big title and put the Workspace email
+             below as `gd-title-email`.
+           - is_google_managed without mapped_email → derived display name
+             via JS (deriveDisplayName), full email below.
+           - everything else → the row's name. #}
+        {% if target_group.mapped_email %}
+          {{ target_group.name }}
+        {% elif target_group.is_google_managed %}
           <span id="header-display-name">{{ target_group.name }}</span>
         {% else %}
           {{ target_group.name }}
         {% endif %}
         <span id="origin-chip" class="origin-chip" style="display:none;"></span>
       </h1>
-      {% if target_group.is_google_managed %}
+      {% if target_group.mapped_email %}
+        <span class="gd-title-email">{{ target_group.mapped_email }}</span>
+      {% elif target_group.is_google_managed %}
         <span class="gd-title-email">{{ target_group.name }}</span>
       {% endif %}
       <div class="gd-subtitle" id="header-sub">
@@ -251,6 +263,7 @@ const root = document.querySelector(".gd-page");
 const GROUP_ID = root.dataset.groupId;
 const IS_SYSTEM = root.dataset.isSystem === "true";
 const IS_GOOGLE_MANAGED = root.dataset.isGoogleManaged === "true";
+const MAPPED_EMAIL = root.dataset.mappedEmail || "";
 const GOOGLE_GROUP_PREFIX = root.dataset.googlePrefix || "";
 const GROUP_API = `/api/admin/groups/${encodeURIComponent(GROUP_ID)}`;
 const MEMBERS_API = `${GROUP_API}/members`;
@@ -266,7 +279,11 @@ function deriveDisplayName(fullEmail) {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-if (IS_GOOGLE_MANAGED) {
+// When a system row carries mapped_email, the canonical name (Admin /
+// Everyone) is the right big title — skip the email-strip rewrite. The
+// rewrite only applies to user-created google_sync groups whose `name`
+// is the raw Workspace email.
+if (IS_GOOGLE_MANAGED && !MAPPED_EMAIL) {
   const dn = document.getElementById("header-display-name");
   if (dn) dn.textContent = deriveDisplayName(root.dataset.groupName);
 }
@@ -290,8 +307,9 @@ async function loadGroup() {
   if (!r.ok) return;
   groupState = await r.json();
   const chip = document.getElementById("origin-chip");
-  chip.textContent = (groupState.origin || "admin").replace("_", " ");
-  chip.className = "origin-chip origin-" + (groupState.origin || "admin");
+  const origin = groupState.origin || "custom";
+  chip.textContent = origin.replace("_", " ");
+  chip.className = "origin-chip origin-" + origin;
   chip.style.display = "inline-block";
   document.getElementById("res-count").textContent = groupState.grant_count || 0;
   if (!groupState.grant_count) {
