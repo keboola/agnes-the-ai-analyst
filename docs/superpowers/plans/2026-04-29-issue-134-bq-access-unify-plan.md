@@ -194,7 +194,7 @@ Expected: all green (existing tests unaffected — the change is additive).
 - [ ] **Step 9: Commit (intermediate, will be squashed before PR)**
 
 ```bash
-cd "/Users/zdeneksrotyr/Library/Mobile Documents/com~apple~CloudDocs/Sources/VsCode/component_factory/tmp_oss-134-bq-access"
+cd <worktree-root>
 git add app/api/v2_sample.py tests/test_v2_sample.py
 git commit -m "fix(v2_sample): #134 add billing_project fallback + structured 502 on BQ Forbidden"
 ```
@@ -2170,5 +2170,5 @@ All spec sections have at least one task implementing them. No placeholders in t
 
 - Each task's tests come BEFORE the implementation per TDD. Run the failing test first, then implement, then verify pass.
 - Intermediate commits during dev are fine — Task 3.2 squashes them into the two PR-shape commits.
-- The plan stays in the worktree (`../tmp_oss-134-bq-access`, branch `fix/134-bq-access-unify`). All commits land there. Push to GitHub when ready for PR.
+- The plan stays in the worktree (`<worktree-root>`, branch `fix/134-bq-access-unify`). All commits land there. Push to GitHub when ready for PR.
 - If a task's TDD step finds an issue with the spec's design, STOP and update the spec before proceeding. Don't paper over design holes in implementation.

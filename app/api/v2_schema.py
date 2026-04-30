@@ -43,6 +43,12 @@ def _fetch_bq_schema(bq, dataset: str, table: str) -> list[dict]:
     from connectors.bigquery.access import translate_bq_error
     from src.identifier_validation import validate_quoted_identifier
 
+    # Surface "BQ not configured" as the structured 500 BqAccessError(not_configured)
+    # with hint, not the misleading 400 unsafe_identifier the empty-string sentinel
+    # would otherwise trigger from validate_quoted_identifier below. Devin BUG_0002.
+    if not bq.projects.data:
+        bq.client()  # raises BqAccessError(not_configured); endpoint catches it
+
     # Defense in depth (cf. v2_sample) — registry already validates these,
     # but the v2 endpoints are downstream of admin REST writes that could
     # bypass that gate. A backtick in `dataset` would otherwise break out
@@ -93,6 +99,13 @@ def _fetch_bq_table_options(bq, dataset: str, table: str) -> dict:
     on. See tests/test_v2_schema.py::test_schema_returns_200_with_empty_…
     """
     from src.identifier_validation import validate_quoted_identifier
+
+    # Best-effort path: if BQ isn't configured (sentinel BqAccess), return
+    # empty partition info silently — operator gets schema (200) without
+    # failing on the missing config. The strict /schema path (_fetch_bq_schema)
+    # surfaces the not_configured error separately.
+    if not bq.projects.data:
+        return {}
 
     if not (validate_quoted_identifier(bq.projects.data, "BQ project")
             and validate_quoted_identifier(dataset, "BQ dataset")
