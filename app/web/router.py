@@ -883,6 +883,28 @@ async def admin_marketplaces_page(
     return templates.TemplateResponse(request, "admin_marketplaces.html", ctx)
 
 
+@router.get("/admin/welcome", response_class=HTMLResponse)
+async def admin_welcome_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    from src.repositories.welcome_template import WelcomeTemplateRepository
+    from src.welcome_template import _load_default_template
+
+    row = WelcomeTemplateRepository(conn).get()
+    ctx = _build_context(
+        request,
+        user=user,
+        current=row["content"] or "",
+        default_template=_load_default_template(),
+        updated_at=row["updated_at"],
+        updated_by=row["updated_by"],
+        is_override=row["content"] is not None,
+    )
+    return templates.TemplateResponse(request, "admin_welcome.html", ctx)
+
+
 @router.get("/tokens", response_class=HTMLResponse)
 async def my_tokens_page(
     request: Request,
