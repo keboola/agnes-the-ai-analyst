@@ -140,9 +140,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   by it. Three retry attempts with backoff, then exit non-zero. Prevents the
   silent regression where docker host-mount propagation unmounts the config
   disk and the app writes user state (DuckDB, marketplaces, session secret)
-  onto `/data` (sdb) — wiped on the next container recreate. Reproduced on
-  `foundryai-development` 2026-04-30. Re-applies `mount --make-rprivate
-  /data /data/state` on every run to defend against propagation regressions.
+  onto `/data` (sdb) — wiped on the next container recreate. Re-applies
+  `mount --make-rprivate /data /data/state` on every run to defend against
+  propagation regressions.
 - Removed rogue module-level `logging.basicConfig` from `app/api/sync.py` that
   was reconfiguring root logger every time the api module was imported.
 - `RequestIdMiddleware` rewritten as a pure ASGI middleware (was

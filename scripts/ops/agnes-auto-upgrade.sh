@@ -14,9 +14,8 @@ set -a; . /opt/agnes/.env; set +a
 # Fail-fast guard: if the VM has a config disk attached, it MUST be
 # mounted at /data/state before any container action. Otherwise the
 # app would write state onto /data (sdb) and lose it on the next
-# container recreate — exactly the regression that wiped marketplaces
-# on foundryai-development 2026-04-30. Three retries (mount may race
-# with udev on cold boot) then hard exit.
+# container recreate — the regression that motivated this guard.
+# Three retries (mount may race with udev on cold boot) then hard exit.
 CONFIG_DEVICE=/dev/disk/by-id/google-config-disk
 if [ -e "$CONFIG_DEVICE" ]; then
   attempt=0
