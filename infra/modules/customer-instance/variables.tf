@@ -93,7 +93,7 @@ variable "image_repo" {
 }
 
 variable "compose_ref" {
-  description = "Git ref to fetch docker-compose.yml and overlays from (in keboola/agnes-the-ai-analyst). Use `main` for latest, or a tag like `stable-2026.04.47` for reproducibility."
+  description = "DEPRECATED — no longer used. Compose files now ship inside the docker image at /opt/agnes-host/ and are extracted via `docker cp` from the same `image_tag` the operator pinned. Pin `image_tag` instead. Variable retained for one release cycle to avoid breaking existing terraform plans; will be removed in a future major bump."
   type        = string
   default     = "main"
 }
