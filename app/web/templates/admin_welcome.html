@@ -10,14 +10,14 @@
     to use the OSS-shipped default.
   </p>
 
+  <p class="status" id="status-line">
   {% if is_override %}
-    <p class="status">
-      Overridden by <strong>{{ updated_by }}</strong> on
-      {{ updated_at.strftime("%Y-%m-%d %H:%M UTC") if updated_at else "—" }}.
-    </p>
+    Overridden by <strong>{{ updated_by }}</strong> on
+    {{ updated_at.strftime("%Y-%m-%d %H:%M UTC") if updated_at else "—" }}.
   {% else %}
-    <p class="status">Using shipped default.</p>
+    Using shipped default.
   {% endif %}
+  </p>
 
   <h2>Available placeholders</h2>
   <pre class="placeholder-cheatsheet">
@@ -50,40 +50,75 @@
   const $ = (id) => document.getElementById(id);
   const result = $("result");
 
+  async function refreshStatus() {
+    const r = await fetch("/api/admin/welcome-template", {credentials: "include"});
+    if (!r.ok) return;
+    const data = await r.json();
+    const status = $("status-line");
+    if (data.content !== null) {
+      const when = data.updated_at
+        ? new Date(data.updated_at).toISOString().slice(0, 16).replace("T", " ") + " UTC"
+        : "—";
+      status.innerHTML = "Overridden by <strong>" + (data.updated_by || "—") + "</strong> on " + when + ".";
+      $("content").value = data.content;
+    } else {
+      status.textContent = "Using shipped default.";
+      $("content").value = data.default;
+    }
+  }
+
   $("save-btn").addEventListener("click", async () => {
     result.textContent = "Saving…";
     const r = await fetch("/api/admin/welcome-template", {
       method: "PUT",
+      credentials: "include",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({content: $("content").value}),
     });
     if (r.ok) {
       result.textContent = "Saved.";
+      await refreshStatus();
     } else {
-      const err = await r.json();
-      result.textContent = "Error: " + (err.detail || r.statusText);
+      let detail = r.statusText;
+      try { detail = (await r.json()).detail || detail; } catch {}
+      result.textContent = "Error: " + detail;
     }
   });
 
   $("reset-btn").addEventListener("click", async () => {
     if (!confirm("Reset to OSS default? Your override will be lost.")) return;
-    const r = await fetch("/api/admin/welcome-template", {method: "DELETE"});
+    const r = await fetch("/api/admin/welcome-template", {
+      method: "DELETE",
+      credentials: "include",
+    });
     if (r.ok) {
-      result.textContent = "Reset. Reload to see the default.";
+      result.textContent = "Reset to default.";
+      await refreshStatus();
     } else {
-      result.textContent = "Error: " + r.statusText;
+      let detail = r.statusText;
+      try { detail = (await r.json()).detail || detail; } catch {}
+      result.textContent = "Error: " + detail;
     }
   });
 
   $("preview-btn").addEventListener("click", async () => {
-    const r = await fetch("/api/welcome?server_url=" + encodeURIComponent(window.location.origin));
+    result.textContent = "Rendering preview…";
+    const r = await fetch("/api/admin/welcome-template/preview", {
+      method: "POST",
+      credentials: "include",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({content: $("content").value}),
+    });
     if (r.ok) {
       const j = await r.json();
       $("preview").textContent = j.content;
       $("preview").hidden = false;
+      result.textContent = "Preview rendered.";
     } else {
-      const err = await r.json();
-      result.textContent = "Render error: " + (err.detail || r.statusText);
+      let detail = r.statusText;
+      try { detail = (await r.json()).detail || detail; } catch {}
+      result.textContent = "Render error: " + detail;
+      $("preview").hidden = true;
     }
   });
 </script>
