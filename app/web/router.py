@@ -958,7 +958,7 @@ async def profile_page(
     # Project the same chip metadata the /admin/users/{id} page derives:
     # origin (single source of truth via app.api.access._derive_origin),
     # plus a display_name that shortens raw Workspace emails for
-    # google_sync rows (`grp_foundryai_legal@groupon.com` → `Legal`). The
+    # google_sync rows (`grp_acme_legal@workspace.example.com` → `Legal`). The
     # Jinja template just renders these without env lookups.
     from app.api.access import _derive_origin
     prefix = os.environ.get("AGNES_GOOGLE_GROUP_PREFIX", "").strip().lower()
