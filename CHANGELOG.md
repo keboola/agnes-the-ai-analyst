@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+
+- **`scripts/ops/agnes-auto-upgrade.sh` now ships in the docker image, not curled from `main` at boot.** The Dockerfile bakes the script at `/opt/agnes-host-scripts/agnes-auto-upgrade.sh` and the customer-instance startup template extracts it via `docker create` + `docker cp` from the same `AGNES_TAG` the operator already pinned. Replaces the curl-from-main pattern shipped in 0.25.0, which decoupled the host-side cron driver from the pinned image (split-brain — image at `stable-2026.04.516`, script floating on whatever `main` was when the VM last booted) and gave no rollback knob other than reverting the upstream PR globally. With the script baked in, host scripts and app code are released together from one commit; AGNES_TAG controls both; rollback is a tag bump. Drift prevention (the original motivation for centralizing the script) is preserved — the image and the script CANNOT drift because they ship together.
+
 ## [0.25.0] — 2026-04-30
 
 ### Fixed

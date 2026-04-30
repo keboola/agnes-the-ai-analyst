@@ -168,23 +168,23 @@ docker compose $COMPOSE_FILES $COMPOSE_PROFILES_ARG up -d
 
 # --- 6. Auto-upgrade via cron (pulls new image digest every 5 min) ---
 if [ "$UPGRADE_MODE" = "auto" ]; then
-    # Single-source the cron script from the OSS repo's main branch instead
-    # of inlining a copy here. Two reasons:
-    #   1. Drift prevention — earlier inline copy missed several iterations
-    #      of the canonical script (TLS overlay detection, array-form compose
-    #      files, config-disk fail-fast guard).
-    #   2. Re-fetched on every VM boot, so script-only fixes propagate
-    #      without an infra recreate. For immediate rollout to running VMs,
-    #      operators can also re-run this fetch by hand.
+    # Extract the cron script from the pinned image at /opt/agnes-host-scripts/.
+    # The Dockerfile bakes scripts/ops/agnes-auto-upgrade.sh there explicitly
+    # so it ships alongside the app at the same AGNES_TAG. Replaces the
+    # earlier `curl from raw.githubusercontent.com/main` approach: that
+    # decoupled the host script from the pinned image (split-brain — image
+    # at stable-YYYY.MM.N, script floating on whatever main is right now)
+    # and gave no rollback path. With the script baked into the image,
+    # whatever AGNES_TAG the operator pins controls BOTH the running
+    # container AND the host-side cron driver. Atomic, version-pinned,
+    # reverted by reverting the image.
     #
-    # Coupling note: this URL is pinned to `main` while compose files above
-    # honor $COMPOSE_REF. If a future canonical script references a NEW
-    # compose file, the fetch list above MUST be updated to match — pinned-
-    # ref VMs would otherwise break on the next cron tick. Treat the docker-
-    # compose.* fetch list as the contract that agnes-auto-upgrade.sh relies
-    # on; new compose files referenced from main need a corresponding fetch.
-    SCRIPT_URL="https://raw.githubusercontent.com/keboola/agnes-the-ai-analyst/main/scripts/ops/agnes-auto-upgrade.sh"
-    curl -fsSL --retry 3 --retry-delay 2 "$SCRIPT_URL" -o /usr/local/bin/agnes-auto-upgrade.sh
+    # Drift prevention (the original motivation for centralizing the
+    # script) is preserved — this script and the image are released
+    # together from the same commit, so nothing can drift between them.
+    EXTRACT_CONTAINER=$(docker create "ghcr.io/keboola/agnes-the-ai-analyst:$${AGNES_TAG:-stable}")
+    docker cp "$EXTRACT_CONTAINER:/opt/agnes-host-scripts/agnes-auto-upgrade.sh" /usr/local/bin/agnes-auto-upgrade.sh
+    docker rm "$EXTRACT_CONTAINER" >/dev/null
     chmod +x /usr/local/bin/agnes-auto-upgrade.sh
 
     # Install cron entry idempotently: remove any prior agnes-auto-upgrade line, then append ours.

@@ -17,6 +17,21 @@ WORKDIR /app
 
 COPY . .
 
+# Bake host-side scripts at a stable, well-known path so VM startup can
+# extract them via `docker create` + `docker cp` instead of curling from
+# raw.githubusercontent.com/main. This pins host scripts to AGNES_TAG
+# the same way it already pins the app — eliminates the split-brain
+# where the immutable image runs against an arbitrary main-branch
+# bash script.
+#
+# Why a copy instead of pointing at /app/scripts/ops directly:
+#   /app is owned by uid 999 and the path may shift; /opt/agnes-host-scripts
+#   is the contract for `docker cp` consumers. Stable path, root-readable,
+#   permissions guaranteed.
+RUN mkdir -p /opt/agnes-host-scripts && \
+    cp /app/scripts/ops/agnes-auto-upgrade.sh /opt/agnes-host-scripts/agnes-auto-upgrade.sh && \
+    chmod 0755 /opt/agnes-host-scripts/agnes-auto-upgrade.sh
+
 # Build wheel artifact (served at /cli/download)
 RUN uv build --wheel --out-dir /app/dist
 
