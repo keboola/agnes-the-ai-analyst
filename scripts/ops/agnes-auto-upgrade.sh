@@ -30,7 +30,7 @@ if [ -e "$CONFIG_DEVICE" ]; then
       logger -t agnes-auto-upgrade "WARN: /data/state on $actual_dev, expected $expected_dev — attempting remount"
       umount /data/state 2>/dev/null || true
     fi
-    mount "$CONFIG_DEVICE" /data/state 2>&1 || true
+    mount "$CONFIG_DEVICE" /data/state 2>/dev/null || true
     sleep $((attempt * 2))
   done
 
