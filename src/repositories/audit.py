@@ -35,8 +35,16 @@ class AuditRepository:
         self,
         user_id: Optional[str] = None,
         action: Optional[str] = None,
+        action_prefix: Optional[str] = None,
+        resource: Optional[str] = None,
         limit: int = 50,
     ) -> List[Dict[str, Any]]:
+        """List audit_log rows newest-first, with optional filters.
+
+        ``action`` matches the full action string; ``action_prefix`` is a
+        ``LIKE 'prefix%'`` filter useful for slicing by category (e.g.
+        ``action_prefix='metric.'`` returns every metric.* row).
+        """
         sql = "SELECT * FROM audit_log WHERE 1=1"
         params: List[Any] = []
         if user_id:
@@ -45,6 +53,12 @@ class AuditRepository:
         if action:
             sql += " AND action = ?"
             params.append(action)
+        if action_prefix:
+            sql += " AND action LIKE ?"
+            params.append(action_prefix + "%")
+        if resource:
+            sql += " AND resource = ?"
+            params.append(resource)
         sql += " ORDER BY timestamp DESC LIMIT ?"
         params.append(limit)
         results = self.conn.execute(sql, params).fetchall()
