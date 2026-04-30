@@ -148,6 +148,79 @@ def init_extract(
     return stats
 
 
+def materialize_query(
+    table_id: str,
+    sql: str,
+    project_id: str,
+    output_dir: str,
+    *,
+    skip_attach: bool = False,
+) -> Dict[str, Any]:
+    """Run an SQL query through the DuckDB BigQuery extension and write the
+    result to a parquet file at `output_dir/data/{table_id}.parquet`.
+
+    Atomic: writes to `<file>.tmp` first, swaps in via os.replace, deletes the
+    tmp on failure so a half-written parquet never appears under the canonical
+    name.
+
+    Args:
+        table_id: Logical id from table_registry; becomes the parquet filename.
+            Must pass `validate_identifier()` so it cannot inject path traversal.
+        sql: SELECT statement (no trailing semicolon). May reference
+            `bq."dataset"."table"` after the BigQuery ATTACH.
+        project_id: GCP project ID for the ATTACH.
+        output_dir: connector root, e.g. `/data/extracts/bigquery`. Parquet
+            lands in `<output_dir>/data/<table_id>.parquet`.
+        skip_attach: Test-only — skip INSTALL/LOAD/ATTACH so a stubbed schema
+            can stand in. Never True in production.
+
+    Returns:
+        {"rows": int, "size_bytes": int, "query_mode": "materialized"}
+
+    Raises:
+        ValueError: if `table_id` is unsafe.
+        duckdb.Error: if the COPY fails (e.g. bad SQL, missing table).
+    """
+    if not validate_identifier(table_id, "table_id"):
+        raise ValueError(f"unsafe table_id: {table_id!r}")
+
+    out_path = Path(output_dir)
+    data_dir = out_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    parquet_path = data_dir / f"{table_id}.parquet"
+    tmp_path = data_dir / f"{table_id}.parquet.tmp"
+    if tmp_path.exists():
+        tmp_path.unlink()
+
+    # Throwaway in-memory connection so we never lock extract.duckdb.
+    conn = duckdb.connect(":memory:")
+    try:
+        if not skip_attach:
+            conn.execute("INSTALL bigquery FROM community; LOAD bigquery;")
+            conn.execute(
+                f"ATTACH 'project={project_id}' AS bq (TYPE bigquery, READ_ONLY)"
+            )
+
+        safe_path = str(tmp_path).replace("'", "''")
+        conn.execute(f"COPY ({sql}) TO '{safe_path}' (FORMAT PARQUET)")
+
+        rows = conn.execute(
+            f"SELECT count(*) FROM read_parquet('{safe_path}')"
+        ).fetchone()[0]
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise
+    finally:
+        conn.close()
+
+    size_bytes = tmp_path.stat().st_size
+    os.replace(tmp_path, parquet_path)
+
+    return {"rows": int(rows), "size_bytes": size_bytes, "query_mode": "materialized"}
+
+
 if __name__ == "__main__":
     """Standalone: reads config from instance.yaml + table_registry, creates extract."""
     from config.loader import load_instance_config
