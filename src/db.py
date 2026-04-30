@@ -39,7 +39,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -404,6 +404,18 @@ CREATE TABLE IF NOT EXISTS resource_grants (
     assigned_at   TIMESTAMP DEFAULT current_timestamp,
     assigned_by   VARCHAR,
     UNIQUE (group_id, resource_type, resource_id)
+);
+
+-- v21: customizable analyst-bootstrap welcome prompt.
+-- Singleton row (id=1). NULL content means "use the default template
+-- shipped at config/claude_md_template.txt"; admin-edited override
+-- stores the raw Jinja2 source string.
+CREATE TABLE IF NOT EXISTS welcome_template (
+    id INTEGER PRIMARY KEY DEFAULT 1,
+    content TEXT,
+    updated_at TIMESTAMP,
+    updated_by VARCHAR,
+    CONSTRAINT singleton CHECK (id = 1)
 );
 """
 
@@ -1614,6 +1626,17 @@ _V3_TO_V4_MIGRATIONS = [
     """,
 ]
 
+_V20_TO_V21_MIGRATIONS = [
+    """CREATE TABLE IF NOT EXISTS welcome_template (
+        id INTEGER PRIMARY KEY DEFAULT 1,
+        content TEXT,
+        updated_at TIMESTAMP,
+        updated_by VARCHAR,
+        CONSTRAINT singleton CHECK (id = 1)
+    )""",
+    "INSERT INTO welcome_template (id, content) VALUES (1, NULL) ON CONFLICT (id) DO NOTHING",
+]
+
 
 def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
     """Create tables if they don't exist. Apply migrations if schema version changed.
@@ -1671,6 +1694,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             conn.execute(
                 "INSERT INTO schema_version (version) VALUES (?)",
                 [SCHEMA_VERSION],
+            )
+            conn.execute(
+                "INSERT INTO welcome_template (id, content) VALUES (1, NULL) "
+                "ON CONFLICT (id) DO NOTHING"
             )
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
@@ -1748,6 +1775,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v18_to_v19_finalize(conn)
             if current < 20:
                 for sql in _V19_TO_V20_MIGRATIONS:
+                    conn.execute(sql)
+            if current < 21:
+                for sql in _V20_TO_V21_MIGRATIONS:
                     conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
