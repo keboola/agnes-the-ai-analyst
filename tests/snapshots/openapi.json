@@ -2833,55 +2833,6 @@
         ]
       }
     },
-    "/activity-center": {
-      "get": {
-        "operationId": "activity_center_activity_center_get",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "text/html": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Activity Center",
-        "tags": [
-          "web"
-        ]
-      }
-    },
     "/admin/access": {
       "get": {
         "description": "Resource access management \u2014 master-detail layout with the group list\non the left and per-resource-type checkbox tree on the right. Supports\n``?group=<id>`` deep-link from the group detail page.\n\nUnderlying entity is `resource_grants`; the UI label \"Resource access\"\nmatches what admins think about (who has access) rather than the table\nname (grants).",
