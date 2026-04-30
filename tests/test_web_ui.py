@@ -78,10 +78,6 @@ class TestWebUISmoke:
         resp = web_client.get("/corporate-memory", cookies=admin_cookie)
         assert resp.status_code == 200
 
-    def test_activity_center(self, web_client, admin_cookie):
-        resp = web_client.get("/activity-center", cookies=admin_cookie)
-        assert resp.status_code == 200
-
     def test_admin_tables(self, web_client, admin_cookie):
         resp = web_client.get("/admin/tables", cookies=admin_cookie)
         if resp.status_code == 404:

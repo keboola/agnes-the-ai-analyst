@@ -137,7 +137,6 @@ _URL_MAP = {
     "catalog": "/catalog",
     "corporate_memory": "/corporate-memory",
     "corporate_memory_admin": "/corporate-memory/admin",
-    "activity_center": "/activity-center",
     "index": "/",
     "auth.login": "/login",
     "auth.logout": "/login",  # No logout route — redirect to login
@@ -471,6 +470,14 @@ async def dashboard(
     enabled_datasets = settings_repo.get_enabled_datasets(user["id"])
     datasets = get_datasets()
 
+    # Live Telegram link state — same lookup as GET /api/telegram/status,
+    # inlined to avoid an extra round-trip from the template.
+    from src.repositories.notifications import TelegramRepository
+    _tg_link = TelegramRepository(conn).get_link(user["id"])
+    telegram_status_ctx = {"linked": bool(_tg_link)}
+    if _tg_link:
+        telegram_status_ctx["chat_id"] = _tg_link["chat_id"]
+
     # Stats
     total_tables = len(all_states)
     total_rows = sum(s.get("rows", 0) or 0 for s in all_states)
@@ -502,7 +509,7 @@ async def dashboard(
         datasets=datasets,
         account_status="active",
         account_details=None,
-        telegram_status={"linked": False},
+        telegram_status=telegram_status_ctx,
         data_stats={
             "tables": total_tables,
             "total_tables": total_tables,
@@ -518,7 +525,6 @@ async def dashboard(
         categories=[],
         metrics_data=[],
         desktop_status={"linked": False},
-        activity_summary={"total_sessions": 0, "total_queries": 0},
         knowledge_stats={"total": 0, "approved": 0},
         user_knowledge_stats={"authored": 0, "votes_given": 0},
     )
@@ -741,25 +747,6 @@ async def corporate_memory_admin(
         audit_entries=[],
     )
     return templates.TemplateResponse(request, "corporate_memory_admin.html", ctx)
-
-
-@router.get("/activity-center", response_class=HTMLResponse)
-async def activity_center(
-    request: Request,
-    user: dict = Depends(get_current_user),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
-):
-    repo = KnowledgeRepository(conn)
-    stats = {
-        "total_items": len(repo.list_items(limit=10000)),
-    }
-    ctx = _build_context(
-        request, user=user,
-        stats=stats,
-        activity={"recent_sessions": [], "recent_reports": [], "insights": []},
-        knowledge_stats={"total": 0, "approved": 0, "mandatory": 0},
-    )
-    return templates.TemplateResponse(request, "activity_center.html", ctx)
 
 
 @router.get("/setup", response_class=HTMLResponse)
