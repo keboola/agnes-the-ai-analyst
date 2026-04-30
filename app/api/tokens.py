@@ -112,7 +112,7 @@ async def create_token(
     # app/auth/dependencies.py (via the DB row).
     # Build the JWT that embeds jti=token_id and typ=pat
     jwt_token = create_access_token(
-        user_id=user["id"], email=user["email"], role=user["role"],
+        user_id=user["id"], email=user["email"],
         token_id=token_id, typ="pat",
         expires_delta=expires_delta, omit_exp=omit_exp,
     )

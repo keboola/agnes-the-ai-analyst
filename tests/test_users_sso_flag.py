@@ -41,12 +41,12 @@ def _seed_admin():
     conn = get_system_db()
     try:
         uid = str(uuid.uuid4())
-        UserRepository(conn).create(id=uid, email="admin@test", name="Admin", role="admin")
+        UserRepository(conn).create(id=uid, email="admin@test", name="Admin")
         admin_gid = conn.execute(
             "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
         ).fetchone()[0]
         UserGroupMembersRepository(conn).add_member(uid, admin_gid, source="system_seed")
-        return uid, create_access_token(user_id=uid, email="admin@test", role="admin")
+        return uid, create_access_token(user_id=uid, email="admin@test")
     finally:
         conn.close()
 
@@ -58,7 +58,7 @@ def _create_user(email: str) -> str:
     conn = get_system_db()
     try:
         uid = str(uuid.uuid4())
-        UserRepository(conn).create(id=uid, email=email, name=email.split("@")[0], role="analyst")
+        UserRepository(conn).create(id=uid, email=email, name=email.split("@")[0])
         return uid
     finally:
         conn.close()

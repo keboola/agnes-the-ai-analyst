@@ -16,13 +16,26 @@ def _seed_two_tables(conn):
     repo.register(
         id="orders", name="orders", source_type="keboola",
         bucket="sales", source_table="orders", query_mode="local",
-        is_public=True,
     )
     repo.register(
         id="bq_view", name="bq_view", source_type="bigquery",
         bucket="ds", source_table="bq_view", query_mode="remote",
-        is_public=True,
     )
+
+
+def _make_admin(conn) -> dict:
+    """Create an admin user + grant Admin-group membership; return user dict."""
+    import uuid
+    from src.db import SYSTEM_ADMIN_GROUP
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    from src.repositories.users import UserRepository
+    uid = "u-" + uuid.uuid4().hex[:8]
+    UserRepository(conn).create(id=uid, email=f"{uid}@x.com", name="A")
+    admin_gid = conn.execute(
+        "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
+    ).fetchone()[0]
+    UserGroupMembersRepository(conn).add_member(uid, admin_gid, source="system_seed")
+    return {"id": uid, "email": f"{uid}@x.com"}
 
 
 class TestCatalogShape:
@@ -31,7 +44,7 @@ class TestCatalogShape:
         conn = reload_db.get_system_db()
         try:
             _seed_two_tables(conn)
-            admin = {"role": "admin", "email": "a@x.com"}
+            admin = _make_admin(conn)
             data = build_catalog(conn, admin)
             ids = {t["id"] for t in data["tables"]}
             assert {"orders", "bq_view"} <= ids
@@ -43,7 +56,7 @@ class TestCatalogShape:
         conn = reload_db.get_system_db()
         try:
             _seed_two_tables(conn)
-            admin = {"role": "admin", "email": "a@x.com"}
+            admin = _make_admin(conn)
             data = build_catalog(conn, admin)
             row = next(t for t in data["tables"] if t["id"] == "orders")
             assert row["sql_flavor"] == "duckdb"
@@ -56,7 +69,7 @@ class TestCatalogShape:
         conn = reload_db.get_system_db()
         try:
             _seed_two_tables(conn)
-            admin = {"role": "admin", "email": "a@x.com"}
+            admin = _make_admin(conn)
             data = build_catalog(conn, admin)
             row = next(t for t in data["tables"] if t["id"] == "bq_view")
             assert row["sql_flavor"] == "bigquery"
@@ -78,7 +91,14 @@ class TestCatalogCacheRbac:
         conn = reload_db.get_system_db()
         try:
             _seed_two_tables(conn)
-            user = {"role": "analyst", "email": "u@x.com"}
+            # Use a real (non-admin) user id; the stub can_access_table below
+            # decides what they actually see, but build_catalog still needs a
+            # real id for the is_user_admin lookup it does internally.
+            import uuid
+            from src.repositories.users import UserRepository
+            uid = "u-" + uuid.uuid4().hex[:8]
+            UserRepository(conn).create(id=uid, email=f"{uid}@x.com", name="A")
+            user = {"id": uid, "email": f"{uid}@x.com"}
 
             # First call: a fake can_access_table that grants both tables.
             calls = []

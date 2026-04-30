@@ -13,7 +13,6 @@ def client(tmp_path, monkeypatch):
     from app.main import create_app
     from src.db import get_system_db
     from src.repositories.users import UserRepository
-    from src.repositories.sync_settings import DatasetPermissionRepository
     from src.repositories.knowledge import KnowledgeRepository
     from app.auth.jwt import create_access_token
 
@@ -21,18 +20,15 @@ def client(tmp_path, monkeypatch):
 
     conn = get_system_db()
     ur = UserRepository(conn)
-    ur.create(id="admin1", email="admin@test.com", name="Admin", role="admin")
-    ur.create(id="analyst1", email="analyst@test.com", name="Analyst", role="analyst")
-    ur.create(id="km1", email="km@test.com", name="KM Admin", role="km_admin")
-    # v12: memory governance endpoints (/api/memory/admin/...) are gated by
-    # require_admin — km_admin role is no longer a thing. Putting km1 in the
-    # Admin group keeps the existing TestGovernance fixture pattern working
-    # (the role/group distinction is irrelevant for these tests; they only
-    # exercise the admin path of the governance flow).
+    ur.create(id="admin1", email="admin@test.com", name="Admin")
+    ur.create(id="analyst1", email="analyst@test.com", name="Analyst")
+    ur.create(id="km1", email="km@test.com", name="KM Admin")
+    # Memory governance endpoints (/api/memory/admin/...) are gated by
+    # require_admin. Putting km1 in the Admin group keeps the existing
+    # TestGovernance fixture pattern working — the tests only exercise
+    # the admin path of the governance flow.
     grant_admin(conn, "admin1")
     grant_admin(conn, "km1")
-
-    DatasetPermissionRepository(conn).grant("analyst1", "sales", "read")
 
     # Seed knowledge for governance tests
     kr = KnowledgeRepository(conn)
@@ -44,9 +40,9 @@ def client(tmp_path, monkeypatch):
     c = TestClient(app)
     return {
         "client": c,
-        "admin": create_access_token("admin1", "admin@test.com", "admin"),
-        "analyst": create_access_token("analyst1", "analyst@test.com", "analyst"),
-        "km": create_access_token("km1", "km@test.com", "km_admin"),
+        "admin": create_access_token("admin1", "admin@test.com"),
+        "analyst": create_access_token("analyst1", "analyst@test.com"),
+        "km": create_access_token("km1", "km@test.com"),
     }
 
 
@@ -76,12 +72,31 @@ class TestCatalog:
         resp = client["client"].post("/api/catalog/profile/private_table/refresh", headers=_h(client["analyst"]))
         assert resp.status_code == 403
 
-    def test_catalog_profile_public_table_accessible_to_analyst(self, client):
-        # Register a public table — analyst can access its profile (404 since no profile data)
+    def test_catalog_profile_granted_table_accessible_to_analyst(self, client):
+        """v19+ — no implicit `is_public`. Analyst gets access via an explicit
+        resource_grants(group, "table", id) row, then sees 404 (no profile yet)."""
         client["client"].post("/api/admin/register-table",
-                               json={"name": "public_table", "source_type": "keboola"},
+                               json={"name": "granted_table", "source_type": "keboola"},
                                headers=_h(client["admin"]))
-        resp = client["client"].get("/api/catalog/profile/public_table", headers=_h(client["analyst"]))
+        from src.db import get_system_db
+        from src.repositories.user_groups import UserGroupsRepository
+        from src.repositories.user_group_members import UserGroupMembersRepository
+        from src.repositories.resource_grants import ResourceGrantsRepository
+        conn = get_system_db()
+        try:
+            grp = UserGroupsRepository(conn).create(
+                name="api-complete-grant", description="t", created_by="t",
+            )
+            UserGroupMembersRepository(conn).add_member(
+                "analyst1", grp["id"], source="admin", added_by="t",
+            )
+            ResourceGrantsRepository(conn).create(
+                group_id=grp["id"], resource_type="table", resource_id="granted_table",
+                assigned_by="t",
+            )
+        finally:
+            conn.close()
+        resp = client["client"].get("/api/catalog/profile/granted_table", headers=_h(client["analyst"]))
         assert resp.status_code == 404  # access granted, but no profile data yet
 
 

@@ -205,19 +205,20 @@ Files NOT to modify: `connectors/jira/file_lock.py`, `connectors/jira/transform.
 
 ### system.duckdb — `{DATA_DIR}/state/system.duckdb`
 
-Current schema version: **3** (auto-migrated from v1/v2 on startup).
+Current schema version: **19** (auto-migrated from any earlier version on startup — see `src/db.py`).
 
 | Table | Purpose |
 |-------|---------|
 | `schema_version` | Tracks applied migration version |
-| `users` | Registered users: id, email, name, role, password_hash, setup/reset tokens |
+| `users` | Registered users: id, email, name, password_hash, setup/reset tokens, active flag |
+| `user_groups` | Named groups (`Admin`, `Everyone` seeded as `is_system=TRUE`; admin-managed and Google-synced groups) |
+| `user_group_members` | `(user_id, group_id, source)` — `source ∈ {admin, google_sync, system_seed}` |
+| `resource_grants` | Generic per-`(group, resource_type, resource_id)` grants (replaces `dataset_permissions` + `plugin_access`) |
 | `sync_state` | Per-table sync status: last_sync, rows, file_size_bytes, hash, status |
 | `sync_history` | Historical sync runs with duration and error |
 | `user_sync_settings` | Per-user dataset enable/disable preferences |
 | `table_registry` | Registered tables: source_type, bucket, source_table, query_mode, sync_schedule |
 | `table_profiles` | JSON data profiles (stats, nulls, cardinality) per table |
-| `dataset_permissions` | Per-user per-dataset access grants |
-| `access_requests` | Self-service access request workflow |
 | `knowledge_items` | Corporate memory knowledge entries (V1 columns: `confidence`, `domain`, `entities`, `source_type`, `source_ref`, `valid_from`/`valid_until`, `supersedes`, `sensitivity`, `is_personal`) |
 | `knowledge_votes` | Up/down votes on knowledge items |
 | `knowledge_contradictions` | Pairs of items the LLM judge flagged as contradictory; carries `severity` and `suggested_resolution` (JSON-encoded structured action — see ADR Decision 4) |
@@ -257,19 +258,22 @@ validates the JWT and loads the user from `users` in `system.duckdb`.
 
 ### RBAC
 
-`src/rbac.py` defines four roles in ascending order:
+Two layers, no role hierarchy (see `docs/RBAC.md` for the full reference):
 
-```
-viewer < analyst < km_admin < admin
-```
+- **App-level access**: membership in the `Admin` system group. The
+  `require_admin` FastAPI dependency in `app.auth.access` gates admin
+  endpoints (admin UI, user management, settings, …).
+- **Resource-level access**: per-(group, resource_type, resource_id)
+  grants in `resource_grants`. The `require_resource_access(rt,
+  path_template)` dependency factory gates entity-scoped endpoints.
 
-Stored in `users.role`. The `require_role(Role.ADMIN)` FastAPI dependency factory enforces
-minimum role. Table-level access is checked via `can_access_table()`:
-
-1. Role `admin` → always allowed.
-2. `table_registry.is_public = true` → allowed.
-3. Explicit row in `dataset_permissions` → allowed.
-4. Wildcard bucket permission (`in.c-finance.*`) → allowed.
+Table access (`src/rbac.py:can_access_table`) is a thin wrapper over
+`app.auth.access.can_access(user_id, "table", table_id, conn)`. Admin
+group members short-circuit; everyone else needs an explicit
+`resource_grants(group, "table", table_id)` row via any group they
+belong to. There is no `is_public` shortcut and no implicit "Everyone
+can read" fallback — the legacy `dataset_permissions` + `is_public`
+mechanism was dropped in v19.
 
 ---
 

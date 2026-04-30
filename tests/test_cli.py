@@ -115,7 +115,7 @@ class TestAuth:
         from argon2 import PasswordHasher
         conn = get_system_db()
         repo = UserRepository(conn)
-        repo.create(id="u1", email="test@acme.com", name="Test", role="analyst",
+        repo.create(id="u1", email="test@acme.com", name="Test",
                     password_hash=PasswordHasher().hash("testpass"))
         conn.close()
 

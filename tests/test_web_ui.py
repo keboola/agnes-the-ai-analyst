@@ -31,7 +31,7 @@ def admin_cookie(web_client, tmp_path, monkeypatch):
     password_hash = PasswordHasher().hash(password)
     conn = get_system_db()
     UserRepository(conn).create(
-        id="admin1", email="admin@test.com", name="Admin", role="admin",
+        id="admin1", email="admin@test.com", name="Admin",
         password_hash=password_hash,
     )
     grant_admin(conn, "admin1")
@@ -51,7 +51,7 @@ def analyst_cookie(web_client, tmp_path, monkeypatch):
     password_hash = PasswordHasher().hash(password)
     conn = get_system_db()
     UserRepository(conn).create(
-        id="analyst1", email="analyst@test.com", name="Analyst", role="analyst",
+        id="analyst1", email="analyst@test.com", name="Analyst",
         password_hash=password_hash,
     )
     conn.close()
@@ -88,11 +88,11 @@ class TestWebUISmoke:
             pytest.skip("Route /admin/tables does not exist")
         assert resp.status_code == 200
 
-    def test_admin_permissions(self, web_client, admin_cookie):
+    def test_admin_permissions_route_removed(self, web_client, admin_cookie):
+        """v19 dropped the half-shipped /admin/permissions page (replaced by
+        the unified /admin/access page). Verify the route is gone."""
         resp = web_client.get("/admin/permissions", cookies=admin_cookie)
-        if resp.status_code == 404:
-            pytest.skip("Route /admin/permissions does not exist")
-        assert resp.status_code == 200
+        assert resp.status_code == 404
 
     def test_admin_users_renders_modern_ui(self, web_client, admin_cookie):
         resp = web_client.get("/admin/users", cookies=admin_cookie)
@@ -258,16 +258,18 @@ class TestAdminRoleGuards:
         resp = web_client.get("/admin/tables", cookies=analyst_cookie)
         assert resp.status_code == 403
 
-    def test_analyst_cannot_access_admin_permissions(self, web_client, admin_cookie, analyst_cookie):
-        resp = web_client.get("/admin/permissions", cookies=analyst_cookie)
-        assert resp.status_code == 403
-
     def test_admin_can_access_admin_tables(self, web_client, admin_cookie):
         resp = web_client.get("/admin/tables", cookies=admin_cookie)
         assert resp.status_code == 200
 
-    def test_admin_can_access_admin_permissions(self, web_client, admin_cookie):
-        resp = web_client.get("/admin/permissions", cookies=admin_cookie)
+    def test_analyst_cannot_access_admin_access_page(self, web_client, analyst_cookie):
+        """The unified /admin/access page replaces the dropped
+        /admin/permissions page. Non-admin must still be blocked."""
+        resp = web_client.get("/admin/access", cookies=analyst_cookie)
+        assert resp.status_code == 403
+
+    def test_admin_can_access_admin_access_page(self, web_client, admin_cookie):
+        resp = web_client.get("/admin/access", cookies=admin_cookie)
         assert resp.status_code == 200
 
     def test_analyst_cannot_access_corporate_memory_admin(self, web_client, admin_cookie, analyst_cookie):
@@ -301,7 +303,7 @@ class TestUnauthenticatedHtmlRedirects:
         password = "TestPass1!"
         conn = get_system_db()
         UserRepository(conn).create(
-            id="u1", email="u1@test.com", name="U1", role="admin",
+            id="u1", email="u1@test.com", name="U1",
             password_hash=PasswordHasher().hash(password),
         )
         conn.close()
@@ -320,7 +322,7 @@ class TestUnauthenticatedHtmlRedirects:
         password = "TestPass1!"
         conn = get_system_db()
         UserRepository(conn).create(
-            id="u2", email="u2@test.com", name="U2", role="admin",
+            id="u2", email="u2@test.com", name="U2",
             password_hash=PasswordHasher().hash(password),
         )
         conn.close()
@@ -348,7 +350,7 @@ class TestUnauthenticatedHtmlRedirects:
         uid = f"u-{uuid.uuid4().hex[:8]}"
         conn = get_system_db()
         UserRepository(conn).create(
-            id=uid, email=f"{uid}@test.com", name=uid, role="admin",
+            id=uid, email=f"{uid}@test.com", name=uid,
             password_hash=PasswordHasher().hash(password),
         )
         conn.close()

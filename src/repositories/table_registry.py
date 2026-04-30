@@ -74,7 +74,6 @@ class TableRegistryRepository:
         source_type: Optional[str] = None, bucket: Optional[str] = None,
         source_table: Optional[str] = None, query_mode: str = "local",
         sync_schedule: Optional[str] = None, profile_after_sync: bool = True,
-        is_public: bool = True,
         registered_at: Optional[datetime] = None,
     ) -> None:
         # `registered_at` defaults to "now" for fresh inserts. Updaters that
@@ -87,18 +86,17 @@ class TableRegistryRepository:
             """INSERT INTO table_registry (id, name, folder, sync_strategy,
                 primary_key, description, registered_by, registered_at,
                 source_type, bucket, source_table, query_mode,
-                sync_schedule, profile_after_sync, is_public)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                sync_schedule, profile_after_sync)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (id) DO UPDATE SET
                 name = excluded.name, folder = excluded.folder,
                 sync_strategy = excluded.sync_strategy, primary_key = excluded.primary_key,
                 description = excluded.description, registered_at = excluded.registered_at,
                 source_type = excluded.source_type, bucket = excluded.bucket,
                 source_table = excluded.source_table, query_mode = excluded.query_mode,
-                sync_schedule = excluded.sync_schedule, profile_after_sync = excluded.profile_after_sync,
-                is_public = excluded.is_public""",
+                sync_schedule = excluded.sync_schedule, profile_after_sync = excluded.profile_after_sync""",
             [id, name, folder, sync_strategy, encoded_pk, description, registered_by, ts,
-             source_type, bucket, source_table, query_mode, sync_schedule, profile_after_sync, is_public],
+             source_type, bucket, source_table, query_mode, sync_schedule, profile_after_sync],
         )
 
     @staticmethod

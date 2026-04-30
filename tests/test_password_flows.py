@@ -38,7 +38,7 @@ def _seed_user(email: str, *, password_hash: str | None = None, setup_token: str
     conn = get_system_db()
     try:
         repo = UserRepository(conn)
-        repo.create(id=uid, email=email, name=email.split("@")[0], role=role,
+        repo.create(id=uid, email=email, name=email.split("@")[0],
                     password_hash=password_hash)
         updates: dict = {}
         if setup_token is not None:
@@ -74,9 +74,9 @@ def _seed_admin() -> str:
     conn = get_system_db()
     try:
         uid = str(uuid.uuid4())
-        UserRepository(conn).create(id=uid, email="admin@test", name="Admin", role="admin")
+        UserRepository(conn).create(id=uid, email="admin@test", name="Admin")
         grant_admin(conn, uid)
-        return create_access_token(user_id=uid, email="admin@test", role="admin")
+        return create_access_token(user_id=uid, email="admin@test")
     finally:
         conn.close()
 

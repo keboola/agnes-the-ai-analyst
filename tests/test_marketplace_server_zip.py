@@ -89,9 +89,9 @@ def marketplace_env(e2e_env, monkeypatch):
             )
 
         users = UserRepository(conn)
-        users.create(id="admin1", email="admin@test.local", name="Admin", role="admin")
-        users.create(id="analyst1", email="analyst@test.local", name="Analyst", role="analyst")
-        users.create(id="nogroups1", email="nobody@test.local", name="Nobody", role="analyst")
+        users.create(id="admin1", email="admin@test.local", name="Admin")
+        users.create(id="analyst1", email="analyst@test.local", name="Analyst")
+        users.create(id="nogroups1", email="nobody@test.local", name="Nobody")
 
         # System groups are seeded by db.init_schema(); look them up.
         ug = UserGroupsRepository(conn)
@@ -122,9 +122,9 @@ def marketplace_env(e2e_env, monkeypatch):
         conn.close()
 
     # Tokens
-    admin_token = create_access_token("admin1", "admin@test.local", "admin")
-    analyst_token = create_access_token("analyst1", "analyst@test.local", "analyst")
-    nogroups_token = create_access_token("nogroups1", "nobody@test.local", "analyst")
+    admin_token = create_access_token("admin1", "admin@test.local")
+    analyst_token = create_access_token("analyst1", "analyst@test.local")
+    nogroups_token = create_access_token("nogroups1", "nobody@test.local")
 
     app = create_app()
     client = TestClient(app)

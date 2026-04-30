@@ -10,6 +10,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.27.0] — 2026-04-30
+
+### Removed
+
+- **BREAKING** Table access fully migrated to per-group `resource_grants` (`ResourceType.TABLE`). Existing `dataset_permissions` rows are dropped on upgrade — admins must re-grant via `/admin/access`. Wildcard bucket grants (`bucket.*`) no longer supported and not replaced: every table needs an explicit grant (or admin override). Per-table bulk action in `/admin/access` covers a whole bucket at once.
+- **BREAKING** `table_registry.is_public` column dropped. The bypass shortcut had no API/UI/CLI surface to set it (only direct DB UPDATE worked) so the legacy data-RBAC layer was de-facto inactive — every table was implicitly public. Post-upgrade non-admin users see **zero tables** until admin grants explicit access. Migrate by minting the relevant `resource_grants(group, "table", id)` rows in `/admin/access` before deploy or immediately after.
+- **BREAKING** Self-service `access_requests` flow removed (table, repository, `/api/access-requests/*` endpoints, "Request Access" catalog modal). Users contact admin out-of-band; admin grants via `/admin/access`.
+- **BREAKING** Legacy `users.role` column dropped (NULL artifact since v13). API contracts: `CreateUserRequest.role`, `UpdateUserRequest.role` removed; `UserResponse.role` becomes a derived `"admin"|"user"` label. CLI: `da admin set-role` removed (hard-fail with a replacement command), `--role` flag removed from `da admin add-user` and `da auth import-token`. JWT `role` claim removed from new tokens (existing tokens keep the claim, ignored on read).
+- **BREAKING** `/api/admin/permissions` endpoints removed (POST/DELETE/GET). Replaced by `/api/admin/grants`. Half-shipped `/admin/permissions` admin UI page removed (template, route).
+- `AGNES_ENABLE_TABLE_GRANTS` env-gate removed from `app/resource_types.py` — `ResourceType.TABLE` is now unconditionally enabled (the gate existed only because runtime enforcement still flowed through legacy `dataset_permissions`).
+- `tests/test_permissions.py`, `tests/test_permissions_api.py`, `tests/test_access_requests_api.py` deleted (covered functionality removed).
+
+### Added
+
+- Schema **v19**: drops `dataset_permissions`, `access_requests` tables and `users.role`, `table_registry.is_public` columns. Implementation in `src/db.py:_v18_to_v19_finalize` uses the table-rebuild idiom (rename → create new → INSERT … SELECT → drop old) to work around DuckDB's `ALTER TABLE DROP COLUMN` limitations on tables that have ever held FK constraints. The INSERT picks the intersection of the legacy and v19 column sets so test fixtures with hand-crafted minimal pre-v19 schemas migrate cleanly.
+
 ## [0.26.0] — 2026-04-30
 
 ### Changed

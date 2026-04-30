@@ -83,7 +83,7 @@ def test_repository_update_accepts_active(fresh_db):
     try:
         repo = UserRepository(conn)
         uid = str(uuid.uuid4())
-        repo.create(id=uid, email="a@b.c", name="A", role="analyst")
+        repo.create(id=uid, email="a@b.c", name="A")
         repo.update(id=uid, active=False, deactivated_by="admin-uuid")
         row = repo.get_by_id(uid)
         assert row["active"] is False
@@ -107,9 +107,9 @@ def test_repository_count_admins(fresh_db):
             "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
         ).fetchone()[0]
         admin_id = str(uuid.uuid4())
-        repo.create(id=admin_id, email="a@b.c", name="A", role="admin")
+        repo.create(id=admin_id, email="a@b.c", name="A")
         UserGroupMembersRepository(conn).add_member(admin_id, admin_gid, source="system_seed")
-        repo.create(id=str(uuid.uuid4()), email="b@b.c", name="B", role="analyst")
+        repo.create(id=str(uuid.uuid4()), email="b@b.c", name="B")
         assert repo.count_admins() == 1
     finally:
         conn.close()
@@ -137,12 +137,12 @@ def _seed_admin(fresh_db):
     conn = get_system_db()
     try:
         uid = str(uuid.uuid4())
-        UserRepository(conn).create(id=uid, email="admin@test", name="Admin", role="admin")
+        UserRepository(conn).create(id=uid, email="admin@test", name="Admin")
         admin_gid = conn.execute(
             "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
         ).fetchone()[0]
         UserGroupMembersRepository(conn).add_member(uid, admin_gid, source="system_seed")
-        token = create_access_token(user_id=uid, email="admin@test", role="admin")
+        token = create_access_token(user_id=uid, email="admin@test")
         return uid, token
     finally:
         conn.close()
@@ -156,7 +156,7 @@ def test_patch_user_updates_role(app_client, fresh_db):
     target_id = str(uuid.uuid4())
     conn = get_system_db()
     try:
-        UserRepository(conn).create(id=target_id, email="x@test", name="X", role="viewer")
+        UserRepository(conn).create(id=target_id, email="x@test", name="X")
     finally:
         conn.close()
 
@@ -217,8 +217,8 @@ def test_deactivated_user_cannot_authenticate(app_client, fresh_db):
     conn = get_system_db()
     try:
         uid = str(uuid.uuid4())
-        UserRepository(conn).create(id=uid, email="u@test", name="U", role="analyst")
-        token = create_access_token(user_id=uid, email="u@test", role="analyst")
+        UserRepository(conn).create(id=uid, email="u@test", name="U")
+        token = create_access_token(user_id=uid, email="u@test")
         UserRepository(conn).update(id=uid, active=False)
     finally:
         conn.close()
@@ -250,8 +250,8 @@ def test_admin_users_page_denies_non_admin(app_client, fresh_db):
     conn = get_system_db()
     try:
         uid = str(uuid.uuid4())
-        UserRepository(conn).create(id=uid, email="a@test", name="A", role="analyst")
-        token = create_access_token(user_id=uid, email="a@test", role="analyst")
+        UserRepository(conn).create(id=uid, email="a@test", name="A")
+        token = create_access_token(user_id=uid, email="a@test")
     finally:
         conn.close()
     resp = app_client.get(
@@ -277,8 +277,8 @@ def test_deactivated_admin_rejected_by_active_check(app_client, fresh_db):
     conn = get_system_db()
     try:
         other_uid = str(uuid.uuid4())
-        UserRepository(conn).create(id=other_uid, email="other@test", name="Other", role="admin")
-        other_token = create_access_token(user_id=other_uid, email="other@test", role="admin")
+        UserRepository(conn).create(id=other_uid, email="other@test", name="Other")
+        other_token = create_access_token(user_id=other_uid, email="other@test")
         # Directly deactivate the "other" admin via repository (bypass safeguard
         # because we already have 2 admins; this is just a state setup).
         UserRepository(conn).update(id=other_uid, active=False)
@@ -294,19 +294,29 @@ def test_deactivated_admin_rejected_by_active_check(app_client, fresh_db):
 
 
 def test_cannot_deactivate_last_admin(app_client, fresh_db):
+    """v19: try to deactivate the last active admin → 409.
+    Admin demotion is now done via group membership (DELETE /api/admin/users/{id}/memberships/{group_id}),
+    but the deactivate path retains its own last-admin guard.
+    """
     admin_id, token = _seed_admin(fresh_db)
-    # Create a second user and try to demote the current admin via PATCH.
+    # Create a second non-admin user.
     resp = app_client.post(
         "/api/users",
         headers={"Authorization": f"Bearer {token}"},
-        json={"email": "y@test", "name": "Y", "role": "viewer"},
+        json={"email": "y@test", "name": "Y"},
     )
-    y_id = resp.json()["id"]
-    # Try to demote self (admin → viewer) while only admin — should fail.
+    assert resp.status_code == 201
+    # Try to deactivate the only active admin → must fail.
     resp = app_client.patch(
         f"/api/users/{admin_id}",
         headers={"Authorization": f"Bearer {token}"},
-        json={"role": "viewer"},
+        json={"active": False},
     )
+    # The endpoint blocks deactivation for the last active admin BEFORE the
+    # self-deactivate check (the user IS themselves, but the message says "last
+    # active admin"). Either error is acceptable — both signal the constraint.
     assert resp.status_code == 409
-    assert "admin" in resp.json()["detail"].lower()
+    assert (
+        "admin" in resp.json()["detail"].lower()
+        or "yourself" in resp.json()["detail"].lower()
+    )

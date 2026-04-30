@@ -14,13 +14,30 @@ def reload_db(tmp_path, monkeypatch):
     yield db_module
 
 
-def _seed(conn, *, is_public=True):
+def _seed(conn):
+    _ensure_admin1(conn)
     from src.repositories.table_registry import TableRegistryRepository
     TableRegistryRepository(conn).register(
         id="bq_view", name="bq_view", source_type="bigquery",
         bucket="ds", source_table="bq_view", query_mode="remote",
-        is_public=is_public,
     )
+
+
+def _ensure_admin1(conn):
+    """Seed an admin user with id='admin1' + Admin group membership so
+    {"id": "admin1", ...} dicts pass the can_access admin shortcut."""
+    from src.db import SYSTEM_ADMIN_GROUP
+    from src.repositories.users import UserRepository
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    if UserRepository(conn).get_by_id('admin1') is None:
+        UserRepository(conn).create(id='admin1', email='admin1@test.com', name='Admin')
+    admin_gid = conn.execute(
+        'SELECT id FROM user_groups WHERE name = ?', [SYSTEM_ADMIN_GROUP]
+    ).fetchone()
+    if admin_gid:
+        UserGroupMembersRepository(conn).add_member(
+            'admin1', admin_gid[0], source='system_seed',
+        )
 
 
 def _bq(billing="billing-proj", data="data-proj"):
@@ -43,7 +60,7 @@ class TestSampleEndpoint:
         conn = reload_db.get_system_db()
         try:
             _seed(conn)
-            user = {"role": "admin", "email": "a@x.com"}
+            user = {"id": "admin1", "email": "a@x.com"}
             data = v2_sample.build_sample(conn, user, "bq_view", n=2, bq=_bq())
         finally:
             conn.close()
@@ -60,7 +77,7 @@ class TestSampleEndpoint:
         conn = reload_db.get_system_db()
         try:
             _seed(conn)
-            user = {"role": "admin", "email": "a@x.com"}
+            user = {"id": "admin1", "email": "a@x.com"}
             v2_sample.build_sample(conn, user, "bq_view", n=999, bq=_bq())
         finally:
             conn.close()
@@ -76,14 +93,14 @@ class TestSampleEndpoint:
         )
         monkeypatch.setattr(
             "app.api.v2_sample.can_access_table",
-            lambda user, tid, conn: False,
+            lambda user, tid, conn: user.get("id") == "admin1",
         )
         conn = reload_db.get_system_db()
         try:
-            _seed(conn, is_public=False)
-            admin = {"role": "admin", "email": "admin@x.com"}
+            _seed(conn)
+            admin = {"id": "admin1", "email": "admin@x.com"}
             v2_sample.build_sample(conn, admin, "bq_view", n=2, bq=_bq())
-            other = {"role": "viewer", "email": "viewer@x.com"}
+            other = {"id": "viewer1", "email": "viewer@x.com"}
             with pytest.raises(PermissionError):
                 v2_sample.build_sample(conn, other, "bq_view", n=2, bq=_bq())
         finally:
@@ -130,7 +147,7 @@ class TestBqAccessErrors:
         conn = reload_db.get_system_db()
         try:
             _seed(conn)
-            user = {"role": "admin", "email": "a@x.com"}
+            user = {"id": "admin1", "email": "a@x.com"}
 
             # Endpoint is async — drive it directly. dependency_overrides only
             # fires through TestClient/HTTP, so pass `bq=bq` explicitly.
@@ -162,7 +179,7 @@ class TestBqAccessErrors:
         conn = reload_db.get_system_db()
         try:
             _seed(conn)
-            user = {"role": "admin", "email": "a@x.com"}
+            user = {"id": "admin1", "email": "a@x.com"}
 
             with pytest.raises(HTTPException) as exc_info:
                 asyncio.run(v2_sample.sample(
@@ -191,7 +208,7 @@ class TestBqAccessErrors:
         conn = reload_db.get_system_db()
         try:
             _seed(conn)
-            user = {"role": "admin", "email": "a@x.com"}
+            user = {"id": "admin1", "email": "a@x.com"}
 
             with pytest.raises(HTTPException) as exc_info:
                 asyncio.run(v2_sample.sample(
@@ -230,7 +247,7 @@ class TestBqAccessErrors:
         conn = reload_db.get_system_db()
         try:
             _seed(conn)
-            user = {"role": "admin", "email": "a@x.com"}
+            user = {"id": "admin1", "email": "a@x.com"}
             asyncio.run(v2_sample.sample(
                 table_id="bq_view", n=5, user=user, conn=conn, bq=bq,
             ))

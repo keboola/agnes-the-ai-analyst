@@ -18,6 +18,23 @@ def _reload_db_module(monkeypatch, tmp_path):
     return db_module
 
 
+def _ensure_admin1(conn):
+    """Seed an admin user with id='admin1' + Admin group membership so
+    {"id": "admin1", ...} dicts pass the can_access admin shortcut."""
+    from src.db import SYSTEM_ADMIN_GROUP
+    from src.repositories.users import UserRepository
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    if UserRepository(conn).get_by_id("admin1") is None:
+        UserRepository(conn).create(id="admin1", email="admin1@test.com", name="Admin")
+    admin_gid = conn.execute(
+        "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
+    ).fetchone()
+    if admin_gid:
+        UserGroupMembersRepository(conn).add_member(
+            "admin1", admin_gid[0], source="system_seed",
+        )
+
+
 def test_manifest_includes_query_mode_for_local_table(tmp_path, monkeypatch):
     """Local-mode table must surface query_mode='local' in manifest."""
     db_module = _reload_db_module(monkeypatch, tmp_path)
@@ -28,6 +45,7 @@ def test_manifest_includes_query_mode_for_local_table(tmp_path, monkeypatch):
 
     conn = db_module.get_system_db()
     try:
+        _ensure_admin1(conn)
         TableRegistryRepository(conn).register(
             id="orders", name="orders", source_type="keboola",
             bucket="sales", source_table="orders", query_mode="local",
@@ -35,7 +53,7 @@ def test_manifest_includes_query_mode_for_local_table(tmp_path, monkeypatch):
         SyncStateRepository(conn).update_sync(
             table_id="orders", rows=10, file_size_bytes=1024, hash="abc",
         )
-        admin = {"role": "admin", "email": "a@x.com"}
+        admin = {"id": "admin1", "email": "a@x.com"}
         manifest = _build_manifest_for_user(conn, admin)
         assert manifest["tables"]["orders"]["query_mode"] == "local"
         assert manifest["tables"]["orders"]["source_type"] == "keboola"
@@ -56,6 +74,7 @@ def test_manifest_includes_query_mode_for_remote_table(tmp_path, monkeypatch):
 
     conn = db_module.get_system_db()
     try:
+        _ensure_admin1(conn)
         TableRegistryRepository(conn).register(
             id="bq_view", name="bq_view", source_type="bigquery",
             bucket="ds", source_table="bq_view", query_mode="remote",
@@ -63,7 +82,7 @@ def test_manifest_includes_query_mode_for_remote_table(tmp_path, monkeypatch):
         SyncStateRepository(conn).update_sync(
             table_id="bq_view", rows=0, file_size_bytes=0, hash="",
         )
-        admin = {"role": "admin", "email": "a@x.com"}
+        admin = {"id": "admin1", "email": "a@x.com"}
         manifest = _build_manifest_for_user(conn, admin)
         assert manifest["tables"]["bq_view"]["query_mode"] == "remote"
         assert manifest["tables"]["bq_view"]["source_type"] == "bigquery"
@@ -83,10 +102,11 @@ def test_manifest_defaults_query_mode_local_for_unregistered_state(tmp_path, mon
 
     conn = db_module.get_system_db()
     try:
+        _ensure_admin1(conn)
         SyncStateRepository(conn).update_sync(
             table_id="orphan", rows=0, file_size_bytes=0, hash="",
         )
-        admin = {"role": "admin", "email": "a@x.com"}
+        admin = {"id": "admin1", "email": "a@x.com"}
         manifest = _build_manifest_for_user(conn, admin)
         assert manifest["tables"]["orphan"]["query_mode"] == "local"
         assert manifest["tables"]["orphan"]["source_type"] == ""

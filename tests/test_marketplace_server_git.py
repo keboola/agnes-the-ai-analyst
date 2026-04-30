@@ -81,8 +81,8 @@ def git_env(e2e_env, monkeypatch):
             )
 
         users = UserRepository(conn)
-        users.create(id="admin1", email="admin@test.local", name="Admin", role="admin")
-        users.create(id="analyst1", email="analyst@test.local", name="Analyst", role="analyst")
+        users.create(id="admin1", email="admin@test.local", name="Admin")
+        users.create(id="analyst1", email="analyst@test.local", name="Analyst")
 
         # System groups
         ug = UserGroupsRepository(conn)
@@ -109,13 +109,13 @@ def git_env(e2e_env, monkeypatch):
         # Create real PAT rows so resolve_token_to_user passes.
         token_repo = AccessTokenRepository(conn)
         pats: dict[str, str] = {}
-        for uid, email, role in [
+        for uid, email, _role in [
             ("admin1", "admin@test.local", "admin"),
             ("analyst1", "analyst@test.local", "analyst"),
         ]:
             tid = str(uuid.uuid4())
             jwt = create_access_token(
-                uid, email, role, token_id=tid, typ="pat",
+                uid, email, token_id=tid, typ="pat",
             )
             token_repo.create(
                 id=tid, user_id=uid, name=f"{uid}-pat",

@@ -46,7 +46,6 @@ def _get_cached_secret_key() -> str:
 def create_access_token(
     user_id: str,
     email: str,
-    role: str = "analyst",
     expires_delta: Optional[timedelta] = None,
     token_id: Optional[str] = None,
     typ: str = "session",
@@ -58,11 +57,14 @@ def create_access_token(
     "no expiry" — the authoritative expiry check is the DB row in
     `personal_access_tokens.expires_at`, and a claim-less JWT avoids the
     misleading ~100y horizon that previously pretended to be "never".
+
+    No ``role`` claim — authorization is derived from
+    ``user_group_members`` at request time via ``app.auth.access.is_user_admin``.
+    The JWT carries only identity (``sub``, ``email``) and token metadata.
     """
     payload = {
         "sub": user_id,
         "email": email,
-        "role": role,
         "typ": typ,
         "iat": datetime.now(timezone.utc),
         "jti": token_id or uuid.uuid4().hex,

@@ -25,15 +25,15 @@ def client(tmp_path, monkeypatch):
         import hashlib
         pw_hash = hashlib.sha256(b"testpass123").hexdigest()
 
-    ur.create(id="pw1", email="pw@test.com", name="PW User", role="analyst", password_hash=pw_hash)
+    ur.create(id="pw1", email="pw@test.com", name="PW User", password_hash=pw_hash)
     # User with setup token (and fresh created timestamp so the JSON /setup
     # endpoint's TTL check accepts it)
     from datetime import datetime, timezone
-    ur.create(id="setup1", email="setup@test.com", name="Setup User", role="analyst")
+    ur.create(id="setup1", email="setup@test.com", name="Setup User")
     ur.update(id="setup1", setup_token="setup-token-123",
               setup_token_created=datetime.now(timezone.utc))
     # User for magic link
-    ur.create(id="ml1", email="ml@test.com", name="ML User", role="analyst")
+    ur.create(id="ml1", email="ml@test.com", name="ML User")
     conn.close()
 
     app = create_app()
@@ -144,7 +144,7 @@ class TestEmailAuth:
         # Create a user and set a magic-link token
         conn = get_system_db()
         repo = UserRepository(conn)
-        repo.create(id="ml-user-1", email="concurrent@test.com", name="Test", role="viewer")
+        repo.create(id="ml-user-1", email="concurrent@test.com", name="Test")
         token = "tok_concurrent_test_12345"
         from datetime import datetime, timezone
         repo.update(id="ml-user-1", reset_token=token, reset_token_created=datetime.now(timezone.utc))
@@ -432,7 +432,7 @@ class TestCookieAuth:
         user = ur.get_by_email("pw@test.com")
         conn.close()
 
-        token = create_access_token(user["id"], user["email"], user["role"])
+        token = create_access_token(user["id"], user["email"])
         # Set cookie and access dashboard
         client.cookies.set("access_token", token)
         resp = client.get("/dashboard")
@@ -623,7 +623,7 @@ class TestEmailMagicLinkTTL:
 
         conn = get_system_db()
         repo = UserRepository(conn)
-        repo.create(id="expired-user", email="expired@test.com", name="Expired", role="analyst")
+        repo.create(id="expired-user", email="expired@test.com", name="Expired")
         # Set token with old timestamp (beyond 1-hour TTL)
         old_time = datetime.now(timezone.utc) - timedelta(hours=2)
         repo.update(id="expired-user", reset_token="expired-token-123", reset_token_created=old_time)
@@ -642,7 +642,7 @@ class TestEmailMagicLinkTTL:
 
         conn = get_system_db()
         repo = UserRepository(conn)
-        repo.create(id="reuse-user", email="reuse@test.com", name="Reuse", role="analyst")
+        repo.create(id="reuse-user", email="reuse@test.com", name="Reuse")
         token = "reusable-token-456"
         repo.update(id="reuse-user", reset_token=token, reset_token_created=datetime.now(timezone.utc))
         conn.close()
@@ -667,7 +667,7 @@ class TestEmailMagicLinkTTL:
 
         conn = get_system_db()
         repo = UserRepository(conn)
-        repo.create(id="sig-user", email="sig@test.com", name="Sig", role="analyst")
+        repo.create(id="sig-user", email="sig@test.com", name="Sig")
         repo.update(id="sig-user", reset_token="real-token-789", reset_token_created=datetime.now(timezone.utc))
         conn.close()
 

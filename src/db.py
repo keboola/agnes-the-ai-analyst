@@ -39,7 +39,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -48,17 +48,13 @@ CREATE TABLE IF NOT EXISTS schema_version (
 );
 
 -- v13: authorization is now via user_groups + user_group_members + resource_grants.
--- DEPRECATED legacy column kept as NULL artifact:
---   role: from v8/v9 enum (viewer/analyst/km_admin/admin); ignored by app
--- The groups JSON column was dropped in v13 (replaced by user_group_members).
--- DuckDB ALTER DROP COLUMN may be blocked by historic FKs on this table; legacy
--- columns are NULL-ed in the migration and physically dropped in a future
--- table-rebuild release.
+-- v19: legacy `role` column physically dropped via _v18_to_v19_finalize table
+-- rebuild (was a NULL artifact since v13 — ignored at runtime, but the column
+-- shape persisted in DBs upgraded through v8→v18).
 CREATE TABLE IF NOT EXISTS users (
     id VARCHAR PRIMARY KEY,
     email VARCHAR UNIQUE NOT NULL,
     name VARCHAR,
-    role VARCHAR,
     password_hash VARCHAR,
     setup_token VARCHAR,
     setup_token_created TIMESTAMP,
@@ -253,6 +249,10 @@ CREATE TABLE IF NOT EXISTS script_registry (
     last_status VARCHAR
 );
 
+-- v19: `is_public` column removed. The bypass shortcut had no API/UI/CLI
+-- surface to set it (only direct DB UPDATE worked) so RBAC enforcement was
+-- de-facto inactive. Table access is now exclusively via resource_grants
+-- (ResourceType.TABLE).
 CREATE TABLE IF NOT EXISTS table_registry (
     id VARCHAR PRIMARY KEY,
     name VARCHAR NOT NULL,
@@ -267,7 +267,6 @@ CREATE TABLE IF NOT EXISTS table_registry (
     folder VARCHAR,
     description TEXT,
     registered_by VARCHAR,
-    is_public BOOLEAN DEFAULT true,
     registered_at TIMESTAMP DEFAULT current_timestamp
 );
 
@@ -277,24 +276,9 @@ CREATE TABLE IF NOT EXISTS table_profiles (
     profiled_at TIMESTAMP DEFAULT current_timestamp
 );
 
-CREATE TABLE IF NOT EXISTS dataset_permissions (
-    user_id VARCHAR NOT NULL,
-    dataset VARCHAR NOT NULL,
-    access VARCHAR DEFAULT 'read',
-    PRIMARY KEY (user_id, dataset)
-);
-
-CREATE TABLE IF NOT EXISTS access_requests (
-    id VARCHAR PRIMARY KEY,
-    user_id VARCHAR NOT NULL,
-    user_email VARCHAR NOT NULL,
-    table_id VARCHAR NOT NULL,
-    reason TEXT,
-    status VARCHAR DEFAULT 'pending',
-    reviewed_by VARCHAR,
-    reviewed_at TIMESTAMP,
-    created_at TIMESTAMP DEFAULT current_timestamp
-);
+-- v19: dataset_permissions and access_requests dropped. Replaced by
+-- resource_grants (ResourceType.TABLE). Access requests flow removed —
+-- users contact admin out-of-band; admin grants via /admin/access.
 
 CREATE TABLE IF NOT EXISTS metric_definitions (
     id              VARCHAR PRIMARY KEY,
@@ -1372,6 +1356,125 @@ def _v17_to_v18_finalize(conn: duckdb.DuckDBPyConnection) -> None:
         )
 
 
+def _v18_to_v19_finalize(conn: duckdb.DuckDBPyConnection) -> None:
+    """Drop legacy data-RBAC tables + dead columns.
+
+    Removes:
+      - ``dataset_permissions`` table (per-user grants — replaced by per-group
+        ``resource_grants(resource_type='table')``)
+      - ``access_requests`` table (self-service request/approve flow — removed,
+        users contact admin out-of-band)
+      - ``users.role`` column (NULL artifact since v13 — auth derives from
+        ``user_group_members`` via ``is_user_admin``)
+      - ``table_registry.is_public`` column (bypass shortcut with no
+        API/UI/CLI surface — every table now requires explicit
+        ``resource_grants`` row, admin override aside)
+
+    DuckDB ALTER TABLE DROP COLUMN can be blocked by historic FK
+    constraints, so the column drops use a table-rebuild idiom (rename →
+    create new → INSERT … SELECT → drop old). The INSERT picks the
+    intersection of the legacy and v19 column sets so test fixtures that
+    hand-craft minimal pre-v19 schemas (e.g. without `sync_strategy` /
+    `primary_key`) still migrate cleanly. Wrapped in BEGIN/COMMIT;
+    on error ROLLBACK and the outer caller skips the schema_version bump.
+    """
+    def _existing_cols(table: str) -> set[str]:
+        return {
+            r[0] for r in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = ?", [table],
+            ).fetchall()
+        }
+
+    conn.execute("BEGIN TRANSACTION")
+    try:
+        # 1 + 2: legacy table drops. IF EXISTS guards against fresh installs
+        # where _SYSTEM_SCHEMA never created them (v19+ shape).
+        conn.execute("DROP TABLE IF EXISTS dataset_permissions")
+        conn.execute("DROP TABLE IF EXISTS access_requests")
+
+        # 3: rebuild users without `role` column. Skip when the column
+        # never existed (fresh install on v19+ schema or test fixtures
+        # that hand-crafted a minimal users table without it).
+        if "role" in _existing_cols("users"):
+            conn.execute("ALTER TABLE users RENAME TO users_v18_pre")
+            conn.execute(
+                """CREATE TABLE users (
+                    id VARCHAR PRIMARY KEY,
+                    email VARCHAR UNIQUE NOT NULL,
+                    name VARCHAR,
+                    password_hash VARCHAR,
+                    setup_token VARCHAR,
+                    setup_token_created TIMESTAMP,
+                    reset_token VARCHAR,
+                    reset_token_created TIMESTAMP,
+                    active BOOLEAN NOT NULL DEFAULT TRUE,
+                    deactivated_at TIMESTAMP,
+                    deactivated_by VARCHAR,
+                    created_at TIMESTAMP DEFAULT current_timestamp,
+                    updated_at TIMESTAMP
+                )"""
+            )
+            users_target_cols = [
+                "id", "email", "name", "password_hash",
+                "setup_token", "setup_token_created",
+                "reset_token", "reset_token_created",
+                "active", "deactivated_at", "deactivated_by",
+                "created_at", "updated_at",
+            ]
+            old_users_cols = _existing_cols("users_v18_pre")
+            common = [c for c in users_target_cols if c in old_users_cols]
+            col_list = ", ".join(common)
+            conn.execute(
+                f"INSERT INTO users ({col_list}) "
+                f"SELECT {col_list} FROM users_v18_pre"
+            )
+            conn.execute("DROP TABLE users_v18_pre")
+
+        # 4: rebuild table_registry without `is_public` column.
+        if "is_public" in _existing_cols("table_registry"):
+            conn.execute(
+                "ALTER TABLE table_registry RENAME TO table_registry_v18_pre"
+            )
+            conn.execute(
+                """CREATE TABLE table_registry (
+                    id VARCHAR PRIMARY KEY,
+                    name VARCHAR NOT NULL,
+                    source_type VARCHAR,
+                    bucket VARCHAR,
+                    source_table VARCHAR,
+                    sync_strategy VARCHAR DEFAULT 'full_refresh',
+                    query_mode VARCHAR DEFAULT 'local',
+                    sync_schedule VARCHAR,
+                    profile_after_sync BOOLEAN DEFAULT true,
+                    primary_key VARCHAR,
+                    folder VARCHAR,
+                    description TEXT,
+                    registered_by VARCHAR,
+                    registered_at TIMESTAMP DEFAULT current_timestamp
+                )"""
+            )
+            registry_target_cols = [
+                "id", "name", "source_type", "bucket", "source_table",
+                "sync_strategy", "query_mode", "sync_schedule",
+                "profile_after_sync", "primary_key", "folder",
+                "description", "registered_by", "registered_at",
+            ]
+            old_registry_cols = _existing_cols("table_registry_v18_pre")
+            common = [c for c in registry_target_cols if c in old_registry_cols]
+            col_list = ", ".join(common)
+            conn.execute(
+                f"INSERT INTO table_registry ({col_list}) "
+                f"SELECT {col_list} FROM table_registry_v18_pre"
+            )
+            conn.execute("DROP TABLE table_registry_v18_pre")
+
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
 def _seed_core_roles(conn: duckdb.DuckDBPyConnection) -> None:
     """Idempotently insert/refresh the four core.* hierarchy roles.
 
@@ -1630,6 +1733,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                     conn.execute(sql)
             if current < 18:
                 _v17_to_v18_finalize(conn)
+            if current < 19:
+                _v18_to_v19_finalize(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
