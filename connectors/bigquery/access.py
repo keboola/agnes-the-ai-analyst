@@ -114,6 +114,39 @@ def translate_bq_error(
     if isinstance(e, gax.GoogleAPICallError):
         return BqAccessError("bq_upstream_error", msg)
 
+    # Last-resort heuristic: the DuckDB bigquery extension is a C++ plugin that
+    # makes its own HTTP calls (not via google-cloud-bigquery), so BQ HTTP errors
+    # arrive as DuckDB-native exceptions (e.g. duckdb.IOException) rather than
+    # google.api_core types — `bigquery_query()` paths in v2_scan/sample/schema
+    # would otherwise fall through to the re-raise below and surface as bare 500
+    # in production. String-match common BQ HTTP error patterns. Devin ANALYSIS
+    # on PR #138 review.
+    msg_lower = msg.lower()
+    if "forbidden" in msg_lower or " 403 " in msg_lower or "403:" in msg_lower:
+        if "serviceusage" in msg_lower:
+            return BqAccessError(
+                "cross_project_forbidden",
+                msg,
+                details={
+                    "billing_project": projects.billing,
+                    "data_project": projects.data,
+                    "hint": (
+                        "Set data_source.bigquery.billing_project in instance.yaml to a project "
+                        "where the SA has serviceusage.services.use, or grant the SA that role "
+                        "on the data project."
+                    ),
+                },
+            )
+        return BqAccessError(
+            "bq_forbidden",
+            msg,
+            details={"billing_project": projects.billing, "data_project": projects.data},
+        )
+    if "bad request" in msg_lower or " 400 " in msg_lower or "400:" in msg_lower:
+        if bad_request_status == "client_error":
+            return BqAccessError("bq_bad_request", msg)
+        return BqAccessError("bq_upstream_error", msg)
+
     # Don't swallow programmer errors / unknown exceptions
     raise e
 

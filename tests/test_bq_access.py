@@ -109,6 +109,40 @@ class TestTranslateBqError:
             translate_bq_error(RuntimeError("oops"), self.projects,
                                bad_request_status="client_error")
 
+    def test_duckdb_native_forbidden_classified_via_string_match(self):
+        """The DuckDB bigquery extension is a C++ plugin making its own HTTP
+        calls; BQ 403 arrives as duckdb.IOException with 'Forbidden' / '403'
+        in the message, NOT as gax.Forbidden. Last-resort heuristic must
+        classify these so /scan, /sample, /schema don't fall back to bare 500
+        in production. Devin ANALYSIS on PR #138 review."""
+        from connectors.bigquery.access import translate_bq_error
+        # Simulate what duckdb.IOException looks like — a plain Exception with
+        # the BQ error text embedded by the C++ extension's HTTP layer.
+        e = Exception("HTTP 403 Forbidden: serviceusage.services.use denied on project x")
+        result = translate_bq_error(e, self.projects, bad_request_status="upstream_error")
+        assert result.kind == "cross_project_forbidden"
+        assert "billing_project" in result.details
+
+    def test_duckdb_native_forbidden_non_serviceusage(self):
+        from connectors.bigquery.access import translate_bq_error
+        e = Exception("HTTP 403: User does not have permission to access table foo")
+        result = translate_bq_error(e, self.projects, bad_request_status="upstream_error")
+        assert result.kind == "bq_forbidden"
+
+    def test_duckdb_native_bad_request_classified_via_string_match(self):
+        from connectors.bigquery.access import translate_bq_error
+        e = Exception("400 Bad Request: Syntax error at line 1")
+        result = translate_bq_error(e, self.projects, bad_request_status="client_error")
+        assert result.kind == "bq_bad_request"
+
+    def test_unknown_exception_without_bq_pattern_still_reraises(self):
+        """Heuristic must be specific — random exceptions without HTTP-error
+        keywords still re-raise (don't swallow programmer bugs)."""
+        from connectors.bigquery.access import translate_bq_error
+        with pytest.raises(ValueError, match="not a BQ error"):
+            translate_bq_error(ValueError("not a BQ error"), self.projects,
+                               bad_request_status="client_error")
+
 
 class TestDefaultClientFactory:
     def test_constructs_client_with_billing_project_as_quota(self, monkeypatch):
