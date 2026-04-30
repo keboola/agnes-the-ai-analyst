@@ -44,6 +44,7 @@ class ResourceType(StrEnum):
 
     MARKETPLACE_PLUGIN = "marketplace_plugin"
     TABLE = "table"
+    MEMORY_DOMAIN = "memory_domain"
 
 
 # Shape returned by ``list_blocks`` delegates. Kept as plain ``dict`` to keep
@@ -166,6 +167,53 @@ def _table_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
 
 
 # ---------------------------------------------------------------------------
+# Memory domain projection
+# ---------------------------------------------------------------------------
+
+
+# Mirrors VALID_DOMAINS in app/api/memory.py. Kept inline here to avoid
+# importing the FastAPI module at registry-load time (circular import risk).
+# If this list drifts from VALID_DOMAINS, add a runtime cross-check or merge
+# the two sources — for now they're tiny and reviewed together.
+_MEMORY_DOMAINS = (
+    "finance",
+    "engineering",
+    "product",
+    "data",
+    "operations",
+    "infrastructure",
+)
+
+
+def _memory_domain_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
+    """Project the (fixed) set of corporate-memory domains into the
+    (block → items) shape the admin UI renders.
+
+    Unlike marketplace plugins / tables, the grantable items are a fixed
+    enum, not a DB lookup — every deployment has the same 6 domains. One
+    synthetic block ``"Memory domains"`` holds them; ``resource_id`` is
+    the domain string (matches ``knowledge_items.domain``).
+    """
+    return [{
+        "id": "memory_domains",
+        "name": "Memory domains",
+        "items": [
+            {
+                "resource_id": domain,
+                "name": domain,
+                "category": "domain",
+                "description": (
+                    f"Members of granted groups see all knowledge_items "
+                    f"with domain={domain!r}, in addition to the existing "
+                    f"audience filter."
+                ),
+            }
+            for domain in _MEMORY_DOMAINS
+        ],
+    }]
+
+
+# ---------------------------------------------------------------------------
 # Registry — the one place that gets edited when adding a new resource type
 # ---------------------------------------------------------------------------
 
@@ -184,6 +232,13 @@ RESOURCE_TYPES: dict[ResourceType, ResourceTypeSpec] = {
         description="A registered data table.",
         id_format="<table_id>",
         list_blocks=_table_blocks,
+    ),
+    ResourceType.MEMORY_DOMAIN: ResourceTypeSpec(
+        key=ResourceType.MEMORY_DOMAIN,
+        display_name="Memory domains",
+        description="A corporate-memory domain (knowledge_items.domain).",
+        id_format="<domain>",
+        list_blocks=_memory_domain_blocks,
     ),
 }
 
