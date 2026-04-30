@@ -351,6 +351,33 @@ class TestGetBqAccess:
         b = get_bq_access()
         assert a is b
 
+    def test_fetch_helpers_raise_not_configured_on_sentinel_before_identifier_validation(self, monkeypatch):
+        """Sentinel BqAccess has BqProjects(data=""). v2 fetch helpers must trigger
+        bq.client() (which raises BqAccessError(not_configured)) BEFORE calling
+        validate_quoted_identifier on the empty string. Otherwise the operator
+        sees a confusing HTTP 400 'unsafe_identifier' instead of the intended
+        HTTP 500 'not_configured' with hint. Devin BUG_0002 on PR #138 review."""
+        from connectors.bigquery.access import get_bq_access, BqAccessError
+        from app.api.v2_sample import _fetch_bq_sample
+        from app.api.v2_schema import _fetch_bq_schema, _fetch_bq_table_options
+
+        monkeypatch.delenv("BIGQUERY_PROJECT", raising=False)
+        monkeypatch.setattr("app.instance_config.get_value", lambda *k, default="": default)
+        bq = get_bq_access()
+        assert bq.projects.data == "", "must be the sentinel"
+
+        # Strict paths surface BqAccessError(not_configured), NOT ValueError(unsafe).
+        with pytest.raises(BqAccessError) as exc_info:
+            _fetch_bq_sample(bq, "ds", "tbl", 5)
+        assert exc_info.value.kind == "not_configured"
+
+        with pytest.raises(BqAccessError) as exc_info:
+            _fetch_bq_schema(bq, "ds", "tbl")
+        assert exc_info.value.kind == "not_configured"
+
+        # Best-effort path returns {} silently.
+        assert _fetch_bq_table_options(bq, "ds", "tbl") == {}
+
     def test_instance_config_reset_cache_invalidates_get_bq_access(self, monkeypatch):
         """admin /api/admin/server-config save → instance_config.reset_cache() →
         must also clear get_bq_access cache so v2 endpoints pick up new
