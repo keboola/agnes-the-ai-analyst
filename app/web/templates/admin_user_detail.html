@@ -30,7 +30,6 @@
   }
   .ud-status-pill.active { background: #dcfce7; color: #166534; }
   .ud-status-pill.inactive { background: #fee2e2; color: #991b1b; }
-  .ud-status-pill.admin { background: #fef3c7; color: #92400e; margin-left: 6px; }
 
   .ud-section {
     background: var(--surface, #fff);
@@ -94,6 +93,22 @@
   }
   .group-link:hover { color: var(--primary, #4338ca); text-decoration: underline; }
 
+  /* Chip styling for the group cell — same color vocabulary as
+     /admin/users membership chips. Built as <a> so a click on the
+     chip lands the admin on the group's detail page. */
+  .group-chip {
+    display: inline-block;
+    padding: 3px 10px; border-radius: 999px;
+    font-size: 12px; font-weight: 500;
+    text-decoration: none;
+    background: #ede9fe; color: #6d28d9;  /* default = custom (purple) */
+  }
+  .group-chip:hover { filter: brightness(0.97); }
+  .group-chip.is-admin       { background: #fef3c7; color: #92400e; font-weight: 600; }
+  .group-chip.is-everyone    { background: #f3f4f6; color: #4b5563; }
+  .group-chip.is-google_sync { background: #dcfce7; color: #166534; }
+  .group-chip.is-custom      { background: #ede9fe; color: #6d28d9; }
+
   .add-member-row {
     padding: 12px 18px;
     background: var(--border-light, #f9fafb);
@@ -117,17 +132,6 @@
     padding: 24px 18px; text-align: center;
     color: var(--text-secondary, #6b7280); font-size: 13px;
   }
-  .ea-admin-pill {
-    margin: 18px;
-    padding: 16px;
-    background: linear-gradient(135deg, #fef3c7, #fde68a);
-    border: 1px solid #f59e0b;
-    border-radius: 8px;
-    display: flex; align-items: center; gap: 12px;
-  }
-  .ea-admin-pill .icon { font-size: 22px; }
-  .ea-admin-pill .text { font-size: 13px; color: #78350f; line-height: 1.4; }
-  .ea-admin-pill strong { color: #422006; }
   .ea-table { width: 100%; border-collapse: collapse; font-size: 13px; }
   .ea-table thead th {
     text-align: left; padding: 10px 18px;
@@ -178,7 +182,6 @@
         {{ target_user.name or target_user.email }}
         <span id="status-pill" class="ud-status-pill"
               style="display:none; vertical-align: middle; margin-left: 8px;"></span>
-        <span id="admin-pill" class="ud-status-pill admin" style="display:none; vertical-align:middle;">Admin</span>
       </h1>
       <div class="ud-subtitle">{{ target_user.email }} · id {{ target_user.id[:8] }}…</div>
     </div>
@@ -244,10 +247,29 @@ const USER_ID = document.querySelector("[data-user-id]").dataset.userId;
 const USER_API = `/api/users/${encodeURIComponent(USER_ID)}`;
 const MEMBERSHIPS_API = `/api/admin/users/${encodeURIComponent(USER_ID)}/memberships`;
 const EFFECTIVE_API = `/api/admin/users/${encodeURIComponent(USER_ID)}/effective-access`;
+// Server-injected env: empty string = no prefix configured. Same shape as
+// /admin/groups + /admin/users — used to shorten google-sync chip text
+// (`grp_acme_legal@workspace.example.com` → `Legal`) so the membership cell
+// stays readable.
+const GOOGLE_GROUP_PREFIX = {{ config.AGNES_GOOGLE_GROUP_PREFIX | tojson }};
 const GROUPS_API = "/api/admin/groups";
 
 function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
 function fmtDate(s) { return s ? String(s).slice(0, 16).replace("T", " ") : "-"; }
+
+// Same logic as /admin/groups + /admin/users: only safe to call on
+// google_sync rows whose `name` is the raw Workspace email; calling it
+// on a custom group name like "data-team" would over-capitalize it.
+function deriveDisplayName(fullEmail) {
+  if (!fullEmail) return "";
+  const local = String(fullEmail).split("@")[0] || String(fullEmail);
+  const px = (GOOGLE_GROUP_PREFIX || "").toLowerCase();
+  let s = local;
+  if (px && s.toLowerCase().startsWith(px)) s = s.slice(px.length);
+  s = s.replace(/^[_\-\s]+/, "");
+  if (!s) return local;
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
 
 function toast(msg, kind = "") {
   const el = document.createElement("div");
@@ -286,14 +308,19 @@ function renderHeader() {
     pill.className = "ud-status-pill active";
     pill.style.display = "inline-block";
   }
-  const adminPill = document.getElementById("admin-pill");
-  const isAdmin = memberships.some(m => m.group_name === "Admin");
-  adminPill.style.display = isAdmin ? "inline-block" : "none";
 }
 
 function renderAccountStatus() {
   const node = document.getElementById("account-status-text");
   const toggleBtn = document.getElementById("toggle-active-btn");
+  // SSO-managed accounts (Google Workspace today) hide password / delete
+  // affordances — those operations are no-ops or get reverted by the next
+  // sync. Deactivate stays so admins can still gate access locally.
+  const resetBtn = document.getElementById("reset-pw-btn");
+  const deleteBtn = document.getElementById("delete-user-btn");
+  const sso = !!(userState && userState.is_sso_user);
+  if (resetBtn) resetBtn.style.display = sso ? "none" : "";
+  if (deleteBtn) deleteBtn.style.display = sso ? "none" : "";
   if (!userState) { node.textContent = "—"; return; }
   if (userState.active) {
     node.innerHTML = `<strong>${esc(userState.email)}</strong> is active.`;
@@ -313,7 +340,6 @@ async function loadMemberships() {
   }
   memberships = await r.json();
   renderMemberships();
-  renderHeader();  // admin pill depends on memberships
 }
 
 function renderMemberships() {
@@ -343,8 +369,19 @@ function renderMemberships() {
     })[m.source] || m.source;
     const addedFragment = m.added_at
       ? `<span class="added">· ${esc(fmtDate(m.added_at))}</span>` : "";
+    // Same chip color + name-shortening rules as the user list:
+    //   - name match (Admin / Everyone) wins over origin so env-mapped
+    //     system rows keep their canonical color
+    //   - google_sync chip text runs through deriveDisplayName ("Legal"
+    //     instead of "grp_acme_legal@workspace.example.com"), full email in
+    //     the title attribute for hover reveal
+    const cls = m.group_name === "Admin"    ? "is-admin"
+              : m.group_name === "Everyone" ? "is-everyone"
+              : `is-${m.origin || "custom"}`;
+    const display = (m.origin === "google_sync" && m.group_name !== "Admin" && m.group_name !== "Everyone")
+      ? deriveDisplayName(m.group_name) : m.group_name;
     tr.innerHTML = `
-      <td><a class="group-link" href="/admin/groups">${esc(m.group_name)}</a></td>
+      <td><a class="group-chip ${cls}" href="/admin/groups/${encodeURIComponent(m.group_id)}" title="${esc(m.group_name)}">${esc(display)}</a></td>
       <td><span class="source-meta"><span class="label">${esc(sourceLabel)}</span>${addedFragment}</span></td>
       <td style="text-align:right">${removable}</td>
     `;
@@ -367,7 +404,13 @@ function refreshGroupDropdown() {
   const memberOf = new Set(memberships.map(m => m.group_id));
   sel.innerHTML = '<option value="">— Pick a group —</option>';
   for (const g of allGroups) {
-    if (memberOf.has(g.id)) continue;  // already a member, hide
+    if (memberOf.has(g.id)) continue;          // already a member, hide
+    if (g.is_google_managed) continue;         // membership owned by Workspace —
+                                               // includes mapped Admin / Everyone when
+                                               // AGNES_GROUP_{ADMIN,EVERYONE}_EMAIL is
+                                               // set. The API would 409 on POST
+                                               // anyway; hiding the option keeps the
+                                               // picker honest about what's grantable.
     const opt = document.createElement("option");
     opt.value = g.id;
     opt.textContent = g.name + (g.is_system ? " (system)" : "");
@@ -426,18 +469,11 @@ async function loadEffectiveAccess() {
   }
   const data = await r.json();
 
-  if (data.is_admin) {
-    content.innerHTML = `
-      <div class="ea-admin-pill">
-        <span class="icon">🔑</span>
-        <span class="text">
-          <strong>Full access via the Admin group.</strong><br>
-          This user can read/write everything regardless of explicit grants.
-        </span>
-      </div>`;
-    return;
-  }
-
+  // We deliberately don't short-circuit on `data.is_admin` anymore —
+  // admin users get the same explicit grant breakdown as everyone else
+  // so the operator can audit which Admin-group grants exist (and via
+  // which sibling groups). Authorization at runtime still grants admin
+  // god-mode regardless of this list (see `app.auth.access`).
   if (!data.items || data.items.length === 0) {
     content.innerHTML = `<div class="ea-empty">User has no resource access yet. Add them to a group with grants.</div>`;
     return;

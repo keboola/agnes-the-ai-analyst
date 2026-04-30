@@ -150,41 +150,6 @@ async def get_resource_types(
     return list_resource_types()
 
 
-@router.get("/group-suggestions", response_model=List[dict])
-async def get_group_suggestions(
-    user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
-):
-    """Suggest Google Workspace group names the calling admin belongs to that
-    are *not yet* registered as ``user_groups`` rows.
-
-    Powers the "Suggested from your Google account" picker on the
-    /admin/groups create modal — click a chip → name input is pre-filled.
-
-    Fail-soft: returns ``[]`` if the Cloud Identity call errors. Off-VM the
-    call falls through to the real path and bails out empty unless
-    ``GOOGLE_ADMIN_SDK_MOCK_GROUPS`` is set.
-    """
-    from app.auth.group_sync import fetch_user_groups
-
-    email = user.get("email") or ""
-    if not email:
-        return []
-    try:
-        google_names = fetch_user_groups(email)
-    except Exception as e:  # noqa: BLE001 - fail-soft by design
-        logger.warning("group-suggestions fetch failed for %s: %s", email, e)
-        return []
-    if not google_names:
-        return []
-    existing = {g["name"] for g in UserGroupsRepository(conn).list_all()}
-    return [
-        {"name": n, "source": "google"}
-        for n in google_names
-        if n and n not in existing
-    ]
-
-
 # ---------------------------------------------------------------------------
 # Access overview — single-shot payload for the /admin/access page
 # ---------------------------------------------------------------------------
@@ -219,6 +184,13 @@ async def access_overview(
             "name": g["name"],
             "description": g.get("description"),
             "is_system": bool(g.get("is_system", False)),
+            "created_by": g.get("created_by"),
+            # Same origin / google-management surface as `/api/admin/groups`
+            # so the /admin/access sidebar can render the identical pill +
+            # subtitle treatment without a second source of truth.
+            "origin": _derive_origin(g),
+            "is_google_managed": _is_google_managed(g),
+            "mapped_email": _mapped_email(g),
             "member_count": members_repo.count_members(g["id"]),
             "grant_count": grants_repo.count_for_group(g["id"]),
         })
@@ -261,7 +233,14 @@ class GroupResponse(BaseModel):
     name: str
     description: Optional[str] = None
     is_system: bool = False
-    origin: str = "admin"  # 'system' | 'admin' | 'google_sync'
+    # 'system' | 'custom' | 'google_sync'. ``custom`` = created by an admin
+    # via the UI/CLI (no system marker, no google-sync marker on
+    # ``created_by``). Mapped Admin/Everyone (system row wired to a
+    # Workspace group via AGNES_GROUP_{ADMIN,EVERYONE}_EMAIL) report
+    # 'google_sync' here — Workspace is the authoritative source of
+    # membership for those rows, so the chip should advertise that, not
+    # the seed mechanism. Unmapped Admin/Everyone stay 'system'.
+    origin: str = "custom"
     created_at: Optional[str] = None
     created_by: Optional[str] = None
     member_count: int = 0
@@ -269,6 +248,14 @@ class GroupResponse(BaseModel):
     # True iff the row is owned by Google sync — admin UI hides edit/delete
     # affordances and the API rejects mutations with 409 google_managed_readonly.
     is_google_managed: bool = False
+    # When the row is the seeded Admin / Everyone system group AND the
+    # corresponding env-mapping is configured, this is the upstream
+    # Workspace group email that funnels members in. The admin UI renders
+    # it as a subtitle under the canonical name (`Admin / admins@...`)
+    # so operators can see *which* Workspace group is wired to the system
+    # row. Null for regular google_sync rows (their email is already in
+    # `name`) and for unmapped system rows.
+    mapped_email: Optional[str] = None
 
 
 class CreateGroupRequest(BaseModel):
@@ -282,24 +269,57 @@ class UpdateGroupRequest(BaseModel):
 
 
 def _derive_origin(g: dict) -> str:
-    """Project a 3-value origin tag from the existing user_groups columns.
+    """Project a 3-value origin tag from existing user_groups columns.
 
-    - ``is_system=TRUE``                       → 'system'  (Admin / Everyone)
-    - ``created_by`` starts with 'system:'     → 'google_sync' (or other auto)
-    - else                                     → 'admin' (created via UI/CLI)
-
-    The OAuth callback stamps ``created_by='system:google-sync'`` when it
-    auto-creates a group from a Cloud Identity claim, so the origin is
-    derivable without a new column.
+      - mapped via ``AGNES_GROUP_{ADMIN,EVERYONE}_EMAIL`` → 'google_sync'
+        (the seed badge is suppressed when the row is wired to Workspace —
+        Workspace is the authoritative source of membership)
+      - ``is_system=TRUE`` (otherwise)                   → 'system'
+      - ``created_by`` starts with 'system:google'       → 'google_sync'
+      - other ``system:`` prefixed creator               → 'system'
+      - else                                             → 'custom'
+        (admin-created via UI/CLI — the value is named after the *origin*,
+        not the creator's role, so it doesn't visually clash with the
+        seeded `Admin` system row in the chip layer)
     """
-    if g.get("is_system"):
-        return "system"
+    is_system = bool(g.get("is_system"))
     cb = g.get("created_by") or ""
+    name = g.get("name") or ""
+    if is_system:
+        from src.db import SYSTEM_ADMIN_GROUP, SYSTEM_EVERYONE_GROUP
+        admin_email = os.environ.get("AGNES_GROUP_ADMIN_EMAIL", "").strip()
+        everyone_email = os.environ.get("AGNES_GROUP_EVERYONE_EMAIL", "").strip()
+        if (admin_email and name == SYSTEM_ADMIN_GROUP) or (
+            everyone_email and name == SYSTEM_EVERYONE_GROUP
+        ):
+            return "google_sync"
+        return "system"
     if cb.startswith("system:google"):
         return "google_sync"
     if cb.startswith("system:"):
         return "system"
-    return "admin"
+    return "custom"
+
+
+def _mapped_email(g: dict) -> Optional[str]:
+    """The Workspace group email that funnels members into a system row.
+
+    Only returns a value when the row is the seeded ``Admin`` / ``Everyone``
+    system group AND the matching env var is configured. Null otherwise —
+    regular google_sync rows already carry the email in ``name``, and
+    unmapped system rows have nothing to show.
+    """
+    if not g.get("is_system"):
+        return None
+    from src.db import SYSTEM_ADMIN_GROUP, SYSTEM_EVERYONE_GROUP
+    name = g.get("name")
+    if name == SYSTEM_ADMIN_GROUP:
+        v = os.environ.get("AGNES_GROUP_ADMIN_EMAIL", "").strip()
+        return v or None
+    if name == SYSTEM_EVERYONE_GROUP:
+        v = os.environ.get("AGNES_GROUP_EVERYONE_EMAIL", "").strip()
+        return v or None
+    return None
 
 
 def _group_to_response(
@@ -318,6 +338,7 @@ def _group_to_response(
         member_count=members_repo.count_members(g["id"]),
         grant_count=grants_repo.count_for_group(g["id"]),
         is_google_managed=_is_google_managed(g),
+        mapped_email=_mapped_email(g),
     )
 
 
@@ -703,6 +724,10 @@ class UserMembershipResponse(BaseModel):
     group_id: str
     group_name: str
     is_system: bool = False
+    # 'system' | 'custom' | 'google_sync' — same shared helper as
+    # /api/admin/groups + /api/users so the user detail page colors the
+    # membership chips identically to the user list and the groups page.
+    origin: str = "custom"
     source: str
     added_at: Optional[str] = None
     added_by: Optional[str] = None
@@ -731,7 +756,7 @@ async def list_user_memberships(
         raise HTTPException(status_code=404, detail="User not found")
     rows = conn.execute(
         """SELECT m.group_id, g.name AS group_name, g.is_system,
-                  m.source, m.added_at, m.added_by
+                  g.created_by, m.source, m.added_at, m.added_by
            FROM user_group_members m
            JOIN user_groups g ON g.id = m.group_id
            WHERE m.user_id = ?
@@ -743,9 +768,12 @@ async def list_user_memberships(
             group_id=r[0],
             group_name=r[1],
             is_system=bool(r[2]),
-            source=r[3],
-            added_at=str(r[4]) if r[4] else None,
-            added_by=r[5],
+            origin=_derive_origin(
+                {"is_system": bool(r[2]), "name": r[1], "created_by": r[3]}
+            ),
+            source=r[4],
+            added_at=str(r[5]) if r[5] else None,
+            added_by=r[6],
         )
         for r in rows
     ]
@@ -791,6 +819,13 @@ async def add_user_to_group(
         group_id=payload.group_id,
         group_name=group["name"],
         is_system=bool(group.get("is_system", False)),
+        origin=_derive_origin(
+            {
+                "is_system": bool(group.get("is_system", False)),
+                "name": group["name"],
+                "created_by": group.get("created_by"),
+            }
+        ),
         source="admin",
         added_at=None,
         added_by=user.get("email"),
@@ -858,16 +893,21 @@ async def user_effective_access(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """List resources the user effectively has access to, with which group
-    grants each one. Admin short-circuits — if the user is in Admin, the
-    response sets ``is_admin=true`` and an empty items list (UI renders a
-    "Full access via Admin" pill instead of the per-resource breakdown).
+    grants each one. ``is_admin`` reflects the real Admin-group check but
+    no longer short-circuits the response — admins get the same explicit
+    grant breakdown as everyone else, so the admin viewing a target user
+    can see precisely what's been granted via which group rather than a
+    flat "Full access" pill that hides the wiring.
+
+    Note: actual authorization at runtime still gives Admin-group members
+    god-mode (see ``app.auth.access.is_user_admin``); this endpoint is a
+    debugging/audit view of the explicit grant graph, not the enforcement
+    surface.
     """
     if not UserRepository(conn).get_by_id(user_id):
         raise HTTPException(status_code=404, detail="User not found")
 
     from app.auth.access import is_user_admin
-    if is_user_admin(user_id, conn):
-        return EffectiveAccessResponse(is_admin=True, items=[])
 
     # JOIN user's group memberships with their grants. group_concat-style
     # aggregation isn't worth it — render side-by-side rows and let the UI
@@ -893,7 +933,7 @@ async def user_effective_access(
         grouped[key].via_groups.append({"group_id": gid, "group_name": gname})
 
     return EffectiveAccessResponse(
-        is_admin=False,
+        is_admin=is_user_admin(user_id, conn),
         items=list(grouped.values()),
     )
 
@@ -916,11 +956,12 @@ async def my_effective_access(
 ):
     """Same payload as /api/admin/users/{id}/effective-access but scoped to
     the calling user. Drives the /profile page's read-only access summary —
-    so non-admin callers can self-audit without elevation."""
+    so non-admin callers can self-audit without elevation. Admins get the
+    same explicit grant breakdown as everyone else (no short-circuit) so
+    the profile page audits the actual grant graph; runtime authorization
+    still gives Admin god-mode regardless of this list."""
     user_id = user["id"]
     from app.auth.access import is_user_admin
-    if is_user_admin(user_id, conn):
-        return EffectiveAccessResponse(is_admin=True, items=[])
 
     rows = conn.execute(
         """SELECT rg.resource_type, rg.resource_id,
@@ -943,6 +984,6 @@ async def my_effective_access(
         grouped[key].via_groups.append({"group_id": gid, "group_name": gname})
 
     return EffectiveAccessResponse(
-        is_admin=False,
+        is_admin=is_user_admin(user_id, conn),
         items=list(grouped.values()),
     )

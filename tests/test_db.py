@@ -1465,3 +1465,261 @@ class TestV13ToV14Migration:
             assert get_schema_version(conn) == SCHEMA_VERSION
         finally:
             conn.close()
+
+
+class TestV17ToV18Migration:
+    """Cleanup of stranded non-google memberships in google-managed groups.
+
+    v13's _v12_to_v13_finalize unconditionally backfilled every existing user
+    into Everyone with source='system_seed'. The platform design has since
+    shifted: Workspace-mapped Admin/Everyone groups receive memberships
+    exclusively from Google sync. v17→v18 deletes the cruft, preserving the
+    bootstrap admin (the only legitimate non-google occupant of Admin).
+    Env-conditional: only fires for env-mapped Admin/Everyone — leaves the
+    rows intact when those system groups are LOCAL (no Workspace mapping)
+    so a non-Google deployment keeps its admin / broadcast semantics.
+    """
+
+    def test_v17_to_v18_drops_stranded_and_preserves_bootstrap(
+        self, tmp_path, monkeypatch,
+    ):
+        import uuid
+        from src.db import close_system_db, get_schema_version, get_system_db
+
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv(
+            "JWT_SECRET_KEY", "test-jwt-secret-key-minimum-32-chars!!",
+        )
+        # Env mapping must be active for the Admin/Everyone branches to fire.
+        monkeypatch.setenv("AGNES_GROUP_ADMIN_EMAIL", "admins@workspace.test")
+        monkeypatch.setenv("AGNES_GROUP_EVERYONE_EMAIL", "everyone@workspace.test")
+        close_system_db()
+
+        # Open at full target version, then plant stranded rows + a synthetic
+        # google_sync group, then reset schema_version to 17 so the v17→v18
+        # migration runs on the next open.
+        conn = get_system_db()
+        try:
+            admin_gid = conn.execute(
+                "SELECT id FROM user_groups WHERE name = 'Admin' AND is_system",
+            ).fetchone()[0]
+            everyone_gid = conn.execute(
+                "SELECT id FROM user_groups WHERE name = 'Everyone' AND is_system",
+            ).fetchone()[0]
+
+            gsync_gid = str(uuid.uuid4())
+            conn.execute(
+                "INSERT INTO user_groups (id, name, is_system, created_by) "
+                "VALUES (?, ?, FALSE, 'system:google-sync')",
+                [gsync_gid, "legal@workspace.test"],
+            )
+
+            bootstrap_uid = str(uuid.uuid4())
+            stranded_admin_uid = str(uuid.uuid4())
+            stranded_everyone_uid = str(uuid.uuid4())
+            stranded_gsync_uid = str(uuid.uuid4())
+            real_gsync_uid = str(uuid.uuid4())
+            for uid, email in [
+                (bootstrap_uid, "boot@x"),
+                (stranded_admin_uid, "ghost-admin@x"),
+                (stranded_everyone_uid, "ghost-everyone@x"),
+                (stranded_gsync_uid, "ghost-gsync@x"),
+                (real_gsync_uid, "real@workspace.test"),
+            ]:
+                conn.execute(
+                    "INSERT INTO users (id, email, name, role) "
+                    "VALUES (?, ?, ?, 'analyst')",
+                    [uid, email, email],
+                )
+
+            # 1. Bootstrap admin in Admin → KEEP (added_by allow-list).
+            conn.execute(
+                "INSERT INTO user_group_members (user_id, group_id, source, added_by) "
+                "VALUES (?, ?, 'system_seed', 'auth.bootstrap')",
+                [bootstrap_uid, admin_gid],
+            )
+            # 2. Stranded system_seed in Admin → DROP.
+            conn.execute(
+                "INSERT INTO user_group_members (user_id, group_id, source, added_by) "
+                "VALUES (?, ?, 'system_seed', 'migration:v13')",
+                [stranded_admin_uid, admin_gid],
+            )
+            # 3. Stranded system_seed in Everyone → DROP.
+            conn.execute(
+                "INSERT INTO user_group_members (user_id, group_id, source, added_by) "
+                "VALUES (?, ?, 'system_seed', 'migration:v13')",
+                [stranded_everyone_uid, everyone_gid],
+            )
+            # 4. Non-google source in google-sync group → DROP.
+            conn.execute(
+                "INSERT INTO user_group_members (user_id, group_id, source, added_by) "
+                "VALUES (?, ?, 'admin', 'admin@x')",
+                [stranded_gsync_uid, gsync_gid],
+            )
+            # 5. Real google_sync in google-sync group → KEEP.
+            conn.execute(
+                "INSERT INTO user_group_members (user_id, group_id, source, added_by) "
+                "VALUES (?, ?, 'google_sync', 'system:google-sync')",
+                [real_gsync_uid, gsync_gid],
+            )
+
+            conn.execute("UPDATE schema_version SET version = 17")
+        finally:
+            conn.close()
+            close_system_db()
+
+        # Re-open → migration v17→v18 runs.
+        conn = get_system_db()
+        try:
+            from src.db import SCHEMA_VERSION
+            assert get_schema_version(conn) == SCHEMA_VERSION
+
+            def _has_membership(uid: str) -> bool:
+                return bool(
+                    conn.execute(
+                        "SELECT 1 FROM user_group_members WHERE user_id = ?",
+                        [uid],
+                    ).fetchone(),
+                )
+
+            # Bootstrap admin survives.
+            assert _has_membership(bootstrap_uid), \
+                "bootstrap admin must survive cleanup"
+            # Real google_sync member survives.
+            assert _has_membership(real_gsync_uid), \
+                "google_sync members must survive cleanup"
+            # Stranded rows are gone.
+            assert not _has_membership(stranded_admin_uid), \
+                "stranded system_seed in Admin must be dropped"
+            assert not _has_membership(stranded_everyone_uid), \
+                "stranded system_seed in Everyone must be dropped"
+            assert not _has_membership(stranded_gsync_uid), \
+                "non-google source in google_sync group must be dropped"
+        finally:
+            conn.close()
+            close_system_db()
+
+    def test_v17_to_v18_skips_admin_everyone_when_env_unmapped(
+        self, tmp_path, monkeypatch,
+    ):
+        """Without env mapping, Admin/Everyone are LOCAL groups — v18 must
+        leave their `system_seed` rows intact (those rows represent legitimate
+        local admins / broadcast membership, not stranded Workspace cruft).
+        Only the auto-created google_sync branch fires unconditionally.
+        """
+        import uuid
+        from src.db import close_system_db, get_schema_version, get_system_db
+
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv(
+            "JWT_SECRET_KEY", "test-jwt-secret-key-minimum-32-chars!!",
+        )
+        monkeypatch.delenv("AGNES_GROUP_ADMIN_EMAIL", raising=False)
+        monkeypatch.delenv("AGNES_GROUP_EVERYONE_EMAIL", raising=False)
+        close_system_db()
+
+        conn = get_system_db()
+        try:
+            admin_gid = conn.execute(
+                "SELECT id FROM user_groups WHERE name = 'Admin' AND is_system",
+            ).fetchone()[0]
+            everyone_gid = conn.execute(
+                "SELECT id FROM user_groups WHERE name = 'Everyone' AND is_system",
+            ).fetchone()[0]
+            gsync_gid = str(uuid.uuid4())
+            conn.execute(
+                "INSERT INTO user_groups (id, name, is_system, created_by) "
+                "VALUES (?, ?, FALSE, 'system:google-sync')",
+                [gsync_gid, "legal@workspace.test"],
+            )
+
+            local_admin_uid = str(uuid.uuid4())
+            local_everyone_uid = str(uuid.uuid4())
+            stranded_gsync_uid = str(uuid.uuid4())
+            for uid, email in [
+                (local_admin_uid, "local-admin@x"),
+                (local_everyone_uid, "local-user@x"),
+                (stranded_gsync_uid, "ghost-gsync@x"),
+            ]:
+                conn.execute(
+                    "INSERT INTO users (id, email, name, role) "
+                    "VALUES (?, ?, ?, 'analyst')",
+                    [uid, email, email],
+                )
+
+            # system_seed rows in unmapped Admin/Everyone — must SURVIVE.
+            conn.execute(
+                "INSERT INTO user_group_members (user_id, group_id, source, added_by) "
+                "VALUES (?, ?, 'system_seed', 'system:v13-backfill')",
+                [local_admin_uid, admin_gid],
+            )
+            conn.execute(
+                "INSERT INTO user_group_members (user_id, group_id, source, added_by) "
+                "VALUES (?, ?, 'system_seed', 'system:v13-backfill')",
+                [local_everyone_uid, everyone_gid],
+            )
+            # Non-google source in google-sync group — must be DROPPED
+            # regardless of env state.
+            conn.execute(
+                "INSERT INTO user_group_members (user_id, group_id, source, added_by) "
+                "VALUES (?, ?, 'admin', 'admin@x')",
+                [stranded_gsync_uid, gsync_gid],
+            )
+
+            conn.execute("UPDATE schema_version SET version = 17")
+        finally:
+            conn.close()
+            close_system_db()
+
+        conn = get_system_db()
+        try:
+            from src.db import SCHEMA_VERSION
+            assert get_schema_version(conn) == SCHEMA_VERSION
+
+            def _has_membership(uid: str) -> bool:
+                return bool(
+                    conn.execute(
+                        "SELECT 1 FROM user_group_members WHERE user_id = ?",
+                        [uid],
+                    ).fetchone(),
+                )
+
+            assert _has_membership(local_admin_uid), \
+                "system_seed in unmapped Admin must survive"
+            assert _has_membership(local_everyone_uid), \
+                "system_seed in unmapped Everyone must survive"
+            assert not _has_membership(stranded_gsync_uid), \
+                "non-google source in google_sync group must drop unconditionally"
+        finally:
+            conn.close()
+            close_system_db()
+
+    def test_v17_to_v18_idempotent(self, tmp_path, monkeypatch):
+        """Running migrations on an already-v18 DB is a no-op."""
+        from src.db import close_system_db, get_schema_version, get_system_db
+
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv(
+            "JWT_SECRET_KEY", "test-jwt-secret-key-minimum-32-chars!!",
+        )
+        close_system_db()
+
+        conn = get_system_db()
+        try:
+            from src.db import SCHEMA_VERSION
+            assert get_schema_version(conn) == SCHEMA_VERSION
+        finally:
+            conn.close()
+            close_system_db()
+
+        # Second open should not regress version or error.
+        conn = get_system_db()
+        try:
+            from src.db import SCHEMA_VERSION
+            assert get_schema_version(conn) == SCHEMA_VERSION
+        finally:
+            conn.close()
+            close_system_db()

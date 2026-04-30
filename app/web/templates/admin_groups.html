@@ -68,7 +68,7 @@
     text-transform: uppercase; letter-spacing: 0.4px;
   }
   .origin-system     { background: #fef3c7; color: #92400e; }
-  .origin-admin      { background: #ede9fe; color: #6d28d9; }
+  .origin-custom     { background: #ede9fe; color: #6d28d9; }
   .origin-google_sync { background: #dcfce7; color: #166534; }
 
   .gp-actions { display: flex; gap: 6px; justify-content: flex-end; }
@@ -125,30 +125,6 @@
     font-family: inherit;
   }
   .modal-card textarea { min-height: 60px; resize: vertical; }
-
-  /* Suggested groups from Google Workspace (admin's own membership) */
-  .suggest-block { display: none; margin: 0 0 4px; }
-  .suggest-block.is-visible { display: block; }
-  .suggest-label {
-    font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px;
-    color: var(--text-secondary, #6b7280); margin: 4px 0 8px;
-  }
-  .suggest-help { text-transform: none; letter-spacing: 0; font-weight: 400; margin-left: 6px; }
-  .suggest-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-  .suggest-chip {
-    display: inline-flex; align-items: center; gap: 6px;
-    padding: 4px 10px; border-radius: 999px;
-    background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534;
-    font-size: 12px; cursor: pointer; font-family: inherit;
-    transition: background 0.12s, border-color 0.12s, transform 0.05s;
-  }
-  .suggest-chip:hover { background: #dcfce7; border-color: #86efac; }
-  .suggest-chip:active { transform: translateY(1px); }
-  .suggest-chip .src-tag {
-    font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.4px;
-    background: rgba(22,101,52,0.12); color: #166534;
-    padding: 1px 6px; border-radius: 3px; font-weight: 600;
-  }
 
   .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
   .modal-btn {
@@ -215,14 +191,6 @@
   <div class="modal-card">
     <h3 id="group-modal-title">New group</h3>
     <p class="sub">Pick a name that identifies a logical audience (e.g. <code>data-team</code>, <code>engineers</code>).</p>
-
-    <div class="suggest-block" id="suggest-block">
-      <div class="suggest-label">
-        Suggested from your Google account
-        <span class="suggest-help">Click a chip to use the name.</span>
-      </div>
-      <div class="suggest-chips" id="suggest-chips"></div>
-    </div>
 
     <label for="group-name">Name</label>
     <input id="group-name" type="text" autocomplete="off" placeholder="data-team">
@@ -331,7 +299,7 @@ function render() {
     const tr = document.createElement("tr");
     tr.dataset.id = g.id;
     tr.style.cursor = "pointer";
-    const origin = g.origin || "admin";
+    const origin = g.origin || "custom";
     // Read-only when the row is owned by Google sync OR a non-mapped system
     // group (Admin/Everyone canonical name without the env mapping — those
     // still cannot be renamed/deleted, but they accept admin-managed members).
@@ -343,13 +311,22 @@ function render() {
       ? `<span style="color:#9ca3af;font-size:11px">read-only</span>`
       : `<button class="icon-btn" data-action="edit">Edit</button>
          <button class="icon-btn danger" data-action="delete">Delete</button>`;
-    // For Google-managed rows, the canonical `name` is the full Workspace
-    // email — render a derived "Finance" big label with the email as a
-    // monospace subtitle. For everything else, name stays one line.
-    const nameCell = isGoogleManaged
-      ? `<a class="gp-name" href="/admin/groups/${encodeURIComponent(g.id)}">${esc(deriveDisplayName(g.name))}</a>
-         <span class="gp-name-sub">${esc(g.name)}</span>`
-      : `<a class="gp-name" href="/admin/groups/${encodeURIComponent(g.id)}">${esc(g.name)}</a>`;
+    // Subtitle rules for the name cell:
+    //   - mapped_email present (Admin/Everyone wired to a Workspace group)
+    //     → big = canonical name ("Admin"), subtitle = the Workspace email
+    //   - google-managed user-created group → big = derived friendly name
+    //     ("Finance"), subtitle = full Workspace email stored as `name`
+    //   - everything else → single-line name, no subtitle
+    let nameCell;
+    if (g.mapped_email) {
+      nameCell = `<a class="gp-name" href="/admin/groups/${encodeURIComponent(g.id)}">${esc(g.name)}</a>
+                  <span class="gp-name-sub">${esc(g.mapped_email)}</span>`;
+    } else if (isGoogleManaged) {
+      nameCell = `<a class="gp-name" href="/admin/groups/${encodeURIComponent(g.id)}">${esc(deriveDisplayName(g.name))}</a>
+                  <span class="gp-name-sub">${esc(g.name)}</span>`;
+    } else {
+      nameCell = `<a class="gp-name" href="/admin/groups/${encodeURIComponent(g.id)}">${esc(g.name)}</a>`;
+    }
     tr.innerHTML = `
       <td>${nameCell}</td>
       <td><span class="gp-desc">${esc(g.description || "")}</span></td>
@@ -377,33 +354,6 @@ function render() {
 
 document.getElementById("search").addEventListener("input", render);
 
-async function loadGroupSuggestions() {
-  const block = document.getElementById("suggest-block");
-  const wrap  = document.getElementById("suggest-chips");
-  block.classList.remove("is-visible");
-  wrap.innerHTML = "";
-  try {
-    const r = await fetch("/api/admin/group-suggestions", { credentials: "include" });
-    if (!r.ok) return;
-    const items = await r.json();
-    if (!Array.isArray(items) || items.length === 0) return;
-    for (const it of items) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "suggest-chip";
-      btn.title = `Use "${it.name}" as the group name`;
-      btn.innerHTML = `${esc(it.name)} <span class="src-tag">Google</span>`;
-      btn.addEventListener("click", () => {
-        const input = document.getElementById("group-name");
-        input.value = it.name;
-        input.focus();
-      });
-      wrap.appendChild(btn);
-    }
-    block.classList.add("is-visible");
-  } catch (_) { /* fail-soft — suggestions are a hint, not required */ }
-}
-
 document.getElementById("open-create-btn").addEventListener("click", () => {
   editingId = null;
   document.getElementById("group-modal-title").textContent = "New group";
@@ -411,7 +361,6 @@ document.getElementById("open-create-btn").addEventListener("click", () => {
   document.getElementById("group-desc").value = "";
   openModal("group-modal");
   setTimeout(() => document.getElementById("group-name").focus(), 50);
-  loadGroupSuggestions();
 });
 
 function openEdit(g) {
@@ -419,9 +368,6 @@ function openEdit(g) {
   document.getElementById("group-modal-title").textContent = "Edit group";
   document.getElementById("group-name").value = g.name;
   document.getElementById("group-desc").value = g.description || "";
-  // Suggestions are only useful when creating; hide on edit.
-  document.getElementById("suggest-block").classList.remove("is-visible");
-  document.getElementById("suggest-chips").innerHTML = "";
   openModal("group-modal");
 }
 

@@ -854,16 +854,17 @@ async def admin_group_detail_page(
     """Single-group detail page — header + members table. Resource grants
     live on /admin/grants (deep-linked from here)."""
     from src.repositories.user_groups import UserGroupsRepository
-    from app.api.access import _is_google_managed
+    from app.api.access import _is_google_managed, _mapped_email
     g = UserGroupsRepository(conn).get(group_id)
     if not g:
         raise HTTPException(status_code=404, detail="Group not found")
-    # Project a `is_google_managed` flag onto the dict the template reads,
-    # using the same rule the API enforces (created_by='system:google-sync'
-    # OR system + env mapping). Doing it server-side keeps the template
-    # free of env-var lookups and Python-side logic duplication.
+    # Project the same flags the API derives so the template avoids env
+    # lookups: `is_google_managed` (created_by='system:google-sync' OR
+    # system + env mapping) and `mapped_email` (the Workspace group
+    # funneling members into the Admin/Everyone system row, when set).
     g_view = dict(g)
     g_view["is_google_managed"] = _is_google_managed(g)
+    g_view["mapped_email"] = _mapped_email(g)
     ctx = _build_context(request, user=user, target_group=g_view)
     return templates.TemplateResponse(request, "admin_group_detail.html", ctx)
 
@@ -944,7 +945,8 @@ async def profile_page(
     were added by an admin, by Google sync, or seeded at deploy).
     """
     rows = conn.execute(
-        """SELECT g.id, g.name, g.description, g.is_system, m.source, m.added_at
+        """SELECT g.id, g.name, g.description, g.is_system, g.created_by,
+                  m.source, m.added_at
            FROM user_group_members m
            JOIN user_groups g ON g.id = m.group_id
            WHERE m.user_id = ?
@@ -953,6 +955,25 @@ async def profile_page(
     ).fetchall()
     cols = [d[0] for d in conn.description]
     memberships = [dict(zip(cols, r)) for r in rows]
+    # Project the same chip metadata the /admin/users/{id} page derives:
+    # origin (single source of truth via app.api.access._derive_origin),
+    # plus a display_name that shortens raw Workspace emails for
+    # google_sync rows (`grp_acme_legal@workspace.example.com` → `Legal`). The
+    # Jinja template just renders these without env lookups.
+    from app.api.access import _derive_origin
+    prefix = os.environ.get("AGNES_GOOGLE_GROUP_PREFIX", "").strip().lower()
+    for m in memberships:
+        m["origin"] = _derive_origin(m)
+        if m["origin"] == "google_sync" and m["name"] and m["name"] not in ("Admin", "Everyone"):
+            local = m["name"].split("@", 1)[0]
+            if prefix and local.lower().startswith(prefix):
+                local = local[len(prefix):]
+            local = local.lstrip("_- \t")
+            if not local:
+                local = m["name"].split("@", 1)[0]
+            m["display_name"] = local[:1].upper() + local[1:]
+        else:
+            m["display_name"] = m["name"]
 
     ctx = _build_context(
         request,

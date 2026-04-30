@@ -44,7 +44,18 @@
   .users-table tbody tr.is-deactivated { opacity: 0.55; }
   .users-table tbody tr:hover { background: var(--border-light, #fafafa); }
 
-  .user-cell { display: flex; align-items: center; gap: 10px; }
+  /* Whole user-info cell is the click target for the detail page —
+     anchor wraps avatar + name + email so the entire block lights up
+     on hover, not just one line. Defaults to inheriting text color so
+     the cell doesn't render in browser link blue; .name turns primary
+     blue on hover as the affordance cue. */
+  .user-cell {
+    display: flex; align-items: center; gap: 10px;
+    color: inherit; text-decoration: none;
+    cursor: pointer;
+  }
+  .user-cell:hover .user-meta .name,
+  .user-cell.no-name:hover .email { color: var(--primary, #4338ca); }
   .user-avatar {
     width: 32px; height: 32px; border-radius: 50%;
     display: flex; align-items: center; justify-content: center;
@@ -57,7 +68,14 @@
   .user-cell.no-name .name { display: none; }
   .user-cell.no-name .email { font-size: 13px; color: var(--text-primary, #111827); font-weight: 500; }
 
-  /* Group chip cloud — admin pill is highlighted, system groups have a subtle border */
+  /* Membership chips — colors match the /admin/groups origin pills so a
+     user's group cell tells the same story at a glance:
+       Admin            → yellow  (seeded admin role)
+       Everyone         → gray    (seeded default group, low signal)
+       google_sync      → green   (synced from Workspace, not editable here)
+       custom (default) → purple  (admin-created via UI/CLI)
+     The Admin/Everyone names take precedence over origin so a row mapped
+     via AGNES_GROUP_{ADMIN,EVERYONE}_EMAIL keeps its canonical color. */
   .group-chips {
     display: flex; flex-wrap: wrap; gap: 4px;
     max-width: 320px;
@@ -66,15 +84,13 @@
     display: inline-block;
     padding: 3px 8px; border-radius: 999px;
     font-size: 11px; font-weight: 500;
-    background: #e0e7ff; color: #3730a3;
     white-space: nowrap;
+    background: #ede9fe; color: #6d28d9;  /* default = custom (purple) */
   }
-  .group-chip.is-admin {
-    background: #fef3c7; color: #92400e; font-weight: 600;
-  }
-  .group-chip.is-system {
-    background: #f3f4f6; color: #4b5563;
-  }
+  .group-chip.is-admin       { background: #fef3c7; color: #92400e; font-weight: 600; }
+  .group-chip.is-everyone    { background: #f3f4f6; color: #4b5563; }
+  .group-chip.is-google_sync { background: #dcfce7; color: #166534; }
+  .group-chip.is-custom      { background: #ede9fe; color: #6d28d9; }
   .group-chips-empty {
     color: var(--text-secondary, #9ca3af);
     font-size: 11px; font-style: italic;
@@ -306,11 +322,33 @@
 
 <script>
 const API = "/api/users";
+// Server-injected env: empty string = no prefix configured. Used to
+// shorten google-sync group chips (e.g. "grp_acme_legal@workspace.example.com"
+// → "Legal") so the membership cell stays readable. Same shape used on
+// /admin/groups; keeping the surface identical.
+const GOOGLE_GROUP_PREFIX = {{ config.AGNES_GOOGLE_GROUP_PREFIX | tojson }};
 
 function esc(s) {
   const d = document.createElement("div");
   d.textContent = s == null ? "" : String(s);
   return d.innerHTML;
+}
+
+// Strip @domain, then the configured prefix (case-insensitive), then any
+// leading separators, then capitalize. Falls back to the raw local-part
+// when the chain leaves nothing meaningful — better than rendering an
+// empty chip. Only safe to apply to google_sync rows (whose `name` is
+// the raw Workspace email); calling this on a custom group name like
+// "data-team" would over-capitalize it.
+function deriveDisplayName(fullEmail) {
+  if (!fullEmail) return "";
+  const local = String(fullEmail).split("@")[0] || String(fullEmail);
+  const px = (GOOGLE_GROUP_PREFIX || "").toLowerCase();
+  let s = local;
+  if (px && s.toLowerCase().startsWith(px)) s = s.slice(px.length);
+  s = s.replace(/^[_\-\s]+/, "");
+  if (!s) return local;
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 function fmtDate(s) { return s ? s.slice(0, 16).replace("T", " ") : "—"; }
 function initials(u) {
@@ -412,20 +450,30 @@ function renderUsers() {
       ? `<span class="group-chips-empty">— no groups —</span>`
       : `<div class="group-chips">${
           groups.map(g => {
-            const cls = g.name === "Admin" ? "is-admin"
-                      : g.is_system ? "is-system" : "";
-            return `<span class="group-chip ${cls}">${esc(g.name)}</span>`;
+            // Name match wins over origin so the env-mapped Admin/Everyone
+            // (whose origin is 'google_sync') keep their canonical color.
+            const cls = g.name === "Admin"    ? "is-admin"
+                      : g.name === "Everyone" ? "is-everyone"
+                      : `is-${g.origin || "custom"}`;
+            // Shorten google-sync chip text: the API stores the full
+            // Workspace email as the group's `name`, but the chip cell
+            // needs to fit ~5 chips per row. Hover reveals the full
+            // email via `title`. Custom / Admin / Everyone keep the raw
+            // name (deriveDisplayName would over-capitalize "data-team").
+            const display = (g.origin === "google_sync" && g.name !== "Admin" && g.name !== "Everyone")
+              ? deriveDisplayName(g.name) : g.name;
+            return `<span class="group-chip ${cls}" title="${esc(g.name)}">${esc(display)}</span>`;
           }).join("")
         }</div>`;
     tr.innerHTML = `
       <td>
-        <div class="user-cell ${hasName ? "" : "no-name"}">
+        <a class="user-cell ${hasName ? "" : "no-name"}" href="/admin/users/${encodeURIComponent(u.id)}">
           <div class="user-avatar" style="background:${avatarColor(u.email || u.id)}">${esc(initials(u))}</div>
           <div class="user-meta">
             <span class="name">${esc(u.name || "")}</span>
             <span class="email">${esc(u.email)}</span>
           </div>
-        </div>
+        </a>
       </td>
       <td>${chipsHtml}</td>
       <td>
@@ -440,9 +488,11 @@ function renderUsers() {
         <div class="row-actions">
           <a class="icon-btn" href="/admin/users/${encodeURIComponent(u.id)}" title="Open detail view: memberships + effective access">Detail</a>
           <a class="icon-btn" href="/admin/tokens?user=${encodeURIComponent(u.email || "")}" title="View this user's personal access tokens">Tokens</a>
+          ${u.is_sso_user ? "" : `
           <button class="icon-btn" data-action="reset-password" data-user-id="${esc(u.id)}" data-user-email="${esc(u.email)}" title="Generate a reset link (user picks their own new password)">Reset</button>
           <button class="icon-btn" data-action="set-password" data-user-id="${esc(u.id)}" data-user-email="${esc(u.email)}" title="Assign a password directly">Set pwd</button>
           <button class="icon-btn danger" data-action="delete-user" data-user-id="${esc(u.id)}" data-user-email="${esc(u.email)}">Delete</button>
+          `}
         </div>
       </td>`;
     tbody.appendChild(tr);

@@ -39,7 +39,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -930,6 +930,10 @@ _V16_TO_V17_MIGRATIONS = [
 ]
 
 
+# v17 -> v18: see _v17_to_v18_finalize. Env-conditional, so kept as a Python
+# helper rather than a flat SQL list (the migrate-ladder calls it directly).
+
+
 # Core role seed data — single source of truth. Used by both _seed_core_roles
 # (idempotent insert) and the v8→v9 backfill. Order matters: lowest privilege
 # first so implies references resolve cleanly when expand_implies does BFS.
@@ -1305,6 +1309,69 @@ def _v13_to_v14_finalize(conn: duckdb.DuckDBPyConnection) -> None:
         raise
 
 
+def _v17_to_v18_finalize(conn: duckdb.DuckDBPyConnection) -> None:
+    """Drop stranded non-google memberships from google-managed groups.
+
+    Two classes of cruft:
+
+    1. Auto-created google_sync groups (``created_by='system:google-sync'``)
+       only exist because Google sync materialized them on a Workspace claim.
+       Anyone in such a group whose membership is NOT ``source='google_sync'``
+       got there by an obsolete code path; drop them unconditionally — the
+       Workspace state is the source of truth for these rows.
+
+    2. Seeded ``Admin`` / ``Everyone`` rows are env-conditional. When
+       ``AGNES_GROUP_ADMIN_EMAIL`` / ``AGNES_GROUP_EVERYONE_EMAIL`` is set
+       the row mirrors a Workspace group exclusively, and v13's
+       ``system:v13-backfill`` writes (one row per existing user into
+       Everyone, one per ``core.admin``-grantee into Admin) are stranded
+       cruft that ``_is_sso_user`` mis-classifies as SSO membership. Drop
+       those ``system_seed`` rows. The bootstrap admin's Admin membership
+       is preserved by the ``added_by`` allow-list — it must survive so
+       the operator never loses console access.
+
+       When the env mapping is absent, those system rows are LOCAL groups,
+       and ``system:v13-backfill`` rows are legitimate (the user's
+       core.admin grant was migrated into Admin-group membership, and
+       every user is auto-broadcast into Everyone). Touching them would
+       remove admin privileges or empty Everyone — so the env-conditional
+       branches are skipped.
+
+    Env vars are read at migration time via os.environ — operators
+    flipping the mapping later don't need a fresh migration.
+    """
+    # Non-google memberships in auto-created google_sync groups: always cruft.
+    conn.execute(
+        """DELETE FROM user_group_members
+           WHERE source != 'google_sync'
+             AND group_id IN (
+                 SELECT id FROM user_groups
+                 WHERE created_by = 'system:google-sync'
+             )"""
+    )
+
+    if os.environ.get("AGNES_GROUP_EVERYONE_EMAIL", "").strip():
+        conn.execute(
+            """DELETE FROM user_group_members
+               WHERE source = 'system_seed'
+                 AND group_id IN (
+                     SELECT id FROM user_groups
+                     WHERE name = 'Everyone' AND is_system
+                 )"""
+        )
+
+    if os.environ.get("AGNES_GROUP_ADMIN_EMAIL", "").strip():
+        conn.execute(
+            """DELETE FROM user_group_members
+               WHERE source = 'system_seed'
+                 AND added_by NOT IN ('app.main:seed_admin', 'auth.bootstrap')
+                 AND group_id IN (
+                     SELECT id FROM user_groups
+                     WHERE name = 'Admin' AND is_system
+                 )"""
+        )
+
+
 def _seed_core_roles(conn: duckdb.DuckDBPyConnection) -> None:
     """Idempotently insert/refresh the four core.* hierarchy roles.
 
@@ -1561,6 +1628,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             if current < 17:
                 for sql in _V16_TO_V17_MIGRATIONS:
                     conn.execute(sql)
+            if current < 18:
+                _v17_to_v18_finalize(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
