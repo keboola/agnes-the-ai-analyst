@@ -144,6 +144,19 @@ curl -X POST http://localhost:8000/api/sync/trigger
 docker compose up
 ```
 
+### Local sync & Claude Code hooks
+
+`da sync` is the canonical analyst-side distribution path: pulls the RBAC-filtered manifest from the server, downloads parquets whose MD5 changed, rebuilds local DuckDB views over them.
+
+`da analyst setup` writes two hooks into `<workspace>/.claude/settings.json`:
+
+- `SessionStart` → `da sync --quiet` — pulls fresh parquets at the start of every Claude Code session
+- `SessionEnd` → `da sync --upload-only --quiet` — uploads session jsonl + `CLAUDE.local.md` to the server
+
+Both pass `--quiet` so they don't pollute Claude Code stdout, and trail with `|| true` so a server outage never blocks a session.
+
+Admin RBAC for auto-sync: `query_mode IN ('local', 'materialized')` plus a `resource_grants` row for one of the analyst's groups → table appears in their manifest → `da sync` downloads it. No per-user sync config; the admin layer is the single source of truth.
+
 ## Business Metrics
 
 Standardized metric definitions live in DuckDB (`metric_definitions` table). Import starter pack:
@@ -314,7 +327,7 @@ Module sets `lifecycle { ignore_changes = [metadata_startup_script] }` on `googl
 ## Key Implementation Details
 
 ### DuckDB Schema (src/db.py)
-- Schema v13 with auto-migration v1→…→v13 (v5 adds `users.active`, v6 adds `personal_access_tokens`, v7 adds `personal_access_tokens.last_used_ip`, v8/v9 added the legacy internal_roles/role-grants tables, v10 added `view_ownership` for cross-connector view-name collision detection (issue #81 Group C), v11 added marketplace_registry + marketplace_plugins + user_groups + plugin_access, v12 added users.groups JSON + user_groups.is_system, **v13 replaces internal_roles/group_mappings/user_role_grants/plugin_access with user_group_members + resource_grants and drops users.groups JSON** — see CHANGELOG and docs/RBAC.md)
+- Schema v15 with auto-migration v1→…→v15 (v5 adds `users.active`, v6 adds `personal_access_tokens`, v7 adds `personal_access_tokens.last_used_ip`, v8/v9 added the legacy internal_roles/role-grants tables, v10 added `view_ownership` for cross-connector view-name collision detection (issue #81 Group C), v11 added marketplace_registry + marketplace_plugins + user_groups + plugin_access, v12 added users.groups JSON + user_groups.is_system, **v13 replaces internal_roles/group_mappings/user_role_grants/plugin_access with user_group_members + resource_grants and drops users.groups JSON** — see CHANGELOG and docs/RBAC.md; v15 adds source_query TEXT to table_registry to back query_mode='materialized' (BigQuery scheduled-query parquet path))
 - `table_registry`: id, name, source_type, bucket, source_table, query_mode, sync_schedule, etc.
 - `sync_state`, `sync_history`: track extraction progress
 - `users`, `dataset_permissions`, `audit_log`: auth + RBAC
@@ -327,8 +340,16 @@ Module sets `lifecycle { ignore_changes = [metadata_startup_script] }` on `googl
 - Thread-safe via `_rebuild_lock`
 
 ### Connector Pattern
+
+Source modes:
+- **Batch pull** (Keboola, `query_mode='local'`): DuckDB extension downloads to parquet, scheduled
+- **Remote attach** (BigQuery, `query_mode='remote'`): DuckDB BQ extension, no download, queries go to BQ
+- **Materialized SQL** (BigQuery, `query_mode='materialized'`): scheduler runs admin-registered SQL through DuckDB BQ extension and writes the result to `/data/extracts/bigquery/data/<id>.parquet`. Distributed via the same manifest + `da sync` flow as Keboola tables. Cost guardrail via `data_source.bigquery.max_bytes_per_materialize` (default 10 GiB).
+- **Real-time push** (Jira): Webhooks update parquets incrementally
+
+Implementation entry points:
 - **Keboola**: `connectors/keboola/extractor.py` uses DuckDB Keboola extension, fallback to `client.py`
-- **BigQuery**: `connectors/bigquery/extractor.py` uses DuckDB BQ extension (remote-only, no download)
+- **BigQuery**: `connectors/bigquery/extractor.py` uses DuckDB BQ extension (remote and materialized modes)
 - **Jira**: `connectors/jira/webhook.py` → `incremental_transform.py` → `extract_init.py` updates `_meta`
 - `connectors/keboola/client.py`: legacy Keboola Storage API wrapper (kept as fallback)
 

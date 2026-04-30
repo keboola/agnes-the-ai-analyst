@@ -23,35 +23,26 @@ ai-data-analyst/
 ## System Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  EXTERNAL DATA SOURCES                                          │
-│  Keboola Storage  │  BigQuery  │  Jira Cloud  │  CSV/files     │
-└──────────┬────────┴─────┬──────┴──────┬────────┴────────────────┘
-           │              │             │
-           ▼              ▼             ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  CONNECTORS  (connectors/)                                      │
-│  extractor.py per source → extract.duckdb contract             │
-└──────────────────────────┬──────────────────────────────────────┘
-                           │  /data/extracts/{source}/extract.duckdb
-                           ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  SYNC ORCHESTRATOR  (src/orchestrator.py)                       │
-│  Scans extracts/, ATTACHes each extract.duckdb,                │
-│  creates master views in analytics.duckdb (atomic swap)        │
-└──────────────────────────┬──────────────────────────────────────┘
-                           │
-              ┌────────────┼────────────┐
-              ▼            ▼            ▼
-     ┌──────────────┐  ┌────────┐  ┌──────────────┐
-     │  FastAPI app  │  │  CLI   │  │  Scheduler   │
-     │  port 8000    │  │  `da`  │  │  sidecar     │
-     └──────────────┘  └────────┘  └──────────────┘
-              │
-    ┌─────────┴──────────┐
-    ▼                    ▼
-system.duckdb       analytics.duckdb
-(state/registry)    (master views)
+┌──────────────┐  ┌────────────────────┐  ┌──────────────┐
+│   Keboola    │  │     BigQuery       │  │    Jira      │
+│  extractor   │  │  ┌──────┬───────┐  │  │  webhooks    │
+│ (DuckDB ext) │  │  │remote│material│ │  │ (incremental)│
+│              │  │  │ view │  ized  │ │  │              │
+└──────┬───────┘  └────────┬─────────┘  └──────┬───────┘
+       │                    │                    │
+       ▼                    ▼                    ▼
+   extract.duckdb    extract.duckdb +     extract.duckdb
+   + data/*.parquet  data/*.parquet for   + data/*.parquet
+                     materialized rows
+       │                    │                    │
+       └────────────────────┼────────────────────┘
+                            ▼
+                 SyncOrchestrator.rebuild()
+                            │
+                ┌───────────┼───────────┐
+                ▼           ▼           ▼
+            FastAPI     /api/sync/   da sync
+            (serve)      manifest    (pull → local)
 ```
 
 **Deployment:** Docker Compose. The `app` service runs Uvicorn. The `scheduler` sidecar triggers
@@ -169,14 +160,17 @@ POST /api/sync/trigger (admin)
     → Profiler: profile each synced parquet  →  table_profiles
 ```
 
-### BigQuery — Remote Attach
+### BigQuery — Remote Attach and Materialized SQL
 
 `connectors/bigquery/extractor.py`
 
 - Uses the DuckDB BigQuery community extension.
-- No data download — views proxy all queries directly to BigQuery.
 - Auth via `GOOGLE_APPLICATION_CREDENTIALS` (service account JSON) or ADC.
-- Populates `_remote_attach` with `extension='bigquery'` and no `token_env` (env-based auth).
+
+Two modes:
+
+- **`query_mode='remote'`**: no data download — views proxy all queries directly to BigQuery. Populates `_remote_attach` with `extension='bigquery'` and no `token_env` (env-based auth).
+- **`query_mode='materialized'`**: scheduler runs the admin-registered `source_query` through the BQ extension and writes the result to `data/<table_id>.parquet`. The result is included in the sync manifest and distributed to analysts via `da sync`, with the same MD5-delta logic as Keboola tables. A BQ dry-run guards the cost cap (`data_source.bigquery.max_bytes_per_materialize`, default 10 GiB) — if the estimate exceeds the limit the run is skipped and the stale parquet is preserved.
 
 ### Jira — Real-Time Push
 
