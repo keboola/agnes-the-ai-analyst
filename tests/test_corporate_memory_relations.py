@@ -41,11 +41,14 @@ class TestSchemaV17:
         assert "knowledge_item_relations" in tables
         conn.close()
 
-    def test_schema_version_is_17(self, tmp_path, monkeypatch):
+    def test_schema_version_at_target(self, tmp_path, monkeypatch):
+        """Fresh install lands at the current SCHEMA_VERSION target. Not
+        pinned to v17 — the relations table was introduced there but the
+        schema has moved on (v18 dropped stranded google memberships)."""
         conn = _fresh_db(tmp_path, monkeypatch)
         from src.db import SCHEMA_VERSION, get_schema_version
-        assert SCHEMA_VERSION == 17
-        assert get_schema_version(conn) == 17
+        assert get_schema_version(conn) == SCHEMA_VERSION
+        assert SCHEMA_VERSION >= 17, "knowledge_item_relations was added at v17"
         conn.close()
 
     def test_relations_table_columns(self, tmp_path, monkeypatch):
