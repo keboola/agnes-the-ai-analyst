@@ -13,7 +13,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 <!-- Add bullets here. Group: Added / Changed / Fixed / Removed / Internal.
      Mark breaking changes with **BREAKING** at the start of the bullet. -->
 
-## [0.25.0] — 2026-04-30
+## [0.26.0] — 2026-04-30
 
 Minor release. Adds **smart local sync** so analysts get RBAC-filtered parquets pulled at every Claude Code SessionStart and session logs pushed at SessionEnd, plus a new **BigQuery `query_mode='materialized'`** that lets admins register a scheduled SQL query whose result rides the same auto-sync flow as Keboola tables. The auto-sync set per analyst is the intersection of `query_mode IN ('local', 'materialized')` and the `resource_grants` rows — admins curate it via the existing RBAC layer, no new endpoints. The materialize path uses the `BqAccess` facade from #138 so cost-estimate logic and DuckDB-extension session setup live in one place. Devin review iteration during PR #145 surfaced and fixed a `null`-disable trap on the cost guardrail, an empty-hash re-download bug on materialized parquets, and a stale-`source_query` data-integrity gap on PUT — all baked in before this PR was opened.
 
@@ -151,6 +151,35 @@ cannot exercise them and they will be revisited in follow-up PRs:
   the remote-attach path, but the materialized path does not yet.
   In practice: the cron scheduler is single-threaded and manual
   triggers are rare, so the race window is small.
+
+## [0.25.0] — 2026-04-30
+
+### Fixed
+- `scripts/ops/agnes-auto-upgrade.sh`: fail-fast guard before any `docker
+  compose` action — when the VM has a config disk attached
+  (`/dev/disk/by-id/google-config-disk` exists), `/data/state` MUST be backed
+  by it. Three retry attempts with backoff, then exit non-zero. Prevents the
+  silent regression where docker host-mount propagation unmounts the config
+  disk and the app writes user state (DuckDB, marketplaces, session secret)
+  onto `/data` (sdb) — wiped on the next container recreate. Re-applies
+  `mount --make-rprivate /data /data/state` on every run to defend against
+  propagation regressions.
+- `infra/modules/customer-instance/startup-script.sh.tpl`: replaced the
+  inline heredoc copy of the auto-upgrade script with a `curl` from
+  `raw.githubusercontent.com/keboola/agnes-the-ai-analyst/main/scripts/ops/agnes-auto-upgrade.sh`
+  — single source of truth eliminates drift (the inline copy had fallen
+  behind on TLS overlay detection, array-form compose files, and the new
+  config-disk guard). VMs re-fetch on every boot, so script-only fixes
+  propagate without an infra recreate. Also: `docker-compose.tls.yml` is
+  now fetched unconditionally (not only when `tls_mode=caddy`), because
+  the canonical auto-upgrade script detects TLS at runtime via cert files
+  on disk — certs can appear after boot via `agnes-tls-rotate.sh` or
+  manual provisioning, and the cron job would otherwise fail every 5 min
+  until the file was placed. Same reasoning extends to `Caddyfile`:
+  fetched unconditionally now, plus `agnes-auto-upgrade.sh` skips the
+  tls overlay when `Caddyfile` is missing/empty (defensive — without
+  it the caddy service crash-loops while the overlay closes `:8000`,
+  net effect "app unreachable").
 
 ## [0.24.0] — 2026-04-30
 
