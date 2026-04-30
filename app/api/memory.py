@@ -452,6 +452,17 @@ async def create_knowledge(
     if request.source_type:
         create_kwargs["source_type"] = request.source_type
     repo.create(**create_kwargs)
+    try:
+        AuditRepository(conn).log(
+            user_id=user.get("email"),
+            action="km_create",
+            resource=item_id,
+            params={"category": request.category,
+                    "title_len": len(request.title or ""),
+                    "content_len": len(request.content or "")},
+        )
+    except Exception:
+        pass
     return {"id": item_id, "status": "pending"}
 
 
@@ -472,6 +483,15 @@ async def vote_knowledge(
         repo.unvote(item_id, user["id"])
     else:
         repo.vote(item_id, user["id"], request.vote)
+    try:
+        AuditRepository(conn).log(
+            user_id=user.get("email"),
+            action="km_vote",
+            resource=item_id,
+            params={"vote": request.vote},
+        )
+    except Exception:
+        pass
     return repo.get_votes(item_id)
 
 

@@ -1,16 +1,43 @@
 """Catalog endpoints — table profiles, metrics."""
 
 import json
+from datetime import datetime
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 import duckdb
 
 from app.auth.dependencies import get_current_user, _get_db
 from app.utils import get_data_dir as _get_data_dir
+from src.repositories.audit import AuditRepository
 from src.repositories.profiles import ProfileRepository
 from src.rbac import can_access_table
 
 router = APIRouter(prefix="/api/catalog", tags=["catalog"])
+
+
+def _audit(
+    conn: duckdb.DuckDBPyConnection,
+    actor_id: str,
+    action: str,
+    target_id: str,
+    params: Optional[dict] = None,
+) -> None:
+    """Audit-log helper for catalog mutations (profile refresh)."""
+    try:
+        safe_params = None
+        if params:
+            safe_params = {}
+            for k, v in params.items():
+                safe_params[k] = v.isoformat() if isinstance(v, datetime) else v
+        AuditRepository(conn).log(
+            user_id=actor_id,
+            action=action,
+            resource=f"catalog:{target_id}",
+            params=safe_params,
+        )
+    except Exception:
+        pass
 
 
 @router.get("/profile/{table_name}")
@@ -101,6 +128,10 @@ async def refresh_profile(
         table_info = TableInfo(name=table_name, table_id=table_name)
         profile = profile_table(table_info, candidates[0], [], {}, {})
         ProfileRepository(conn).save(table_name, profile)
+        _audit(
+            conn, user["id"], "catalog.profile_refresh", table_name,
+            {"columns": len(profile.get("columns", {}))},
+        )
         return {"status": "ok", "table": table_name, "columns": len(profile.get("columns", {}))}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Profile failed: {e}")
