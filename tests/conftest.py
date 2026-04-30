@@ -202,3 +202,43 @@ def admin_user(seeded_app):
     """Convenience fixture returning admin auth headers dict."""
     token = seeded_app["admin_token"]
     return {"Authorization": f"Bearer {token}"}
+
+
+import contextlib as _contextlib
+
+
+@pytest.fixture
+def bq_access():
+    """Build a BqAccess with pluggable factories and override the FastAPI Depends.
+
+    Usage:
+        def test_x(bq_access):
+            mock_client = MagicMock()
+            bq = bq_access(client=mock_client)
+            # endpoint test code
+
+    Override is auto-cleared on fixture teardown.
+
+    NOTE: `contextlib.nullcontext(duckdb_conn)` does NOT close the conn on exit.
+    The production path closes via _default_duckdb_session_factory. Tests that
+    care about close behavior should use that factory directly (see
+    tests/test_bq_access.py::TestDefaultDuckdbSessionFactory).
+    """
+    from connectors.bigquery.access import BqAccess, BqProjects, get_bq_access
+    from app.main import app
+
+    def _build(*, client=None, duckdb_conn=None,
+               billing="test-billing", data="test-data"):
+        bq = BqAccess(
+            BqProjects(billing=billing, data=data),
+            client_factory=(lambda projects: client) if client is not None else None,
+            duckdb_session_factory=(
+                lambda projects: _contextlib.nullcontext(duckdb_conn)
+            ) if duckdb_conn is not None else None,
+        )
+        app.dependency_overrides[get_bq_access] = lambda: bq
+        return bq
+
+    yield _build
+    from app.main import app as _app
+    _app.dependency_overrides.pop(get_bq_access, None)

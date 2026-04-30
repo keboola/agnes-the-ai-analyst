@@ -21,6 +21,7 @@ from app.api.where_validator import (
 from app.api.v2_schema import build_schema  # reused for column resolution
 from app.api.v2_arrow import arrow_table_to_ipc_bytes, CONTENT_TYPE
 from app.api.v2_quota import QuotaTracker, QuotaExceededError
+from connectors.bigquery.access import BqAccess, BqAccessError, get_bq_access
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v2", tags=["v2"])
@@ -34,25 +35,30 @@ class ScanRequest(BaseModel):
     order_by: Optional[list[str]] = None
 
 
-def _resolve_schema(conn, user, table_id: str, project_id: str) -> dict:
+def _resolve_schema(conn, user, table_id: str, bq: BqAccess) -> dict:
     """Get {column: type} dict for the target table — used by validator + projection check."""
-    s = build_schema(conn, user, table_id, project_id=project_id)
+    s = build_schema(conn, user, table_id, bq=bq)
     return {c["name"]: c["type"] for c in s.get("columns", [])}
 
 
-def _bq_dry_run_bytes(project: str, sql: str) -> int:
-    """Run a BQ dry-run via the google-cloud-bigquery client and return totalBytesProcessed."""
+def _bq_dry_run_bytes(bq: BqAccess, sql: str) -> int:
+    """Run a BQ dry-run via the google-cloud-bigquery client and return totalBytesProcessed.
+
+    SQL here is user-derived (built from req.select/where/order_by), so BadRequest → 400
+    (`bad_request_status="client_error"`).
+    """
     from google.cloud import bigquery
-    from google.api_core.client_options import ClientOptions
-    client = bigquery.Client(
-        project=project,
-        client_options=ClientOptions(quota_project_id=project),
-    )
-    job = client.query(
-        sql,
-        job_config=bigquery.QueryJobConfig(dry_run=True, use_query_cache=False),
-    )
-    return int(job.total_bytes_processed or 0)
+    from connectors.bigquery.access import translate_bq_error
+
+    client = bq.client()  # raises BqAccessError(bq_lib_missing/auth_failed) — propagates
+    try:
+        job = client.query(
+            sql,
+            job_config=bigquery.QueryJobConfig(dry_run=True, use_query_cache=False),
+        )
+        return int(job.total_bytes_processed or 0)
+    except Exception as e:
+        raise translate_bq_error(e, bq.projects, bad_request_status="client_error")
 
 
 _COLUMN_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
@@ -132,7 +138,7 @@ def _build_bq_sql(
     return sql
 
 
-def estimate(conn, user, raw_request: dict, *, project_id: str, billing_project: str | None = None) -> dict:
+def estimate(conn, user, raw_request: dict, *, bq: BqAccess) -> dict:
     req = ScanRequest(**raw_request)
     repo = TableRegistryRepository(conn)
     row = repo.get(req.table_id)
@@ -141,7 +147,7 @@ def estimate(conn, user, raw_request: dict, *, project_id: str, billing_project:
     if user.get("role") != "admin" and not can_access_table(user, req.table_id, conn):
         raise PermissionError(req.table_id)
 
-    schema = _resolve_schema(conn, user, req.table_id, project_id)
+    schema = _resolve_schema(conn, user, req.table_id, bq)
     dialect = "bigquery" if (row.get("source_type") or "") == "bigquery" else "duckdb"
 
     # Validate WHERE and capture the comment-stripped fragment for splicing.
@@ -167,8 +173,8 @@ def estimate(conn, user, raw_request: dict, *, project_id: str, billing_project:
             "bq_cost_estimate_usd": 0.0,
         }
 
-    bq_sql = _build_bq_sql(row, project_id, req, safe_where=safe_where)
-    scan_bytes = _bq_dry_run_bytes(billing_project or project_id, bq_sql)
+    bq_sql = _build_bq_sql(row, bq.projects.data, req, safe_where=safe_where)
+    scan_bytes = _bq_dry_run_bytes(bq, bq_sql)
 
     cost_per_tb = float(get_value("api", "scan", "bq_cost_per_tb_usd", default=5.0) or 5.0)
     cost = (scan_bytes / 1_099_511_627_776) * cost_per_tb  # 1 TiB = 2^40
@@ -216,19 +222,26 @@ async def scan_estimate_endpoint(
     raw: dict,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+    bq: BqAccess = Depends(get_bq_access),
 ):
-    project_id = get_value("data_source", "bigquery", "project", default="") or ""
-    billing_project = get_value("data_source", "bigquery", "billing_project", default="") or project_id
     try:
-        return estimate(conn, user, raw, project_id=project_id, billing_project=billing_project)
+        return estimate(conn, user, raw, bq=bq)
     except WhereValidationError as e:
-        raise HTTPException(status_code=400, detail={"error": "validator_rejected", "kind": e.kind, "details": e.detail or {}})
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "validator_rejected", "kind": e.kind, "details": e.detail or {}},
+        )
     except PermissionError:
-        raise HTTPException(status_code=403, detail="not authorized")
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="table not found")
+        raise HTTPException(status_code=403, detail="not authorized for this table")
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=f"table {e!s} not found")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except BqAccessError as e:
+        raise HTTPException(
+            status_code=BqAccessError.HTTP_STATUS.get(e.kind, 500),
+            detail={"error": e.kind, "message": e.message, "details": e.details},
+        )
 
 
 # Module-level singleton (process-local quota state per spec §3.8). FastAPI
@@ -263,23 +276,21 @@ def _max_limit() -> int:
     return int(get_value("api", "scan", "max_limit", default=10_000_000) or 10_000_000)
 
 
-def _run_bq_scan(project: str, sql: str) -> pa.Table:
-    """Execute SQL via DuckDB BQ extension, return pyarrow Table."""
-    from connectors.bigquery.auth import get_metadata_token
+def _run_bq_scan(bq: BqAccess, sql: str) -> pa.Table:
+    """Run a BQ query via DuckDB BQ extension. Returns Arrow table.
 
-    token = get_metadata_token()
-    conn = duckdb.connect(":memory:")
-    try:
-        conn.execute("INSTALL bigquery FROM community; LOAD bigquery;")
-        escaped = token.replace("'", "''")
-        conn.execute(f"CREATE OR REPLACE SECRET bq_s (TYPE bigquery, ACCESS_TOKEN '{escaped}')")
-        # Use bigquery_query() since the SQL is already authored against the BQ jobs API
-        return conn.execute(
-            "SELECT * FROM bigquery_query(?, ?)",
-            [project, sql],
-        ).arrow()
-    finally:
-        conn.close()
+    SQL here is user-derived → BadRequest → 400 (`bad_request_status="client_error"`).
+    """
+    from connectors.bigquery.access import translate_bq_error
+
+    with bq.duckdb_session() as conn:
+        try:
+            return conn.execute(
+                "SELECT * FROM bigquery_query(?, ?)",
+                [bq.projects.billing, sql],
+            ).arrow()
+        except Exception as e:
+            raise translate_bq_error(e, bq.projects, bad_request_status="client_error")
 
 
 def run_scan(
@@ -287,14 +298,14 @@ def run_scan(
     user: dict,
     raw_request: dict,
     *,
-    project_id: str,
+    bq: BqAccess,
     quota: QuotaTracker,
-    billing_project: str | None = None,
 ) -> bytes:
     """Validate → quota → execute → serialize. Returns Arrow IPC bytes.
 
     Raises:
-        WhereValidationError, QuotaExceededError, FileNotFoundError, PermissionError, ValueError
+        WhereValidationError, QuotaExceededError, FileNotFoundError, PermissionError,
+        ValueError, BqAccessError
     """
     req = ScanRequest(**raw_request)
     repo = TableRegistryRepository(conn)
@@ -307,7 +318,7 @@ def run_scan(
     if req.limit and req.limit > _max_limit():
         raise ValueError(f"limit {req.limit} exceeds max {_max_limit()}")
 
-    schema = _resolve_schema(conn, user, req.table_id, project_id)
+    schema = _resolve_schema(conn, user, req.table_id, bq)
     dialect = "bigquery" if (row.get("source_type") or "") == "bigquery" else "duckdb"
     # Validate WHERE and capture the comment-stripped fragment for splicing.
     safe_where = (
@@ -355,8 +366,8 @@ def run_scan(
             finally:
                 local.close()
         else:
-            bq_sql = _build_bq_sql(row, project_id, req, safe_where=safe_where)
-            table = _run_bq_scan(billing_project or project_id, bq_sql)
+            bq_sql = _build_bq_sql(row, bq.projects.data, req, safe_where=safe_where)
+            table = _run_bq_scan(bq, bq_sql)
 
         ipc = arrow_table_to_ipc_bytes(table)
 
@@ -380,12 +391,11 @@ async def scan_endpoint(
     raw: dict,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+    bq: BqAccess = Depends(get_bq_access),
 ):
-    project_id = get_value("data_source", "bigquery", "project", default="") or ""
-    billing_project = get_value("data_source", "bigquery", "billing_project", default="") or project_id
     quota = _build_quota_tracker()
     try:
-        ipc = run_scan(conn, user, raw, project_id=project_id, quota=quota, billing_project=billing_project)
+        ipc = run_scan(conn, user, raw, bq=bq, quota=quota)
         return Response(content=ipc, media_type=CONTENT_TYPE)
     except WhereValidationError as e:
         raise HTTPException(
@@ -409,3 +419,8 @@ async def scan_endpoint(
         raise HTTPException(status_code=403, detail="not authorized")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except BqAccessError as e:
+        raise HTTPException(
+            status_code=BqAccessError.HTTP_STATUS.get(e.kind, 500),
+            detail={"error": e.kind, "message": e.message, "details": e.details},
+        )

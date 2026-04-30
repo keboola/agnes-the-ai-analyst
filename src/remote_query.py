@@ -10,7 +10,6 @@ registered BQ views), serialize and return results.
 from __future__ import annotations
 
 import logging
-import os
 import re
 from typing import Any, Dict, List, Optional
 
@@ -200,8 +199,11 @@ class RemoteQueryEngine:
 
     Args:
         conn: Open DuckDB connection used for both view registration and querying.
-        _bq_client_factory: Optional callable ``(project: str) -> BQ client``.
-            Defaults to ``scripts.duckdb_manager._create_bq_client``.
+        bq_access: Optional ``BqAccess`` instance for BigQuery access. When ``None``
+            (the default), it is resolved lazily on first BQ call via
+            ``connectors.bigquery.access.get_bq_access()``. Pure-DuckDB callers that
+            never invoke ``register_bq`` can leave it ``None`` even in environments
+            without BQ config.
         max_bq_registration_rows: Maximum rows allowed in a single BQ registration.
         max_memory_mb: Maximum in-memory Arrow table size (MiB).
         max_result_rows: Maximum rows returned by ``execute()``.
@@ -212,14 +214,14 @@ class RemoteQueryEngine:
         self,
         conn: duckdb.DuckDBPyConnection,
         *,
-        _bq_client_factory=None,
+        bq_access: "BqAccess | None" = None,
         max_bq_registration_rows: int = 500_000,
         max_memory_mb: float = 2048.0,
         max_result_rows: int = 100_000,
         timeout_seconds: int = 300,
     ) -> None:
         self._conn = conn
-        self._bq_client_factory = _bq_client_factory
+        self._bq = bq_access
         self.max_bq_registration_rows = max_bq_registration_rows
         self.max_memory_mb = max_memory_mb
         self.max_result_rows = max_result_rows
@@ -405,46 +407,31 @@ class RemoteQueryEngine:
     # ------------------------------------------------------------------
 
     def _get_bq_client(self):
-        """Return a BigQuery client from the injected factory or the default one.
+        """Lazy-resolve BqAccess on first use. Many tests construct RemoteQueryEngine
+        for DuckDB-only paths and never touch BQ — those must not fail with not_configured.
 
-        Raises:
-            ImportError: If google-cloud-bigquery is not installed and no
-                factory was injected.
+        Translates ``BqAccessError`` (e.g. ``bq_lib_missing``, ``not_configured``) into
+        ``RemoteQueryError(error_type="bq_error")`` to preserve the engine's existing
+        contract with its callers.
         """
-        if self._bq_client_factory is not None:
-            project = os.environ.get("BIGQUERY_PROJECT", "unknown")
-            return self._bq_client_factory(project)
-
-        # Lazy import so the module stays usable without BQ installed.
-        try:
-            import google.cloud.bigquery as _bq_module  # noqa: PLC0415, F401
-        except ImportError:
-            raise RemoteQueryError(
-                "google-cloud-bigquery is not installed. Install with: pip install google-cloud-bigquery",
-                error_type="bq_error",
-            )
-
-        # Project resolution order: BIGQUERY_PROJECT env var (legacy override)
-        # → instance.yaml `data_source.bigquery.billing_project` →
-        # `data_source.bigquery.project`. Without falling back to instance.yaml
-        # operators had to duplicate the project in `.env` even though
-        # everywhere else in the codebase reads it from instance.yaml.
-        project = os.environ.get("BIGQUERY_PROJECT") or ""
-        if not project:
+        if self._bq is None:
+            from connectors.bigquery.access import get_bq_access, BqAccessError
             try:
-                from app.instance_config import get_value as _get_value
-                project = (
-                    _get_value("data_source", "bigquery", "billing_project", default="")
-                    or _get_value("data_source", "bigquery", "project", default="")
-                    or ""
-                )
-            except Exception:
-                project = ""
-        if not project:
-            raise RemoteQueryError(
-                "BigQuery project not configured. Set "
-                "`data_source.bigquery.project` in instance.yaml "
-                "(or BIGQUERY_PROJECT env var as legacy override).",
-                error_type="bq_error",
-            )
-        return _bq_module.Client(project=project)
+                self._bq = get_bq_access()
+            except BqAccessError as exc:
+                raise RemoteQueryError(
+                    f"BigQuery access unavailable: {exc.message}",
+                    error_type="bq_error",
+                    details={"kind": exc.kind, **exc.details},
+                ) from exc
+        try:
+            return self._bq.client()
+        except Exception as exc:
+            from connectors.bigquery.access import BqAccessError
+            if isinstance(exc, BqAccessError):
+                raise RemoteQueryError(
+                    f"BigQuery access unavailable: {exc.message}",
+                    error_type="bq_error",
+                    details={"kind": exc.kind, **exc.details},
+                ) from exc
+            raise
