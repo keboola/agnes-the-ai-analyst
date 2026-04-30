@@ -2,6 +2,7 @@
 
 import logging
 import os
+from datetime import datetime
 from typing import List, Optional
 
 import duckdb
@@ -11,11 +12,36 @@ from pydantic import BaseModel
 
 from app.auth.access import require_admin
 from app.auth.dependencies import get_current_user, _get_db
+from src.repositories.audit import AuditRepository
 from src.repositories.column_metadata import ColumnMetadataRepository
 from src.repositories.table_registry import TableRegistryRepository
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["metadata"])
+
+
+def _audit(
+    conn: duckdb.DuckDBPyConnection,
+    actor_id: str,
+    action: str,
+    target_id: str,
+    params: Optional[dict] = None,
+) -> None:
+    """Audit-log helper for column-metadata mutations + Keboola push."""
+    try:
+        safe_params = None
+        if params:
+            safe_params = {}
+            for k, v in params.items():
+                safe_params[k] = v.isoformat() if isinstance(v, datetime) else v
+        AuditRepository(conn).log(
+            user_id=actor_id,
+            action=action,
+            resource=f"metadata:{target_id}",
+            params=safe_params,
+        )
+    except Exception:
+        pass
 
 
 class ColumnMetadataItem(BaseModel):
@@ -58,6 +84,11 @@ async def save_table_metadata(
             description=item.description,
             confidence=item.confidence,
         )
+    _audit(
+        conn, user["id"], "metadata.save", table_id,
+        {"columns": [c.column_name for c in body.columns],
+         "count": len(body.columns)},
+    )
     return {"status": "ok", "count": len(body.columns)}
 
 
@@ -129,4 +160,8 @@ async def push_metadata_to_source(
     result = {"status": "ok", "pushed": pushed}
     if errors:
         result["errors"] = errors
+    _audit(
+        conn, user["id"], "metadata.push", table_id,
+        {"pushed": pushed, "errors": len(errors), "source_type": source_type},
+    )
     return result

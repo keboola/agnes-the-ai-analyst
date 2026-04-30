@@ -9,6 +9,7 @@ import logging
 import os
 import threading
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
@@ -18,8 +19,8 @@ import duckdb
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
-from src.repositories.table_registry import TableRegistryRepository
 from src.repositories.audit import AuditRepository
+from src.repositories.table_registry import TableRegistryRepository
 from src.identifier_validation import (
     is_safe_identifier as _is_safe_identifier,
     is_safe_quoted_identifier as _is_safe_quoted_identifier,
@@ -62,6 +63,30 @@ def _get_processor_run_lock(name: str) -> threading.Lock:
             _processor_run_locks[name] = threading.Lock()
         return _processor_run_locks[name]
 
+
+def _audit(
+    conn: duckdb.DuckDBPyConnection,
+    actor_id: str,
+    action: str,
+    target_id: str,
+    params: Optional[dict] = None,
+) -> None:
+    """Audit-log helper for admin registry / configure mutations.
+    Same shape as ``app/api/users.py::_audit`` / ``marketplaces.py::_audit``."""
+    try:
+        safe_params = None
+        if params:
+            safe_params = {}
+            for k, v in params.items():
+                safe_params[k] = v.isoformat() if isinstance(v, datetime) else v
+        AuditRepository(conn).log(
+            user_id=actor_id,
+            action=action,
+            resource=f"admin:{target_id}",
+            params=safe_params,
+        )
+    except Exception:
+        pass
 
 # SSRF protection: reject private/internal URLs for keboola_url
 import ipaddress as _ipaddress
@@ -2784,6 +2809,7 @@ async def unregister_table(
     name = existing.get("name") or table_id
 
     repo.unregister(table_id)
+    _audit(conn, user["id"], "registry.unregister", table_id)
 
     # Drop the canonical parquet for materialized rows. Path layout:
     # `${DATA_DIR}/extracts/<source_type>/data/<name>.parquet` — the
@@ -2855,6 +2881,7 @@ async def unregister_table(
 async def configure_instance(
     request: ConfigureRequest,
     user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Configure data source and instance settings via API.
 
@@ -3010,6 +3037,11 @@ async def configure_instance(
     from app.instance_config import reset_cache
     reset_cache()
 
+    _audit(
+        conn, user["id"], "instance.configure", request.data_source,
+        {"instance_name": request.instance_name,
+         "secrets_persisted": len(secrets_to_persist) if secrets_to_persist else 0},
+    )
     return {
         "status": "ok",
         "data_source": request.data_source,
