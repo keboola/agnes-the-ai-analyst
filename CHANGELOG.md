@@ -20,7 +20,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - Dashboard stat row now shows real numbers instead of hardcoded zeros: **Columns** sums `sync_state.columns`, **Data Size** sums `sync_state.uncompressed_size_bytes` (formatted via the new `_format_bytes` helper). The "Unstructured" stat-card was removed — Agnes does not track unstructured data volume; the slot was always "0 MB".
 - Dashboard **Account → Last Sync** row now renders the real instance-wide last-sync timestamp (`MAX(sync_state.last_sync)`) humanized via the new `_format_relative_time` helper ("3 minutes ago" / "2 days ago" / absolute UTC after a week).
 - Dashboard and `/catalog` **Business Metrics** card now lists real metric definitions: a new `_build_metrics_data()` helper groups `metric_definitions` rows by category and emits the `{label, css, metrics: [{path, display_name, description, grain}]}` structure both templates already iterate. Categories without an entry in the well-known CSS map render without a color accent (rather than breaking).
-- `tests/test_dashboard_helpers.py` — 16 unit tests pinning the new formatters and the metrics builder.
+- `tests/test_dashboard_helpers.py` — 17 unit tests pinning the new formatters and the metrics builder, including a future-timestamp clamp ensuring clock skew between the DB writer and the web pod doesn't render as "0 minutes ago".
+
+### Internal
+
+- Stats Row CSS grid corrected to `repeat(4, 1fr)` (was still `repeat(5, 1fr)` after the Unstructured stat-card was removed) so the four remaining cards no longer stretch ~25% wider than designed. Tablet breakpoint at `≤1100px` matches with `repeat(2, 1fr)` instead of leaving a 3+1 wrap.
+- Removed the unreachable `welcome-pending` empty-state from `dashboard.html`. `UserInfo.exists` is hardcoded `True` in the dashboard route, so the `{% else %}` branch never fires; deleting it eliminates dead template code.
+- Dropped four unused stub kwargs from the dashboard route's template context (`account_status`, `categories=[]`, `knowledge_stats`, `user_knowledge_stats`). No template references them; they were noise in the context.
+- `_format_relative_time` clamps future timestamps (clock skew between writer + reader) to `"just now"`.
+- Promoted `TelegramRepository` to a module-level import in `app/web/router.py` (was a local-import inside the dashboard handler).
 
 ### Removed
 

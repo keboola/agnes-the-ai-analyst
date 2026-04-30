@@ -119,7 +119,7 @@
         /* ── Stats Row ── */
         .stats-row {
             display: grid;
-            grid-template-columns: repeat(5, 1fr);
+            grid-template-columns: repeat(4, 1fr);
             gap: 16px;
             margin-bottom: 28px;
         }
@@ -1761,7 +1761,7 @@
             }
 
             .stats-row {
-                grid-template-columns: repeat(3, 1fr);
+                grid-template-columns: repeat(2, 1fr);
             }
         }
 
@@ -2121,15 +2121,6 @@
             </div><!-- /right-column -->
         </div><!-- /dashboard-grid -->
 
-    </main>
-
-    {% else %}
-    {# ── NEW USER (account not provisioned yet) ── #}
-    <main class="main">
-        <div class="welcome-pending">
-            <h2>Welcome to {{ config.INSTANCE_NAME or 'Data Analyst Portal' }}</h2>
-            <p>Your account is being set up by an administrator. Once your access is configured, this page will show your data sources and tools.</p>
-        </div>
     </main>
     {% endif %}
 

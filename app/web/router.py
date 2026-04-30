@@ -30,6 +30,7 @@ from src.repositories.users import UserRepository
 from src.repositories.profiles import ProfileRepository
 from src.repositories.access_requests import AccessRequestRepository
 from src.repositories.metrics import MetricRepository
+from src.repositories.notifications import TelegramRepository
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["web"])
@@ -224,6 +225,9 @@ def _format_relative_time(ts: Any) -> Optional[str]:
         ts = ts.replace(tzinfo=timezone.utc)
     delta = datetime.now(timezone.utc) - ts
     sec = int(delta.total_seconds())
+    # Future timestamps (clock skew between DB writer and the web pod)
+    # would otherwise floor-divide into "0 minutes ago" / negative deltas
+    # and render strangely. Treat anything not-yet-past as "just now".
     if sec < 60:
         return "just now"
     if sec < 3600:
@@ -407,7 +411,6 @@ async def dashboard(
 
     # Live Telegram link state — same lookup as GET /api/telegram/status,
     # inlined to avoid an extra round-trip from the template.
-    from src.repositories.notifications import TelegramRepository
     _tg_link = TelegramRepository(conn).get_link(user["id"])
     telegram_status_ctx = {"linked": bool(_tg_link)}
     if _tg_link:
@@ -454,7 +457,6 @@ async def dashboard(
         sync_states=all_states,
         enabled_datasets=enabled_datasets,
         datasets=datasets,
-        account_status="active",
         account_details={"last_sync_display": last_sync_display} if last_sync_display else None,
         telegram_status=telegram_status_ctx,
         data_stats={
@@ -468,10 +470,7 @@ async def dashboard(
             "remote_tables": 0,
             "local_tables": total_tables,
         },
-        categories=[],
         metrics_data=_build_metrics_data(conn),
-        knowledge_stats={"total": 0, "approved": 0},
-        user_knowledge_stats={"authored": 0, "votes_given": 0},
     )
     return templates.TemplateResponse(request, "dashboard.html", ctx)
 
