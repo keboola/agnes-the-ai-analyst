@@ -113,6 +113,7 @@ class KnowledgeRepository:
         source_type: Optional[str] = None,
         exclude_personal: bool = False,
         user_groups: Optional[List[str]] = None,
+        granted_domains: Optional[List[str]] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
@@ -134,13 +135,20 @@ class KnowledgeRepository:
         if exclude_personal:
             query += " AND (is_personal = FALSE OR is_personal IS NULL)"
         if user_groups is not None:
-            # Audience filter: null/all → visible to everyone; group:X → only that group.
+            # Visibility: audience-string match (null/all/group:X) OR
+            # caller has been granted access to the item's domain via
+            # resource_grants (MEMORY_DOMAIN). When ``granted_domains`` is
+            # falsy the OR clause collapses, preserving pre-RBAC behaviour.
+            visibility_clauses = ["audience IS NULL", "audience = 'all'"]
             if user_groups:
                 audience_placeholders = ", ".join("?" for _ in user_groups)
-                query += f" AND (audience IS NULL OR audience = 'all' OR audience IN ({audience_placeholders}))"
+                visibility_clauses.append(f"audience IN ({audience_placeholders})")
                 params.extend(user_groups)
-            else:
-                query += " AND (audience IS NULL OR audience = 'all')"
+            if granted_domains:
+                domain_placeholders = ", ".join("?" for _ in granted_domains)
+                visibility_clauses.append(f"domain IN ({domain_placeholders})")
+                params.extend(granted_domains)
+            query += " AND (" + " OR ".join(visibility_clauses) + ")"
         query += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         return self._rows_to_dicts(self.conn.execute(query, params).fetchall())
@@ -150,6 +158,7 @@ class KnowledgeRepository:
         query: str,
         exclude_personal: bool = False,
         user_groups: Optional[List[str]] = None,
+        granted_domains: Optional[List[str]] = None,
         statuses: Optional[List[str]] = None,
         category: Optional[str] = None,
         domain: Optional[str] = None,
@@ -177,12 +186,16 @@ class KnowledgeRepository:
         if exclude_personal:
             sql += " AND (is_personal = FALSE OR is_personal IS NULL)"
         if user_groups is not None:
+            visibility_clauses = ["audience IS NULL", "audience = 'all'"]
             if user_groups:
                 audience_placeholders = ", ".join("?" for _ in user_groups)
-                sql += f" AND (audience IS NULL OR audience = 'all' OR audience IN ({audience_placeholders}))"
+                visibility_clauses.append(f"audience IN ({audience_placeholders})")
                 params.extend(user_groups)
-            else:
-                sql += " AND (audience IS NULL OR audience = 'all')"
+            if granted_domains:
+                domain_placeholders = ", ".join("?" for _ in granted_domains)
+                visibility_clauses.append(f"domain IN ({domain_placeholders})")
+                params.extend(granted_domains)
+            sql += " AND (" + " OR ".join(visibility_clauses) + ")"
         sql += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         results = self.conn.execute(sql, params).fetchall()
@@ -197,6 +210,7 @@ class KnowledgeRepository:
         source_type: Optional[str] = None,
         exclude_personal: bool = False,
         user_groups: Optional[List[str]] = None,
+        granted_domains: Optional[List[str]] = None,
     ) -> int:
         if search:
             pattern = f"%{search}%"
@@ -221,12 +235,16 @@ class KnowledgeRepository:
         if exclude_personal:
             sql += " AND (is_personal = FALSE OR is_personal IS NULL)"
         if user_groups is not None:
+            visibility_clauses = ["audience IS NULL", "audience = 'all'"]
             if user_groups:
                 audience_placeholders = ", ".join("?" for _ in user_groups)
-                sql += f" AND (audience IS NULL OR audience = 'all' OR audience IN ({audience_placeholders}))"
+                visibility_clauses.append(f"audience IN ({audience_placeholders})")
                 params.extend(user_groups)
-            else:
-                sql += " AND (audience IS NULL OR audience = 'all')"
+            if granted_domains:
+                domain_placeholders = ", ".join("?" for _ in granted_domains)
+                visibility_clauses.append(f"domain IN ({domain_placeholders})")
+                params.extend(granted_domains)
+            sql += " AND (" + " OR ".join(visibility_clauses) + ")"
         return self.conn.execute(sql, params).fetchone()[0]
 
     def list_by_domain(

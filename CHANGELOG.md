@@ -12,6 +12,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 - **Single-item Edit button on every memory item card** in `/corporate-memory/admin`. Surfaces the per-item `PATCH /api/memory/admin/{id}` endpoint added in #126 — until now it was only reachable via the CLI (`da admin memory edit <id>`) or by selecting one item in the bulk batch bar. The modal pre-fills from the item's current title / content / category / domain (dropdown matching `VALID_DOMAINS` + `(unset)`) / audience / tags (comma-separated). Authorisation: same `require_admin` gate as the rest of the memory admin surface.
+- **`MEMORY_DOMAIN` RBAC resource type** for corporate-memory items. Admins use `/admin/access` to grant `user_groups` access to specific domains (one of `finance` / `engineering` / `product` / `data` / `operations` / `infrastructure`). Members of granted groups see all `knowledge_items` in that domain regardless of the existing `audience` string filter. The two filters compose with OR semantics, so the existing `audience='group:X'` convention keeps working unchanged for ad-hoc per-item targeting; pre-grant deployments behave identically (when no MEMORY_DOMAIN grants exist, the OR clause collapses to a no-op). Wired in `KnowledgeRepository.list_items` / `search` / `count_items` via a new `granted_domains` parameter resolved from `resource_grants` by `_caller_granted_memory_domains`.
 
 ## [0.22.0] — 2026-04-30
 

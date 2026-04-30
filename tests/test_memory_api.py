@@ -844,6 +844,64 @@ class TestAudienceDistribution:
         ids = {i["id"] for i in r.json()["items"]}
         assert "aud_null2" in ids
 
+    def test_memory_domain_grant_extends_visibility(self, seeded_app):
+        """A non-admin user whose group is granted MEMORY_DOMAIN/<domain>
+        sees items in that domain even when audience is restrictive
+        (audience='group:admins-only' that they're not in).
+
+        Wires together: resource_grants row + _caller_granted_memory_domains
+        helper + the OR domain IN (...) clause in list_items SQL."""
+        import uuid
+        from datetime import datetime, timezone
+        from src.db import get_system_db
+
+        conn = get_system_db()
+        # Item is restricted by audience to a group the analyst is NOT in,
+        # but tagged with domain=engineering.
+        self._seed_item(
+            conn, "dom_eng1", "Eng-only via domain grant",
+            audience="group:admins-only",
+        )
+        conn.execute(
+            "UPDATE knowledge_items SET domain = ? WHERE id = ?",
+            ["engineering", "dom_eng1"],
+        )
+
+        # The seeded analyst (id="analyst1") has no implicit Everyone
+        # membership since 0.18.0 BREAKING change. Create a dedicated
+        # group, add the analyst, then grant MEMORY_DOMAIN/engineering.
+        gid = str(uuid.uuid4())
+        conn.execute(
+            """INSERT INTO user_groups (id, name, description, created_by, created_at)
+               VALUES (?, 'eng-team', 'test', 'test', ?)""",
+            [gid, datetime.now(timezone.utc)],
+        )
+        conn.execute(
+            """INSERT INTO user_group_members (user_id, group_id, source)
+               VALUES ('analyst1', ?, 'admin')""",
+            [gid],
+        )
+        conn.execute(
+            """INSERT INTO resource_grants (id, group_id, resource_type, resource_id, assigned_at, assigned_by)
+               VALUES (?, ?, 'memory_domain', 'engineering', ?, 'test')""",
+            [str(uuid.uuid4()), gid, datetime.now(timezone.utc)],
+        )
+        conn.close()
+
+        # Without the grant the analyst would not see this item (audience
+        # gate excludes group:admins-only). With the grant on engineering
+        # domain, the OR clause restores visibility.
+        r = seeded_app["client"].get(
+            "/api/memory?per_page=500",
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert r.status_code == 200, r.text
+        ids = {i["id"] for i in r.json()["items"]}
+        assert "dom_eng1" in ids, (
+            "MEMORY_DOMAIN/engineering grant must make engineering items "
+            "visible regardless of audience filter"
+        )
+
 
 class TestVoteRetract:
     def _create_item(self, c, token):
