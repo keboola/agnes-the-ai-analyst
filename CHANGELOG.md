@@ -17,6 +17,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - `tests/test_route_integrity.py` — regression test pinning the contract between the top-nav and registered HTML routes. Asserts every static `href="/..."` in `_app_header.html` resolves to a registered route, and every registered HTML route is either in the nav or on a documented allowlist. Catches dead nav links and orphan pages before they ship. The allowlist is the migration ramp for Phase 2 of the UI overhaul (`docs/superpowers/plans/2026-04-30-ui-overhaul.md`), which moves Catalog / Corporate Memory / Metrics off the allowlist into the nav.
 - `docs/superpowers/plans/2026-04-30-ui-overhaul.md` — the 9-phase plan this PR opens.
+- Dashboard stat row now shows real numbers instead of hardcoded zeros: **Columns** sums `sync_state.columns`, **Data Size** sums `sync_state.uncompressed_size_bytes` (formatted via the new `_format_bytes` helper). The "Unstructured" stat-card was removed — Agnes does not track unstructured data volume; the slot was always "0 MB".
+- Dashboard **Account → Last Sync** row now renders the real instance-wide last-sync timestamp (`MAX(sync_state.last_sync)`) humanized via the new `_format_relative_time` helper ("3 minutes ago" / "2 days ago" / absolute UTC after a week).
+- Dashboard and `/catalog` **Business Metrics** card now lists real metric definitions: a new `_build_metrics_data()` helper groups `metric_definitions` rows by category and emits the `{label, css, metrics: [{path, display_name, description, grain}]}` structure both templates already iterate. Categories without an entry in the well-known CSS map render without a color accent (rather than breaking).
+- `tests/test_dashboard_helpers.py` — 16 unit tests pinning the new formatters and the metrics builder.
 
 ### Removed
 
@@ -24,6 +28,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - `/activity-center` page, its dashboard widget, and the `test_activity_center` smoke test. The route was rendering against undefined stub data passed by `app/web/router.py` (`_SilentUndefined` masked the breakage), and no service produces the `executive_summary` / `maturity_roadmap` / `business_processes` fields the template referenced.
 - Dashboard SSH-key new-user onboarding flow (the `{% else %}` branch under `{% if user_info.exists %}`). It posted to `url_for('register')` which resolves to `/auth/password/setup` — an unrelated password-setup endpoint, so the form was wired to nothing. v13 auth uses Google OAuth + magic-link + PAT; replaced with a minimal welcome empty-state.
 - `account_details.notification_scripts` row on the dashboard Account card and the "Instant Automation" feature card on `/login`. The product never shipped a UI for managing notification scripts; the account-row pointed users to drop `.py` files in `~/user/notifications/` with no auditing surface. Decision deferred under D2 of the UI overhaul plan.
+- Dashboard **macOS App** notification channel (the `desktop_status` row in the Notifications card). No backend infrastructure exists — no `DesktopRepository`, no `/api/desktop/*` endpoints, no `desktop_links` table — so the row was permanently "Not linked" and the Verify/Unlink buttons would have 404'd. Telegram remains the only wired notification channel.
+- Dashboard **Unstructured** stat-card. There is no unstructured-data feature in this product (no JSONL volume tracking, no binary blob storage), so the slot was always "0 MB".
 
 ### Fixed
 

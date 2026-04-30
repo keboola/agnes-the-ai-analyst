@@ -5,9 +5,9 @@ Replicates all Flask webapp routes with DuckDB-backed data.
 
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Request, HTTPException
@@ -29,6 +29,7 @@ from src.repositories.knowledge import KnowledgeRepository
 from src.repositories.users import UserRepository
 from src.repositories.profiles import ProfileRepository
 from src.repositories.access_requests import AccessRequestRepository
+from src.repositories.metrics import MetricRepository
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["web"])
@@ -183,6 +184,103 @@ def _build_context(request: Request, user: Optional[dict] = None, **extra) -> di
     return ctx
 
 
+# ---- Display helpers ----
+# Small formatting + aggregation helpers used by the dashboard / catalog routes
+# to populate template variables that used to be hardcoded stubs.
+
+
+def _format_bytes(n: Optional[int]) -> str:
+    """Render a byte count as a short human-readable string (``"1.2 MB"``).
+
+    None / 0 → ``"0 MB"`` so the stat-card never reads as empty/dash.
+    """
+    if not n:
+        return "0 MB"
+    for unit, scale in (("GB", 1_000_000_000), ("MB", 1_000_000), ("KB", 1_000)):
+        if n >= scale:
+            v = n / scale
+            return f"{v:.1f} {unit}" if v < 10 else f"{v:.0f} {unit}"
+    return f"{n} B"
+
+
+def _format_relative_time(ts: Any) -> Optional[str]:
+    """Humanize a timestamp for the dashboard "Last sync" row.
+
+    Accepts ``datetime`` or ISO-string. Returns ``None`` when ``ts`` is
+    falsy so the caller can skip the row entirely. Naive datetimes are
+    treated as UTC (consistent with how DuckDB returns ``TIMESTAMP``
+    rows under our default timezone setting).
+    """
+    if not ts:
+        return None
+    if isinstance(ts, str):
+        try:
+            ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except ValueError:
+            return ts  # Last-resort: render the raw string.
+    if not isinstance(ts, datetime):
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    delta = datetime.now(timezone.utc) - ts
+    sec = int(delta.total_seconds())
+    if sec < 60:
+        return "just now"
+    if sec < 3600:
+        m = sec // 60
+        return f"{m} minute{'s' if m != 1 else ''} ago"
+    if sec < 86_400:
+        h = sec // 3600
+        return f"{h} hour{'s' if h != 1 else ''} ago"
+    if sec < 7 * 86_400:
+        d = sec // 86_400
+        return f"{d} day{'s' if d != 1 else ''} ago"
+    return ts.strftime("%Y-%m-%d %H:%M UTC")
+
+
+# Map of metric category → CSS class on .category-tag (defined in
+# style-custom.css). Anything not in the map renders without color
+# accent — caller can extend the map as new categories are introduced.
+_CATEGORY_CSS = {
+    "finance": "finance",
+    "hr": "hr",
+    "sales": "sales",
+    "telemetry": "telemetry",
+    "support": "support",
+    "revenue": "revenue",
+    "customers": "customers",
+    "marketing": "marketing",
+}
+
+
+def _build_metrics_data(conn: "duckdb.DuckDBPyConnection") -> list[dict]:
+    """Group ``metric_definitions`` rows by category for the dashboard
+    Business-Metrics card and the catalog Business-Metrics accordion.
+
+    Returns ``[{label, css, metrics: [{path, display_name, description, grain}]}]``.
+    The ``path`` is the canonical ``category/name`` key the metric modal
+    opens via ``openMetricModal(...)``.
+    """
+    rows = MetricRepository(conn).list()
+    by_cat: dict[str, list[dict]] = {}
+    for r in rows:
+        cat = r.get("category") or "uncategorized"
+        by_cat.setdefault(cat, []).append({
+            "path": f"{cat}/{r['name']}",
+            "display_name": r.get("display_name") or r["name"],
+            "description": r.get("description") or "",
+            "grain": r.get("grain") or "",
+        })
+    out = []
+    for cat in sorted(by_cat.keys()):
+        out.append({
+            "label": cat.replace("_", " ").title(),
+            "css": _CATEGORY_CSS.get(cat.lower(), ""),
+            "metrics": by_cat[cat],
+        })
+    return out
+
+
 # ---- Navigation ----
 
 @router.get("/", response_class=HTMLResponse)
@@ -315,9 +413,21 @@ async def dashboard(
     if _tg_link:
         telegram_status_ctx["chat_id"] = _tg_link["chat_id"]
 
-    # Stats
+    # Stats — real aggregates from sync_state. The repository already
+    # records ``columns``, ``rows``, ``file_size_bytes``, and
+    # ``uncompressed_size_bytes`` per table; summing across rows is the
+    # cheapest surface for the stat-row. Filtering per-user (RBAC) is a
+    # follow-up: today the stats reflect instance-wide volume, matching
+    # the existing "Tables" + "Rows" semantics.
     total_tables = len(all_states)
     total_rows = sum(s.get("rows", 0) or 0 for s in all_states)
+    total_columns = sum(s.get("columns", 0) or 0 for s in all_states)
+    total_uncompressed_bytes = sum(s.get("uncompressed_size_bytes", 0) or 0 for s in all_states)
+    last_sync_ts = max(
+        (s.get("last_sync") for s in all_states if s.get("last_sync")),
+        default=None,
+    )
+    last_sync_display = _format_relative_time(last_sync_ts)
 
     # Build user_info object expected by dashboard template
     is_admin = is_user_admin(user["id"], conn)
@@ -345,23 +455,21 @@ async def dashboard(
         enabled_datasets=enabled_datasets,
         datasets=datasets,
         account_status="active",
-        account_details=None,
+        account_details={"last_sync_display": last_sync_display} if last_sync_display else None,
         telegram_status=telegram_status_ctx,
         data_stats={
             "tables": total_tables,
             "total_tables": total_tables,
-            "columns": 0,
+            "columns": total_columns,
             "rows_display": f"{total_rows:,}" if total_rows else "0",
-            "size_display": "0 MB",
-            "unstructured_display": "0 MB",
+            "size_display": _format_bytes(total_uncompressed_bytes),
             "total_rows": total_rows,
-            "last_updated": None,
+            "last_updated": last_sync_display,
             "remote_tables": 0,
             "local_tables": total_tables,
         },
         categories=[],
-        metrics_data=[],
-        desktop_status={"linked": False},
+        metrics_data=_build_metrics_data(conn),
         knowledge_stats={"total": 0, "approved": 0},
         user_knowledge_stats={"authored": 0, "votes_given": 0},
     )
@@ -460,7 +568,7 @@ async def catalog(
         data_stats=data_stats,
         categories=catalog_data,
         catalog_data=catalog_data,
-        metrics_data=[],
+        metrics_data=_build_metrics_data(conn),
         sync_states=all_states,
         folder_mapping={},
     )

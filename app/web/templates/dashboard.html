@@ -1884,10 +1884,6 @@
                 <span class="stat-label">Data Size</span>
                 <span class="stat-value">{{ data_stats.size_display }}</span>
             </div>
-            <div class="stat-card">
-                <span class="stat-label">Unstructured</span>
-                <span class="stat-value">{{ data_stats.unstructured_display }}</span>
-            </div>
         </div>
 
         <!-- Credit line -->
@@ -2000,26 +1996,6 @@
                                     <button class="notif-unlink" onclick="unlinkChannel('telegram')">Unlink</button>
                                     {% else %}
                                     <button class="notif-link" onclick="showTelegramVerify()">Link</button>
-                                    {% endif %}
-                                </div>
-                                <div class="notif-channel">
-                                    <div class="notif-channel-icon desktop">
-                                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                                            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
-                                            <line x1="8" y1="21" x2="16" y2="21"/>
-                                            <line x1="12" y1="17" x2="12" y2="21"/>
-                                        </svg>
-                                    </div>
-                                    <div style="min-width: 0;">
-                                        <div class="notif-channel-name">macOS App</div>
-                                        <span class="beta-badge" style="margin-left: 0;">private beta</span>
-                                        {% if not desktop_status.linked %}
-                                        <span class="notif-status notif-status--inactive">Not linked</span>
-                                        {% endif %}
-                                    </div>
-                                    {% if desktop_status.linked %}
-                                    <span class="notif-badge active">Active</span>
-                                    <button class="notif-unlink" onclick="unlinkChannel('desktop')">Unlink</button>
                                     {% endif %}
                                 </div>
                             </div>
