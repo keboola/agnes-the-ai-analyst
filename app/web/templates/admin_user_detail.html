@@ -294,6 +294,14 @@ function renderHeader() {
 function renderAccountStatus() {
   const node = document.getElementById("account-status-text");
   const toggleBtn = document.getElementById("toggle-active-btn");
+  // SSO-managed accounts (Google Workspace today) hide password / delete
+  // affordances — those operations are no-ops or get reverted by the next
+  // sync. Deactivate stays so admins can still gate access locally.
+  const resetBtn = document.getElementById("reset-pw-btn");
+  const deleteBtn = document.getElementById("delete-user-btn");
+  const sso = !!(userState && userState.is_sso_user);
+  if (resetBtn) resetBtn.style.display = sso ? "none" : "";
+  if (deleteBtn) deleteBtn.style.display = sso ? "none" : "";
   if (!userState) { node.textContent = "—"; return; }
   if (userState.active) {
     node.innerHTML = `<strong>${esc(userState.email)}</strong> is active.`;

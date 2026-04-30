@@ -1,5 +1,6 @@
 """User management endpoints (#11)."""
 
+import os
 import uuid
 from datetime import datetime, timezone
 from typing import Optional, List
@@ -11,7 +12,7 @@ from argon2 import PasswordHasher
 
 from app.auth.access import is_user_admin, require_admin
 from app.auth.dependencies import _get_db
-from src.db import SYSTEM_ADMIN_GROUP
+from src.db import SYSTEM_ADMIN_GROUP, SYSTEM_EVERYONE_GROUP
 from src.repositories.users import UserRepository
 from src.repositories.user_group_members import UserGroupMembersRepository
 from src.repositories.audit import AuditRepository
@@ -69,6 +70,7 @@ class UserResponse(BaseModel):
     name: Optional[str]
     role: str
     is_admin: bool = False
+    is_sso_user: bool = False
     groups: List[GroupBrief] = []
     active: bool = True
     created_at: Optional[str]
@@ -102,6 +104,54 @@ def _user_groups(user_id: str, conn: duckdb.DuckDBPyConnection) -> List[GroupBri
     return [GroupBrief(id=r[0], name=r[1], is_system=bool(r[2])) for r in rows]
 
 
+def _is_sso_user(user_id: str, conn: duckdb.DuckDBPyConnection) -> bool:
+    """Whether the user is sourced from an external SSO provider.
+
+    Today the only SSO provider is Google Workspace, but the name is kept
+    generic so a future provider (Cloudflare Access, Okta, …) can plug into
+    the same flag without churning the API surface. The admin UI hides the
+    password-reset / set-password / delete affordances when this is True —
+    those accounts are managed upstream and editing them here would either
+    be no-ops (password) or get reverted on next sync (delete).
+
+    A user counts as SSO-managed if they are a member of any group where:
+
+      1. ``user_groups.created_by = 'system:google-sync'`` — the OAuth
+         callback auto-created this group from a Workspace claim, OR
+      2. the group is the seeded ``Admin`` system row AND
+         ``AGNES_GROUP_ADMIN_EMAIL`` is set (env-mapped to a Workspace
+         admin group), OR
+      3. the group is the seeded ``Everyone`` system row AND
+         ``AGNES_GROUP_EVERYONE_EMAIL`` is set (env-mapped to a Workspace
+         everyone group).
+
+    Users with no groups, or only admin-created custom groups, are NOT
+    SSO users — local accounts are unaffected.
+
+    Env values are read per-request so operators flipping the mapping
+    don't have to restart the process.
+    """
+    rows = conn.execute(
+        """SELECT g.name, g.is_system, g.created_by
+           FROM user_group_members m
+           JOIN user_groups g ON g.id = m.group_id
+           WHERE m.user_id = ?""",
+        [user_id],
+    ).fetchall()
+    if not rows:
+        return False
+    admin_mapped = bool(os.environ.get("AGNES_GROUP_ADMIN_EMAIL", "").strip())
+    everyone_mapped = bool(os.environ.get("AGNES_GROUP_EVERYONE_EMAIL", "").strip())
+    for name, is_system, created_by in rows:
+        if created_by == "system:google-sync":
+            return True
+        if is_system and name == SYSTEM_ADMIN_GROUP and admin_mapped:
+            return True
+        if is_system and name == SYSTEM_EVERYONE_GROUP and everyone_mapped:
+            return True
+    return False
+
+
 def _to_response(
     u: dict,
     conn: duckdb.DuckDBPyConnection,
@@ -115,6 +165,7 @@ def _to_response(
         name=u.get("name"),
         role=_resolve_role(u, conn),
         is_admin=any(g.name == SYSTEM_ADMIN_GROUP for g in groups),
+        is_sso_user=_is_sso_user(u["id"], conn),
         groups=groups,
         active=bool(u.get("active", True)),
         created_at=str(u.get("created_at", "")),
@@ -261,6 +312,25 @@ async def update_user(
     return _to_response(repo.get_by_id(user_id), conn)
 
 
+_SSO_LOCKED_DETAIL = (
+    "User is managed by an external SSO provider; "
+    "this operation must be performed in the upstream system"
+)
+
+
+def _reject_if_sso(target_id: str, conn: duckdb.DuckDBPyConnection) -> None:
+    """409 if the target is SSO-managed.
+
+    The admin UI hides the password / delete affordances for SSO users, but
+    the UI-only guard is bypassable by anyone who calls /api/users/...
+    directly with a valid admin token. This is the server-side enforcement
+    that backs the UI: admins cannot reset / set / wipe a Google-Workspace
+    account through Agnes — those mutations belong upstream.
+    """
+    if _is_sso_user(target_id, conn):
+        raise HTTPException(status_code=409, detail=_SSO_LOCKED_DETAIL)
+
+
 @router.delete("/{user_id}", status_code=204)
 async def delete_user(
     user_id: str,
@@ -274,6 +344,7 @@ async def delete_user(
         raise HTTPException(status_code=404, detail="User not found")
     if target["id"] == user["id"]:
         raise HTTPException(status_code=409, detail="Cannot delete yourself")
+    _reject_if_sso(target["id"], conn)
     if is_user_admin(target["id"], conn) and repo.count_admins(active_only=True) <= 1:
         raise HTTPException(status_code=409, detail="Cannot delete the last active admin")
     repo.delete(user_id)
@@ -293,6 +364,7 @@ async def reset_password(
     target = repo.get_by_id(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
+    _reject_if_sso(target["id"], conn)
     token = secrets.token_urlsafe(32)
     repo.update(
         id=user_id,
@@ -326,6 +398,7 @@ async def set_password(
     target = repo.get_by_id(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
+    _reject_if_sso(target["id"], conn)
     ph = PasswordHasher()
     repo.update(id=user_id, password_hash=ph.hash(payload.password))
     _audit(conn, user["id"], "user.set_password", user_id, {"email": target["email"]})
