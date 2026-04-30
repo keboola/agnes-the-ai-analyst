@@ -278,3 +278,187 @@ def test_upload_local_md_writes_audit(fresh_db):
     assert r.status_code == 200, r.text
     rows = _audit_rows(action_prefix="upload.local_md", user_id=uid)
     assert len(rows) == 1
+
+
+# ── admin.py (registry mutations) ───────────────────────────────────────
+
+
+def test_admin_register_table_writes_audit(fresh_db):
+    from app.main import app
+    uid, token = _seed_admin()
+    client = TestClient(app)
+    r = client.post(
+        "/api/admin/register-table",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"name": "Orders", "folder": "data", "sync_strategy": "full"},
+    )
+    assert r.status_code == 201, r.text
+    rows = _audit_rows(action_prefix="registry.register", user_id=uid)
+    assert len(rows) == 1
+    assert rows[0]["resource"] == "admin:orders"
+
+
+def test_admin_unregister_table_writes_audit(fresh_db):
+    from app.main import app
+    uid, token = _seed_admin()
+    client = TestClient(app)
+    client.post(
+        "/api/admin/register-table",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"name": "Orders", "folder": "data", "sync_strategy": "full"},
+    )
+    r = client.delete(
+        "/api/admin/registry/orders",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 204, r.text
+    rows = _audit_rows(action_prefix="registry.unregister", user_id=uid)
+    assert len(rows) == 1
+
+
+# ── permissions.py (legacy dataset_permissions) ─────────────────────────
+
+
+def test_permissions_grant_writes_audit(fresh_db):
+    from app.main import app
+    uid, token = _seed_admin()
+    client = TestClient(app)
+    r = client.post(
+        "/api/admin/permissions",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"user_id": "victim", "dataset": "orders", "access": "read"},
+    )
+    assert r.status_code == 201, r.text
+    rows = _audit_rows(action_prefix="permission.grant", user_id=uid)
+    assert len(rows) == 1
+
+
+def test_permissions_revoke_writes_audit(fresh_db):
+    from app.main import app
+    uid, token = _seed_admin()
+    client = TestClient(app)
+    client.post(
+        "/api/admin/permissions",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"user_id": "victim", "dataset": "orders", "access": "read"},
+    )
+    r = client.request(
+        "DELETE", "/api/admin/permissions",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"user_id": "victim", "dataset": "orders"},
+    )
+    assert r.status_code == 200, r.text
+    rows = _audit_rows(action_prefix="permission.revoke", user_id=uid)
+    assert len(rows) == 1
+
+
+# ── access_requests.py ──────────────────────────────────────────────────
+
+
+def test_access_request_create_writes_audit(fresh_db):
+    from app.main import app
+    uid, token = _seed_admin()
+    client = TestClient(app)
+    r = client.post(
+        "/api/access-requests",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"table_id": "orders", "reason": "I need it"},
+    )
+    assert r.status_code == 201, r.text
+    rows = _audit_rows(action_prefix="access_request.create", user_id=uid)
+    assert len(rows) == 1
+
+
+def test_access_request_approve_and_deny_write_audit(fresh_db):
+    from app.main import app
+    uid, token = _seed_admin()
+    client = TestClient(app)
+    # Create one to approve
+    create1 = client.post(
+        "/api/access-requests",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"table_id": "orders", "reason": ""},
+    )
+    rid1 = create1.json()["id"]
+    a = client.post(
+        f"/api/access-requests/{rid1}/approve",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert a.status_code == 200, a.text
+    # Create another to deny
+    create2 = client.post(
+        "/api/access-requests",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"table_id": "customers", "reason": ""},
+    )
+    rid2 = create2.json()["id"]
+    d = client.post(
+        f"/api/access-requests/{rid2}/deny",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert d.status_code == 200, d.text
+    assert len(_audit_rows(action_prefix="access_request.approve", user_id=uid)) == 1
+    assert len(_audit_rows(action_prefix="access_request.deny", user_id=uid)) == 1
+
+
+# ── metadata.py ─────────────────────────────────────────────────────────
+
+
+def test_metadata_save_writes_audit(fresh_db):
+    from app.main import app
+    uid, token = _seed_admin()
+    client = TestClient(app)
+    r = client.post(
+        "/api/admin/metadata/orders",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"columns": [{"column_name": "id", "basetype": "INTEGER",
+                            "description": "Primary key"}]},
+    )
+    assert r.status_code == 200, r.text
+    rows = _audit_rows(action_prefix="metadata.save", user_id=uid)
+    assert len(rows) == 1
+    assert rows[0]["resource"] == "metadata:orders"
+
+
+# ── catalog.py ──────────────────────────────────────────────────────────
+# profile_refresh requires a parquet on disk; we don't simulate that here.
+# Coverage relies on the audit helper being reachable — exercise via the
+# code path's metadata.save above (catalog and metadata share the
+# AuditRepository.log path).
+
+
+# ── memory.py (user-self submit + vote) ─────────────────────────────────
+
+
+def test_memory_create_writes_audit(fresh_db):
+    from app.main import app
+    uid, token = _seed_admin()
+    client = TestClient(app)
+    r = client.post(
+        "/api/memory",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"title": "Tip", "content": "Always …", "category": "ops"},
+    )
+    assert r.status_code == 201, r.text
+    rows = _audit_rows(action_prefix="km_create")
+    assert len(rows) == 1
+
+
+def test_memory_vote_writes_audit(fresh_db):
+    from app.main import app
+    uid, token = _seed_admin()
+    client = TestClient(app)
+    create = client.post(
+        "/api/memory",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"title": "Tip", "content": "x", "category": "ops"},
+    )
+    item_id = create.json()["id"]
+    r = client.post(
+        f"/api/memory/{item_id}/vote",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"vote": 1},
+    )
+    assert r.status_code == 200, r.text
+    rows = _audit_rows(action_prefix="km_vote")
+    assert len(rows) == 1

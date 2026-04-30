@@ -1,6 +1,7 @@
 """Admin permissions API — grant/revoke dataset access."""
 
 import logging
+from datetime import datetime
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -9,10 +10,38 @@ import duckdb
 
 from app.auth.access import require_admin
 from app.auth.dependencies import get_current_user, _get_db
+from src.repositories.audit import AuditRepository
 from src.repositories.sync_settings import DatasetPermissionRepository
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin/permissions", tags=["permissions"])
+
+
+def _audit(
+    conn: duckdb.DuckDBPyConnection,
+    actor_id: str,
+    action: str,
+    target_id: str,
+    params: Optional[dict] = None,
+) -> None:
+    """Audit-log helper for legacy dataset-permission grants/revokes.
+    The /admin/access page (RBAC v13) supersedes these mutations but the
+    endpoints stay live for the access-request inbox flow — until that
+    folds into resource_grants every grant/revoke must leave a trace."""
+    try:
+        safe_params = None
+        if params:
+            safe_params = {}
+            for k, v in params.items():
+                safe_params[k] = v.isoformat() if isinstance(v, datetime) else v
+        AuditRepository(conn).log(
+            user_id=actor_id,
+            action=action,
+            resource=f"permission:{target_id}",
+            params=safe_params,
+        )
+    except Exception:
+        pass
 
 
 class PermissionRequest(BaseModel):
@@ -30,6 +59,12 @@ async def grant_permission(
     """Grant a user access to a dataset/table."""
     repo = DatasetPermissionRepository(conn)
     repo.grant(request.user_id, request.dataset, request.access)
+    _audit(
+        conn, user["id"], "permission.grant",
+        f"{request.user_id}:{request.dataset}",
+        {"target_user": request.user_id, "dataset": request.dataset,
+         "access": request.access},
+    )
     return {"user_id": request.user_id, "dataset": request.dataset, "access": request.access}
 
 
@@ -42,6 +77,11 @@ async def revoke_permission(
     """Revoke a user's access to a dataset/table."""
     repo = DatasetPermissionRepository(conn)
     repo.revoke(request.user_id, request.dataset)
+    _audit(
+        conn, user["id"], "permission.revoke",
+        f"{request.user_id}:{request.dataset}",
+        {"target_user": request.user_id, "dataset": request.dataset},
+    )
     return {"revoked": True}
 
 

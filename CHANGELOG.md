@@ -15,7 +15,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-- **Audit-log writes added to 13 admin/user-mutating endpoints across 4 modules** that previously left no trace. Operators can now answer "who did what, when" without grepping logs. Pattern matches the canonical `_audit()` helper from `app/api/users.py` and `marketplaces.py`. New rows land in the existing `audit_log` table; the helper swallows write failures so audit instrumentation never breaks the user-facing operation.
+- **Audit-log writes added to 28 admin/user-mutating endpoints across 10 modules** that previously left no trace. Operators can now answer "who did what, when" without grepping logs. Pattern matches the canonical `_audit()` helper from `app/api/users.py` and `marketplaces.py`. New rows land in the existing `audit_log` table; the helper swallows write failures so audit instrumentation never breaks the user-facing operation.
 
   | Module | Action prefix | Endpoints |
   |---|---|---|
@@ -23,10 +23,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   | `metrics.py` | `metric.upsert` / `metric.delete` / `metric.import` | 3 |
   | `sync.py` | `sync.trigger` / `sync.settings.update` / `sync.subscriptions.update` | 3 |
   | `upload.py` | `upload.session` / `upload.artifact` / `upload.local_md` | 3 |
+  | `admin.py` | `registry.register` / `registry.update` / `registry.unregister` / `instance.configure` / `registry.discover` | 5 |
+  | `permissions.py` | `permission.grant` / `permission.revoke` | 2 |
+  | `access_requests.py` | `access_request.create` / `access_request.approve` / `access_request.deny` | 3 |
+  | `metadata.py` | `metadata.save` / `metadata.push` | 2 |
+  | `catalog.py` | `catalog.profile_refresh` | 1 |
+  | `memory.py` | `km_create` / `km_vote` (admin governance actions already covered) | 2 |
 
-  Resource ID prefixes are namespaced (`script:<id>`, `metric:<id>`, `sync:<scope>`, `upload:<filename>`). Params capture name + size hints + exit codes — never script source bodies or upload contents. Server-side Python execution (the highest-blast-radius surface) is now fully audited.
+  Resource ID prefixes are namespaced (`script:<id>`, `metric:<id>`, `sync:<scope>`, `upload:<filename>`, `admin:<id>`, `permission:<user>:<dataset>`, `access_request:<id>`, `metadata:<table>`, `catalog:<table>`). Params capture name + size hints + exit codes + counts — never script source bodies, upload contents, or secret values. Server-side Python execution (the highest-blast-radius surface) is now fully audited; legacy dataset_permission grants/revokes (the v13 RBAC migration's tail) leave a trail until they're folded into resource_grants.
 
-- 12 new tests in `tests/test_audit_log_coverage.py` pin that each instrumented endpoint writes a matching `audit_log` row. Loose-match strategy (action prefix + user_id) keeps tests resilient to future param wording tweaks.
+- 21 new tests in `tests/test_audit_log_coverage.py` pin that each instrumented endpoint writes a matching `audit_log` row. Loose-match strategy (action prefix + user_id) keeps tests resilient to future param wording tweaks.
 
 ### Added
 

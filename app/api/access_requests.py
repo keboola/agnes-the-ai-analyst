@@ -1,6 +1,7 @@
 """Access request API — users request access, admins approve/deny."""
 
 import logging
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional
@@ -9,9 +10,35 @@ import duckdb
 from app.auth.access import require_admin
 from app.auth.dependencies import get_current_user, _get_db
 from src.repositories.access_requests import AccessRequestRepository
+from src.repositories.audit import AuditRepository
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/access-requests", tags=["access-requests"])
+
+
+def _audit(
+    conn: duckdb.DuckDBPyConnection,
+    actor_id: str,
+    action: str,
+    target_id: str,
+    params: Optional[dict] = None,
+) -> None:
+    """Audit-log helper for access-request flow. Approve/deny grant or
+    refuse data access — admins must leave a trail."""
+    try:
+        safe_params = None
+        if params:
+            safe_params = {}
+            for k, v in params.items():
+                safe_params[k] = v.isoformat() if isinstance(v, datetime) else v
+        AuditRepository(conn).log(
+            user_id=actor_id,
+            action=action,
+            resource=f"access_request:{target_id}",
+            params=safe_params,
+        )
+    except Exception:
+        pass
 
 
 class AccessRequestCreate(BaseModel):
@@ -37,6 +64,10 @@ async def create_request(
         user_email=user.get("email", ""),
         table_id=request.table_id,
         reason=request.reason or "",
+    )
+    _audit(
+        conn, user["id"], "access_request.create", req_id,
+        {"table_id": request.table_id, "has_reason": bool(request.reason)},
     )
     return {"id": req_id, "status": "pending", "table_id": request.table_id}
 
@@ -81,6 +112,7 @@ async def approve_request(
     """Approve an access request (admin only). Auto-grants permission."""
     repo = AccessRequestRepository(conn)
     if repo.approve(request_id, reviewed_by=user.get("email", "")):
+        _audit(conn, user["id"], "access_request.approve", request_id)
         return {"status": "approved", "id": request_id}
     raise HTTPException(status_code=404, detail="Request not found or already processed")
 
@@ -94,5 +126,6 @@ async def deny_request(
     """Deny an access request (admin only)."""
     repo = AccessRequestRepository(conn)
     if repo.deny(request_id, reviewed_by=user.get("email", "")):
+        _audit(conn, user["id"], "access_request.deny", request_id)
         return {"status": "denied", "id": request_id}
     raise HTTPException(status_code=404, detail="Request not found or already processed")

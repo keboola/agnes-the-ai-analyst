@@ -8,6 +8,7 @@ callers via the same ``_user_group_ids`` lookup.
 import logging
 import os
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -17,10 +18,36 @@ import duckdb
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
+from src.repositories.audit import AuditRepository
 from src.repositories.table_registry import TableRegistryRepository
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+
+def _audit(
+    conn: duckdb.DuckDBPyConnection,
+    actor_id: str,
+    action: str,
+    target_id: str,
+    params: Optional[dict] = None,
+) -> None:
+    """Audit-log helper for admin registry / configure mutations.
+    Same shape as ``app/api/users.py::_audit`` / ``marketplaces.py::_audit``."""
+    try:
+        safe_params = None
+        if params:
+            safe_params = {}
+            for k, v in params.items():
+                safe_params[k] = v.isoformat() if isinstance(v, datetime) else v
+        AuditRepository(conn).log(
+            user_id=actor_id,
+            action=action,
+            resource=f"admin:{target_id}",
+            params=safe_params,
+        )
+    except Exception:
+        pass
 
 # SSRF protection: reject private/internal URLs for keboola_url
 import ipaddress as _ipaddress
@@ -177,6 +204,11 @@ async def register_table(
         profile_after_sync=request.profile_after_sync,
     )
 
+    _audit(
+        conn, user["id"], "registry.register", table_id,
+        {"name": request.name, "source_type": request.source_type,
+         "bucket": request.bucket, "query_mode": request.query_mode},
+    )
     return {"id": table_id, "name": request.name, "status": "registered"}
 
 
@@ -199,6 +231,10 @@ async def update_table(
         merged.update(updates)
         merged.pop("id", None)  # avoid duplicate id kwarg
         repo.register(id=table_id, **merged)
+        _audit(
+            conn, user["id"], "registry.update", table_id,
+            {"fields": list(updates.keys())},
+        )
     return {"id": table_id, "updated": list(updates.keys())}
 
 
@@ -213,12 +249,14 @@ async def unregister_table(
     if not repo.get(table_id):
         raise HTTPException(status_code=404, detail="Table not found")
     repo.unregister(table_id)
+    _audit(conn, user["id"], "registry.unregister", table_id)
 
 
 @router.post("/configure")
 async def configure_instance(
     request: ConfigureRequest,
     user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Configure data source and instance settings via API.
 
@@ -331,6 +369,11 @@ async def configure_instance(
     import app.instance_config as ic
     ic._instance_config = None
 
+    _audit(
+        conn, user["id"], "instance.configure", request.data_source,
+        {"instance_name": request.instance_name,
+         "secrets_persisted": len(secrets_to_persist) if secrets_to_persist else 0},
+    )
     return {
         "status": "ok",
         "data_source": request.data_source,
@@ -416,6 +459,12 @@ async def discover_and_register(
     """
     try:
         result = _discover_and_register_tables(conn, user.get("email", "admin"))
+        _audit(
+            conn, user["id"], "registry.discover", result.get("source", "unknown"),
+            {"registered": result.get("registered", 0),
+             "skipped": result.get("skipped", 0),
+             "errors": result.get("errors", 0)},
+        )
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Discovery and registration failed: {e}")

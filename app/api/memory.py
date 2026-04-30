@@ -114,6 +114,17 @@ async def create_knowledge(
         source_user=user.get("email"),
         tags=request.tags,
     )
+    try:
+        AuditRepository(conn).log(
+            user_id=user.get("email"),
+            action="km_create",
+            resource=item_id,
+            params={"category": request.category,
+                    "title_len": len(request.title or ""),
+                    "content_len": len(request.content or "")},
+        )
+    except Exception:
+        pass
     return {"id": item_id, "status": "pending"}
 
 
@@ -130,6 +141,15 @@ async def vote_knowledge(
     if not repo.get_by_id(item_id):
         raise HTTPException(status_code=404, detail="Knowledge item not found")
     repo.vote(item_id, user["id"], request.vote)
+    try:
+        AuditRepository(conn).log(
+            user_id=user.get("email"),
+            action="km_vote",
+            resource=item_id,
+            params={"vote": request.vote},
+        )
+    except Exception:
+        pass
     return repo.get_votes(item_id)
 
 
