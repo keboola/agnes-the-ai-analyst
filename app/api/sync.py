@@ -28,6 +28,30 @@ from src.rbac import can_access_table
 from src.scheduler import filter_due_tables, is_table_due
 
 logger = logging.getLogger(__name__)
+
+
+def _audit(
+    conn: duckdb.DuckDBPyConnection,
+    actor_id: str,
+    action: str,
+    target_id: str,
+    params: Optional[dict] = None,
+) -> None:
+    """Audit-log helper for sync mutations."""
+    try:
+        safe_params = None
+        if params:
+            safe_params = {}
+            for k, v in params.items():
+                safe_params[k] = v.isoformat() if isinstance(v, datetime) else v
+        AuditRepository(conn).log(
+            user_id=actor_id,
+            action=action,
+            resource=f"sync:{target_id}",
+            params=safe_params,
+        )
+    except Exception:
+        pass
 router = APIRouter(prefix="/api/sync", tags=["sync"])
 
 # Process-wide guard against overlapping `_run_sync` invocations. Two
@@ -798,6 +822,7 @@ async def trigger_sync(
     background_tasks: BackgroundTasks,
     body: Optional[Any] = Body(None),
     user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Trigger data sync from configured source. Admin only. Runs in background.
 
@@ -943,6 +968,11 @@ async def update_sync_settings(
         settings_repo.set_dataset_enabled(user["id"], dataset, enabled)
         results[dataset] = {"enabled": enabled}
 
+    _audit(
+        conn, user["id"], "sync.settings.update", "datasets",
+        {"requested": list(request.datasets.keys()),
+         "applied": [k for k, v in results.items() if "enabled" in v]},
+    )
     return {"updated": results}
 
 
@@ -974,6 +1004,10 @@ async def update_table_subscriptions(
     repo = SyncSettingsRepository(conn)
     for table_name, enabled in request.tables.items():
         repo.set_dataset_enabled(user["id"], table_name, enabled)
+    _audit(
+        conn, user["id"], "sync.subscriptions.update", "tables",
+        {"mode": request.table_mode, "count": len(request.tables)},
+    )
     return {"table_mode": request.table_mode, "updated": len(request.tables)}
 
 
