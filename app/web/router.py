@@ -854,16 +854,17 @@ async def admin_group_detail_page(
     """Single-group detail page — header + members table. Resource grants
     live on /admin/grants (deep-linked from here)."""
     from src.repositories.user_groups import UserGroupsRepository
-    from app.api.access import _is_google_managed
+    from app.api.access import _is_google_managed, _mapped_email
     g = UserGroupsRepository(conn).get(group_id)
     if not g:
         raise HTTPException(status_code=404, detail="Group not found")
-    # Project a `is_google_managed` flag onto the dict the template reads,
-    # using the same rule the API enforces (created_by='system:google-sync'
-    # OR system + env mapping). Doing it server-side keeps the template
-    # free of env-var lookups and Python-side logic duplication.
+    # Project the same flags the API derives so the template avoids env
+    # lookups: `is_google_managed` (created_by='system:google-sync' OR
+    # system + env mapping) and `mapped_email` (the Workspace group
+    # funneling members into the Admin/Everyone system row, when set).
     g_view = dict(g)
     g_view["is_google_managed"] = _is_google_managed(g)
+    g_view["mapped_email"] = _mapped_email(g)
     ctx = _build_context(request, user=user, target_group=g_view)
     return templates.TemplateResponse(request, "admin_group_detail.html", ctx)
 
