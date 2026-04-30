@@ -135,6 +135,45 @@ def test_finale_bullets_match_emitted_steps():
     assert "Whether the marketplace add went via direct HTTPS" in both
 
 
+def test_marketplace_block_redetects_platform_for_self_containment():
+    """Marketplace `case "$PLATFORM" in` would silently fall through to the
+    `*)` catch-all on every platform if `$PLATFORM` from step 0 isn't in
+    the current shell — which the prompt itself warns about
+    ("env vars do NOT persist between separate Bash invocations"). Linux
+    would then never get the direct-HTTPS attempt the comment promises.
+    The marketplace block must therefore re-detect $PLATFORM via uname
+    before its case statement, mirroring step 0(a)."""
+    from app.web.setup_instructions import resolve_lines
+
+    fake_ca = (
+        "-----BEGIN CERTIFICATE-----\n"
+        "FAKE\n"
+        "-----END CERTIFICATE-----\n"
+    )
+    joined = "\n".join(
+        resolve_lines(
+            "agnes.whl",
+            plugin_install_names=["foo"],
+            server_host="agnes.example.com",
+            ca_pem=fake_ca,
+        )
+    )
+    # Locate the marketplace section.
+    section_idx = joined.index("Register the Agnes Claude Code marketplace")
+    section = joined[section_idx:]
+
+    # Re-detection block must appear BEFORE the `case "$PLATFORM" in`
+    # check so the variable is set when the case runs.
+    redetect_idx = section.index('case "$(uname -s)" in')
+    platform_case_idx = section.index('case "$PLATFORM" in')
+    assert redetect_idx < platform_case_idx
+    # All three platform branches must be covered (same shape as step 0(a)).
+    redetect_block = section[redetect_idx:platform_case_idx]
+    assert "Darwin" in redetect_block and "PLATFORM=macos" in redetect_block
+    assert "Linux" in redetect_block and "PLATFORM=linux" in redetect_block
+    assert "MINGW*|MSYS*|CYGWIN*" in redetect_block and "PLATFORM=windows" in redetect_block
+
+
 def test_trust_block_step_0c_does_not_reference_stale_step_number():
     """Step 0(c) used to say 'without this, step 7's marketplace add fails'
     but after the layout reordering, marketplace is step 5 (when plugins
