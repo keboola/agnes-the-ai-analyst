@@ -2151,7 +2151,11 @@
             alert(`Unlink for ${channel} is not supported yet.`);
             return;
         }
-        if (!confirm(`Unlink Telegram? You will stop receiving notifications.`)) return;
+        if (!await confirmDestructive({
+            title: 'Unlink Telegram?',
+            body: 'You will stop receiving Agnes notifications on Telegram. You can re-link any time.',
+            confirmLabel: 'Unlink',
+        })) return;
         try {
             const resp = await fetch('/api/telegram/unlink', {
                 method: 'POST',
