@@ -31,6 +31,7 @@ def sync(
     upload_only: bool = typer.Option(False, "--upload-only", help="Only upload sessions/artifacts"),
     docs_only: bool = typer.Option(False, "--docs-only", help="Only sync documentation"),
     as_json: bool = typer.Option(False, "--json", help="Output as JSON"),
+    quiet: bool = typer.Option(False, "--quiet", help="Suppress progress output (for hooks/cron)"),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
@@ -39,7 +40,12 @@ def sync(
 ):
     """Sync data between server and local machine."""
     if upload_only:
-        _upload(as_json, dry_run=dry_run)
+        _upload(as_json, dry_run=dry_run, quiet=quiet)
+        return
+
+    if quiet:
+        # Bypass Rich Progress entirely so hook stdout stays clean.
+        _sync_quiet(table=table, docs_only=docs_only, as_json=as_json, dry_run=dry_run)
         return
 
     with Progress(
@@ -300,7 +306,7 @@ def _is_valid_parquet(path: Path) -> bool:
         return False
 
 
-def _upload(as_json: bool, dry_run: bool = False):
+def _upload(as_json: bool, dry_run: bool = False, quiet: bool = False):
     """Upload sessions and CLAUDE.local.md to server.
 
     When `dry_run=True`, enumerate what would be uploaded without hitting the
@@ -360,7 +366,81 @@ def _upload(as_json: bool, dry_run: bool = False):
 
     if as_json:
         typer.echo(json.dumps(results, indent=2))
-    else:
+    elif not quiet:
         typer.echo(f"Uploaded {results['sessions']} sessions")
         if results["local_md"]:
             typer.echo("Uploaded CLAUDE.local.md")
+
+
+def _sync_quiet(table, docs_only, as_json, dry_run):
+    """Same flow as the Progress block, no UI. One-line final summary on stderr."""
+    try:
+        resp = api_get("/api/sync/manifest")
+        resp.raise_for_status()
+        manifest = resp.json()
+    except Exception as e:
+        typer.echo(f"sync: manifest fetch failed: {e}", err=True)
+        raise typer.Exit(1)
+
+    server_tables = manifest.get("tables", {})
+    local_state = get_sync_state()
+    local_tables = local_state.get("tables", {})
+
+    to_download = []
+    for tid, info in server_tables.items():
+        if table and tid != table:
+            continue
+        if docs_only:
+            continue
+        local_hash = local_tables.get(tid, {}).get("hash", "")
+        server_hash = info.get("hash", "")
+        if server_hash != local_hash or tid not in local_tables or not server_hash:
+            to_download.append(tid)
+
+    if dry_run:
+        if as_json:
+            typer.echo(json.dumps({"dry_run": True, "would_download": to_download}, indent=2))
+        return
+
+    local_dir = _local_data_dir()
+    parquet_dir = local_dir / "server" / "parquet"
+    parquet_dir.mkdir(parents=True, exist_ok=True)
+
+    results = {"downloaded": [], "errors": []}
+    for tid in to_download:
+        target = parquet_dir / f"{tid}.parquet"
+        expected_hash = server_tables[tid].get("hash", "")
+        try:
+            stream_download(f"/api/data/{tid}/download", str(target))
+            if expected_hash:
+                if _md5_file(target) != expected_hash:
+                    target.unlink(missing_ok=True)
+                    raise ValueError("hash mismatch")
+            elif not _is_valid_parquet(target):
+                target.unlink(missing_ok=True)
+                raise ValueError("not a valid parquet")
+            local_tables[tid] = {
+                "hash": expected_hash,
+                "rows": server_tables[tid].get("rows", 0),
+                "size_bytes": server_tables[tid].get("size_bytes", 0),
+            }
+            results["downloaded"].append(tid)
+        except Exception as e:
+            results["errors"].append({"table": tid, "error": str(e)})
+
+    from datetime import datetime, timezone
+    local_state["tables"] = local_tables
+    local_state["last_sync"] = datetime.now(timezone.utc).isoformat()
+    save_sync_state(local_state)
+
+    if results["downloaded"]:
+        _rebuild_duckdb_views(local_dir, parquet_dir)
+
+    if as_json:
+        typer.echo(json.dumps(results, indent=2))
+    elif results["downloaded"] or results["errors"]:
+        # One terse line for hook-friendly logs; silent on no-op
+        typer.echo(
+            f"sync: {len(results['downloaded'])} tables, {len(results['errors'])} errors",
+            err=True,
+        )
