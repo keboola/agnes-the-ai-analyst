@@ -22,6 +22,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   preserving any existing user-owned hooks. Workspace-level (not
   user-home) so the hooks fire only when Claude Code is opened in the
   analyst workspace, not in unrelated sessions on the same machine.
+  Hooks assume `da` is on `PATH`. If the CLI is not installed system-wide
+  (e.g. via `pipx` or `pip install -e .`), the hooks no-op silently —
+  expected graceful degradation, never blocks a session.
 - `docs/setup/claude_settings.json` ships the same two hooks so operators
   bootstrapping a fresh Claude Code workspace get auto-sync out of the box.
 

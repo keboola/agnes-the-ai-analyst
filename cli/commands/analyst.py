@@ -291,7 +291,14 @@ def _install_claude_hooks(settings_path: Path) -> None:
     settings_path.parent.mkdir(parents=True, exist_ok=True)
 
     if settings_path.exists():
-        cfg = json.loads(settings_path.read_text(encoding="utf-8"))
+        try:
+            cfg = json.loads(settings_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            typer.echo(
+                f"Warning: {settings_path} is not valid JSON; skipping hook install.",
+                err=True,
+            )
+            return
     else:
         cfg = {}
 
