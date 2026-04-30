@@ -37,6 +37,10 @@ def _dry_run_bytes(sql: str, project_id: str) -> int:
         from google.cloud import bigquery
         from google.cloud.bigquery import QueryJobConfig
     except ImportError:
+        logger.warning(
+            "google-cloud-bigquery not installed — cost guardrail is disabled (fail-open). "
+            "Install it to enable BQ dry-run estimates."
+        )
         return 0
 
     try:
@@ -44,7 +48,13 @@ def _dry_run_bytes(sql: str, project_id: str) -> int:
         cfg = QueryJobConfig(dry_run=True, use_query_cache=False)
         job = client.query(sql, job_config=cfg)
         return int(job.total_bytes_processed or 0)
-    except Exception:
+    except Exception as e:
+        logger.warning(
+            "BQ dry-run failed for cost guardrail (fail-open): %s. "
+            "If the SQL uses DuckDB three-part names like bq.\"ds\".\"t\", "
+            "rewrite to native BQ syntax (`project.ds.t`) for the guardrail to engage.",
+            e,
+        )
         return 0
 
 
