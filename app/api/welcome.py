@@ -10,7 +10,7 @@ import datetime
 from typing import Optional
 
 import duckdb
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from jinja2 import Environment, StrictUndefined, TemplateError, TemplateSyntaxError
 from pydantic import BaseModel, Field
 
@@ -58,6 +58,10 @@ class TemplateGetResponse(BaseModel):
 
 
 class TemplatePutRequest(BaseModel):
+    content: str = Field(..., min_length=1, max_length=200_000)
+
+
+class TemplatePreviewRequest(BaseModel):
     content: str = Field(..., min_length=1, max_length=200_000)
 
 
@@ -117,3 +121,25 @@ async def admin_reset_template(
 ):
     WelcomeTemplateRepository(conn).reset(updated_by=user["email"])
     return Response(status_code=204)
+
+
+@router.post("/api/admin/welcome-template/preview", response_model=WelcomeResponse)
+async def admin_preview_template(
+    payload: TemplatePreviewRequest,
+    request: Request,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Render arbitrary template content against the live context for the
+    calling admin, without persisting. Used by the /admin/welcome editor's
+    Preview button so admins can see their edits before saving."""
+    from src.welcome_template import build_context
+
+    env = Environment(undefined=StrictUndefined, autoescape=False)
+    try:
+        template = env.from_string(payload.content)
+        ctx = build_context(conn, user=user, server_url=str(request.base_url).rstrip("/"))
+        rendered = template.render(**ctx)
+    except TemplateError as e:
+        raise HTTPException(status_code=400, detail=f"Template invalid: {e}")
+    return WelcomeResponse(content=rendered)
