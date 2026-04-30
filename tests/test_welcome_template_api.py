@@ -119,3 +119,39 @@ def test_get_welcome_500_includes_reset_hint_on_render_failure(seeded_app, monke
     )
     assert r.status_code == 500
     assert "/admin/welcome" in r.json()["detail"]
+
+
+def test_admin_preview_renders_arbitrary_content(seeded_app):
+    """Preview endpoint must render the supplied content (not whatever's
+    stored), so the admin UI can show pre-save preview."""
+    c = seeded_app["client"]
+    admin = _auth(seeded_app["admin_token"])
+    r = c.post(
+        "/api/admin/welcome-template/preview",
+        json={"content": "# Preview {{ user.email }}"},
+        headers=admin,
+    )
+    assert r.status_code == 200
+    assert r.json()["content"].startswith("# Preview admin@test.com")
+
+
+def test_preview_rejects_invalid_template(seeded_app):
+    c = seeded_app["client"]
+    admin = _auth(seeded_app["admin_token"])
+    r = c.post(
+        "/api/admin/welcome-template/preview",
+        json={"content": "{% for x in y %}"},
+        headers=admin,
+    )
+    assert r.status_code == 400
+
+
+def test_preview_requires_admin(seeded_app):
+    c = seeded_app["client"]
+    analyst = _auth(seeded_app["analyst_token"])
+    r = c.post(
+        "/api/admin/welcome-template/preview",
+        json={"content": "# x"},
+        headers=analyst,
+    )
+    assert r.status_code == 403
