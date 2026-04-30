@@ -62,6 +62,11 @@ class GroupBrief(BaseModel):
     id: str
     name: str
     is_system: bool = False
+    # Same 'system' | 'custom' | 'google_sync' tag as /api/admin/groups —
+    # the user list renders membership chips with color-coded backgrounds
+    # (Admin yellow, Everyone gray, google_sync green, custom purple) and
+    # needs the origin to pick the right swatch.
+    origin: str = "custom"
 
 
 class UserResponse(BaseModel):
@@ -91,17 +96,30 @@ def _user_groups(user_id: str, conn: duckdb.DuckDBPyConnection) -> List[GroupBri
     """Groups the user is a member of, sorted with system groups first.
 
     Inlined into ``/api/users`` responses so the admin list view can show
-    membership chips per row without an N+1 fetch.
+    membership chips per row without an N+1 fetch. ``origin`` is computed
+    via the same ``_derive_origin`` helper /api/admin/groups uses, so
+    chip colors stay in lock-step across the two surfaces.
     """
+    from app.api.access import _derive_origin
     rows = conn.execute(
-        """SELECT g.id, g.name, g.is_system
+        """SELECT g.id, g.name, g.is_system, g.created_by
            FROM user_group_members m
            JOIN user_groups g ON g.id = m.group_id
            WHERE m.user_id = ?
            ORDER BY g.is_system DESC, g.name""",
         [user_id],
     ).fetchall()
-    return [GroupBrief(id=r[0], name=r[1], is_system=bool(r[2])) for r in rows]
+    return [
+        GroupBrief(
+            id=r[0],
+            name=r[1],
+            is_system=bool(r[2]),
+            origin=_derive_origin(
+                {"is_system": bool(r[2]), "name": r[1], "created_by": r[3]}
+            ),
+        )
+        for r in rows
+    ]
 
 
 def _is_sso_user(user_id: str, conn: duckdb.DuckDBPyConnection) -> bool:
