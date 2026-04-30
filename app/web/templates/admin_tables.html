@@ -883,14 +883,31 @@
                     </div>
                 </div>
                 <div class="form-group bq-type-table bq-type-view">
-                    <label class="form-label" for="bqDataset">Dataset</label>
-                    <input type="text" class="form-input" id="bqDataset" placeholder="e.g. analytics">
-                    <div class="form-hint">BigQuery dataset name (no project prefix — read from instance.yaml).</div>
+                    <label class="form-label" for="bqDataset">
+                        Dataset
+                        <button type="button" class="btn btn-secondary btn-sm"
+                                onclick="discoverBqDatasets()" style="float:right; margin-top:-3px;">
+                            Discover
+                        </button>
+                    </label>
+                    <input type="text" class="form-input" id="bqDataset" list="bqDatasetList" placeholder="e.g. analytics">
+                    <datalist id="bqDatasetList"></datalist>
+                    <div class="form-hint">BigQuery dataset name (no project prefix — read from instance.yaml).
+                        Click <strong>Discover</strong> to populate the autocomplete from the BQ project's dataset list.</div>
                 </div>
                 <div class="form-group bq-type-table bq-type-view">
-                    <label class="form-label" for="bqSourceTable">Source Table / View</label>
-                    <input type="text" class="form-input" id="bqSourceTable" placeholder="e.g. orders">
-                    <div class="form-hint">Table or view name within the dataset. The server detects which it is at registration time.</div>
+                    <label class="form-label" for="bqSourceTable">
+                        Source Table / View
+                        <button type="button" class="btn btn-secondary btn-sm"
+                                onclick="discoverBqTables()" style="float:right; margin-top:-3px;">
+                            List tables
+                        </button>
+                    </label>
+                    <input type="text" class="form-input" id="bqSourceTable" list="bqTableList" placeholder="e.g. orders">
+                    <datalist id="bqTableList"></datalist>
+                    <div class="form-hint">Table or view name within the dataset. The server auto-detects
+                        BASE TABLE vs VIEW at registration time. Click <strong>List tables</strong> after
+                        filling Dataset to populate the autocomplete from BQ.</div>
                 </div>
                 <div class="form-group bq-type-query" style="display:none;">
                     <label class="form-label" for="bqSourceQuery">
@@ -1467,6 +1484,72 @@
         });
         var hint = document.getElementById('bqEntityHint');
         if (hint) hint.innerHTML = _BQ_HINT_BY_TYPE[entityType] || '';
+    }
+
+    function discoverBqDatasets() {
+        // GET /api/admin/discover-tables (no `dataset`) → list datasets in
+        // the configured BQ project. Populate the bqDatasetList <datalist>
+        // so the input shows them as autocomplete suggestions. The endpoint
+        // routes through BqAccess so config / auth errors come back as the
+        // standard {error, kind, details} shape.
+        fetch('/api/admin/discover-tables')
+            .then(function(r) {
+                if (!r.ok) return r.json().then(function(d) {
+                    var msg = (d && d.detail && d.detail.error) || (d && d.detail) || 'BQ discovery failed';
+                    throw new Error(msg);
+                });
+                return r.json();
+            })
+            .then(function(data) {
+                var dl = document.getElementById('bqDatasetList');
+                dl.innerHTML = '';
+                (data.datasets || []).forEach(function(ds) {
+                    var opt = document.createElement('option');
+                    opt.value = ds.dataset_id;
+                    opt.label = ds.full_id || ds.dataset_id;
+                    dl.appendChild(opt);
+                });
+                showToast('Loaded ' + (data.count || 0) + ' datasets', 'success');
+            })
+            .catch(function(err) {
+                showToast(err.message || 'Discovery failed', 'error');
+            });
+    }
+
+    function discoverBqTables() {
+        // GET /api/admin/discover-tables?dataset=NAME → list tables + views
+        // in the dataset. Two-step (dataset → tables) avoids paying the
+        // per-dataset list_tables() cost up front on big projects.
+        var dataset = document.getElementById('bqDataset').value.trim();
+        if (!dataset) {
+            showToast('Fill Dataset first', 'error');
+            return;
+        }
+        fetch('/api/admin/discover-tables?dataset=' + encodeURIComponent(dataset))
+            .then(function(r) {
+                if (!r.ok) return r.json().then(function(d) {
+                    var msg = (d && d.detail && d.detail.error) || (d && d.detail) || 'BQ table discovery failed';
+                    throw new Error(msg);
+                });
+                return r.json();
+            })
+            .then(function(data) {
+                var dl = document.getElementById('bqTableList');
+                dl.innerHTML = '';
+                (data.tables || []).forEach(function(t) {
+                    var opt = document.createElement('option');
+                    opt.value = t.table_id;
+                    // BQ entity types: TABLE, VIEW, MATERIALIZED_VIEW,
+                    // EXTERNAL, SNAPSHOT — surface so the operator can
+                    // pick the right Type selector option.
+                    opt.label = t.table_id + (t.table_type ? '  (' + t.table_type + ')' : '');
+                    dl.appendChild(opt);
+                });
+                showToast('Loaded ' + (data.count || 0) + ' tables in ' + dataset, 'success');
+            })
+            .catch(function(err) {
+                showToast(err.message || 'Table list failed', 'error');
+            });
     }
 
     function prefillFromTable() {

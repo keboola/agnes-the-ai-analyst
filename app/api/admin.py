@@ -956,8 +956,20 @@ class ConfigureRequest(BaseModel):
 @router.get("/discover-tables")
 async def discover_tables(
     user: dict = Depends(require_admin),
+    dataset: Optional[str] = None,
 ):
-    """Discover all available tables from the configured data source."""
+    """Discover available tables from the configured data source.
+
+    For ``data_source.type='keboola'`` returns the full Storage API table
+    list (single round-trip). For ``data_source.type='bigquery'``:
+
+    - Without ``dataset``: list datasets in the configured project.
+    - With ``dataset=name``: list tables (BASE TABLE + VIEW) in that dataset.
+
+    Two-step shape avoids paying the per-dataset list_tables cost up-front
+    on projects with hundreds of datasets — the UI populates the dataset
+    dropdown first, then fetches tables only for the selected dataset.
+    """
     try:
         from app.instance_config import get_data_source_type
         source_type = get_data_source_type()
@@ -973,10 +985,87 @@ async def discover_tables(
             client = KeboolaClient(token=token, url=url)
             tables = client.discover_all_tables()
             return {"tables": tables, "count": len(tables), "source": "keboola"}
-        else:
-            return {"tables": [], "count": 0, "source": source_type, "error": "Discovery not implemented for this source"}
+
+        if source_type == "bigquery":
+            return _discover_bigquery(dataset=dataset)
+
+        return {
+            "tables": [],
+            "count": 0,
+            "source": source_type,
+            "error": f"Discovery not implemented for source_type={source_type!r}",
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Discovery failed: {e}")
+
+
+def _discover_bigquery(dataset: Optional[str]) -> Dict[str, Any]:
+    """List BQ datasets (when ``dataset`` is None) or tables-in-dataset.
+
+    Routes through ``BqAccess.client()`` so config / auth / error
+    translation matches the rest of the BQ surface (#138 facade). Returns
+    the same shape as the Keboola path so the UI doesn't have to branch.
+    """
+    from connectors.bigquery.access import (
+        get_bq_access,
+        BqAccessError,
+        translate_bq_error,
+    )
+
+    try:
+        bq = get_bq_access()
+        client = bq.client()
+    except BqAccessError as e:
+        raise HTTPException(
+            status_code=BqAccessError.HTTP_STATUS.get(e.kind, 500),
+            detail={"error": e.message, "kind": e.kind, "details": e.details},
+        )
+
+    try:
+        if dataset is None:
+            datasets = []
+            for ds in client.list_datasets():
+                datasets.append({
+                    "dataset_id": ds.dataset_id,
+                    "full_id": f"{ds.project}.{ds.dataset_id}",
+                })
+            return {
+                "datasets": sorted(datasets, key=lambda d: d["dataset_id"]),
+                "count": len(datasets),
+                "source": "bigquery",
+            }
+
+        # List tables in the named dataset. `list_tables` returns
+        # `TableListItem` with `table_id` + `table_type` ('TABLE', 'VIEW',
+        # 'MATERIALIZED_VIEW', 'EXTERNAL', 'SNAPSHOT'). UI maps TABLE → Type
+        # selector "table" and VIEW/MATERIALIZED_VIEW → "view"; the rest are
+        # passed through with their raw type so the operator can decide.
+        tables = []
+        for t in client.list_tables(dataset):
+            tables.append({
+                "table_id": t.table_id,
+                "table_type": t.table_type,
+                "full_id": f"{t.project}.{t.dataset_id}.{t.table_id}",
+            })
+        return {
+            "tables": sorted(tables, key=lambda t: t["table_id"]),
+            "count": len(tables),
+            "source": "bigquery",
+            "dataset": dataset,
+        }
+    except Exception as e:
+        # `translate_bq_error` re-raises non-Google exceptions unchanged,
+        # so wrap in HTTPException to keep the JSON-shape contract.
+        try:
+            err = translate_bq_error(e, bq.projects, bad_request_status="upstream_error")
+        except Exception:
+            raise HTTPException(status_code=502, detail=f"BQ discovery failed: {e}")
+        raise HTTPException(
+            status_code=BqAccessError.HTTP_STATUS.get(err.kind, 502),
+            detail={"error": err.message, "kind": err.kind, "details": err.details},
+        )
 
 
 @router.get("/registry")
