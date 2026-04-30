@@ -964,7 +964,7 @@ async def profile_page(
     prefix = os.environ.get("AGNES_GOOGLE_GROUP_PREFIX", "").strip().lower()
     for m in memberships:
         m["origin"] = _derive_origin(m)
-        if m["origin"] == "google_sync" and m["name"]:
+        if m["origin"] == "google_sync" and m["name"] and m["name"] not in ("Admin", "Everyone"):
             local = m["name"].split("@", 1)[0]
             if prefix and local.lower().startswith(prefix):
                 local = local[len(prefix):]
