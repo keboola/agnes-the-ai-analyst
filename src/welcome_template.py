@@ -47,11 +47,14 @@ def _load_default_template() -> str:
 
 
 def _list_tables(conn: duckdb.DuckDBPyConnection) -> list[dict[str, Any]]:
-    rows = conn.execute(
-        """SELECT name, description, query_mode
-           FROM table_registry
-           ORDER BY name"""
-    ).fetchall()
+    try:
+        rows = conn.execute(
+            """SELECT name, description, query_mode
+               FROM table_registry
+               ORDER BY name"""
+        ).fetchall()
+    except duckdb.CatalogException:
+        return []
     return [
         {"name": r[0], "description": r[1] or "", "query_mode": r[2] or "local"}
         for r in rows
@@ -81,18 +84,24 @@ def _marketplaces_for_user(
     Results are grouped by marketplace slug; display names are fetched
     from marketplace_registry in a single query.
     """
-    allowed = resolve_allowed_plugins(conn, user)
+    try:
+        allowed = resolve_allowed_plugins(conn, user)
+    except duckdb.CatalogException:
+        return []
     if not allowed:
         return []
 
     # Build slug → display name lookup from registry
     slugs = list({p["marketplace_slug"] for p in allowed})
     placeholders = ",".join(["?"] * len(slugs))
-    name_rows = conn.execute(
-        f"SELECT id, name FROM marketplace_registry WHERE id IN ({placeholders})",
-        slugs,
-    ).fetchall()
-    slug_to_name: dict[str, str] = {r[0]: r[1] for r in name_rows}
+    try:
+        name_rows = conn.execute(
+            f"SELECT id, name FROM marketplace_registry WHERE id IN ({placeholders})",
+            slugs,
+        ).fetchall()
+        slug_to_name: dict[str, str] = {r[0]: r[1] for r in name_rows}
+    except duckdb.CatalogException:
+        slug_to_name = {}
 
     grouped: dict[str, dict[str, Any]] = {}
     for plugin in allowed:
@@ -116,7 +125,12 @@ def build_context(
     user: dict[str, Any],
     server_url: str,
 ) -> dict[str, Any]:
-    """Compose the Jinja2 render context. Pure, no side effects."""
+    """Compose the Jinja2 render context. Pure, no side effects.
+
+    Note: ``now`` is tz-aware UTC; DB-sourced timestamps elsewhere in the
+    codebase are naive (DuckDB stores ``TIMESTAMP``, not ``TIMESTAMPTZ``).
+    Don't subtract or compare them inside templates without normalising.
+    """
     now = datetime.now(timezone.utc)
     parsed = urlparse(server_url)
     return {
