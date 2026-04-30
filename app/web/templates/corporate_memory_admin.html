@@ -1482,12 +1482,21 @@
             showToast('Title is required', 'error');
             return;
         }
-        const content = document.getElementById('editItemContent').value;
-        const category = document.getElementById('editItemCategory').value.trim();
-        // Domain: empty string is a valid value meaning "clear the field"
-        // (matches the bulk-edit "(unset)" option). Send it through.
-        const domain = document.getElementById('editItemDomain').value.trim();
-        const audience = document.getElementById('editItemAudience').value;
+        // Convert empty strings to JSON null so the backend writes NULL,
+        // not an empty string. The audience filter in
+        // src/repositories/knowledge.py uses `audience IS NULL OR audience
+        // = 'all' OR audience IN (...)`, so an empty-string audience would
+        // silently make the item invisible to non-admin viewers (Devin
+        // BUG_0001 on PR #141 5f649a4 review). Same NULL-preservation
+        // applies to content / category / domain so unmodified fields
+        // round-trip correctly. Title is required so we never send null.
+        // Domain dropdown's "(unset)" option also funnels through this
+        // empty-string → null path.
+        const orNull = (s) => (s && s.trim() ? s.trim() : null);
+        const content = document.getElementById('editItemContent').value || null;
+        const category = orNull(document.getElementById('editItemCategory').value);
+        const domain = orNull(document.getElementById('editItemDomain').value);
+        const audience = orNull(document.getElementById('editItemAudience').value);
         const tagsStr = document.getElementById('editItemTags').value;
         const tags = tagsStr
             .split(',')

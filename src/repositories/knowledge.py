@@ -676,23 +676,29 @@ class KnowledgeRepository:
         self,
         exclude_personal: bool = False,
         user_groups: Optional[List[str]] = None,
+        granted_domains: Optional[List[str]] = None,
     ) -> Dict[str, int]:
         """Aggregate item counts per tag (one tag may belong to many items).
 
         Uses DuckDB ``json_each`` to unnest the JSON tag list. Items with no
-        tags don't contribute. Audience filter mirrors ``count_items``.
+        tags don't contribute. Visibility filter mirrors ``count_items``
+        (audience OR MEMORY_DOMAIN grant).
         """
         where = ["tags IS NOT NULL"]
         params: List[Any] = []
         if exclude_personal:
             where.append("(is_personal = FALSE OR is_personal IS NULL)")
         if user_groups is not None:
+            visibility = ["audience IS NULL", "audience = 'all'"]
             if user_groups:
                 ph = ",".join(["?"] * len(user_groups))
-                where.append(f"(audience IS NULL OR audience = 'all' OR audience IN ({ph}))")
+                visibility.append(f"audience IN ({ph})")
                 params.extend(user_groups)
-            else:
-                where.append("(audience IS NULL OR audience = 'all')")
+            if granted_domains:
+                dph = ",".join(["?"] * len(granted_domains))
+                visibility.append(f"domain IN ({dph})")
+                params.extend(granted_domains)
+            where.append("(" + " OR ".join(visibility) + ")")
         where_sql = " WHERE " + " AND ".join(where)
         sql = (
             "SELECT t.value AS tag, COUNT(*) AS cnt "
@@ -714,25 +720,31 @@ class KnowledgeRepository:
         self,
         exclude_personal: bool = False,
         user_groups: Optional[List[str]] = None,
+        granted_domains: Optional[List[str]] = None,
     ) -> Dict[str, int]:
         """Aggregate item counts per audience bucket.
 
         ``audience`` is a free-form column whose canonical values are
         ``NULL`` / ``'all'`` / ``'group:<name>'``. NULL is bucketed as
         ``'all'`` so the chip-filter UI doesn't need a separate "no audience"
-        affordance. Audience filter mirrors ``count_items``.
+        affordance. Visibility filter mirrors ``count_items`` (audience OR
+        MEMORY_DOMAIN grant).
         """
         where: List[str] = []
         params: List[Any] = []
         if exclude_personal:
             where.append("(is_personal = FALSE OR is_personal IS NULL)")
         if user_groups is not None:
+            visibility = ["audience IS NULL", "audience = 'all'"]
             if user_groups:
                 ph = ",".join(["?"] * len(user_groups))
-                where.append(f"(audience IS NULL OR audience = 'all' OR audience IN ({ph}))")
+                visibility.append(f"audience IN ({ph})")
                 params.extend(user_groups)
-            else:
-                where.append("(audience IS NULL OR audience = 'all')")
+            if granted_domains:
+                dph = ",".join(["?"] * len(granted_domains))
+                visibility.append(f"domain IN ({dph})")
+                params.extend(granted_domains)
+            where.append("(" + " OR ".join(visibility) + ")")
         where_sql = (" WHERE " + " AND ".join(where)) if where else ""
         sql = (
             "SELECT COALESCE(audience, 'all') AS aud, COUNT(*) AS cnt "

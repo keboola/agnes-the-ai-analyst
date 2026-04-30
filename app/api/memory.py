@@ -306,6 +306,7 @@ async def get_stats(
     """
     is_priv = _is_privileged_viewer(user, conn)
     groups = _effective_groups(user, conn)
+    granted_domains = _caller_granted_memory_domains(user, conn)
 
     where_clauses: List[str] = []
     params: list = []
@@ -319,16 +320,20 @@ async def get_stats(
         where_clauses.append("(is_personal IS NULL OR is_personal = FALSE)")
 
     if groups is not None:
-        # groups is None for admins → no audience filter; otherwise restrict to
-        # null/'all' or one of the caller's group audiences.
+        # Mirror the visibility composition KnowledgeRepository.list_items
+        # uses: audience match OR MEMORY_DOMAIN grant. Without this the
+        # stats `total` diverges from the list endpoint's `total_count` for
+        # non-admin users with grants (Devin BUG_0001 on PR #141 5f649a4).
+        visibility = ["audience IS NULL", "audience = 'all'"]
         if groups:
             placeholders = ",".join(["?"] * len(groups))
-            where_clauses.append(
-                f"(audience IS NULL OR audience = 'all' OR audience IN ({placeholders}))"
-            )
+            visibility.append(f"audience IN ({placeholders})")
             params.extend(groups)
-        else:
-            where_clauses.append("(audience IS NULL OR audience = 'all')")
+        if granted_domains:
+            domain_placeholders = ",".join(["?"] * len(granted_domains))
+            visibility.append(f"domain IN ({domain_placeholders})")
+            params.extend(granted_domains)
+        where_clauses.append("(" + " OR ".join(visibility) + ")")
 
     where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
@@ -372,10 +377,12 @@ async def get_stats(
     by_tag = repo.count_by_tag(
         exclude_personal=exclude_personal_for_caller,
         user_groups=groups,
+        granted_domains=granted_domains,
     )
     by_audience = repo.count_by_audience(
         exclude_personal=exclude_personal_for_caller,
         user_groups=groups,
+        granted_domains=granted_domains,
     )
 
     return {
