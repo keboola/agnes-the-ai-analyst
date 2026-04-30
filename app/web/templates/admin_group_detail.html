@@ -325,7 +325,11 @@ document.getElementById("add-email").addEventListener("keydown", e => {
 });
 
 async function removeMember(userId, label) {
-  if (!confirm(`Remove ${label} from this group?`)) return;
+  if (!await confirmDestructive({
+    title: "Remove member?",
+    body: `${label} will lose access through this group.`,
+    confirmLabel: "Remove",
+  })) return;
   const r = await fetch(`${MEMBERS_API}/${encodeURIComponent(userId)}`, {
     method: "DELETE", credentials: "include",
   });
@@ -372,7 +376,11 @@ if (editBtn) {
 const delBtn = document.getElementById("delete-group-btn");
 if (delBtn) {
   delBtn.addEventListener("click", async () => {
-    if (!confirm(`Delete group "${root.dataset.groupName}" and all its members + grants?`)) return;
+    if (!await confirmDestructive({
+      title: `Delete group "${root.dataset.groupName}"?`,
+      body: "All members will lose access via this group, and every resource grant attached to it will be removed. This cannot be undone.",
+      confirmLabel: "Delete group",
+    })) return;
     const r = await fetch(GROUP_API, { method: "DELETE", credentials: "include" });
     if (!r.ok) {
       const err = await r.json().catch(() => ({}));

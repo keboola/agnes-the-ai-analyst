@@ -15,6 +15,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+- **Catalog** and **Corporate Memory** entries on the top navigation header. Previously the analyst's two daily destinations were reachable only by typing the URL or clicking through dashboard widgets; now they sit alongside Dashboard and Install CLI in `_app_header.html`. Phase 2 of the UI overhaul plan.
+- **Registered tables** (`/admin/tables`) entry in the Admin sub-menu — was a registered route that no nav linked to.
+- Global `confirmDestructive({title, body, confirmLabel, kind})` helper at `app/web/static/js/confirm_modal.js`, loaded from `base.html`. Self-contained: injects its own CSS once on first call, builds modal DOM on demand, returns `Promise<boolean>`. Closing via Escape / backdrop / Cancel resolves false; OK button (or Enter) resolves true. Supports `kind: 'danger'` (default) and `'primary'` to color the confirm button red or blue.
+- Two new tests in `tests/test_route_integrity.py` pinning that the analyst-surface (Catalog / Corporate Memory / Dashboard / Install CLI) and the admin sub-menu destinations stay in the rendered nav. Catches refactors that silently drop entries.
+
+### Changed
+
+- Top-level navigation reorganized: **Catalog** and **Corporate Memory** added as analyst destinations; **Tokens** and **Marketplaces** moved into the Admin dropdown alongside Users / Groups / Resource access / Registered tables (was: top-level peers of the Admin button).
+- Eight raw `confirm()` calls across `dashboard.html` (Telegram unlink), `admin_tables.html` (table unregister), `admin_group_detail.html` (remove member, delete group), and `admin_user_detail.html` (remove from group, password reset, deactivate, delete user) replaced with `confirmDestructive(...)`. Each call carries a meaningful body string instead of the previous one-line confirm; destructive vs. primary intent is signalled by button color.
+
+### Internal
+
+- The dashboard's `unlinkChannel('telegram')` flow is fully `await`-based now that the confirm step is async.
+
 - `tests/test_route_integrity.py` — regression test pinning the contract between the top-nav and registered HTML routes. Asserts every static `href="/..."` in `_app_header.html` resolves to a registered route, and every registered HTML route is either in the nav or on a documented allowlist. Catches dead nav links and orphan pages before they ship. The allowlist is the migration ramp for Phase 2 of the UI overhaul (`docs/superpowers/plans/2026-04-30-ui-overhaul.md`), which moves Catalog / Corporate Memory / Metrics off the allowlist into the nav.
 - `docs/superpowers/plans/2026-04-30-ui-overhaul.md` — the 9-phase plan this PR opens.
 - Dashboard stat row now shows real numbers instead of hardcoded zeros: **Columns** sums `sync_state.columns`, **Data Size** sums `sync_state.uncompressed_size_bytes` (formatted via the new `_format_bytes` helper). The "Unstructured" stat-card was removed — Agnes does not track unstructured data volume; the slot was always "0 MB".

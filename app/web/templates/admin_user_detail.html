@@ -400,7 +400,11 @@ document.getElementById("add-group-btn").addEventListener("click", async () => {
 });
 
 async function removeFromGroup(group_id) {
-  if (!confirm("Remove user from this group?")) return;
+  if (!await confirmDestructive({
+    title: "Remove from group?",
+    body: "The user will lose any access this group grants.",
+    confirmLabel: "Remove",
+  })) return;
   const r = await fetch(`${MEMBERSHIPS_API}/${encodeURIComponent(group_id)}`, {
     method: "DELETE", credentials: "include",
   });
@@ -463,7 +467,12 @@ async function loadEffectiveAccess() {
 
 // Account actions
 document.getElementById("reset-pw-btn").addEventListener("click", async () => {
-  if (!confirm("Send password reset link to " + (userState && userState.email) + "?")) return;
+  if (!await confirmDestructive({
+    title: "Send password reset link?",
+    body: `${(userState && userState.email) || "This user"} will receive an email with a one-time link to set a new password.`,
+    confirmLabel: "Send link",
+    kind: "primary",
+  })) return;
   const r = await fetch(`${USER_API}/reset-password`, {
     method: "POST", credentials: "include",
   });
@@ -479,7 +488,14 @@ document.getElementById("toggle-active-btn").addEventListener("click", async () 
   if (!userState) return;
   const newActive = !userState.active;
   const verb = newActive ? "Reactivate" : "Deactivate";
-  if (!confirm(`${verb} this user?`)) return;
+  if (!await confirmDestructive({
+    title: `${verb} ${userState.email}?`,
+    body: newActive
+      ? "The user will be able to sign in again."
+      : "The user will lose all access immediately. Their group memberships and grants are preserved; reactivating restores access.",
+    confirmLabel: verb,
+    kind: newActive ? "primary" : "danger",
+  })) return;
   const path = newActive ? "/activate" : "/deactivate";
   const r = await fetch(`${USER_API}${path}`, { method: "POST", credentials: "include" });
   if (!r.ok) {
@@ -493,7 +509,11 @@ document.getElementById("toggle-active-btn").addEventListener("click", async () 
 
 document.getElementById("delete-user-btn").addEventListener("click", async () => {
   if (!userState) return;
-  if (!confirm(`Delete ${userState.email}? This cannot be undone.`)) return;
+  if (!await confirmDestructive({
+    title: `Delete ${userState.email}?`,
+    body: "The user, their group memberships, and personal access tokens will be removed. This cannot be undone.",
+    confirmLabel: "Delete user",
+  })) return;
   const r = await fetch(USER_API, { method: "DELETE", credentials: "include" });
   if (!r.ok) {
     const err = await r.json().catch(() => ({}));

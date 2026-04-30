@@ -48,11 +48,8 @@ ALLOWLIST = {
     "/admin/users/{user_id}",
     "/admin/groups/{group_id}",
     "/admin/grants",
-    # TODO(phase2): move into the top nav, remove from allowlist.
-    "/catalog",
-    "/corporate-memory",
+    # Reached from /corporate-memory's "Manage knowledge" admin link.
     "/corporate-memory/admin",
-    "/admin/tables",
 }
 
 
@@ -107,4 +104,39 @@ def test_every_registered_page_is_reachable_or_allowlisted():
         f"Registered HTML routes neither in nav nor on allowlist: "
         f"{sorted(orphans)}. Either add to nav, add to ALLOWLIST with "
         "rationale, or drop the route."
+    )
+
+
+def test_required_top_level_nav_links_present():
+    """Pin the analyst-surface entry points so a refactor can't silently
+    drop them from the header. ``/catalog`` and ``/corporate-memory`` are
+    the analyst's two daily destinations; their absence in the nav is
+    the kind of regression operators only notice when an analyst opens
+    a support ticket asking 'where did the data catalog go?'."""
+    nav = _nav_hrefs()
+    required = {"/dashboard", "/catalog", "/corporate-memory", "/install"}
+    missing = required - nav
+    assert not missing, (
+        f"Top nav missing required entries: {sorted(missing)}."
+    )
+
+
+def test_admin_submenu_links_present_in_header():
+    """The admin sub-menu is rendered server-side inside the same header
+    template (gated on ``session.user.role == 'admin'``) so its hrefs are
+    in scope of ``_nav_hrefs`` regardless of which user role is rendering
+    in tests. Pin the admin destinations so a refactor that drops e.g.
+    'Registered tables' from the dropdown doesn't pass CI."""
+    nav = _nav_hrefs()
+    required_admin = {
+        "/admin/users",
+        "/admin/groups",
+        "/admin/access",
+        "/admin/tables",
+        "/admin/marketplaces",
+        "/admin/tokens",
+    }
+    missing = required_admin - nav
+    assert not missing, (
+        f"Admin sub-menu missing required entries: {sorted(missing)}."
     )

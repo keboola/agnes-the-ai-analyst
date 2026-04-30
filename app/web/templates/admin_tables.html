@@ -1268,8 +1268,12 @@
         el.innerHTML = html;
     }
 
-    function deleteTable(tableId) {
-        if (!confirm('Are you sure you want to unregister "' + tableId + '"?\n\nThis will remove it from sync and clean up user subscriptions.')) {
+    async function deleteTable(tableId) {
+        if (!await confirmDestructive({
+            title: `Unregister "${tableId}"?`,
+            body: 'This will remove it from sync and clean up user subscriptions.',
+            confirmLabel: 'Unregister',
+        })) {
             return;
         }
 
@@ -1317,5 +1321,6 @@
 
     </script>
     {% include "_version_badge.html" %}
+    <script src="{{ static_url('js/confirm_modal.js') }}"></script>
 </body>
 </html>
