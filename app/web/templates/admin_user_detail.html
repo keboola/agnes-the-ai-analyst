@@ -30,7 +30,6 @@
   }
   .ud-status-pill.active { background: #dcfce7; color: #166534; }
   .ud-status-pill.inactive { background: #fee2e2; color: #991b1b; }
-  .ud-status-pill.admin { background: #fef3c7; color: #92400e; margin-left: 6px; }
 
   .ud-section {
     background: var(--surface, #fff);
@@ -133,17 +132,6 @@
     padding: 24px 18px; text-align: center;
     color: var(--text-secondary, #6b7280); font-size: 13px;
   }
-  .ea-admin-pill {
-    margin: 18px;
-    padding: 16px;
-    background: linear-gradient(135deg, #fef3c7, #fde68a);
-    border: 1px solid #f59e0b;
-    border-radius: 8px;
-    display: flex; align-items: center; gap: 12px;
-  }
-  .ea-admin-pill .icon { font-size: 22px; }
-  .ea-admin-pill .text { font-size: 13px; color: #78350f; line-height: 1.4; }
-  .ea-admin-pill strong { color: #422006; }
   .ea-table { width: 100%; border-collapse: collapse; font-size: 13px; }
   .ea-table thead th {
     text-align: left; padding: 10px 18px;
@@ -194,7 +182,6 @@
         {{ target_user.name or target_user.email }}
         <span id="status-pill" class="ud-status-pill"
               style="display:none; vertical-align: middle; margin-left: 8px;"></span>
-        <span id="admin-pill" class="ud-status-pill admin" style="display:none; vertical-align:middle;">Admin</span>
       </h1>
       <div class="ud-subtitle">{{ target_user.email }} · id {{ target_user.id[:8] }}…</div>
     </div>
@@ -321,9 +308,6 @@ function renderHeader() {
     pill.className = "ud-status-pill active";
     pill.style.display = "inline-block";
   }
-  const adminPill = document.getElementById("admin-pill");
-  const isAdmin = memberships.some(m => m.group_name === "Admin");
-  adminPill.style.display = isAdmin ? "inline-block" : "none";
 }
 
 function renderAccountStatus() {
@@ -356,7 +340,6 @@ async function loadMemberships() {
   }
   memberships = await r.json();
   renderMemberships();
-  renderHeader();  // admin pill depends on memberships
 }
 
 function renderMemberships() {
@@ -421,7 +404,13 @@ function refreshGroupDropdown() {
   const memberOf = new Set(memberships.map(m => m.group_id));
   sel.innerHTML = '<option value="">— Pick a group —</option>';
   for (const g of allGroups) {
-    if (memberOf.has(g.id)) continue;  // already a member, hide
+    if (memberOf.has(g.id)) continue;          // already a member, hide
+    if (g.is_google_managed) continue;         // membership owned by Workspace —
+                                               // includes mapped Admin / Everyone when
+                                               // AGNES_GROUP_{ADMIN,EVERYONE}_EMAIL is
+                                               // set. The API would 409 on POST
+                                               // anyway; hiding the option keeps the
+                                               // picker honest about what's grantable.
     const opt = document.createElement("option");
     opt.value = g.id;
     opt.textContent = g.name + (g.is_system ? " (system)" : "");
@@ -480,18 +469,11 @@ async function loadEffectiveAccess() {
   }
   const data = await r.json();
 
-  if (data.is_admin) {
-    content.innerHTML = `
-      <div class="ea-admin-pill">
-        <span class="icon">🔑</span>
-        <span class="text">
-          <strong>Full access via the Admin group.</strong><br>
-          This user can read/write everything regardless of explicit grants.
-        </span>
-      </div>`;
-    return;
-  }
-
+  // We deliberately don't short-circuit on `data.is_admin` anymore —
+  // admin users get the same explicit grant breakdown as everyone else
+  // so the operator can audit which Admin-group grants exist (and via
+  // which sibling groups). Authorization at runtime still grants admin
+  // god-mode regardless of this list (see `app.auth.access`).
   if (!data.items || data.items.length === 0) {
     content.innerHTML = `<div class="ea-empty">User has no resource access yet. Add them to a group with grants.</div>`;
     return;

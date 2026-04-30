@@ -150,41 +150,6 @@ async def get_resource_types(
     return list_resource_types()
 
 
-@router.get("/group-suggestions", response_model=List[dict])
-async def get_group_suggestions(
-    user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
-):
-    """Suggest Google Workspace group names the calling admin belongs to that
-    are *not yet* registered as ``user_groups`` rows.
-
-    Powers the "Suggested from your Google account" picker on the
-    /admin/groups create modal — click a chip → name input is pre-filled.
-
-    Fail-soft: returns ``[]`` if the Cloud Identity call errors. Off-VM the
-    call falls through to the real path and bails out empty unless
-    ``GOOGLE_ADMIN_SDK_MOCK_GROUPS`` is set.
-    """
-    from app.auth.group_sync import fetch_user_groups
-
-    email = user.get("email") or ""
-    if not email:
-        return []
-    try:
-        google_names = fetch_user_groups(email)
-    except Exception as e:  # noqa: BLE001 - fail-soft by design
-        logger.warning("group-suggestions fetch failed for %s: %s", email, e)
-        return []
-    if not google_names:
-        return []
-    existing = {g["name"] for g in UserGroupsRepository(conn).list_all()}
-    return [
-        {"name": n, "source": "google"}
-        for n in google_names
-        if n and n not in existing
-    ]
-
-
 # ---------------------------------------------------------------------------
 # Access overview — single-shot payload for the /admin/access page
 # ---------------------------------------------------------------------------
@@ -921,16 +886,21 @@ async def user_effective_access(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """List resources the user effectively has access to, with which group
-    grants each one. Admin short-circuits — if the user is in Admin, the
-    response sets ``is_admin=true`` and an empty items list (UI renders a
-    "Full access via Admin" pill instead of the per-resource breakdown).
+    grants each one. ``is_admin`` reflects the real Admin-group check but
+    no longer short-circuits the response — admins get the same explicit
+    grant breakdown as everyone else, so the admin viewing a target user
+    can see precisely what's been granted via which group rather than a
+    flat "Full access" pill that hides the wiring.
+
+    Note: actual authorization at runtime still gives Admin-group members
+    god-mode (see ``app.auth.access.is_user_admin``); this endpoint is a
+    debugging/audit view of the explicit grant graph, not the enforcement
+    surface.
     """
     if not UserRepository(conn).get_by_id(user_id):
         raise HTTPException(status_code=404, detail="User not found")
 
     from app.auth.access import is_user_admin
-    if is_user_admin(user_id, conn):
-        return EffectiveAccessResponse(is_admin=True, items=[])
 
     # JOIN user's group memberships with their grants. group_concat-style
     # aggregation isn't worth it — render side-by-side rows and let the UI
@@ -956,7 +926,7 @@ async def user_effective_access(
         grouped[key].via_groups.append({"group_id": gid, "group_name": gname})
 
     return EffectiveAccessResponse(
-        is_admin=False,
+        is_admin=is_user_admin(user_id, conn),
         items=list(grouped.values()),
     )
 
@@ -979,11 +949,12 @@ async def my_effective_access(
 ):
     """Same payload as /api/admin/users/{id}/effective-access but scoped to
     the calling user. Drives the /profile page's read-only access summary —
-    so non-admin callers can self-audit without elevation."""
+    so non-admin callers can self-audit without elevation. Admins get the
+    same explicit grant breakdown as everyone else (no short-circuit) so
+    the profile page audits the actual grant graph; runtime authorization
+    still gives Admin god-mode regardless of this list."""
     user_id = user["id"]
     from app.auth.access import is_user_admin
-    if is_user_admin(user_id, conn):
-        return EffectiveAccessResponse(is_admin=True, items=[])
 
     rows = conn.execute(
         """SELECT rg.resource_type, rg.resource_id,
@@ -1006,6 +977,6 @@ async def my_effective_access(
         grouped[key].via_groups.append({"group_id": gid, "group_name": gname})
 
     return EffectiveAccessResponse(
-        is_admin=False,
+        is_admin=is_user_admin(user_id, conn),
         items=list(grouped.values()),
     )

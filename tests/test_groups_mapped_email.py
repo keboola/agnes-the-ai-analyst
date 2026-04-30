@@ -331,6 +331,218 @@ def test_user_memberships_payload_carries_origin(fresh_db, monkeypatch):
     assert by_name["legal@workspace.test"]["origin"] == "google_sync"
 
 
+def test_effective_access_lists_explicit_grants_for_admin_user(fresh_db):
+    """`/api/admin/users/{id}/effective-access` no longer short-circuits
+    for admins — they get the same per-resource breakdown as everyone
+    else, so an operator auditing a target user can see precisely which
+    grants the Admin group carries via which group, instead of a flat
+    "Full access" pill that hides the wiring. Authorization at runtime
+    still gives Admin god-mode regardless of this list."""
+    from app.main import app
+    from src.db import SYSTEM_ADMIN_GROUP, get_system_db
+    from src.repositories.resource_grants import ResourceGrantsRepository
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    from src.repositories.user_groups import UserGroupsRepository
+    from src.repositories.users import UserRepository
+
+    # Set up: a target admin user belongs to the Admin group AND a
+    # custom "data-team" group. The Admin group has no explicit grants;
+    # data-team has one. The endpoint should list the data-team grant.
+    conn = get_system_db()
+    try:
+        admin_gid = conn.execute(
+            "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
+        ).fetchone()[0]
+        custom_g = UserGroupsRepository(conn).create(
+            name="data-team", created_by="admin@test",
+        )
+        target_uid = str(uuid.uuid4())
+        UserRepository(conn).create(
+            id=target_uid, email="t-admin@test", name="T", role="admin",
+        )
+        members = UserGroupMembersRepository(conn)
+        members.add_member(target_uid, admin_gid, source="admin")
+        members.add_member(target_uid, custom_g["id"], source="admin")
+        ResourceGrantsRepository(conn).create(
+            group_id=custom_g["id"],
+            resource_type="plugin",
+            resource_id="agnes/foo",
+        )
+    finally:
+        conn.close()
+
+    client = TestClient(app)
+    _, token = _seed_admin()
+    resp = client.get(
+        f"/api/admin/users/{target_uid}/effective-access",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    # is_admin still reflects reality; the UI just doesn't short-circuit on it.
+    assert data["is_admin"] is True
+    # The actual grant list is no longer empty — `data-team` carries one.
+    rids = [it["resource_id"] for it in data["items"]]
+    assert "agnes/foo" in rids
+
+
+def test_profile_template_renders_color_coded_membership_chips(fresh_db, monkeypatch):
+    """The /profile page must render group memberships with the same
+    chip vocabulary used on the user list / detail pages: a colored
+    .group-chip with class derived from name (Admin / Everyone) first
+    and origin (google_sync / custom) second. google_sync chip text is
+    shortened via the prefix-strip logic and the raw email sits on the
+    chip's title attribute for hover reveal."""
+    monkeypatch.setenv("AGNES_GOOGLE_GROUP_PREFIX", "grp_foundryai_")
+    from app.main import app
+    from src.db import get_system_db
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    from src.repositories.user_groups import UserGroupsRepository
+
+    admin_uid, token = _seed_admin()
+    conn = get_system_db()
+    try:
+        # Add the seeded admin to a Workspace-derived group so the
+        # rendered profile page actually has a green chip we can grep
+        # for. The chip text should be "Legal" (prefix stripped,
+        # capitalized); the title attribute should keep the raw email.
+        ug_repo = UserGroupsRepository(conn)
+        gsync = ug_repo.create(
+            name="grp_foundryai_legal@workspace.test",
+            created_by="system:google-sync",
+        )
+        UserGroupMembersRepository(conn).add_member(
+            admin_uid, gsync["id"], source="google_sync",
+        )
+    finally:
+        conn.close()
+
+    client = TestClient(app)
+    resp = client.get(
+        "/profile",
+        headers={"Accept": "text/html"},
+        cookies={"access_token": token},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+    # Chip CSS classes from the shared vocabulary.
+    assert ".group-chip.is-admin" in body
+    assert ".group-chip.is-google_sync" in body
+    assert ".group-chip.is-custom" in body
+    # Admin row gets the canonical-name chip class (server-side rendered).
+    assert 'class="group-chip is-admin"' in body
+    # Workspace-derived group's chip text is the shortened display name;
+    # the raw email lives in the title attribute for hover reveal.
+    assert ">Legal<" in body
+    assert 'title="grp_foundryai_legal@workspace.test"' in body
+
+
+def test_my_effective_access_lists_explicit_grants_for_admin_user(fresh_db):
+    """`/api/me/effective-access` (the /profile page surface) mirrors
+    /api/admin/users/{id}/effective-access — admins see their explicit
+    grant breakdown rather than a flat "Full access" short-circuit. Same
+    rationale as the admin-side endpoint: audit the grant graph, not the
+    runtime god-mode."""
+    from app.main import app
+    from src.db import SYSTEM_ADMIN_GROUP, get_system_db
+    from src.repositories.resource_grants import ResourceGrantsRepository
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    from src.repositories.user_groups import UserGroupsRepository
+
+    # _seed_admin already adds the admin to the Admin group; we layer on
+    # a custom group with one grant so the response actually has items.
+    admin_uid, token = _seed_admin()
+    conn = get_system_db()
+    try:
+        custom_g = UserGroupsRepository(conn).create(
+            name="data-team", created_by="admin@test",
+        )
+        UserGroupMembersRepository(conn).add_member(
+            admin_uid, custom_g["id"], source="admin",
+        )
+        ResourceGrantsRepository(conn).create(
+            group_id=custom_g["id"],
+            resource_type="plugin",
+            resource_id="agnes/foo",
+        )
+    finally:
+        conn.close()
+
+    client = TestClient(app)
+    resp = client.get(
+        "/api/me/effective-access",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["is_admin"] is True
+    rids = [it["resource_id"] for it in data["items"]]
+    assert "agnes/foo" in rids
+
+
+def test_profile_template_drops_full_access_pill(fresh_db):
+    """The /profile page no longer renders the gold "Full access via
+    Admin" empty-state for admin users — it should fall through to the
+    grant list (or the generic "no resource access" message). Pinning
+    the absence of the old branch."""
+    from app.main import app
+
+    client = TestClient(app)
+    _, token = _seed_admin()
+    resp = client.get(
+        "/profile",
+        headers={"Accept": "text/html"},
+        cookies={"access_token": token},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+    assert "Full access via Admin" not in body
+    assert "You can read and write everything in Agnes regardless" not in body
+
+
+def test_admin_user_detail_template_drops_full_access_pill(fresh_db):
+    """The `ea-admin-pill` short-circuit branch is gone — a regression
+    that re-adds a special-case render for admins would slip through if
+    we don't pin its absence."""
+    from app.main import app
+
+    client = TestClient(app)
+    _, token = _seed_admin()
+    target_uid = _create_user("v3@test")
+    resp = client.get(
+        f"/admin/users/{target_uid}",
+        headers={"Accept": "text/html"},
+        cookies={"access_token": token},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+    # No longer references the "Full access via the Admin group" branch.
+    assert "Full access via the Admin group" not in body
+    assert "ea-admin-pill" not in body
+
+
+def test_user_detail_dropdown_hides_google_managed_groups(fresh_db):
+    """The "Add to group" dropdown on /admin/users/{id} must skip any
+    row with `is_google_managed=true` — membership for those groups is
+    owned by Workspace and the API 409s on POST anyway. Pin the JS
+    contract so a regression that drops the filter (and floods the
+    picker with un-grantable options) surfaces in CI."""
+    from app.main import app
+
+    client = TestClient(app)
+    _, token = _seed_admin()
+    target_uid = _create_user("victim2@test")
+    resp = client.get(
+        f"/admin/users/{target_uid}",
+        headers={"Accept": "text/html"},
+        cookies={"access_token": token},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+    # The filter sits inside the picker-population loop.
+    assert "g.is_google_managed" in body
+
+
 def test_admin_user_detail_template_uses_color_coded_chips(fresh_db):
     """Detail page must declare the same chip CSS classes + reference
     `m.origin` and `deriveDisplayName` in the membership renderer so a
