@@ -18,9 +18,10 @@ from src.repositories.users import UserRepository
 
 
 def _role_label(user: dict, conn: duckdb.DuckDBPyConnection) -> str:
-    if is_user_admin(user["id"], conn):
-        return "admin"
-    return user.get("role") or "user"
+    """Display label for the response payload only — `admin` if the user is
+    in the Admin system group, otherwise `user`. Authorization at runtime
+    checks `is_user_admin` directly; this label is purely cosmetic."""
+    return "admin" if is_user_admin(user["id"], conn) else "user"
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth/email", tags=["auth"])
@@ -190,7 +191,7 @@ async def verify_magic_link(
     """Verify a magic link token and issue JWT (JSON API for programmatic clients)."""
     user = _consume_token(conn, request.email, request.token)
     role_label = _role_label(user, conn)
-    jwt_token = create_access_token(user["id"], user["email"], role_label)
+    jwt_token = create_access_token(user["id"], user["email"])
     return {"access_token": jwt_token, "token_type": "bearer", "email": user["email"], "role": role_label}
 
 
@@ -206,7 +207,7 @@ async def verify_magic_link_get(
     clicking it in a mail client logs the user in without a separate API call.
     """
     user = _consume_token(conn, email, token)
-    jwt_token = create_access_token(user["id"], user["email"], _role_label(user, conn))
+    jwt_token = create_access_token(user["id"], user["email"])
     # secure=False when DOMAIN is unset so the cookie is actually sent on plain HTTP (dev).
     use_secure = os.environ.get("DOMAIN", "") != ""
     response = RedirectResponse(url="/dashboard", status_code=302)

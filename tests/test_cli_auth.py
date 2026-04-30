@@ -33,7 +33,7 @@ class TestAuthLogin:
         mock_resp = _make_response(200, {
             "access_token": "tok123",
             "email": "alice@example.com",
-            "role": "analyst",
+            "role": "user",
         })
         with patch("cli.commands.auth.api_post", return_value=mock_resp):
             with patch("cli.commands.auth.save_token") as mock_save:
@@ -41,7 +41,7 @@ class TestAuthLogin:
                 result = runner.invoke(app, ["auth", "login", "--email", "alice@example.com"], input="\n")
         assert result.exit_code == 0
         assert "alice@example.com" in result.output
-        mock_save.assert_called_once_with("tok123", "alice@example.com", "analyst")
+        mock_save.assert_called_once_with("tok123", "alice@example.com")
 
     def test_login_invalid_credentials(self):
         """Login with bad credentials exits with error."""
@@ -70,10 +70,10 @@ class TestAuthLogout:
 
 
 class TestAuthImportToken:
-    def _make_jwt(self, email="alice@example.com", role="analyst", typ="pat"):
+    def _make_jwt(self, email="alice@example.com", typ="pat"):
         import jwt as pyjwt
         return pyjwt.encode(
-            {"email": email, "role": role, "typ": typ, "sub": "u-1"},
+            {"email": email, "typ": typ, "sub": "u-1"},
             "unused",
             algorithm="HS256",
         )
@@ -90,24 +90,25 @@ class TestAuthImportToken:
     def test_import_token_success_writes_canonical_format(self, tmp_path, monkeypatch):
         """Valid JWT + 200 from server -> canonical token.json on disk."""
         monkeypatch.setenv("DA_SERVER", "http://example.test")
-        token = self._make_jwt(email="bob@example.com", role="admin")
+        token = self._make_jwt(email="bob@example.com")
 
         with self._mock_verify(200):
             result = runner.invoke(app, ["auth", "import-token", "--token", token])
 
         assert result.exit_code == 0, result.output
         assert "bob@example.com" in result.output
-        assert "admin" in result.output
 
         token_file = tmp_path / "config" / "token.json"
         assert token_file.exists()
         data = json.loads(token_file.read_text())
-        assert data == {"access_token": token, "email": "bob@example.com", "role": "admin"}
+        # v19: token.json no longer carries a role label (auth derives admin
+        # from group memberships server-side).
+        assert data == {"access_token": token, "email": "bob@example.com"}
 
     def test_import_token_401_does_not_overwrite_existing(self, tmp_path, monkeypatch):
         """A 401 response aborts import and leaves the prior token file untouched."""
         monkeypatch.setenv("DA_SERVER", "http://example.test")
-        existing = {"access_token": "keep-me", "email": "old@example.com", "role": "viewer"}
+        existing = {"access_token": "keep-me", "email": "old@example.com"}
         token_file = tmp_path / "config" / "token.json"
         token_file.write_text(json.dumps(existing))
 
@@ -128,7 +129,7 @@ class TestAuthImportToken:
         so the user never has to configure the server in a separate step."""
         # No DA_SERVER env var — rely entirely on the --server flag for persistence.
         monkeypatch.delenv("DA_SERVER", raising=False)
-        token = self._make_jwt(email="dave@example.com", role="analyst")
+        token = self._make_jwt(email="dave@example.com")
 
         with self._mock_verify(200):
             result = runner.invoke(
@@ -147,11 +148,12 @@ class TestAuthImportToken:
         cfg = yaml.safe_load(config_file.read_text())
         assert cfg.get("server") == "https://agnes.example.com"
 
-    def test_import_token_claim_fallback_via_cli_overrides(self, tmp_path, monkeypatch):
-        """Missing email/role claims -> refuse without overrides, accept with them."""
+    def test_import_token_claim_fallback_via_cli_email_override(self, tmp_path, monkeypatch):
+        """Missing email claim -> refuse without --email, accept with it.
+        v19 dropped the --role flag (token.json no longer carries role)."""
         import jwt as pyjwt
         monkeypatch.setenv("DA_SERVER", "http://example.test")
-        # JWT without email/role claims — simulates a malformed or minimal token.
+        # JWT without email claim — simulates a malformed or minimal token.
         token = pyjwt.encode({"sub": "u-1", "typ": "pat"}, "unused", algorithm="HS256")
 
         with self._mock_verify(200):
@@ -166,13 +168,12 @@ class TestAuthImportToken:
                     "auth", "import-token",
                     "--token", token,
                     "--email", "carol@example.com",
-                    "--role", "analyst",
                 ],
             )
         assert ok_result.exit_code == 0, ok_result.output
         token_file = tmp_path / "config" / "token.json"
         data = json.loads(token_file.read_text())
-        assert data == {"access_token": token, "email": "carol@example.com", "role": "analyst"}
+        assert data == {"access_token": token, "email": "carol@example.com"}
 
 
 class TestAuthWhoami:
@@ -184,10 +185,10 @@ class TestAuthWhoami:
         assert "Not logged in" in result.output
 
     def test_whoami_valid_token(self):
-        """Whoami decodes JWT and shows user info."""
+        """Whoami decodes JWT and shows user info. v19: no role claim."""
         import jwt as pyjwt
         token = pyjwt.encode(
-            {"email": "alice@example.com", "role": "analyst"},
+            {"email": "alice@example.com"},
             "secret",
             algorithm="HS256",
         )
@@ -196,7 +197,6 @@ class TestAuthWhoami:
                 result = runner.invoke(app, ["auth", "whoami"])
         assert result.exit_code == 0
         assert "alice@example.com" in result.output
-        assert "analyst" in result.output
 
     def test_whoami_invalid_token(self):
         """Whoami with garbled token exits with error."""

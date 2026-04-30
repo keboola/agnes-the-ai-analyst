@@ -211,9 +211,9 @@ async def google_callback(request: Request):
         finally:
             conn.close()
 
-        # Issue JWT — role field is legacy; pass empty string so callers
-        # that still inspect it during the transition don't NPE on None.
-        jwt_token = create_access_token(user["id"], user["email"], user.get("role") or "")
+        # Issue JWT — identity-only, authorization derives from
+        # user_group_members at request time (see app.auth.access).
+        jwt_token = create_access_token(user["id"], user["email"])
 
         # Redirect to the post-login target. Prefer the value stashed by
         # google_login() — re-sanitize defensively in case of session tampering.

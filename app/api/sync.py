@@ -17,7 +17,7 @@ from app.auth.access import require_admin
 from app.auth.dependencies import get_current_user, _get_db
 from app.utils import get_data_dir as _get_data_dir
 from src.repositories.sync_state import SyncStateRepository
-from src.repositories.sync_settings import SyncSettingsRepository, DatasetPermissionRepository
+from src.repositories.sync_settings import SyncSettingsRepository
 from src.repositories.table_registry import TableRegistryRepository
 from src.rbac import can_access_table
 from src.scheduler import filter_due_tables
@@ -266,15 +266,15 @@ def _build_manifest_for_user(conn, user: dict) -> dict:
     # `query_mode=local`, causing the CLI to try downloading remote tables.
     registry_by_name = {t["name"]: t for t in table_repo.list_all()}
 
-    # Filter by user's accessible tables (admin sees all). `can_access_table`
-    # internally does a registry lookup BY ID, but `s["table_id"]` is sourced
-    # from `_meta.table_name` = registry `name`. When id != name we need to
-    # translate name→id first, or the RBAC lookup misses and falls through.
-    if user.get("role") != "admin":
-        def _id_for(state):
-            reg = registry_by_name.get(state["table_id"])
-            return reg["id"] if reg else state["table_id"]
-        all_states = [s for s in all_states if can_access_table(user, _id_for(s), conn)]
+    # Filter by user's accessible tables. `can_access_table` has its own
+    # admin shortcut (Admin group → True). Lookup translates name→id first
+    # because `s["table_id"]` is sourced from `_meta.table_name` = registry
+    # `name` while `can_access_table` keys on registry `id`; when id != name
+    # an id-keyed call would miss.
+    def _id_for(state):
+        reg = registry_by_name.get(state["table_id"])
+        return reg["id"] if reg else state["table_id"]
+    all_states = [s for s in all_states if can_access_table(user, _id_for(s), conn)]
 
     data_dir = _get_data_dir()
     tables = {}
@@ -368,13 +368,20 @@ async def update_sync_settings(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Update user's dataset sync settings."""
-    settings_repo = SyncSettingsRepository(conn)
-    perm_repo = DatasetPermissionRepository(conn)
+    """Update user's dataset sync settings.
 
+    A dataset can only be enabled when the user has access (via
+    ``resource_grants(group, "table", dataset)`` or Admin membership). The
+    user_sync_settings layer is per-user preference, not authorization —
+    the gate stops users from enabling sync on tables they cannot read.
+    """
+    from app.auth.access import can_access
+    from app.resource_types import ResourceType
+
+    settings_repo = SyncSettingsRepository(conn)
     results = {}
     for dataset, enabled in request.datasets.items():
-        if not perm_repo.has_access(user["id"], dataset):
+        if not can_access(user["id"], ResourceType.TABLE.value, dataset, conn):
             results[dataset] = {"error": "no permission"}
             continue
         settings_repo.set_dataset_enabled(user["id"], dataset, enabled)

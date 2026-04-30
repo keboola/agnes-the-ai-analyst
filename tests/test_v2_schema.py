@@ -14,13 +14,30 @@ def reload_db(tmp_path, monkeypatch):
     yield db_module
 
 
-def _seed_bq_table(conn, *, is_public=True):
+def _seed_bq_table(conn):
+    _ensure_admin1(conn)
     from src.repositories.table_registry import TableRegistryRepository
     TableRegistryRepository(conn).register(
         id="bq_view", name="bq_view", source_type="bigquery",
         bucket="ds", source_table="bq_view", query_mode="remote",
-        is_public=is_public,
     )
+
+
+def _ensure_admin1(conn):
+    """Seed an admin user with id='admin1' + Admin group membership so
+    {"id": "admin1", ...} dicts pass the can_access admin shortcut."""
+    from src.db import SYSTEM_ADMIN_GROUP
+    from src.repositories.users import UserRepository
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    if UserRepository(conn).get_by_id('admin1') is None:
+        UserRepository(conn).create(id='admin1', email='admin1@test.com', name='Admin')
+    admin_gid = conn.execute(
+        'SELECT id FROM user_groups WHERE name = ?', [SYSTEM_ADMIN_GROUP]
+    ).fetchone()
+    if admin_gid:
+        UserGroupMembersRepository(conn).add_member(
+            'admin1', admin_gid[0], source='system_seed',
+        )
 
 
 def _bq(billing="billing-proj", data="data-proj"):
@@ -50,7 +67,7 @@ class TestSchemaEndpoint:
         conn = reload_db.get_system_db()
         try:
             _seed_bq_table(conn)
-            user = {"role": "admin", "email": "a@x.com"}
+            user = {"id": "admin1", "email": "a@x.com"}
             data = v2_schema.build_schema(conn, user, "bq_view", bq=_bq())
         finally:
             conn.close()
@@ -64,7 +81,7 @@ class TestSchemaEndpoint:
         from app.api.v2_schema import build_schema, NotFound
         conn = reload_db.get_system_db()
         try:
-            user = {"role": "admin", "email": "a@x.com"}
+            user = {"id": "admin1", "email": "a@x.com"}
             with pytest.raises(NotFound):
                 build_schema(conn, user, "missing", bq=_bq())
         finally:
@@ -80,21 +97,21 @@ class TestSchemaEndpoint:
             lambda *a, **kw: [{"name": "x", "type": "STRING", "nullable": True, "description": ""}],
         )
         monkeypatch.setattr(v2_schema, "_fetch_bq_table_options", lambda *a, **kw: {})
-        # Stub can_access_table to deny non-admins
+        # Stub can_access_table — admin1 always allowed (warms cache),
+        # everyone else denied (must hit RBAC check, not cached payload).
         monkeypatch.setattr(
             "app.api.v2_schema.can_access_table",
-            lambda user, tid, conn: False,
+            lambda user, tid, conn: user.get("id") == "admin1",
         )
 
         conn = reload_db.get_system_db()
         try:
-            # Register the table NOT public so RBAC has to gate it.
-            _seed_bq_table(conn, is_public=False)
+            _seed_bq_table(conn)
             # Admin warms the cache.
-            admin = {"role": "admin", "email": "admin@x.com"}
+            admin = {"id": "admin1", "email": "admin@x.com"}
             v2_schema.build_schema(conn, admin, "bq_view", bq=_bq())
             # Non-admin must hit RBAC denial — cache must NOT short-circuit.
-            other = {"role": "viewer", "email": "viewer@x.com"}
+            other = {"id": "viewer1", "email": "viewer@x.com"}
             with pytest.raises(PermissionError):
                 v2_schema.build_schema(conn, other, "bq_view", bq=_bq())
         finally:
@@ -140,7 +157,7 @@ class TestBqAccessErrors:
         conn = reload_db.get_system_db()
         try:
             _seed_bq_table(conn)
-            user = {"role": "admin", "email": "a@x.com"}
+            user = {"id": "admin1", "email": "a@x.com"}
             # Endpoint is async — drive it directly. dependency_overrides only
             # fires through TestClient/HTTP, so pass `bq=bq` explicitly.
             with pytest.raises(HTTPException) as exc_info:
@@ -172,7 +189,7 @@ class TestBqAccessErrors:
         conn = reload_db.get_system_db()
         try:
             _seed_bq_table(conn)
-            user = {"role": "admin", "email": "a@x.com"}
+            user = {"id": "admin1", "email": "a@x.com"}
             with pytest.raises(HTTPException) as exc_info:
                 asyncio.run(v2_schema.schema(
                     table_id="bq_view", user=user, conn=conn, bq=bq,
@@ -198,7 +215,7 @@ class TestBqAccessErrors:
         conn = reload_db.get_system_db()
         try:
             _seed_bq_table(conn)
-            user = {"role": "admin", "email": "a@x.com"}
+            user = {"id": "admin1", "email": "a@x.com"}
             with pytest.raises(HTTPException) as exc_info:
                 asyncio.run(v2_schema.schema(
                     table_id="bq_view", user=user, conn=conn, bq=bq,
@@ -241,7 +258,7 @@ class TestBqAccessErrors:
         conn = reload_db.get_system_db()
         try:
             _seed_bq_table(conn)
-            user = {"role": "admin", "email": "a@x.com"}
+            user = {"id": "admin1", "email": "a@x.com"}
             data = asyncio.run(v2_schema.schema(
                 table_id="bq_view", user=user, conn=conn, bq=_bq(),
             ))
@@ -304,7 +321,7 @@ class TestBqAccessErrors:
         conn = reload_db.get_system_db()
         try:
             _seed_bq_table(conn)
-            user = {"role": "admin", "email": "a@x.com"}
+            user = {"id": "admin1", "email": "a@x.com"}
             asyncio.run(v2_schema.schema(
                 table_id="bq_view", user=user, conn=conn, bq=bq,
             ))

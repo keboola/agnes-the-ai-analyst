@@ -1,9 +1,8 @@
 """Tests for app.resource_types — registry + list_blocks delegates.
 
-Focus on the TABLE resource type added on top of the existing
-MARKETPLACE_PLUGIN. The marketplace projection has integration coverage
-elsewhere (test_marketplace_*.py); here we exercise the table projection
-and the wiring into /api/admin/access-overview.
+Focus on the TABLE resource type. The marketplace projection has integration
+coverage elsewhere (test_marketplace_*.py); here we exercise the table
+projection and the wiring into /api/admin/access-overview.
 """
 
 from __future__ import annotations
@@ -41,12 +40,11 @@ class TestTableBlocks:
     def test_groups_by_bucket(self, system_conn):
         repo = TableRegistryRepository(system_conn)
         repo.register(id="t_finance_a", name="finance_a", bucket="in.c-finance",
-                      source_type="dummy", is_public=False)
+                      source_type="dummy")
         repo.register(id="t_finance_b", name="finance_b", bucket="in.c-finance",
-                      source_type="dummy", is_public=False)
+                      source_type="dummy")
         repo.register(id="t_marketing_a", name="marketing_a",
-                      bucket="in.c-marketing", source_type="dummy",
-                      is_public=False)
+                      bucket="in.c-marketing", source_type="dummy")
 
         blocks = _table_blocks(system_conn)
         by_name = {b["name"]: b for b in blocks}
@@ -64,7 +62,7 @@ class TestTableBlocks:
         repo.register(
             id="shape_test", name="shape_test", bucket="b1",
             source_type="keboola", query_mode="remote",
-            description="hello", is_public=False,
+            description="hello",
         )
 
         blocks = _table_blocks(system_conn)
@@ -79,8 +77,8 @@ class TestTableBlocks:
 
     def test_handles_null_or_empty_bucket(self, system_conn):
         repo = TableRegistryRepository(system_conn)
-        repo.register(id="orphan", name="orphan", source_type="dummy",
-                      is_public=False)  # bucket left as None
+        repo.register(id="orphan", name="orphan", source_type="dummy")
+        # bucket left as None
 
         blocks = _table_blocks(system_conn)
         names = {b["name"] for b in blocks}
@@ -108,13 +106,9 @@ class TestResourceTypeRegistration:
 
 
 class TestAccessOverviewIncludesTables:
-    """Table grants are gated behind AGNES_ENABLE_TABLE_GRANTS until runtime
-    enforcement lands (see docs/TODO-rbac-data-enforcement.md). These tests
-    opt in via the env var so they exercise the behavior the feature actually
-    targets — see TestTableGrantsFeatureFlag below for the disabled path."""
+    """v19+ — TABLE is unconditionally enabled (no env-gate)."""
 
-    def test_tables_section_present(self, seeded_app, monkeypatch):
-        monkeypatch.setenv("AGNES_ENABLE_TABLE_GRANTS", "1")
+    def test_tables_section_present(self, seeded_app):
         c = seeded_app["client"]
         resp = c.get(
             "/api/admin/access-overview",
@@ -125,13 +119,12 @@ class TestAccessOverviewIncludesTables:
         assert "table" in type_keys
         assert "marketplace_plugin" in type_keys  # regression — still there
 
-    def test_seeded_tables_appear_in_overview(self, seeded_app, monkeypatch):
-        monkeypatch.setenv("AGNES_ENABLE_TABLE_GRANTS", "1")
+    def test_seeded_tables_appear_in_overview(self, seeded_app):
         conn = get_system_db()
         try:
             TableRegistryRepository(conn).register(
                 id="overview_test", name="overview_test",
-                bucket="in.c-overview", source_type="dummy", is_public=False,
+                bucket="in.c-overview", source_type="dummy",
             )
         finally:
             conn.close()
@@ -153,16 +146,11 @@ class TestAccessOverviewIncludesTables:
         assert "overview_test" in all_resource_ids
 
 
-class TestTableGrantsFeatureFlag:
-    """ResourceType.TABLE is hidden from the admin UI + grant API by default.
-    Until docs/TODO-rbac-data-enforcement.md step 1 lands, the runtime check
-    still consults legacy dataset_permissions, so granting a TABLE chip
-    in /admin/access would appear to work but produce 403s downstream."""
+class TestTableGrantsAlwaysOn:
+    """v19+ — the env-gate AGNES_ENABLE_TABLE_GRANTS was removed; TABLE is
+    listed unconditionally and grants succeed without a feature flag."""
 
-    def test_resource_types_endpoint_excludes_table_by_default(
-        self, seeded_app, monkeypatch
-    ):
-        monkeypatch.delenv("AGNES_ENABLE_TABLE_GRANTS", raising=False)
+    def test_resource_types_endpoint_includes_table(self, seeded_app):
         c = seeded_app["client"]
         resp = c.get(
             "/api/admin/resource-types",
@@ -170,57 +158,15 @@ class TestTableGrantsFeatureFlag:
         )
         assert resp.status_code == 200
         keys = {r["key"] for r in resp.json()}
-        assert "table" not in keys
+        assert "table" in keys
         assert "marketplace_plugin" in keys
 
-    def test_resource_types_endpoint_includes_table_when_enabled(
-        self, seeded_app, monkeypatch
-    ):
-        monkeypatch.setenv("AGNES_ENABLE_TABLE_GRANTS", "1")
-        c = seeded_app["client"]
-        resp = c.get(
-            "/api/admin/resource-types",
-            headers=_auth(seeded_app["admin_token"]),
-        )
-        keys = {r["key"] for r in resp.json()}
-        assert "table" in keys
-
-    def test_create_table_grant_rejected_when_disabled(
-        self, seeded_app, monkeypatch
-    ):
-        monkeypatch.delenv("AGNES_ENABLE_TABLE_GRANTS", raising=False)
-        # Need a non-system group to grant against; use the seed Engineering
-        # / Everyone path via /admin/groups.
-        c = seeded_app["client"]
-        admin = _auth(seeded_app["admin_token"])
-        gresp = c.post(
-            "/api/admin/groups",
-            headers=admin,
-            json={"name": "table-grant-test"},
-        )
-        assert gresp.status_code == 201
-        gid = gresp.json()["id"]
-        resp = c.post(
-            "/api/admin/grants",
-            headers=admin,
-            json={
-                "group_id": gid,
-                "resource_type": "table",
-                "resource_id": "some.table",
-            },
-        )
-        assert resp.status_code == 422
-        assert "AGNES_ENABLE_TABLE_GRANTS" in resp.json()["detail"]
-
-    def test_create_table_grant_accepted_when_enabled(
-        self, seeded_app, monkeypatch
-    ):
-        monkeypatch.setenv("AGNES_ENABLE_TABLE_GRANTS", "1")
+    def test_create_table_grant_accepted(self, seeded_app):
         conn = get_system_db()
         try:
             TableRegistryRepository(conn).register(
                 id="ff_table", name="ff_table",
-                bucket="in.c-ff", source_type="dummy", is_public=False,
+                bucket="in.c-ff", source_type="dummy",
             )
         finally:
             conn.close()
@@ -231,6 +177,7 @@ class TestTableGrantsFeatureFlag:
             headers=admin,
             json={"name": "table-grant-on"},
         )
+        assert gresp.status_code == 201
         gid = gresp.json()["id"]
         resp = c.post(
             "/api/admin/grants",

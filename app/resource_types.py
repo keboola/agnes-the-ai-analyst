@@ -25,7 +25,6 @@ value verbatim.
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Callable, List
@@ -136,9 +135,8 @@ def _table_blocks(conn: "duckdb.DuckDBPyConnection") -> List[Block]:
     One block per ``bucket`` value, ordered by bucket then table name.
     Items inside are tables; ``resource_id`` is the ``table_registry.id``
     primary key — that is the path string that ``resource_grants.resource_id``
-    matches against when enforcement lands. Bucket is purely a UI grouping
-    and does not enter the resource_id (mirrors the marketplace/plugin
-    pattern, where the marketplace itself is not a grantable resource).
+    matches against. Bucket is purely a UI grouping and does not enter the
+    resource_id (mirrors the marketplace/plugin pattern).
 
     Tables with NULL/empty bucket fall into a synthetic ``"(no bucket)"``
     block so they are still grantable.
@@ -246,21 +244,11 @@ RESOURCE_TYPES: dict[ResourceType, ResourceTypeSpec] = {
 def is_resource_type_enabled(rt: ResourceType) -> bool:
     """Whether a resource type is exposed to the admin UI + grant API.
 
-    ``ResourceType.TABLE`` is gated behind ``AGNES_ENABLE_TABLE_GRANTS=1``
-    (default off) until the data-plane runtime check delegates to
-    ``app.auth.access.can_access`` (currently still flows through legacy
-    ``dataset_permissions``). Without runtime enforcement, exposing the chip
-    is misleading: admins grant access through /admin/access, but the user
-    still gets filtered out at /api/catalog. See
-    ``docs/TODO-rbac-data-enforcement.md`` step 1.
-
-    Existing TABLE grants in ``resource_grants`` remain in the DB regardless
-    — this flag controls UI exposure + new-grant acceptance, not data.
+    All resource types are unconditionally enabled in v19. The
+    ``AGNES_ENABLE_TABLE_GRANTS`` env-gate that previously held back
+    ``ResourceType.TABLE`` was removed when ``can_access_table`` was
+    rewired onto ``app.auth.access.can_access``.
     """
-    if rt is ResourceType.TABLE:
-        return os.environ.get("AGNES_ENABLE_TABLE_GRANTS", "").lower() in {
-            "1", "true", "yes", "on",
-        }
     return True
 
 
@@ -274,9 +262,7 @@ def list_resource_types() -> list[dict[str, str]]:
 
     Shape: ``[{key, display_name, description, id_format}]``. The
     ``list_blocks`` delegate is intentionally omitted — the UI consumes
-    blocks via ``/api/admin/access-overview`` instead. Disabled types
-    (e.g. TABLE without ``AGNES_ENABLE_TABLE_GRANTS``) are filtered out so
-    the admin UI does not advertise grants the runtime cannot enforce.
+    blocks via ``/api/admin/access-overview`` instead.
     """
     return [
         {

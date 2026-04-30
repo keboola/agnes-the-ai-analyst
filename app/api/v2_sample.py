@@ -74,7 +74,7 @@ def build_sample(
     if not row:
         raise FileNotFoundError(table_id)
 
-    if user.get("role") != "admin" and not can_access_table(user, table_id, conn):
+    if not can_access_table(user, table_id, conn):
         raise PermissionError(table_id)
 
     cache_key = f"{table_id}|{n}"

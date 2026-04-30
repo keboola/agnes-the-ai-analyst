@@ -28,9 +28,12 @@ class TestGetSystemDb:
                 "user_sync_settings", "knowledge_items", "knowledge_votes",
                 "audit_log", "telegram_links", "pending_codes",
                 "script_registry", "table_registry", "table_profiles",
-                "dataset_permissions", "metric_definitions", "column_metadata",
+                "metric_definitions", "column_metadata",
             }
             assert expected.issubset(tables), f"Missing: {expected - tables}"
+            # v19: legacy tables MUST NOT exist on a fresh install.
+            assert "dataset_permissions" not in tables
+            assert "access_requests" not in tables
         finally:
             conn.close()
 
@@ -40,7 +43,7 @@ class TestGetSystemDb:
 
         conn = get_system_db()
         conn.execute(
-            "INSERT INTO users (id, email, name, role) VALUES ('u1', 'test@test.com', 'Test', 'analyst')"
+            "INSERT INTO users (id, email, name) VALUES ('u1', 'test@test.com', 'Test')"
         )
         conn.close()
 
@@ -198,8 +201,12 @@ class TestMigrationSafety:
         finally:
             conn.close()
 
-    def test_v2_to_v3_migration(self, tmp_path, monkeypatch):
-        """v2 DB migrated to current schema: is_public column added."""
+    def test_v2_to_current_migration(self, tmp_path, monkeypatch):
+        """v2 DB migrates cleanly through every ladder step to the current
+        schema. The historic v3 step added ``is_public``; the v19 step
+        dropped it again. The forward-compat invariant tested here is just
+        that a v2-shaped DB ends up at SCHEDULED_VERSION with no exception
+        from any intermediate migration."""
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         import duckdb as _duckdb
         from src.db import _ensure_schema, get_schema_version, SCHEMA_VERSION
@@ -217,7 +224,8 @@ class TestMigrationSafety:
                     "SELECT column_name FROM information_schema.columns WHERE table_name='table_registry'"
                 ).fetchall()
             }
-            assert "is_public" in cols
+            # v19 dropped is_public — confirm it really is gone post-migrate.
+            assert "is_public" not in cols
         finally:
             conn.close()
 
@@ -616,8 +624,9 @@ class TestSchemaV4:
                 "CREATE TABLE IF NOT EXISTS pending_codes (code VARCHAR PRIMARY KEY, chat_id BIGINT)",
                 "CREATE TABLE IF NOT EXISTS script_registry (id VARCHAR PRIMARY KEY, name VARCHAR, source TEXT)",
                 "CREATE TABLE IF NOT EXISTS table_profiles (table_id VARCHAR PRIMARY KEY, profile JSON)",
-                "CREATE TABLE IF NOT EXISTS dataset_permissions (user_id VARCHAR, dataset VARCHAR, PRIMARY KEY(user_id, dataset))",
-                "CREATE TABLE IF NOT EXISTS access_requests (id VARCHAR PRIMARY KEY, user_id VARCHAR, user_email VARCHAR, table_id VARCHAR)",
+                # dataset_permissions + access_requests dropped in v19; the
+                # self-heal test plants tables that ARE expected to exist
+                # post-migration, so these stay omitted.
             ]:
                 conn.execute(ddl)
         finally:
@@ -1528,8 +1537,7 @@ class TestV17ToV18Migration:
                 (real_gsync_uid, "real@workspace.test"),
             ]:
                 conn.execute(
-                    "INSERT INTO users (id, email, name, role) "
-                    "VALUES (?, ?, ?, 'analyst')",
+                    "INSERT INTO users (id, email, name) VALUES (?, ?, ?)",
                     [uid, email, email],
                 )
 
@@ -1644,8 +1652,7 @@ class TestV17ToV18Migration:
                 (stranded_gsync_uid, "ghost-gsync@x"),
             ]:
                 conn.execute(
-                    "INSERT INTO users (id, email, name, role) "
-                    "VALUES (?, ?, ?, 'analyst')",
+                    "INSERT INTO users (id, email, name) VALUES (?, ?, ?)",
                     [uid, email, email],
                 )
 

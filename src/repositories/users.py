@@ -36,36 +36,34 @@ class UserRepository:
         id: str,
         email: str,
         name: str,
-        role: str = "analyst",
         password_hash: Optional[str] = None,
     ) -> None:
         """Create a user. Group memberships are populated separately.
 
-        ``role`` is accepted for legacy API compatibility (some callers still
-        pass it) but the value is written to the deprecated ``users.role``
-        column only — authorization no longer reads it. New users are NOT
-        auto-added to Everyone — the implicit membership was removed when
-        Google-prefix mapping landed because access deployments need every
-        membership to be traceable to a real source (admin grant, Google
-        sync, or explicit system seed). If you need the previous "every
-        new user is in Everyone" behavior, add a `system_seed` row in the
-        caller after `create`.
+        Admin promotion happens via ``user_group_members`` (Admin system
+        group), not a column on the user row — see ``app.auth.access`` and
+        ``UserGroupMembersRepository``.
+
+        New users are NOT auto-added to Everyone: the implicit membership
+        was removed when Google-prefix mapping landed because access
+        deployments need every membership to be traceable to a real source
+        (admin grant, Google sync, or explicit system seed). If you need
+        the previous "every new user is in Everyone" behavior, add a
+        ``system_seed`` row in the caller after ``create``.
         """
         now = datetime.now(timezone.utc)
         self.conn.execute(
-            """INSERT INTO users (id, email, name, role, password_hash, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            [id, email, name, role, password_hash, now, now],
+            """INSERT INTO users (id, email, name, password_hash, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)""",
+            [id, email, name, password_hash, now, now],
         )
 
     def update(self, id: str, **kwargs) -> None:
-        # `groups` was a v12-era column dropped in v13; fresh installs run
-        # `_SYSTEM_SCHEMA` only and never have it, so listing it here would
-        # break update calls on those installs with a CatalogException. Group
-        # membership is now materialized in `user_group_members`; writers
+        # Group membership is materialized in `user_group_members`; writers
         # there go through `UserGroupMembersRepository` instead of `update`.
+        # The legacy `role` column was dropped in v19.
         allowed = {
-            "email", "name", "role", "password_hash", "setup_token",
+            "email", "name", "password_hash", "setup_token",
             "setup_token_created", "reset_token", "reset_token_created",
             "active", "deactivated_at", "deactivated_by",
         }

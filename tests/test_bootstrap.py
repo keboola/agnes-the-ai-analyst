@@ -24,7 +24,7 @@ def seeded_client(tmp_path, monkeypatch):
     from src.db import get_system_db
     from src.repositories.users import UserRepository
     conn = get_system_db()
-    UserRepository(conn).create(id="existing", email="existing@test.com", name="E", role="admin")
+    UserRepository(conn).create(id="existing", email="existing@test.com", name="E")
     conn.close()
     return TestClient(create_app())
 
@@ -43,7 +43,6 @@ def password_user_client(tmp_path, monkeypatch):
         id="existing",
         email="existing@test.com",
         name="E",
-        role="admin",
         password_hash=PasswordHasher().hash("pre-existing-pass"),
     )
     conn.close()

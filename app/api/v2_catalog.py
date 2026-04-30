@@ -55,7 +55,7 @@ def build_catalog(conn: duckdb.DuckDBPyConnection, user: dict) -> dict:
     # cache TTL expires.
     visible = []
     for r in rows:
-        if user.get("role") != "admin" and not can_access_table(user, r["id"], conn):
+        if not can_access_table(user, r["id"], conn):
             continue
         visible.append({
             "id": r["id"],
