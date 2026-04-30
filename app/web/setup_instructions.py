@@ -235,7 +235,6 @@ def _tls_trust_block(ca_pem: str) -> list[str]:
         "",
         "       if ! grep -q 'AGNES_CA_PEM_TRUST' \"$RC\" 2>/dev/null; then",
         "         cat >> \"$RC\" <<'AGNES_RC_BLOCK'",
-        "",
         "# AGNES_CA_PEM_TRUST — added by Agnes setup",
         "# Combined bundle (system roots + Agnes CA) for tools that REPLACE trust:",
         "export SSL_CERT_FILE=\"$HOME/.agnes/ca-bundle.pem\"",

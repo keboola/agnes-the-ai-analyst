@@ -174,6 +174,79 @@ def test_marketplace_block_redetects_platform_for_self_containment():
     assert "MINGW*|MSYS*|CYGWIN*" in redetect_block and "PLATFORM=windows" in redetect_block
 
 
+def test_trust_block_rc_heredoc_writes_exactly_8_lines():
+    """The trust block emits a heredoc that appends to the user's shell rc.
+    The companion `agnes-client-reset.sh` strips the block via awk that
+    `skip = 8` from the AGNES_CA_PEM_TRUST marker, so the heredoc MUST
+    write exactly 8 lines (marker + 7 export/comment lines). If the
+    heredoc body is 9+ lines, repeated install/reset cycles leave stray
+    empty lines in the rc file (Devin Review round 3 BUG_0001).
+
+    Source of truth pinning: this test cross-checks the marker count with
+    the reset script's `skip = N` so the two stay in sync."""
+    from app.web.setup_instructions import _tls_trust_block
+
+    fake_ca = (
+        "-----BEGIN CERTIFICATE-----\n"
+        "FAKE\n"
+        "-----END CERTIFICATE-----\n"
+    )
+    lines = _tls_trust_block(fake_ca)
+    joined = "\n".join(lines)
+
+    # Locate heredoc bounds in the emitted shell.
+    start = joined.index("<<'AGNES_RC_BLOCK'")
+    end = joined.index("\nAGNES_RC_BLOCK\n", start)
+    # Body = lines BETWEEN the opening `<<'AGNES_RC_BLOCK'` line and the
+    # closing `AGNES_RC_BLOCK` delimiter.
+    after_open = joined.index("\n", start) + 1  # first body line starts here
+    body = joined[after_open:end]
+    body_lines = body.split("\n")
+
+    # Must be exactly 8 lines: marker + 7 content lines.
+    assert len(body_lines) == 8, (
+        f"Heredoc body has {len(body_lines)} lines; reset script awk "
+        f"skips 8 lines, so any drift leaves stray lines in the rc file. "
+        f"Body was:\n" + "\n".join(f"  {i+1:2d} {ln!r}" for i, ln in enumerate(body_lines))
+    )
+    # First body line MUST be the marker (anchor for the reset awk).
+    assert body_lines[0] == "# AGNES_CA_PEM_TRUST — added by Agnes setup"
+
+
+def test_trust_block_rc_heredoc_count_matches_reset_script_skip():
+    """Stronger version of the previous test: read the actual `skip = N`
+    integer literal out of `scripts/dev/agnes-client-reset.sh` and assert
+    it matches the heredoc body line count. If someone changes either
+    side without updating the other, this test fails loudly."""
+    import re
+    from pathlib import Path
+    from app.web.setup_instructions import _tls_trust_block
+
+    fake_ca = (
+        "-----BEGIN CERTIFICATE-----\n"
+        "FAKE\n"
+        "-----END CERTIFICATE-----\n"
+    )
+    joined = "\n".join(_tls_trust_block(fake_ca))
+    start = joined.index("<<'AGNES_RC_BLOCK'")
+    end = joined.index("\nAGNES_RC_BLOCK\n", start)
+    after_open = joined.index("\n", start) + 1
+    body_line_count = len(joined[after_open:end].split("\n"))
+
+    # Resolve the reset script relative to this test file (works from any cwd).
+    repo_root = Path(__file__).resolve().parents[1]
+    reset_sh = (repo_root / "scripts" / "dev" / "agnes-client-reset.sh").read_text()
+    match = re.search(r"AGNES_CA_PEM_TRUST.*?skip\s*=\s*(\d+)", reset_sh, re.DOTALL)
+    assert match, "Could not locate `skip = N` near AGNES_CA_PEM_TRUST in reset script"
+    reset_skip = int(match.group(1))
+
+    assert body_line_count == reset_skip, (
+        f"Heredoc body has {body_line_count} lines but reset script skips "
+        f"{reset_skip}. Update one side to match — either trim the heredoc "
+        f"or bump the awk skip count."
+    )
+
+
 def test_trust_block_step_0c_does_not_reference_stale_step_number():
     """Step 0(c) used to say 'without this, step 7's marketplace add fails'
     but after the layout reordering, marketplace is step 5 (when plugins
