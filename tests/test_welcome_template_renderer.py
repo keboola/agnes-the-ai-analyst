@@ -54,3 +54,26 @@ def test_context_exposes_documented_keys(conn):
     for top in ("instance", "server", "sync_interval", "data_source",
                 "tables", "metrics", "marketplaces", "user", "now", "today"):
         assert top in ctx, f"missing top-level key: {top}"
+
+
+def test_render_tolerates_missing_optional_tables(tmp_path, monkeypatch):
+    """A bare DuckDB without table_registry / marketplace_registry must still render."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    db_path = tmp_path / "bare.duckdb"
+    bare = duckdb.connect(str(db_path))
+    # Only seed the welcome_template singleton manually; no other tables.
+    bare.execute(
+        """CREATE TABLE welcome_template (
+            id INTEGER PRIMARY KEY DEFAULT 1,
+            content TEXT,
+            updated_at TIMESTAMP,
+            updated_by VARCHAR
+        )"""
+    )
+    bare.execute("INSERT INTO welcome_template (id, content) VALUES (1, NULL)")
+
+    out = render_welcome(bare, user=_user(), server_url="https://example.com")
+    bare.close()
+    assert "AI Data Analyst" in out  # default template still renders
+    # No tables → "_No tables registered yet_" branch from the default template
+    assert "No tables registered yet" in out
