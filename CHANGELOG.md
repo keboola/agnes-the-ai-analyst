@@ -12,11 +12,32 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+- **BigQuery `query_mode='materialized'`** — admin registers a SQL query
+  via `da admin register-table --query-mode materialized --query @file.sql
+  --schedule "every 6h"`; the sync trigger pass runs it through the DuckDB
+  BigQuery extension on each tick that's due (per-table `sync_schedule` honored
+  via `is_table_due()`) and writes the result to
+  `/data/extracts/bigquery/data/<id>.parquet`. The orchestrator picks the
+  parquet up via standard local-parquet discovery and the existing manifest +
+  `da sync` flow distributes it to analysts. Per-user RBAC filtering is
+  unchanged: a materialized table is just another row in `table_registry` with
+  `resource_grants` controlling which groups see it.
+- **Schema v15** adds `source_query TEXT` column to `table_registry` to back
+  the materialized mode. NULL for existing rows. Fresh `materialize_query()`
+  function in the BigQuery extractor performs the COPY atomically (`<id>.parquet.tmp`
+  → `os.replace`) so a failed query never leaves a half-written parquet.
 - BigQuery cost guardrail for `query_mode='materialized'` tables: before each
   COPY the scheduler runs a BQ dry-run and raises `MaterializeBudgetError`
   (skips the row) when the estimate exceeds `data_source.bigquery.max_bytes_per_materialize`.
   Fail-open when the dry-run itself errors (library missing, transient API
   failure) — see `config/instance.yaml.example` for the knob.
+- Admin API: `POST /api/admin/register-table` and `PUT /api/admin/registry/{id}`
+  accept `source_query` field. Validator enforces that
+  `query_mode='materialized'` requires `source_query` and `query_mode in
+  ('local', 'remote')` forbids it (returns 422 on mismatch).
+- CLI: `da admin register-table --query <SQL>` accepts inline SQL or
+  `@path/to.sql` shorthand for reading from disk. New `--schedule` flag passes
+  through to `sync_schedule`.
 - `da sync --quiet` flag suppresses Rich progress + multi-line summary,
   intended for use from Claude Code SessionStart/SessionEnd hooks and cron
   jobs. Errors still surface on stderr; the no-op case is silent. The
@@ -33,12 +54,31 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - `docs/setup/claude_settings.json` ships the same two hooks so operators
   bootstrapping a fresh Claude Code workspace get auto-sync out of the box.
 
+### Changed
+
+- BigQuery `init_extract` no longer creates remote views for rows with
+  `query_mode='materialized'`; those live as parquets and surface via the
+  orchestrator's standard local-parquet discovery. Skipped rows do not appear
+  in `_meta` so cross-source view-name collisions remain impossible.
+
 ### Fixed
 
 - `docs/setup/claude_settings.json` no longer references the deleted
   `server/scripts/collect_session.py` — the dead `SessionEnd` hook had
   silently failed in every Claude Code session since the v1→v2 server
   purge. Replaced with `da sync --upload-only --quiet`.
+
+### Internal
+
+- README mode-first source table; new "Local sync & auto-update" section
+  covering `da sync`, hooks, and admin RBAC for auto-sync membership.
+- `CLAUDE.md` schema bumped to v15 in the schema-version paragraph; four
+  source modes documented in Connector Pattern; new "Local sync & Claude Code
+  hooks" subsection under Development.
+- `cli/skills/connectors.md` — "BigQuery: pick a mode" decision table with
+  cost / guardrail / registration example.
+- `docs/architecture.md` — diagram refreshed to show the two BigQuery lanes
+  (remote view + materialized parquet).
 
 ## [0.12.1] — 2026-04-28
 
