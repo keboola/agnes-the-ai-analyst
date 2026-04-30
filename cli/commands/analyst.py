@@ -314,8 +314,17 @@ def _generate_claude_md(workspace: Path, server_url: str, token: str) -> None:
         resp = httpx.get(url, headers=headers, timeout=15.0)
         if resp.status_code == 200:
             rendered = resp.json().get("content")
-    except Exception:
-        pass
+        elif resp.status_code != 404:
+            typer.echo(
+                f"  Warning: server returned {resp.status_code} for /api/welcome; "
+                "using minimal fallback. Tell your admin if this persists.",
+                err=True,
+            )
+    except Exception as e:
+        typer.echo(
+            f"  Warning: couldn't fetch welcome prompt ({e}); using minimal fallback.",
+            err=True,
+        )
 
     if rendered is None:
         # Fallback for older servers — keeps the CLI usable, just less rich.
