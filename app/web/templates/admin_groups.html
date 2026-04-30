@@ -68,7 +68,7 @@
     text-transform: uppercase; letter-spacing: 0.4px;
   }
   .origin-system     { background: #fef3c7; color: #92400e; }
-  .origin-admin      { background: #ede9fe; color: #6d28d9; }
+  .origin-custom     { background: #ede9fe; color: #6d28d9; }
   .origin-google_sync { background: #dcfce7; color: #166534; }
 
   .gp-actions { display: flex; gap: 6px; justify-content: flex-end; }
@@ -331,7 +331,7 @@ function render() {
     const tr = document.createElement("tr");
     tr.dataset.id = g.id;
     tr.style.cursor = "pointer";
-    const origin = g.origin || "admin";
+    const origin = g.origin || "custom";
     // Read-only when the row is owned by Google sync OR a non-mapped system
     // group (Admin/Everyone canonical name without the env mapping — those
     // still cannot be renamed/deleted, but they accept admin-managed members).
@@ -343,13 +343,22 @@ function render() {
       ? `<span style="color:#9ca3af;font-size:11px">read-only</span>`
       : `<button class="icon-btn" data-action="edit">Edit</button>
          <button class="icon-btn danger" data-action="delete">Delete</button>`;
-    // For Google-managed rows, the canonical `name` is the full Workspace
-    // email — render a derived "Finance" big label with the email as a
-    // monospace subtitle. For everything else, name stays one line.
-    const nameCell = isGoogleManaged
-      ? `<a class="gp-name" href="/admin/groups/${encodeURIComponent(g.id)}">${esc(deriveDisplayName(g.name))}</a>
-         <span class="gp-name-sub">${esc(g.name)}</span>`
-      : `<a class="gp-name" href="/admin/groups/${encodeURIComponent(g.id)}">${esc(g.name)}</a>`;
+    // Subtitle rules for the name cell:
+    //   - mapped_email present (Admin/Everyone wired to a Workspace group)
+    //     → big = canonical name ("Admin"), subtitle = the Workspace email
+    //   - google-managed user-created group → big = derived friendly name
+    //     ("Finance"), subtitle = full Workspace email stored as `name`
+    //   - everything else → single-line name, no subtitle
+    let nameCell;
+    if (g.mapped_email) {
+      nameCell = `<a class="gp-name" href="/admin/groups/${encodeURIComponent(g.id)}">${esc(g.name)}</a>
+                  <span class="gp-name-sub">${esc(g.mapped_email)}</span>`;
+    } else if (isGoogleManaged) {
+      nameCell = `<a class="gp-name" href="/admin/groups/${encodeURIComponent(g.id)}">${esc(deriveDisplayName(g.name))}</a>
+                  <span class="gp-name-sub">${esc(g.name)}</span>`;
+    } else {
+      nameCell = `<a class="gp-name" href="/admin/groups/${encodeURIComponent(g.id)}">${esc(g.name)}</a>`;
+    }
     tr.innerHTML = `
       <td>${nameCell}</td>
       <td><span class="gp-desc">${esc(g.description || "")}</span></td>
