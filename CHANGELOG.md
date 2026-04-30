@@ -10,7 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-## [0.21.0] — 2026-04-30
+### Internal
+- `scripts/smoke-test.sh`: assertion 8 now hits `/api/admin/registry` (the current admin tables endpoint). The old `/api/admin/tables` URL was renamed long ago and the smoke test was returning 404 on every run — it only surfaced as a deploy failure when the full release pipeline first triggered the rollback path on the post-#137 deploy (run 25151878647).
+- `.github/workflows/release.yml` smoke-test job: added `Log in to GHCR` step. The auto-rollback's `docker push :stable` was hitting `unauthenticated: User cannot be authenticated with the token provided` because the smoke-test job had no GHCR login of its own. Result: a failed deploy left `:stable` pointing at the broken image. The rollback step also got an explicit `GH_TOKEN` env so its `gh issue create` call actually creates the alert issue (was silently swallowed by the `|| echo` fallback).
 
 ### Internal
 
