@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Optional, List, Dict, Any
 import duckdb
 
@@ -664,9 +664,33 @@ class RegisterTableRequest(BaseModel):
     source_type: Optional[str] = None
     bucket: Optional[str] = None
     source_table: Optional[str] = None
+    # Backs query_mode='materialized'. Stored verbatim in
+    # table_registry.source_query (schema v19); the trigger pass runs it
+    # through the DuckDB BQ extension via BqAccess and writes the result
+    # to /data/extracts/bigquery/data/<id>.parquet.
+    source_query: Optional[str] = None
     query_mode: str = "local"
     sync_schedule: Optional[str] = None
     profile_after_sync: bool = True
+
+    @model_validator(mode="after")
+    def _check_mode_query_coherence(self):
+        """Enforce query_mode ↔ source_query invariants up front so an admin
+        can't persist a remote/local row carrying an orphan source_query, and
+        materialized rows can't be registered without a SQL body."""
+        sq = (self.source_query or "").strip() or None
+        if self.query_mode == "materialized" and not sq:
+            raise ValueError(
+                "query_mode='materialized' requires a non-empty source_query"
+            )
+        if self.query_mode != "materialized" and sq:
+            raise ValueError(
+                "source_query is only valid when query_mode='materialized'"
+            )
+        # Normalise: stash the trimmed-or-None form so the persisted column
+        # never carries surrounding whitespace or empty-string sentinels.
+        self.source_query = sq
+        return self
 
     @field_validator("primary_key", mode="before")
     @classmethod
@@ -707,12 +731,66 @@ class RegisterTableRequest(BaseModel):
 def _validate_bigquery_register_payload(req: "RegisterTableRequest") -> None:
     """Enforce BQ-specific shape on a register/precheck request.
 
-    Mutates the model: forces ``query_mode='remote'`` and
-    ``profile_after_sync=False`` (per Decision 7 in #108) so a caller can't
-    accidentally enqueue a parquet profiling pass for a remote view that
-    has no local file. Raises HTTPException(422) for missing required
-    fields and HTTPException(400) for unsafe identifiers / bogus project_id.
+    Two BQ paths:
+
+    - ``query_mode='materialized'`` — admin-registered SQL writes a parquet on
+      schedule. Requires ``source_query``; ``bucket`` / ``source_table`` are
+      not used (the SQL inlines the references). Doesn't force any field; the
+      Pydantic ``model_validator`` already gated the query/mode coherence.
+
+    - ``query_mode='remote'`` (or default) — remote view over a single BQ
+      table. Requires ``bucket`` (BQ dataset) + ``source_table``. Mutates
+      the model: forces ``query_mode='remote'`` and ``profile_after_sync=False``
+      (per Decision 7 in #108) so a caller can't accidentally enqueue a
+      parquet profiling pass for a remote view that has no local file.
+
+    Raises HTTPException(422) for missing required fields and
+    HTTPException(400) for unsafe identifiers / bogus project_id.
     """
+    if req.query_mode == "materialized":
+        # Materialized BQ rows: the SQL body replaces dataset+table refs.
+        # Pydantic model_validator already verified source_query is non-empty;
+        # all we still need is a valid project_id and a safe view name.
+        if not req.source_query or not req.source_query.strip():
+            raise HTTPException(
+                status_code=422,
+                detail="bigquery materialized: 'source_query' is required",
+            )
+        raw_name = req.name or ""
+        if raw_name.strip() != raw_name or not _is_safe_identifier(raw_name):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"bigquery: view name {raw_name!r} is unsafe — must match "
+                    f"^[a-zA-Z_][a-zA-Z0-9_]{{0,63}}$ (DuckDB identifier rules) "
+                    "with no leading/trailing whitespace"
+                ),
+            )
+        from app.instance_config import get_value
+        project_id = get_value("data_source", "bigquery", "project", default="")
+        if not project_id:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "bigquery: data_source.bigquery.project is not set in "
+                    "instance.yaml; configure it via /admin/server-config or "
+                    "/api/admin/configure first"
+                ),
+            )
+        if not _is_safe_project_id(project_id):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"bigquery: data_source.bigquery.project {project_id!r} "
+                    "is malformed — must match GCP project_id grammar "
+                    "^[a-z][a-z0-9-]{4,28}[a-z0-9]$"
+                ),
+            )
+        # Materialized rows have no remote view to profile. Force-disable
+        # to keep the registry consistent across mode switches.
+        req.profile_after_sync = False
+        return
+
     if not req.bucket or not req.bucket.strip():
         raise HTTPException(
             status_code=422,
@@ -811,9 +889,34 @@ class UpdateTableRequest(BaseModel):
     source_type: Optional[str] = None
     bucket: Optional[str] = None
     source_table: Optional[str] = None
+    source_query: Optional[str] = None
     query_mode: Optional[str] = None
     sync_schedule: Optional[str] = None
     profile_after_sync: Optional[bool] = None
+
+    @model_validator(mode="after")
+    def _check_mode_query_coherence(self):
+        """Same invariant as RegisterTableRequest, but only fires when at
+        least one of query_mode / source_query is being touched in this
+        PUT — fields not in the body stay None and don't trigger anything."""
+        if self.query_mode is None and self.source_query is None:
+            return self
+        sq = (self.source_query or "").strip() or None
+        if self.query_mode == "materialized" and not sq:
+            raise ValueError(
+                "query_mode='materialized' requires a non-empty source_query"
+            )
+        if self.query_mode is not None and self.query_mode != "materialized" and sq:
+            raise ValueError(
+                "source_query is only valid when query_mode='materialized'"
+            )
+        if self.query_mode is None and sq:
+            raise ValueError(
+                "source_query requires query_mode='materialized' to be set "
+                "in the same request"
+            )
+        self.source_query = sq
+        return self
 
     @field_validator("primary_key", mode="before")
     @classmethod
@@ -1132,6 +1235,7 @@ def register_table(
         source_type=request.source_type,
         bucket=request.bucket,
         source_table=request.source_table,
+        source_query=request.source_query,
         query_mode=request.query_mode,
         sync_schedule=request.sync_schedule,
         profile_after_sync=request.profile_after_sync,
@@ -1152,6 +1256,24 @@ def register_table(
         return JSONResponse(
             status_code=201,
             content={"id": table_id, "name": request.name, "status": "registered"},
+        )
+
+    if request.query_mode == "materialized":
+        # Materialized BQ rows are picked up by the trigger pass on the next
+        # scheduled tick (or via POST /api/sync/trigger). No synchronous
+        # rebuild — the COPY can scan multi-GB and would block the request.
+        return JSONResponse(
+            status_code=201,
+            content={
+                "id": table_id,
+                "name": request.name,
+                "status": "registered",
+                "view_name": table_id,
+                "message": (
+                    "Materialized — parquet will be written on the next sync "
+                    "tick. Trigger now via POST /api/sync/trigger."
+                ),
+            },
         )
 
     # BQ post-register: rebuild extract + master views, with timeout fallback.
@@ -1360,14 +1482,23 @@ async def update_table(
         merged.update(updates)
         merged.pop("id", None)  # avoid duplicate id kwarg
 
+        # When switching the merged record away from materialized mode, drop
+        # the stale source_query — the request validator can't clear it via
+        # the `if v is not None` filter above. Without this, a remote/local
+        # row would carry an orphan source_query in the registry.
+        if merged.get("query_mode") != "materialized":
+            merged["source_query"] = None
+
         if merged.get("source_type") == "bigquery":
             # Reuse the register-time validator. It mutates the request to
-            # force query_mode='remote' / profile_after_sync=False — apply
-            # the same coercion to `merged` so the persisted row matches.
+            # force query_mode='remote' / profile_after_sync=False (or to
+            # leave a materialized row alone) — apply the same coercion to
+            # `merged` so the persisted row matches.
             synthetic = RegisterTableRequest(
                 name=merged.get("name") or table_id,
                 bucket=merged.get("bucket"),
                 source_table=merged.get("source_table"),
+                source_query=merged.get("source_query"),
                 source_type="bigquery",
                 query_mode=merged.get("query_mode") or "remote",
                 profile_after_sync=bool(merged.get("profile_after_sync") or False),
@@ -1380,6 +1511,7 @@ async def update_table(
             _validate_bigquery_register_payload(synthetic)
             merged["query_mode"] = synthetic.query_mode
             merged["profile_after_sync"] = synthetic.profile_after_sync
+            merged["source_query"] = synthetic.source_query
 
         repo.register(id=table_id, **merged)
 
