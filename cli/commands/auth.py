@@ -43,8 +43,8 @@ def login(
         resp = api_post("/auth/token", json=body)
         if resp.status_code == 200:
             data = resp.json()
-            save_token(data["access_token"], data["email"], data["role"])
-            typer.echo(f"Logged in as {data['email']} (role: {data['role']})")
+            save_token(data["access_token"], data["email"])
+            typer.echo(f"Logged in as {data['email']}")
             return
         # Helpful error for accounts that cannot login via password.
         try:
@@ -87,7 +87,6 @@ def whoami():
     try:
         payload = jwt.decode(token, options={"verify_signature": False})
         typer.echo(f"Email: {payload.get('email', 'unknown')}")
-        typer.echo(f"Role:  {payload.get('role', 'unknown')}")
         typer.echo(f"Server: {get_server_url()}")
     except Exception:
         typer.echo("Invalid token. Run: da login")
@@ -107,11 +106,6 @@ def import_token(
         "--email",
         help="Override email (used only if the JWT lacks an 'email' claim)",
     ),
-    role: str = typer.Option(
-        None,
-        "--role",
-        help="Override role (used only if the JWT lacks a 'role' claim)",
-    ),
     skip_verify: bool = typer.Option(
         False,
         "--skip-verify",
@@ -120,7 +114,7 @@ def import_token(
 ):
     """Import a personal access token non-interactively.
 
-    Decodes the JWT locally to extract the email/role claims, verifies it
+    Decodes the JWT locally to extract the email claim, verifies it
     against the server, and writes it to ~/.config/da/token.json using the
     canonical format so subsequent `da auth whoami` / `da sync` calls
     authenticate cleanly.
@@ -149,11 +143,9 @@ def import_token(
 
     # 2) Decode JWT without signature verification — we only need the claims.
     resolved_email = email
-    resolved_role = role
     try:
         payload = pyjwt.decode(token, options={"verify_signature": False})
         resolved_email = resolved_email or payload.get("email")
-        resolved_role = resolved_role or payload.get("role")
     except Exception as e:
         typer.echo(f"Could not decode token as JWT: {e}", err=True)
         raise typer.Exit(1)
@@ -191,18 +183,18 @@ def import_token(
         #    issuers might later gain an /auth/me. For now, we rely on JWT
         #    claims + the CLI overrides.
 
-    # 5) If we still lack email/role, refuse rather than writing a partial record.
-    if not resolved_email or not resolved_role:
+    # 5) Refuse to write a partial record if the email claim is missing.
+    if not resolved_email:
         typer.echo(
-            "Token is missing 'email' and/or 'role' claims. Re-issue the token "
-            "or pass --email and --role explicitly.",
+            "Token is missing the 'email' claim. Re-issue the token "
+            "or pass --email explicitly.",
             err=True,
         )
         raise typer.Exit(1)
 
     # 6) Persist in the canonical on-disk format used by cli/config.py.
-    save_token(token, resolved_email, resolved_role)
-    typer.echo(f"Imported token for {resolved_email} (role: {resolved_role}).")
+    save_token(token, resolved_email)
+    typer.echo(f"Imported token for {resolved_email}.")
 
 
 from cli.commands.tokens import token_app

@@ -1,10 +1,35 @@
-"""Tests for user settings API endpoints."""
+"""Tests for user settings API endpoints (v19+).
+
+The legacy ``permissions`` field on GET /api/settings was removed —
+table access lives in resource_grants now, queryable via
+/api/me/effective-access. PUT /api/settings/dataset still gates on
+access, but the gate goes through ``app.auth.access.can_access`` against
+``ResourceType.TABLE`` instead of dataset_permissions.
+"""
 
 import pytest
 
 
 def _auth(token):
     return {"Authorization": f"Bearer {token}"}
+
+
+def _grant_table(conn, user_id: str, table_id: str) -> None:
+    """Mint a one-shot resource_grants(group, "table", id) row that
+    covers ``user_id``. Creates a per-test group + membership + grant."""
+    from src.repositories.user_groups import UserGroupsRepository
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    from src.repositories.resource_grants import ResourceGrantsRepository
+    grp = UserGroupsRepository(conn).create(
+        name=f"test-{user_id}-{table_id}", description="test", created_by="test",
+    )
+    UserGroupMembersRepository(conn).add_member(
+        user_id, grp["id"], source="admin", added_by="test",
+    )
+    ResourceGrantsRepository(conn).create(
+        group_id=grp["id"], resource_type="table", resource_id=table_id,
+        assigned_by="test",
+    )
 
 
 class TestSettingsGet:
@@ -16,7 +41,8 @@ class TestSettingsGet:
         data = resp.json()
         assert data["user_id"] == "admin1"
         assert "sync_settings" in data
-        assert "permissions" in data
+        # v19: legacy ``permissions`` field dropped — use /api/me/effective-access.
+        assert "permissions" not in data
 
     def test_get_settings_analyst(self, seeded_app):
         c = seeded_app["client"]
@@ -31,29 +57,19 @@ class TestSettingsGet:
         resp = c.get("/api/settings")
         assert resp.status_code == 401
 
-    def test_get_settings_empty_permissions_for_new_user(self, seeded_app):
-        """New users have no permissions by default."""
-        c = seeded_app["client"]
-        token = seeded_app["admin_token"]
-        resp = c.get("/api/settings", headers=_auth(token))
-        assert resp.status_code == 200
-        # Admin sees their own settings — permissions list should exist (may be empty)
-        assert isinstance(resp.json()["permissions"], list)
-
 
 class TestSettingsDataset:
-    def test_update_dataset_setting_with_permission(self, seeded_app):
-        """Admin granting permission first, then analyst can update the dataset setting."""
+    def test_update_dataset_setting_with_grant(self, seeded_app):
+        """After admin grants TABLE access, analyst can enable the dataset."""
         c = seeded_app["client"]
-        admin_token = seeded_app["admin_token"]
         analyst_token = seeded_app["analyst_token"]
 
-        # Grant permission to analyst first
-        c.post(
-            "/api/admin/permissions",
-            json={"user_id": "analyst1", "dataset": "sales_data", "access": "read"},
-            headers=_auth(admin_token),
-        )
+        from src.db import get_system_db
+        conn = get_system_db()
+        try:
+            _grant_table(conn, "analyst1", "sales_data")
+        finally:
+            conn.close()
 
         resp = c.put(
             "/api/settings/dataset",
@@ -65,7 +81,9 @@ class TestSettingsDataset:
         assert data["dataset"] == "sales_data"
         assert data["enabled"] is True
 
-    def test_update_dataset_setting_without_permission_returns_403(self, seeded_app):
+    def test_update_dataset_setting_without_grant_returns_403(self, seeded_app):
+        """No resource_grants(table) row → 403, regardless of who's asking
+        (admin still passes via the can_access admin shortcut)."""
         c = seeded_app["client"]
         token = seeded_app["analyst_token"]
         resp = c.put(
@@ -93,33 +111,14 @@ class TestSettingsDataset:
         )
         assert resp.status_code == 422
 
-    def test_update_without_explicit_permission_returns_403_even_for_admin(self, seeded_app):
-        """The dataset settings endpoint checks dataset_permissions table — even admin
-        needs explicit permission to enable/disable a specific dataset via this endpoint."""
-        c = seeded_app["client"]
-        token = seeded_app["admin_token"]
-        resp = c.put(
-            "/api/settings/dataset",
-            json={"dataset": "any_dataset_no_perm", "enabled": False},
-            headers=_auth(token),
-        )
-        # The endpoint checks perm_repo.has_access which doesn't have admin bypass
-        assert resp.status_code == 403
-
-    def test_disable_dataset_with_permission(self, seeded_app):
+    def test_admin_passes_gate_via_admin_shortcut(self, seeded_app):
+        """Admin is in the Admin system group → can_access shortcut → no
+        explicit grant needed even though no resource_grants row exists."""
         c = seeded_app["client"]
         admin_token = seeded_app["admin_token"]
-
-        # Grant explicit permission to admin for the dataset
-        c.post(
-            "/api/admin/permissions",
-            json={"user_id": "admin1", "dataset": "some_table", "access": "read"},
-            headers=_auth(admin_token),
-        )
-
         resp = c.put(
             "/api/settings/dataset",
-            json={"dataset": "some_table", "enabled": False},
+            json={"dataset": "any_dataset_no_grant", "enabled": False},
             headers=_auth(admin_token),
         )
         assert resp.status_code == 200

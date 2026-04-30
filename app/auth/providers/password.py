@@ -20,11 +20,11 @@ from src.repositories.users import UserRepository
 
 
 def _role_label(user: dict, conn: duckdb.DuckDBPyConnection) -> str:
-    """JWT/cookie role-claim label. ``admin`` for Admin group members,
-    otherwise the legacy column value (or ``user`` as fallback)."""
-    if is_user_admin(user["id"], conn):
-        return "admin"
-    return user.get("role") or "user"
+    """Display label for the response payload only — `admin` for Admin
+    group members, `user` otherwise. Authorization at runtime checks
+    `is_user_admin` directly; this label is purely cosmetic for the
+    response shape."""
+    return "admin" if is_user_admin(user["id"], conn) else "user"
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth/password", tags=["auth"])
@@ -75,8 +75,8 @@ def _cookie_secure() -> bool:
     return os.environ.get("DOMAIN", "") != ""
 
 
-def _set_login_cookie(response, user_id: str, email: str, role: str) -> None:
-    token = create_access_token(user_id, email, role)
+def _set_login_cookie(response, user_id: str, email: str) -> None:
+    token = create_access_token(user_id, email)
     response.set_cookie(
         key="access_token", value=token,
         httponly=True, max_age=86400, samesite="lax",
@@ -219,7 +219,7 @@ async def password_login(
         raise HTTPException(status_code=500, detail="Internal server error")
 
     role_label = _role_label(user, conn)
-    token = create_access_token(user["id"], user["email"], role_label)
+    token = create_access_token(user["id"], user["email"])
     return {"access_token": token, "token_type": "bearer", "email": user["email"], "role": role_label}
 
 
@@ -251,7 +251,7 @@ async def password_login_web(
 
     target = next if (next.startswith("/") and not next.startswith("//")) else "/dashboard"
     response = RedirectResponse(url=target, status_code=302)
-    _set_login_cookie(response, user["id"], user["email"], _role_label(user, conn))
+    _set_login_cookie(response, user["id"], user["email"])
     return response
 
 
@@ -282,7 +282,7 @@ async def password_setup(
     hashed = ph.hash(request_body.password)
 
     repo.update(id=user["id"], password_hash=hashed, setup_token=None, setup_token_created=None)
-    token = create_access_token(user["id"], user["email"], _role_label(user, conn))
+    token = create_access_token(user["id"], user["email"])
     return {"access_token": token, "token_type": "bearer", "message": "Password set successfully"}
 
 
@@ -398,7 +398,7 @@ async def reset_confirm(
     )
 
     response = RedirectResponse(url="/login/password?msg=password_reset", status_code=302)
-    _set_login_cookie(response, user["id"], user["email"], _role_label(user, conn))
+    _set_login_cookie(response, user["id"], user["email"])
     return response
 
 
@@ -490,5 +490,5 @@ async def setup_confirm(
     repo.update(id=user["id"], **updates)
 
     response = RedirectResponse(url="/dashboard", status_code=302)
-    _set_login_cookie(response, user["id"], user["email"], _role_label(user, conn))
+    _set_login_cookie(response, user["id"], user["email"])
     return response

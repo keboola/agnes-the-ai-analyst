@@ -18,12 +18,29 @@ def reload_db(tmp_path, monkeypatch):
 
 
 def _seed(conn):
+    _ensure_admin1(conn)
     from src.repositories.table_registry import TableRegistryRepository
     TableRegistryRepository(conn).register(
         id="bq_view", name="bq_view", source_type="bigquery",
         bucket="ds", source_table="bq_view", query_mode="remote",
-        is_public=True,
     )
+
+
+def _ensure_admin1(conn):
+    """Seed an admin user with id='admin1' + Admin group membership so
+    {"id": "admin1", ...} dicts pass the can_access admin shortcut."""
+    from src.db import SYSTEM_ADMIN_GROUP
+    from src.repositories.users import UserRepository
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    if UserRepository(conn).get_by_id('admin1') is None:
+        UserRepository(conn).create(id='admin1', email='admin1@test.com', name='Admin')
+    admin_gid = conn.execute(
+        'SELECT id FROM user_groups WHERE name = ?', [SYSTEM_ADMIN_GROUP]
+    ).fetchone()
+    if admin_gid:
+        UserGroupMembersRepository(conn).add_member(
+            'admin1', admin_gid[0], source='system_seed',
+        )
 
 
 def _bq(billing="billing-proj", data="data-proj"):
@@ -50,7 +67,7 @@ class TestScan:
         conn = reload_db.get_system_db()
         try:
             _seed(conn)
-            user = {"role": "admin", "email": "a@x.com"}
+            user = {"id": "admin1", "email": "a@x.com"}
             req = {
                 "table_id": "bq_view",
                 "select": ["event_date", "country_code"],
@@ -79,7 +96,7 @@ class TestScan:
         conn = reload_db.get_system_db()
         try:
             _seed(conn)
-            user = {"role": "admin", "email": "a@x.com"}
+            user = {"id": "admin1", "email": "a@x.com"}
             req = {"table_id": "bq_view", "select": ["event_date"], "limit": 1}
 
             # Hold one concurrent slot
@@ -102,7 +119,7 @@ class TestScan:
         conn = reload_db.get_system_db()
         try:
             _seed(conn)
-            user = {"role": "admin", "email": "a@x.com"}
+            user = {"id": "admin1", "email": "a@x.com"}
             req = {
                 "table_id": "bq_view",
                 "where": "event_date = NUKE_FN()",
@@ -127,7 +144,7 @@ class TestOrderByValidation:
         conn = reload_db.get_system_db()
         try:
             _seed(conn)
-            user = {"role": "admin", "email": "a@x.com"}
+            user = {"id": "admin1", "email": "a@x.com"}
             req = {"table_id": "bq_view", "select": ["event_date"], "order_by": ["bogus_col"], "limit": 1}
             with pytest.raises(ValueError, match="unknown order_by"):
                 v2_scan.run_scan(conn, user, req, bq=_bq(data="proj"), quota=tracker)
@@ -144,7 +161,7 @@ class TestOrderByValidation:
         conn = reload_db.get_system_db()
         try:
             _seed(conn)
-            user = {"role": "admin", "email": "a@x.com"}
+            user = {"id": "admin1", "email": "a@x.com"}
             req = {
                 "table_id": "bq_view",
                 "select": ["event_date"],
@@ -170,7 +187,7 @@ class TestOrderByValidation:
         conn = reload_db.get_system_db()
         try:
             _seed(conn)
-            user = {"role": "admin", "email": "a@x.com"}
+            user = {"id": "admin1", "email": "a@x.com"}
             req = {
                 "table_id": "bq_view",
                 "select": ["event_date`+ INJECTED --"],
@@ -191,13 +208,13 @@ class TestOrderByValidation:
         tracker = v2_scan._build_quota_tracker()
         conn = reload_db.get_system_db()
         try:
+            _ensure_admin1(conn)
             from src.repositories.table_registry import TableRegistryRepository
             TableRegistryRepository(conn).register(
                 id="local_t", name="local_t", source_type="keboola",
                 bucket="b", source_table="local_t", query_mode="local",
-                is_public=True,
             )
-            user = {"role": "admin", "email": "a@x.com"}
+            user = {"id": "admin1", "email": "a@x.com"}
             req = {
                 "table_id": "local_t",
                 "select": ['id"; DROP TABLE x; --'],
@@ -234,7 +251,7 @@ class TestOrderByValidation:
         conn = reload_db.get_system_db()
         try:
             _seed(conn)
-            user = {"role": "admin", "email": "a@x.com"}
+            user = {"id": "admin1", "email": "a@x.com"}
             req = {"table_id": "bq_view", "select": ["event_date"], "order_by": ["event_date DESC"], "limit": 1}
             # No exception
             v2_scan.run_scan(conn, user, req, bq=_bq(data="proj"), quota=tracker)
@@ -269,7 +286,7 @@ class TestBqAccessErrors:
         conn = reload_db.get_system_db()
         try:
             _seed(conn)
-            user = {"role": "admin", "email": "a@x.com"}
+            user = {"id": "admin1", "email": "a@x.com"}
             req = {
                 "table_id": "bq_view",
                 "select": ["event_date", "country_code"],
@@ -309,7 +326,7 @@ class TestBqAccessErrors:
         conn = reload_db.get_system_db()
         try:
             _seed(conn)
-            user = {"role": "admin", "email": "a@x.com"}
+            user = {"id": "admin1", "email": "a@x.com"}
             req = {
                 "table_id": "bq_view",
                 "select": ["event_date"],
@@ -344,7 +361,7 @@ class TestBqAccessErrors:
         conn = reload_db.get_system_db()
         try:
             _seed(conn)
-            user = {"role": "admin", "email": "a@x.com"}
+            user = {"id": "admin1", "email": "a@x.com"}
             req = {
                 "table_id": "bq_view",
                 "select": ["event_date"],

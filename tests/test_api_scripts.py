@@ -14,26 +14,38 @@ def client(tmp_path, monkeypatch):
     from app.main import create_app
     from src.db import get_system_db
     from src.repositories.users import UserRepository
-    from src.repositories.sync_settings import DatasetPermissionRepository
     from app.auth.jwt import create_access_token
 
     from tests.helpers.auth import grant_admin
 
     conn = get_system_db()
     user_repo = UserRepository(conn)
-    user_repo.create(id="admin1", email="admin@acme.com", name="Admin", role="admin")
-    user_repo.create(id="analyst1", email="analyst@acme.com", name="Analyst", role="analyst")
+    user_repo.create(id="admin1", email="admin@acme.com", name="Admin")
+    user_repo.create(id="analyst1", email="analyst@acme.com", name="Analyst")
     grant_admin(conn, "admin1")
 
-    perm_repo = DatasetPermissionRepository(conn)
-    perm_repo.grant("analyst1", "sales", "read")
-    perm_repo.grant("analyst1", "support", "read")
+    # Grant analyst1 access to "sales" + "support" tables via resource_grants
+    # (tests below exercise enable-dataset gates that require an explicit grant).
+    from src.repositories.user_groups import UserGroupsRepository
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    from src.repositories.resource_grants import ResourceGrantsRepository
+    grp = UserGroupsRepository(conn).create(
+        name="api-scripts-test", description="test", created_by="test",
+    )
+    UserGroupMembersRepository(conn).add_member(
+        "analyst1", grp["id"], source="admin", added_by="test",
+    )
+    grants = ResourceGrantsRepository(conn)
+    grants.create(group_id=grp["id"], resource_type="table", resource_id="sales",
+                  assigned_by="test")
+    grants.create(group_id=grp["id"], resource_type="table", resource_id="support",
+                  assigned_by="test")
     conn.close()
 
     app = create_app()
     test_client = TestClient(app)
-    admin_token = create_access_token("admin1", "admin@acme.com", "admin")
-    analyst_token = create_access_token("analyst1", "analyst@acme.com", "analyst")
+    admin_token = create_access_token("admin1", "admin@acme.com")
+    analyst_token = create_access_token("analyst1", "analyst@acme.com")
 
     return test_client, admin_token, analyst_token
 
@@ -106,7 +118,10 @@ class TestSettingsAPI:
         assert resp.status_code == 200
         data = resp.json()
         assert data["user_id"] == "analyst1"
-        assert len(data["permissions"]) == 2
+        # v19: legacy `permissions` field dropped — use /api/me/effective-access
+        # if you need the per-user grant breakdown.
+        assert "permissions" not in data
+        assert "sync_settings" in data
 
     def test_enable_dataset(self, client):
         c, _, analyst_token = client

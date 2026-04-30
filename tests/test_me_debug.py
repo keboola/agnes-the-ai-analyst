@@ -36,9 +36,9 @@ def _make_user_and_session(conn, email: str = "u@example.com"):
 
     uid = str(uuid.uuid4())
     UserRepository(conn).create(
-        id=uid, email=email, name=email.split("@")[0], role="analyst"
+        id=uid, email=email, name=email.split("@")[0]
     )
-    token = create_access_token(user_id=uid, email=email, role="analyst")
+    token = create_access_token(user_id=uid, email=email)
     return uid, token
 
 

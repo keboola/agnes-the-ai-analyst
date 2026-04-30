@@ -128,10 +128,10 @@ def seeded_app(e2e_env):
 
     conn = get_system_db()
     repo = UserRepository(conn)
-    repo.create(id="admin1", email="admin@test.com", name="Admin", role="admin")
-    repo.create(id="km_admin1", email="km@test.com", name="KM Admin", role="km_admin")
-    repo.create(id="analyst1", email="analyst@test.com", name="Analyst", role="analyst")
-    repo.create(id="viewer1", email="viewer@test.com", name="Viewer", role="viewer")
+    repo.create(id="admin1", email="admin@test.com", name="Admin")
+    repo.create(id="km_admin1", email="km@test.com", name="KM Admin")
+    repo.create(id="analyst1", email="analyst@test.com", name="Analyst")
+    repo.create(id="viewer1", email="viewer@test.com", name="Viewer")
 
     admin_gid = conn.execute("SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]).fetchone()[0]
     UserGroupMembersRepository(conn).add_member(
@@ -143,10 +143,10 @@ def seeded_app(e2e_env):
 
     app = create_app()
     client = TestClient(app)
-    admin_token = create_access_token("admin1", "admin@test.com", "admin")
-    km_admin_token = create_access_token("km_admin1", "km@test.com", "km_admin")
-    analyst_token = create_access_token("analyst1", "analyst@test.com", "analyst")
-    viewer_token = create_access_token("viewer1", "viewer@test.com", "viewer")
+    admin_token = create_access_token("admin1", "admin@test.com")
+    km_admin_token = create_access_token("km_admin1", "km@test.com")
+    analyst_token = create_access_token("analyst1", "analyst@test.com")
+    viewer_token = create_access_token("viewer1", "viewer@test.com")
 
     return {
         "client": client,

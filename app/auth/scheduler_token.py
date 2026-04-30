@@ -94,7 +94,6 @@ def ensure_scheduler_user(conn: duckdb.DuckDBPyConnection) -> dict:
             id=user_id,
             email=SCHEDULER_USER_EMAIL,
             name=SCHEDULER_USER_NAME,
-            role="admin",
             # No password_hash — this user authenticates via the shared
             # secret only, never via /auth/login. Keeps the bootstrap
             # check ("any user has a password?") accurate.

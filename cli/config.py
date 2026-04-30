@@ -25,12 +25,18 @@ def get_token() -> Optional[str]:
     return os.environ.get("DA_TOKEN")
 
 
-def save_token(token: str, email: str, role: str):
+def save_token(token: str, email: str, role: Optional[str] = None):
+    """Persist token + email to ~/.config/da/token.json.
+
+    The ``role`` parameter is accepted for back-compat with older callers
+    but is no longer written — authorization derives from group memberships
+    server-side, not from a CLI-cached label. Old token.json files with a
+    ``role`` field are still readable; the field is simply ignored.
+    """
     token_file = _config_dir() / "token.json"
     token_file.write_text(json.dumps({
         "access_token": token,
         "email": email,
-        "role": role,
     }, indent=2))
 
 

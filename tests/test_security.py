@@ -21,14 +21,14 @@ def client(tmp_path, monkeypatch):
 
     conn = get_system_db()
     repo = UserRepository(conn)
-    repo.create(id="admin1", email="admin@test.com", name="Admin", role="admin")
-    repo.create(id="u1", email="user@test.com", name="User", role="analyst")
+    repo.create(id="admin1", email="admin@test.com", name="Admin")
+    repo.create(id="u1", email="user@test.com", name="User")
     grant_admin(conn, "admin1")
     conn.close()
 
     app = create_app()
     c = TestClient(app)
-    token = create_access_token("admin1", "admin@test.com", "admin")
+    token = create_access_token("admin1", "admin@test.com")
     return c, token
 
 
@@ -301,12 +301,12 @@ def viewer_client(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 
     conn = get_system_db()
-    UserRepository(conn).create(id="viewer1", email="viewer@test.com", name="Viewer", role="viewer")
+    UserRepository(conn).create(id="viewer1", email="viewer@test.com", name="Viewer")
     conn.close()
 
     app = create_app()
     c = TestClient(app)
-    token = create_access_token(user_id="viewer1", email="viewer@test.com", role="viewer")
+    token = create_access_token(user_id="viewer1", email="viewer@test.com")
     return c, token
 
 
@@ -344,7 +344,7 @@ class TestJwtClaims:
         """Token payload must include a jti claim with at least 16 hex chars."""
         os.environ.setdefault("TESTING", "1")
         from app.auth.jwt import create_access_token, verify_token
-        token = create_access_token("u1", "user@test.com", "analyst")
+        token = create_access_token("u1", "user@test.com")
         payload = verify_token(token)
         assert payload is not None
         assert "jti" in payload

@@ -1,7 +1,9 @@
-"""J4 — RBAC journey tests.
+"""J4 — RBAC journey tests (v19+ resource_grants flow).
 
-Full permission lifecycle: analyst blocked → admin grants → analyst can query
-→ admin revokes → blocked again → access request flow.
+Full permission lifecycle: analyst denied by default → admin grants via
+resource_grants → analyst can query → admin revokes → blocked again.
+The legacy /api/admin/permissions and /api/access-requests/* endpoints
+were removed in v19 along with `is_public`.
 """
 
 import pytest
@@ -12,17 +14,37 @@ def _auth(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _grant_table(conn, user_id: str, table_id: str) -> str:
+    from src.repositories.user_groups import UserGroupsRepository
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    from src.repositories.resource_grants import ResourceGrantsRepository
+    grp = UserGroupsRepository(conn).get_by_name(f"j-{user_id}")
+    if not grp:
+        grp = UserGroupsRepository(conn).create(
+            name=f"j-{user_id}", description="journey", created_by="test",
+        )
+    members = UserGroupMembersRepository(conn)
+    if not members.has_membership(user_id, grp["id"]):
+        members.add_member(user_id, grp["id"], source="admin", added_by="test")
+    grants = ResourceGrantsRepository(conn)
+    if not grants.has_grant([grp["id"]], "table", table_id):
+        return grants.create(
+            group_id=grp["id"], resource_type="table", resource_id=table_id,
+            assigned_by="test",
+        )
+    existing = next(
+        g for g in grants.list_for_groups([grp["id"]], "table")
+        if g["resource_id"] == table_id
+    )
+    return existing["id"]
+
+
 @pytest.mark.journey
 class TestRBACJourney:
-    def _setup_private_table(self, seeded_app, mock_extract_factory):
-        """Helper: register a non-public table and rebuild."""
+    def _setup_table(self, seeded_app, mock_extract_factory):
         c = seeded_app["client"]
-        t = seeded_app["admin_token"]
         env = seeded_app["env"]
-
-        # Register table as non-public (is_public defaults False when explicitly set)
-        # We rely on the default is_public=True and will test the query RBAC path
-        resp = c.post(
+        c.post(
             "/api/admin/register-table",
             json={
                 "name": "private_data",
@@ -30,151 +52,83 @@ class TestRBACJourney:
                 "query_mode": "local",
                 "description": "Private dataset",
             },
-            headers=_auth(t),
-        )
-        assert resp.status_code == 201
-
-        mock_extract_factory(
-            "keboola",
-            [{"name": "private_data", "data": [{"id": "1", "secret": "top_secret"}]}],
-        )
-
-        from src.orchestrator import SyncOrchestrator
-        SyncOrchestrator(analytics_db_path=env["analytics_db"]).rebuild()
-
-    def test_analyst_can_query_public_table(self, seeded_app, mock_extract_factory):
-        """Analyst can query public (default) tables without explicit permission."""
-        c = seeded_app["client"]
-        env = seeded_app["env"]
-
-        # Register + create data
-        c.post(
-            "/api/admin/register-table",
-            json={"name": "public_sales", "source_type": "keboola", "query_mode": "local"},
             headers=_auth(seeded_app["admin_token"]),
         )
         mock_extract_factory(
             "keboola",
-            [{"name": "public_sales", "data": [{"id": "1", "amount": "100"}]}],
+            [{"name": "private_data", "data": [{"id": "1", "secret": "top_secret"}]}],
         )
-
         from src.orchestrator import SyncOrchestrator
         SyncOrchestrator(analytics_db_path=env["analytics_db"]).rebuild()
 
+    def test_analyst_blocked_without_grant(self, seeded_app, mock_extract_factory):
+        c = seeded_app["client"]
+        self._setup_table(seeded_app, mock_extract_factory)
         resp = c.post(
             "/api/query",
-            json={"sql": "SELECT * FROM public_sales"},
+            json={"sql": "SELECT * FROM private_data"},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert resp.status_code == 403
+
+    def test_admin_grants_then_analyst_can_query(self, seeded_app, mock_extract_factory):
+        c = seeded_app["client"]
+        self._setup_table(seeded_app, mock_extract_factory)
+        # Admin grants TABLE access via resource_grants
+        from src.db import get_system_db
+        conn = get_system_db()
+        try:
+            _grant_table(conn, "analyst1", "private_data")
+        finally:
+            conn.close()
+        resp = c.post(
+            "/api/query",
+            json={"sql": "SELECT * FROM private_data"},
             headers=_auth(seeded_app["analyst_token"]),
         )
         assert resp.status_code == 200
 
-    def test_admin_grants_permission_analyst_can_query(self, seeded_app, mock_extract_factory):
-        """Admin grants explicit permission → analyst can query the table."""
+    def test_admin_revokes_grant_blocks_analyst(self, seeded_app, mock_extract_factory):
         c = seeded_app["client"]
-        t = seeded_app["admin_token"]
-        env = seeded_app["env"]
+        self._setup_table(seeded_app, mock_extract_factory)
 
-        self._setup_private_table(seeded_app, mock_extract_factory)
+        from src.db import get_system_db
+        conn = get_system_db()
+        try:
+            grant_id = _grant_table(conn, "analyst1", "private_data")
+        finally:
+            conn.close()
 
-        # Grant permission
+        # Verify analyst can query
         resp = c.post(
-            "/api/admin/permissions",
-            json={"user_id": "analyst1", "dataset": "private_data", "access": "read"},
-            headers=_auth(t),
+            "/api/query",
+            json={"sql": "SELECT * FROM private_data"},
+            headers=_auth(seeded_app["analyst_token"]),
         )
-        assert resp.status_code == 201
-
-        # Verify permission recorded
-        resp = c.get("/api/admin/permissions/analyst1", headers=_auth(t))
         assert resp.status_code == 200
-        datasets = [p["dataset"] for p in resp.json()["permissions"]]
-        assert "private_data" in datasets
 
-    def test_admin_revokes_permission(self, seeded_app, mock_extract_factory):
-        """After granting then revoking, permission is removed from record."""
+        # Admin revokes the grant via REST API
+        resp = c.delete(
+            f"/api/admin/grants/{grant_id}",
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert resp.status_code == 204
+
+        # Analyst is blocked again
+        resp = c.post(
+            "/api/query",
+            json={"sql": "SELECT * FROM private_data"},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert resp.status_code == 403
+
+    def test_admin_can_query_any_table(self, seeded_app, mock_extract_factory):
+        """Admin shortcut: members of the Admin group never need explicit grants."""
         c = seeded_app["client"]
-        t = seeded_app["admin_token"]
-        env = seeded_app["env"]
-
-        self._setup_private_table(seeded_app, mock_extract_factory)
-
-        # Grant
-        c.post(
-            "/api/admin/permissions",
-            json={"user_id": "analyst1", "dataset": "private_data", "access": "read"},
-            headers=_auth(t),
-        )
-
-        # Revoke — use request() because TestClient.delete() doesn't accept a body
-        import json as _json
-        resp = c.request(
-            "DELETE",
-            "/api/admin/permissions",
-            data=_json.dumps({"user_id": "analyst1", "dataset": "private_data", "access": "read"}),
-            headers={**_auth(t), "Content-Type": "application/json"},
-        )
-        assert resp.status_code == 200
-        assert resp.json()["revoked"] is True
-
-        # Permission should be gone
-        resp = c.get("/api/admin/permissions/analyst1", headers=_auth(t))
-        datasets = [p["dataset"] for p in resp.json()["permissions"]]
-        assert "private_data" not in datasets
-
-    def test_access_request_flow(self, seeded_app, mock_extract_factory):
-        """Analyst submits access request → admin approves → request is approved."""
-        c = seeded_app["client"]
-        t = seeded_app["admin_token"]
-        analyst_headers = _auth(seeded_app["analyst_token"])
-
-        self._setup_private_table(seeded_app, mock_extract_factory)
-
-        # Analyst creates access request
+        self._setup_table(seeded_app, mock_extract_factory)
         resp = c.post(
-            "/api/access-requests",
-            json={"table_id": "private_data", "reason": "I need this for analysis"},
-            headers=analyst_headers,
+            "/api/query",
+            json={"sql": "SELECT * FROM private_data"},
+            headers=_auth(seeded_app["admin_token"]),
         )
-        assert resp.status_code == 201
-        req_id = resp.json()["id"]
-        assert resp.json()["status"] == "pending"
-
-        # Admin sees pending request
-        resp = c.get("/api/access-requests/pending", headers=_auth(t))
         assert resp.status_code == 200
-        pending_ids = [r["id"] for r in resp.json()["requests"]]
-        assert req_id in pending_ids
-
-        # Admin approves
-        resp = c.post(f"/api/access-requests/{req_id}/approve", headers=_auth(t))
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "approved"
-
-        # Analyst's own requests show approved
-        resp = c.get("/api/access-requests/my", headers=analyst_headers)
-        assert resp.status_code == 200
-        statuses = {r["id"]: r["status"] for r in resp.json()["requests"]}
-        assert statuses.get(req_id) == "approved"
-
-    def test_duplicate_access_request_rejected(self, seeded_app, mock_extract_factory):
-        """Submitting a duplicate pending request returns 409."""
-        c = seeded_app["client"]
-        analyst_headers = _auth(seeded_app["analyst_token"])
-
-        self._setup_private_table(seeded_app, mock_extract_factory)
-
-        # First request
-        resp = c.post(
-            "/api/access-requests",
-            json={"table_id": "private_data"},
-            headers=analyst_headers,
-        )
-        assert resp.status_code == 201
-
-        # Duplicate
-        resp = c.post(
-            "/api/access-requests",
-            json={"table_id": "private_data"},
-            headers=analyst_headers,
-        )
-        assert resp.status_code == 409

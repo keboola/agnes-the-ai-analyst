@@ -366,8 +366,8 @@ class TestApiGuard:
         conn = get_system_db()
         try:
             ur = UserRepository(conn)
-            ur.create(id="admin1", email="admin@x", name="Admin1", role="admin")
-            ur.create(id="u1", email="u1@x", name="U1", role="analyst")
+            ur.create(id="admin1", email="admin@x", name="Admin1")
+            ur.create(id="u1", email="u1@x", name="U1")
             ug = UserGroupsRepository(conn)
             admin_id = ug.get_by_name("Admin")["id"]
             UserGroupMembersRepository(conn).add_member(
@@ -380,7 +380,7 @@ class TestApiGuard:
 
         app = create_app()
         client = TestClient(app, follow_redirects=False)
-        token = create_access_token("admin1", "admin@x", "")
+        token = create_access_token("admin1", "admin@x")
         client.cookies.set("access_token", token)
         return client
 

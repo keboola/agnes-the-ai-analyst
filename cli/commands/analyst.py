@@ -81,11 +81,10 @@ def _connect_to_instance(server_url: str) -> str:
     if not token:
         typer.echo("Authentication failed: server response missing access_token", err=True)
         raise typer.Exit(1)
-    role = data.get("role", "analyst")
 
     save_config({"server": server_url})
-    save_token(token, email, role)
-    typer.echo(f"Authenticated as {email} (role: {role})")
+    save_token(token, email)
+    typer.echo(f"Authenticated as {email}")
     return token
 
 
