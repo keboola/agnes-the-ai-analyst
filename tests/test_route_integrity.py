@@ -133,6 +133,7 @@ def test_admin_submenu_links_present_in_header():
         "/admin/groups",
         "/admin/access",
         "/admin/tables",
+        "/admin/sync",
         "/admin/marketplaces",
         "/admin/tokens",
     }

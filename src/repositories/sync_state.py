@@ -80,3 +80,23 @@ class SyncStateRepository:
             [table_id, limit],
         ).fetchall()
         return self._rows_to_dicts(results)
+
+    def list_history(
+        self,
+        limit: int = 50,
+        table_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """All sync_history rows, newest first. Powers the /admin/sync
+        recent-runs table. Optional ``table_id`` filter narrows to a
+        single table; without it the result spans every source / table."""
+        if table_id:
+            sql = (
+                "SELECT * FROM sync_history WHERE table_id = ? "
+                "ORDER BY synced_at DESC LIMIT ?"
+            )
+            params: list = [table_id, limit]
+        else:
+            sql = "SELECT * FROM sync_history ORDER BY synced_at DESC LIMIT ?"
+            params = [limit]
+        rows = self.conn.execute(sql, params).fetchall()
+        return self._rows_to_dicts(rows)

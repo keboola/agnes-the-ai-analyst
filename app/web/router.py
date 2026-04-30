@@ -669,6 +669,29 @@ async def admin_tables(
     return templates.TemplateResponse(request, "admin_tables.html", ctx)
 
 
+@router.get("/admin/sync", response_class=HTMLResponse)
+async def admin_sync(
+    request: Request,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Per-table sync state + recent history + manual trigger.
+    Recent runs are loaded client-side via ``GET /api/sync/history`` so
+    the table refreshes without a page reload after a trigger."""
+    sync_repo = SyncStateRepository(conn)
+    states = sync_repo.get_all_states()
+    # Pre-compute display strings server-side so the Jinja template stays
+    # logic-free. Reuses the same helpers the dashboard route uses.
+    enriched = []
+    for s in states:
+        item = dict(s)
+        item["last_sync_display"] = _format_relative_time(s.get("last_sync"))
+        item["size_display"] = _format_bytes(s.get("uncompressed_size_bytes") or 0)
+        enriched.append(item)
+    ctx = _build_context(request, user=user, sync_states=enriched)
+    return templates.TemplateResponse(request, "admin_sync.html", ctx)
+
+
 @router.get("/admin/users", response_class=HTMLResponse)
 async def admin_users_page(
     request: Request,

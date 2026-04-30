@@ -13,6 +13,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 <!-- Add bullets here. Group: Added / Changed / Fixed / Removed / Internal.
      Mark breaking changes with **BREAKING** at the start of the bullet. -->
 
+### Added
+
+- **`/admin/sync` page** (admin-only) under the Admin sub-menu: per-table sync state (last sync, status, rows, size, columns), recent runs (loaded live from `GET /api/sync/history`), and a "Sync now" trigger button that POSTs to the existing `/api/sync/trigger`. Replaces the ad-hoc Telegram-style sync controls scattered across the dashboard with a single console.
+- **`GET /api/sync/history?limit=&table_id=`** endpoint (admin-only) returning rows from the `sync_history` table newest-first. The optional `table_id` filter narrows to a single table; `limit` is clamped to 1–500. Powers the recent-runs table on `/admin/sync`.
+- `tests/test_admin_sync.py` — 7 tests pinning the page render + endpoint contract (admin/analyst/unauthenticated, table_id filter, limit clamp).
+
 ### Fixed
 
 - **Long descriptions in the data catalog no longer truncate to a single ellipsised line on desktop.** `.table-row-desc` (`app/web/templates/catalog.html`) now uses a 2-line clamp with ellipsis (`-webkit-line-clamp: 2`) so multi-sentence descriptions stay readable without pushing rows to a wall-of-text height. Below the 700 px breakpoint the rule still relaxes to `white-space: normal` so mobile sees full wrapping.

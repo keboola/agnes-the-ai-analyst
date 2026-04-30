@@ -355,3 +355,34 @@ async def update_table_subscriptions(
     for table_name, enabled in request.tables.items():
         repo.set_dataset_enabled(user["id"], table_name, enabled)
     return {"table_mode": request.table_mode, "updated": len(request.tables)}
+
+
+# ---- History ----
+
+@router.get("/history")
+async def sync_history(
+    limit: int = 50,
+    table_id: Optional[str] = None,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """List recent sync runs, newest first. Powers the /admin/sync
+    recent-runs table. Optional ``table_id`` filter narrows to a single
+    table. Admin-only — exposes per-run errors operators may not want
+    surfaced to end users.
+
+    Response: ``[{id, table_id, synced_at, rows, duration_ms, status, error}, ...]``.
+    """
+    if limit < 1:
+        limit = 1
+    if limit > 500:
+        limit = 500
+    repo = SyncStateRepository(conn)
+    rows = repo.list_history(limit=limit, table_id=table_id)
+    out = []
+    for r in rows:
+        item = dict(r)
+        if item.get("synced_at") is not None:
+            item["synced_at"] = str(item["synced_at"])
+        out.append(item)
+    return out
