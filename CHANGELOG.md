@@ -13,6 +13,58 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 <!-- Add bullets here. Group: Added / Changed / Fixed / Removed / Internal.
      Mark breaking changes with **BREAKING** at the start of the bullet. -->
 
+UI overhaul (9 phases per `docs/superpowers/plans/2026-04-30-ui-overhaul.md`)
+plus audit-log instrumentation across 10 admin/user-mutating modules.
+
+### Added
+
+- **`/admin/sync` page** (admin-only) under the Admin sub-menu: per-table sync state (last sync, status, rows, size, columns), recent runs (loaded live from `GET /api/sync/history`), and a "Sync now" trigger button that POSTs to the existing `/api/sync/trigger`. Replaces the ad-hoc Telegram-style sync controls scattered across the dashboard with a single console.
+- **`/admin/settings` page** (admin-only) under the Admin sub-menu: dataset sync toggles + per-table subscriptions for the calling user, loaded live from the existing `/api/settings`, `/api/settings/dataset`, and `/api/sync/table-subscriptions` endpoints — surfaces in-browser the per-user preferences that were previously API/CLI-only.
+- **`/admin/metrics` and `/admin/metrics/{id}` pages** (admin-only): read-only browser surface for `metric_definitions`. List page groups metrics by category (reuses the catalog's `_build_metrics_data` helper); detail page shows display name, ID, description, SQL block, notes/synonyms, and technical metadata (table_name, dimensions, filters, source). Editing remains via `da metrics import`; the page surfaces a "managed via CLI" notice.
+- **`GET /api/sync/history?limit=&table_id=`** endpoint (admin-only) returning rows from the `sync_history` table newest-first. The optional `table_id` filter narrows to a single table; `limit` is clamped to 1–500. Powers the recent-runs table on `/admin/sync`.
+- **Catalog** and **Corporate Memory** entries on the top navigation header. Previously the analyst's two daily destinations were reachable only by typing the URL or clicking through dashboard widgets; now they sit alongside Dashboard and Install CLI in `_app_header.html`.
+- **Registered tables** (`/admin/tables`) entry in the Admin sub-menu — was a registered route that no nav linked to.
+- Global `.data-table` CSS class in `app/web/static/style-custom.css` — single source of truth for tabular layouts: fixed layout, ellipsis truncation, hoverable rows, `tabular-nums` for column alignment. Modifier classes `.cell-mono` / `.cell-wrap` / `.cell-truncate-2` cover the most common per-cell needs. Existing admin templates can opt in by adding `data-table` alongside their current class without losing per-page overrides.
+- Global `confirmDestructive({title, body, confirmLabel, kind})` helper at `app/web/static/js/confirm_modal.js`, loaded from `base.html`. Self-contained: injects its own CSS once on first call, builds modal DOM on demand, returns `Promise<boolean>`. Closing via Escape / backdrop / Cancel resolves false; OK button (or Enter) resolves true. Supports `kind: 'danger'` (default) and `'primary'` to color the confirm button red or blue.
+- Tablet breakpoint (`@media (max-width: 1024px)`) in `style-custom.css`: tightens container padding, shrinks `.data-table` density, and reduces modal padding. Fills the gap between the desktop layout and the existing 720 px mobile rules.
+- Dashboard stat row now shows real numbers instead of hardcoded zeros: **Columns** sums `sync_state.columns`, **Data Size** sums `sync_state.uncompressed_size_bytes` (formatted via the new `_format_bytes` helper).
+- Dashboard **Account → Last Sync** row now renders the real instance-wide last-sync timestamp (`MAX(sync_state.last_sync)`) humanized via the new `_format_relative_time` helper ("3 minutes ago" / "2 days ago" / absolute UTC after a week).
+- Dashboard and `/catalog` **Business Metrics** card now lists real metric definitions: a new `_build_metrics_data()` helper groups `metric_definitions` rows by category and emits the `{label, css, metrics: [{path, display_name, description, grain}]}` structure both templates already iterate. Categories without an entry in the well-known CSS map render without a color accent (rather than breaking).
+- `docs/superpowers/plans/2026-04-30-ui-overhaul.md` — the 9-phase plan this PR opens.
+- `tests/test_route_integrity.py` — regression test pinning the contract between the top-nav and registered HTML routes. Two assertions: every static `href="/..."` in `_app_header.html` resolves to a registered route, and every registered HTML route is either in the nav or on a documented allowlist. Catches dead nav links and orphan pages before they ship. Plus pins for the analyst-surface and admin sub-menu destinations.
+- `tests/test_dashboard_helpers.py` — 17 unit tests for `_format_bytes`, `_format_relative_time`, `_build_metrics_data`, including a future-timestamp clamp ensuring clock skew between the DB writer and the web pod doesn't render as "0 minutes ago".
+- `tests/test_admin_sync.py` — 7 tests pinning `/admin/sync` page render + the `GET /api/sync/history` endpoint contract.
+- `tests/test_admin_settings.py` — 3 tests pinning `/admin/settings` route + endpoint references.
+- `tests/test_admin_metrics_page.py` — 7 tests pinning `/admin/metrics` list + detail + 404 + RBAC.
+- `tests/test_audit_log_coverage.py` — 21 tests pinning that each instrumented endpoint writes a matching `audit_log` row.
+
+### Changed
+
+- Top-level navigation reorganized: **Catalog** and **Corporate Memory** added as analyst destinations; **Tokens** and **Marketplaces** moved into the Admin dropdown alongside Users / Groups / Resource access / Registered tables (was: top-level peers of the Admin button).
+- Eight raw `confirm()` calls across `dashboard.html` (Telegram unlink), `admin_tables.html` (table unregister), `admin_group_detail.html` (remove member, delete group), and `admin_user_detail.html` (remove from group, password reset, deactivate, delete user) replaced with `confirmDestructive(...)`. Each call carries a meaningful body string instead of the previous one-line confirm; destructive vs. primary intent is signalled by button color.
+- Replaced 8 hardcoded `'Monaco'/'SF Mono'/'Inter'` font-family declarations with `var(--font-mono)` / `var(--font-primary)` references in `style.css`, `style-custom.css`, `css/metric_modal.css`, and `js/metric_modal.js`. The `:root` design tokens in `style-custom.css` remain the single source of truth; updating `--font-mono` now propagates to every code/SQL/identifier surface instead of leaving stragglers (the Prism SQL highlighter, the metric-modal sub-title, copy-button code blocks).
+- Deleted the duplicate `body { font-family: -apple-system, … }` rule at `app/web/static/style.css:24`. The cascade was already overriding it from `style-custom.css:65` (loaded second), so removal eliminates one source of font drift without changing what users see.
+- **Modal CSS hoisted to `style-custom.css`** (`.modal-backdrop`, `.modal-card`, `.modal-btn`, `.modal-actions`). Four admin templates (`admin_users`, `admin_access`, `admin_groups`, `admin_marketplaces`) had near-identical inline copies; canonical version (480 px max-width, `max-height: 90vh; overflow-y: auto`, full input-type coverage including `text/email/password/url/number/select/textarea`) now lives in one place. `admin_tokens` and `my_tokens` keep their custom modal treatment (backdrop-filter, slide-in animation, larger padding) — those modals are visually distinct on purpose.
+- **Catalog profiler overlay markup extracted to `_profiler_overlay.html`** Jinja partial. Pure structural extraction — no behavior change. CSS + JS still live in `catalog.html`; full hoist of those tracked separately because the JS references shared `catalog.html` state.
+
+### Fixed
+
+- **Long descriptions in the data catalog no longer truncate to a single ellipsised line on desktop.** `.table-row-desc` (`app/web/templates/catalog.html`) now uses a 2-line clamp with ellipsis (`-webkit-line-clamp: 2`) so multi-sentence descriptions stay readable without pushing rows to a wall-of-text height. Below the 700 px breakpoint the rule still relaxes to `white-space: normal` so mobile sees full wrapping.
+- Dashboard `updateSyncSettings()` now POSTs to `/api/sync/settings` (the actual endpoint) instead of the non-existent `/api/sync-settings` — toggling Jira sync was silently 404-ing.
+- Dashboard `unlinkChannel()` now early-returns for non-`telegram` channels with a clear message instead of calling `/api/${channel}/unlink`. The macOS-app desktop unlink endpoint doesn't exist; clicking Unlink on the desktop notification channel was 404-ing.
+- Dashboard's Telegram link state now reflects the live `TelegramRepository.get_link()` lookup (same query as `GET /api/telegram/status`) instead of the hardcoded `{"linked": False}` that was always shown regardless of whether the user had a linked Telegram account.
+
+### Removed
+
+- Legacy `/admin/permissions` page (template, route handler, and 3 stale tests in `tests/test_web_ui.py`). The page's calls to `/api/admin/permissions` and `/api/access-requests/*` are wired against the v12-era `dataset_permissions` table that v13 RBAC does not read; the page was never linked from the nav. The underlying `app/api/permissions.py` REST endpoints stay for now — a follow-up plan retires them once the access-request inbox is folded into `/admin/access`.
+- `/activity-center` page, its dashboard widget, and the `test_activity_center` smoke test. The route was rendering against undefined stub data passed by `app/web/router.py` (`_SilentUndefined` masked the breakage), and no service produces the `executive_summary` / `maturity_roadmap` / `business_processes` fields the template referenced.
+- Dashboard SSH-key new-user onboarding flow (the `{% else %}` branch under `{% if user_info.exists %}`). It posted to `url_for('register')` which resolves to `/auth/password/setup` — an unrelated password-setup endpoint, so the form was wired to nothing. v13 auth uses Google OAuth + magic-link + PAT; replaced with a minimal welcome empty-state.
+- The unreachable `welcome-pending` empty-state from `dashboard.html`. `UserInfo.exists` is hardcoded `True` in the dashboard route, so the `{% else %}` branch never fires; deleting it eliminates dead template code.
+- `account_details.notification_scripts` row on the dashboard Account card and the "Instant Automation" feature card on `/login`. The product never shipped a UI for managing notification scripts; the account-row pointed users to drop `.py` files in `~/user/notifications/` with no auditing surface. Decision deferred under D2 of the UI overhaul plan.
+- Dashboard **macOS App** notification channel (the `desktop_status` row in the Notifications card). No backend infrastructure exists — no `DesktopRepository`, no `/api/desktop/*` endpoints, no `desktop_links` table — so the row was permanently "Not linked" and the Verify/Unlink buttons would have 404'd. Telegram remains the only wired notification channel.
+- Dashboard **Unstructured** stat-card. There is no unstructured-data feature in this product (no JSONL volume tracking, no binary blob storage), so the slot was always "0 MB".
+- Four unused stub kwargs from the dashboard route's template context (`account_status`, `categories=[]`, `knowledge_stats`, `user_knowledge_stats`). No template references them; they were noise in the context.
+
 ### Security
 
 - **Audit-log writes added to 28 admin/user-mutating endpoints across 10 modules** that previously left no trace. Operators can now answer "who did what, when" without grepping logs. Pattern matches the canonical `_audit()` helper from `app/api/users.py` and `marketplaces.py`. New rows land in the existing `audit_log` table; the helper swallows write failures so audit instrumentation never breaks the user-facing operation.
@@ -32,83 +84,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
   Resource ID prefixes are namespaced (`script:<id>`, `metric:<id>`, `sync:<scope>`, `upload:<filename>`, `admin:<id>`, `permission:<user>:<dataset>`, `access_request:<id>`, `metadata:<table>`, `catalog:<table>`). Params capture name + size hints + exit codes + counts — never script source bodies, upload contents, or secret values. Server-side Python execution (the highest-blast-radius surface) is now fully audited; legacy dataset_permission grants/revokes (the v13 RBAC migration's tail) leave a trail until they're folded into resource_grants.
 
-- 21 new tests in `tests/test_audit_log_coverage.py` pin that each instrumented endpoint writes a matching `audit_log` row. Loose-match strategy (action prefix + user_id) keeps tests resilient to future param wording tweaks.
-
-### Added
-
-- Tablet breakpoint (`@media (max-width: 1024px)`) in `style-custom.css`: tightens container padding, shrinks `.data-table` density, and reduces modal padding. Fills the gap between the desktop layout and the existing 720 px mobile rules.
-
-### Changed
-
-- **Modal CSS hoisted to `style-custom.css`** (`.modal-backdrop`, `.modal-card`, `.modal-btn`, `.modal-actions`). Four admin templates (`admin_users`, `admin_access`, `admin_groups`, `admin_marketplaces`) had near-identical inline copies; canonical version (480 px max-width, `max-height: 90vh; overflow-y: auto`, full input-type coverage including `text/email/password/url/number/select/textarea`) now lives in one place. `admin_tokens` and `my_tokens` keep their custom modal treatment (backdrop-filter, slide-in animation, larger padding) — those modals are visually distinct on purpose.
-- **Catalog profiler overlay markup extracted to `_profiler_overlay.html`** Jinja partial. Pure structural extraction — no behavior change. CSS + JS still live in `catalog.html`; full hoist of those tracked separately because the JS references shared `catalog.html` state.
-
-### Internal
-
-- `style.css` retirement is partially complete: the body font-family duplicate was removed in Phase 3a and the cascade order means `style-custom.css` already wins on every overlapping rule. Full deletion + `-v2` suffix rename across 93 markup sites is deferred — too much surface area to verify without per-page browser sweep. Tracked as a follow-up.
-
-- **`/admin/metrics` and `/admin/metrics/{id}` pages** (admin-only): read-only browser surface for `metric_definitions`. List page groups metrics by category (reuses the catalog's `_build_metrics_data` helper); detail page shows display name, ID, description, SQL block, notes/synonyms, and technical metadata (table_name, dimensions, filters, source). Editing remains via `da metrics import`; the page surfaces a "managed via CLI" notice. Phase 6 of the UI overhaul plan.
-- **`/admin/settings` page** (admin-only) under the Admin sub-menu: dataset sync toggles + per-table subscriptions for the calling user, loaded live from the existing `/api/settings`, `/api/settings/dataset`, and `/api/sync/table-subscriptions` endpoints. Phase 5 of the UI overhaul plan — surfaces in-browser the per-user preferences that were previously API/CLI-only.
-- **`/admin/sync` page** (admin-only) under the Admin sub-menu: per-table sync state (last sync, status, rows, size, columns), recent runs (loaded live from `GET /api/sync/history`), and a "Sync now" trigger button that POSTs to the existing `/api/sync/trigger`. Replaces the ad-hoc Telegram-style sync controls scattered across the dashboard with a single console.
-- **`GET /api/sync/history?limit=&table_id=`** endpoint (admin-only) returning rows from the `sync_history` table newest-first. The optional `table_id` filter narrows to a single table; `limit` is clamped to 1–500. Powers the recent-runs table on `/admin/sync`.
-- `tests/test_admin_sync.py` — 7 tests pinning the page render + endpoint contract (admin/analyst/unauthenticated, table_id filter, limit clamp).
-
-### Fixed
-
-- **Long descriptions in the data catalog no longer truncate to a single ellipsised line on desktop.** `.table-row-desc` (`app/web/templates/catalog.html`) now uses a 2-line clamp with ellipsis (`-webkit-line-clamp: 2`) so multi-sentence descriptions stay readable without pushing rows to a wall-of-text height. Below the 700 px breakpoint the rule still relaxes to `white-space: normal` so mobile sees full wrapping.
-
-### Added
-
-- Global `.data-table` CSS class in `app/web/static/style-custom.css` — single source of truth for tabular layouts: fixed layout, ellipsis truncation, hoverable rows, `tabular-nums` for column alignment. Modifier classes `.cell-mono` / `.cell-wrap` / `.cell-truncate-2` cover the most common per-cell needs. Existing admin templates can opt in by adding `data-table` alongside their current class without losing per-page overrides.
-- **Catalog** and **Corporate Memory** entries on the top navigation header. Previously the analyst's two daily destinations were reachable only by typing the URL or clicking through dashboard widgets; now they sit alongside Dashboard and Install CLI in `_app_header.html`. Phase 2 of the UI overhaul plan.
-- **Registered tables** (`/admin/tables`) entry in the Admin sub-menu — was a registered route that no nav linked to.
-- Global `confirmDestructive({title, body, confirmLabel, kind})` helper at `app/web/static/js/confirm_modal.js`, loaded from `base.html`. Self-contained: injects its own CSS once on first call, builds modal DOM on demand, returns `Promise<boolean>`. Closing via Escape / backdrop / Cancel resolves false; OK button (or Enter) resolves true. Supports `kind: 'danger'` (default) and `'primary'` to color the confirm button red or blue.
-- Two new tests in `tests/test_route_integrity.py` pinning that the analyst-surface (Catalog / Corporate Memory / Dashboard / Install CLI) and the admin sub-menu destinations stay in the rendered nav. Catches refactors that silently drop entries.
-
-### Changed
-
-- Replaced 8 hardcoded `'Monaco'/'SF Mono'/'Inter'` font-family declarations with `var(--font-mono)` / `var(--font-primary)` references in `style.css`, `style-custom.css`, `css/metric_modal.css`, and `js/metric_modal.js`. The `:root` design tokens in `style-custom.css` remain the single source of truth; updating `--font-mono` now propagates to every code/SQL/identifier surface instead of leaving stragglers (the Prism SQL highlighter, the metric-modal sub-title, copy-button code blocks).
-- Deleted the duplicate `body { font-family: -apple-system, … }` rule at `app/web/static/style.css:24`. The cascade was already overriding it from `style-custom.css:65` (loaded second), so removal eliminates one source of font drift without changing what users see.
-- Top-level navigation reorganized: **Catalog** and **Corporate Memory** added as analyst destinations; **Tokens** and **Marketplaces** moved into the Admin dropdown alongside Users / Groups / Resource access / Registered tables (was: top-level peers of the Admin button).
-- Eight raw `confirm()` calls across `dashboard.html` (Telegram unlink), `admin_tables.html` (table unregister), `admin_group_detail.html` (remove member, delete group), and `admin_user_detail.html` (remove from group, password reset, deactivate, delete user) replaced with `confirmDestructive(...)`. Each call carries a meaningful body string instead of the previous one-line confirm; destructive vs. primary intent is signalled by button color.
-
-### Internal
-
-- The dashboard's `unlinkChannel('telegram')` flow is fully `await`-based now that the confirm step is async.
-- The `font-family: monospace` inline style injected by `app/web/static/js/metric_modal.js` for the metric subtitle is now a `.metric-name-id` class in `metric_modal.css`, picking up `var(--font-mono)`. CSS-injecting JS strings hide from grep audits; promoting to a class makes the rule visible to future design-token changes.
-
-- `tests/test_route_integrity.py` — regression test pinning the contract between the top-nav and registered HTML routes. Asserts every static `href="/..."` in `_app_header.html` resolves to a registered route, and every registered HTML route is either in the nav or on a documented allowlist. Catches dead nav links and orphan pages before they ship. The allowlist is the migration ramp for Phase 2 of the UI overhaul (`docs/superpowers/plans/2026-04-30-ui-overhaul.md`), which moves Catalog / Corporate Memory / Metrics off the allowlist into the nav.
-- `docs/superpowers/plans/2026-04-30-ui-overhaul.md` — the 9-phase plan this PR opens.
-- Dashboard stat row now shows real numbers instead of hardcoded zeros: **Columns** sums `sync_state.columns`, **Data Size** sums `sync_state.uncompressed_size_bytes` (formatted via the new `_format_bytes` helper). The "Unstructured" stat-card was removed — Agnes does not track unstructured data volume; the slot was always "0 MB".
-- Dashboard **Account → Last Sync** row now renders the real instance-wide last-sync timestamp (`MAX(sync_state.last_sync)`) humanized via the new `_format_relative_time` helper ("3 minutes ago" / "2 days ago" / absolute UTC after a week).
-- Dashboard and `/catalog` **Business Metrics** card now lists real metric definitions: a new `_build_metrics_data()` helper groups `metric_definitions` rows by category and emits the `{label, css, metrics: [{path, display_name, description, grain}]}` structure both templates already iterate. Categories without an entry in the well-known CSS map render without a color accent (rather than breaking).
-- `tests/test_dashboard_helpers.py` — 17 unit tests pinning the new formatters and the metrics builder, including a future-timestamp clamp ensuring clock skew between the DB writer and the web pod doesn't render as "0 minutes ago".
-
 ### Internal
 
 - Stats Row CSS grid corrected to `repeat(4, 1fr)` (was still `repeat(5, 1fr)` after the Unstructured stat-card was removed) so the four remaining cards no longer stretch ~25% wider than designed. Tablet breakpoint at `≤1100px` matches with `repeat(2, 1fr)` instead of leaving a 3+1 wrap.
-- Removed the unreachable `welcome-pending` empty-state from `dashboard.html`. `UserInfo.exists` is hardcoded `True` in the dashboard route, so the `{% else %}` branch never fires; deleting it eliminates dead template code.
-- Dropped four unused stub kwargs from the dashboard route's template context (`account_status`, `categories=[]`, `knowledge_stats`, `user_knowledge_stats`). No template references them; they were noise in the context.
 - `_format_relative_time` clamps future timestamps (clock skew between writer + reader) to `"just now"`.
 - Promoted `TelegramRepository` to a module-level import in `app/web/router.py` (was a local-import inside the dashboard handler).
-
-### Removed
-
-- Legacy `/admin/permissions` page (template, route handler, and 3 stale tests in `tests/test_web_ui.py`). The page's calls to `/api/admin/permissions` and `/api/access-requests/*` are wired against the v12-era `dataset_permissions` table that v13 RBAC does not read; the page was never linked from the nav. The underlying `app/api/permissions.py` REST endpoints stay for now — a follow-up plan retires them once the access-request inbox is folded into `/admin/access`.
-- `/activity-center` page, its dashboard widget, and the `test_activity_center` smoke test. The route was rendering against undefined stub data passed by `app/web/router.py` (`_SilentUndefined` masked the breakage), and no service produces the `executive_summary` / `maturity_roadmap` / `business_processes` fields the template referenced.
-- Dashboard SSH-key new-user onboarding flow (the `{% else %}` branch under `{% if user_info.exists %}`). It posted to `url_for('register')` which resolves to `/auth/password/setup` — an unrelated password-setup endpoint, so the form was wired to nothing. v13 auth uses Google OAuth + magic-link + PAT; replaced with a minimal welcome empty-state.
-- `account_details.notification_scripts` row on the dashboard Account card and the "Instant Automation" feature card on `/login`. The product never shipped a UI for managing notification scripts; the account-row pointed users to drop `.py` files in `~/user/notifications/` with no auditing surface. Decision deferred under D2 of the UI overhaul plan.
-- Dashboard **macOS App** notification channel (the `desktop_status` row in the Notifications card). No backend infrastructure exists — no `DesktopRepository`, no `/api/desktop/*` endpoints, no `desktop_links` table — so the row was permanently "Not linked" and the Verify/Unlink buttons would have 404'd. Telegram remains the only wired notification channel.
-- Dashboard **Unstructured** stat-card. There is no unstructured-data feature in this product (no JSONL volume tracking, no binary blob storage), so the slot was always "0 MB".
-
-### Fixed
-
-- Dashboard `updateSyncSettings()` now POSTs to `/api/sync/settings` (the actual endpoint) instead of the non-existent `/api/sync-settings` — toggling Jira sync was silently 404-ing.
-- Dashboard `unlinkChannel()` now early-returns for non-`telegram` channels with a clear message instead of calling `/api/${channel}/unlink`. The macOS-app desktop unlink endpoint doesn't exist; clicking Unlink on the desktop notification channel was 404-ing.
-- Dashboard's Telegram link state now reflects the live `TelegramRepository.get_link()` lookup (same query as `GET /api/telegram/status`) instead of the hardcoded `{"linked": False}` that was always shown regardless of whether the user had a linked Telegram account.
-
-### Internal
-
+- The dashboard's `unlinkChannel('telegram')` flow is fully `await`-based now that the confirm step is async.
+- The `font-family: monospace` inline style injected by `app/web/static/js/metric_modal.js` for the metric subtitle is now a `.metric-name-id` class in `metric_modal.css`, picking up `var(--font-mono)`. CSS-injecting JS strings hide from grep audits; promoting to a class makes the rule visible to future design-token changes.
+- `style.css` retirement is partially complete: the body font-family duplicate was removed and the cascade order means `style-custom.css` already wins on every overlapping rule. Full deletion + `-v2` suffix rename across 93 markup sites is deferred — too much surface area to verify without per-page browser sweep. Tracked as a follow-up.
 - Added `.worktrees/` to `.gitignore` so contributor-local isolated worktrees don't pollute git status.
 - Pinned the OpenAPI snapshot (`tests/snapshots/openapi.json`) by removing the two deleted route entries (`/activity-center`, `/admin/permissions`).
 
