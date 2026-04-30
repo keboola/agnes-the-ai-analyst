@@ -161,28 +161,16 @@ docker compose $COMPOSE_FILES $COMPOSE_PROFILES_ARG up -d
 
 # --- 6. Auto-upgrade via cron (pulls new image digest every 5 min) ---
 if [ "$UPGRADE_MODE" = "auto" ]; then
-    # Cron script sources /opt/agnes/.env for AGNES_TAG — so if operator edits .env
-    # (e.g. to pin a specific stable-YYYY.MM.N), cron picks it up immediately. No
-    # drift between what compose up reads and what the digest-check inspects.
-    cat > /usr/local/bin/agnes-auto-upgrade.sh <<'SCRIPTEOF'
-#!/bin/bash
-# Runs from cron — pulls new image if one is available, restarts containers.
-set -euo pipefail
-cd /opt/agnes
-# Source .env so AGNES_TAG reflects any operator edits since boot.
-# shellcheck disable=SC1091
-set -a; . /opt/agnes/.env; set +a
-IMAGE="ghcr.io/keboola/agnes-the-ai-analyst:$${AGNES_TAG:-stable}"
-COMPOSE_FILES="-f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.host-mount.yml"
-BEFORE=$(docker images --no-trunc --format '{{.Digest}}' "$IMAGE" | head -1)
-docker compose $COMPOSE_FILES pull >/dev/null 2>&1
-AFTER=$(docker images --no-trunc --format '{{.Digest}}' "$IMAGE" | head -1)
-if [ "$BEFORE" != "$AFTER" ]; then
-    echo "$(date): new image digest for $IMAGE — recreating containers"
-    docker compose $COMPOSE_FILES up -d
-    docker image prune -f >/dev/null 2>&1
-fi
-SCRIPTEOF
+    # Single-source the cron script from the OSS repo's main branch instead
+    # of inlining a copy here. Two reasons:
+    #   1. Drift prevention — earlier inline copy missed several iterations
+    #      of the canonical script (TLS overlay detection, array-form compose
+    #      files, config-disk fail-fast guard).
+    #   2. Re-fetched on every VM boot, so script-only fixes propagate
+    #      without an infra recreate. For immediate rollout to running VMs,
+    #      operators can also re-run this fetch by hand.
+    SCRIPT_URL="https://raw.githubusercontent.com/keboola/agnes-the-ai-analyst/main/scripts/ops/agnes-auto-upgrade.sh"
+    curl -fsSL --retry 3 --retry-delay 2 "$SCRIPT_URL" -o /usr/local/bin/agnes-auto-upgrade.sh
     chmod +x /usr/local/bin/agnes-auto-upgrade.sh
 
     # Install cron entry idempotently: remove any prior agnes-auto-upgrade line, then append ours.

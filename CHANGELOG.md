@@ -20,6 +20,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   onto `/data` (sdb) — wiped on the next container recreate. Re-applies
   `mount --make-rprivate /data /data/state` on every run to defend against
   propagation regressions.
+- `infra/modules/customer-instance/startup-script.sh.tpl`: replaced the
+  inline heredoc copy of the auto-upgrade script with a `curl` from
+  `raw.githubusercontent.com/keboola/agnes-the-ai-analyst/main/scripts/ops/agnes-auto-upgrade.sh`
+  — single source of truth eliminates drift (the inline copy had fallen
+  behind on TLS overlay detection, array-form compose files, and the new
+  config-disk guard). VMs re-fetch on every boot, so script-only fixes
+  propagate without an infra recreate.
 
 ## [0.24.0] — 2026-04-30
 
