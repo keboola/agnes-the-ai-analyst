@@ -10,6 +10,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+<!-- Add bullets here. Group: Added / Changed / Fixed / Removed / Internal.
+     Mark breaking changes with **BREAKING** at the start of the bullet. -->
+
+## [0.13.0] — 2026-04-30
+
+Minor release. Adds **smart local sync** so analysts get RBAC-filtered parquets pulled at every Claude Code SessionStart and session logs pushed at SessionEnd, plus a new **BigQuery `query_mode='materialized'`** that lets admins register a scheduled SQL query whose result rides the same auto-sync flow as Keboola tables. The auto-sync set per analyst is the intersection of `query_mode IN ('local', 'materialized')` and the `resource_grants` rows — admins curate it via the existing RBAC layer, no new endpoints. Devin review iteration during PR #145 surfaced and fixed a `null`-disable trap, an empty-hash re-download bug, and a stale-`source_query` data-integrity gap.
+
 ### Added
 
 - **BigQuery `query_mode='materialized'`** — admin registers a SQL query
