@@ -397,22 +397,25 @@ def materialize_query(
 
     # COPY through a BqAccess-managed session.
     with bq.duckdb_session() as conn:
-        # ATTACH the data project. Test stubs pre-populate `bq` as an
-        # in-memory schema; production uses the real BQ extension. The
-        # only tolerated failure is "alias already in use" — anything else
-        # (auth, permission, malformed project_id) must surface so the
-        # caller's per-row try/except can record it. Devil's-advocate
-        # review found that swallowing the error blindly hid
-        # cross-project permission errors behind a confusing
-        # "bq is not attached" downstream message.
-        try:
+        # ATTACH the data project — but only when no `bq` catalog is
+        # already attached. Production sessions (real BqAccess) come with
+        # only `:memory:` and need the ATTACH; test sessions pre-populate
+        # `bq` as a fixture catalog and would error on a redundant ATTACH
+        # (alias already in use) AND on the bigquery extension load when
+        # the test runner has no cached extension. Detecting via
+        # `duckdb_databases()` keeps the ATTACH path idempotent without
+        # swallowing real errors (auth, cross-project permission,
+        # malformed project_id) — those still propagate from the actual
+        # ATTACH call.
+        attached = {
+            r[0] for r in conn.execute(
+                "SELECT database_name FROM duckdb_databases()"
+            ).fetchall()
+        }
+        if "bq" not in attached:
             conn.execute(
                 f"ATTACH 'project={bq.projects.data}' AS bq (TYPE bigquery, READ_ONLY)"
             )
-        except duckdb.Error as e:
-            msg = str(e).lower()
-            if "already" not in msg and "in use" not in msg:
-                raise
 
         try:
             safe_path = str(tmp_path).replace("'", "''")
