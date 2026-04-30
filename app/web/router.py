@@ -945,7 +945,8 @@ async def profile_page(
     were added by an admin, by Google sync, or seeded at deploy).
     """
     rows = conn.execute(
-        """SELECT g.id, g.name, g.description, g.is_system, m.source, m.added_at
+        """SELECT g.id, g.name, g.description, g.is_system, g.created_by,
+                  m.source, m.added_at
            FROM user_group_members m
            JOIN user_groups g ON g.id = m.group_id
            WHERE m.user_id = ?
@@ -954,6 +955,25 @@ async def profile_page(
     ).fetchall()
     cols = [d[0] for d in conn.description]
     memberships = [dict(zip(cols, r)) for r in rows]
+    # Project the same chip metadata the /admin/users/{id} page derives:
+    # origin (single source of truth via app.api.access._derive_origin),
+    # plus a display_name that shortens raw Workspace emails for
+    # google_sync rows (`grp_foundryai_legal@groupon.com` → `Legal`). The
+    # Jinja template just renders these without env lookups.
+    from app.api.access import _derive_origin
+    prefix = os.environ.get("AGNES_GOOGLE_GROUP_PREFIX", "").strip().lower()
+    for m in memberships:
+        m["origin"] = _derive_origin(m)
+        if m["origin"] == "google_sync" and m["name"]:
+            local = m["name"].split("@", 1)[0]
+            if prefix and local.lower().startswith(prefix):
+                local = local[len(prefix):]
+            local = local.lstrip("_- \t")
+            if not local:
+                local = m["name"].split("@", 1)[0]
+            m["display_name"] = local[:1].upper() + local[1:]
+        else:
+            m["display_name"] = m["name"]
 
     ctx = _build_context(
         request,
