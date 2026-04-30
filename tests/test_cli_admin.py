@@ -55,9 +55,9 @@ class TestListUsers:
 
 class TestAddUser:
     def test_add_user_success(self):
-        created = {"email": "newuser@x.com", "id": "uid-1", "role": "analyst"}
+        created = {"email": "newuser@x.com", "id": "uid-1"}
         with patch("cli.commands.admin.api_post", return_value=_resp(201, created)):
-            result = runner.invoke(app, ["admin", "add-user", "newuser@x.com", "--role", "analyst"])
+            result = runner.invoke(app, ["admin", "add-user", "newuser@x.com"])
         assert result.exit_code == 0
         assert "newuser@x.com" in result.output
 
@@ -156,34 +156,19 @@ class TestMetadataShow:
         assert result.exit_code == 1
 
 
-def test_admin_set_role_invokes_patch(monkeypatch):
-    """`da admin set-role` sends PATCH to /api/users/{id} with role."""
-    import httpx
+def test_admin_set_role_returns_hardfail():
+    """v19: `da admin set-role` was removed. Calling it must hard-fail
+    with a non-zero exit code and a message pointing at the replacement
+    (group memberships)."""
     from cli.commands.admin import admin_app
     from typer.testing import CliRunner
 
-    captured = {}
-
-    def fake_patch(path, json=None, **kwargs):
-        captured["path"] = path
-        captured["json"] = json
-        return httpx.Response(200, json={
-            "id": "abc", "email": "x@y.z", "name": "X",
-            "role": json.get("role") if json else "viewer",
-            "active": True, "created_at": "", "deactivated_at": None,
-        })
-
-    from cli import client as cli_client
-    monkeypatch.setattr(cli_client, "api_patch", fake_patch, raising=False)
-    # patch admin.api_patch too since admin.py imports names
-    from cli.commands import admin as admin_mod
-    monkeypatch.setattr(admin_mod, "api_patch", fake_patch, raising=False)
-
     runner = CliRunner()
-    result = runner.invoke(admin_app, ["set-role", "abc", "analyst"])
-    assert result.exit_code == 0
-    assert captured["path"] == "/api/users/abc"
-    assert captured["json"] == {"role": "analyst"}
+    result = runner.invoke(admin_app, ["set-role", "abc", "admin"])
+    assert result.exit_code == 2
+    out = (result.stderr or "") + (result.output or "")
+    assert "removed" in out.lower()
+    assert "group" in out.lower()
 
 
 class TestMetadataApply:

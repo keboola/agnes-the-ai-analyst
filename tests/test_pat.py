@@ -101,7 +101,7 @@ def test_access_token_repo_mark_used(fresh_db):
 def test_pat_token_carries_typ_claim(fresh_db):
     from app.auth.jwt import create_access_token, verify_token
     token = create_access_token(
-        user_id="u1", email="u@test", role="analyst",
+        user_id="u1", email="u@test",
         token_id="deadbeef-1234", typ="pat",
     )
     payload = verify_token(token)
@@ -111,7 +111,7 @@ def test_pat_token_carries_typ_claim(fresh_db):
 
 def test_session_token_defaults_typ(fresh_db):
     from app.auth.jwt import create_access_token, verify_token
-    token = create_access_token(user_id="u1", email="u@test", role="analyst")
+    token = create_access_token(user_id="u1", email="u@test")
     payload = verify_token(token)
     # Default typ is "session".
     assert payload.get("typ") == "session"
@@ -130,7 +130,7 @@ def test_revoked_pat_is_rejected(fresh_db, monkeypatch):
     conn = get_system_db()
     try:
         uid = str(uuid.uuid4())
-        UserRepository(conn).create(id=uid, email="u@t", name="U", role="admin")
+        UserRepository(conn).create(id=uid, email="u@t", name="U")
         from tests.helpers.auth import grant_admin
         grant_admin(conn, uid)
         token_id = str(uuid.uuid4())
@@ -142,7 +142,7 @@ def test_revoked_pat_is_rejected(fresh_db, monkeypatch):
             expires_at=datetime.now(timezone.utc) + timedelta(days=30),
         )
         jwt_token = create_access_token(
-            user_id=uid, email="u@t", role="admin", token_id=token_id, typ="pat",
+            user_id=uid, email="u@t", token_id=token_id, typ="pat",
         )
         # Revoke
         AccessTokenRepository(conn).revoke(token_id)
@@ -172,7 +172,7 @@ def test_expired_pat_is_rejected_from_db(fresh_db):
     conn = get_system_db()
     try:
         uid = str(uuid.uuid4())
-        UserRepository(conn).create(id=uid, email="u@t", name="U", role="admin")
+        UserRepository(conn).create(id=uid, email="u@t", name="U")
         from tests.helpers.auth import grant_admin
         grant_admin(conn, uid)
         tid = str(uuid.uuid4())
@@ -184,7 +184,7 @@ def test_expired_pat_is_rejected_from_db(fresh_db):
         )
         # JWT with much longer TTL so signature-level `exp` would pass
         pat = create_access_token(
-            user_id=uid, email="u@t", role="admin",
+            user_id=uid, email="u@t",
             token_id=tid, typ="pat",
             expires_delta=timedelta(days=365),
         )
@@ -211,10 +211,10 @@ def test_create_pat_returns_raw_once(fresh_db):
     conn = get_system_db()
     try:
         uid = str(uuid.uuid4())
-        UserRepository(conn).create(id=uid, email="u@t", name="U", role="admin")
+        UserRepository(conn).create(id=uid, email="u@t", name="U")
         from tests.helpers.auth import grant_admin
         grant_admin(conn, uid)
-        sess_token = create_access_token(user_id=uid, email="u@t", role="admin")  # typ=session
+        sess_token = create_access_token(user_id=uid, email="u@t")  # typ=session
     finally:
         conn.close()
         close_system_db()
@@ -258,14 +258,14 @@ def test_pat_cannot_create_pat(fresh_db):
     conn = get_system_db()
     try:
         uid = str(uuid.uuid4())
-        UserRepository(conn).create(id=uid, email="u@t", name="U", role="admin")
+        UserRepository(conn).create(id=uid, email="u@t", name="U")
         from tests.helpers.auth import grant_admin
         grant_admin(conn, uid)
         tid = str(uuid.uuid4())
         # Create the JWT first so we can store its sha256 as token_hash (otherwise
         # the defense-in-depth check in get_current_user would reject it with 401
         # before require_session_token ever runs).
-        pat = create_access_token(user_id=uid, email="u@t", role="admin", token_id=tid, typ="pat")
+        pat = create_access_token(user_id=uid, email="u@t", token_id=tid, typ="pat")
         AccessTokenRepository(conn).create(
             id=tid, user_id=uid, name="x",
             token_hash=hashlib.sha256(pat.encode()).hexdigest(),
@@ -306,12 +306,12 @@ def test_pat_first_use_from_new_ip_audits(fresh_db):
     conn = get_system_db()
     try:
         uid = str(uuid.uuid4())
-        UserRepository(conn).create(id=uid, email="u@t", name="U", role="admin")
+        UserRepository(conn).create(id=uid, email="u@t", name="U")
         from tests.helpers.auth import grant_admin
         grant_admin(conn, uid)
         tid = str(uuid.uuid4())
         pat = create_access_token(
-            user_id=uid, email="u@t", role="admin", token_id=tid, typ="pat",
+            user_id=uid, email="u@t", token_id=tid, typ="pat",
             expires_delta=timedelta(days=90),
         )
         repo = AccessTokenRepository(conn)
@@ -367,12 +367,12 @@ def test_pat_same_ip_does_not_audit(fresh_db):
     conn = get_system_db()
     try:
         uid = str(uuid.uuid4())
-        UserRepository(conn).create(id=uid, email="u@t", name="U", role="admin")
+        UserRepository(conn).create(id=uid, email="u@t", name="U")
         from tests.helpers.auth import grant_admin
         grant_admin(conn, uid)
         tid = str(uuid.uuid4())
         pat = create_access_token(
-            user_id=uid, email="u@t", role="admin", token_id=tid, typ="pat",
+            user_id=uid, email="u@t", token_id=tid, typ="pat",
             expires_delta=timedelta(days=90),
         )
         repo = AccessTokenRepository(conn)
@@ -426,10 +426,10 @@ def test_pat_can_list_own_tokens(fresh_db):
     conn = get_system_db()
     try:
         uid = str(uuid.uuid4())
-        UserRepository(conn).create(id=uid, email="u@t", name="U", role="analyst")
+        UserRepository(conn).create(id=uid, email="u@t", name="U")
         tid = str(uuid.uuid4())
         pat = create_access_token(
-            user_id=uid, email="u@t", role="analyst", token_id=tid, typ="pat",
+            user_id=uid, email="u@t", token_id=tid, typ="pat",
             expires_delta=timedelta(days=90),
         )
         AccessTokenRepository(conn).create(
@@ -467,11 +467,11 @@ def test_pat_can_revoke_own_token(fresh_db):
     conn = get_system_db()
     try:
         uid = str(uuid.uuid4())
-        UserRepository(conn).create(id=uid, email="u@t", name="U", role="analyst")
+        UserRepository(conn).create(id=uid, email="u@t", name="U")
         # Token A — the PAT used to authenticate this call.
         tid_a = str(uuid.uuid4())
         pat_a = create_access_token(
-            user_id=uid, email="u@t", role="analyst", token_id=tid_a, typ="pat",
+            user_id=uid, email="u@t", token_id=tid_a, typ="pat",
             expires_delta=timedelta(days=90),
         )
         AccessTokenRepository(conn).create(
@@ -521,10 +521,10 @@ def test_create_token_rejects_expires_in_days_above_cap(fresh_db):
     conn = get_system_db()
     try:
         uid = str(uuid.uuid4())
-        UserRepository(conn).create(id=uid, email="u@t", name="U", role="admin")
+        UserRepository(conn).create(id=uid, email="u@t", name="U")
         from tests.helpers.auth import grant_admin
         grant_admin(conn, uid)
-        sess_token = create_access_token(user_id=uid, email="u@t", role="admin")
+        sess_token = create_access_token(user_id=uid, email="u@t")
     finally:
         conn.close()
         close_system_db()
@@ -562,12 +562,12 @@ def test_pat_first_ever_use_does_not_audit(fresh_db):
     conn = get_system_db()
     try:
         uid = str(uuid.uuid4())
-        UserRepository(conn).create(id=uid, email="u@t", name="U", role="admin")
+        UserRepository(conn).create(id=uid, email="u@t", name="U")
         from tests.helpers.auth import grant_admin
         grant_admin(conn, uid)
         tid = str(uuid.uuid4())
         pat = create_access_token(
-            user_id=uid, email="u@t", role="admin", token_id=tid, typ="pat",
+            user_id=uid, email="u@t", token_id=tid, typ="pat",
             expires_delta=timedelta(days=90),
         )
         AccessTokenRepository(conn).create(
@@ -619,10 +619,10 @@ def test_pat_null_expiry_jwt_has_no_exp_claim(fresh_db):
     conn = get_system_db()
     try:
         uid = str(uuid.uuid4())
-        UserRepository(conn).create(id=uid, email="u@t", name="U", role="admin")
+        UserRepository(conn).create(id=uid, email="u@t", name="U")
         from tests.helpers.auth import grant_admin
         grant_admin(conn, uid)
-        sess_token = create_access_token(user_id=uid, email="u@t", role="admin")
+        sess_token = create_access_token(user_id=uid, email="u@t")
     finally:
         conn.close()
         close_system_db()
@@ -654,7 +654,7 @@ def test_pat_with_null_expiry_is_accepted_by_verify_token(fresh_db):
     from app.auth.jwt import create_access_token, verify_token
 
     raw = create_access_token(
-        user_id="u-1", email="u@t", role="admin",
+        user_id="u-1", email="u@t",
         token_id="tid-1", typ="pat", omit_exp=True,
     )
     payload = verify_token(raw)
@@ -678,10 +678,10 @@ def test_pat_null_expiry_end_to_end_allows_authenticated_request(fresh_db):
     conn = get_system_db()
     try:
         uid = str(uuid.uuid4())
-        UserRepository(conn).create(id=uid, email="u@t", name="U", role="admin")
+        UserRepository(conn).create(id=uid, email="u@t", name="U")
         from tests.helpers.auth import grant_admin
         grant_admin(conn, uid)
-        sess_token = create_access_token(user_id=uid, email="u@t", role="admin")
+        sess_token = create_access_token(user_id=uid, email="u@t")
     finally:
         conn.close()
         close_system_db()
@@ -754,12 +754,12 @@ class TestPATMalformedToken:
         conn = get_system_db()
         try:
             uid = str(uuid.uuid4())
-            UserRepository(conn).create(id=uid, email="ip@t", name="IP", role="admin")
+            UserRepository(conn).create(id=uid, email="ip@t", name="IP")
             from tests.helpers.auth import grant_admin
             grant_admin(conn, uid)
             tid = str(uuid.uuid4())
             pat = create_access_token(
-                user_id=uid, email="ip@t", role="admin", token_id=tid, typ="pat",
+                user_id=uid, email="ip@t", token_id=tid, typ="pat",
                 expires_delta=timedelta(days=90),
             )
             AccessTokenRepository(conn).create(

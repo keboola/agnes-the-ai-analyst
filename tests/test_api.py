@@ -35,9 +35,9 @@ def seeded_client(tmp_path, monkeypatch):
 
     conn = get_system_db()
     repo = UserRepository(conn)
-    repo.create(id="admin1", email="admin@acme.com", name="Admin", role="admin",
+    repo.create(id="admin1", email="admin@acme.com", name="Admin",
                 password_hash=ph.hash("adminpass"))
-    repo.create(id="analyst1", email="analyst@acme.com", name="Analyst", role="analyst",
+    repo.create(id="analyst1", email="analyst@acme.com", name="Analyst",
                 password_hash=ph.hash("analystpass"))
     grant_admin(conn, "admin1")
     conn.close()
@@ -45,8 +45,8 @@ def seeded_client(tmp_path, monkeypatch):
     app = create_app()
     client = TestClient(app)
 
-    admin_token = create_access_token("admin1", "admin@acme.com", "admin")
-    analyst_token = create_access_token("analyst1", "analyst@acme.com", "analyst")
+    admin_token = create_access_token("admin1", "admin@acme.com")
+    analyst_token = create_access_token("analyst1", "analyst@acme.com")
 
     return client, admin_token, analyst_token
 

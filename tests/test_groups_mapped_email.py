@@ -42,12 +42,12 @@ def _seed_admin():
     conn = get_system_db()
     try:
         uid = str(uuid.uuid4())
-        UserRepository(conn).create(id=uid, email="admin@test", name="Admin", role="admin")
+        UserRepository(conn).create(id=uid, email="admin@test", name="Admin")
         admin_gid = conn.execute(
             "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
         ).fetchone()[0]
         UserGroupMembersRepository(conn).add_member(uid, admin_gid, source="system_seed")
-        return uid, create_access_token(user_id=uid, email="admin@test", role="admin")
+        return uid, create_access_token(user_id=uid, email="admin@test")
     finally:
         conn.close()
 
@@ -260,7 +260,7 @@ def test_user_groups_payload_carries_origin(fresh_db, monkeypatch):
         ).fetchone()[0]
         target_uid = str(uuid.uuid4())
         UserRepository(conn).create(
-            id=target_uid, email="t@test", name="T", role="analyst",
+            id=target_uid, email="t@test", name="T",
         )
         members = UserGroupMembersRepository(conn)
         members.add_member(target_uid, admin_gid, source="google_sync")
@@ -307,7 +307,7 @@ def test_user_memberships_payload_carries_origin(fresh_db, monkeypatch):
         ).fetchone()[0]
         target_uid = str(uuid.uuid4())
         UserRepository(conn).create(
-            id=target_uid, email="t@test", name="T", role="analyst",
+            id=target_uid, email="t@test", name="T",
         )
         members = UserGroupMembersRepository(conn)
         members.add_member(target_uid, admin_gid, source="google_sync")
@@ -353,7 +353,7 @@ def test_add_user_to_group_response_carries_origin(fresh_db):
         )
         target_uid = str(uuid.uuid4())
         UserRepository(conn).create(
-            id=target_uid, email="t@test", name="T", role="analyst",
+            id=target_uid, email="t@test", name="T",
         )
     finally:
         conn.close()
@@ -409,7 +409,7 @@ def test_effective_access_lists_explicit_grants_for_admin_user(fresh_db):
         )
         target_uid = str(uuid.uuid4())
         UserRepository(conn).create(
-            id=target_uid, email="t-admin@test", name="T", role="admin",
+            id=target_uid, email="t-admin@test", name="T",
         )
         members = UserGroupMembersRepository(conn)
         members.add_member(target_uid, admin_gid, source="admin")
@@ -630,7 +630,7 @@ def _create_user(email: str) -> str:
     conn = get_system_db()
     try:
         uid = str(_uuid.uuid4())
-        UserRepository(conn).create(id=uid, email=email, name="V", role="analyst")
+        UserRepository(conn).create(id=uid, email=email, name="V")
         return uid
     finally:
         conn.close()

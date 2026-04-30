@@ -55,7 +55,7 @@ def bootstrap(
             data = resp.json()
             # Save token automatically
             from cli.config import save_token
-            save_token(data["access_token"], data["email"], data["role"])
+            save_token(data["access_token"], data["email"])
             typer.echo(f"Admin user created: {data['email']}")
             typer.echo(f"Token saved — you are now logged in as admin.")
             typer.echo("\nNext: da setup test-connection")

@@ -154,7 +154,7 @@ def build_schema(
     if not row:
         raise NotFound(table_id)
 
-    if user.get("role") != "admin" and not can_access_table(user, table_id, conn):
+    if not can_access_table(user, table_id, conn):
         raise PermissionError(table_id)
 
     cache_key = f"{table_id}"

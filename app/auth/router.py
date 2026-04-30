@@ -92,11 +92,10 @@ async def create_token(
             detail="This account uses external authentication. Please log in via your configured provider.",
         )
 
-    role_label = "admin" if is_user_admin(user["id"], conn) else (user.get("role") or "user")
+    role_label = "admin" if is_user_admin(user["id"], conn) else "user"
     token = create_access_token(
         user_id=user["id"],
         email=user["email"],
-        role=role_label,
     )
     _audit(user["id"], "token_created")
     return TokenResponse(
@@ -143,7 +142,7 @@ async def bootstrap(
     existing_user = next((u for u in existing if u.get("email") == request.email), None)
     if existing_user:
         user_id = existing_user["id"]
-        repo.update(id=user_id, password_hash=password_hash, role="admin")
+        repo.update(id=user_id, password_hash=password_hash)
         _audit(user_id, "bootstrap_activated_seed")
     else:
         user_id = str(uuid.uuid4())
@@ -151,7 +150,6 @@ async def bootstrap(
             id=user_id,
             email=request.email,
             name=request.name or request.email.split("@")[0],
-            role="admin",
             password_hash=password_hash,
         )
         _audit(user_id, "bootstrap_completed")
@@ -169,7 +167,7 @@ async def bootstrap(
             added_by="auth.bootstrap",
         )
 
-    token = create_access_token(user_id=user_id, email=request.email, role="admin")
+    token = create_access_token(user_id=user_id, email=request.email)
     return TokenResponse(
         access_token=token,
         user_id=user_id,

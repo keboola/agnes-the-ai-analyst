@@ -778,11 +778,11 @@ class TestAudienceDistribution:
         self._seed_item(conn, "aud_all", "All-users fact", audience="all")
         # Create a user and attach them to the finance group via the v13 model.
         repo = UserRepository(conn)
-        repo.create(id="fin_user1", email="fin@test.com", name="Finance User", role="analyst")
+        repo.create(id="fin_user1", email="fin@test.com", name="Finance User")
         self._add_user_to_group(conn, "fin_user1", "finance")
         conn.close()
 
-        token = create_access_token("fin_user1", "fin@test.com", "analyst")
+        token = create_access_token("fin_user1", "fin@test.com")
         r = seeded_app["client"].get("/api/memory", headers=_auth(token))
         assert r.status_code == 200
         ids = {i["id"] for i in r.json()["items"]}
@@ -801,10 +801,10 @@ class TestAudienceDistribution:
         self._seed_item(conn, "aud_null", "No audience fact", audience=None)
         # Create a user with NO groups
         repo = UserRepository(conn)
-        repo.create(id="eng_user1", email="eng@test.com", name="Eng User", role="analyst")
+        repo.create(id="eng_user1", email="eng@test.com", name="Eng User")
         conn.close()
 
-        token = create_access_token("eng_user1", "eng@test.com", "analyst")
+        token = create_access_token("eng_user1", "eng@test.com")
         r = seeded_app["client"].get("/api/memory", headers=_auth(token))
         assert r.status_code == 200
         ids = {i["id"] for i in r.json()["items"]}
@@ -1358,11 +1358,11 @@ class TestTreeEndpoint:
                                audience=None, domain="data")
         repo = UserRepository(conn)
         repo.create(id="tree_fin_user", email="treefin@test.com",
-                    name="Tree Finance User", role="analyst")
+                    name="Tree Finance User")
         TestAudienceDistribution._add_user_to_group(conn, "tree_fin_user", "finance")
         conn.close()
 
-        token = create_access_token("tree_fin_user", "treefin@test.com", "analyst")
+        token = create_access_token("tree_fin_user", "treefin@test.com")
         c = seeded_app["client"]
         resp = c.get("/api/memory/tree?axis=audience", headers=_auth(token))
         assert resp.status_code == 200, resp.text
