@@ -102,42 +102,9 @@
   }
   .mp-empty .big { font-size: 15px; color: var(--text-primary, #111827); margin-bottom: 6px; font-weight: 500; }
 
-  /* Modal — identical to admin_users.html */
-  .modal-backdrop {
-    position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55);
-    display: none; align-items: center; justify-content: center; z-index: 1000;
-    padding: 16px;
-  }
-  .modal-backdrop.is-open { display: flex; }
-  .modal-card {
-    background: var(--surface, #fff); border-radius: 12px;
-    padding: 24px; width: 100%; max-width: 480px;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
-    max-height: 90vh; overflow-y: auto;
-  }
-  .modal-card h3 { margin: 0 0 6px; font-size: 17px; font-weight: 600; }
-  .modal-card p.sub { margin: 0 0 18px; font-size: 13px; color: var(--text-secondary, #6b7280); }
-  .modal-card label { display: block; font-size: 12px; font-weight: 500; color: var(--text-secondary, #6b7280); margin: 12px 0 6px; }
+  /* Modal styling hoisted to style-custom.css → ".modal-backdrop" family.
+     Page-specific .modal-card .help kept below. */
   .modal-card .help { font-size: 11px; color: var(--text-secondary, #9ca3af); margin-top: 4px; }
-  .modal-card input[type="text"], .modal-card input[type="url"], .modal-card input[type="password"], .modal-card textarea {
-    width: 100%; padding: 9px 12px; border: 1px solid var(--border, #e5e7eb);
-    border-radius: 8px; font-size: 13px; box-sizing: border-box;
-    background: var(--surface, #fff); color: var(--text-primary, #111827);
-    font-family: inherit;
-  }
-  .modal-card textarea { min-height: 60px; resize: vertical; }
-  .modal-card input:focus, .modal-card textarea:focus { outline: 2px solid var(--primary, #6366f1); outline-offset: -1px; }
-  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
-  .modal-btn {
-    padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 500;
-    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
-    cursor: pointer; transition: all 0.15s;
-  }
-  .modal-btn:hover { background: var(--border-light, #f9fafb); }
-  .modal-btn.primary { background: var(--primary, #6366f1); color: #fff; border-color: var(--primary, #6366f1); }
-  .modal-btn.primary:hover { filter: brightness(1.05); }
-  .modal-btn.danger { background: #dc2626; color: #fff; border-color: #dc2626; }
-  .modal-btn.danger:hover { filter: brightness(1.05); }
 
   .sync-result {
     margin: 12px 0;
