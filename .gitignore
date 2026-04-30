@@ -137,6 +137,9 @@ docs/datasets/*/schema.yml
 .audit/
 docs/AGENT-REPORTS/
 
+# Git worktrees
+.worktrees/
+
 # Internal transcripts and meeting notes
 docs/ZS_PADAK_*
 .github/workflows/ci.yml
