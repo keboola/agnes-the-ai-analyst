@@ -33,6 +33,78 @@ def _file_hash(path: Path) -> str:
     return h.hexdigest()
 
 
+def _materialize_table(
+    *,
+    table_id: str,
+    sql: str,
+    project_id: str,
+    output_dir: str,
+    max_bytes: Optional[int],
+) -> dict:
+    """Thin wrapper around connectors.bigquery.extractor.materialize_query so
+    the trigger pass can be unit-tested without importing duckdb directly."""
+    from connectors.bigquery.extractor import materialize_query
+    return materialize_query(
+        table_id=table_id, sql=sql, project_id=project_id,
+        output_dir=output_dir, max_bytes=max_bytes,
+    )
+
+
+def _run_materialized_pass(
+    conn: duckdb.DuckDBPyConnection,
+    project_id: str,
+    max_bytes: Optional[int],
+) -> dict:
+    """Walk table_registry for query_mode='materialized' rows and run any
+    that are due (per is_table_due + sync_schedule).
+
+    Returns {"materialized": [ids], "skipped": [ids], "errors": [{table, error}]}
+    so the trigger can log the outcome. Errors are aggregated per-row, not
+    fatal — a budget-blown table doesn't stop a healthy sibling.
+    """
+    from src.scheduler import is_table_due
+    from src.repositories.table_registry import TableRegistryRepository
+    from src.repositories.sync_state import SyncStateRepository
+
+    output_dir = str(Path(_get_data_dir()) / "extracts" / "bigquery")
+
+    registry = TableRegistryRepository(conn)
+    state = SyncStateRepository(conn)
+
+    summary: dict = {"materialized": [], "skipped": [], "errors": []}
+    for row in registry.list_all():
+        if row.get("query_mode") != "materialized":
+            continue
+
+        last = state.get_last_sync(row["id"])
+        last_iso = last.isoformat() if last else None
+        schedule = row.get("sync_schedule") or "every 1h"
+        if not is_table_due(schedule, last_iso):
+            summary["skipped"].append(row["id"])
+            continue
+
+        try:
+            stats = _materialize_table(
+                table_id=row["id"],
+                sql=row["source_query"],
+                project_id=project_id,
+                output_dir=output_dir,
+                max_bytes=max_bytes,
+            )
+            state.update_sync(
+                table_id=row["id"],
+                rows=stats["rows"],
+                file_size_bytes=stats["size_bytes"],
+                hash="",  # filled by manifest pass via _file_hash on next /api/sync/manifest
+            )
+            summary["materialized"].append(row["id"])
+        except Exception as e:
+            logger.exception("Materialize failed for %s", row["id"])
+            summary["errors"].append({"table": row["id"], "error": str(e)})
+
+    return summary
+
+
 def _run_sync(tables: Optional[List[str]] = None):
     """Run extractor as subprocess + orchestrator rebuild.
 
@@ -172,6 +244,38 @@ sys.exit(compute_exit_code(result, len(configs)))
                         logger.info("Custom connector %s completed", connector_dir.name)
                 except subprocess.TimeoutExpired:
                     logger.error("Custom connector %s timed out", connector_dir.name)
+
+        # Materialized BigQuery pass — runs admin-registered SQL through the
+        # DuckDB BQ extension and writes parquet for due rows. The orchestrator
+        # rebuild below will pick the parquets up via the standard local path.
+        try:
+            from app.instance_config import get_value
+            bq_project = get_value("data_source", "bigquery", "project", default="") or ""
+            if bq_project:
+                bq_max_bytes = get_value(
+                    "data_source", "bigquery", "max_bytes_per_materialize",
+                    default=10 * 2**30,
+                )
+                mat_conn = get_system_db()
+                try:
+                    materialized = _run_materialized_pass(
+                        mat_conn, project_id=bq_project, max_bytes=bq_max_bytes,
+                    )
+                finally:
+                    mat_conn.close()
+                print(
+                    f"[SYNC] Materialized BQ: {len(materialized['materialized'])} ok, "
+                    f"{len(materialized['skipped'])} skipped, "
+                    f"{len(materialized['errors'])} errors",
+                    file=_sys.stderr, flush=True,
+                )
+                for err in materialized["errors"]:
+                    print(f"[SYNC]   {err['table']}: {err['error']}",
+                          file=_sys.stderr, flush=True)
+        except Exception as e:
+            print(f"[SYNC] Materialized BQ pass FAILED: {e}",
+                  file=_sys.stderr, flush=True)
+            traceback.print_exc()
 
         # Rebuild master views (reads extract.duckdb files, no write conflict)
         from src.orchestrator import SyncOrchestrator
