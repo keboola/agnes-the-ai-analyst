@@ -13,6 +13,29 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 <!-- Add bullets here. Group: Added / Changed / Fixed / Removed / Internal.
      Mark breaking changes with **BREAKING** at the start of the bullet. -->
 
+### Added
+
+- `tests/test_route_integrity.py` — regression test pinning the contract between the top-nav and registered HTML routes. Asserts every static `href="/..."` in `_app_header.html` resolves to a registered route, and every registered HTML route is either in the nav or on a documented allowlist. Catches dead nav links and orphan pages before they ship. The allowlist is the migration ramp for Phase 2 of the UI overhaul (`docs/superpowers/plans/2026-04-30-ui-overhaul.md`), which moves Catalog / Corporate Memory / Metrics off the allowlist into the nav.
+- `docs/superpowers/plans/2026-04-30-ui-overhaul.md` — the 9-phase plan this PR opens.
+
+### Removed
+
+- Legacy `/admin/permissions` page (template, route handler, and 3 stale tests in `tests/test_web_ui.py`). The page's calls to `/api/admin/permissions` and `/api/access-requests/*` are wired against the v12-era `dataset_permissions` table that v13 RBAC does not read; the page was never linked from the nav. The underlying `app/api/permissions.py` REST endpoints stay for now — a follow-up plan retires them once the access-request inbox is folded into `/admin/access`.
+- `/activity-center` page, its dashboard widget, and the `test_activity_center` smoke test. The route was rendering against undefined stub data passed by `app/web/router.py` (`_SilentUndefined` masked the breakage), and no service produces the `executive_summary` / `maturity_roadmap` / `business_processes` fields the template referenced.
+- Dashboard SSH-key new-user onboarding flow (the `{% else %}` branch under `{% if user_info.exists %}`). It posted to `url_for('register')` which resolves to `/auth/password/setup` — an unrelated password-setup endpoint, so the form was wired to nothing. v13 auth uses Google OAuth + magic-link + PAT; replaced with a minimal welcome empty-state.
+- `account_details.notification_scripts` row on the dashboard Account card and the "Instant Automation" feature card on `/login`. The product never shipped a UI for managing notification scripts; the account-row pointed users to drop `.py` files in `~/user/notifications/` with no auditing surface. Decision deferred under D2 of the UI overhaul plan.
+
+### Fixed
+
+- Dashboard `updateSyncSettings()` now POSTs to `/api/sync/settings` (the actual endpoint) instead of the non-existent `/api/sync-settings` — toggling Jira sync was silently 404-ing.
+- Dashboard `unlinkChannel()` now early-returns for non-`telegram` channels with a clear message instead of calling `/api/${channel}/unlink`. The macOS-app desktop unlink endpoint doesn't exist; clicking Unlink on the desktop notification channel was 404-ing.
+- Dashboard's Telegram link state now reflects the live `TelegramRepository.get_link()` lookup (same query as `GET /api/telegram/status`) instead of the hardcoded `{"linked": False}` that was always shown regardless of whether the user had a linked Telegram account.
+
+### Internal
+
+- Added `.worktrees/` to `.gitignore` so contributor-local isolated worktrees don't pollute git status.
+- Pinned the OpenAPI snapshot (`tests/snapshots/openapi.json`) by removing the two deleted route entries (`/activity-center`, `/admin/permissions`).
+
 ## [0.12.1] — 2026-04-28
 
 Patch release. Hotfixes the pre-migration snapshot-integrity bug shipped in [v0.12.0](https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.12.0) and bundles the security/ops hardening from issue groups #82 (auth hardening), #85 (API validation), #87 (deploy posture), plus #46 (SSRF) and #90 (memory stats blocking).

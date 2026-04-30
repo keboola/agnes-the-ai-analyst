@@ -78,20 +78,10 @@ class TestWebUISmoke:
         resp = web_client.get("/corporate-memory", cookies=admin_cookie)
         assert resp.status_code == 200
 
-    def test_activity_center(self, web_client, admin_cookie):
-        resp = web_client.get("/activity-center", cookies=admin_cookie)
-        assert resp.status_code == 200
-
     def test_admin_tables(self, web_client, admin_cookie):
         resp = web_client.get("/admin/tables", cookies=admin_cookie)
         if resp.status_code == 404:
             pytest.skip("Route /admin/tables does not exist")
-        assert resp.status_code == 200
-
-    def test_admin_permissions(self, web_client, admin_cookie):
-        resp = web_client.get("/admin/permissions", cookies=admin_cookie)
-        if resp.status_code == 404:
-            pytest.skip("Route /admin/permissions does not exist")
         assert resp.status_code == 200
 
     def test_admin_users_renders_modern_ui(self, web_client, admin_cookie):
@@ -257,16 +247,8 @@ class TestAdminRoleGuards:
         resp = web_client.get("/admin/tables", cookies=analyst_cookie)
         assert resp.status_code == 403
 
-    def test_analyst_cannot_access_admin_permissions(self, web_client, admin_cookie, analyst_cookie):
-        resp = web_client.get("/admin/permissions", cookies=analyst_cookie)
-        assert resp.status_code == 403
-
     def test_admin_can_access_admin_tables(self, web_client, admin_cookie):
         resp = web_client.get("/admin/tables", cookies=admin_cookie)
-        assert resp.status_code == 200
-
-    def test_admin_can_access_admin_permissions(self, web_client, admin_cookie):
-        resp = web_client.get("/admin/permissions", cookies=admin_cookie)
         assert resp.status_code == 200
 
     def test_analyst_cannot_access_corporate_memory_admin(self, web_client, admin_cookie, analyst_cookie):
