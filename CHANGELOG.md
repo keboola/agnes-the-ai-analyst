@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.27.0] — 2026-04-30
+
 ### Removed
 
 - **BREAKING** Table access fully migrated to per-group `resource_grants` (`ResourceType.TABLE`). Existing `dataset_permissions` rows are dropped on upgrade — admins must re-grant via `/admin/access`. Wildcard bucket grants (`bucket.*`) no longer supported and not replaced: every table needs an explicit grant (or admin override). Per-table bulk action in `/admin/access` covers a whole bucket at once.
