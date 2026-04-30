@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- **Single-item Edit button on every memory item card** in `/corporate-memory/admin`. Surfaces the per-item `PATCH /api/memory/admin/{id}` endpoint added in #126 — until now it was only reachable via the CLI (`da admin memory edit <id>`) or by selecting one item in the bulk batch bar. The modal pre-fills from the item's current title / content / category / domain (dropdown matching `VALID_DOMAINS` + `(unset)`) / audience / tags (comma-separated). Authorisation: same `require_admin` gate as the rest of the memory admin surface — corporate-memory items don't have a per-item RBAC resource type today.
+
 ### Internal
 - `scripts/smoke-test.sh`: assertion 8 now hits `/api/admin/registry` (the current admin tables endpoint). The old `/api/admin/tables` URL was renamed long ago and the smoke test was returning 404 on every run — it only surfaced as a deploy failure when the full release pipeline first triggered the rollback path on the post-#137 deploy (run 25151878647). Same stale URL was also fixed in `CLAUDE.md`, `README.md`, and `dev_docs/server.md` — the routes now correctly point at `POST /api/admin/register-table` (create) and `PUT /api/admin/registry/{id}` (update).
 - `.github/workflows/release.yml` smoke-test job: added `Log in to GHCR` step. The auto-rollback's `docker push :stable` was hitting `unauthenticated: User cannot be authenticated with the token provided` because the smoke-test job had no GHCR login of its own. Result: a failed deploy left `:stable` pointing at the broken image. The rollback step also got an explicit `GH_TOKEN` env, and the workflow's top-level `permissions` block gained `issues: write`, so its `gh issue create` call actually creates the alert issue (was silently swallowed by the `|| echo` fallback because of both the missing env var AND the missing scope).
