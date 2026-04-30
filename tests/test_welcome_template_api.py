@@ -77,4 +77,45 @@ def test_invalid_jinja2_returns_400(seeded_app):
         headers=admin,
     )
     assert r.status_code == 400
-    assert "syntax" in r.json()["detail"].lower()
+    assert "invalid" in r.json()["detail"].lower()
+
+
+def test_put_rejects_undefined_placeholder(seeded_app):
+    """Templates that parse but reference unknown placeholders must be rejected
+    at PUT time so an admin can fix the typo immediately rather than after an
+    analyst's bootstrap blows up."""
+    c = seeded_app["client"]
+    admin = _auth(seeded_app["admin_token"])
+    r = c.put(
+        "/api/admin/welcome-template",
+        json={"content": "Hello {{ user.emial }}"},  # typo, would fail StrictUndefined at render
+        headers=admin,
+    )
+    assert r.status_code == 400
+    assert "emial" in r.json()["detail"] or "undefined" in r.json()["detail"].lower()
+
+
+def test_get_welcome_500_includes_reset_hint_on_render_failure(seeded_app, monkeypatch):
+    """If an override slips through validation and fails at render time, the
+    user-visible 500 must point at /admin/welcome rather than leaking a
+    Jinja stack trace."""
+    # Stub render_welcome to raise a TemplateError so we exercise the
+    # exception path without needing a malformed override (PUT validation
+    # blocks those now).
+    from jinja2 import UndefinedError
+    import app.api.welcome as welcome_module
+
+    def fake_render(*args, **kwargs):
+        raise UndefinedError("'foo' is undefined")
+
+    monkeypatch.setattr(welcome_module, "render_welcome", fake_render)
+
+    c = seeded_app["client"]
+    admin = _auth(seeded_app["admin_token"])
+    r = c.get(
+        "/api/welcome",
+        params={"server_url": "https://example.com"},
+        headers=admin,
+    )
+    assert r.status_code == 500
+    assert "/admin/welcome" in r.json()["detail"]
