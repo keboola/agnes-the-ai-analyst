@@ -331,6 +331,57 @@ def test_user_memberships_payload_carries_origin(fresh_db, monkeypatch):
     assert by_name["legal@workspace.test"]["origin"] == "google_sync"
 
 
+def test_add_user_to_group_response_carries_origin(fresh_db):
+    """POST /api/admin/users/{id}/memberships must compute `origin` the
+    same way GET does. Without this, any caller relying on the POST
+    response (or rendering the chip optimistically before the GET
+    re-fetch) sees `'custom'` even when adding to the seeded Admin /
+    Everyone system rows.
+    """
+    from app.main import app
+    from src.db import SYSTEM_ADMIN_GROUP, get_system_db
+    from src.repositories.user_groups import UserGroupsRepository
+    from src.repositories.users import UserRepository
+
+    conn = get_system_db()
+    try:
+        admin_gid = conn.execute(
+            "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
+        ).fetchone()[0]
+        custom_g = UserGroupsRepository(conn).create(
+            name="data-team", created_by="admin@test",
+        )
+        target_uid = str(uuid.uuid4())
+        UserRepository(conn).create(
+            id=target_uid, email="t@test", name="T", role="analyst",
+        )
+    finally:
+        conn.close()
+
+    client = TestClient(app)
+    _, token = _seed_admin()
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # System group (no env mapping) → origin must be 'system', not the
+    # default 'custom'.
+    resp = client.post(
+        f"/api/admin/users/{target_uid}/memberships",
+        headers=headers,
+        json={"group_id": admin_gid},
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["origin"] == "system"
+
+    # Custom admin-created group → origin stays 'custom'.
+    resp = client.post(
+        f"/api/admin/users/{target_uid}/memberships",
+        headers=headers,
+        json={"group_id": custom_g["id"]},
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["origin"] == "custom"
+
+
 def test_effective_access_lists_explicit_grants_for_admin_user(fresh_db):
     """`/api/admin/users/{id}/effective-access` no longer short-circuits
     for admins — they get the same per-resource breakdown as everyone

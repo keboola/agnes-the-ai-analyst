@@ -819,6 +819,13 @@ async def add_user_to_group(
         group_id=payload.group_id,
         group_name=group["name"],
         is_system=bool(group.get("is_system", False)),
+        origin=_derive_origin(
+            {
+                "is_system": bool(group.get("is_system", False)),
+                "name": group["name"],
+                "created_by": group.get("created_by"),
+            }
+        ),
         source="admin",
         added_at=None,
         added_by=user.get("email"),
