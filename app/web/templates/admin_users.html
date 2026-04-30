@@ -460,7 +460,7 @@ function renderUsers() {
             // needs to fit ~5 chips per row. Hover reveals the full
             // email via `title`. Custom / Admin / Everyone keep the raw
             // name (deriveDisplayName would over-capitalize "data-team").
-            const display = g.origin === "google_sync"
+            const display = (g.origin === "google_sync" && g.name !== "Admin" && g.name !== "Everyone")
               ? deriveDisplayName(g.name) : g.name;
             return `<span class="group-chip ${cls}" title="${esc(g.name)}">${esc(display)}</span>`;
           }).join("")
