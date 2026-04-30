@@ -94,3 +94,25 @@ def test_register_materialized_with_empty_source_query_is_rejected(seeded_app):
         "source_query": "",
     }, headers=_auth(token))
     assert 400 <= r.status_code < 500, r.json()
+
+
+def test_update_source_query_alone_requires_query_mode(seeded_app):
+    """PUT with source_query but no query_mode in the body must be rejected
+    so non-materialized rows can't carry an orphan source_query."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+
+    # First seed a remote-mode row.
+    r = c.post("/api/admin/register-table", json={
+        "name": "live_orphan_b7",
+        "source_type": "bigquery",
+        "query_mode": "remote",
+    }, headers=_auth(token))
+    assert r.status_code == 201, r.json()
+    table_id = r.json()["id"]
+
+    # Try to add a source_query without changing query_mode — should fail.
+    r2 = c.put(f"/api/admin/registry/{table_id}", json={
+        "source_query": "SELECT 1",
+    }, headers=_auth(token))
+    assert 400 <= r2.status_code < 500, r2.json()

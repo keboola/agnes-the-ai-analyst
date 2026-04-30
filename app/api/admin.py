@@ -123,6 +123,11 @@ class UpdateTableRequest(BaseModel):
             raise ValueError("query_mode='materialized' requires a non-empty source_query")
         if self.query_mode is not None and self.query_mode != "materialized" and sq:
             raise ValueError("source_query is only valid when query_mode='materialized'")
+        # New: source_query alone without query_mode is incoherent.
+        if self.query_mode is None and sq:
+            raise ValueError(
+                "source_query requires query_mode='materialized' to be set in the same request"
+            )
         self.source_query = sq
         return self
 
