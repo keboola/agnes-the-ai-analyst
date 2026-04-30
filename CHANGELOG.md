@@ -13,8 +13,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 <!-- Add bullets here. Group: Added / Changed / Fixed / Removed / Internal.
      Mark breaking changes with **BREAKING** at the start of the bullet. -->
 
+### Fixed
+
+- **Long descriptions in the data catalog no longer truncate to a single ellipsised line on desktop.** `.table-row-desc` (`app/web/templates/catalog.html`) now uses a 2-line clamp with ellipsis (`-webkit-line-clamp: 2`) so multi-sentence descriptions stay readable without pushing rows to a wall-of-text height. Below the 700 px breakpoint the rule still relaxes to `white-space: normal` so mobile sees full wrapping.
+
 ### Added
 
+- Global `.data-table` CSS class in `app/web/static/style-custom.css` — single source of truth for tabular layouts: fixed layout, ellipsis truncation, hoverable rows, `tabular-nums` for column alignment. Modifier classes `.cell-mono` / `.cell-wrap` / `.cell-truncate-2` cover the most common per-cell needs. Existing admin templates can opt in by adding `data-table` alongside their current class without losing per-page overrides.
 - **Catalog** and **Corporate Memory** entries on the top navigation header. Previously the analyst's two daily destinations were reachable only by typing the URL or clicking through dashboard widgets; now they sit alongside Dashboard and Install CLI in `_app_header.html`. Phase 2 of the UI overhaul plan.
 - **Registered tables** (`/admin/tables`) entry in the Admin sub-menu — was a registered route that no nav linked to.
 - Global `confirmDestructive({title, body, confirmLabel, kind})` helper at `app/web/static/js/confirm_modal.js`, loaded from `base.html`. Self-contained: injects its own CSS once on first call, builds modal DOM on demand, returns `Promise<boolean>`. Closing via Escape / backdrop / Cancel resolves false; OK button (or Enter) resolves true. Supports `kind: 'danger'` (default) and `'primary'` to color the confirm button red or blue.
@@ -22,12 +27,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
+- Replaced 8 hardcoded `'Monaco'/'SF Mono'/'Inter'` font-family declarations with `var(--font-mono)` / `var(--font-primary)` references in `style.css`, `style-custom.css`, `css/metric_modal.css`, and `js/metric_modal.js`. The `:root` design tokens in `style-custom.css` remain the single source of truth; updating `--font-mono` now propagates to every code/SQL/identifier surface instead of leaving stragglers (the Prism SQL highlighter, the metric-modal sub-title, copy-button code blocks).
+- Deleted the duplicate `body { font-family: -apple-system, … }` rule at `app/web/static/style.css:24`. The cascade was already overriding it from `style-custom.css:65` (loaded second), so removal eliminates one source of font drift without changing what users see.
 - Top-level navigation reorganized: **Catalog** and **Corporate Memory** added as analyst destinations; **Tokens** and **Marketplaces** moved into the Admin dropdown alongside Users / Groups / Resource access / Registered tables (was: top-level peers of the Admin button).
 - Eight raw `confirm()` calls across `dashboard.html` (Telegram unlink), `admin_tables.html` (table unregister), `admin_group_detail.html` (remove member, delete group), and `admin_user_detail.html` (remove from group, password reset, deactivate, delete user) replaced with `confirmDestructive(...)`. Each call carries a meaningful body string instead of the previous one-line confirm; destructive vs. primary intent is signalled by button color.
 
 ### Internal
 
 - The dashboard's `unlinkChannel('telegram')` flow is fully `await`-based now that the confirm step is async.
+- The `font-family: monospace` inline style injected by `app/web/static/js/metric_modal.js` for the metric subtitle is now a `.metric-name-id` class in `metric_modal.css`, picking up `var(--font-mono)`. CSS-injecting JS strings hide from grep audits; promoting to a class makes the rule visible to future design-token changes.
 
 - `tests/test_route_integrity.py` — regression test pinning the contract between the top-nav and registered HTML routes. Asserts every static `href="/..."` in `_app_header.html` resolves to a registered route, and every registered HTML route is either in the nav or on a documented allowlist. Catches dead nav links and orphan pages before they ship. The allowlist is the migration ramp for Phase 2 of the UI overhaul (`docs/superpowers/plans/2026-04-30-ui-overhaul.md`), which moves Catalog / Corporate Memory / Metrics off the allowlist into the nav.
 - `docs/superpowers/plans/2026-04-30-ui-overhaul.md` — the 9-phase plan this PR opens.

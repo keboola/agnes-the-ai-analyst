@@ -956,7 +956,7 @@ a.slack-badge:hover {
 
 .code-block {
     flex: 1;
-    font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+    font-family: var(--font-mono);
     font-size: 13px;
     color: #fff;
     background: transparent;
@@ -2241,4 +2241,66 @@ a.app-header-logo:focus-visible {
     .app-header { padding: 0 16px; gap: 8px; }
     .app-header-email { display: none; }
     .app-nav-link { padding: 6px 8px; }
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+   Tables — single source of truth for tabular layouts
+   ─────────────────────────────────────────────────────────────────────
+   Apply ``.data-table`` to any ``<table>`` to opt in to:
+     - fixed layout (predictable column widths, no overflow surprises)
+     - ellipsis truncation per cell (titles can carry the full value)
+     - hoverable rows + tabular-nums (timestamps + counts align)
+
+   Modifier classes for individual cells:
+     - .cell-mono       → monospace numerals / IDs / hashes
+     - .cell-wrap       → opt out of nowrap; allow the cell to grow
+     - .cell-truncate-2 → 2-line clamp with ellipsis (long descriptions)
+
+   Per-page overrides (e.g. specific column widths) belong in the page's
+   own stylesheet; the rules below are the floor every admin table sits on.
+*/
+.data-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+    font-variant-numeric: tabular-nums;
+    font-size: 13px;
+}
+.data-table th,
+.data-table td {
+    padding: 8px 12px;
+    text-align: left;
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.data-table thead th {
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--text-secondary, #6b7280);
+    background: var(--border-light, #f9fafb);
+    border-bottom: 1px solid var(--border, #e5e7eb);
+}
+.data-table tbody tr:hover {
+    background: var(--border-light, #fafafa);
+}
+.data-table .cell-mono {
+    font-family: var(--font-mono);
+    font-size: 12px;
+}
+.data-table .cell-wrap {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+}
+.data-table .cell-truncate-2 {
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }

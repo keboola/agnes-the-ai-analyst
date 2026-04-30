@@ -20,13 +20,10 @@
     padding: 0;
 }
 
-body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-    background-color: var(--bg);
-    color: var(--text);
-    line-height: 1.6;
-    min-height: 100vh;
-}
+/* body rule lives in style-custom.css (loaded second). The duplicate
+   declaration here was overridden by the cascade and pinned the legacy
+   ``-apple-system, …`` stack; removing it eliminates one source of font
+   drift when ``--font-primary`` is updated centrally. */
 
 .container {
     max-width: 800px;
@@ -284,7 +281,7 @@ nav {
 
 /* Code blocks */
 code {
-    font-family: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", monospace;
+    font-family: var(--font-mono);
     font-size: 0.875rem;
     background-color: var(--bg);
     padding: 2px 6px;
@@ -384,7 +381,7 @@ code {
 .form-group textarea {
     width: 100%;
     padding: 12px 14px;
-    font-family: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", monospace;
+    font-family: var(--font-mono);
     font-size: 0.8125rem;
     line-height: 1.5;
     border: 1px solid var(--border);

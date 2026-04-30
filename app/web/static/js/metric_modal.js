@@ -107,9 +107,7 @@ function renderMetricModal(data) {
                     </span>
                 ` : ''}
             </div>
-            <div style="font-size: 14px; font-weight: 400; color: #6B7280; font-family: monospace;">
-                ${data.name}
-            </div>
+            <div class="metric-name-id">${data.name}</div>
         </div>
     `;
 
