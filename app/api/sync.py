@@ -234,20 +234,38 @@ def _run_sync(tables: Optional[List[str]] = None):
                 except Exception as e:
                     logger.warning("Auto-discovery failed: %s", e)
 
-            if not table_configs:
-                logger.warning("No tables to sync for source_type=%s", source_type)
-                return
+        # CRITICAL: don't early-return when local-mode tables are empty.
+        # `list_local("bigquery")` is always empty on BQ-only deployments
+        # (BQ rows are always remote or materialized, never local), so an
+        # early return would prevent the materialized pass AND the
+        # orchestrator rebuild from ever firing on a BQ-only instance.
+        # Devin BUG_0002 on PR #148 commit 2fa44f2. Just flag whether the
+        # Keboola subprocess + custom-connectors should run; everything
+        # below (materialized pass, orchestrator rebuild, profiler) runs
+        # unconditionally so a registry with materialized rows but no
+        # local rows still publishes them.
+        run_extractor_subprocess = bool(table_configs)
+        if not run_extractor_subprocess:
+            logger.info(
+                "No local-mode tables to sync for source_type=%s — "
+                "skipping extractor subprocess; materialized pass + "
+                "orchestrator rebuild still run.",
+                source_type,
+            )
 
-        # Serialize configs — strip non-serializable fields
-        serializable = []
-        for tc in table_configs:
-            serializable.append({k: (v.isoformat() if hasattr(v, 'isoformat') else v)
-                                 for k, v in tc.items() if v is not None})
-
-        # Run extractor subprocess with table configs via stdin
-        # Subprocess does NOT open system.duckdb — no lock conflict
         env = {**os.environ}
-        cmd = [sys.executable, "-c", """
+        import sys as _sys
+
+        if run_extractor_subprocess:
+            # Serialize configs — strip non-serializable fields
+            serializable = []
+            for tc in table_configs:
+                serializable.append({k: (v.isoformat() if hasattr(v, 'isoformat') else v)
+                                     for k, v in tc.items() if v is not None})
+
+            # Run extractor subprocess with table configs via stdin
+            # Subprocess does NOT open system.duckdb — no lock conflict
+            cmd = [sys.executable, "-c", """
 import json, sys, os, logging
 from pathlib import Path
 
@@ -275,58 +293,59 @@ print(json.dumps(result))
 sys.exit(compute_exit_code(result, len(configs)))
 """]
 
-        import sys as _sys
-        print(f"[SYNC] Starting extractor subprocess for {len(table_configs)} tables", file=_sys.stderr, flush=True)
+            print(f"[SYNC] Starting extractor subprocess for {len(table_configs)} tables", file=_sys.stderr, flush=True)
 
-        result = subprocess.run(
-            cmd, input=_json.dumps(serializable), capture_output=True, text=True,
-            timeout=1800, env=env,
-            cwd=str(Path(__file__).parent.parent.parent),
-        )
-
-        if result.stdout:
-            print(f"[SYNC] Extractor stdout: {result.stdout.strip()[-500:]}", file=_sys.stderr, flush=True)
-        if result.stderr:
-            print(f"[SYNC] Extractor stderr: {result.stderr[-500:]}", file=_sys.stderr, flush=True)
-        # Issue #81 Group B: three exit codes. 0 = full success,
-        # 1 = full failure, 2 = partial. Partial is a data-quality
-        # alert, not a crash — the orchestrator's per-table _meta
-        # machinery already captured which tables succeeded; we just
-        # need to log loudly so operator alerting can pick it up.
-        if result.returncode == 0:
-            print(f"[SYNC] Extractor OK", file=_sys.stderr, flush=True)
-        elif result.returncode == 2:
-            print(
-                f"[SYNC] Extractor PARTIAL FAILURE (exit 2) — some tables "
-                f"succeeded, some failed; see stderr for per-table errors. "
-                f"Successful tables will still be published by the orchestrator.",
-                file=_sys.stderr, flush=True,
+            result = subprocess.run(
+                cmd, input=_json.dumps(serializable), capture_output=True, text=True,
+                timeout=1800, env=env,
+                cwd=str(Path(__file__).parent.parent.parent),
             )
-        else:
-            print(f"[SYNC] Extractor FAILED (exit {result.returncode})", file=_sys.stderr, flush=True)
 
-        # Run custom connectors (Tier A: local mount)
-        connectors_dir = Path(os.environ.get("CONNECTORS_DIR", str(Path(__file__).parent.parent.parent / "connectors" / "custom")))
-        if connectors_dir.exists():
-            for connector_dir in sorted(connectors_dir.iterdir()):
-                if not connector_dir.is_dir():
-                    continue
-                extractor = connector_dir / "extractor.py"
-                if not extractor.exists():
-                    continue
-                logger.info("Running custom connector: %s", connector_dir.name)
-                try:
-                    custom_result = subprocess.run(
-                        [sys.executable, str(extractor)],
-                        env=env, capture_output=True, text=True, timeout=600,
-                        cwd=str(Path(__file__).parent.parent.parent),
-                    )
-                    if custom_result.returncode != 0:
-                        logger.error("Custom connector %s failed: %s", connector_dir.name, custom_result.stderr[-500:])
-                    else:
-                        logger.info("Custom connector %s completed", connector_dir.name)
-                except subprocess.TimeoutExpired:
-                    logger.error("Custom connector %s timed out", connector_dir.name)
+            if result.stdout:
+                print(f"[SYNC] Extractor stdout: {result.stdout.strip()[-500:]}", file=_sys.stderr, flush=True)
+            if result.stderr:
+                print(f"[SYNC] Extractor stderr: {result.stderr[-500:]}", file=_sys.stderr, flush=True)
+            # Issue #81 Group B: three exit codes. 0 = full success,
+            # 1 = full failure, 2 = partial. Partial is a data-quality
+            # alert, not a crash — the orchestrator's per-table _meta
+            # machinery already captured which tables succeeded; we just
+            # need to log loudly so operator alerting can pick it up.
+            if result.returncode == 0:
+                print(f"[SYNC] Extractor OK", file=_sys.stderr, flush=True)
+            elif result.returncode == 2:
+                print(
+                    f"[SYNC] Extractor PARTIAL FAILURE (exit 2) — some tables "
+                    f"succeeded, some failed; see stderr for per-table errors. "
+                    f"Successful tables will still be published by the orchestrator.",
+                    file=_sys.stderr, flush=True,
+                )
+            else:
+                print(f"[SYNC] Extractor FAILED (exit {result.returncode})", file=_sys.stderr, flush=True)
+
+            # Run custom connectors (Tier A: local mount) — only when there
+            # were local-mode tables to drive the extractor. Custom connectors
+            # currently piggyback on the same env as the Keboola extractor.
+            connectors_dir = Path(os.environ.get("CONNECTORS_DIR", str(Path(__file__).parent.parent.parent / "connectors" / "custom")))
+            if connectors_dir.exists():
+                for connector_dir in sorted(connectors_dir.iterdir()):
+                    if not connector_dir.is_dir():
+                        continue
+                    extractor = connector_dir / "extractor.py"
+                    if not extractor.exists():
+                        continue
+                    logger.info("Running custom connector: %s", connector_dir.name)
+                    try:
+                        custom_result = subprocess.run(
+                            [sys.executable, str(extractor)],
+                            env=env, capture_output=True, text=True, timeout=600,
+                            cwd=str(Path(__file__).parent.parent.parent),
+                        )
+                        if custom_result.returncode != 0:
+                            logger.error("Custom connector %s failed: %s", connector_dir.name, custom_result.stderr[-500:])
+                        else:
+                            logger.info("Custom connector %s completed", connector_dir.name)
+                    except subprocess.TimeoutExpired:
+                        logger.error("Custom connector %s timed out", connector_dir.name)
 
         # Materialized BigQuery pass — runs admin-registered SQL through the
         # DuckDB BQ extension (via BqAccess) and writes parquet for due rows.

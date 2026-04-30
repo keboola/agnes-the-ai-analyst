@@ -185,6 +185,83 @@ def test_materialized_pass_records_parquet_hash(system_db, stub_bq, tmp_path):
     assert row["hash"] == expected
 
 
+def test_run_sync_runs_materialized_pass_on_bq_only_deployment(
+    tmp_path, monkeypatch,
+):
+    """REGRESSION (Devin BUG_0002 on 2fa44f2): on BigQuery-only deployments
+    `list_local('bigquery')` is always empty (BQ rows are remote or
+    materialized, never local). The pre-fix _run_sync early-returned in
+    that case → materialized pass + orchestrator rebuild were dead code.
+    Post-fix: run_extractor_subprocess flag skips just the Keboola
+    subprocess, and the materialized pass still fires."""
+    import duckdb
+    from src.db import _ensure_schema
+
+    db_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+
+    repo = TableRegistryRepository(conn)
+    # Materialized BQ row — would be invisible to list_local('bigquery').
+    repo.register(
+        id="m1", name="m1", source_type="bigquery",
+        query_mode="materialized",
+        source_query="SELECT 1",
+        sync_schedule="every 1m",
+    )
+    conn.close()
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+
+    # Patch the heavy collaborators so we observe what _run_sync invoked
+    # without actually running BQ / orchestrator.
+    from app.api import sync as sync_mod
+
+    materialized_called = {"count": 0}
+    orchestrator_called = {"count": 0}
+
+    def _spy_materialized_pass(_conn, _bq):
+        materialized_called["count"] += 1
+        return {"materialized": ["m1"], "skipped": [], "errors": []}
+
+    class _OrchStub:
+        def rebuild(self):
+            orchestrator_called["count"] += 1
+            return {}
+
+    monkeypatch.setattr(
+        "app.api.sync._run_materialized_pass",
+        _spy_materialized_pass,
+    )
+    monkeypatch.setattr(
+        "src.orchestrator.SyncOrchestrator",
+        lambda *a, **kw: _OrchStub(),
+    )
+    # Pretend instance.yaml says data_source.type=bigquery
+    monkeypatch.setattr(
+        "app.instance_config.get_data_source_type",
+        lambda: "bigquery",
+    )
+    # bq_project must be truthy so the materialized pass branch fires.
+    real_get_value = sync_mod.__dict__.get("get_value")
+    monkeypatch.setattr(
+        "app.instance_config.get_value",
+        lambda *args, **kw: (
+            "my-bq-proj" if (args and args[-1] == "project")
+            else kw.get("default", "")
+        ),
+    )
+
+    sync_mod._run_sync()
+
+    assert materialized_called["count"] == 1, (
+        "materialized pass must run on BQ-only deployment (no local rows)"
+    )
+    assert orchestrator_called["count"] == 1, (
+        "orchestrator rebuild must run so materialized parquets are picked up"
+    )
+
+
 @pytest.mark.parametrize("yaml_value, expected_max", [
     (10737418240, 10737418240),       # int — canonical
     (10737418240.0, 10737418240),     # float — YAML often parses as float
