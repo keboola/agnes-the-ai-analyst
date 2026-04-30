@@ -68,6 +68,11 @@ def _run_materialized_pass(
 
     output_dir = str(Path(_get_data_dir()) / "extracts" / "bigquery")
 
+    # Sentinel: max_bytes <= 0 means "guardrail disabled". get_value() returns
+    # the default for missing keys, so we use 0 as the explicit-disable value
+    # (config docs: `max_bytes_per_materialize: 0` to disable).
+    effective_max = max_bytes if (max_bytes is not None and max_bytes > 0) else None
+
     registry = TableRegistryRepository(conn)
     state = SyncStateRepository(conn)
 
@@ -89,7 +94,7 @@ def _run_materialized_pass(
                 sql=row["source_query"],
                 project_id=project_id,
                 output_dir=output_dir,
-                max_bytes=max_bytes,
+                max_bytes=effective_max,
             )
             state.update_sync(
                 table_id=row["id"],

@@ -110,10 +110,12 @@ data_source:
     location: "${BIGQUERY_LOCATION}"     # BigQuery location (e.g., "us-central1", "US")
     # Uses ADC (Application Default Credentials) - VM service account on GCP
     # Data can live in a different project -- use fully-qualified table IDs in data_description.md
-    # Cost guardrail for query_mode='materialized'. Before each COPY the
-    # scheduler runs a BQ dry-run and refuses to proceed if the estimate
-    # exceeds this cap (bytes). Default 10 GiB. Set to null to disable
-    # (NOT recommended in production — a misconfigured query can scan TBs).
+    # Cost guardrail for query_mode='materialized'. The scheduler runs a BQ
+    # dry-run before each COPY and refuses to proceed if the estimate
+    # exceeds this cap (bytes). Default 10 GiB.
+    # Set to 0 to disable (NOT recommended in production — a misconfigured
+    # query can scan TBs). YAML `null` falls through to the 10 GiB default;
+    # use the explicit `0` sentinel instead.
     # max_bytes_per_materialize: 10737418240
 
 # --- OpenMetadata catalog (optional) ---

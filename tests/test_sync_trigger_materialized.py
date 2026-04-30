@@ -134,3 +134,29 @@ def test_materialized_pass_updates_sync_state_on_success(system_db, tmp_path):
     assert last is not None
     assert last["rows"] == 42
     assert last["file_size_bytes"] == 1000
+
+
+def test_run_materialized_pass_zero_max_bytes_disables_guardrail(system_db, tmp_path):
+    """max_bytes=0 (configured to disable) means materialize_query is called
+    without a cap (max_bytes=None passed downstream)."""
+    repo = TableRegistryRepository(system_db)
+    repo.register(
+        id="big_query", name="big_query",
+        source_type="bigquery", query_mode="materialized",
+        source_query="SELECT 1",
+        sync_schedule="every 1m",
+    )
+
+    from app.api import sync as sync_mod
+
+    captured = {}
+
+    def _spy(**kwargs):
+        captured.update(kwargs)
+        return {"rows": 1, "size_bytes": 100, "query_mode": "materialized"}
+
+    with patch("app.api.sync._materialize_table", side_effect=_spy):
+        sync_mod._run_materialized_pass(system_db, project_id="p", max_bytes=0)
+
+    # max_bytes=0 in the config → None passed to materialize_query (no dry-run)
+    assert captured["max_bytes"] is None

@@ -63,7 +63,7 @@ The `_meta` table must have columns:
 
 Cost: `materialized` runs once per `sync_schedule` regardless of how many analysts query it; `remote` runs once per analyst-query. The break-even is roughly query frequency × bytes scanned vs. one COPY × bytes scanned.
 
-Guardrail: `data_source.bigquery.max_bytes_per_materialize` (default 10 GiB) blocks the COPY when BQ's dry-run estimate exceeds the cap. Set it explicitly per environment in `instance.yaml`.
+Guardrail: `data_source.bigquery.max_bytes_per_materialize` (default 10 GiB) blocks the COPY when BQ's dry-run estimate exceeds the cap. Set it explicitly per environment in `instance.yaml`. The default 10 GiB cap applies when the knob is missing OR set to YAML `null`. To explicitly disable the guardrail, use `max_bytes_per_materialize: 0`.
 
 Register a materialized table:
 
