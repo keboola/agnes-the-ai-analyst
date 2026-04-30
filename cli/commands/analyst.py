@@ -5,8 +5,8 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlparse
 
+import httpx
 import typer
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
@@ -248,32 +248,6 @@ def _initialize_duckdb(workspace: Path) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Helper: resolve instance name
-# ---------------------------------------------------------------------------
-
-def _get_instance_name(server_url: str, token: str) -> str:
-    """Retrieve instance name from /api/health, fall back to hostname."""
-    import httpx
-
-    server_url = server_url.rstrip("/")
-    headers = {"Authorization": f"Bearer {token}"}
-
-    try:
-        resp = httpx.get(f"{server_url}/api/health", headers=headers, timeout=10.0)
-        if resp.status_code == 200:
-            data = resp.json()
-            name = data.get("instance_name") or data.get("name")
-            if name:
-                return name
-    except Exception:
-        pass
-
-    # Fall back to hostname extracted from URL
-    parsed = urlparse(server_url)
-    return parsed.hostname or "AI Data Analyst"
-
-
-# ---------------------------------------------------------------------------
 # Helper: install SessionStart/End hooks into a Claude settings file
 # ---------------------------------------------------------------------------
 
@@ -320,40 +294,42 @@ def _install_claude_hooks(settings_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Helper: generate CLAUDE.md from template
+# Helper: generate CLAUDE.md from server-rendered template
 # ---------------------------------------------------------------------------
 
-def _generate_claude_md(
-    workspace: Path,
-    instance_name: str,
-    server_url: str,
-    sync_interval: str,
-) -> None:
-    """Write CLAUDE.md from the template; create CLAUDE.local.md if absent."""
-    # Locate template relative to this file (../../config/claude_md_template.txt)
-    here = Path(__file__).parent
-    template_path = here.parent.parent / "config" / "claude_md_template.txt"
+def _generate_claude_md(workspace: Path, server_url: str, token: str) -> None:
+    """Fetch the rendered welcome prompt from the server and write CLAUDE.md.
 
-    if template_path.exists():
-        template = template_path.read_text(encoding="utf-8")
-    else:
-        # Fallback minimal template
-        template = (
-            "# {instance_name} — AI Data Analyst\n\n"
-            "This workspace is connected to {server_url}.\n\n"
-            "- Data on the server refreshes every {sync_interval}\n"
+    Falls back to a minimal embedded template if the server endpoint is
+    unavailable (e.g., older server versions before /api/welcome shipped).
+    """
+    from urllib.parse import quote
+
+    server_url = server_url.rstrip("/")
+    headers = {"Authorization": f"Bearer {token}"}
+    url = f"{server_url}/api/welcome?server_url={quote(server_url, safe='')}"
+
+    rendered: Optional[str] = None
+    try:
+        resp = httpx.get(url, headers=headers, timeout=15.0)
+        if resp.status_code == 200:
+            rendered = resp.json().get("content")
+    except Exception:
+        pass
+
+    if rendered is None:
+        # Fallback for older servers — keeps the CLI usable, just less rich.
+        rendered = (
+            "# AI Data Analyst\n\n"
+            f"This workspace is connected to {server_url}.\n\n"
+            "## Rules\n"
+            "- Before computing any business metric: run `da metrics show <category>/<name>`\n"
+            "- Save work output to `user/artifacts/`\n"
+            "- Sync data regularly with `da sync`\n"
         )
 
-    content = (
-        template
-        .replace("{instance_name}", instance_name)
-        .replace("{server_url}", server_url)
-        .replace("{sync_interval}", sync_interval)
-    )
+    (workspace / "CLAUDE.md").write_text(rendered, encoding="utf-8")
 
-    (workspace / "CLAUDE.md").write_text(content, encoding="utf-8")
-
-    # .claude/CLAUDE.local.md — never overwrite if it already exists
     local_md = workspace / ".claude" / "CLAUDE.local.md"
     if not local_md.exists():
         local_md.write_text(
@@ -402,7 +378,6 @@ def _check_data_freshness(workspace: Path) -> str:
 def setup(
     server_url: str = typer.Option(..., "--server-url", help="URL of the AI Data Analyst server"),
     force: bool = typer.Option(False, "--force", help="Re-initialise even if workspace already exists"),
-    sync_interval: str = typer.Option("1 hour", "--sync-interval", help="Data refresh interval shown in CLAUDE.md"),
     workspace_dir: Optional[str] = typer.Option(None, "--workspace", help="Workspace directory (default: current dir)"),
 ):
     """Bootstrap a new analyst workspace from a remote server."""
@@ -437,15 +412,13 @@ def setup(
     typer.echo("Initialising DuckDB views...")
     total_rows = _initialize_duckdb(workspace)
 
-    # 7. Generate CLAUDE.md
-    typer.echo("Generating CLAUDE.md...")
-    instance_name = _get_instance_name(server_url, token)
-    _generate_claude_md(workspace, instance_name, server_url, sync_interval)
+    # 7. Generate CLAUDE.md (rendered server-side)
+    typer.echo("Fetching welcome prompt from server...")
+    _generate_claude_md(workspace, server_url, token)
 
     # 8. Summary
     typer.echo("")
     typer.echo("Setup complete!")
-    typer.echo(f"  Instance : {instance_name}")
     typer.echo(f"  Server   : {server_url}")
     typer.echo(f"  Tables   : {n_downloaded} downloaded, {total_rows} total rows")
     typer.echo(f"  Workspace: {workspace}")
