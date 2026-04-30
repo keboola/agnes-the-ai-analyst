@@ -84,6 +84,8 @@ def init_extract(
     output_dir: str,
     project_id: str,
     table_configs: List[Dict[str, Any]],
+    *,
+    skip_attach: bool = False,
 ) -> Dict[str, Any]:
     """Create extract.duckdb with remote views into BigQuery.
 
@@ -111,14 +113,22 @@ def init_extract(
 
     try:
         # Install and load BigQuery extension
-        conn.execute("INSTALL bigquery FROM community; LOAD bigquery;")
-        conn.execute(f"ATTACH 'project={project_id}' AS bq (TYPE bigquery, READ_ONLY)")
-        logger.info("Attached BigQuery project: %s", project_id)
+        if not skip_attach:
+            conn.execute("INSTALL bigquery FROM community; LOAD bigquery;")
+            conn.execute(f"ATTACH 'project={project_id}' AS bq (TYPE bigquery, READ_ONLY)")
+            logger.info("Attached BigQuery project: %s", project_id)
 
         _create_meta_table(conn)
         _create_remote_attach_table(conn, project_id)
 
         for tc in table_configs:
+            if tc.get("query_mode") == "materialized":
+                # Materialized rows are handled by the sync trigger pass — they
+                # write parquet files into /data/extracts/bigquery/data/, which
+                # the orchestrator picks up via standard local-parquet discovery.
+                # Don't create a remote view here (would shadow the parquet
+                # via a cross-source name collision).
+                continue
             table_name = tc["name"]
             dataset = tc.get("bucket", "")  # BigQuery dataset
             source_table = tc.get("source_table", table_name)
@@ -160,7 +170,8 @@ def init_extract(
                 logger.error("Failed to register %s: %s", table_name, e)
                 stats["errors"].append({"table": table_name, "error": str(e)})
 
-        conn.execute("DETACH bq")
+        if not skip_attach:
+            conn.execute("DETACH bq")
     finally:
         conn.close()
 
