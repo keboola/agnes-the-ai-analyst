@@ -440,9 +440,11 @@ function renderUsers() {
         <div class="row-actions">
           <a class="icon-btn" href="/admin/users/${encodeURIComponent(u.id)}" title="Open detail view: memberships + effective access">Detail</a>
           <a class="icon-btn" href="/admin/tokens?user=${encodeURIComponent(u.email || "")}" title="View this user's personal access tokens">Tokens</a>
+          ${u.is_sso_user ? "" : `
           <button class="icon-btn" data-action="reset-password" data-user-id="${esc(u.id)}" data-user-email="${esc(u.email)}" title="Generate a reset link (user picks their own new password)">Reset</button>
           <button class="icon-btn" data-action="set-password" data-user-id="${esc(u.id)}" data-user-email="${esc(u.email)}" title="Assign a password directly">Set pwd</button>
           <button class="icon-btn danger" data-action="delete-user" data-user-id="${esc(u.id)}" data-user-email="${esc(u.email)}">Delete</button>
+          `}
         </div>
       </td>`;
     tbody.appendChild(tr);
