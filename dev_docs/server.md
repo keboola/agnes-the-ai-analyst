@@ -218,7 +218,7 @@ The FastAPI app is available at `https://your-instance.example.com`.
 
 - **Google OAuth**: restricted to `allowed_domain` set in `config/instance.yaml`
 - **Email magic link**: available out of the box (no external service required)
-- **Admin API**: `POST /api/admin/tables/{id}` — register/update tables
+- **Admin API**: `POST /api/admin/register-table` (register), `PUT /api/admin/registry/{id}` (update), `GET /api/admin/registry` (list) — manage tables
 - **Sync API**: `POST /api/sync/trigger` — trigger data extraction
 
 ### Google OAuth setup

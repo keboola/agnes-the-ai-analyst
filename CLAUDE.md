@@ -19,7 +19,7 @@ Ask the user for:
 4. Create `.env` from `config/.env.template`
 
 ### Step 3: Register Tables
-1. Use the FastAPI admin API (`POST /api/admin/tables/{id}`) or webapp UI to register tables
+1. Use the FastAPI admin API (`POST /api/admin/register-table`, then `PUT /api/admin/registry/{id}` for updates) or webapp UI to register tables
 2. Tables are stored in DuckDB `table_registry` with source_type, bucket, source_table, query_mode
 3. For migration from old format: `python scripts/migrate_registry_to_duckdb.py`
 
