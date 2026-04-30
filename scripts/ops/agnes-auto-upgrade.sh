@@ -10,6 +10,46 @@ set -euo pipefail
 cd /opt/agnes
 # shellcheck disable=SC1091
 set -a; . /opt/agnes/.env; set +a
+
+# Fail-fast guard: if the VM has a config disk attached, it MUST be
+# mounted at /data/state before any container action. Otherwise the
+# app would write state onto /data (sdb) and lose it on the next
+# container recreate — exactly the regression that wiped marketplaces
+# on foundryai-development 2026-04-30. Three retries (mount may race
+# with udev on cold boot) then hard exit.
+CONFIG_DEVICE=/dev/disk/by-id/google-config-disk
+if [ -e "$CONFIG_DEVICE" ]; then
+  attempt=0
+  while [ $attempt -lt 3 ]; do
+    attempt=$((attempt + 1))
+    if mountpoint -q /data/state; then
+      expected_dev=$(readlink -f "$CONFIG_DEVICE")
+      actual_dev=$(findmnt -n -o SOURCE /data/state)
+      if [ "$expected_dev" = "$actual_dev" ]; then
+        break
+      fi
+      logger -t agnes-auto-upgrade "WARN: /data/state on $actual_dev, expected $expected_dev — attempting remount"
+      umount /data/state 2>/dev/null || true
+    fi
+    mount "$CONFIG_DEVICE" /data/state 2>&1 || true
+    sleep $((attempt * 2))
+  done
+
+  if ! mountpoint -q /data/state || \
+     [ "$(readlink -f "$CONFIG_DEVICE")" != "$(findmnt -n -o SOURCE /data/state)" ]; then
+    logger -t agnes-auto-upgrade "FATAL: config disk not mounted at /data/state — refusing to start containers"
+    echo "FATAL: /data/state is not backed by the config disk." >&2
+    echo "       Refusing to run docker compose — app state must NEVER land on /data (sdb)." >&2
+    echo "       Inspect: mount | grep /data/state ; ls /dev/disk/by-id/google-config-disk" >&2
+    exit 1
+  fi
+
+  # Re-apply propagation in case a prior container teardown reset it.
+  # Idempotent — safe to call when already private.
+  mount --make-rprivate /data 2>/dev/null || true
+  mount --make-rprivate /data/state 2>/dev/null || true
+fi
+
 IMAGE="ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}"
 # Array form (vs. word-split string) — quoted expansion survives paths
 # with spaces and is the modern bash idiom. Functionally identical here
