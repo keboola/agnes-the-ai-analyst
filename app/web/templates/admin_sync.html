@@ -1,0 +1,232 @@
+{% extends "base.html" %}
+{% block title %}Sync — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block content %}
+<style>
+  /* Page-specific layout glue. Tabular layout uses the global .data-table
+     rule from style-custom.css; only header rows + the trigger panel sit
+     here. */
+  .sync-page { max-width: 1280px; margin: 0 auto; padding: 24px 32px 48px; }
+  .sync-page h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; }
+  .sync-page .subtitle { color: var(--text-secondary); font-size: 13px; margin: 0 0 24px; }
+
+  .sync-card {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border-light, #e5e7eb);
+    border-radius: 10px;
+    margin-bottom: 24px;
+    overflow: hidden;
+  }
+  .sync-card-head {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .sync-card-head h2 {
+    font-size: 14px; font-weight: 600; margin: 0;
+    text-transform: uppercase; letter-spacing: 0.4px;
+    color: var(--text-secondary, #6b7280);
+  }
+  .sync-card-head .meta { font-size: 12px; color: var(--text-secondary, #9ca3af); }
+
+  .trigger-row {
+    padding: 16px 20px;
+    display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+  }
+  .trigger-row button {
+    padding: 8px 16px; border-radius: 8px;
+    background: var(--primary, #0073D1); color: #fff;
+    border: none; font-size: 13px; font-weight: 500;
+    cursor: pointer; font-family: inherit;
+  }
+  .trigger-row button:hover { filter: brightness(0.95); }
+  .trigger-row button:disabled { opacity: 0.5; cursor: progress; }
+  .trigger-row .trigger-result {
+    font-size: 12px; color: var(--text-secondary);
+    flex: 1; min-width: 0;
+  }
+  .trigger-row .trigger-result.is-error { color: #b91c1c; }
+
+  .status-pill {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .status-pill.is-ok      { background: #dcfce7; color: #166534; }
+  .status-pill.is-error   { background: #fee2e2; color: #991b1b; }
+  .status-pill.is-pending { background: #fef3c7; color: #92400e; }
+
+  .duration { font-variant-numeric: tabular-nums; color: var(--text-secondary); }
+  .err-cell { color: #b91c1c; font-size: 12px; }
+
+  .empty-state {
+    padding: 32px 20px;
+    text-align: center;
+    color: var(--text-secondary, #6b7280);
+    font-size: 13px;
+  }
+</style>
+
+<div class="sync-page">
+  <h1>Sync</h1>
+  <p class="subtitle">Per-source last-run summary, recent history, and on-demand trigger. Admin only.</p>
+
+  <!-- Manual trigger -->
+  <div class="sync-card">
+    <div class="sync-card-head">
+      <h2>Trigger sync</h2>
+    </div>
+    <div class="trigger-row">
+      <button id="trigger-btn" type="button">Sync now</button>
+      <span class="trigger-result" id="trigger-result">Runs all configured sources in the background. Refresh the recent-runs table after a few seconds.</span>
+    </div>
+  </div>
+
+  <!-- Per-table summary -->
+  <div class="sync-card">
+    <div class="sync-card-head">
+      <h2>Per-table state</h2>
+      <span class="meta" id="state-count"></span>
+    </div>
+    {% if sync_states %}
+    <table class="data-table">
+      <colgroup>
+        <col style="width: 30%;">
+        <col style="width: 22%;">
+        <col style="width: 12%;">
+        <col style="width: 14%;">
+        <col style="width: 12%;">
+        <col style="width: 10%;">
+      </colgroup>
+      <thead>
+        <tr>
+          <th>Table</th>
+          <th>Last sync</th>
+          <th>Status</th>
+          <th>Rows</th>
+          <th>Size</th>
+          <th>Cols</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in sync_states %}
+        <tr>
+          <td class="cell-mono" title="{{ s.table_id }}">{{ s.table_id }}</td>
+          <td title="{{ s.last_sync or '' }}">{{ s.last_sync_display or '—' }}</td>
+          <td>
+            <span class="status-pill is-{{ (s.status or 'pending') | lower }}">{{ s.status or 'pending' }}</span>
+          </td>
+          <td class="duration">{{ '{:,}'.format(s.rows or 0) }}</td>
+          <td class="duration">{{ s.size_display or '—' }}</td>
+          <td class="duration">{{ s.columns or 0 }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty-state">No tables have synced yet. Trigger a sync above to populate this view.</div>
+    {% endif %}
+  </div>
+
+  <!-- Recent history (JS-loaded) -->
+  <div class="sync-card">
+    <div class="sync-card-head">
+      <h2>Recent runs</h2>
+      <span class="meta" id="history-count">Loading…</span>
+    </div>
+    <div id="history-content">
+      <div class="empty-state">Loading…</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const HISTORY_API = "/api/sync/history?limit=50";
+const TRIGGER_API = "/api/sync/trigger";
+
+function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+function fmtMs(ms) { if (ms == null) return "—"; if (ms < 1000) return ms + " ms"; return (ms / 1000).toFixed(1) + " s"; }
+function fmtAbs(s) { return s ? String(s).slice(0, 19).replace("T", " ") : "—"; }
+
+async function loadHistory() {
+  const host = document.getElementById("history-content");
+  const meta = document.getElementById("history-count");
+  try {
+    const r = await fetch(HISTORY_API, { credentials: "include" });
+    if (!r.ok) {
+      host.innerHTML = `<div class="empty-state" style="color:#b91c1c;">Failed to load: ${esc(r.status)}</div>`;
+      meta.textContent = "";
+      return;
+    }
+    const rows = await r.json();
+    meta.textContent = rows.length === 0 ? "no runs yet" : `${rows.length} run${rows.length === 1 ? "" : "s"}`;
+    if (!rows.length) {
+      host.innerHTML = `<div class="empty-state">No runs recorded yet.</div>`;
+      return;
+    }
+    let html = `<table class="data-table">
+      <colgroup>
+        <col style="width: 22%;">
+        <col style="width: 28%;">
+        <col style="width: 10%;">
+        <col style="width: 12%;">
+        <col style="width: 12%;">
+        <col style="width: 16%;">
+      </colgroup>
+      <thead><tr>
+        <th>Started</th><th>Table</th><th>Status</th><th>Rows</th><th>Duration</th><th>Error</th>
+      </tr></thead><tbody>`;
+    for (const row of rows) {
+      const status = (row.status || "pending").toLowerCase();
+      html += `<tr>
+        <td class="duration" title="${esc(row.synced_at)}">${esc(fmtAbs(row.synced_at))}</td>
+        <td class="cell-mono" title="${esc(row.table_id)}">${esc(row.table_id)}</td>
+        <td><span class="status-pill is-${esc(status)}">${esc(row.status || "pending")}</span></td>
+        <td class="duration">${row.rows == null ? "—" : Number(row.rows).toLocaleString()}</td>
+        <td class="duration">${esc(fmtMs(row.duration_ms))}</td>
+        <td class="err-cell" title="${esc(row.error || '')}">${esc(row.error || "")}</td>
+      </tr>`;
+    }
+    html += `</tbody></table>`;
+    host.innerHTML = html;
+  } catch (e) {
+    host.innerHTML = `<div class="empty-state" style="color:#b91c1c;">Network error: ${esc(e.message)}</div>`;
+    meta.textContent = "";
+  }
+}
+
+document.getElementById("trigger-btn").addEventListener("click", async () => {
+  if (!await confirmDestructive({
+    title: "Trigger a sync now?",
+    body: "Runs all configured sources in the background. Existing runs continue; this just starts a new one.",
+    confirmLabel: "Sync now",
+    kind: "primary",
+  })) return;
+  const btn = document.getElementById("trigger-btn");
+  const out = document.getElementById("trigger-result");
+  btn.disabled = true;
+  out.classList.remove("is-error");
+  out.textContent = "Triggering…";
+  try {
+    const r = await fetch(TRIGGER_API, { method: "POST", credentials: "include" });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      out.classList.add("is-error");
+      out.textContent = "Trigger failed: " + (data.detail || r.status);
+    } else {
+      out.textContent = (data.message || "Sync started.") + " Refresh in a few seconds to see new runs.";
+    }
+  } catch (e) {
+    out.classList.add("is-error");
+    out.textContent = "Network error: " + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById("state-count").textContent =
+  {% if sync_states %}"{{ sync_states | length }} table" + ({{ sync_states | length }} === 1 ? "" : "s"){% else %}""{% endif %};
+
+loadHistory();
+</script>
+{% endblock %}
