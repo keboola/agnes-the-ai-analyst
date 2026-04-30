@@ -116,3 +116,38 @@ def test_update_source_query_alone_requires_query_mode(seeded_app):
         "source_query": "SELECT 1",
     }, headers=_auth(token))
     assert 400 <= r2.status_code < 500, r2.json()
+
+
+def test_update_materialized_to_remote_clears_source_query(seeded_app):
+    """When admin switches a materialized table to remote/local, the stale
+    source_query must be cleared in the DB — otherwise the registry shows
+    a non-materialized row carrying an orphan SQL body."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+
+    # Seed a materialized table with a source_query
+    r = c.post("/api/admin/register-table", json={
+        "name": "switcher_b7",
+        "source_type": "bigquery",
+        "query_mode": "materialized",
+        "source_query": "SELECT * FROM bq.\"ds\".\"t\"",
+    }, headers=_auth(token))
+    assert r.status_code == 201, r.json()
+    table_id = r.json()["id"]
+
+    # Switch mode to remote — request body intentionally omits source_query
+    # since the existing PATCH semantics only update fields explicitly given.
+    r2 = c.put(f"/api/admin/registry/{table_id}", json={
+        "query_mode": "remote",
+    }, headers=_auth(token))
+    assert r2.status_code == 200, r2.json()
+
+    # Verify the row in the registry: query_mode='remote', source_query is null.
+    r3 = c.get("/api/admin/registry", headers=_auth(token))
+    assert r3.status_code == 200, r3.json()
+    row = next((t for t in r3.json()["tables"] if t["id"] == table_id), None)
+    assert row is not None, f"Table {table_id} not found in registry"
+    assert row["query_mode"] == "remote"
+    assert row["source_query"] in (None, ""), (
+        f"Expected source_query cleared, got: {row['source_query']!r}"
+    )

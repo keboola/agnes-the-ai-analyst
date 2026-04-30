@@ -231,6 +231,12 @@ async def update_table(
         existing = repo.get(table_id)
         merged = {k: v for k, v in existing.items() if k != "registered_at"}
         merged.update(updates)
+        # When switching away from materialized mode, drop the stale
+        # source_query — the request validator can't clear it via the
+        # `if v is not None` filter above. Without this, a remote/local
+        # row would carry an orphan source_query in the registry.
+        if merged.get("query_mode") != "materialized":
+            merged["source_query"] = None
         merged.pop("id", None)  # avoid duplicate id kwarg
         repo.register(id=table_id, **merged)
     return {"id": table_id, "updated": list(updates.keys())}
