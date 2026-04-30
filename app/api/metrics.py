@@ -1,5 +1,6 @@
 """Metrics API endpoints — CRUD for metric definitions stored in DuckDB."""
 
+from datetime import datetime
 from typing import List, Optional
 
 import duckdb
@@ -9,9 +10,35 @@ from pydantic import BaseModel
 
 from app.auth.access import require_admin
 from app.auth.dependencies import get_current_user, _get_db
+from src.repositories.audit import AuditRepository
 from src.repositories.metrics import MetricRepository
 
 router = APIRouter(tags=["metrics"])
+
+
+def _audit(
+    conn: duckdb.DuckDBPyConnection,
+    actor_id: str,
+    action: str,
+    target_id: str,
+    params: Optional[dict] = None,
+) -> None:
+    """Audit-log helper for metric admin mutations. Same shape as
+    ``app/api/users.py::_audit`` / ``marketplaces.py::_audit``."""
+    try:
+        safe_params = None
+        if params:
+            safe_params = {}
+            for k, v in params.items():
+                safe_params[k] = v.isoformat() if isinstance(v, datetime) else v
+        AuditRepository(conn).log(
+            user_id=actor_id,
+            action=action,
+            resource=f"metric:{target_id}",
+            params=safe_params,
+        )
+    except Exception:
+        pass
 
 
 class MetricCreate(BaseModel):
@@ -93,6 +120,10 @@ async def create_or_update_metric(
         validation=body.validation,
         source=body.source,
     )
+    _audit(
+        conn, user["id"], "metric.upsert", body.id,
+        {"name": body.name, "category": body.category, "source": body.source},
+    )
     return metric
 
 
@@ -107,6 +138,7 @@ async def delete_metric(
     deleted = repo.delete(metric_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Metric '{metric_id}' not found")
+    _audit(conn, user["id"], "metric.delete", metric_id)
     return {"status": "deleted", "id": metric_id}
 
 
@@ -174,4 +206,8 @@ async def import_metrics(
         )
         count += 1
 
+    _audit(
+        conn, user["id"], "metric.import", file.filename or "(unnamed)",
+        {"count": count, "size_bytes": len(content)},
+    )
     return {"status": "imported", "count": count}

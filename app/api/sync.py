@@ -15,6 +15,32 @@ import duckdb
 from app.auth.access import require_admin
 from app.auth.dependencies import get_current_user, _get_db
 from app.utils import get_data_dir as _get_data_dir
+from src.repositories.audit import AuditRepository
+
+
+def _audit(
+    conn: duckdb.DuckDBPyConnection,
+    actor_id: str,
+    action: str,
+    target_id: str,
+    params: Optional[dict] = None,
+) -> None:
+    """Audit-log helper for sync mutations. Same shape as
+    ``app/api/users.py::_audit`` / ``marketplaces.py::_audit``."""
+    try:
+        safe_params = None
+        if params:
+            safe_params = {}
+            for k, v in params.items():
+                safe_params[k] = v.isoformat() if isinstance(v, datetime) else v
+        AuditRepository(conn).log(
+            user_id=actor_id,
+            action=action,
+            resource=f"sync:{target_id}",
+            params=safe_params,
+        )
+    except Exception:
+        pass
 from src.repositories.sync_state import SyncStateRepository
 from src.repositories.sync_settings import SyncSettingsRepository, DatasetPermissionRepository
 from src.rbac import can_access_table
@@ -273,9 +299,15 @@ async def trigger_sync(
     background_tasks: BackgroundTasks,
     tables: Optional[List[str]] = None,
     user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Trigger data sync from configured source. Admin only. Runs in background."""
     background_tasks.add_task(_run_sync, tables)
+    _audit(
+        conn, user["id"], "sync.trigger",
+        ",".join(tables) if tables else "all",
+        {"tables": tables or "all"},
+    )
     return {
         "status": "triggered",
         "tables": tables or "all",
@@ -323,6 +355,11 @@ async def update_sync_settings(
         settings_repo.set_dataset_enabled(user["id"], dataset, enabled)
         results[dataset] = {"enabled": enabled}
 
+    _audit(
+        conn, user["id"], "sync.settings.update", "datasets",
+        {"requested": list(request.datasets.keys()),
+         "applied": [k for k, v in results.items() if "enabled" in v]},
+    )
     return {"updated": results}
 
 
@@ -354,6 +391,10 @@ async def update_table_subscriptions(
     repo = SyncSettingsRepository(conn)
     for table_name, enabled in request.tables.items():
         repo.set_dataset_enabled(user["id"], table_name, enabled)
+    _audit(
+        conn, user["id"], "sync.subscriptions.update", "tables",
+        {"mode": request.table_mode, "count": len(request.tables)},
+    )
     return {"table_mode": request.table_mode, "updated": len(request.tables)}
 
 

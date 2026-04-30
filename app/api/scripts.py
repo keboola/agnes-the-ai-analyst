@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional
@@ -13,12 +14,50 @@ import duckdb
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
+from src.repositories.audit import AuditRepository
 from src.repositories.notifications import ScriptRepository
 
 router = APIRouter(prefix="/api/scripts", tags=["scripts"])
 
 SCRIPT_TIMEOUT = int(os.environ.get("SCRIPT_TIMEOUT", "300"))  # 5 min default
 SCRIPT_MAX_OUTPUT = int(os.environ.get("SCRIPT_MAX_OUTPUT", "65536"))  # 64KB
+
+
+# ---------------------------------------------------------------------------
+# Audit helper — same shape as app/api/users.py::_audit / marketplaces.py
+# ---------------------------------------------------------------------------
+# Server-side Python execution is the highest-blast-radius action in the
+# product (admin-only sandboxed subprocess). Every deploy / run / delete
+# writes a row to ``audit_log`` so an operator can answer "who ran what,
+# when, and against which script ID" without diffing logs.
+
+
+def _audit(
+    conn: duckdb.DuckDBPyConnection,
+    actor_id: str,
+    action: str,
+    target_id: str,
+    params: Optional[dict] = None,
+) -> None:
+    try:
+        safe_params = None
+        if params:
+            safe_params = {}
+            for k, v in params.items():
+                if isinstance(v, datetime):
+                    safe_params[k] = v.isoformat()
+                else:
+                    safe_params[k] = v
+        AuditRepository(conn).log(
+            user_id=actor_id,
+            action=action,
+            resource=f"script:{target_id}",
+            params=safe_params,
+        )
+    except Exception:
+        # Audit must not break the user-facing operation. The caller still
+        # observes the success/failure of the actual mutation.
+        pass
 
 
 class DeployScriptRequest(BaseModel):
@@ -66,6 +105,11 @@ async def deploy_script(
         schedule=request.schedule,
         source=request.source,
     )
+    _audit(
+        conn, user["id"], "script.deploy", script_id,
+        {"name": request.name, "schedule": request.schedule,
+         "source_bytes": len(request.source or "")},
+    )
     return ScriptResponse(
         id=script_id, name=request.name,
         schedule=request.schedule, owner=user["id"],
@@ -83,18 +127,32 @@ async def run_deployed_script(
     script = repo.get(script_id)
     if not script:
         raise HTTPException(status_code=404, detail="Script not found")
-    return _execute_script(script["source"], script["name"])
+    result = _execute_script(script["source"], script["name"])
+    _audit(
+        conn, user["id"], "script.run", script_id,
+        {"name": script["name"], "exit_code": result.get("exit_code"),
+         "truncated": result.get("truncated", False)},
+    )
+    return result
 
 
 @router.post("/run")
 async def run_adhoc_script(
     request: RunScriptRequest,
     user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Run an ad-hoc Python script (not deployed). Admin-only."""
     if not request.source:
         raise HTTPException(status_code=400, detail="Script source required")
-    return _execute_script(request.source, request.name or "adhoc")
+    name = request.name or "adhoc"
+    result = _execute_script(request.source, name)
+    _audit(
+        conn, user["id"], "script.run_adhoc", "adhoc",
+        {"name": name, "source_bytes": len(request.source),
+         "exit_code": result.get("exit_code")},
+    )
+    return result
 
 
 @router.delete("/{script_id}", status_code=204)
@@ -104,9 +162,14 @@ async def undeploy_script(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     repo = ScriptRepository(conn)
-    if not repo.get(script_id):
+    script = repo.get(script_id)
+    if not script:
         raise HTTPException(status_code=404, detail="Script not found")
     repo.undeploy(script_id)
+    _audit(
+        conn, user["id"], "script.delete", script_id,
+        {"name": script.get("name")},
+    )
 
 
 def _execute_script(source: str, name: str) -> dict:

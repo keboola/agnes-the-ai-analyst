@@ -13,6 +13,21 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 <!-- Add bullets here. Group: Added / Changed / Fixed / Removed / Internal.
      Mark breaking changes with **BREAKING** at the start of the bullet. -->
 
+### Security
+
+- **Audit-log writes added to 13 admin/user-mutating endpoints across 4 modules** that previously left no trace. Operators can now answer "who did what, when" without grepping logs. Pattern matches the canonical `_audit()` helper from `app/api/users.py` and `marketplaces.py`. New rows land in the existing `audit_log` table; the helper swallows write failures so audit instrumentation never breaks the user-facing operation.
+
+  | Module | Action prefix | Endpoints |
+  |---|---|---|
+  | `scripts.py` | `script.deploy` / `script.run` / `script.run_adhoc` / `script.delete` | 4 |
+  | `metrics.py` | `metric.upsert` / `metric.delete` / `metric.import` | 3 |
+  | `sync.py` | `sync.trigger` / `sync.settings.update` / `sync.subscriptions.update` | 3 |
+  | `upload.py` | `upload.session` / `upload.artifact` / `upload.local_md` | 3 |
+
+  Resource ID prefixes are namespaced (`script:<id>`, `metric:<id>`, `sync:<scope>`, `upload:<filename>`). Params capture name + size hints + exit codes — never script source bodies or upload contents. Server-side Python execution (the highest-blast-radius surface) is now fully audited.
+
+- 12 new tests in `tests/test_audit_log_coverage.py` pin that each instrumented endpoint writes a matching `audit_log` row. Loose-match strategy (action prefix + user_id) keeps tests resilient to future param wording tweaks.
+
 ### Added
 
 - Tablet breakpoint (`@media (max-width: 1024px)`) in `style-custom.css`: tightens container padding, shrinks `.data-table` density, and reduces modal padding. Fills the gap between the desktop layout and the existing 720 px mobile rules.
