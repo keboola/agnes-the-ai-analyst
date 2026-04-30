@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.21.0] — 2026-04-30
+
 ### Internal
 
 - `scripts/dev/agnes-client-reset.sh` — destructive cleanup of an Agnes *client* install on a developer workstation, mirror image of `app/web/setup_instructions.py` so an onboarding-from-scratch test is reproducible. Removes the `da` CLI (`uv tool uninstall`), `~/.config/da` / `~/.agnes` / `~/.claude/skills/agnes`, the Claude Code `agnes` marketplace + its plugins, the Agnes CA from the OS trust store (Windows `certutil -delstore`, macOS `security delete-certificate -Z`, Linux `update-ca-certificates`/`update-ca-trust`), the `AGNES_CA_PEM_TRUST` block from the user's shell rc (with `.agnes-reset.bak` backup), and `/tmp/agnes*.whl` matches. Cross-platform (Git Bash on Windows / macOS / Linux); `--yes` skips the confirm prompt, `--dry-run` prints actions without executing.
