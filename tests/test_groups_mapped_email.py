@@ -444,7 +444,7 @@ def test_profile_template_renders_color_coded_membership_chips(fresh_db, monkeyp
     and origin (google_sync / custom) second. google_sync chip text is
     shortened via the prefix-strip logic and the raw email sits on the
     chip's title attribute for hover reveal."""
-    monkeypatch.setenv("AGNES_GOOGLE_GROUP_PREFIX", "grp_foundryai_")
+    monkeypatch.setenv("AGNES_GOOGLE_GROUP_PREFIX", "grp_acme_")
     from app.main import app
     from src.db import get_system_db
     from src.repositories.user_group_members import UserGroupMembersRepository
@@ -459,7 +459,7 @@ def test_profile_template_renders_color_coded_membership_chips(fresh_db, monkeyp
         # capitalized); the title attribute should keep the raw email.
         ug_repo = UserGroupsRepository(conn)
         gsync = ug_repo.create(
-            name="grp_foundryai_legal@workspace.test",
+            name="grp_acme_legal@workspace.test",
             created_by="system:google-sync",
         )
         UserGroupMembersRepository(conn).add_member(
@@ -485,7 +485,7 @@ def test_profile_template_renders_color_coded_membership_chips(fresh_db, monkeyp
     # Workspace-derived group's chip text is the shortened display name;
     # the raw email lives in the title attribute for hover reveal.
     assert ">Legal<" in body
-    assert 'title="grp_foundryai_legal@workspace.test"' in body
+    assert 'title="grp_acme_legal@workspace.test"' in body
 
 
 def test_my_effective_access_lists_explicit_grants_for_admin_user(fresh_db):
