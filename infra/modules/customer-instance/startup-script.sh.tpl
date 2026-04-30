@@ -60,17 +60,18 @@ curl -fsSL "$${RAW_BASE}/docker-compose.yml" -o docker-compose.yml
 curl -fsSL "$${RAW_BASE}/docker-compose.prod.yml" -o docker-compose.prod.yml
 # Overlay which binds `data` volume to host /data (persistent disk mounted above)
 curl -fsSL "$${RAW_BASE}/docker-compose.host-mount.yml" -o docker-compose.host-mount.yml
-# TLS overlay — fetched unconditionally because agnes-auto-upgrade.sh (curled
-# from main below) detects TLS at runtime via cert files on disk, regardless
-# of TLS_MODE. Certs can appear after boot via agnes-tls-rotate.sh or manual
-# provisioning, and the cron job would then fail under `set -euo pipefail`
-# every 5 min until the file is present. Cheap to keep on disk either way.
+# TLS overlay + Caddyfile — fetched unconditionally because agnes-auto-upgrade.sh
+# (curled from main below) detects TLS at runtime via cert files on disk,
+# regardless of TLS_MODE. Certs can appear after boot via agnes-tls-rotate.sh
+# or manual provisioning, and:
+#   - the cron job would fail under `set -euo pipefail` every 5 min if
+#     docker-compose.tls.yml were missing, and
+#   - the caddy service in docker-compose.yml bind-mounts ./Caddyfile:ro,
+#     so without it on disk Docker auto-creates an empty directory there
+#     and Caddy crash-loops while the overlay has already closed :8000.
+# Cheap to keep on disk either way.
 curl -fsSL "$${RAW_BASE}/docker-compose.tls.yml" -o docker-compose.tls.yml
-
-# Caddyfile only when actually serving over Caddy
-if [ "$TLS_MODE" = "caddy" ] && [ -n "$DOMAIN" ]; then
-    curl -fsSL "$${RAW_BASE}/Caddyfile" -o Caddyfile
-fi
+curl -fsSL "$${RAW_BASE}/Caddyfile" -o Caddyfile
 
 # --- 4. Fetch secrets from Secret Manager — fail loudly if missing ---
 KEBOOLA_TOKEN=""

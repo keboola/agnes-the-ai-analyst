@@ -31,7 +31,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   the canonical auto-upgrade script detects TLS at runtime via cert files
   on disk — certs can appear after boot via `agnes-tls-rotate.sh` or
   manual provisioning, and the cron job would otherwise fail every 5 min
-  until the file was placed.
+  until the file was placed. Same reasoning extends to `Caddyfile`:
+  fetched unconditionally now, plus `agnes-auto-upgrade.sh` skips the
+  tls overlay when `Caddyfile` is missing/empty (defensive — without
+  it the caddy service crash-loops while the overlay closes `:8000`,
+  net effect "app unreachable").
 
 ## [0.24.0] — 2026-04-30
 

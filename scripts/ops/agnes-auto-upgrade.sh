@@ -59,10 +59,15 @@ PROFILE_ARGS=()
 # rotate.sh wrote a 0-byte cert and exited (or got SIGKILLed mid-write).
 # Bringing up the tls profile against an empty cert would just crash
 # Caddy on start; better to fall back to plain :8000 until rotate
-# regenerates real bytes.
-if [ -s /data/state/certs/fullchain.pem ] && [ -s /data/state/certs/privkey.pem ]; then
+# regenerates real bytes. Same `-s` rule for Caddyfile: without it (or
+# with an empty one) the caddy service crash-loops while the tls overlay
+# has already closed :8000 — net effect is "app unreachable". Skipping
+# the overlay keeps the app on plain :8000 until config lands.
+if [ -s /data/state/certs/fullchain.pem ] && [ -s /data/state/certs/privkey.pem ] && [ -s Caddyfile ]; then
     COMPOSE_FILES+=( -f docker-compose.tls.yml )
     PROFILE_ARGS=( --profile tls )
+elif [ -s /data/state/certs/fullchain.pem ] && [ -s /data/state/certs/privkey.pem ]; then
+    logger -t agnes-auto-upgrade "WARN: certs present but Caddyfile missing/empty — skipping tls overlay"
 fi
 BEFORE=$(docker images --no-trunc --format '{{.Digest}}' "$IMAGE" | head -1)
 docker compose "${COMPOSE_FILES[@]}" pull >/dev/null 2>&1
