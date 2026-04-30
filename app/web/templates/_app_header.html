@@ -69,7 +69,7 @@
                 <div class="app-nav-menu-section">Data</div>
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/tables') %}is-active{% endif %}" role="menuitem" href="/admin/tables">Tables</a>
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/sync') %}is-active{% endif %}" role="menuitem" href="/admin/sync">Sync</a>
-<<<<<<< HEAD
+                <a class="app-nav-menu-item {% if _path.startswith('/admin/metrics') %}is-active{% endif %}" role="menuitem" href="/admin/metrics">Metrics</a>
 
                 {# "Agent Experience" groups everything the admin curates
                    for what an analyst's AI agent sees / can do: which
@@ -84,9 +84,6 @@
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/workspace-prompt') %}is-active{% endif %}" role="menuitem" href="/admin/workspace-prompt">Workspace Prompt</a>
 
                 <div class="app-nav-menu-section">Server</div>
-=======
-                <a class="app-nav-menu-item {% if _path.startswith('/admin/metrics') %}is-active{% endif %}" role="menuitem" href="/admin/metrics">Metrics</a>
->>>>>>> d54c09e (feat(admin): add /admin/metrics list and detail pages)
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/settings') %}is-active{% endif %}" role="menuitem" href="/admin/settings">Settings</a>
                 <a class="app-nav-menu-item {% if _path.startswith('/admin/server-config') %}is-active{% endif %}" role="menuitem" href="/admin/server-config">Server config</a>
                 {# /admin/scheduler-runs collapsed into /admin/activity as
