@@ -9,7 +9,7 @@ import shutil
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 import duckdb
 
@@ -182,6 +182,14 @@ def _init_extract_locked(
         _create_remote_attach_table(conn, project_id)
 
         for tc in table_configs:
+            # Materialized rows are written by the sync trigger pass via
+            # `materialize_query()` — they live as parquets in
+            # /data/extracts/bigquery/data/, picked up by the orchestrator's
+            # standard local-parquet discovery. Don't create a remote view
+            # here (would shadow the parquet via name collision).
+            if tc.get("query_mode") == "materialized":
+                continue
+
             table_name = tc["name"]
             dataset = tc.get("bucket", "")
             source_table = tc.get("source_table", table_name)
@@ -277,6 +285,142 @@ def _init_extract_locked(
         tmp_wal.unlink()
 
     return stats
+
+
+class MaterializeBudgetError(RuntimeError):
+    """Raised when a `materialize_query` BQ dry-run estimate exceeds the
+    configured `data_source.bigquery.max_bytes_per_materialize` cap.
+
+    The materialize trigger pass logs this and skips the row; the next
+    scheduled tick re-tries (in case the underlying table size dropped
+    or the operator raised the cap). Shape mirrors `BqAccessError` —
+    `current` and `limit` for operator triage.
+    """
+
+    def __init__(self, message: str, *, table_id: str, current: int, limit: int):
+        self.table_id = table_id
+        self.current = current
+        self.limit = limit
+        super().__init__(message)
+
+
+def materialize_query(
+    table_id: str,
+    sql: str,
+    *,
+    bq,  # connectors.bigquery.access.BqAccess (untyped here to avoid circular import at type-check)
+    output_dir: str,
+    max_bytes: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Run `sql` through the DuckDB BigQuery extension and write the result
+    to `<output_dir>/data/<table_id>.parquet` atomically.
+
+    Designed for `query_mode='materialized'` table_registry rows. The SQL
+    is admin-registered (validated upstream) and may reference DuckDB
+    three-part identifiers (`bq."dataset"."table"`) resolved by the
+    in-session ATTACH, OR native BQ identifiers via the `bigquery_query()`
+    table function — both work because the session has the bigquery
+    extension loaded with a SECRET token.
+
+    Cost guardrail: when `max_bytes` is a positive int, run a BQ dry-run
+    via `bq.client()` first; raise `MaterializeBudgetError` if the
+    estimate exceeds the cap. `max_bytes=None` or `max_bytes <= 0`
+    disables the guardrail (config sentinel, see
+    `data_source.bigquery.max_bytes_per_materialize`).
+
+    Dry-run is best-effort and fail-open: if the SQL uses DuckDB syntax
+    that the native BQ client can't parse (e.g. `bq."ds"."t"`), the
+    dry-run raises and we log a warning; the COPY still runs. This
+    matches the BqAccess facade's "client is for native BQ SQL only"
+    contract — operators who need the cap to engage write the registered
+    SQL using native BQ identifiers (`\\`project.ds.t\\``).
+
+    Atomic write: result lands in `<id>.parquet.tmp` first, then
+    `os.replace` swaps it in. A failed COPY leaves no partial file behind.
+
+    Args:
+        table_id: Logical id from table_registry; becomes the parquet
+            filename. Must pass `validate_identifier()` so it can't
+            inject path traversal.
+        sql: SELECT statement, no trailing semicolon.
+        bq: A `BqAccess` instance — provides `duckdb_session()` for the
+            COPY and `client()` for the dry-run.
+        output_dir: Connector root, e.g. `/data/extracts/bigquery`.
+            Parquet lands in `<output_dir>/data/<table_id>.parquet`.
+        max_bytes: Optional cap on BQ bytes scanned. None or <= 0 disables.
+
+    Returns:
+        {"rows": int, "size_bytes": int, "query_mode": "materialized"}
+
+    Raises:
+        ValueError: if `table_id` is unsafe.
+        MaterializeBudgetError: if `max_bytes > 0` and dry-run estimate exceeds it.
+        BqAccessError: from `bq.duckdb_session()` (auth_failed / bq_lib_missing /
+            not_configured) — caller catches and aggregates into the trigger
+            pass summary.
+        duckdb.Error: if the COPY itself fails (e.g. bad SQL, missing table).
+    """
+    if not validate_identifier(table_id, "materialize table_id"):
+        raise ValueError(f"unsafe table_id: {table_id!r}")
+
+    out_path = Path(output_dir)
+    data_dir = out_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    parquet_path = data_dir / f"{table_id}.parquet"
+    tmp_path = data_dir / f"{table_id}.parquet.tmp"
+    if tmp_path.exists():
+        tmp_path.unlink()
+
+    # Cost guardrail (best-effort — fail-open if dry-run can't parse the SQL).
+    if max_bytes is not None and max_bytes > 0:
+        try:
+            from app.api.v2_scan import _bq_dry_run_bytes  # reuse main's impl
+            estimated = _bq_dry_run_bytes(bq, sql)
+        except Exception as e:
+            logger.warning(
+                "BQ dry-run failed for materialize cost guardrail (fail-open): %s. "
+                "If the SQL uses DuckDB three-part names like bq.\"ds\".\"t\", "
+                "rewrite to native BQ identifiers (`project.ds.t`) for the "
+                "guardrail to engage. Proceeding with COPY.",
+                e,
+            )
+            estimated = 0
+        if estimated > max_bytes:
+            raise MaterializeBudgetError(
+                f"dry-run estimate {estimated:,} bytes exceeds cap "
+                f"{max_bytes:,} for table {table_id!r}",
+                table_id=table_id,
+                current=estimated,
+                limit=max_bytes,
+            )
+
+    # COPY through a BqAccess-managed session.
+    with bq.duckdb_session() as conn:
+        # ATTACH the data project. Tolerated-fail when the session already
+        # has `bq` attached (test stubs may pre-populate; rare in production).
+        try:
+            conn.execute(
+                f"ATTACH 'project={bq.projects.data}' AS bq (TYPE bigquery, READ_ONLY)"
+            )
+        except duckdb.Error:
+            pass
+
+        try:
+            safe_path = str(tmp_path).replace("'", "''")
+            conn.execute(f"COPY ({sql}) TO '{safe_path}' (FORMAT PARQUET)")
+            rows = conn.execute(
+                f"SELECT count(*) FROM read_parquet('{safe_path}')"
+            ).fetchone()[0]
+        except Exception:
+            if tmp_path.exists():
+                tmp_path.unlink()
+            raise
+
+    size_bytes = tmp_path.stat().st_size
+    os.replace(tmp_path, parquet_path)
+
+    return {"rows": int(rows), "size_bytes": size_bytes, "query_mode": "materialized"}
 
 
 def _resolve_bq_project_id() -> str:
