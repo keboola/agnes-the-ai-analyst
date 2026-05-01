@@ -265,6 +265,55 @@ def test_keboola_edit_modal_parity(seeded_app, monkeypatch):
         reset_cache()
 
 
+def test_keboola_discover_buttons_hidden_on_bigquery_instance(seeded_app, monkeypatch):
+    """C1: Discover/List/Use-as-base buttons in the Keboola tab are
+    UI-hidden when the instance's data_source.type isn't keboola, because
+    /api/admin/discover-tables routes by instance type and would return
+    BQ data on a BQ instance."""
+    fake_cfg = {"data_source": {"type": "bigquery", "bigquery": {"project": "p"}}}
+    monkeypatch.setattr(
+        "app.instance_config.load_instance_config",
+        lambda: fake_cfg, raising=False,
+    )
+    from app.instance_config import reset_cache
+    reset_cache()
+    try:
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        r = c.get("/admin/tables", headers=_auth(token))
+        html = r.text
+        # Inputs stay (manual entry works).
+        assert 'id="kbBucket"' in html
+        assert 'id="kbSourceTable"' in html
+        # Buttons hidden.
+        assert "discoverKeboolaBuckets" not in html
+        assert "discoverKeboolaTables" not in html
+        assert "prefillFromKeboolaTable" not in html
+    finally:
+        reset_cache()
+
+
+def test_keboola_discover_buttons_visible_on_keboola_instance(seeded_app, monkeypatch):
+    """Inverse — buttons render on a Keboola-typed instance."""
+    fake_cfg = {"data_source": {"type": "keboola", "keboola": {}}}
+    monkeypatch.setattr(
+        "app.instance_config.load_instance_config",
+        lambda: fake_cfg, raising=False,
+    )
+    from app.instance_config import reset_cache
+    reset_cache()
+    try:
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        r = c.get("/admin/tables", headers=_auth(token))
+        html = r.text
+        assert "discoverKeboolaBuckets" in html
+        assert "discoverKeboolaTables" in html
+        assert "prefillFromKeboolaTable" in html
+    finally:
+        reset_cache()
+
+
 def test_admin_tables_keboola_branch_unchanged(seeded_app, monkeypatch):
     """Phase E: the BQ form is always rendered (inside #tab-content-bigquery)
     regardless of data_source.type. On a Keboola instance the BQ tab is

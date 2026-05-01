@@ -1010,12 +1010,18 @@
                                    placeholder="e.g. orders_recent">
                         </div>
 
+                        {# Discover/List tables backend currently routes by instance's data_source.type
+                           ignoring the `source` query param. Hiding the buttons on non-Keboola instances
+                           prevents wrong-shape responses; inputs stay for manual entry. Future fix: make
+                           /api/admin/discover-tables accept ?source=keboola and remove this guard. #}
                         <div class="form-group kb-source-table">
                             <label class="form-label" for="kbBucket">
                                 Bucket
+                                {% if data_source_type == 'keboola' %}
                                 <button type="button" class="btn btn-secondary btn-sm"
                                         onclick="discoverKeboolaBuckets('kbBucketList')"
                                         style="float:right; margin-top:-3px;">Discover</button>
+                                {% endif %}
                             </label>
                             <input type="text" class="form-input" id="kbBucket"
                                    list="kbBucketList" placeholder="e.g. in.c-sales">
@@ -1024,9 +1030,11 @@
                         <div class="form-group kb-source-table">
                             <label class="form-label" for="kbSourceTable">
                                 Source Table
+                                {% if data_source_type == 'keboola' %}
                                 <button type="button" class="btn btn-secondary btn-sm"
                                         onclick="discoverKeboolaTables('kbBucket', 'kbTableList')"
                                         style="float:right; margin-top:-3px;">List tables</button>
+                                {% endif %}
                             </label>
                             <input type="text" class="form-input" id="kbSourceTable"
                                    list="kbTableList" placeholder="e.g. orders">
@@ -1035,12 +1043,14 @@
                         <div class="form-group kb-source-custom" style="display:none;">
                             <label class="form-label" for="kbSourceQuery">
                                 SQL
+                                {% if data_source_type == 'keboola' %}
                                 <button type="button" class="btn btn-secondary btn-sm"
                                         onclick="prefillFromKeboolaTable('kbSourceQuery')"
                                         style="float:right; margin-top:-3px;"
                                         title="Prefill SELECT * FROM kbc.bucket.table so you only edit the WHERE / projection">
                                     Use table as base
                                 </button>
+                                {% endif %}
                             </label>
                             <textarea class="form-textarea" id="kbSourceQuery" rows="8"></textarea>
                             <div class="form-hint">SELECT against <code>kbc."bucket"."table"</code>.
@@ -1135,12 +1145,18 @@
                             </div>
                         </div>
 
+                        {# Discover/List tables backend currently routes by instance's data_source.type
+                           ignoring the `source` query param. Hiding the buttons on non-Keboola instances
+                           prevents wrong-shape responses; inputs stay for manual entry. Future fix: make
+                           /api/admin/discover-tables accept ?source=keboola and remove this guard. #}
                         <div class="form-group editkb-source-table">
                             <label class="form-label" for="editKbBucket">
                                 Bucket
+                                {% if data_source_type == 'keboola' %}
                                 <button type="button" class="btn btn-secondary btn-sm"
                                         onclick="discoverKeboolaBuckets('editKbBucketList')"
                                         style="float:right; margin-top:-3px;">Discover</button>
+                                {% endif %}
                             </label>
                             <input type="text" class="form-input" id="editKbBucket"
                                    list="editKbBucketList" placeholder="e.g. in.c-sales">
@@ -1149,9 +1165,11 @@
                         <div class="form-group editkb-source-table">
                             <label class="form-label" for="editKbSourceTable">
                                 Source Table
+                                {% if data_source_type == 'keboola' %}
                                 <button type="button" class="btn btn-secondary btn-sm"
                                         onclick="discoverKeboolaTables('editKbBucket', 'editKbTableList')"
                                         style="float:right; margin-top:-3px;">List tables</button>
+                                {% endif %}
                             </label>
                             <input type="text" class="form-input" id="editKbSourceTable"
                                    list="editKbTableList" placeholder="e.g. orders">
@@ -1160,12 +1178,14 @@
                         <div class="form-group editkb-source-custom" style="display:none;">
                             <label class="form-label" for="editKbSourceQuery">
                                 SQL
+                                {% if data_source_type == 'keboola' %}
                                 <button type="button" class="btn btn-secondary btn-sm"
                                         onclick="prefillFromKeboolaTable('editKbSourceQuery')"
                                         style="float:right; margin-top:-3px;"
                                         title="Prefill SELECT * FROM kbc.bucket.table so you only edit the WHERE / projection">
                                     Use table as base
                                 </button>
+                                {% endif %}
                             </label>
                             <textarea class="form-textarea" id="editKbSourceQuery" rows="8"></textarea>
                         </div>
@@ -1885,10 +1905,13 @@
     // Discovery shims — the existing /api/admin/discover-tables endpoint
     // already routes by the instance's data_source.type (returning Keboola
     // tables when the instance is Keboola-typed); the source=keboola query
-    // param is informational. On a BQ-typed instance, these calls fail-soft
-    // — the toast surfaces the error and the operator falls back to manual
-    // entry. Future work: extend the endpoint to take an explicit source
-    // override so secondary-source registration works in both directions.
+    // param is informational. Hidden behind `data_source_type == 'keboola'`
+    // because on a BQ-typed instance the endpoint would return BQ-shaped
+    // data (wrong shape, confusing); operators fall back to manual entry
+    // for cross-source registration. Future work: extend the endpoint to
+    // accept an explicit ?source= override so secondary-source registration
+    // works in both directions and we can remove this guard.
+    {% if data_source_type == 'keboola' %}
     function discoverKeboolaBuckets(datalistId) {
         fetch('/api/admin/discover-tables?source=keboola')
             .then(function(r) {
@@ -2100,6 +2123,7 @@
         }
         ta.value = 'SELECT *\nFROM kbc."' + bucket + '"."' + sourceTable + '"\nWHERE -- your filter here';
     }
+    {% endif %}{# data_source_type == 'keboola' — discover/prefill JS #}
 
     function _buildKeboolaLegacyPayload() {
         var pk = document.getElementById('regPrimaryKey').value.trim();
