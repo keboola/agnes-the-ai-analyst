@@ -801,3 +801,151 @@ class TestRedactionHelpers:
         patch = {"a": {"y": 99}}
         out = _deep_merge(base, patch)
         assert out == {"a": {"x": 1, "y": 99}, "b": {"z": 3}}
+
+
+# --- Phase J: BQ fields exposure in /admin/server-config ---------------------
+
+
+class TestServerConfigBigQueryFields:
+    """Phase J — billing_project, legacy_wrap_views, and
+    max_bytes_per_materialize are surfaced in the UI/API so an operator can
+    set them without SSH'ing to the VM. The first two were previously only
+    addressable via direct YAML edits; max_bytes_per_materialize had no UI
+    hint at all."""
+
+    def test_get_surfaces_bq_fields_even_when_unset(self, seeded_app, tmp_path, monkeypatch):
+        """GET response always includes the three BQ fields under
+        data_source.bigquery so the UI's JSON-textarea rendering shows them
+        as editable keys even when YAML omits them. Without this, the
+        operator has no UI hint that the knobs exist."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        state = tmp_path / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        # Plant a minimal instance.yaml that has data_source.bigquery but
+        # NONE of the three fields set.
+        (state / "instance.yaml").write_text(yaml.dump({
+            "data_source": {
+                "type": "bigquery",
+                "bigquery": {"project": "my-data-prj", "location": "US"},
+            },
+        }))
+        import app.instance_config as ic
+        ic._instance_config = None
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/api/admin/server-config", headers=_auth(token))
+        assert resp.status_code == 200, resp.text
+        bq = resp.json()["sections"]["data_source"]["bigquery"]
+        assert "billing_project" in bq, f"billing_project missing from GET: {bq}"
+        assert "legacy_wrap_views" in bq, f"legacy_wrap_views missing from GET: {bq}"
+        assert "max_bytes_per_materialize" in bq, \
+            f"max_bytes_per_materialize missing from GET: {bq}"
+
+    def test_get_preserves_existing_bq_field_values(self, seeded_app, tmp_path, monkeypatch):
+        """When the operator HAS set the fields, GET must surface their actual
+        values, not the unset defaults."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        state = tmp_path / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "instance.yaml").write_text(yaml.dump({
+            "data_source": {
+                "type": "bigquery",
+                "bigquery": {
+                    "project": "my-data-prj",
+                    "billing_project": "my-billing-prj",
+                    "legacy_wrap_views": True,
+                    "max_bytes_per_materialize": 5368709120,  # 5 GiB
+                },
+            },
+        }))
+        import app.instance_config as ic
+        ic._instance_config = None
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/api/admin/server-config", headers=_auth(token))
+        bq = resp.json()["sections"]["data_source"]["bigquery"]
+        assert bq["billing_project"] == "my-billing-prj"
+        assert bq["legacy_wrap_views"] is True
+        assert bq["max_bytes_per_materialize"] == 5368709120
+
+    def test_post_persists_billing_project(self, seeded_app, tmp_path, monkeypatch):
+        """POST through the existing section-patch flow persists
+        data_source.bigquery.billing_project to the overlay."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        (tmp_path / "state").mkdir(parents=True, exist_ok=True)
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"data_source": {"bigquery": {
+                "billing_project": "my-billing-prj",
+            }}}},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+        # Round-trip: GET should now reflect it.
+        resp = c.get("/api/admin/server-config", headers=_auth(token))
+        bq = resp.json()["sections"]["data_source"]["bigquery"]
+        assert bq["billing_project"] == "my-billing-prj"
+
+    def test_post_persists_legacy_wrap_views(self, seeded_app, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        (tmp_path / "state").mkdir(parents=True, exist_ok=True)
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"data_source": {"bigquery": {
+                "legacy_wrap_views": True,
+            }}}},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+        resp = c.get("/api/admin/server-config", headers=_auth(token))
+        bq = resp.json()["sections"]["data_source"]["bigquery"]
+        assert bq["legacy_wrap_views"] is True
+
+    def test_post_persists_max_bytes_per_materialize(self, seeded_app, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        (tmp_path / "state").mkdir(parents=True, exist_ok=True)
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"data_source": {"bigquery": {
+                "max_bytes_per_materialize": 21474836480,  # 20 GiB
+            }}}},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+        resp = c.get("/api/admin/server-config", headers=_auth(token))
+        bq = resp.json()["sections"]["data_source"]["bigquery"]
+        assert bq["max_bytes_per_materialize"] == 21474836480
+
+    def test_template_documents_three_new_fields(self, seeded_app):
+        """The three BQ optional fields are now surfaced through the
+        known-fields registry (GET /api/admin/server-config carries them
+        in `known_fields.data_source.bigquery.fields`), not hardcoded into
+        the template text. The renderer reads the registry at runtime and
+        creates a structured form with hints for each leaf — so the test
+        verifies operator-discoverability through the API channel rather
+        than via static HTML inspection.
+        """
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/api/admin/server-config", headers=_auth(token))
+        assert resp.status_code == 200, resp.text
+        bq_fields = resp.json()["known_fields"]["data_source"]["bigquery"]["fields"]
+        assert "billing_project" in bq_fields, \
+            "registry must expose billing_project as a known field"
+        assert "legacy_wrap_views" in bq_fields, \
+            "registry must expose legacy_wrap_views as a known field"
+        assert "max_bytes_per_materialize" in bq_fields, \
+            "registry must expose max_bytes_per_materialize as a known field"
+        # Each field must carry a hint so the renderer can show operator-
+        # facing help text — no anonymous knobs.
+        for k in ("billing_project", "legacy_wrap_views", "max_bytes_per_materialize"):
+            assert "hint" in bq_fields[k] and bq_fields[k]["hint"], \
+                f"{k} must carry a non-empty hint"

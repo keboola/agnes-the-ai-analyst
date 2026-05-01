@@ -108,6 +108,33 @@
 
   .cfg-loading { padding: 32px 16px; text-align: center; color: var(--text-secondary, #6b7280); font-size: 13px; }
 
+  /* Known-but-unset fields (sourced from the known_fields registry) — render
+     dashed and de-emphasised so the operator sees "this is a knob you can
+     turn" without confusing it with a populated value. */
+  .cfg-field.is-unset label { color: var(--text-secondary, #9ca3af); }
+  .cfg-field.is-unset input[type="text"],
+  .cfg-field.is-unset input[type="password"],
+  .cfg-field.is-unset input[type="number"],
+  .cfg-field.is-unset select,
+  .cfg-field.is-unset textarea {
+    border-style: dashed;
+    background: var(--background, #fafafa);
+  }
+  .cfg-field.is-unset .field-help { font-style: italic; }
+  .cfg-divider {
+    border: 0;
+    border-top: 1px dashed var(--border, #e5e7eb);
+    margin: 12px 0;
+  }
+  .cfg-divider-label {
+    display: block;
+    font-size: 11px;
+    color: var(--text-secondary, #9ca3af);
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
   /* Confirmation modal — danger-zone gate */
   .modal-backdrop {
     position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55);
@@ -177,7 +204,7 @@ function isSecretKey(key) {
 // Section copy — kept short; the issue's Scope section explains the rest.
 const SECTION_META = {
   instance: { title: "Instance", help: "Branding shown in the header and emails." },
-  data_source: { title: "Data source", help: "Switch source type or update connection details." },
+  data_source: { title: "Data source", help: "Switch source type or update connection details. Optional BQ + Keboola knobs render below as structured fields with hints; expand each to edit." },
   email: { title: "Email (SMTP)", help: "SMTP relay for magic-link login. Leave blank to disable." },
   telegram: { title: "Telegram", help: "Bot credentials for notifications." },
   jira: { title: "Jira", help: "Jira webhook + REST credentials." },
@@ -185,6 +212,12 @@ const SECTION_META = {
   server: { title: "Server", help: "Hostname and host. Changing these can break OAuth callbacks." },
   auth: { title: "Authentication", help: "Allowed sign-in domain and Google OAuth keys. Misconfiguration can lock everyone out." },
   ai: { title: "AI / LLM", help: "Provider + API key for the corporate-memory extractor. provider=anthropic|openai_compat; api_key uses ${ENV_VAR} so the secret stays in .env." },
+  openmetadata: { title: "OpenMetadata", help: "Optional REST catalog enrichment. Without it, the app runs without catalog cross-links." },
+  desktop: { title: "Desktop app", help: "JWT auth for the desktop client (rarely changed)." },
+  corporate_memory: {
+    title: "Corporate Memory",
+    help: "Optional governance for AI-extracted knowledge. When the section is unset, the system runs in legacy democratic-wiki mode with no admin review.",
+  },
 };
 const DANGER_SECTIONS = new Set(["auth", "server"]);
 
@@ -224,50 +257,407 @@ function escHtml(s) {
   return d.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
-function renderField(section, key, value) {
-  const fieldId = `f_${section}_${key.replace(/\W/g, "_")}`;
-  const isSecret = isSecretKey(key);
-  // Determine input type — secrets render as password, ports as number,
-  // long strings (>120 chars) as textarea, the rest as text.
-  let input;
-  if (isSecret) {
-    input = `<input id="${fieldId}" type="password" class="is-secret" data-section="${section}" data-key="${escHtml(key)}" placeholder="${value === '<empty>' ? 'unset — type to set' : '*** — type to overwrite'}" autocomplete="off">`;
-  } else if (typeof value === "number") {
-    input = `<input id="${fieldId}" type="number" data-section="${section}" data-key="${escHtml(key)}" value="${escHtml(value)}">`;
-  } else if (typeof value === "boolean") {
-    input = `<select id="${fieldId}" data-section="${section}" data-key="${escHtml(key)}" data-cast="bool">
-      <option value="true" ${value ? "selected" : ""}>true</option>
-      <option value="false" ${!value ? "selected" : ""}>false</option>
-    </select>`;
-  } else if (value && typeof value === "object") {
-    // Nested object (e.g. data_source.keboola.{...}) — render the JSON
-    // for now and let the operator edit it as a blob. Keeps the UI simple
-    // while still allowing every field to be reachable.
-    input = `<textarea id="${fieldId}" data-section="${section}" data-key="${escHtml(key)}" data-cast="json">${escHtml(JSON.stringify(value, null, 2))}</textarea>`;
-  } else {
-    const v = value == null ? "" : value;
-    input = `<input id="${fieldId}" type="text" data-section="${section}" data-key="${escHtml(key)}" value="${escHtml(v)}">`;
+// Encode a segment array as a JSON-string suitable for an HTML attribute.
+// We store the path as JSON rather than dot-joined so that map keys (which
+// are user-supplied data and can themselves contain '.', e.g.
+// "user_verification.correction" in confidence.base) round-trip intact —
+// splitting `data-key` on '.' would shred them into bogus extra segments.
+function encodePath(segments) {
+  return escHtml(JSON.stringify(segments || []));
+}
+
+// Build a basic <input>/<select>/<textarea> for a leaf field. Returns the
+// HTML for the input element only — the wrapping <div class="cfg-field">
+// + label + hint is added by the caller.
+//
+// `pathSegments` is the array of registry path segments down to this leaf
+// (e.g. ["bigquery", "billing_project"]). It's emitted as a JSON-encoded
+// `data-path` attribute that the collector reads to rebuild the nested
+// patch shape — bypassing the old dotted-string-splitting which would
+// mis-parse map keys with embedded dots.
+//
+// `dottedKey` is kept for backward-compat / debugging; collectSection
+// prefers data-path when present.
+function renderLeafInput(fieldId, section, pathSegments, kind, value, opts, isUnset) {
+  const dottedKey = (pathSegments || []).join(".");
+  const dataPath = encodePath(pathSegments);
+  const leafKey = pathSegments && pathSegments.length ? pathSegments[pathSegments.length - 1] : "";
+  const isSecret = isSecretKey(String(leafKey)) || kind === "secret";
+  if (kind === "secret") {
+    const ph = isUnset
+      ? "unset — type to set"
+      : (value === "<empty>" ? "unset — type to set" : "*** — type to overwrite");
+    return `<input id="${fieldId}" type="password" class="is-secret" data-section="${section}" data-key="${escHtml(dottedKey)}" data-path="${dataPath}" placeholder="${escHtml(ph)}" autocomplete="off">`;
   }
-  const secretPill = isSecret ? '<span class="secret-pill">secret</span>' : "";
+  if (kind === "int") {
+    const v = (value == null || value === "") ? "" : value;
+    return `<input id="${fieldId}" type="number" data-section="${section}" data-key="${escHtml(dottedKey)}" data-path="${dataPath}" value="${escHtml(v)}">`;
+  }
+  if (kind === "float") {
+    const v = (value == null || value === "") ? "" : value;
+    return `<input id="${fieldId}" type="number" step="any" data-section="${section}" data-key="${escHtml(dottedKey)}" data-path="${dataPath}" data-cast="float" value="${escHtml(v)}">`;
+  }
+  if (kind === "bool") {
+    const v = !!value;
+    return `<select id="${fieldId}" data-section="${section}" data-key="${escHtml(dottedKey)}" data-path="${dataPath}" data-cast="bool">
+      <option value="true" ${v ? "selected" : ""}>true</option>
+      <option value="false" ${!v ? "selected" : ""}>false</option>
+    </select>`;
+  }
+  if (kind === "select" && Array.isArray(opts && opts.spec && opts.spec.options)) {
+    const sel = value == null ? "" : String(value);
+    const options = opts.spec.options.map(o => {
+      const ov = String(o);
+      return `<option value="${escHtml(ov)}" ${sel === ov ? "selected" : ""}>${escHtml(ov)}</option>`;
+    }).join("");
+    return `<select id="${fieldId}" data-section="${section}" data-key="${escHtml(dottedKey)}" data-path="${dataPath}">${options}</select>`;
+  }
+  // Default: text. Use the registry's default when unset, else the value.
+  const v = isUnset
+    ? (opts && opts.spec && opts.spec.default != null ? String(opts.spec.default) : "")
+    : (value == null ? "" : value);
+  return `<input id="${fieldId}" type="text" data-section="${section}" data-key="${escHtml(dottedKey)}" data-path="${dataPath}" value="${escHtml(v)}">`;
+}
+
+// Cast a string raw value to the JS type implied by an item_kind / value_kind.
+// Used by the array-of-scalars + map-of-scalars renderers when reading user
+// input back out into a structured patch.
+function castScalar(raw, kind) {
+  if (raw === "" || raw == null) return null;
+  if (kind === "int") {
+    const n = Number(raw);
+    return Number.isFinite(n) ? Math.trunc(n) : null;
+  }
+  if (kind === "float") {
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+  }
+  if (kind === "bool") {
+    return raw === "true" || raw === true;
+  }
+  return String(raw);
+}
+
+// Render an array of scalars (e.g. detection_types: ["correction", ...]).
+// Produces a vertical stack of text inputs, one per item, plus an add/remove
+// affordance per row and a trailing "+ Add" button. The container's
+// data-array-collect path collects each row's value at save time.
+function renderArrayField(section, pathSegments, label, value, spec, depth) {
+  spec = spec || {};
+  const indent = (depth || 0) * 24;
+  const itemKind = spec.item_kind || "string";
+  const items = Array.isArray(value) ? value
+    : (value === undefined && Array.isArray(spec.default) ? spec.default : []);
+  const dataPath = encodePath(pathSegments);
+  const dottedKey = (pathSegments || []).join(".");
+  const arrow = depth > 0 ? "↳ " : "";
+  const hintBlock = spec.hint
+    ? `<div class="field-help">${escHtml(spec.hint)}</div>`
+    : "";
+  // `data-array-collect="1"` marks the wrapper so collectSection can pick
+  // it up as a single unit (otherwise the per-row inputs would each emit
+  // their own patch leaf and clobber each other).
+  const rows = items.map((item, idx) => `
+    <div class="array-row" data-array-row="${idx}" style="display: flex; gap: 6px; margin-bottom: 4px;">
+      <input type="text" class="array-item-input" data-array-item="${idx}" value="${escHtml(item == null ? "" : String(item))}" style="flex: 1;">
+      <button type="button" class="cfg-btn" data-array-remove="${idx}" title="Remove this item">×</button>
+    </div>`).join("");
   return `
-    <div class="cfg-field">
-      <label for="${fieldId}">${escHtml(key)}${secretPill}</label>
-      <div>${input}</div>
+    <div class="cfg-field nested-field" style="margin-left: ${indent}px;">
+      <label>${arrow}${escHtml(label)}</label>
+      <div>
+        <div class="array-container"
+             data-section="${section}"
+             data-key="${escHtml(dottedKey)}"
+             data-path="${dataPath}"
+             data-array-collect="1"
+             data-item-kind="${escHtml(itemKind)}">
+          <div class="array-rows">${rows}</div>
+          <button type="button" class="cfg-btn" data-array-add="1" data-item-kind="${escHtml(itemKind)}">+ Add item</button>
+        </div>
+        ${hintBlock}
+      </div>
     </div>`;
 }
 
-function renderSection(section, payload) {
+// Render a map of string → scalar/array/object (e.g. confidence.base:
+// {"user_verification.correction": 0.9, ...}). Produces a vertical stack
+// of <key-input>: <value-input> rows plus a "+ Add row" button. Map keys
+// are user-supplied data and may contain dots — we never reuse them as
+// path segments at collect time; instead they become the *final* path
+// segment of each row, JSON-encoded so collectors don't split them.
+function renderMapField(section, pathSegments, label, value, spec, depth) {
+  spec = spec || {};
+  const indent = (depth || 0) * 24;
+  const valueKind = spec.value_kind || "string";
+  const valueItemKind = spec.value_item_kind || "string";  // for value_kind="array"
+  // Use registry default only when the value is genuinely missing (undefined).
+  // An explicit empty {} from YAML must not get backfilled with the example default.
+  const obj = (value && typeof value === "object" && !Array.isArray(value))
+    ? value
+    : (value === undefined && spec.default && typeof spec.default === "object" ? spec.default : {});
+  const dataPath = encodePath(pathSegments);
+  const dottedKey = (pathSegments || []).join(".");
+  const arrow = depth > 0 ? "↳ " : "";
+  const hintBlock = spec.hint
+    ? `<div class="field-help">${escHtml(spec.hint)}</div>`
+    : "";
+  const renderRow = (k, v, idx) => {
+    if (valueKind === "array") {
+      // Map<string, array<scalar>> — value column is itself a comma-separated
+      // text input. Operator can edit the list inline; collectSection splits
+      // on commas. (Full nested array UI inside a map row would require more
+      // wiring; comma-list is the pragmatic compromise.)
+      const items = Array.isArray(v) ? v.join(", ") : "";
+      return `
+        <div class="map-row" data-map-row="${idx}" style="display: grid; grid-template-columns: minmax(160px, 1fr) 2fr auto; gap: 6px; margin-bottom: 4px;">
+          <input type="text" class="map-key-input" data-map-key="${idx}" value="${escHtml(String(k))}" placeholder="key">
+          <input type="text" class="map-value-input" data-map-value="${idx}" value="${escHtml(items)}" placeholder="comma,separated,values">
+          <button type="button" class="cfg-btn" data-map-remove="${idx}" title="Remove this row">×</button>
+        </div>`;
+    }
+    // Scalar value column.
+    const inputType = (valueKind === "int" || valueKind === "float") ? "number" : "text";
+    const stepAttr = valueKind === "float" ? ' step="any"' : "";
+    return `
+      <div class="map-row" data-map-row="${idx}" style="display: grid; grid-template-columns: minmax(160px, 1fr) 1fr auto; gap: 6px; margin-bottom: 4px;">
+        <input type="text" class="map-key-input" data-map-key="${idx}" value="${escHtml(String(k))}" placeholder="key">
+        <input type="${inputType}"${stepAttr} class="map-value-input" data-map-value="${idx}" value="${escHtml(v == null ? "" : String(v))}" placeholder="value">
+        <button type="button" class="cfg-btn" data-map-remove="${idx}" title="Remove this row">×</button>
+      </div>`;
+  };
+  const rows = Object.entries(obj).map(([k, v], idx) => renderRow(k, v, idx)).join("");
+  return `
+    <div class="cfg-field nested-field" style="margin-left: ${indent}px;">
+      <label>${arrow}${escHtml(label)}</label>
+      <div>
+        <div class="map-container"
+             data-section="${section}"
+             data-key="${escHtml(dottedKey)}"
+             data-path="${dataPath}"
+             data-map-collect="1"
+             data-value-kind="${escHtml(valueKind)}"
+             data-value-item-kind="${escHtml(valueItemKind)}">
+          <div class="map-rows">${rows}</div>
+          <button type="button" class="cfg-btn" data-map-add="1" data-value-kind="${escHtml(valueKind)}">+ Add row</button>
+        </div>
+        ${hintBlock}
+      </div>
+    </div>`;
+}
+
+// Render a single nested subfield row recursively. Each leaf input carries
+// `data-path` (JSON-encoded segment array) so collectSection can rebuild
+// the nested patch shape without splitting on '.' — important for map keys
+// that themselves contain dots (e.g. confidence.base keys like
+// "user_verification.correction").
+//
+// Recursion: arbitrary depth supported. When a child spec has kind="object"
+// with its own `fields` map, we recurse with the indent bumped up. The depth
+// bound is implicit (browser stack); registries with ridiculous depth would
+// blow up, but the entries we ship max out around 4 levels (corporate_memory
+// in subagent 3) which is comfortably within budget.
+//
+// `pathSegments` — array of registry path segments down to this field (e.g.
+// ["bigquery", "billing_project"]). Used both for the rendered data-path
+// attribute and to derive the legacy dotted key for back-compat.
+function renderNestedField(section, pathSegments, label, value, spec, depth) {
+  spec = spec || {};
+  const segs = Array.isArray(pathSegments) ? pathSegments : [pathSegments];
+  const dottedKey = segs.join(".");
+  const indent = (depth || 0) * 24;
+  const kind = spec.kind || (
+    Array.isArray(value) ? "array"
+    : typeof value === "number" ? "int"
+    : typeof value === "boolean" ? "bool"
+    : (value && typeof value === "object") ? "object"
+    : "string"
+  );
+  const isSecret = isSecretKey(label) || kind === "secret";
+  const isUnset = (value === undefined);
+  const fieldId = `f_${section}_${dottedKey.replace(/\W/g, "_")}`;
+  const wrapperClass = "cfg-field nested-field" + (isUnset ? " is-unset" : "");
+  const arrow = depth > 0 ? "↳ " : "";
+  const secretPill = isSecret ? '<span class="secret-pill">secret</span>' : "";
+  const hintBlock = spec.hint
+    ? `<div class="field-help">${escHtml(spec.hint)}</div>`
+    : "";
+
+  // Array-of-scalars: dedicated stack-of-inputs renderer.
+  if (kind === "array" && spec.item_kind && spec.item_kind !== "object") {
+    return renderArrayField(section, segs, label, value, spec, depth);
+  }
+
+  // Map<string, …>: dedicated key/value-row renderer. Handles map of scalars,
+  // map of arrays, and (with a JSON-textarea fallback) map of complex objects.
+  if (kind === "map") {
+    if (spec.value_kind === "object" && spec.value_fields && Object.keys(spec.value_fields).length > 0) {
+      // TODO: structured editor for "map of objects with declared subfields"
+      // (e.g. confidence.modifiers — Map<string, Map<string, float>>).
+      // Falls through to the JSON-textarea fallback below for now.
+    } else {
+      return renderMapField(section, segs, label, value, spec, depth);
+    }
+  }
+
+  // Registry-declared object with explicit fields → recurse for each child
+  // as a structured form; emit a header row for the parent.
+  if (kind === "object" && spec.fields && typeof spec.fields === "object") {
+    const childValue = (value && typeof value === "object" && !Array.isArray(value)) ? value : {};
+    const knownChildKeys = Object.keys(spec.fields);
+    const knownSet = new Set(knownChildKeys);
+    const populatedChildKeys = Object.keys(childValue).filter(k => knownSet.has(k));
+    const unsetChildKeys = knownChildKeys.filter(k => !(k in childValue));
+
+    // YAML-only keys that aren't in the registry — preserve via a small JSON
+    // expander so admins who hand-edited an unusual key in the YAML don't
+    // lose it on round-trip. Keys are still editable as a single JSON blob
+    // (deliberately less prominent than registry-known leaves).
+    const fallbackKeys = Object.keys(childValue).filter(k => !knownSet.has(k));
+    const fallbackBlob = fallbackKeys.length
+      ? Object.fromEntries(fallbackKeys.map(k => [k, childValue[k]]))
+      : null;
+
+    const renderChild = (k) => renderNestedField(
+      section,
+      segs.concat([k]),
+      k,
+      (k in childValue) ? childValue[k] : undefined,
+      spec.fields[k] || {},
+      (depth || 0) + 1,
+    );
+
+    const populatedHtml = populatedChildKeys.sort().map(renderChild).join("");
+    const unsetHtml = unsetChildKeys.sort().map(renderChild).join("");
+    const fallbackHtml = fallbackBlob
+      ? (() => {
+          const fbId = `f_${section}_${dottedKey.replace(/\W/g, "_")}_fallback`;
+          const fbPath = encodePath(segs.concat(["__other__"]));
+          // The fallback uses the same path convention with a literal
+          // "__other__" leaf so the collector emits it under the parent
+          // in collectSection. Cast=json so the textarea content
+          // round-trips as an object.
+          const indentInner = ((depth || 0) + 1) * 24;
+          return `
+            <div class="cfg-field" style="margin-left: ${indentInner}px;">
+              <label for="${fbId}">↳ Other (YAML-only) keys</label>
+              <div>
+                <textarea id="${fbId}" data-section="${section}" data-key="${escHtml(dottedKey + ".__other__")}" data-path="${fbPath}" data-cast="json">${escHtml(JSON.stringify(fallbackBlob, null, 2))}</textarea>
+                <div class="field-help">Keys present in YAML but not in the registry. Edit as a JSON object — keys at this layer survive round-trip.</div>
+              </div>
+            </div>`;
+        })()
+      : "";
+
+    return `
+      <div class="cfg-field nested-field nested-parent" style="margin-left: ${indent}px;">
+        <label>${arrow}${escHtml(label)}</label>
+        <div>${hintBlock || `<div class="field-help">Nested structured fields below.</div>`}</div>
+      </div>
+      ${populatedHtml}${unsetHtml}${fallbackHtml}`;
+  }
+
+  // Leaf field (string / int / float / bool / secret / select / array,
+  // OR an object without explicit `fields`, OR a map with complex values
+  // — the last two fall back to JSON).
+  let inp;
+  if (kind === "object" || kind === "map" || kind === "array") {
+    // No explicit structured renderer for this shape — JSON-textarea
+    // fallback so a YAML-populated subtree still round-trips even
+    // without finer-grained schema.
+    const blobValue = isUnset ? "" : JSON.stringify(value || (kind === "array" ? [] : {}), null, 2);
+    const dataPath = encodePath(segs);
+    inp = `<textarea id="${fieldId}" data-section="${section}" data-key="${escHtml(dottedKey)}" data-path="${dataPath}" data-cast="json" placeholder="${isUnset ? 'unset — paste JSON to populate' : ''}">${escHtml(blobValue)}</textarea>`;
+  } else {
+    inp = renderLeafInput(fieldId, section, segs, kind, value, { spec }, isUnset);
+  }
+
+  return `
+    <div class="${wrapperClass}" style="margin-left: ${indent}px;">
+      <label for="${fieldId}">${arrow}${escHtml(label)}${secretPill}</label>
+      <div>${inp}${hintBlock}</div>
+    </div>`;
+}
+
+function renderField(section, key, value, opts) {
+  // opts: { isUnset: bool, hint: string, kind: string, spec: {…} }
+  // - isUnset: render the field as a dashed placeholder (.is-unset) so the
+  //   operator can tell at a glance that the value is sourced from the
+  //   known_fields registry rather than the live YAML.
+  // - hint: one-line operator-facing help (rendered as .field-help).
+  // - kind: registry-declared input kind. Overrides the typeof-value
+  //   heuristic for known-but-unset entries (we have no value to inspect).
+  // - spec: the raw registry entry — when kind="object" + spec.fields is
+  //   declared, we render a fully-editable structured form (every leaf is
+  //   a real input with a dotted-path data-key so collectSection rebuilds
+  //   the nested patch). When spec.fields is absent / the object isn't in
+  //   the registry, we fall back to the JSON-textarea path.
+  opts = opts || {};
+  const isUnset = !!opts.isUnset;
+  const valueForKind = isUnset ? undefined : value;
+  // Registry-declared structured object → delegate to the recursive
+  // nested-form renderer. Replaces the old read-only preview path.
+  if (opts.kind === "object" && opts.spec && opts.spec.fields && typeof opts.spec.fields === "object") {
+    return renderNestedField(section, [key], key, valueForKind, opts.spec, 0);
+  }
+  // Pass through ALL spec fields (item_kind, key_kind, value_kind, fields,
+  // value_fields, default, options, hint) so the top-level entry point can
+  // render arrays, maps, and primitive leaves correctly.
+  return renderNestedField(section, [key], key, valueForKind, opts.spec || {
+    kind: opts.kind,
+    hint: opts.hint,
+  }, 0);
+}
+
+function renderSection(section, payload, knownForSection) {
+  // knownForSection: registry slice for this section, e.g.
+  //   { bigquery: { kind: "object", hint: "...", fields: { billing_project: {...} } } }
+  // Keys present in `payload` render as populated; keys present in
+  // `knownForSection` but absent from `payload` render as dashed
+  // placeholders (.is-unset).
   const meta = SECTION_META[section] || { title: section, help: "" };
   const isDanger = DANGER_SECTIONS.has(section);
   const danger = isDanger ? '<span class="danger-pill">danger</span>' : "";
-  const keys = Object.keys(payload || {}).sort();
-  const fieldsHtml = keys.length
-    ? keys.map(k => renderField(section, k, payload[k])).join("")
+  const populatedKeys = Object.keys(payload || {}).sort();
+  const known = knownForSection || {};
+  const populatedSet = new Set(populatedKeys);
+  const knownUnsetKeys = Object.keys(known).filter(k => !populatedSet.has(k)).sort();
+
+  const populatedHtml = populatedKeys.map(k => {
+    const spec = known[k] || {};
+    return renderField(section, k, payload[k], {
+      isUnset: false,
+      hint: spec.hint || "",
+      kind: spec.kind,  // may be undefined; renderField falls back to typeof inference
+      spec,
+    });
+  }).join("");
+
+  const unsetHtml = knownUnsetKeys.map(k => {
+    const spec = known[k] || {};
+    return renderField(section, k, undefined, {
+      isUnset: true,
+      hint: spec.hint || "",
+      kind: spec.kind || "string",
+      spec,
+    });
+  }).join("");
+
+  // Visual divider between populated and known-but-unset rows so the
+  // operator sees at a glance which knobs they're already using vs which
+  // ones the registry exposes for them.
+  const divider = (populatedHtml && unsetHtml)
+    ? `<hr class="cfg-divider"><span class="cfg-divider-label">Available but unset</span>`
+    : (unsetHtml ? `<span class="cfg-divider-label">Available but unset</span>` : "");
+
+  const fieldsHtml = (populatedHtml || unsetHtml)
+    ? (populatedHtml + divider + unsetHtml)
     : `<div class="section-help">No fields populated yet — type below to add common keys, or edit the YAML directly via the API.</div>`;
-  // For empty sections, give the operator a textarea so they can paste a
-  // YAML/JSON blob to bootstrap the section. We persist it via the JSON
-  // cast so non-trivial structures still merge correctly.
-  const bootstrap = keys.length === 0
+  // For empty sections (no populated *and* no known-but-unset), give the
+  // operator a textarea so they can paste a YAML/JSON blob to bootstrap
+  // the section. We persist it via the JSON cast so non-trivial structures
+  // still merge correctly.
+  const bootstrap = (populatedKeys.length === 0 && knownUnsetKeys.length === 0)
     ? `<div class="cfg-field">
         <label for="bootstrap_${section}">JSON patch</label>
         <div>
@@ -297,12 +687,79 @@ function renderSection(section, payload) {
 function renderAll(data) {
   const wrap = document.getElementById("cfg-sections");
   const sections = data.editable_sections || Object.keys(data.sections || {});
-  wrap.innerHTML = sections.map(s => renderSection(s, data.sections[s] || {})).join("");
+  const known = data.known_fields || {};
+  wrap.innerHTML = sections.map(s => renderSection(s, data.sections[s] || {}, known[s] || {})).join("");
   document.getElementById("cfg-loading").style.display = "none";
   wrap.hidden = false;
 
   wrap.querySelectorAll('[data-action="save-section"]').forEach(btn =>
     btn.addEventListener("click", () => onSaveSection(btn.dataset.section)));
+
+  // Wire array-of-scalars + map-of-scalars add/remove buttons via event
+  // delegation on the wrapper. Re-attaching after every renderAll() is
+  // fine because we replace innerHTML wholesale on each load.
+  wrap.addEventListener("click", (e) => {
+    const target = e.target;
+    if (!(target instanceof Element)) return;
+    // Add an array row.
+    if (target.dataset.arrayAdd) {
+      const container = target.closest('[data-array-collect="1"]');
+      if (!container) return;
+      const rows = container.querySelector('.array-rows');
+      const idx = rows.querySelectorAll('[data-array-row]').length;
+      const div = document.createElement("div");
+      div.className = "array-row";
+      div.dataset.arrayRow = String(idx);
+      div.style.display = "flex";
+      div.style.gap = "6px";
+      div.style.marginBottom = "4px";
+      div.innerHTML = `<input type="text" class="array-item-input" data-array-item="${idx}" value="" style="flex: 1;">
+        <button type="button" class="cfg-btn" data-array-remove="${idx}" title="Remove this item">×</button>`;
+      rows.appendChild(div);
+      const inp = div.querySelector('input');
+      if (inp) inp.focus();
+      return;
+    }
+    // Remove an array row.
+    if (target.dataset.arrayRemove != null) {
+      const row = target.closest('[data-array-row]');
+      if (row) row.remove();
+      return;
+    }
+    // Add a map row.
+    if (target.dataset.mapAdd) {
+      const container = target.closest('[data-map-collect="1"]');
+      if (!container) return;
+      const valueKind = container.dataset.valueKind || "string";
+      const rows = container.querySelector('.map-rows');
+      const idx = rows.querySelectorAll('[data-map-row]').length;
+      const div = document.createElement("div");
+      div.className = "map-row";
+      div.dataset.mapRow = String(idx);
+      div.style.display = "grid";
+      div.style.gridTemplateColumns = valueKind === "array"
+        ? "minmax(160px, 1fr) 2fr auto"
+        : "minmax(160px, 1fr) 1fr auto";
+      div.style.gap = "6px";
+      div.style.marginBottom = "4px";
+      const valuePlaceholder = valueKind === "array" ? "comma,separated,values" : "value";
+      const inputType = (valueKind === "int" || valueKind === "float") ? "number" : "text";
+      const stepAttr = valueKind === "float" ? ' step="any"' : "";
+      div.innerHTML = `<input type="text" class="map-key-input" data-map-key="${idx}" value="" placeholder="key">
+        <input type="${inputType}"${stepAttr} class="map-value-input" data-map-value="${idx}" value="" placeholder="${valuePlaceholder}">
+        <button type="button" class="cfg-btn" data-map-remove="${idx}" title="Remove this row">×</button>`;
+      rows.appendChild(div);
+      const inp = div.querySelector('input');
+      if (inp) inp.focus();
+      return;
+    }
+    // Remove a map row.
+    if (target.dataset.mapRemove != null) {
+      const row = target.closest('[data-map-row]');
+      if (row) row.remove();
+      return;
+    }
+  });
 }
 
 // Recursively strip secret-keyed leaves whose value is the redaction sentinel
@@ -326,21 +783,159 @@ function scrubRedactedSecrets(value) {
   return value;
 }
 
+// Resolve the registry-path segments for a leaf input. We prefer the
+// JSON-encoded `data-path` attribute (introduced for array/map renderers
+// where data keys can themselves contain dots) and fall back to splitting
+// the legacy `data-key` on '.' for older inputs.
+//
+// The "__other__" segment is the YAML-fallback expander — its parsed
+// content is merged into the parent dict (not nested under the literal
+// segment). See `setNested` for that special case.
+function resolvePath(el) {
+  const raw = el.dataset && el.dataset.path;
+  if (raw) {
+    try {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) return arr.map(s => String(s));
+    } catch (_) {
+      // fall through to dotted-key parsing
+    }
+  }
+  const dotKey = el.dataset && el.dataset.key;
+  if (!dotKey) return [];
+  return dotKey.split(".");
+}
+
+// Legacy alias kept for tests asserting on the helper name.
+function splitDotted(dotKey) {
+  if (!dotKey) return [];
+  return dotKey.split(".");
+}
+
+// Set value at a nested path inside `out`, creating intermediate dicts as
+// needed. The "__other__" segment is special-cased: its dict value gets
+// merged into the parent rather than stored under the literal segment.
+function setNested(out, segments, value) {
+  if (!segments.length) return;
+  let node = out;
+  for (let i = 0; i < segments.length - 1; i++) {
+    const seg = segments[i];
+    if (typeof node[seg] !== "object" || node[seg] === null || Array.isArray(node[seg])) {
+      node[seg] = {};
+    }
+    node = node[seg];
+  }
+  const last = segments[segments.length - 1];
+  if (last === "__other__") {
+    // Fallback expander: merge the JSON object into the parent. Skip if the
+    // user cleared the textarea or the value isn't an object.
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      Object.assign(node, value);
+    }
+    return;
+  }
+  node[last] = value;
+}
+
+// Collect the value of an array-of-scalars container (data-array-collect="1")
+// — concatenates each non-empty row's input cast to the declared item_kind.
+function collectArrayContainer(container) {
+  const itemKind = container.dataset.itemKind || "string";
+  const inputs = container.querySelectorAll('input[data-array-item]');
+  const out = [];
+  for (const inp of inputs) {
+    const raw = inp.value;
+    if (raw === "" || raw == null) continue;  // drop blank rows
+    const cast = castScalar(raw, itemKind);
+    if (cast === null) continue;
+    out.push(cast);
+  }
+  return out;
+}
+
+// Collect the value of a map-of-scalars container (data-map-collect="1")
+// — pairs each row's key-input + value-input, casting the value to the
+// declared value_kind. Map keys keep their literal string form (we never
+// split them on '.' — that's the whole point of the data-path/JSON encoding).
+function collectMapContainer(container) {
+  const valueKind = container.dataset.valueKind || "string";
+  const valueItemKind = container.dataset.valueItemKind || "string";
+  const rows = container.querySelectorAll('[data-map-row]');
+  const out = {};
+  for (const row of rows) {
+    const keyInput = row.querySelector('[data-map-key]');
+    const valInput = row.querySelector('[data-map-value]');
+    if (!keyInput) continue;
+    const key = keyInput.value;
+    if (!key) continue;  // skip incomplete rows
+    let value;
+    if (valueKind === "array") {
+      // Comma-separated list → array of scalars cast to value_item_kind.
+      const raw = valInput ? valInput.value : "";
+      value = raw.split(",").map(s => s.trim()).filter(s => s.length > 0)
+                 .map(s => castScalar(s, valueItemKind))
+                 .filter(v => v !== null);
+    } else {
+      const raw = valInput ? valInput.value : "";
+      value = castScalar(raw, valueKind);
+      if (value === null && raw === "") continue;  // drop empty values
+    }
+    out[key] = value;
+  }
+  return out;
+}
+
 // ── Collect form values for one section ───────────────────────────────
 function collectSection(section) {
-  const inputs = document.querySelectorAll(`[data-section="${section}"]`);
+  const sectionRoot = document.querySelector(`section.cfg-section[data-section="${section}"]`)
+    || document;
   const patch = {};
+  // Track ancestor paths covered by an array/map container so we don't
+  // double-collect their inner inputs as individual leaves.
+  const handledRoots = new Set();
+
+  // 1) Array containers — collect each as a single leaf.
+  const arrayContainers = sectionRoot.querySelectorAll('[data-array-collect="1"]');
+  for (const c of arrayContainers) {
+    if (c.dataset.section && c.dataset.section !== section) continue;
+    const segments = resolvePath(c);
+    if (!segments.length) continue;
+    handledRoots.add(c);
+    const arr = collectArrayContainer(c);
+    setNested(patch, segments, arr);
+  }
+
+  // 2) Map containers — collect each as a single dict leaf.
+  const mapContainers = sectionRoot.querySelectorAll('[data-map-collect="1"]');
+  for (const c of mapContainers) {
+    if (c.dataset.section && c.dataset.section !== section) continue;
+    const segments = resolvePath(c);
+    if (!segments.length) continue;
+    handledRoots.add(c);
+    const obj = collectMapContainer(c);
+    setNested(patch, segments, obj);
+  }
+
+  // 3) Plain leaf inputs (everything outside an array/map container).
+  const inputs = document.querySelectorAll(`[data-section="${section}"]`);
   for (const el of inputs) {
     if (el.dataset.action) continue; // skip buttons
-    const key = el.dataset.key;
-    if (!key) continue;
+    // Skip inner inputs that belong to an array/map container we already
+    // collected as a single unit.
+    if (el.closest('[data-array-collect="1"]') || el.closest('[data-map-collect="1"]')) {
+      // …unless the element IS itself the container (the container also
+      // carries data-section). In that case it was already handled above.
+      continue;
+    }
+    const dotKey = el.dataset.key;
+    if (!dotKey && !el.dataset.path) continue;
     let raw = el.value;
     // Skip empty secret fields — operator left them blank to preserve the
     // existing value. Sending "" would overwrite the secret with empty.
     if (el.classList.contains("is-secret") && raw === "") continue;
 
     let value;
-    if (key === "__bootstrap__") {
+    if (dotKey === "__bootstrap__") {
       // Bootstrap textarea — parse the entire blob and merge it as the
       // section patch. Skip empty input entirely. Scrub redacted sentinels
       // out of the parsed object so a round-trip can't overwrite real
@@ -352,12 +947,17 @@ function collectSection(section) {
     }
     if (el.dataset.cast === "bool") {
       value = raw === "true";
+    } else if (el.dataset.cast === "float") {
+      value = raw === "" ? null : Number(raw);
     } else if (el.dataset.cast === "json") {
-      if (!raw.trim()) { value = null; }
-      else {
-        try { value = scrubRedactedSecrets(JSON.parse(raw)); }
-        catch (e) { throw new Error(`Field ${section}.${key} is not valid JSON: ${e.message}`); }
+      if (!raw.trim()) {
+        // Empty JSON textarea: skip entirely so a blank fallback expander
+        // doesn't wipe its parent. The deep-merge on the server preserves
+        // whatever's already on disk for this slot.
+        continue;
       }
+      try { value = scrubRedactedSecrets(JSON.parse(raw)); }
+      catch (e) { throw new Error(`Field ${section}.${dotKey} is not valid JSON: ${e.message}`); }
     } else if (el.type === "number") {
       value = raw === "" ? null : Number(raw);
     } else {
@@ -366,8 +966,10 @@ function collectSection(section) {
     // If the operator left a secret-keyed scalar at the redaction sentinel
     // — e.g. typed nothing into a `token_env` text input that already shows
     // `"***"` — drop it rather than persisting the placeholder.
-    if (isSecretKey(key) && (value === "***" || value === "<empty>")) continue;
-    patch[key] = value;
+    const segments = resolvePath(el);
+    const leafKey = segments[segments.length - 1] || "";
+    if (isSecretKey(leafKey) && (value === "***" || value === "<empty>")) continue;
+    setNested(patch, segments, value);
   }
   return patch;
 }
