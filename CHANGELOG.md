@@ -46,7 +46,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   primary source and pointing at `/admin/server-config` for enabling a
   secondary source. `jira` / `local` are exempt — they don't sit under
   `data_source.*`. Omitted source_type still tolerated for legacy CLI
-  callers.
+  callers. Stays permissive when primary is `'local'` (bootstrap workflow
+  — instance not yet pointed at a real source).
+- **query API**: `POST /api/query` now returns a materialize-aware error
+  when the failed SQL references a table id that's registered with
+  `query_mode='materialized'` but doesn't yet exist as a master view in
+  this instance's `analytics.duckdb` (e.g. fresh instance, no scheduler
+  tick yet). The hint names the table, points at `da sync` /
+  `POST /api/sync/trigger`, and — when the registry row carries a
+  bucket+source_table — surfaces the equivalent direct-source query
+  (`bq."dataset"."table"` or `kbc."bucket"."table"`) so the operator has a
+  concrete next step. Falls back to DuckDB's raw error for non-materialized
+  unknowns.
 
 ## [0.30.0] — 2026-05-01
 
