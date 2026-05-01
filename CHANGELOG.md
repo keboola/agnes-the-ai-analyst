@@ -11,6 +11,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **docs**: `config/instance.yaml.example` documents every field newly
+  exposed by `/admin/server-config` — `data_source.bigquery.billing_project`
+  (with the USER_PROJECT_DENIED hint), `data_source.bigquery.legacy_wrap_views`,
+  `data_source.bigquery.max_bytes_per_materialize`, `ai.base_url`,
+  `openmetadata.*`, `desktop.*`, and the full `corporate_memory.*` block.
+  Each cross-references the admin UI so operators discover the editor exists.
 - **diagnostics**: `/api/health/detailed` (and therefore `da diagnose`) now
   surfaces a `bq_config` service entry on BigQuery instances. Reports
   `status="warning"` when `data_source.bigquery.billing_project` resolves
