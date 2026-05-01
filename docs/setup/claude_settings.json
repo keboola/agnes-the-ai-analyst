@@ -1,11 +1,21 @@
 {
     "hooks": {
+        "SessionStart": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "da sync --quiet 2>/dev/null || true"
+                    }
+                ]
+            }
+        ],
         "SessionEnd": [
             {
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "python server/scripts/collect_session.py 2>/dev/null || true"
+                        "command": "da sync --upload-only --quiet 2>/dev/null || true"
                     }
                 ]
             }

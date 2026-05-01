@@ -31,6 +31,11 @@ def sync(
     upload_only: bool = typer.Option(False, "--upload-only", help="Only upload sessions/artifacts"),
     docs_only: bool = typer.Option(False, "--docs-only", help="Only sync documentation"),
     as_json: bool = typer.Option(False, "--json", help="Output as JSON"),
+    quiet: bool = typer.Option(
+        False,
+        "--quiet",
+        help="Suppress progress output (intended for hooks/cron)",
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
@@ -39,7 +44,12 @@ def sync(
 ):
     """Sync data between server and local machine."""
     if upload_only:
-        _upload(as_json, dry_run=dry_run)
+        _upload(as_json, dry_run=dry_run, quiet=quiet)
+        return
+
+    if quiet:
+        # Bypass Rich Progress entirely so hook stdout stays clean.
+        _sync_quiet(table=table, docs_only=docs_only, as_json=as_json, dry_run=dry_run)
         return
 
     with Progress(
@@ -388,11 +398,13 @@ def _is_valid_parquet(path: Path) -> bool:
         return False
 
 
-def _upload(as_json: bool, dry_run: bool = False):
+def _upload(as_json: bool, dry_run: bool = False, quiet: bool = False):
     """Upload sessions and CLAUDE.local.md to server.
 
     When `dry_run=True`, enumerate what would be uploaded without hitting the
-    API or mutating anything on disk.
+    API or mutating anything on disk. When `quiet=True`, suppress the trailing
+    "Uploaded N sessions" stdout line — error paths still surface on stderr
+    via api_post itself.
     """
     local_dir = _local_data_dir()
     sessions_dir = local_dir / "user" / "sessions"
@@ -448,7 +460,117 @@ def _upload(as_json: bool, dry_run: bool = False):
 
     if as_json:
         typer.echo(json.dumps(results, indent=2))
-    else:
+    elif not quiet:
         typer.echo(f"Uploaded {results['sessions']} sessions")
         if results["local_md"]:
             typer.echo("Uploaded CLAUDE.local.md")
+
+
+def _sync_quiet(table, docs_only, as_json, dry_run):
+    """Mirror of the Progress-block flow without any Rich UI.
+
+    Designed for Claude Code SessionStart/SessionEnd hooks and cron callers:
+    stdout stays empty in the no-op case, the terse one-line summary lands
+    on stderr so hook stdout pipes don't see it, and a manifest fetch
+    failure exits non-zero so the `|| true` shell fallback can swallow it
+    cleanly.
+
+    Skips remote-mode tables exactly like the noisy path; runs the
+    `_fetch_and_write_rules` corporate-memory step so analysts' .claude/
+    rules/ stay fresh between sessions.
+    """
+    try:
+        resp = api_get("/api/sync/manifest")
+        resp.raise_for_status()
+        manifest = resp.json()
+    except Exception as e:
+        typer.echo(f"sync: manifest fetch failed: {e}", err=True)
+        raise typer.Exit(1)
+
+    server_tables = manifest.get("tables", {})
+    local_state = get_sync_state()
+    local_tables = local_state.get("tables", {})
+
+    to_download = []
+    skipped_remote = []
+    for tid, info in server_tables.items():
+        if table and tid != table:
+            continue
+        if docs_only:
+            continue
+        if info.get("query_mode") == "remote":
+            skipped_remote.append(tid)
+            continue
+        local_hash = local_tables.get(tid, {}).get("hash", "")
+        server_hash = info.get("hash", "")
+        if server_hash != local_hash or tid not in local_tables or not server_hash:
+            to_download.append(tid)
+
+    if dry_run:
+        if as_json:
+            typer.echo(json.dumps(
+                {"dry_run": True, "would_download": to_download,
+                 "skipped_remote": skipped_remote},
+                indent=2,
+            ))
+        else:
+            # Single stderr line keeps stdout clean for hooks while still
+            # giving an interactive operator running `da sync --quiet
+            # --dry-run` a sign that something happened.
+            typer.echo(
+                f"sync (dry-run): would download {len(to_download)} tables, "
+                f"skip {len(skipped_remote)} remote-mode",
+                err=True,
+            )
+        return
+
+    local_dir = _local_data_dir()
+    parquet_dir = local_dir / "server" / "parquet"
+    parquet_dir.mkdir(parents=True, exist_ok=True)
+
+    results = {
+        "downloaded": [], "skipped": [],
+        "skipped_remote": list(skipped_remote), "errors": [],
+    }
+    for tid in to_download:
+        target = parquet_dir / f"{tid}.parquet"
+        expected_hash = server_tables[tid].get("hash", "")
+        try:
+            stream_download(f"/api/data/{tid}/download", str(target))
+            if expected_hash:
+                if _md5_file(target) != expected_hash:
+                    target.unlink(missing_ok=True)
+                    raise ValueError("hash mismatch")
+            elif not _is_valid_parquet(target):
+                target.unlink(missing_ok=True)
+                raise ValueError("not a valid parquet")
+            local_tables[tid] = {
+                "hash": expected_hash,
+                "rows": server_tables[tid].get("rows", 0),
+                "size_bytes": server_tables[tid].get("size_bytes", 0),
+            }
+            results["downloaded"].append(tid)
+        except Exception as e:
+            results["errors"].append({"table": tid, "error": str(e)})
+
+    from datetime import datetime, timezone
+    local_state["tables"] = local_tables
+    local_state["last_sync"] = datetime.now(timezone.utc).isoformat()
+    save_sync_state(local_state)
+
+    if results["downloaded"]:
+        _rebuild_duckdb_views(local_dir, parquet_dir)
+
+    # Same corporate-memory rule fetch as the noisy path — keeps the
+    # `.claude/rules/km_*.md` files fresh between sessions even when the
+    # hook is the only thing invoking sync.
+    _fetch_and_write_rules(local_dir)
+
+    if as_json:
+        typer.echo(json.dumps(results, indent=2))
+    elif results["downloaded"] or results["errors"]:
+        typer.echo(
+            f"sync: {len(results['downloaded'])} tables, "
+            f"{len(results['errors'])} errors",
+            err=True,
+        )
