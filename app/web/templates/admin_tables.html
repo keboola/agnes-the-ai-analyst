@@ -730,6 +730,37 @@
                 margin: 16px;
             }
         }
+
+        /* ── Tab nav (Phase D) ── */
+        .tab-nav {
+            display: flex;
+            gap: 4px;
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 16px;
+        }
+        .tab {
+            padding: 8px 16px;
+            background: transparent;
+            border: 0;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: inherit;
+            color: var(--text-secondary);
+        }
+        .tab[aria-selected="true"] {
+            border-bottom: 2px solid var(--primary);
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+        .tab-content {
+            padding: 16px 0;
+        }
+        .tab-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+        }
     </style>
     {% include '_theme.html' %}
 </head>
@@ -746,6 +777,56 @@
 
     <!-- ═══════════════ CONTENT ═══════════════ -->
     <div class="content">
+
+        {# Phase D: tab-split scaffold. Per-connector tabs (BigQuery /
+           Keboola / Jira) replace the single mixed form. Each tab has its
+           own Register button + listing div + (later) form modals. The
+           initial active tab matches data_source.type from instance.yaml;
+           the operator can still switch tabs to manage a secondary source.
+
+           Phase E moves the BQ form into #tab-content-bigquery; Phase F
+           builds the Keboola form inside #tab-content-keboola. For now
+           the existing Jinja-branched panels below stay in place. #}
+        {% set initial_tab = data_source_type if data_source_type in ['bigquery', 'keboola', 'jira'] else 'keboola' %}
+
+        <nav class="tab-nav" role="tablist">
+            <button data-tab="bigquery" aria-selected="{{ 'true' if initial_tab == 'bigquery' else 'false' }}" class="tab" onclick="switchTab('bigquery')">BigQuery</button>
+            <button data-tab="keboola" aria-selected="{{ 'true' if initial_tab == 'keboola' else 'false' }}" class="tab" onclick="switchTab('keboola')">Keboola</button>
+            <button data-tab="jira" aria-selected="{{ 'true' if initial_tab == 'jira' else 'false' }}" class="tab" onclick="switchTab('jira')">Jira</button>
+        </nav>
+
+        <section id="tab-content-bigquery" class="tab-content"
+                 style="display: {% if initial_tab == 'bigquery' %}block{% else %}none{% endif %};">
+            <div class="tab-header">
+                <h2>BigQuery tables</h2>
+                <button id="bqRegisterBtn" class="btn btn-primary"
+                        onclick="openRegisterModal('bigquery')">Register BigQuery table</button>
+            </div>
+            <div id="bqTableListing"></div>
+            {# Phase E lifts the existing BQ register/edit modals + form
+               into this section. #}
+        </section>
+
+        <section id="tab-content-keboola" class="tab-content"
+                 style="display: {% if initial_tab == 'keboola' %}block{% else %}none{% endif %};">
+            <div class="tab-header">
+                <h2>Keboola tables</h2>
+                <button id="kbRegisterBtn" class="btn btn-primary"
+                        onclick="openRegisterModal('keboola')">Register Keboola table</button>
+            </div>
+            <div id="kbTableListing"></div>
+            {# Phase F builds the Keboola Register + Edit modals here. #}
+        </section>
+
+        <section id="tab-content-jira" class="tab-content"
+                 style="display: {% if initial_tab == 'jira' %}block{% else %}none{% endif %};">
+            <div class="tab-header">
+                <h2>Jira tables</h2>
+                <p class="hint">Jira tables are populated by webhooks. To register a new
+                    Jira webhook integration, see <code>docs/connectors/jira.md</code>.</p>
+            </div>
+            <div id="jiraTableListing"></div>
+        </section>
 
         {% if data_source_type == 'bigquery' %}
         <!-- ── BigQuery Register Panel ── -->
@@ -1233,6 +1314,30 @@
     /* ═══════════════════════════════════════════════════════════════
        Admin Tables - JavaScript
        ═══════════════════════════════════════════════════════════════ */
+
+    // ── Tab nav (Phase D) ───────────────────────────────────────
+    function switchTab(tab) {
+        document.querySelectorAll('.tab').forEach(function(b) {
+            b.setAttribute('aria-selected', b.dataset.tab === tab ? 'true' : 'false');
+        });
+        document.querySelectorAll('.tab-content').forEach(function(c) {
+            c.style.display = (c.id === ('tab-content-' + tab)) ? 'block' : 'none';
+        });
+        history.replaceState(null, '', '#' + tab);
+    }
+
+    function getActiveTabFromHash() {
+        var hash = window.location.hash.replace(/^#/, '');
+        if (hash === 'bigquery' || hash === 'keboola' || hash === 'jira') {
+            return hash;
+        }
+        return null;
+    }
+
+    (function initTabFromHash() {
+        var t = getActiveTabFromHash();
+        if (t) switchTab(t);
+    })();
 
     // State
     let discoveryData = null;
