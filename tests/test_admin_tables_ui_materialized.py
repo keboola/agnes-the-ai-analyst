@@ -148,6 +148,91 @@ def test_edit_modal_has_bq_parity_fields(seeded_app, bq_instance):
     assert 'list="editBqTableList"' in html
 
 
+def test_keboola_register_form_has_two_question_radio(seeded_app, monkeypatch):
+    """Phase F: Keboola tab Register form mirrors BQ's two-question
+    radio model, but Q1 (access mode) is forced to 'synced' (no Live
+    mode for Keboola), so visually only Q2 (sync mode = whole | custom)
+    is exposed.
+
+    Q2.whole → query_mode='materialized' with auto SELECT * FROM kbc.bucket.table
+    Q2.custom → query_mode='materialized' with admin SELECT
+    Both create materialized rows; the legacy 'local' mode is no longer
+    user-selectable (it would be exactly equivalent to whole)."""
+    fake_cfg = {"data_source": {"type": "keboola", "keboola": {}}}
+    monkeypatch.setattr(
+        "app.instance_config.load_instance_config",
+        lambda: fake_cfg, raising=False,
+    )
+    from app.instance_config import reset_cache
+    reset_cache()
+    try:
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        r = c.get("/admin/tables", headers=_auth(token))
+        html = r.text
+        kb_tab = html[html.index('id="tab-content-keboola"'):]
+        kb_tab = kb_tab[:kb_tab.index('</section>')]
+
+        # Q2 radio — Whole vs Custom.
+        assert 'name="kbSyncMode"' in kb_tab
+        assert 'value="whole"' in kb_tab
+        assert 'value="custom"' in kb_tab
+
+        # Bucket + source-table inputs reused for whole mode.
+        assert 'id="kbBucket"' in kb_tab
+        assert 'id="kbSourceTable"' in kb_tab
+        # Custom-SQL textarea + Use-table-as-base prefill button.
+        assert 'id="kbSourceQuery"' in kb_tab
+        assert 'kbPrefillFromTable' in html or "prefillFromKeboolaTable('kbSourceQuery')" in html
+
+        # Sync Schedule input — was missing from old Keboola form.
+        assert 'id="kbSyncSchedule"' in kb_tab
+
+        # Sync Strategy dropdown — gone from new Keboola form.
+        assert 'id="kbStrategy"' not in kb_tab
+
+        # Primary Key — under <details>Advanced.
+        assert 'id="kbPrimaryKey"' in kb_tab
+        assert "<details" in kb_tab
+        assert ">Advanced" in kb_tab
+
+        # Discover datasets / List tables buttons.
+        assert 'kbDiscoverBuckets' in html or "discoverKeboolaBuckets(" in html
+        assert 'kbListTables' in html or "discoverKeboolaTables(" in html
+    finally:
+        reset_cache()
+
+
+def test_keboola_register_payload_maps_to_materialized(seeded_app, monkeypatch):
+    """The form's whole-table mode posts query_mode='materialized' with
+    a synthetic SELECT * SQL — same pattern as BQ Synced/Whole."""
+    fake_cfg = {"data_source": {"type": "keboola", "keboola": {}}}
+    monkeypatch.setattr(
+        "app.instance_config.load_instance_config",
+        lambda: fake_cfg, raising=False,
+    )
+    from app.instance_config import reset_cache
+    reset_cache()
+    try:
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        auth = {"Authorization": f"Bearer {token}"}
+        r = c.post(
+            "/api/admin/register-table",
+            headers=auth,
+            json={
+                "name": "orders",
+                "source_type": "keboola",
+                "query_mode": "materialized",
+                "source_query": 'SELECT * FROM kbc."in.c-sales"."orders"',
+                "sync_schedule": "every 6h",
+            },
+        )
+        assert r.status_code == 201, r.text
+    finally:
+        reset_cache()
+
+
 def test_admin_tables_keboola_branch_unchanged(seeded_app, monkeypatch):
     """Phase E: the BQ form is always rendered (inside #tab-content-bigquery)
     regardless of data_source.type. On a Keboola instance the BQ tab is

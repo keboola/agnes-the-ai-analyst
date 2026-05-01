@@ -975,7 +975,133 @@
                         onclick="openRegisterModal('keboola')">Register Keboola table</button>
             </div>
             <div id="kbTableListing"></div>
-            {# Phase F builds the Keboola Register + Edit modals here. #}
+
+            <!-- ── Keboola Register Modal (Phase F1) ── -->
+            <div class="modal-overlay" id="registerKeboolaModal">
+                <div class="modal">
+                    <div class="modal-header">
+                        <h2>Register Keboola Table</h2>
+                        <button class="modal-close" onclick="closeRegisterKeboolaModal()">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="18" y1="6" x2="6" y2="18"/>
+                                <line x1="6" y1="6" x2="18" y2="18"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="modal-body">
+                        {# Q2 radio — Sync mode. (Q1 is implicitly 'synced'; Keboola
+                           has no Live mode.) Whole and Custom both map to
+                           query_mode='materialized'. #}
+                        <div class="form-group">
+                            <label class="form-label">What to sync?</label>
+                            <div class="bq-sync-radio-group" style="display:flex; gap:12px; margin-top:6px;">
+                                <label style="flex:1; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                    <input type="radio" name="kbSyncMode" value="whole" checked onchange="onKbSyncModeChange()">
+                                    <strong>Whole table</strong>
+                                    <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
+                                        Pull everything in the bucket/table on each
+                                        schedule tick. Disk + sync cost = full table size.
+                                    </div>
+                                </label>
+                                <label style="flex:1; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                    <input type="radio" name="kbSyncMode" value="custom" onchange="onKbSyncModeChange()">
+                                    <strong>Custom SQL</strong>
+                                    <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
+                                        Pre-aggregate or filter with your own SELECT
+                                        (e.g. last 30 days only, per-day rollup).
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label" for="kbViewName">View name (analyst-visible)</label>
+                            <input type="text" class="form-input" id="kbViewName"
+                                   placeholder="e.g. orders_recent">
+                        </div>
+
+                        <div class="form-group kb-source-table">
+                            <label class="form-label" for="kbBucket">
+                                Bucket
+                                <button type="button" class="btn btn-secondary btn-sm"
+                                        onclick="discoverKeboolaBuckets('kbBucketList')"
+                                        style="float:right; margin-top:-3px;">Discover</button>
+                            </label>
+                            <input type="text" class="form-input" id="kbBucket"
+                                   list="kbBucketList" placeholder="e.g. in.c-sales">
+                            <datalist id="kbBucketList"></datalist>
+                        </div>
+                        <div class="form-group kb-source-table">
+                            <label class="form-label" for="kbSourceTable">
+                                Source Table
+                                <button type="button" class="btn btn-secondary btn-sm"
+                                        onclick="discoverKeboolaTables('kbBucket', 'kbTableList')"
+                                        style="float:right; margin-top:-3px;">List tables</button>
+                            </label>
+                            <input type="text" class="form-input" id="kbSourceTable"
+                                   list="kbTableList" placeholder="e.g. orders">
+                            <datalist id="kbTableList"></datalist>
+                        </div>
+                        <div class="form-group kb-source-custom" style="display:none;">
+                            <label class="form-label" for="kbSourceQuery">
+                                SQL
+                                <button type="button" class="btn btn-secondary btn-sm"
+                                        onclick="prefillFromKeboolaTable('kbSourceQuery')"
+                                        style="float:right; margin-top:-3px;"
+                                        title="Prefill SELECT * FROM kbc.bucket.table so you only edit the WHERE / projection">
+                                    Use table as base
+                                </button>
+                            </label>
+                            <textarea class="form-textarea" id="kbSourceQuery" rows="8"></textarea>
+                            <div class="form-hint">SELECT against <code>kbc."bucket"."table"</code>.
+                                Result is materialized to parquet and distributed via
+                                <code>da sync</code>.</div>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label" for="kbSyncSchedule">Sync Schedule
+                                <span class="optional">(optional, default <code>every 1h</code>)</span></label>
+                            <input type="text" class="form-input" id="kbSyncSchedule" placeholder="every 6h">
+                            <div class="form-hint">
+                                How often Agnes refreshes the local copy. Examples:
+                                <code>every 15m</code>, <code>every 6h</code>,
+                                <code>daily 03:00</code>, <code>daily 07:00,13:00,18:00</code> (UTC).
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label" for="kbDescription">Description
+                                <span class="optional">(optional)</span></label>
+                            <textarea class="form-textarea" id="kbDescription"
+                                      placeholder="Brief description of the table contents..."></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="kbFolder">Folder
+                                <span class="optional">(optional)</span></label>
+                            <input type="text" class="form-input" id="kbFolder"
+                                   placeholder="e.g. crm, finance, marketing">
+                        </div>
+
+                        <details class="form-group">
+                            <summary>Advanced (optional)</summary>
+                            <div class="form-group" style="margin-top:8px;">
+                                <label class="form-label" for="kbPrimaryKey">Primary Key</label>
+                                <input type="text" class="form-input" id="kbPrimaryKey"
+                                       placeholder="e.g. id">
+                                <div class="form-hint">Comma-separated list. <strong>Catalog
+                                    metadata only</strong> — Agnes always does full-overwrite
+                                    sync; no upsert/dedup. Auto-filled from the Keboola source
+                                    when available.</div>
+                            </div>
+                        </details>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn btn-secondary" onclick="closeRegisterKeboolaModal()">Cancel</button>
+                        <button class="btn btn-primary" id="registerKeboolaSubmitBtn"
+                                onclick="registerKeboolaTable()">Register</button>
+                    </div>
+                </div>
+            </div>
         </section>
 
         <section id="tab-content-jira" class="tab-content"
@@ -1553,17 +1679,16 @@
     var DATA_SOURCE_TYPE = document.getElementById('registerModal').dataset.sourceType || 'keboola';
 
     function openRegisterModal(arg) {
-        // Phase E: dispatch by argument shape.
-        //   String 'bigquery' / 'keboola'  → Tab Register button calls.
-        //   Object {bucket_id, ...}        → Keboola Discover-tables click.
+        // Phase E + F: dispatch by argument shape.
+        //   String 'bigquery'              → BQ tab Register button → #registerBqModal.
+        //   String 'keboola'               → Keboola tab Register button → #registerKeboolaModal.
+        //   Object {bucket_id, ...}        → Keboola Discover-tables click → legacy #registerModal.
         //   Object {} or undefined         → manual entry (legacy openBQ path).
-        // The BQ form lives in #registerBqModal (inside the BQ tab); the
-        // Keboola form lives in the legacy #registerModal.
         if (arg === 'bigquery') {
             return _openBqRegisterModal({});
         }
         if (arg === 'keboola') {
-            return _openKeboolaRegisterModal({});
+            return _openKeboolaTabRegisterModal();
         }
         // Backward-compat: object form. Prefer the existing source-type
         // dispatcher so a Keboola Discover click still fills regBucket /
@@ -1639,7 +1764,216 @@
         document.getElementById('registerBqModal').classList.remove('active');
     }
 
+    // ── Keboola tab register modal (Phase F1) ──────────────────────
+
+    function _openKeboolaTabRegisterModal() {
+        // Reset form to defaults each open. Whole mode is the default
+        // (Q2='whole'); the kb-source-table fields are visible.
+        var modal = document.getElementById('registerKeboolaModal');
+        if (!modal) return;
+        var radio = modal.querySelector('input[name="kbSyncMode"][value="whole"]');
+        if (radio) radio.checked = true;
+        ['kbViewName', 'kbBucket', 'kbSourceTable', 'kbSourceQuery',
+         'kbSyncSchedule', 'kbDescription', 'kbFolder', 'kbPrimaryKey'].forEach(function(id) {
+            var el = document.getElementById(id);
+            if (el) el.value = '';
+        });
+        onKbSyncModeChange();  // apply default visibility
+        var btn = document.getElementById('registerKeboolaSubmitBtn');
+        btn.disabled = false;
+        btn.textContent = 'Register';
+        modal.classList.add('active');
+    }
+
+    function closeRegisterKeboolaModal() {
+        document.getElementById('registerKeboolaModal').classList.remove('active');
+    }
+
+    function _getKbSyncMode() {
+        var el = document.querySelector('input[name="kbSyncMode"]:checked');
+        return el ? el.value : 'whole';
+    }
+
+    function onKbSyncModeChange() {
+        var mode = _getKbSyncMode();
+        document.querySelectorAll('.kb-source-table').forEach(function(el) {
+            el.style.display = (mode === 'whole') ? '' : 'none';
+        });
+        document.querySelectorAll('.kb-source-custom').forEach(function(el) {
+            el.style.display = (mode === 'custom') ? '' : 'none';
+        });
+    }
+
     function _buildKeboolaPayload() {
+        // Phase F: canonical Keboola payload builder for the Keboola-tab
+        // Register modal. Whole mode synthesizes SELECT * FROM kbc."b"."t";
+        // Custom mode posts the admin-supplied SELECT verbatim. Both map
+        // to query_mode='materialized'.
+        var mode = _getKbSyncMode();
+        var viewName = (document.getElementById('kbViewName').value || '').trim();
+        var bucket = (document.getElementById('kbBucket').value || '').trim();
+        var sourceTable = (document.getElementById('kbSourceTable').value || '').trim();
+        var pk = (document.getElementById('kbPrimaryKey').value || '').trim();
+        var primaryKey = pk
+            ? pk.split(',').map(function(s) { return s.trim(); }).filter(Boolean)
+            : [];
+
+        var common = {
+            name: viewName || sourceTable,
+            source_type: 'keboola',
+            query_mode: 'materialized',
+            primary_key: primaryKey,
+            sync_schedule: (document.getElementById('kbSyncSchedule').value || '').trim() || null,
+            description: (document.getElementById('kbDescription').value || '').trim() || null,
+            folder: (document.getElementById('kbFolder').value || '').trim() || null,
+        };
+
+        if (mode === 'custom') {
+            return Object.assign({}, common, {
+                source_query: (document.getElementById('kbSourceQuery').value || '').trim(),
+            });
+        }
+        // Whole — synthesize SELECT * FROM kbc."bucket"."table".
+        return Object.assign({}, common, {
+            bucket: bucket,
+            source_table: sourceTable,
+            source_query: 'SELECT * FROM kbc."' + bucket + '"."' + sourceTable + '"',
+        });
+    }
+
+    function registerKeboolaTable() {
+        var btn = document.getElementById('registerKeboolaSubmitBtn');
+        btn.disabled = true;
+        btn.textContent = 'Registering...';
+        var payload = _buildKeboolaPayload();
+        fetch('/api/admin/register-table', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        })
+            .then(function(r) {
+                if (!r.ok) {
+                    return r.json().then(function(d) {
+                        throw new Error(d.detail || d.error || 'Registration failed');
+                    });
+                }
+                return r.json();
+            })
+            .then(function() {
+                closeRegisterKeboolaModal();
+                showToast('Table registered', 'success');
+                loadRegistry();
+            })
+            .catch(function(err) {
+                showToast('' + err.message, 'error');
+            })
+            .finally(function() {
+                btn.disabled = false;
+                btn.textContent = 'Register';
+            });
+    }
+
+    // Discovery shims — the existing /api/admin/discover-tables endpoint
+    // already routes by the instance's data_source.type (returning Keboola
+    // tables when the instance is Keboola-typed); the source=keboola query
+    // param is informational. On a BQ-typed instance, these calls fail-soft
+    // — the toast surfaces the error and the operator falls back to manual
+    // entry. Future work: extend the endpoint to take an explicit source
+    // override so secondary-source registration works in both directions.
+    function discoverKeboolaBuckets(datalistId) {
+        fetch('/api/admin/discover-tables?source=keboola')
+            .then(function(r) {
+                if (!r.ok) return r.json().then(function(d) {
+                    throw new Error(d.detail || d.error || 'Keboola discovery failed');
+                });
+                return r.json();
+            })
+            .then(function(data) {
+                var dl = document.getElementById(datalistId);
+                if (!dl) return;
+                dl.innerHTML = '';
+                // Endpoint may return either {buckets:[...]}, {datasets:[...]}
+                // or {tables:[...]} depending on routing; project to a flat
+                // bucket-id list. Keboola path returns tables → derive uniq
+                // bucket_ids.
+                var buckets = data.buckets || data.datasets;
+                if (!buckets && Array.isArray(data.tables)) {
+                    var seen = {};
+                    buckets = [];
+                    data.tables.forEach(function(t) {
+                        var b = t.bucket_id || (t.bucket && t.bucket.id);
+                        if (b && !seen[b]) { seen[b] = 1; buckets.push(b); }
+                    });
+                }
+                (buckets || []).forEach(function(b) {
+                    var o = document.createElement('option');
+                    o.value = (typeof b === 'string') ? b : (b.id || b.bucket_id || '');
+                    dl.appendChild(o);
+                });
+                showToast('Loaded ' + (dl.children.length) + ' buckets', 'success');
+            })
+            .catch(function(err) {
+                showToast('' + err.message, 'error');
+            });
+    }
+
+    function discoverKeboolaTables(bucketInputId, tablesDatalistId) {
+        var bucketEl = document.getElementById(bucketInputId);
+        var bucket = bucketEl ? (bucketEl.value || '').trim() : '';
+        if (!bucket) {
+            showToast('Fill bucket first', 'error');
+            return;
+        }
+        fetch('/api/admin/discover-tables?source=keboola&bucket=' + encodeURIComponent(bucket))
+            .then(function(r) {
+                if (!r.ok) return r.json().then(function(d) {
+                    throw new Error(d.detail || d.error || 'Keboola table discovery failed');
+                });
+                return r.json();
+            })
+            .then(function(data) {
+                var dl = document.getElementById(tablesDatalistId);
+                if (!dl) return;
+                dl.innerHTML = '';
+                var tables = data.tables || [];
+                // Filter to the selected bucket if endpoint didn't.
+                tables.filter(function(t) {
+                    var b = t.bucket_id || (t.bucket && t.bucket.id);
+                    return !bucket || !b || b === bucket;
+                }).forEach(function(t) {
+                    var o = document.createElement('option');
+                    var name = (typeof t === 'string') ? t : (t.name || t.id || '');
+                    // Strip bucket prefix if present.
+                    if (name.indexOf(bucket + '.') === 0) name = name.substring(bucket.length + 1);
+                    o.value = name;
+                    dl.appendChild(o);
+                });
+                showToast('Loaded ' + dl.children.length + ' tables in ' + bucket, 'success');
+            })
+            .catch(function(err) {
+                showToast('' + err.message, 'error');
+            });
+    }
+
+    function prefillFromKeboolaTable(textareaId) {
+        // Edit-modal callers may pass an editKbBucket / editKbSourceTable
+        // pair instead of the Register modal's kbBucket / kbSourceTable.
+        // Detect the modal via the textarea id prefix.
+        var prefix = textareaId.indexOf('editKb') === 0 ? 'editKb' : 'kb';
+        var bucket = (document.getElementById(prefix + 'Bucket').value || '').trim();
+        var sourceTable = (document.getElementById(prefix + 'SourceTable').value || '').trim();
+        if (!bucket || !sourceTable) {
+            showToast('Fill bucket + source table first', 'error');
+            return;
+        }
+        var ta = document.getElementById(textareaId);
+        if (ta.value.trim()) {
+            if (!confirm('Replace existing SQL?')) return;
+        }
+        ta.value = 'SELECT *\nFROM kbc."' + bucket + '"."' + sourceTable + '"\nWHERE -- your filter here';
+    }
+
+    function _buildKeboolaLegacyPayload() {
         var pk = document.getElementById('regPrimaryKey').value.trim();
         var primaryKey = pk ? pk.split(',').map(function(s) { return s.trim(); }).filter(Boolean) : [];
         // `regSourceTable` carries the bare Keboola storage identifier
@@ -1913,7 +2247,7 @@
 
     function _registerKeboolaTable(btn) {
         btn.textContent = 'Registering...';
-        var payload = _buildKeboolaPayload();
+        var payload = _buildKeboolaLegacyPayload();
         fetch('/api/admin/register-table', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -2371,6 +2705,13 @@
         });
     }
 
+    var _registerKeboolaModalEl = document.getElementById('registerKeboolaModal');
+    if (_registerKeboolaModalEl) {
+        _registerKeboolaModalEl.addEventListener('click', function(e) {
+            if (e.target === this) closeRegisterKeboolaModal();
+        });
+    }
+
     document.getElementById('editModal').addEventListener('click', function(e) {
         if (e.target === this) closeEditModal();
     });
@@ -2380,6 +2721,7 @@
         if (e.key === 'Escape') {
             closeRegisterModal();
             closeRegisterBqModal();
+            if (typeof closeRegisterKeboolaModal === 'function') closeRegisterKeboolaModal();
             closeEditModal();
         }
     });
