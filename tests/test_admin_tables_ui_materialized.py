@@ -233,6 +233,38 @@ def test_keboola_register_payload_maps_to_materialized(seeded_app, monkeypatch):
         reset_cache()
 
 
+def test_keboola_edit_modal_parity(seeded_app, monkeypatch):
+    """Phase F2: Edit modal mirrors Register's two-question structure
+    for Keboola rows."""
+    fake_cfg = {"data_source": {"type": "keboola", "keboola": {}}}
+    monkeypatch.setattr(
+        "app.instance_config.load_instance_config",
+        lambda: fake_cfg, raising=False,
+    )
+    from app.instance_config import reset_cache
+    reset_cache()
+    try:
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        r = c.get("/admin/tables", headers=_auth(token))
+        html = r.text
+        # Q2 radio in edit.
+        assert 'name="editKbSyncMode"' in html
+        assert 'id="editKbBucket"' in html
+        assert 'id="editKbSourceTable"' in html
+        assert 'id="editKbSourceQuery"' in html
+        assert 'id="editKbSyncSchedule"' in html
+        # Discover/List/Use-as-base buttons mirror Register.
+        assert "discoverKeboolaBuckets('editKbBucketList')" in html
+        assert "discoverKeboolaTables('editKbBucket', 'editKbTableList')" in html
+        assert "prefillFromKeboolaTable('editKbSourceQuery')" in html
+        # Strategy gone, PK under details.
+        assert 'id="editKbStrategy"' not in html
+        assert 'id="editKbPrimaryKey"' in html
+    finally:
+        reset_cache()
+
+
 def test_admin_tables_keboola_branch_unchanged(seeded_app, monkeypatch):
     """Phase E: the BQ form is always rendered (inside #tab-content-bigquery)
     regardless of data_source.type. On a Keboola instance the BQ tab is
