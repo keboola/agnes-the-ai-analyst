@@ -746,11 +746,14 @@ class TestAdminTablesUI:
             # cleanup landed — Keboola discovery is per-modal now).
             assert 'id="tab-content-keboola"' in body
             assert 'id="kbRegisterBtn"' in body
-            # Legacy Keboola register modal is still in the DOM for back-
-            # compat (the Phase F Keboola modal at #registerKeboolaModal
-            # supersedes it); its inputs survive.
-            assert 'id="regBucket"' in body
-            assert 'id="regTableName"' in body
+            # C3: legacy #registerModal is gone; the Phase F Keboola modal
+            # at #registerKeboolaModal owns the Keboola register flow now.
+            assert 'id="registerModal"' not in body
+            assert 'id="regBucket"' not in body
+            assert 'id="regTableName"' not in body
+            # The Phase F Keboola modal's inputs are present.
+            assert 'id="kbBucket"' in body
+            assert 'id="kbViewName"' in body
             # Phase E: BQ form now always rendered (inside #tab-content-bigquery)
             # — operator can switch tabs to register a BQ table on a Keboola
             # instance. Tab is hidden by default but the form is in the DOM.
@@ -1563,11 +1566,17 @@ class TestKeboolaModalUsesDiscoveredTableId:
     """Review IMPORTANT 5: the JS that builds the Keboola register payload
     must derive `source_table` from the discovered table's storage ID
     (`t.id` minus the bucket prefix), NOT the human-friendly display name
-    (`t.name`). We verify by static template inspection — this is enough
-    to catch a regression that drops the hidden field or reverts the JS
-    to reading `regTableName`."""
+    (`t.name`). We verify by static template inspection.
 
-    def test_template_has_hidden_source_table_field(self, seeded_app, monkeypatch):
+    C3: the legacy #registerModal that owned regTableName / regSourceTable
+    was removed. The Phase F #registerKeboolaModal uses kbBucket /
+    kbSourceTable and a different payload builder (`_buildKeboolaPayload`)
+    that already keeps storage identifier separate from display name. The
+    tests below were rewritten to gate the Phase F flow."""
+
+    def test_phase_f_modal_separates_storage_id_from_display_name(
+        self, seeded_app, monkeypatch,
+    ):
         from app.instance_config import reset_cache
         monkeypatch.setattr(
             "app.instance_config.load_instance_config",
@@ -1584,22 +1593,25 @@ class TestKeboolaModalUsesDiscoveredTableId:
                 c.cookies.clear()
             assert resp.status_code == 200, resp.text
             body = resp.text
-            # Hidden field must exist so the JS can stash the bare
-            # storage identifier separately from the display name.
-            assert 'id="regSourceTable"' in body
-            # And the build function must read from that hidden field
-            # (NOT from regTableName, which is the display name).
-            assert "getElementById('regSourceTable').value" in body
+            # Phase F modal owns the Keboola Register flow now.
+            assert 'id="registerKeboolaModal"' in body
+            # The source-table input is NOT the same field as the
+            # human-friendly view name input.
+            assert 'id="kbSourceTable"' in body
+            assert 'id="kbViewName"' in body
+            # The payload builder reads kbSourceTable for the storage
+            # identifier (used in SELECT * FROM kbc."b"."t").
+            assert "getElementById('kbSourceTable').value" in body
         finally:
             reset_cache()
 
-    def test_template_does_not_send_display_name_as_source_table(
+    def test_legacy_regtablename_payload_path_is_gone(
         self, seeded_app, monkeypatch,
     ):
-        """Regression check: pre-fix the payload had
-        `source_table: document.getElementById('regTableName').value`.
-        After the fix, that exact line must be gone (the build function
-        reads from the hidden `regSourceTable` first)."""
+        """Regression check: the pre-fix payload line
+        `source_table: document.getElementById('regTableName').value`
+        must remain absent. C3 removed the entire legacy modal so no
+        regTableName-based payload can be reintroduced."""
         from app.instance_config import reset_cache
         monkeypatch.setattr(
             "app.instance_config.load_instance_config",
@@ -1615,11 +1627,14 @@ class TestKeboolaModalUsesDiscoveredTableId:
             finally:
                 c.cookies.clear()
             body = resp.text
-            # No occurrence of the buggy direct assignment.
             assert (
                 "source_table: document.getElementById('regTableName').value"
                 not in body
             )
+            # C3: the regTableName / regSourceTable inputs themselves are
+            # gone with the legacy modal.
+            assert 'id="regTableName"' not in body
+            assert 'id="regSourceTable"' not in body
         finally:
             reset_cache()
 

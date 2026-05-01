@@ -362,8 +362,10 @@ def test_admin_tables_keboola_branch_unchanged(seeded_app, monkeypatch):
         assert 'id="bqEntityType"' not in html
         # BQ form now always rendered inside #tab-content-bigquery.
         assert 'id="bqSourceQuery"' in html
-        # Keboola form's regBucket / regTableId still there.
-        assert 'id="regTableId"' in html
-        assert 'id="regBucket"' in html
+        # C3: legacy #registerModal removed; the Phase F Keboola modal
+        # at #registerKeboolaModal owns the Keboola flow now.
+        assert 'id="registerModal"' not in html
+        assert 'id="kbBucket"' in html
+        assert 'id="kbViewName"' in html
     finally:
         reset_cache()

@@ -756,7 +756,7 @@
     </style>
     {% include '_theme.html' %}
 </head>
-<body>
+<body data-source-type="{{ data_source_type }}">
 
     <!-- ═══════════════ HEADER ═══════════════ -->
     {% include '_app_header.html' %}
@@ -1383,81 +1383,11 @@
 
     </div>
 
-    <!-- ═══════════════ REGISTRATION MODAL ═══════════════ -->
-    <!--
-      The form is branched server-side on data_source_type so the JS
-      doesn't have to round-trip /api/admin/server-config to learn the
-      source type. data-source-type carries the value down to the JS so
-      the submit handler picks the right payload shape.
-    -->
-    <div class="modal-overlay" id="registerModal" data-source-type="{{ data_source_type }}">
-        <div class="modal">
-            <div class="modal-header">
-                <h2>Register Table</h2>
-                <button class="modal-close" onclick="closeRegisterModal()">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <line x1="18" y1="6" x2="6" y2="18"/>
-                        <line x1="6" y1="6" x2="18" y2="18"/>
-                    </svg>
-                </button>
-            </div>
-            <div class="modal-body">
-                {# Keboola (default) path — fields populated by Discover-tables prefill.
-                   Phase E: BQ form was relocated into #tab-content-bigquery as
-                   #registerBqModal; this modal is now Keboola-only (will be
-                   renamed to #registerKeboolaModal in Phase F). #}
-                <div class="form-group">
-                    <label class="form-label" for="regTableId">Table ID</label>
-                    <input type="text" class="form-input" id="regTableId" readonly>
-                </div>
-                <div class="form-group">
-                    <label class="form-label" for="regTableName">Table Name</label>
-                    <input type="text" class="form-input" id="regTableName" readonly>
-                    <div class="form-hint">Derived from the source table identifier</div>
-                </div>
-                <div class="form-group">
-                    <label class="form-label" for="regBucket">Bucket</label>
-                    <input type="text" class="form-input" id="regBucket" readonly>
-                    <div class="form-hint">Source bucket (Keboola: in.c-foo)</div>
-                </div>
-                {# Hidden: the Keboola storage table identifier (the part after the
-                   bucket prefix in `t.id`, e.g. `company` for `in.c-sfdc.company`).
-                   `regTableName` is the human-friendly display name and is NOT
-                   safe to send as `source_table` — see review IMPORTANT 5 in
-                   PR #119. #}
-                <input type="hidden" id="regSourceTable" value="">
-                <div class="form-group">
-                    <label class="form-label" for="regStrategy">Sync Strategy</label>
-                    <select class="form-select" id="regStrategy">
-                        <option value="full_refresh">Full Refresh</option>
-                        <option value="incremental">Incremental</option>
-                        <option value="partitioned">Partitioned</option>
-                    </select>
-                    <div class="form-hint">How data should be synchronized from the source</div>
-                </div>
-                <div class="form-group">
-                    <label class="form-label" for="regPrimaryKey">Primary Key</label>
-                    <input type="text" class="form-input" id="regPrimaryKey" placeholder="e.g. id">
-                    <div class="form-hint">Comma-separated list of primary key columns</div>
-                </div>
-                <div class="form-group">
-                    <label class="form-label" for="regDescription">Description <span class="optional">(optional)</span></label>
-                    <textarea class="form-textarea" id="regDescription" placeholder="Brief description of the table contents..."></textarea>
-                </div>
-                <div class="form-group">
-                    <label class="form-label" for="regFolder">Folder <span class="optional">(optional)</span></label>
-                    <input type="text" class="form-input" id="regFolder" placeholder="e.g. crm, finance, marketing">
-                    <div class="form-hint">Logical grouping for catalog organization</div>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-secondary" onclick="closeRegisterModal()">Cancel</button>
-                <button class="btn btn-primary" id="registerSubmitBtn" onclick="registerTable()">
-                    Register Table
-                </button>
-            </div>
-        </div>
-    </div>
+    {# C3: legacy #registerModal removed. The Phase E #registerBqModal
+       (inside #tab-content-bigquery) and Phase F #registerKeboolaModal
+       (inside #tab-content-keboola) own the Register flows now. The
+       data-source-type marker moved to <body> so DATA_SOURCE_TYPE still
+       has somewhere to read from. #}
 
     <!-- ═══════════════ EDIT MODAL (legacy fallback — Keboola-only fields
          remaining; the BQ Edit modal moved into #tab-content-bigquery as
@@ -1558,7 +1488,6 @@
     })();
 
     // State
-    let discoveryData = null;
     let registryData = null;
     let registryVersion = null;
     let currentEditTableId = null;
@@ -1614,162 +1543,35 @@
         return div.innerHTML;
     }
 
-    // ── Discovery ───────────────────────────────────────────────
-
-    function discoverTables() {
-        var btn = document.getElementById('discoverBtn');
-        var resultsEl = document.getElementById('discoveryResults');
-
-        // Loading state
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner"></span> Discovering...';
-        resultsEl.innerHTML = '<div class="loading-state"><div class="spinner spinner-lg"></div><span>Scanning data source for tables...</span></div>';
-
-        fetch('/api/admin/discover-tables')
-            .then(function(r) {
-                if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || 'Discovery failed'); });
-                return r.json();
-            })
-            .then(function(data) {
-                discoveryData = data;
-                // renderDiscoveryResults handles the per-source shape and
-                // surfaces its own success toast (count derived from the
-                // actual flat tables list, not whatever `data.total` says).
-                renderDiscoveryResults(data);
-            })
-            .catch(function(err) {
-                resultsEl.innerHTML = '<div class="panel-body-empty" style="color: var(--error);">Discovery failed: ' + escapeHtml(err.message) + '</div>';
-                showToast('Discovery failed: ' + err.message, 'error');
-            })
-            .finally(function() {
-                btn.disabled = false;
-                btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> Discover tables from source';
-            });
-    }
-
-    function renderDiscoveryResults(data) {
-        var el = document.getElementById('discoveryResults');
-
-        // The discovery API returns a flat {tables: [...]} list; group on
-        // the client by `bucket_id` so the rendered accordion still shows
-        // bucket → tables. Fall back to the legacy `data.buckets` shape
-        // if a future endpoint emits it pre-grouped.
-        var buckets;
-        if (data.buckets && data.buckets.length) {
-            buckets = data.buckets;
-        } else if (data.tables && data.tables.length) {
-            var byBucket = {};
-            data.tables.forEach(function(t) {
-                var bid = t.bucket_id || '(ungrouped)';
-                if (!byBucket[bid]) {
-                    byBucket[bid] = {
-                        bucket_id: bid,
-                        bucket_name: t.bucket_name || bid,
-                        tables: [],
-                    };
-                }
-                byBucket[bid].tables.push(t);
-            });
-            buckets = Object.keys(byBucket).sort().map(function(k) { return byBucket[k]; });
-        } else {
-            buckets = [];
-        }
-
-        if (!buckets.length) {
-            el.innerHTML = '<div class="panel-body-empty">No tables found in data source</div>';
-            return;
-        }
-
-        var html = '';
-        var totalTables = 0;
-        buckets.forEach(function(bucket) {
-            var registeredCount = bucket.tables.filter(function(t) { return t.is_registered; }).length;
-            totalTables += bucket.tables.length;
-
-            html += '<div class="bucket-group">';
-            html += '<button class="bucket-trigger expanded" onclick="toggleBucket(this)">';
-            html += '<svg class="bucket-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>';
-            html += escapeHtml(bucket.bucket_name || bucket.bucket_id);
-            html += '<span class="bucket-count">' + bucket.tables.length + ' tables';
-            if (registeredCount > 0) html += ' / ' + registeredCount + ' registered';
-            html += '</span>';
-            html += '</button>';
-            html += '<div class="bucket-content expanded">';
-
-            bucket.tables.forEach(function(table) {
-                html += '<div class="table-item">';
-                html += '<div class="table-item-info">';
-                html += '<div class="table-item-name">' + escapeHtml(table.name) + '</div>';
-                html += '<div class="table-item-meta">';
-                if (table.columns != null) html += '<span>' + table.columns + ' columns</span>';
-                if (table.row_count != null) html += '<span>' + formatNumber(table.row_count) + ' rows</span>';
-                if (table.size_bytes != null) html += '<span>' + formatSize(table.size_bytes) + '</span>';
-                html += '</div>';
-                html += '</div>';
-                html += '<div class="table-item-actions">';
-
-                if (table.is_registered) {
-                    html += '<span class="badge badge-registered">Registered</span>';
-                } else {
-                    html += '<span class="badge badge-available">Available</span>';
-                    html += '<button class="btn btn-primary btn-sm" onclick=\'openRegisterModal(' + JSON.stringify(table).replace(/'/g, "\\'") + ')\'>Register</button>';
-                }
-
-                html += '</div>';
-                html += '</div>';
-            });
-
-            html += '</div>';
-            html += '</div>';
-        });
-
-        el.innerHTML = html;
-        // Surface the discovery summary in the toast (count is whatever
-        // discovery returned, not whatever the API claimed in `total`).
-        showToast('Found ' + totalTables + ' tables in ' + buckets.length + ' buckets', 'success');
-    }
-
-    function toggleBucket(trigger) {
-        var content = trigger.nextElementSibling;
-        var isExpanded = trigger.classList.contains('expanded');
-
-        if (isExpanded) {
-            trigger.classList.remove('expanded');
-            content.classList.remove('expanded');
-        } else {
-            trigger.classList.add('expanded');
-            content.classList.add('expanded');
-        }
-    }
+    // C3: removed dead Discovery panel JS. The global Discovery card +
+    // its #discoverBtn / #discoveryResults DOM hooks were removed when
+    // the per-tab UI landed; per-tab Discover/List datalist helpers live
+    // in the per-source shims further down. The legacy "Register" button
+    // rendered per discovery row also went away — operators register
+    // through the per-tab Register modals.
 
     // ── Registration Modal ──────────────────────────────────────
 
-    // Server-rendered marker so the JS knows whether to drive the Keboola
-    // form or the BigQuery form. Single source of truth — stays in sync
-    // with the Jinja branch above.
-    var DATA_SOURCE_TYPE = document.getElementById('registerModal').dataset.sourceType || 'keboola';
+    // Server-rendered marker so the JS knows the instance's data source
+    // type. Lives on <body> after C3 (previously on the now-removed
+    // #registerModal).
+    var DATA_SOURCE_TYPE = document.body.dataset.sourceType || 'keboola';
 
     function openRegisterModal(arg) {
-        // Phase E + F: dispatch by argument shape.
-        //   String 'bigquery'              → BQ tab Register button → #registerBqModal.
-        //   String 'keboola'               → Keboola tab Register button → #registerKeboolaModal.
-        //   Object {bucket_id, ...}        → Keboola Discover-tables click → legacy #registerModal.
-        //   Object {} or undefined         → manual entry (legacy openBQ path).
+        // Phase E + F: dispatch by string argument.
+        //   'bigquery' → BQ tab Register button → #registerBqModal.
+        //   'keboola'  → Keboola tab Register button → #registerKeboolaModal.
         if (arg === 'bigquery') {
             return _openBqRegisterModal({});
         }
         if (arg === 'keboola') {
             return _openKeboolaTabRegisterModal();
         }
-        // Backward-compat: object form. Prefer the existing source-type
-        // dispatcher so a Keboola Discover click still fills regBucket /
-        // regTableId, and a (currently unused) BQ-discovery prefill could
-        // pass {bucket, source_table, name, ...}.
+        // Fallback when called with no argument — pick by instance type.
         if (DATA_SOURCE_TYPE === 'bigquery') {
-            _openBqRegisterModal(arg || {});
-        } else {
-            _openKeboolaRegisterModal(arg || {});
+            return _openBqRegisterModal({});
         }
+        return _openKeboolaTabRegisterModal();
     }
 
     function _openBqRegisterModal(table) {
@@ -1793,43 +1595,9 @@
         document.getElementById('registerBqModal').classList.add('active');
     }
 
-    function _openKeboolaRegisterModal(table) {
-        // Keboola path — fields populated from the discovery click.
-        // `table.id` from KeboolaClient.discover_all_tables() is the
-        // full storage identifier (e.g. `in.c-sfdc.company`); strip the
-        // bucket prefix to get the bare source table name (`company`)
-        // that the extractor expects in `kbc."{bucket}"."{source_table}"`.
-        // `table.name` is the human-friendly display name — NOT safe to
-        // use as the storage identifier. See review IMPORTANT 5 in #119.
-        table = table || {};
-        var bucketId = table.bucket_id || (table.bucket && table.bucket.id) || '';
-        var fullId = table.id || '';
-        var bareSourceTable = '';
-        if (fullId && bucketId && fullId.indexOf(bucketId + '.') === 0) {
-            bareSourceTable = fullId.substring(bucketId.length + 1);
-        } else if (fullId.indexOf('.') >= 0) {
-            bareSourceTable = fullId.substring(fullId.lastIndexOf('.') + 1);
-        } else {
-            bareSourceTable = fullId || table.name || '';
-        }
-        document.getElementById('regTableId').value = fullId;
-        document.getElementById('regTableName').value = table.name || '';
-        document.getElementById('regBucket').value = bucketId;
-        document.getElementById('regSourceTable').value = bareSourceTable;
-        document.getElementById('regStrategy').value = 'full_refresh';
-        document.getElementById('regPrimaryKey').value = (table.primary_key || []).join(', ');
-        document.getElementById('regDescription').value = '';
-        document.getElementById('regFolder').value = '';
-        var btn = document.getElementById('registerSubmitBtn');
-        btn.disabled = false;
-        btn.textContent = 'Register Table';
-        btn.onclick = registerTable;
-        document.getElementById('registerModal').classList.add('active');
-    }
-
-    function closeRegisterModal() {
-        document.getElementById('registerModal').classList.remove('active');
-    }
+    // C3: removed dead helpers _openKeboolaRegisterModal /
+    // closeRegisterModal that drove the now-deleted #registerModal.
+    // The Phase F #registerKeboolaModal owns the Keboola flow now.
 
     function closeRegisterBqModal() {
         document.getElementById('registerBqModal').classList.remove('active');
@@ -2167,37 +1935,8 @@
     }
     {% endif %}{# data_source_type == 'keboola' — discover/prefill JS #}
 
-    function _buildKeboolaLegacyPayload() {
-        var pk = document.getElementById('regPrimaryKey').value.trim();
-        var primaryKey = pk ? pk.split(',').map(function(s) { return s.trim(); }).filter(Boolean) : [];
-        // `regSourceTable` carries the bare Keboola storage identifier
-        // (e.g. `company`), populated from the discovery row's `t.id`
-        // by openRegisterModal. `regTableName` is the display name and
-        // can include spaces or non-ASCII chars — never send it as
-        // source_table. See review IMPORTANT 5 in #119.
-        var sourceTable = (document.getElementById('regSourceTable').value || '').trim();
-        if (!sourceTable) {
-            // Manual-entry fallback (no discovery row clicked) — fall
-            // back to the display name. Validators on the server will
-            // reject it if it's not a safe identifier.
-            sourceTable = document.getElementById('regTableName').value;
-        }
-        return {
-            // RegisterTableRequest contract: name + source_type + bucket +
-            // source_table; no `id`, no `version`, no `dataset` (the field
-            // is `bucket`). Pre-fix the modal posted those phantom fields
-            // and the API silently dropped them.
-            name: document.getElementById('regTableName').value,
-            source_type: 'keboola',
-            bucket: document.getElementById('regBucket').value,
-            source_table: sourceTable,
-            query_mode: 'local',
-            sync_strategy: document.getElementById('regStrategy').value,
-            primary_key: primaryKey,
-            description: document.getElementById('regDescription').value.trim() || null,
-            folder: document.getElementById('regFolder').value.trim() || null,
-        };
-    }
+    // C3: removed dead helper _buildKeboolaLegacyPayload — the Phase F
+    // _buildKeboolaPayload (above) replaced it.
 
     function _getBqAccessMode() {
         // Q1 radio. Default 'live' if nothing's checked yet (model-validator
@@ -2422,48 +2161,16 @@
         ta.value = stub;
     }
 
-    function registerTable() {
-        // Phase E: legacy entry point now Keboola-only — the BQ form lives
-        // in #registerBqModal with its own submit button → registerBqTable().
-        var btn = document.getElementById('registerSubmitBtn');
-        btn.disabled = true;
-        _registerKeboolaTable(btn);
-    }
+    // C3: removed dead entry points registerTable / _registerKeboolaTable
+    // that submitted the now-deleted #registerModal. The Keboola Register
+    // flow runs through #registerKeboolaModal → registerKeboolaTable().
 
     function registerBqTable() {
         // BQ tab modal entry point — runs the same two-step precheck →
-        // confirm flow as the legacy registerTable() did for BQ, but
-        // against #registerBqSubmitBtn / #registerBqModal.
+        // confirm flow against #registerBqSubmitBtn / #registerBqModal.
         var btn = document.getElementById('registerBqSubmitBtn');
         btn.disabled = true;
         _registerBigQueryTable(btn);
-    }
-
-    function _registerKeboolaTable(btn) {
-        btn.textContent = 'Registering...';
-        var payload = _buildKeboolaLegacyPayload();
-        fetch('/api/admin/register-table', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        })
-        .then(function(r) {
-            if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || d.error || 'Registration failed'); });
-            return r.json();
-        })
-        .then(function(data) {
-            closeRegisterModal();
-            showToast('Table registered successfully', 'success');
-            loadRegistry();
-            if (discoveryData) discoverTables();
-        })
-        .catch(function(err) {
-            showToast('Registration failed: ' + err.message, 'error');
-        })
-        .finally(function() {
-            btn.disabled = false;
-            btn.textContent = 'Register Table';
-        });
     }
 
     function _registerBigQueryTable(btn) {
@@ -2930,7 +2637,6 @@
         .then(function() {
             showToast('Table unregistered successfully', 'success');
             loadRegistry();
-            if (discoveryData) discoverTables();
         })
         .catch(function(err) {
             showToast('Delete failed: ' + err.message, 'error');
@@ -2938,10 +2644,6 @@
     }
 
     // ── Modal close on overlay click ────────────────────────────
-
-    document.getElementById('registerModal').addEventListener('click', function(e) {
-        if (e.target === this) closeRegisterModal();
-    });
 
     var _registerBqModalEl = document.getElementById('registerBqModal');
     if (_registerBqModalEl) {
@@ -2978,7 +2680,6 @@
     // Close modals on Escape key
     document.addEventListener('keydown', function(e) {
         if (e.key === 'Escape') {
-            closeRegisterModal();
             closeRegisterBqModal();
             if (typeof closeRegisterKeboolaModal === 'function') closeRegisterKeboolaModal();
             if (typeof closeEditKeboolaModal === 'function') closeEditKeboolaModal();
