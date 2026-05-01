@@ -947,9 +947,16 @@
                     </label>
                     <input type="text" class="form-input" id="bqSourceTable" list="bqTableList" placeholder="e.g. orders">
                     <datalist id="bqTableList"></datalist>
-                    <div class="form-hint">Table or view name within the dataset. Agnes auto-detects whether
-                        it's a BASE TABLE or a VIEW and routes the query path accordingly. Click
-                        <strong>List tables</strong> after filling Dataset to populate the autocomplete.</div>
+                    <div class="form-hint">Table or view name within the dataset. Click
+                        <strong>List tables</strong> after filling Dataset to populate autocomplete.
+                        <br><strong>Live access:</strong> BASE TABLEs are queryable directly via
+                        <code>da query --remote</code>; VIEWs are registered but analysts must run
+                        <code>da fetch</code> to materialize a local snapshot (or the admin can flip
+                        <code>data_source.bigquery.legacy_wrap_views=true</code> to wrap views via the
+                        BQ jobs API).
+                        <br><strong>Synced access:</strong> handles both table and view transparently
+                        — the scheduler runs <code>SELECT *</code> through the jobs API and writes a
+                        parquet.</div>
                 </div>
                 <div class="form-group bq-source-custom" style="display:none;">
                     <label class="form-label" for="bqSourceQuery">
@@ -1146,7 +1153,14 @@
                     <input type="text" class="form-input" id="editBqSourceTable"
                            list="editBqTableList" placeholder="e.g. orders">
                     <datalist id="editBqTableList"></datalist>
-                    <div class="form-hint">Agnes auto-detects whether this is a table or a view.</div>
+                    <div class="form-hint">Table or view name within the dataset.
+                        <br><strong>Live access:</strong> BASE TABLEs are queryable directly via
+                        <code>da query --remote</code>; VIEWs are registered but analysts must run
+                        <code>da fetch</code> to materialize a local snapshot (or admin can flip
+                        <code>data_source.bigquery.legacy_wrap_views=true</code>).
+                        <br><strong>Synced access:</strong> handles both transparently — the
+                        scheduler runs <code>SELECT *</code> through the jobs API and writes a
+                        parquet.</div>
                 </div>
                 <div class="form-group bq-edit-only bq-edit-source-custom" style="display:none;">
                     <label class="form-label" for="editBqSourceQuery">
