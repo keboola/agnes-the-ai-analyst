@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.30.0] — 2026-05-01
+
 ### Added
 - **admin UI**: each row in `/admin/tables` listings now has a per-row
   **Manage access** icon button (between Edit and Delete) that deep-links
