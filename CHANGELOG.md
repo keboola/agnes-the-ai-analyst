@@ -10,6 +10,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.29.0] — 2026-05-01
+
+### Fixed
+- **`scripts/ops/agnes-tls-rotate.sh` self-signed fallback cert now sets `basicConstraints=critical,CA:FALSE` on the leaf.** OpenSSL's default `[v3_ca]` config marks `CA:TRUE` on `req -x509`, which causes strict TLS stacks (rustls / `webpki`, used by `uv`, `cargo`, and future versions of `pip`) to reject the cert with `invalid peer certificate: CaUsedAsEndEntity` per RFC 5280 §4.2.1.9. Browsers, curl, and OpenSSL-based clients tolerated the violation, hiding the bug until a `uv` user hit it. Affects every VM running on the self-signed fallback while the corp PKI hasn't published the real chain yet — the fix lands on the next `agnes-tls-rotate.timer` tick (or `systemctl start agnes-tls-rotate.service` for an immediate refresh). Existing CSR / real-cert paths unaffected; only the bring-up fallback regenerates.
+
 ## [0.28.0] — 2026-05-01
 
 ### Fixed
