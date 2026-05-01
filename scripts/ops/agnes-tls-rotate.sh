@@ -162,6 +162,7 @@ if ! refetch "$TLS_FULLCHAIN_URL" "$CERT_DIR/fullchain.pem" 644 cert; then
       -out "$CERT_DIR/fullchain.pem" -days 30 \
       -subj "$SUBJECT" \
       -addext "subjectAltName=DNS:$CN" \
+      -addext "basicConstraints=critical,CA:FALSE" \
       -addext "keyUsage=digitalSignature,keyEncipherment" \
       -addext "extendedKeyUsage=serverAuth" 2>/dev/null
     chmod 644 "$CERT_DIR/fullchain.pem"
