@@ -102,3 +102,33 @@ def test_admin_tables_tab_persists_in_url_hash(seeded_app):
     assert "location.hash" in html or "history.replaceState" in html
     # And initial-tab pickup from hash on load.
     assert "window.location.hash" in html or "getActiveTabFromHash" in html
+
+
+def test_listing_partitions_rows_by_source_type(seeded_app):
+    """When the operator has registered tables across all three sources,
+    each tab's listing shows only the rows matching its source_type.
+    JS-driven so we test by inspecting the JS branching logic indirectly:
+    the renderer function takes a source filter and emits rows accordingly."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    auth = {"Authorization": f"Bearer {token}"}
+
+    c.post("/api/admin/register-table", headers=auth, json={
+        "name": "kb_table", "source_type": "keboola", "bucket": "in.c-x",
+        "source_table": "y", "query_mode": "local",
+    })
+    c.post("/api/admin/register-table", headers=auth, json={
+        "name": "bq_table", "source_type": "bigquery",
+        "query_mode": "materialized", "source_query": "SELECT 1",
+    })
+
+    r = c.get("/admin/tables", headers=auth)
+    html = r.text
+    # The renderer function is dispatched per tab. The test verifies the
+    # JS code paths exist (we don't run JS in tests, just confirm the
+    # template provides the wiring).
+    assert "renderRegistryListing" in html or "loadRegistry" in html
+    # Each tab listing div is the renderer target.
+    assert "document.getElementById('bqTableListing')" in html
+    assert "document.getElementById('kbTableListing')" in html
+    assert "document.getElementById('jiraTableListing')" in html

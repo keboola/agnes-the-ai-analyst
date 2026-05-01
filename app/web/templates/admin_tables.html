@@ -511,22 +511,9 @@
             white-space: nowrap;
         }
 
-        .registry-table .col-strategy {
-            white-space: nowrap;
-        }
-
         .registry-table .col-actions {
             width: 80px;
             text-align: right;
-        }
-
-        .strategy-badge {
-            font-size: 11px;
-            font-weight: 500;
-            padding: 2px 8px;
-            border-radius: 4px;
-            background: var(--border-light);
-            color: var(--text-secondary);
         }
 
         /* ── Modal overlay ── */
@@ -1315,12 +1302,10 @@
                     Refresh
                 </button>
             </div>
-            <div id="registryContent">
-                <div class="loading-state" id="registryLoading">
-                    <div class="spinner spinner-lg"></div>
-                    <span>Loading registry...</span>
-                </div>
-            </div>
+            <!-- Registry rows now live inside each per-tab listing div
+                 (#bqTableListing / #kbTableListing / #jiraTableListing).
+                 The Refresh button above re-fetches /api/admin/registry and
+                 dispatches the rows into all three by source_type. -->
         </div>
 
     </div>
@@ -2837,9 +2822,6 @@
     // ── Registry ────────────────────────────────────────────────
 
     function loadRegistry() {
-        var el = document.getElementById('registryContent');
-        el.innerHTML = '<div class="loading-state"><div class="spinner spinner-lg"></div><span>Loading registry...</span></div>';
-
         fetch('/api/admin/registry')
             .then(function(r) {
                 if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || 'Load failed'); });
@@ -2848,39 +2830,52 @@
             .then(function(data) {
                 registryData = data;
                 registryVersion = data.version;
-                renderRegistry(data);
+                var tables = data.tables || [];
+                var subtitle = document.getElementById('registrySubtitle');
+                if (subtitle) {
+                    subtitle.textContent = tables.length + ' table' + (tables.length !== 1 ? 's' : '') + ' configured for sync';
+                }
+                renderRegistryListing(
+                    document.getElementById('bqTableListing'),
+                    tables.filter(function(t) { return t.source_type === 'bigquery'; })
+                );
+                renderRegistryListing(
+                    document.getElementById('kbTableListing'),
+                    tables.filter(function(t) { return t.source_type === 'keboola'; })
+                );
+                renderRegistryListing(
+                    document.getElementById('jiraTableListing'),
+                    tables.filter(function(t) { return t.source_type === 'jira'; })
+                );
             })
             .catch(function(err) {
-                el.innerHTML = '<div class="panel-body-empty" style="color: var(--error);">Failed to load registry: ' + escapeHtml(err.message) + '</div>';
+                var msg = '<div class="panel-body-empty" style="color: var(--error);">Failed to load registry: ' + escapeHtml(err.message) + '</div>';
+                [
+                    document.getElementById('bqTableListing'),
+                    document.getElementById('kbTableListing'),
+                    document.getElementById('jiraTableListing'),
+                ].forEach(function(target) { if (target) target.innerHTML = msg; });
             });
     }
 
-    function renderRegistry(data) {
-        var el = document.getElementById('registryContent');
-        var tables = data.tables || [];
-        var subtitle = document.getElementById('registrySubtitle');
-
-        subtitle.textContent = tables.length + ' table' + (tables.length !== 1 ? 's' : '') + ' configured for sync';
-
+    function renderRegistryListing(target, tables) {
+        if (!target) return;
         if (tables.length === 0) {
-            el.innerHTML = '<div class="panel-body-empty">No tables registered yet. Use the discovery panel above to find and register tables.</div>';
+            target.innerHTML = '<div class="panel-body-empty">No tables registered yet.</div>';
             return;
         }
-
         var html = '<table class="registry-table">';
         html += '<thead><tr>';
         html += '<th>Table ID</th>';
-        html += '<th>Strategy</th>';
+        html += '<th>Mode</th>';
         html += '<th>Primary Key</th>';
         html += '<th>Description</th>';
         html += '<th class="col-actions">Actions</th>';
-        html += '</tr></thead>';
-        html += '<tbody>';
-
+        html += '</tr></thead><tbody>';
         tables.forEach(function(table) {
             html += '<tr>';
             html += '<td class="col-id" title="' + escapeHtml(table.id) + '">' + escapeHtml(table.id) + '</td>';
-            html += '<td class="col-strategy"><span class="strategy-badge">' + escapeHtml(table.sync_strategy || 'full_refresh') + '</span></td>';
+            html += '<td>' + escapeHtml(table.query_mode || 'local') + '</td>';
             html += '<td>' + escapeHtml((table.primary_key || []).join(', ') || '-') + '</td>';
             html += '<td>' + escapeHtml(table.description || '-') + '</td>';
             html += '<td class="col-actions">';
@@ -2890,12 +2885,10 @@
             html += '<button class="btn-icon danger" title="Delete" onclick="deleteTable(\'' + escapeHtml(table.id).replace(/'/g, "\\'") + '\')">';
             html += '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
             html += '</button>';
-            html += '</td>';
-            html += '</tr>';
+            html += '</td></tr>';
         });
-
         html += '</tbody></table>';
-        el.innerHTML = html;
+        target.innerHTML = html;
     }
 
     function deleteTable(tableId) {
