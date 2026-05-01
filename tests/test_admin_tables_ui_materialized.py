@@ -128,6 +128,17 @@ def test_edit_modal_has_bq_parity_fields(seeded_app, bq_instance):
     assert 'id="editBqEntityType"' not in html
     assert "onEditBqTypeChange" not in html
 
+    # Edit modal has the same Discover / List tables / Use-as-base buttons
+    # as Register so the operator can re-pick the source from autocomplete
+    # without dropping the row.
+    assert "discoverBqDatasets('editBqDatasetList')" in html
+    assert "discoverBqTables('editBqDataset', 'editBqTableList')" in html
+    assert "prefillFromTable('editBqSourceQuery')" in html
+    assert 'id="editBqDatasetList"' in html
+    assert 'id="editBqTableList"' in html
+    assert 'list="editBqDatasetList"' in html
+    assert 'list="editBqTableList"' in html
+
 
 def test_admin_tables_keboola_branch_unchanged(seeded_app, monkeypatch):
     """Negative — when `data_source.type` is NOT bigquery, the BQ form

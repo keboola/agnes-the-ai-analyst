@@ -1122,16 +1122,42 @@
                     </div>
                 </div>
                 <div class="form-group bq-edit-only bq-edit-source-table" style="display:none;">
-                    <label class="form-label" for="editBqDataset">Dataset</label>
-                    <input type="text" class="form-input" id="editBqDataset" placeholder="e.g. analytics">
+                    <label class="form-label" for="editBqDataset">
+                        Dataset
+                        <button type="button" class="btn btn-secondary btn-sm"
+                                onclick="discoverBqDatasets('editBqDatasetList')"
+                                style="float:right; margin-top:-3px;">
+                            Discover
+                        </button>
+                    </label>
+                    <input type="text" class="form-input" id="editBqDataset"
+                           list="editBqDatasetList" placeholder="e.g. analytics">
+                    <datalist id="editBqDatasetList"></datalist>
                 </div>
                 <div class="form-group bq-edit-only bq-edit-source-table" style="display:none;">
-                    <label class="form-label" for="editBqSourceTable">Source Table / View</label>
-                    <input type="text" class="form-input" id="editBqSourceTable" placeholder="e.g. orders">
+                    <label class="form-label" for="editBqSourceTable">
+                        Source Table / View
+                        <button type="button" class="btn btn-secondary btn-sm"
+                                onclick="discoverBqTables('editBqDataset', 'editBqTableList')"
+                                style="float:right; margin-top:-3px;">
+                            List tables
+                        </button>
+                    </label>
+                    <input type="text" class="form-input" id="editBqSourceTable"
+                           list="editBqTableList" placeholder="e.g. orders">
+                    <datalist id="editBqTableList"></datalist>
                     <div class="form-hint">Agnes auto-detects whether this is a table or a view.</div>
                 </div>
                 <div class="form-group bq-edit-only bq-edit-source-custom" style="display:none;">
-                    <label class="form-label" for="editBqSourceQuery">SQL</label>
+                    <label class="form-label" for="editBqSourceQuery">
+                        SQL
+                        <button type="button" class="btn btn-secondary btn-sm"
+                                onclick="prefillFromTable('editBqSourceQuery')"
+                                style="float:right; margin-top:-3px;"
+                                title="Prefill SELECT * FROM `project.dataset.table` so you only edit the WHERE / projection">
+                            Use table as base
+                        </button>
+                    </label>
                     <textarea class="form-textarea" id="editBqSourceQuery" rows="8"></textarea>
                     <div class="form-hint">SELECT statement, no trailing semicolon. Native BQ
                         identifiers recommended for the cost guardrail to engage.</div>
@@ -1593,12 +1619,19 @@
         });
     }
 
-    function discoverBqDatasets() {
+    // The discover / list-tables / prefill helpers are shared between the
+    // Register and Edit modals. The default datalist + input ids match the
+    // Register modal; Edit-modal callers pass their own ids so the
+    // autocomplete populates the right datalist and reads from the right
+    // dataset input.
+
+    function discoverBqDatasets(datalistId) {
         // GET /api/admin/discover-tables (no `dataset`) → list datasets in
-        // the configured BQ project. Populate the bqDatasetList <datalist>
-        // so the input shows them as autocomplete suggestions. The endpoint
+        // the configured BQ project. Populate the named <datalist> so the
+        // dataset input shows them as autocomplete suggestions. Endpoint
         // routes through BqAccess so config / auth errors come back as the
         // standard {error, kind, details} shape.
+        var dlId = datalistId || 'bqDatasetList';
         fetch('/api/admin/discover-tables')
             .then(function(r) {
                 if (!r.ok) return r.json().then(function(d) {
@@ -1608,7 +1641,7 @@
                 return r.json();
             })
             .then(function(data) {
-                var dl = document.getElementById('bqDatasetList');
+                var dl = document.getElementById(dlId);
                 dl.innerHTML = '';
                 (data.datasets || []).forEach(function(ds) {
                     var opt = document.createElement('option');
@@ -1623,11 +1656,13 @@
             });
     }
 
-    function discoverBqTables() {
+    function discoverBqTables(datasetInputId, tablesDatalistId) {
         // GET /api/admin/discover-tables?dataset=NAME → list tables + views
         // in the dataset. Two-step (dataset → tables) avoids paying the
         // per-dataset list_tables() cost up front on big projects.
-        var dataset = document.getElementById('bqDataset').value.trim();
+        var inId = datasetInputId || 'bqDataset';
+        var dlId = tablesDatalistId || 'bqTableList';
+        var dataset = document.getElementById(inId).value.trim();
         if (!dataset) {
             showToast('Fill Dataset first', 'error');
             return;
@@ -1641,14 +1676,14 @@
                 return r.json();
             })
             .then(function(data) {
-                var dl = document.getElementById('bqTableList');
+                var dl = document.getElementById(dlId);
                 dl.innerHTML = '';
                 (data.tables || []).forEach(function(t) {
                     var opt = document.createElement('option');
                     opt.value = t.table_id;
                     // BQ entity types: TABLE, VIEW, MATERIALIZED_VIEW,
                     // EXTERNAL, SNAPSHOT — surface so the operator can
-                    // pick the right Type selector option.
+                    // pick the right entity option.
                     opt.label = t.table_id + (t.table_type ? '  (' + t.table_type + ')' : '');
                     dl.appendChild(opt);
                 });
@@ -1659,13 +1694,15 @@
             });
     }
 
-    function prefillFromTable() {
+    function prefillFromTable(textareaId) {
         // Convenience for the Custom SQL path: prompt for project.dataset.table
         // and prefill `SELECT * FROM \`...\`` so the operator only edits the
         // WHERE / projection. We can't know the project from the form (it's
         // server-side config), so the prompt accepts both `dataset.table` and
         // `project.dataset.table`. Empty / cancel → no change.
-        var existing = document.getElementById('bqSourceQuery').value.trim();
+        var taId = textareaId || 'bqSourceQuery';
+        var ta = document.getElementById(taId);
+        var existing = ta.value.trim();
         if (existing && !confirm('SQL field is not empty — overwrite with prefill?')) {
             return;
         }
@@ -1681,7 +1718,7 @@
             + 'FROM `' + ref + '`\n'
             + 'WHERE -- TODO: filter or aggregate before the COPY runs (10 GiB cap)\n'
             + 'LIMIT 1000';
-        document.getElementById('bqSourceQuery').value = stub;
+        ta.value = stub;
     }
 
     function registerTable() {
