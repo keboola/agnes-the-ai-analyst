@@ -172,6 +172,8 @@ _EDITABLE_SECTIONS: tuple[str, ...] = (
     "server",
     "auth",
     "ai",
+    "openmetadata",
+    "desktop",
 )
 
 # "Danger-zone" sections — flipping these can lock operators out (auth.*) or
@@ -205,7 +207,9 @@ _DANGER_SECTIONS: tuple[str, ...] = ("auth", "server")
 # don't need to touch admin_server_config.html.
 _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
     "instance": {
-        # populated by subagent 2 if any apply; instance has no commonly-missing fields
+        # No commonly-missing instance-level fields. The example YAML's
+        # `name`/`subtitle` are always populated by `da setup` so they
+        # render via the populated path; nothing to surface here.
     },
     "data_source": {
         "bigquery": {
@@ -215,42 +219,144 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                 "billing_project": {
                     "kind": "string",
                     "hint": (
-                        "GCP project to bill BQ jobs against. Set when the SA can "
-                        "read the data project but cannot bill there (e.g. shared "
-                        "read-only data project). Defaults to data_source.bigquery.project."
+                        "GCP project to bill BQ jobs against. Set when SA can read "
+                        "the data project but cannot bill there (e.g. shared read-only "
+                        "data project). Defaults to data_source.bigquery.project. "
+                        "Mismatch → 403 USER_PROJECT_DENIED on every BQ call."
+                    ),
+                },
+                "legacy_wrap_views": {
+                    "kind": "bool",
+                    "default": False,
+                    "hint": (
+                        "When true, registered VIEWs and MATERIALIZED_VIEWs get a DuckDB "
+                        "master view via bigquery_query() (jobs API) so analysts can "
+                        "SELECT * FROM viewname directly. When false (default), views are "
+                        "catalog-only — analysts use `da fetch` or `da query --remote`. "
+                        "ON for view-heavy deployments where most views are small enough "
+                        "to materialize without 'Response too large' (issue #101)."
+                    ),
+                },
+                "max_bytes_per_materialize": {
+                    "kind": "int",
+                    "default": 10737418240,
+                    "hint": (
+                        "Cost guardrail for query_mode='materialized' BQ scans (dry-run "
+                        "check before running). Bytes processed; exceeds → registration "
+                        "or sync rejected. 0 disables the gate. Default 10737418240 = 10 GiB."
                     ),
                 },
             },
         },
-        # subagent 2 will add bigquery.legacy_wrap_views and
-        # bigquery.max_bytes_per_materialize alongside billing_project.
+        "keboola": {
+            "kind": "object",
+            "hint": "Keboola Storage API connection",
+            "fields": {
+                "stack_url": {
+                    "kind": "string",
+                    "hint": (
+                        "e.g. https://connection.keboola.com (instance-specific stack URL). "
+                        "Validated against private-IP allowlist on save (SSRF guard)."
+                    ),
+                },
+                "project_id": {
+                    "kind": "string",
+                    "hint": "Keboola project ID (numeric, but kept as string in YAML).",
+                },
+            },
+        },
     },
     "email": {
-        # populated by subagent 2 if any apply
+        # SMTP fields render via the populated path (always set when email
+        # is enabled); no commonly-missing optional knobs at this layer.
     },
     "telegram": {
-        # rare enough; leave for now
+        # Rarely missing; leave empty.
     },
     "jira": {
-        # populated by subagent 2 if any apply
+        # Webhook + REST credentials always present when Jira is configured.
     },
     "theme": {
-        # cosmetic; rarely missing
+        # Cosmetic only; rarely missing.
     },
     "server": {
-        # rarely missing (TLS knobs are env-side)
+        # TLS / hostname knobs are mostly env-side; nothing to surface here.
     },
     "auth": {
-        # rarely missing
+        "allowed_domain": {
+            "kind": "string",
+            "hint": (
+                "Comma-separated list of allowed sign-in email domains (e.g. "
+                "'acme.com,acme-internal.com'). Single domain works too. Empty → no "
+                "domain restriction (any verified Google identity can sign in)."
+            ),
+        },
     },
     "ai": {
-        # populated by subagent 2: base_url
+        "base_url": {
+            "kind": "string",
+            "hint": (
+                "Required for provider='openai_compat' (LiteLLM, OpenRouter, vLLM, etc.). "
+                "Ignored when provider='anthropic'. Examples: https://litellm.example.com, "
+                "https://openrouter.ai/api/v1."
+            ),
+        },
+        "structured_output": {
+            "kind": "select",
+            "options": ["strict", "json", "auto"],
+            "default": "auto",
+            "hint": (
+                "JSON-schema enforcement strategy. strict=Layer 1 only "
+                "(Anthropic/OpenAI native, fail otherwise). json=Layer 1 + Layer 2 "
+                "fallback. auto=all three layers including prompt-based JSON (most "
+                "compatible, least strict)."
+            ),
+        },
     },
-    # New sections subagents 3-4 add to _EDITABLE_SECTIONS:
-    # "openmetadata": ...
-    # "corporate_memory": ...
-    # "desktop": ...
-    # "admins": ...
+    "openmetadata": {
+        "url": {
+            "kind": "string",
+            "hint": "Base URL of your OpenMetadata server (e.g. https://catalog.example.com).",
+        },
+        "token": {
+            "kind": "secret",
+            "hint": (
+                "JWT bearer token. Use ${OPENMETADATA_TOKEN} env-var reference "
+                "(don't paste secret directly)."
+            ),
+        },
+        "cache_ttl_seconds": {
+            "kind": "int",
+            "default": 3600,
+            "hint": "How long to cache catalog responses in-process. Default 3600s (1h).",
+        },
+        "verify_ssl": {
+            "kind": "bool",
+            "default": True,
+            "hint": (
+                "TLS verification. Default true. Set false ONLY for internal CAs / "
+                "self-signed certs — sends the JWT over an unverified channel."
+            ),
+        },
+    },
+    "desktop": {
+        "jwt_issuer": {
+            "kind": "string",
+            "default": "data-analyst",
+            "hint": "JWT iss claim. Match what the desktop app verifies.",
+        },
+        "jwt_secret": {
+            "kind": "secret",
+            "hint": "JWT signing secret. Use ${DESKTOP_JWT_SECRET} env-var reference.",
+        },
+        "url_scheme": {
+            "kind": "string",
+            "default": "data-analyst",
+            "hint": "Custom URL scheme registered by the desktop app (data-analyst://...).",
+        },
+    },
+    # Future: subagents 3-4 will add corporate_memory + admins entries
+    # (multi-level nesting handled by the recursive renderer).
 }
 
 # Keys whose values must be redacted from the audit diff. We match

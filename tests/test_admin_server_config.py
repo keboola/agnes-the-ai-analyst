@@ -925,19 +925,27 @@ class TestServerConfigBigQueryFields:
         assert bq["max_bytes_per_materialize"] == 21474836480
 
     def test_template_documents_three_new_fields(self, seeded_app):
-        """The Jinja template (or its embedded JS SECTION_META) must mention
-        the three new fields so an operator browsing the UI sees them — the
-        BQ section is rendered as a JSON blob, so without an explicit hint
-        the fields are invisible to operators who don't know they exist."""
+        """The three BQ optional fields are now surfaced through the
+        known-fields registry (GET /api/admin/server-config carries them
+        in `known_fields.data_source.bigquery.fields`), not hardcoded into
+        the template text. The renderer reads the registry at runtime and
+        creates a structured form with hints for each leaf — so the test
+        verifies operator-discoverability through the API channel rather
+        than via static HTML inspection.
+        """
         c = seeded_app["client"]
-        c.cookies.set("access_token", seeded_app["admin_token"])
-        try:
-            resp = c.get("/admin/server-config")
-        finally:
-            c.cookies.clear()
-        assert resp.status_code == 200
-        body = resp.text
-        assert "billing_project" in body, "template should mention billing_project as a hint"
-        assert "legacy_wrap_views" in body, "template should mention legacy_wrap_views as a hint"
-        assert "max_bytes_per_materialize" in body, \
-            "template should mention max_bytes_per_materialize as a hint"
+        token = seeded_app["admin_token"]
+        resp = c.get("/api/admin/server-config", headers=_auth(token))
+        assert resp.status_code == 200, resp.text
+        bq_fields = resp.json()["known_fields"]["data_source"]["bigquery"]["fields"]
+        assert "billing_project" in bq_fields, \
+            "registry must expose billing_project as a known field"
+        assert "legacy_wrap_views" in bq_fields, \
+            "registry must expose legacy_wrap_views as a known field"
+        assert "max_bytes_per_materialize" in bq_fields, \
+            "registry must expose max_bytes_per_materialize as a known field"
+        # Each field must carry a hint so the renderer can show operator-
+        # facing help text — no anonymous knobs.
+        for k in ("billing_project", "legacy_wrap_views", "max_bytes_per_materialize"):
+            assert "hint" in bq_fields[k] and bq_fields[k]["hint"], \
+                f"{k} must carry a non-empty hint"

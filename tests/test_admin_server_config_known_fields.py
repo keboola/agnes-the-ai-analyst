@@ -164,6 +164,136 @@ def test_nested_field_renders_as_structured_form_not_json_blob(seeded_app, monke
         ic._instance_config = None
 
 
+# ── Part B: registry population ─────────────────────────────────────────────
+
+
+def test_bigquery_subfields_populated(seeded_app):
+    """Every documented BigQuery optional knob is in the registry under
+    data_source.bigquery.fields with the right kind."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.get("/api/admin/server-config", headers=_auth(token))
+    assert r.status_code == 200
+    fields = r.json()["known_fields"]["data_source"]["bigquery"]["fields"]
+    assert "billing_project" in fields
+    assert "legacy_wrap_views" in fields
+    assert "max_bytes_per_materialize" in fields
+    assert fields["legacy_wrap_views"]["kind"] == "bool"
+    assert fields["legacy_wrap_views"]["default"] is False
+    assert fields["max_bytes_per_materialize"]["kind"] == "int"
+    assert fields["max_bytes_per_materialize"]["default"] == 10737418240
+
+
+def test_keboola_registry_entries_present(seeded_app):
+    """Keboola subfields exposed for hint discoverability."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.get("/api/admin/server-config", headers=_auth(token))
+    fields = r.json()["known_fields"]["data_source"]["keboola"]["fields"]
+    assert "stack_url" in fields
+    assert "project_id" in fields
+
+
+def test_ai_base_url_populated(seeded_app):
+    """AI section exposes base_url + structured_output."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.get("/api/admin/server-config", headers=_auth(token))
+    fields = r.json()["known_fields"]["ai"]
+    assert "base_url" in fields
+    assert "structured_output" in fields
+    assert fields["structured_output"]["kind"] == "select"
+    assert fields["structured_output"]["default"] == "auto"
+
+
+def test_openmetadata_is_editable_section_with_known_fields(seeded_app):
+    """openmetadata is a new editable section with full registry."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.get("/api/admin/server-config", headers=_auth(token))
+    body = r.json()
+    assert "openmetadata" in body["editable_sections"]
+    fields = body["known_fields"].get("openmetadata", {})
+    assert "url" in fields
+    assert "token" in fields
+    assert fields["token"]["kind"] == "secret"
+    assert "verify_ssl" in fields
+    assert fields["verify_ssl"]["kind"] == "bool"
+    assert fields["verify_ssl"]["default"] is True
+    assert "cache_ttl_seconds" in fields
+    assert fields["cache_ttl_seconds"]["kind"] == "int"
+
+
+def test_desktop_is_editable_section(seeded_app):
+    """desktop is a new editable section with jwt_secret marked secret."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.get("/api/admin/server-config", headers=_auth(token))
+    body = r.json()
+    assert "desktop" in body["editable_sections"]
+    fields = body["known_fields"].get("desktop", {})
+    assert "jwt_issuer" in fields
+    assert "jwt_secret" in fields
+    assert fields["jwt_secret"]["kind"] == "secret"
+    assert "url_scheme" in fields
+
+
+def test_post_openmetadata_section_persists(seeded_app, tmp_path, monkeypatch):
+    """openmetadata is now in _EDITABLE_SECTIONS; POST flow accepts it."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    state = tmp_path / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    import app.instance_config as ic
+    ic._instance_config = None
+    try:
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        r = c.post(
+            "/api/admin/server-config",
+            headers=_auth(token),
+            json={
+                "sections": {
+                    "openmetadata": {
+                        "url": "https://om.example.com",
+                        "cache_ttl_seconds": 1800,
+                        "verify_ssl": True,
+                    },
+                },
+            },
+        )
+        assert r.status_code in (200, 204), r.text
+        # Verify it landed on disk.
+        import yaml as _yaml
+        loaded = _yaml.safe_load((state / "instance.yaml").read_text())
+        assert loaded["openmetadata"]["url"] == "https://om.example.com"
+        assert loaded["openmetadata"]["cache_ttl_seconds"] == 1800
+    finally:
+        ic._instance_config = None
+
+
+def test_post_desktop_section_persists(seeded_app, tmp_path, monkeypatch):
+    """desktop section accepts patches via the standard editor flow."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    state = tmp_path / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    import app.instance_config as ic
+    ic._instance_config = None
+    try:
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        r = c.post(
+            "/api/admin/server-config",
+            headers=_auth(token),
+            json={"sections": {"desktop": {"jwt_issuer": "data-analyst"}}},
+        )
+        assert r.status_code in (200, 204), r.text
+        import yaml as _yaml
+        loaded = _yaml.safe_load((state / "instance.yaml").read_text())
+        assert loaded["desktop"]["jwt_issuer"] == "data-analyst"
+    finally:
+        ic._instance_config = None
+
+
 def test_save_section_with_nested_field_merges_correctly(seeded_app, tmp_path, monkeypatch):
     """When the renderer ships a dotted-path patch (e.g. bigquery.billing_project=X),
     the API merges it into the existing data_source.bigquery dict without wiping
