@@ -956,6 +956,147 @@
                     </div>
                 </div>
             </div>
+
+            <!-- ── BigQuery Edit Modal (C2 — physically inside the BQ tab,
+                 mirror of #registerBqModal placement) ── -->
+            <div class="modal-overlay" id="editBqModal">
+                <div class="modal">
+                    <div class="modal-header">
+                        <h2>Edit BigQuery Table</h2>
+                        <button class="modal-close" onclick="closeEditBqModal()">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="18" y1="6" x2="6" y2="18"/>
+                                <line x1="6" y1="6" x2="18" y2="18"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="form-group">
+                            <label class="form-label" for="editBqTableId">Table ID</label>
+                            <input type="text" class="form-input" id="editBqTableId" readonly>
+                            <div class="form-hint">Slugified id, immutable. Source type:
+                                <strong id="editBqSourceTypeBadge">bigquery</strong></div>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">How should analysts access this data?</label>
+                            <div style="display:flex; gap:12px; margin-top:6px;">
+                                <label style="flex:1; padding:10px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                    <input type="radio" name="editBqAccessMode" value="live" onchange="onEditBqAccessModeChange()">
+                                    <strong>Live from BigQuery</strong>
+                                    <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
+                                        Each query goes to BQ. No local copy.
+                                    </div>
+                                </label>
+                                <label style="flex:1; padding:10px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                    <input type="radio" name="editBqAccessMode" value="synced" onchange="onEditBqAccessModeChange()">
+                                    <strong>Synced locally</strong>
+                                    <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
+                                        Scheduled SELECT → parquet, queried locally.
+                                    </div>
+                                </label>
+                            </div>
+                            <div class="form-hint" id="editBqModeWarning" style="display:none;
+                                 color:#EA580C;background:rgba(234,88,12,.08);padding:8px;border-radius:6px;margin-top:8px;">
+                                <!-- Filled by onEditBqAccessModeChange() when switching
+                                     modes on an existing row — warns about parquet
+                                     drop / scheduling impact. -->
+                            </div>
+                        </div>
+                        <div class="form-group bq-edit-access-synced" style="display:none;">
+                            <label class="form-label">What to sync?</label>
+                            <div style="display:flex; gap:12px; margin-top:6px;">
+                                <label style="flex:1; padding:10px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                    <input type="radio" name="editBqSyncMode" value="whole" onchange="onEditBqSyncModeChange()">
+                                    <strong>Whole table</strong>
+                                    <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
+                                        <code>SELECT *</code> on a schedule.
+                                    </div>
+                                </label>
+                                <label style="flex:1; padding:10px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                    <input type="radio" name="editBqSyncMode" value="custom" onchange="onEditBqSyncModeChange()">
+                                    <strong>Custom query</strong>
+                                    <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
+                                        Filter / aggregate before sync.
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="form-group bq-edit-source-table" style="display:none;">
+                            <label class="form-label" for="editBqDataset">
+                                Dataset
+                                <button type="button" class="btn btn-secondary btn-sm"
+                                        onclick="discoverBqDatasets('editBqDatasetList')"
+                                        style="float:right; margin-top:-3px;">
+                                    Discover
+                                </button>
+                            </label>
+                            <input type="text" class="form-input" id="editBqDataset"
+                                   list="editBqDatasetList" placeholder="e.g. analytics">
+                            <datalist id="editBqDatasetList"></datalist>
+                        </div>
+                        <div class="form-group bq-edit-source-table" style="display:none;">
+                            <label class="form-label" for="editBqSourceTable">
+                                Source Table / View
+                                <button type="button" class="btn btn-secondary btn-sm"
+                                        onclick="discoverBqTables('editBqDataset', 'editBqTableList')"
+                                        style="float:right; margin-top:-3px;">
+                                    List tables
+                                </button>
+                            </label>
+                            <input type="text" class="form-input" id="editBqSourceTable"
+                                   list="editBqTableList" placeholder="e.g. orders">
+                            <datalist id="editBqTableList"></datalist>
+                            <div class="form-hint">Table or view name within the dataset.
+                                <br><strong>Live access:</strong> BASE TABLEs are queryable directly via
+                                <code>da query --remote</code>; VIEWs are registered but analysts must run
+                                <code>da fetch</code> to materialize a local snapshot (or admin can flip
+                                <code>data_source.bigquery.legacy_wrap_views=true</code>).
+                                <br><strong>Synced access:</strong> handles both transparently — the
+                                scheduler runs <code>SELECT *</code> through the jobs API and writes a
+                                parquet.</div>
+                        </div>
+                        <div class="form-group bq-edit-source-custom" style="display:none;">
+                            <label class="form-label" for="editBqSourceQuery">
+                                SQL
+                                <button type="button" class="btn btn-secondary btn-sm"
+                                        onclick="prefillFromTable('editBqSourceQuery')"
+                                        style="float:right; margin-top:-3px;"
+                                        title="Prefill SELECT * FROM `project.dataset.table` so you only edit the WHERE / projection">
+                                    Use table as base
+                                </button>
+                            </label>
+                            <textarea class="form-textarea" id="editBqSourceQuery" rows="8"></textarea>
+                            <div class="form-hint">SELECT statement, no trailing semicolon. Native BQ
+                                identifiers recommended for the cost guardrail to engage.</div>
+                        </div>
+                        <div class="form-group bq-edit-access-synced" style="display:none;">
+                            <label class="form-label" for="editBqSyncSchedule">Sync Schedule
+                                <span class="optional">(optional)</span></label>
+                            <input type="text" class="form-input" id="editBqSyncSchedule" placeholder="every 6h">
+                            <div class="form-hint">How often Agnes refreshes the local copy.
+                                <code>every 15m</code>, <code>every 6h</code>,
+                                <code>daily 03:00</code> (UTC).</div>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label" for="editBqDescription">Description <span class="optional">(optional)</span></label>
+                            <textarea class="form-textarea" id="editBqDescription" placeholder="Brief description of the table contents..."></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="editBqFolder">Folder <span class="optional">(optional)</span></label>
+                            <input type="text" class="form-input" id="editBqFolder" placeholder="e.g. crm, finance, marketing">
+                            <div class="form-hint">Logical grouping for catalog organization (does not affect storage).</div>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn btn-secondary" onclick="closeEditBqModal()">Cancel</button>
+                        <button class="btn btn-primary" id="editBqSubmitBtn" onclick="saveBqTabEdit()">
+                            Save Changes
+                        </button>
+                    </div>
+                </div>
+            </div>
         </section>
 
         <section id="tab-content-keboola" class="tab-content"
@@ -1318,7 +1459,10 @@
         </div>
     </div>
 
-    <!-- ═══════════════ EDIT MODAL ═══════════════ -->
+    <!-- ═══════════════ EDIT MODAL (legacy fallback — Keboola-only fields
+         remaining; the BQ Edit modal moved into #tab-content-bigquery as
+         #editBqModal in C2; the Keboola Edit modal is #editKeboolaModal
+         in #tab-content-keboola) ═══════════════ -->
     <div class="modal-overlay" id="editModal">
         <div class="modal">
             <div class="modal-header">
@@ -1338,111 +1482,10 @@
                         <strong id="editSourceTypeBadge">—</strong></div>
                 </div>
 
-                <!-- BQ-only fields (Type selector + Dataset/Source Table for
-                     Table/View, SQL textarea for Query). Hidden for Keboola
-                     rows. Wired by populateEditModal(table). -->
-                <div class="form-group bq-edit-only" style="display:none;">
-                    <label class="form-label">How should analysts access this data?</label>
-                    <div style="display:flex; gap:12px; margin-top:6px;">
-                        <label style="flex:1; padding:10px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
-                            <input type="radio" name="editBqAccessMode" value="live" onchange="onEditBqAccessModeChange()">
-                            <strong>Live from BigQuery</strong>
-                            <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
-                                Each query goes to BQ. No local copy.
-                            </div>
-                        </label>
-                        <label style="flex:1; padding:10px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
-                            <input type="radio" name="editBqAccessMode" value="synced" onchange="onEditBqAccessModeChange()">
-                            <strong>Synced locally</strong>
-                            <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
-                                Scheduled SELECT → parquet, queried locally.
-                            </div>
-                        </label>
-                    </div>
-                    <div class="form-hint" id="editBqModeWarning" style="display:none;
-                         color:#EA580C;background:rgba(234,88,12,.08);padding:8px;border-radius:6px;margin-top:8px;">
-                        <!-- Filled by onEditBqAccessModeChange() when switching
-                             modes on an existing row — warns about parquet
-                             drop / scheduling impact. -->
-                    </div>
-                </div>
-                <div class="form-group bq-edit-only bq-edit-access-synced" style="display:none;">
-                    <label class="form-label">What to sync?</label>
-                    <div style="display:flex; gap:12px; margin-top:6px;">
-                        <label style="flex:1; padding:10px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
-                            <input type="radio" name="editBqSyncMode" value="whole" onchange="onEditBqSyncModeChange()">
-                            <strong>Whole table</strong>
-                            <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
-                                <code>SELECT *</code> on a schedule.
-                            </div>
-                        </label>
-                        <label style="flex:1; padding:10px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
-                            <input type="radio" name="editBqSyncMode" value="custom" onchange="onEditBqSyncModeChange()">
-                            <strong>Custom query</strong>
-                            <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
-                                Filter / aggregate before sync.
-                            </div>
-                        </label>
-                    </div>
-                </div>
-                <div class="form-group bq-edit-only bq-edit-source-table" style="display:none;">
-                    <label class="form-label" for="editBqDataset">
-                        Dataset
-                        <button type="button" class="btn btn-secondary btn-sm"
-                                onclick="discoverBqDatasets('editBqDatasetList')"
-                                style="float:right; margin-top:-3px;">
-                            Discover
-                        </button>
-                    </label>
-                    <input type="text" class="form-input" id="editBqDataset"
-                           list="editBqDatasetList" placeholder="e.g. analytics">
-                    <datalist id="editBqDatasetList"></datalist>
-                </div>
-                <div class="form-group bq-edit-only bq-edit-source-table" style="display:none;">
-                    <label class="form-label" for="editBqSourceTable">
-                        Source Table / View
-                        <button type="button" class="btn btn-secondary btn-sm"
-                                onclick="discoverBqTables('editBqDataset', 'editBqTableList')"
-                                style="float:right; margin-top:-3px;">
-                            List tables
-                        </button>
-                    </label>
-                    <input type="text" class="form-input" id="editBqSourceTable"
-                           list="editBqTableList" placeholder="e.g. orders">
-                    <datalist id="editBqTableList"></datalist>
-                    <div class="form-hint">Table or view name within the dataset.
-                        <br><strong>Live access:</strong> BASE TABLEs are queryable directly via
-                        <code>da query --remote</code>; VIEWs are registered but analysts must run
-                        <code>da fetch</code> to materialize a local snapshot (or admin can flip
-                        <code>data_source.bigquery.legacy_wrap_views=true</code>).
-                        <br><strong>Synced access:</strong> handles both transparently — the
-                        scheduler runs <code>SELECT *</code> through the jobs API and writes a
-                        parquet.</div>
-                </div>
-                <div class="form-group bq-edit-only bq-edit-source-custom" style="display:none;">
-                    <label class="form-label" for="editBqSourceQuery">
-                        SQL
-                        <button type="button" class="btn btn-secondary btn-sm"
-                                onclick="prefillFromTable('editBqSourceQuery')"
-                                style="float:right; margin-top:-3px;"
-                                title="Prefill SELECT * FROM `project.dataset.table` so you only edit the WHERE / projection">
-                            Use table as base
-                        </button>
-                    </label>
-                    <textarea class="form-textarea" id="editBqSourceQuery" rows="8"></textarea>
-                    <div class="form-hint">SELECT statement, no trailing semicolon. Native BQ
-                        identifiers recommended for the cost guardrail to engage.</div>
-                </div>
-                <div class="form-group bq-edit-only bq-edit-access-synced" style="display:none;">
-                    <label class="form-label" for="editBqSyncSchedule">Sync Schedule
-                        <span class="optional">(optional)</span></label>
-                    <input type="text" class="form-input" id="editBqSyncSchedule" placeholder="every 6h">
-                    <div class="form-hint">How often Agnes refreshes the local copy.
-                        <code>every 15m</code>, <code>every 6h</code>,
-                        <code>daily 03:00</code> (UTC).</div>
-                </div>
-
-                <!-- Keboola-only fields (existing). Hidden for BQ rows. -->
+                <!-- Keboola/Jira fallback fields. The richer Keboola modal
+                     lives at #editKeboolaModal; this remains the catch-all
+                     for any source_type that's neither bigquery nor keboola
+                     (e.g. jira). -->
                 <div class="form-group keboola-edit-only">
                     <label class="form-label" for="editStrategy">Sync Strategy</label>
                     <select class="form-select" id="editStrategy">
@@ -1456,7 +1499,6 @@
                     <input type="text" class="form-input" id="editPrimaryKey" placeholder="e.g. id">
                 </div>
 
-                <!-- Shared between BQ + Keboola -->
                 <div class="form-group">
                     <label class="form-label" for="editDescription">Description <span class="optional">(optional)</span></label>
                     <textarea class="form-textarea" id="editDescription" placeholder="Brief description of the table contents..."></textarea>
@@ -2551,60 +2593,78 @@
     }
 
     function openEditModal(table) {
-        currentEditTableId = table.id;
-        document.getElementById('editTableId').value = table.id || '';
-
+        // C2: dispatch by source_type. BigQuery rows go to the relocated
+        // #editBqModal inside the BQ tab; Keboola rows go to the existing
+        // #editKeboolaModal inside the Keboola tab; anything else (jira,
+        // future sources) falls through to the legacy #editModal which now
+        // only carries Description/Folder + a Keboola-style Strategy/PK
+        // fallback.
         var sourceType = (table.source_type || '').toLowerCase();
-        document.getElementById('editSourceTypeBadge').textContent = sourceType || '—';
+        if (sourceType === 'bigquery') {
+            return _openEditBqModal(table);
+        }
+        if (sourceType === 'keboola') {
+            return openEditKeboolaModal(table);
+        }
+        return _openEditLegacyModal(table);
+    }
 
-        var isBigQuery = (sourceType === 'bigquery');
-        document.querySelectorAll('.bq-edit-only').forEach(function(el) {
-            el.style.display = isBigQuery ? '' : 'none';
-        });
-        document.querySelectorAll('.keboola-edit-only').forEach(function(el) {
-            el.style.display = isBigQuery ? 'none' : '';
-        });
+    function _openEditBqModal(table) {
+        // Populate the BQ-tab Edit modal from a registry row. Mirror of
+        // populateEditModal's BQ branch from before C2 — same query_mode →
+        // radio mapping, same field bindings, but writes to the new
+        // #editBqModal scope.
+        currentEditTableId = table.id;
+        document.getElementById('editBqTableId').value = table.id || '';
+        var badge = document.getElementById('editBqSourceTypeBadge');
+        if (badge) badge.textContent = (table.source_type || 'bigquery');
 
-        // Shared fields.
-        document.getElementById('editDescription').value = table.description || '';
-        document.getElementById('editFolder').value = table.folder || '';
-
-        if (isBigQuery) {
-            // Map registry's query_mode back onto the two-question radio:
-            //   query_mode='remote'       → access=live
-            //   query_mode='materialized' → access=synced. We can't recover
-            //     whether the row was originally registered as Whole or
-            //     Custom (registry doesn't store that distinction — both
-            //     produce a `source_query`), so we default to Custom when
-            //     a non-empty source_query exists; operator can flip to
-            //     Whole if it was auto-generated SELECT *.
-            var qmode = (table.query_mode || 'remote');
-            var sq = (table.source_query || '');
-
-            if (qmode === 'materialized') {
-                _setEditBqRadio('editBqAccessMode', 'synced');
-                // Heuristic: treat `SELECT * FROM bq."ds"."t"` (whole-table
-                // auto-build) as Whole; anything else as Custom.
-                var isAutoSelectStar = /^\s*SELECT\s+\*\s+FROM\s+bq\.".+"\.".+"\s*$/i.test(sq);
-                _setEditBqRadio('editBqSyncMode', isAutoSelectStar ? 'whole' : 'custom');
-            } else {
-                _setEditBqRadio('editBqAccessMode', 'live');
-                _setEditBqRadio('editBqSyncMode', 'whole');
-            }
-
-            document.getElementById('editBqDataset').value = table.bucket || '';
-            document.getElementById('editBqSourceTable').value = table.source_table || '';
-            document.getElementById('editBqSourceQuery').value = sq;
-            document.getElementById('editBqSyncSchedule').value = table.sync_schedule || '';
-            document.getElementById('editBqModeWarning').style.display = 'none';
-            _editOriginalQueryMode = qmode;
-            onEditBqAccessModeChange();  // fire to set field visibility
+        var qmode = (table.query_mode || 'remote');
+        var sq = (table.source_query || '');
+        if (qmode === 'materialized') {
+            _setEditBqRadio('editBqAccessMode', 'synced');
+            var isAutoSelectStar = /^\s*SELECT\s+\*\s+FROM\s+bq\.".+"\.".+"\s*$/i.test(sq);
+            _setEditBqRadio('editBqSyncMode', isAutoSelectStar ? 'whole' : 'custom');
         } else {
-            document.getElementById('editStrategy').value = table.sync_strategy || 'full_refresh';
-            document.getElementById('editPrimaryKey').value = (table.primary_key || []).join(', ');
-            _editOriginalQueryMode = null;
+            _setEditBqRadio('editBqAccessMode', 'live');
+            _setEditBqRadio('editBqSyncMode', 'whole');
         }
 
+        document.getElementById('editBqDataset').value = table.bucket || '';
+        document.getElementById('editBqSourceTable').value = table.source_table || '';
+        document.getElementById('editBqSourceQuery').value = sq;
+        document.getElementById('editBqSyncSchedule').value = table.sync_schedule || '';
+        document.getElementById('editBqDescription').value = table.description || '';
+        document.getElementById('editBqFolder').value = table.folder || '';
+        document.getElementById('editBqModeWarning').style.display = 'none';
+        _editOriginalQueryMode = qmode;
+        onEditBqAccessModeChange();  // fire to set field visibility
+
+        var btn = document.getElementById('editBqSubmitBtn');
+        btn.disabled = false;
+        btn.textContent = 'Save Changes';
+        document.getElementById('editBqModal').classList.add('active');
+    }
+
+    function closeEditBqModal() {
+        document.getElementById('editBqModal').classList.remove('active');
+        currentEditTableId = null;
+        _editOriginalQueryMode = null;
+    }
+
+    function _openEditLegacyModal(table) {
+        // Legacy fallback for source_types that aren't bigquery or keboola
+        // (e.g. jira). Carries the Strategy + Primary Key + Description +
+        // Folder fields only.
+        currentEditTableId = table.id;
+        document.getElementById('editTableId').value = table.id || '';
+        var sourceType = (table.source_type || '').toLowerCase();
+        document.getElementById('editSourceTypeBadge').textContent = sourceType || '—';
+        document.getElementById('editDescription').value = table.description || '';
+        document.getElementById('editFolder').value = table.folder || '';
+        document.getElementById('editStrategy').value = table.sync_strategy || 'full_refresh';
+        document.getElementById('editPrimaryKey').value = (table.primary_key || []).join(', ');
+        _editOriginalQueryMode = null;
         document.getElementById('editSubmitBtn').disabled = false;
         document.getElementById('editModal').classList.add('active');
     }
@@ -2662,75 +2722,26 @@
     }
 
     function saveTableEdit() {
+        // Legacy save handler — runs only for source_types that aren't
+        // bigquery (handled by saveBqTabEdit) or keboola (handled by
+        // saveKeboolaTabEdit). Currently the catch-all for jira-style rows.
         if (!currentEditTableId) return;
 
         var btn = document.getElementById('editSubmitBtn');
         btn.disabled = true;
         btn.textContent = 'Saving...';
 
-        // Branch on whether this row is a BigQuery row. Source-type is
-        // immutable post-register (no UI control to flip it), so we can
-        // trust the badge text we set in openEditModal.
-        var sourceType = document.getElementById('editSourceTypeBadge').textContent;
-        var payload;
-
-        if (sourceType === 'bigquery') {
-            // Two-question state machine — same as Register modal:
-            //   live          → query_mode='remote'
-            //   synced/whole  → materialized + auto SELECT *
-            //   synced/custom → materialized + admin SQL
-            var accessMode = _getEditBqAccessMode();
-            var syncMode = _getEditBqSyncMode();
-            var dataset = document.getElementById('editBqDataset').value.trim();
-            var sourceTable = document.getElementById('editBqSourceTable').value.trim();
-
-            payload = {
-                description: document.getElementById('editDescription').value.trim() || null,
-                folder: document.getElementById('editFolder').value.trim() || null,
-                source_type: 'bigquery',
-                sync_schedule:
-                    document.getElementById('editBqSyncSchedule').value.trim() || null,
-            };
-
-            if (accessMode === 'synced' && syncMode === 'custom') {
-                payload.query_mode = 'materialized';
-                payload.source_query =
-                    document.getElementById('editBqSourceQuery').value.trim();
-                // PUT semantics: an explicit null clears the prior value so
-                // a remote→materialized switch doesn't carry stale
-                // bucket/source_table forward through the synthetic
-                // RegisterTableRequest validator.
-                payload.bucket = null;
-                payload.source_table = null;
-            } else if (accessMode === 'synced' && syncMode === 'whole') {
-                payload.query_mode = 'materialized';
-                payload.source_query =
-                    'SELECT * FROM bq."' + dataset + '"."' + sourceTable + '"';
-                // Keep bucket/source_table on the row so a future
-                // Whole→Custom switch can prefill from them.
-                payload.bucket = dataset || null;
-                payload.source_table = sourceTable || null;
-            } else {
-                // Live.
-                payload.query_mode = 'remote';
-                payload.bucket = dataset || null;
-                payload.source_table = sourceTable || null;
-                payload.source_query = null;
-            }
-        } else {
-            // Keboola path — keeps the existing field set.
-            var pk = document.getElementById('editPrimaryKey').value.trim();
-            var primaryKey = pk
-                ? pk.split(',').map(function(s) { return s.trim(); }).filter(Boolean)
-                : [];
-            payload = {
-                sync_strategy: document.getElementById('editStrategy').value,
-                primary_key: primaryKey,
-                description:
-                    document.getElementById('editDescription').value.trim() || null,
-                folder: document.getElementById('editFolder').value.trim() || null,
-            };
-        }
+        var pk = document.getElementById('editPrimaryKey').value.trim();
+        var primaryKey = pk
+            ? pk.split(',').map(function(s) { return s.trim(); }).filter(Boolean)
+            : [];
+        var payload = {
+            sync_strategy: document.getElementById('editStrategy').value,
+            primary_key: primaryKey,
+            description:
+                document.getElementById('editDescription').value.trim() || null,
+            folder: document.getElementById('editFolder').value.trim() || null,
+        };
 
         fetch('/api/admin/registry/' + encodeURIComponent(currentEditTableId), {
             method: 'PUT',
@@ -2743,6 +2754,80 @@
         })
         .then(function(data) {
             closeEditModal();
+            showToast('Table updated successfully', 'success');
+            loadRegistry();
+        })
+        .catch(function(err) {
+            showToast('Update failed: ' + err.message, 'error');
+        })
+        .finally(function() {
+            btn.disabled = false;
+            btn.textContent = 'Save Changes';
+        });
+    }
+
+    function saveBqTabEdit() {
+        // Save handler for the relocated BQ Edit modal (#editBqModal).
+        // Mirrors the pre-C2 BQ branch of saveTableEdit() but reads from
+        // the BQ-modal-scoped fields (editBqDescription / editBqFolder).
+        if (!currentEditTableId) return;
+
+        var btn = document.getElementById('editBqSubmitBtn');
+        btn.disabled = true;
+        btn.textContent = 'Saving...';
+
+        // Two-question state machine — same as Register modal:
+        //   live          → query_mode='remote'
+        //   synced/whole  → materialized + auto SELECT *
+        //   synced/custom → materialized + admin SQL
+        var accessMode = _getEditBqAccessMode();
+        var syncMode = _getEditBqSyncMode();
+        var dataset = document.getElementById('editBqDataset').value.trim();
+        var sourceTable = document.getElementById('editBqSourceTable').value.trim();
+
+        var payload = {
+            description: document.getElementById('editBqDescription').value.trim() || null,
+            folder: document.getElementById('editBqFolder').value.trim() || null,
+            source_type: 'bigquery',
+            sync_schedule:
+                document.getElementById('editBqSyncSchedule').value.trim() || null,
+        };
+
+        if (accessMode === 'synced' && syncMode === 'custom') {
+            payload.query_mode = 'materialized';
+            payload.source_query =
+                document.getElementById('editBqSourceQuery').value.trim();
+            // PUT semantics: explicit null clears prior value so a
+            // remote→materialized switch doesn't carry stale
+            // bucket/source_table forward through the synthetic
+            // RegisterTableRequest validator.
+            payload.bucket = null;
+            payload.source_table = null;
+        } else if (accessMode === 'synced' && syncMode === 'whole') {
+            payload.query_mode = 'materialized';
+            payload.source_query =
+                'SELECT * FROM bq."' + dataset + '"."' + sourceTable + '"';
+            payload.bucket = dataset || null;
+            payload.source_table = sourceTable || null;
+        } else {
+            // Live.
+            payload.query_mode = 'remote';
+            payload.bucket = dataset || null;
+            payload.source_table = sourceTable || null;
+            payload.source_query = null;
+        }
+
+        fetch('/api/admin/registry/' + encodeURIComponent(currentEditTableId), {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        })
+        .then(function(r) {
+            if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || d.error || 'Update failed'); });
+            return r.json();
+        })
+        .then(function() {
+            closeEditBqModal();
             showToast('Table updated successfully', 'success');
             loadRegistry();
         })
@@ -2879,6 +2964,13 @@
         });
     }
 
+    var _editBqModalEl = document.getElementById('editBqModal');
+    if (_editBqModalEl) {
+        _editBqModalEl.addEventListener('click', function(e) {
+            if (e.target === this) closeEditBqModal();
+        });
+    }
+
     document.getElementById('editModal').addEventListener('click', function(e) {
         if (e.target === this) closeEditModal();
     });
@@ -2890,6 +2982,7 @@
             closeRegisterBqModal();
             if (typeof closeRegisterKeboolaModal === 'function') closeRegisterKeboolaModal();
             if (typeof closeEditKeboolaModal === 'function') closeEditKeboolaModal();
+            if (typeof closeEditBqModal === 'function') closeEditBqModal();
             closeEditModal();
         }
     });

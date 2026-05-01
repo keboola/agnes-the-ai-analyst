@@ -265,6 +265,30 @@ def test_keboola_edit_modal_parity(seeded_app, monkeypatch):
         reset_cache()
 
 
+def test_bq_edit_modal_inside_tab_content_bigquery(seeded_app, bq_instance):
+    """C2: BQ Edit modal physically lives inside <section id='tab-content-bigquery'>
+    so the modal+form share the tab's DOM scope. Mirror of Phase E's BQ Register
+    modal placement."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.get("/admin/tables", headers=_auth(token))
+    html = r.text
+    bq_section_start = html.index('id="tab-content-bigquery"')
+    bq_section_end = html.index('</section>', bq_section_start)
+    bq_section = html[bq_section_start:bq_section_end]
+    assert 'id="editBqModal"' in bq_section
+    assert 'id="editBqDataset"' in bq_section
+    assert 'id="editBqSourceQuery"' in bq_section
+    # Old shared #editModal either gone or only carries non-BQ fields.
+    if 'id="editModal"' in html:
+        edit_modal_start = html.index('id="editModal"')
+        # rough lookahead: scan until the next modal-overlay sibling or </body>
+        edit_modal_end = html.index('id="toast"', edit_modal_start) \
+            if 'id="toast"' in html[edit_modal_start:] else len(html)
+        edit_modal = html[edit_modal_start:edit_modal_end]
+        assert 'id="editBqDataset"' not in edit_modal  # BQ fields aren't here anymore
+
+
 def test_keboola_discover_buttons_hidden_on_bigquery_instance(seeded_app, monkeypatch):
     """C1: Discover/List/Use-as-base buttons in the Keboola tab are
     UI-hidden when the instance's data_source.type isn't keboola, because
