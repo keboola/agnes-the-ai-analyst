@@ -1213,100 +1213,11 @@
             <div id="jiraTableListing"></div>
         </section>
 
-        {% if data_source_type == 'bigquery' %}
-        <!-- ── BigQuery Register Panel ── -->
-        <div class="panel" data-test="bq-register-panel">
-            <div class="panel-header">
-                <div class="panel-header-left">
-                    <div class="panel-header-icon">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0073D1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <line x1="12" y1="5" x2="12" y2="19"/>
-                            <line x1="5" y1="12" x2="19" y2="12"/>
-                        </svg>
-                    </div>
-                    <div>
-                        <div class="panel-title">Register BigQuery Table</div>
-                        <div class="panel-subtitle">Make a BQ table or query available to analysts</div>
-                    </div>
-                </div>
-                <button class="btn btn-primary" onclick="openBigQueryRegisterModal()">
-                    Register BigQuery table
-                </button>
-            </div>
-            <div class="panel-body-empty">
-                The form starts with one question — <strong>Live from BigQuery</strong> (each
-                analyst query goes straight to BQ; always current) or <strong>Synced
-                locally</strong> (Agnes runs a SELECT on a schedule and serves a local copy;
-                sub-100&nbsp;ms queries). Synced gives you a follow-up: full table or your
-                own SQL.
-                Dataset and table inputs autocomplete from your BQ project — click
-                <strong>Discover</strong> to populate the dataset list and
-                <strong>List tables</strong> for the per-dataset table list.
-            </div>
-        </div>
-        {% else %}
-        <!-- ── Discovery Panel (Keboola etc.) ── -->
-        <div class="panel">
-            <div class="panel-header">
-                <div class="panel-header-left">
-                    <div class="panel-header-icon">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0073D1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <circle cx="11" cy="11" r="8"/>
-                            <line x1="21" y1="21" x2="16.65" y2="16.65"/>
-                        </svg>
-                    </div>
-                    <div>
-                        <div class="panel-title">Discover Tables</div>
-                        <div class="panel-subtitle">Scan your data source for available tables</div>
-                    </div>
-                </div>
-                <button class="btn btn-primary" id="discoverBtn" onclick="discoverTables()">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <circle cx="11" cy="11" r="8"/>
-                        <line x1="21" y1="21" x2="16.65" y2="16.65"/>
-                    </svg>
-                    Discover tables from source
-                </button>
-            </div>
-            <div id="discoveryResults">
-                <div class="panel-body-empty" id="discoveryEmpty">
-                    Click "Discover tables from source" to scan for available tables
-                </div>
-            </div>
-        </div>
-        {% endif %}
-
-        <!-- ── Registry Panel ── -->
-        <div class="panel">
-            <div class="panel-header">
-                <div class="panel-header-left">
-                    <div class="panel-header-icon" style="background: var(--success-light);">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#10B77F" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                            <polyline points="14 2 14 8 20 8"/>
-                            <line x1="16" y1="13" x2="8" y2="13"/>
-                            <line x1="16" y1="17" x2="8" y2="17"/>
-                            <polyline points="10 9 9 9 8 9"/>
-                        </svg>
-                    </div>
-                    <div>
-                        <div class="panel-title">Registered Tables</div>
-                        <div class="panel-subtitle" id="registrySubtitle">Tables currently configured for sync</div>
-                    </div>
-                </div>
-                <button class="btn btn-secondary btn-sm" onclick="loadRegistry()">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <polyline points="23 4 23 10 17 10"/>
-                        <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
-                    </svg>
-                    Refresh
-                </button>
-            </div>
-            <!-- Registry rows now live inside each per-tab listing div
-                 (#bqTableListing / #kbTableListing / #jiraTableListing).
-                 The Refresh button above re-fetches /api/admin/registry and
-                 dispatches the rows into all three by source_type. -->
-        </div>
+        {# Legacy out-of-tab panels (BQ Register card, Keboola Discovery card,
+           shared Registered Tables wrapper) removed — each tab now owns its
+           own header (with Register button) and listing div. The Refresh
+           action is implicit: registration / edit / delete flows already
+           call loadRegistry(), which re-renders all three per-tab listings. #}
 
     </div>
 

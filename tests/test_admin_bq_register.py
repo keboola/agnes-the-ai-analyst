@@ -714,8 +714,11 @@ class TestAdminTablesUI:
         # Cron-style schedule examples are surfaced near the field
         # (operator-facing copy explains the syntax).
         assert "every 6h" in body or "daily 03:00" in body
-        # BQ-specific panel (Keboola-style discovery panel must not appear).
-        assert 'data-test="bq-register-panel"' in body
+        # BQ tab content section (legacy out-of-tab BQ register panel was
+        # removed when the user-visible cleanup landed — each tab now owns
+        # its own header + Register button).
+        assert 'id="tab-content-bigquery"' in body
+        assert 'id="bqRegisterBtn"' in body
         # Phase E: BQ + Keboola modals are now both always rendered (each
         # inside its own tab). On a BQ instance the BQ tab is the visible
         # one; the Keboola modal is just hidden in a non-active tab.
@@ -738,8 +741,14 @@ class TestAdminTablesUI:
             assert resp.status_code == 200
             body = resp.text
             assert 'data-source-type="keboola"' in body
-            # Keboola path — discovery panel + Keboola inputs.
-            assert 'id="discoveryResults"' in body
+            # Keboola tab content section + Register-Keboola button (legacy
+            # global Discovery panel was removed when the user-visible
+            # cleanup landed — Keboola discovery is per-modal now).
+            assert 'id="tab-content-keboola"' in body
+            assert 'id="kbRegisterBtn"' in body
+            # Legacy Keboola register modal is still in the DOM for back-
+            # compat (the Phase F Keboola modal at #registerKeboolaModal
+            # supersedes it); its inputs survive.
             assert 'id="regBucket"' in body
             assert 'id="regTableName"' in body
             # Phase E: BQ form now always rendered (inside #tab-content-bigquery)
