@@ -173,10 +173,19 @@ POST /api/sync/trigger (admin)
 
 `connectors/bigquery/extractor.py`
 
-- Uses the DuckDB BigQuery community extension.
+- Uses the DuckDB BigQuery community extension via the `BqAccess` facade in `connectors/bigquery/access.py`.
 - No data download — views proxy all queries directly to BigQuery.
 - Auth via `GOOGLE_APPLICATION_CREDENTIALS` (service account JSON) or ADC.
 - Populates `_remote_attach` with `extension='bigquery'` and no `token_env` (env-based auth).
+
+### BigQuery — Materialized SQL
+
+`connectors/bigquery/extractor.py::materialize_query` (added in v0.25.0)
+
+- Runs admin-registered SQL through the DuckDB BigQuery extension via `BqAccess.duckdb_session()` and writes the result to `/data/extracts/bigquery/data/<id>.parquet` atomically (`<id>.parquet.tmp` → `os.replace`).
+- Triggered by `_run_materialized_pass` in `app/api/sync.py` between custom-connectors and orchestrator rebuild on every `/api/sync/trigger`. Per-table `sync_schedule` honored via `is_table_due()`.
+- Cost guardrail: BQ dry-run via `app.api.v2_scan._bq_dry_run_bytes` (single source of truth for cost-estimate logic). `data_source.bigquery.max_bytes_per_materialize` (default 10 GiB; `0` disables). Fail-open when dry-run errors (DuckDB three-part syntax the native BQ client can't parse) — log warning + proceed.
+- Distribution: result parquet rides the same manifest + `da sync` flow as Keboola tables. Per-user RBAC unchanged (`resource_grants(group, ResourceType.TABLE, table_id)`).
 
 ### Jira — Real-Time Push
 

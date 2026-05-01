@@ -117,9 +117,10 @@ The SyncOrchestrator scans `/data/extracts/*/extract.duckdb`, ATTACHes each into
           (serve)    (da sync)
 ```
 
-Three source types:
-- **Batch pull** (Keboola): DuckDB extension downloads to parquet, scheduled
-- **Remote attach** (BigQuery): DuckDB BQ extension, no download, queries go to BQ
+Source modes:
+- **Batch pull** (Keboola, `query_mode='local'`): DuckDB extension downloads to parquet, scheduled
+- **Remote attach** (BigQuery, `query_mode='remote'`): DuckDB BQ extension, no download, queries go to BQ
+- **Materialized SQL** (BigQuery, `query_mode='materialized'`): scheduler runs admin-registered SQL through DuckDB BQ extension (via `BqAccess` from `connectors/bigquery/access.py`) and writes the result to `/data/extracts/bigquery/data/<id>.parquet`. Distributed via the same manifest + `da sync` flow as Keboola tables. Cost guardrail via `data_source.bigquery.max_bytes_per_materialize` (default 10 GiB; set `0` to disable — YAML `null` falls through to the default).
 - **Real-time push** (Jira): Webhooks update parquets incrementally
 
 ## Configuration
@@ -147,6 +148,19 @@ curl -X POST http://localhost:8000/api/sync/trigger
 # Docker
 docker compose up
 ```
+
+### Local sync & Claude Code hooks
+
+`da sync` is the canonical analyst-side distribution path: pulls the RBAC-filtered manifest from the server, downloads parquets whose MD5 changed (skipping `query_mode='remote'` rows), rebuilds local DuckDB views over them.
+
+`da analyst setup` writes two hooks into `<workspace>/.claude/settings.json`:
+
+- `SessionStart` → `da sync --quiet` — pulls fresh parquets at the start of every Claude Code session
+- `SessionEnd`   → `da sync --upload-only --quiet` — uploads session jsonl + `CLAUDE.local.md` to the server
+
+Both pass `--quiet` so they don't pollute Claude Code stdout, and trail with `|| true` so a server outage never blocks a session. Workspace-level (not user-home) so the hooks fire only when Claude Code opens this analyst workspace, not in unrelated sessions on the same machine.
+
+Admin RBAC for auto-sync: `query_mode IN ('local', 'materialized')` plus a `resource_grants` row for one of the analyst's groups → table appears in their manifest → `da sync` downloads it. No per-user sync config; the admin layer is the single source of truth.
 
 ## Business Metrics
 
@@ -416,7 +430,7 @@ Module sets `lifecycle { ignore_changes = [metadata_startup_script] }` on `googl
 ## Key Implementation Details
 
 ### DuckDB Schema (src/db.py)
-- Schema v19 with auto-migration v1→…→v19 (v5 adds `users.active`, v6 adds `personal_access_tokens`, v7 adds `personal_access_tokens.last_used_ip`, v8/v9 added the legacy internal_roles/role-grants tables, v10 added `view_ownership` for cross-connector view-name collision detection (issue #81 Group C), v11 added marketplace_registry + marketplace_plugins + user_groups + plugin_access, v12 added users.groups JSON + user_groups.is_system, **v13 replaces internal_roles/group_mappings/user_role_grants/plugin_access with user_group_members + resource_grants and drops users.groups JSON**, v14 adds FK constraints on user_group_members + resource_grants after orphan cleanup, v15 adds knowledge_items context-engineering columns + contradictions + session_extraction_state, v16 adds verification_evidence, v17 adds knowledge_item_relations, v18 drops stranded non-google memberships from google-managed groups, **v19 drops legacy `dataset_permissions`, `access_requests` tables and `users.role`, `table_registry.is_public` columns — table access is now exclusively per-group via `resource_grants(resource_type='table')`** — see CHANGELOG and docs/RBAC.md)
+- Schema v20 with auto-migration v1→…→v20 (v5 adds `users.active`, v6 adds `personal_access_tokens`, v7 adds `personal_access_tokens.last_used_ip`, v8/v9 added the legacy internal_roles/role-grants tables, v10 added `view_ownership` for cross-connector view-name collision detection (issue #81 Group C), v11 added marketplace_registry + marketplace_plugins + user_groups + plugin_access, v12 added users.groups JSON + user_groups.is_system, **v13 replaces internal_roles/group_mappings/user_role_grants/plugin_access with user_group_members + resource_grants and drops users.groups JSON**, v14 adds FK constraints on user_group_members + resource_grants after orphan cleanup, v15 adds knowledge_items context-engineering columns + contradictions + session_extraction_state, v16 adds verification_evidence, v17 adds knowledge_item_relations, v18 drops stranded non-google memberships from google-managed groups, **v19 drops legacy `dataset_permissions`, `access_requests` tables and `users.role`, `table_registry.is_public` columns — table access is now exclusively per-group via `resource_grants(resource_type='table')`**, **v20 adds `source_query` TEXT to `table_registry` to back `query_mode='materialized'` (BigQuery scheduled-query parquet path)** — see CHANGELOG and docs/RBAC.md)
 - `table_registry`: id, name, source_type, bucket, source_table, query_mode, sync_schedule, etc.
 - `sync_state`, `sync_history`: track extraction progress
 - `users`, `audit_log`: account state + audit trail. RBAC lives in `user_groups` + `user_group_members` + `resource_grants`.

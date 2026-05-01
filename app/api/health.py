@@ -18,6 +18,65 @@ router = APIRouter(tags=["health"])
 _DEPLOYED_AT = datetime.now(timezone.utc).isoformat()
 
 
+def _check_bq_billing_project() -> dict | None:
+    """Surface the USER_PROJECT_DENIED footgun when a BQ instance has
+    `billing_project` falling back to (or explicitly equal to) `project`.
+
+    Background: connectors/bigquery/access.py:339-342 lets `billing` default
+    to `data` when `billing_project` is unset. A service account with
+    `roles/bigquery.dataViewer` on the data project but no
+    `serviceusage.services.use` on it then 403s on every BQ call with
+    USER_PROJECT_DENIED. The config is technically valid, so we warn rather
+    than error — the operator's billable project must be set distinctly.
+
+    Returns:
+      None when the check doesn't apply (non-BQ instance, or BQ deps missing).
+      A service-entry dict otherwise: {"status": "ok"} or
+      {"status": "warning", "detail": ..., "hint": ..., "billing_project": ...,
+       "data_project": ...}.
+    """
+    try:
+        from app.instance_config import get_data_source_type
+    except Exception:
+        return None
+    if (get_data_source_type() or "").lower() != "bigquery":
+        return None
+
+    try:
+        from connectors.bigquery.access import get_bq_access
+        bq = get_bq_access()
+        billing = bq.projects.billing
+        data = bq.projects.data
+    except Exception as e:
+        return {"status": "ok", "detail": f"could not resolve BQ projects: {e}"}
+
+    if not data:
+        # not_configured sentinel — surfaced elsewhere; nothing to warn about here.
+        return {"status": "ok", "detail": "BigQuery project not configured"}
+
+    if billing == data:
+        return {
+            "status": "warning",
+            "detail": "BigQuery billing project equals data project",
+            "hint": (
+                "Set data_source.bigquery.billing_project in instance.yaml to a "
+                "project the SA can bill against (typically your dev/billable "
+                "project, distinct from a shared read-only data project). "
+                "Otherwise BQ calls 403 USER_PROJECT_DENIED whenever the SA "
+                "lacks serviceusage.services.use on the data project. "
+                "Configurable via /admin/server-config UI."
+            ),
+            "billing_project": billing,
+            "data_project": data,
+        }
+
+    return {
+        "status": "ok",
+        "billing_project": billing,
+        "data_project": data,
+    }
+
+
 def _check_db_schema() -> dict:
     """Check DB schema version against expected SCHEMA_VERSION.
 
@@ -102,6 +161,11 @@ async def health_check_detailed(
         checks["users"] = {"status": "ok", "count": user_count}
     except Exception as e:
         checks["users"] = {"status": "error", "detail": str(e)}
+
+    # BigQuery billing-project sanity check (USER_PROJECT_DENIED footgun).
+    bq_cfg = _check_bq_billing_project()
+    if bq_cfg is not None:
+        checks["bq_config"] = bq_cfg
 
     overall = "healthy"
     for check in checks.values():
