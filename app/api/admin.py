@@ -1378,6 +1378,68 @@ def _validate_bigquery_register_payload(req: "RegisterTableRequest") -> None:
     req.query_mode = "remote"
 
 
+# Source types that don't depend on a `data_source.<name>.*` block — they
+# get their data through a different ingestion path (e.g. Jira via
+# webhooks). Registrations against these types are allowed regardless of
+# the configured primary `data_source.type`.
+_SOURCE_TYPES_INDEPENDENT_OF_DATA_SOURCE: frozenset[str] = frozenset({
+    "jira",
+    "local",
+})
+
+
+def _validate_source_type_configured(source_type: Optional[str]) -> None:
+    """Refuse register-table requests whose ``source_type`` isn't actually
+    configured on this instance.
+
+    Pre-fix the route happily persisted e.g. ``source_type='keboola'`` on a
+    BQ-only instance — the row landed in the registry but the scheduler had
+    no Keboola URL/token to ATTACH against, so it silently never synced.
+    No upfront error, no operator-visible signal until they noticed the
+    table was missing from `da catalog`.
+
+    A source_type is considered configured when:
+
+    - it matches the instance's primary ``data_source.type``, OR
+    - a non-empty ``data_source.<source_type>`` block exists in the
+      effective `instance.yaml` (multi-source instances),OR
+    - it's in the small allowlist of types that don't sit under
+      `data_source.*` at all (Jira, local — see
+      ``_SOURCE_TYPES_INDEPENDENT_OF_DATA_SOURCE``).
+
+    A bare/None source_type is tolerated for backward compat with legacy
+    CLI scripts; the route resolves it later against
+    ``get_data_source_type()``.
+    """
+    if not source_type:
+        return
+    if source_type in _SOURCE_TYPES_INDEPENDENT_OF_DATA_SOURCE:
+        return
+
+    from app.instance_config import get_data_source_type, get_value
+
+    configured_primary = get_data_source_type()
+    if source_type == configured_primary:
+        return
+
+    # Multi-source: accept if a non-empty `data_source.<source_type>` block
+    # exists. Empty dict / None / "" all count as "not configured".
+    secondary_block = get_value("data_source", source_type, default=None)
+    if secondary_block:
+        # Truthy non-empty dict / mapping / scalar — treat as configured.
+        return
+
+    raise HTTPException(
+        status_code=422,
+        detail=(
+            f"source_type={source_type!r} is not configured on this instance. "
+            f"The configured data source is {configured_primary!r}. To enable "
+            f"a secondary source, set data_source.{source_type}.* fields in "
+            "instance.yaml or via /admin/server-config."
+        ),
+    )
+
+
 class UpdateTableRequest(BaseModel):
     name: Optional[str] = None
     sync_strategy: Optional[str] = Field(
@@ -1885,6 +1947,13 @@ def register_table(
             status_code=409,
             detail=f"View name '{request.name}' is already in use by table id '{existing_by_name.get('id')}'",
         )
+
+    # Refuse rows whose source_type isn't actually configured — pre-fix the
+    # row landed in the registry but never synced because there was no
+    # Keboola URL/token (or BQ project) to ATTACH against. Surfaces the
+    # misconfig at registration time so the operator sees the gap before
+    # they wonder why `da catalog` is missing the table.
+    _validate_source_type_configured(request.source_type)
 
     # BQ rows go through the extra validation + post-insert materialization
     # contract from issue #108. Other source types keep the legacy insert-only

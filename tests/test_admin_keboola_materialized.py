@@ -2,6 +2,32 @@
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _keboola_instance(monkeypatch):
+    """Configure the test instance with a Keboola data source so the new
+    register-table source_type-availability validator (introduced in this
+    PR) accepts `source_type='keboola'` payloads. Pre-validator the test
+    suite passed without any data_source config because the route blindly
+    persisted whatever source_type the caller sent."""
+    fake_cfg = {
+        "data_source": {
+            "type": "keboola",
+            "keboola": {
+                "stack_url": "https://connection.keboola.com",
+                "project_id": "1234",
+                "token_env": "KEBOOLA_STORAGE_TOKEN",
+            },
+        },
+    }
+    monkeypatch.setattr(
+        "app.instance_config.load_instance_config", lambda: fake_cfg, raising=False,
+    )
+    from app.instance_config import reset_cache
+    reset_cache()
+    yield
+    reset_cache()
+
+
 def test_register_keboola_materialized_accepts_source_query(seeded_app):
     c = seeded_app["client"]
     token = seeded_app["admin_token"]

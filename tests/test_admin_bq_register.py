@@ -70,6 +70,32 @@ def bq_instance(monkeypatch):
 
 
 @pytest.fixture
+def keboola_instance(monkeypatch):
+    """Mirror of bq_instance for Keboola — required by tests that POST
+    `source_type='keboola'` payloads. The new register-table source-type
+    availability validator (see _validate_source_type_configured) refuses
+    Keboola registrations on the default unconfigured test instance,
+    which `get_data_source_type()` resolves to 'local'."""
+    fake_cfg = {
+        "data_source": {
+            "type": "keboola",
+            "keboola": {
+                "stack_url": "https://connection.keboola.com",
+                "project_id": "1234",
+                "token_env": "KEBOOLA_STORAGE_TOKEN",
+            },
+        },
+    }
+    monkeypatch.setattr(
+        "app.instance_config.load_instance_config", lambda: fake_cfg, raising=False,
+    )
+    from app.instance_config import reset_cache
+    reset_cache()
+    yield fake_cfg
+    reset_cache()
+
+
+@pytest.fixture
 def stub_bq_extractor(monkeypatch):
     """Replace rebuild_from_registry + SyncOrchestrator.rebuild with mocks
     so the API's post-register materialize doesn't try to hit real BQ."""
@@ -508,7 +534,7 @@ class TestRegistryAuditLog:
         from src.repositories.audit import AuditRepository
         return AuditRepository(conn).query(action=action, limit=10)
 
-    def test_register_keboola_writes_audit_entry(self, seeded_app):
+    def test_register_keboola_writes_audit_entry(self, seeded_app, keboola_instance):
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
         resp = c.post(
@@ -566,7 +592,7 @@ class TestRegistryAuditLog:
         assert out["primary_key"] == ["id"]  # whitelisted
         assert out["description"] == "raw description stays raw"
 
-    def test_update_writes_audit_entry(self, seeded_app):
+    def test_update_writes_audit_entry(self, seeded_app, keboola_instance):
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
         c.post(
@@ -589,7 +615,7 @@ class TestRegistryAuditLog:
             conn.close()
         assert any(r["resource"] == "kb_upd" for r in rows)
 
-    def test_unregister_writes_audit_entry(self, seeded_app):
+    def test_unregister_writes_audit_entry(self, seeded_app, keboola_instance):
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
         c.post(
@@ -906,7 +932,7 @@ class TestKeboolaRegisterStatusCode:
     its decorator — each branch returns its own. Keboola (non-BQ) must still
     explicitly return 201 with the registered-row body."""
 
-    def test_keboola_register_returns_201(self, seeded_app):
+    def test_keboola_register_returns_201(self, seeded_app, keboola_instance):
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
         resp = c.post(
@@ -936,13 +962,21 @@ class TestUpdateTableBigQueryValidation:
     ):
         from app.instance_config import reset_cache
         # Set a malformed project_id in instance.yaml so the BQ validator
-        # rejects the merged row at PUT time.
+        # rejects the merged row at PUT time. Configure both `bigquery`
+        # AND `keboola` blocks so the test's initial Keboola register
+        # passes the source_type-availability validator (multi-source
+        # instance shape — see _validate_source_type_configured).
         monkeypatch.setattr(
             "app.instance_config.load_instance_config",
             lambda: {
                 "data_source": {
                     "type": "bigquery",
                     "bigquery": {"project": "Bad Project With Spaces"},
+                    "keboola": {
+                        "stack_url": "https://connection.keboola.com",
+                        "project_id": "1234",
+                        "token_env": "KEBOOLA_STORAGE_TOKEN",
+                    },
                 }
             },
             raising=False,
@@ -1003,7 +1037,7 @@ class TestUpdateTableBigQueryValidation:
         )
         assert resp.status_code == 400, resp.text
 
-    def test_put_preserves_registered_at_across_edits(self, seeded_app):
+    def test_put_preserves_registered_at_across_edits(self, seeded_app, keboola_instance):
         """Issue #130 — PUT /api/admin/registry/{id} must NOT reset
         registered_at on every edit. The original timestamp from the initial
         register call must survive subsequent PUTs."""

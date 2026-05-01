@@ -38,6 +38,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   into scheduler stderr. A row that recovers on the next tick clears the
   error automatically (the success path of `update_sync` resets
   `status='ok'` / `error=NULL` on the upsert).
+- **admin API**: `POST /api/admin/register-table` now refuses requests whose
+  `source_type` isn't actually configured on the instance — pre-fix, an
+  admin could register `source_type='keboola'` on a BQ-only instance and
+  the row would land in the registry but never sync (no Keboola URL/token
+  to ATTACH against). Returns 422 with a message naming the configured
+  primary source and pointing at `/admin/server-config` for enabling a
+  secondary source. `jira` / `local` are exempt — they don't sit under
+  `data_source.*`. Omitted source_type still tolerated for legacy CLI
+  callers.
 
 ## [0.30.0] — 2026-05-01
 

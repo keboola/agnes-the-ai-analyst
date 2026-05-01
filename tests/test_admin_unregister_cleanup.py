@@ -60,6 +60,31 @@ def stub_bq_extractor(monkeypatch):
     return rebuild_mock
 
 
+@pytest.fixture
+def keboola_instance(monkeypatch):
+    """Keboola instance fixture — required by tests that POST
+    `source_type='keboola'` payloads. The register-table source-type
+    availability validator refuses Keboola registrations on the default
+    unconfigured test instance."""
+    fake_cfg = {
+        "data_source": {
+            "type": "keboola",
+            "keboola": {
+                "stack_url": "https://connection.keboola.com",
+                "project_id": "1234",
+                "token_env": "KEBOOLA_STORAGE_TOKEN",
+            },
+        },
+    }
+    monkeypatch.setattr(
+        "app.instance_config.load_instance_config", lambda: fake_cfg, raising=False,
+    )
+    from app.instance_config import reset_cache
+    reset_cache()
+    yield fake_cfg
+    reset_cache()
+
+
 def test_delete_materialized_bq_row_removes_parquet(
     seeded_app, bq_instance, stub_bq_extractor,
 ):
@@ -101,7 +126,7 @@ def test_delete_materialized_bq_row_removes_parquet(
     assert not tmp_path.exists(), "DELETE should also clean up stale .tmp file"
 
 
-def test_delete_materialized_keboola_row_removes_parquet(seeded_app):
+def test_delete_materialized_keboola_row_removes_parquet(seeded_app, keboola_instance):
     """Same contract for Keboola materialized rows — the canonical path is
     /data/extracts/keboola/data/<id>.parquet."""
     c = seeded_app["client"]
@@ -157,7 +182,7 @@ def test_delete_remote_bq_row_does_not_touch_data_dir(
     assert r2.status_code == 204
 
 
-def test_delete_clears_sync_state_for_materialized_row(seeded_app):
+def test_delete_clears_sync_state_for_materialized_row(seeded_app, keboola_instance):
     """DELETE must also clear the sync_state row so the manifest stops
     advertising the dropped table to `da sync`."""
     c = seeded_app["client"]
