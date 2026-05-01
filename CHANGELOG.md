@@ -11,6 +11,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **admin UI**: each row in `/admin/tables` listings now has a per-row
+  **Manage access** icon button (between Edit and Delete) that deep-links
+  to `/admin/access#table:<table_id>`. The grant editor reads the hash on
+  load and pre-fills the resource filter so the operator lands on the
+  picked table once they select a group — shortcut for the common
+  "I just registered table X, who should see it?" workflow without
+  manual navigation through the resource tree.
 - **docs**: `config/instance.yaml.example` documents every field newly
   exposed by `/admin/server-config` — `data_source.bigquery.billing_project`
   (with the USER_PROJECT_DENIED hint), `data_source.bigquery.legacy_wrap_views`,

@@ -132,3 +132,47 @@ def test_listing_partitions_rows_by_source_type(seeded_app):
     assert "document.getElementById('bqTableListing')" in html
     assert "document.getElementById('kbTableListing')" in html
     assert "document.getElementById('jiraTableListing')" in html
+
+
+def test_registry_listing_renders_manage_access_button(seeded_app):
+    """Phase O: each row in the per-tab listing has a Manage access button
+    that links to /admin/access scoped to the table_id."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    auth = {"Authorization": f"Bearer {token}"}
+
+    # Register a table so the listing has at least one row to render.
+    c.post(
+        "/api/admin/register-table",
+        headers=auth,
+        json={
+            "name": "test_orders",
+            "source_type": "keboola",
+            "bucket": "in.c-sales",
+            "source_table": "orders",
+            "query_mode": "local",
+        },
+    )
+
+    r = c.get("/admin/tables", headers=auth)
+    body = r.text
+    # The manageAccess() helper exists in the JS.
+    assert "function manageAccess(" in body or "manageAccess =" in body
+    # It targets the access page (the renderer ships the call site).
+    assert "/admin/access" in body
+    # Renderer emits the per-row Manage access button.
+    assert 'title="Manage access"' in body
+    assert "manageAccess(" in body
+
+
+def test_admin_access_supports_deep_link_for_table(seeded_app):
+    """Phase O: /admin/access page reads a deep link from the URL on load
+    so /admin/tables's per-row Manage access button lands the operator
+    on a pre-filtered view of the picked table."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.get("/admin/access", headers={"Authorization": f"Bearer {token}"})
+    body = r.text
+    # The page reads window.location.hash on load and dispatches by prefix.
+    assert "location.hash" in body and "table:" in body, \
+        "/admin/access must read the deep-link from URL on load"
