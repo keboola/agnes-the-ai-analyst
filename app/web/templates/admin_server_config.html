@@ -251,6 +251,152 @@ function escHtml(s) {
   return d.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
+// Build a basic <input>/<select>/<textarea> for a leaf field. Returns the
+// HTML for the input element only — the wrapping <div class="cfg-field">
+// + label + hint is added by the caller. `dottedKey` is the compound
+// data-key the collector splits on dots to rebuild the nested patch
+// (e.g. "bigquery.billing_project" → patch.bigquery.billing_project).
+function renderLeafInput(fieldId, section, dottedKey, kind, value, opts, isUnset) {
+  const isSecret = isSecretKey(dottedKey.split(".").pop() || "") || kind === "secret";
+  if (kind === "secret") {
+    const ph = isUnset
+      ? "unset — type to set"
+      : (value === "<empty>" ? "unset — type to set" : "*** — type to overwrite");
+    return `<input id="${fieldId}" type="password" class="is-secret" data-section="${section}" data-key="${escHtml(dottedKey)}" placeholder="${escHtml(ph)}" autocomplete="off">`;
+  }
+  if (kind === "int") {
+    const v = (value == null || value === "") ? "" : value;
+    return `<input id="${fieldId}" type="number" data-section="${section}" data-key="${escHtml(dottedKey)}" value="${escHtml(v)}">`;
+  }
+  if (kind === "bool") {
+    const v = !!value;
+    return `<select id="${fieldId}" data-section="${section}" data-key="${escHtml(dottedKey)}" data-cast="bool">
+      <option value="true" ${v ? "selected" : ""}>true</option>
+      <option value="false" ${!v ? "selected" : ""}>false</option>
+    </select>`;
+  }
+  if (kind === "select" && Array.isArray(opts && opts.spec && opts.spec.options)) {
+    const sel = value == null ? "" : String(value);
+    const options = opts.spec.options.map(o => {
+      const ov = String(o);
+      return `<option value="${escHtml(ov)}" ${sel === ov ? "selected" : ""}>${escHtml(ov)}</option>`;
+    }).join("");
+    return `<select id="${fieldId}" data-section="${section}" data-key="${escHtml(dottedKey)}">${options}</select>`;
+  }
+  if (kind === "array") {
+    const blobValue = isUnset ? "" : JSON.stringify(value || [], null, 2);
+    return `<textarea id="${fieldId}" data-section="${section}" data-key="${escHtml(dottedKey)}" data-cast="json" placeholder="${isUnset ? 'unset — paste a JSON array' : ''}">${escHtml(blobValue)}</textarea>`;
+  }
+  // Default: text. Use the registry's default when unset, else the value.
+  const v = isUnset
+    ? (opts && opts.spec && opts.spec.default != null ? String(opts.spec.default) : "")
+    : (value == null ? "" : value);
+  return `<input id="${fieldId}" type="text" data-section="${section}" data-key="${escHtml(dottedKey)}" value="${escHtml(v)}">`;
+}
+
+// Render a single nested subfield row recursively. Each leaf input carries
+// data-key="<parent>.<child>" so collectSection can split on '.' and rebuild
+// a nested patch — fully editable, no JSON-textarea wrapper.
+//
+// Recursion: arbitrary depth supported. When a child spec has kind="object"
+// with its own `fields` map, we recurse with the indent bumped up. The depth
+// bound is implicit (browser stack); registries with ridiculous depth would
+// blow up, but the entries we ship max out around 3 levels (corporate_memory
+// in subagent 3) which is comfortably within budget.
+function renderNestedField(section, dottedKey, label, value, spec, depth) {
+  spec = spec || {};
+  const indent = (depth || 0) * 24;
+  const kind = spec.kind || (
+    typeof value === "number" ? "int"
+    : typeof value === "boolean" ? "bool"
+    : (value && typeof value === "object") ? "object"
+    : "string"
+  );
+  const isSecret = isSecretKey(label) || kind === "secret";
+  const isUnset = (value === undefined);
+  const fieldId = `f_${section}_${dottedKey.replace(/\W/g, "_")}`;
+  const wrapperClass = "cfg-field nested-field" + (isUnset ? " is-unset" : "");
+  const arrow = depth > 0 ? "↳ " : "";
+  const secretPill = isSecret ? '<span class="secret-pill">secret</span>' : "";
+  const hintBlock = spec.hint
+    ? `<div class="field-help">${escHtml(spec.hint)}</div>`
+    : "";
+
+  // Registry-declared object with explicit fields → recurse for each child
+  // as a structured form; emit a header row for the parent.
+  if (kind === "object" && spec.fields && typeof spec.fields === "object") {
+    const childValue = (value && typeof value === "object" && !Array.isArray(value)) ? value : {};
+    const knownChildKeys = Object.keys(spec.fields);
+    const knownSet = new Set(knownChildKeys);
+    const populatedChildKeys = Object.keys(childValue).filter(k => knownSet.has(k));
+    const unsetChildKeys = knownChildKeys.filter(k => !(k in childValue));
+
+    // YAML-only keys that aren't in the registry — preserve via a small JSON
+    // expander so admins who hand-edited an unusual key in the YAML don't
+    // lose it on round-trip. Keys are still editable as a single JSON blob
+    // (deliberately less prominent than registry-known leaves).
+    const fallbackKeys = Object.keys(childValue).filter(k => !knownSet.has(k));
+    const fallbackBlob = fallbackKeys.length
+      ? Object.fromEntries(fallbackKeys.map(k => [k, childValue[k]]))
+      : null;
+
+    const renderChild = (k) => renderNestedField(
+      section,
+      `${dottedKey}.${k}`,
+      k,
+      (k in childValue) ? childValue[k] : undefined,
+      spec.fields[k] || {},
+      (depth || 0) + 1,
+    );
+
+    const populatedHtml = populatedChildKeys.sort().map(renderChild).join("");
+    const unsetHtml = unsetChildKeys.sort().map(renderChild).join("");
+    const fallbackHtml = fallbackBlob
+      ? (() => {
+          const fbId = `f_${section}_${dottedKey.replace(/\W/g, "_")}_fallback`;
+          // The fallback uses the same dotted-path data-key convention with
+          // a literal "__other__" leaf so the collector emits it under the
+          // parent in collectSection. Cast=json so the textarea content
+          // round-trips as an object.
+          const indentInner = ((depth || 0) + 1) * 24;
+          return `
+            <div class="cfg-field" style="margin-left: ${indentInner}px;">
+              <label for="${fbId}">↳ Other (YAML-only) keys</label>
+              <div>
+                <textarea id="${fbId}" data-section="${section}" data-key="${escHtml(dottedKey + ".__other__")}" data-cast="json">${escHtml(JSON.stringify(fallbackBlob, null, 2))}</textarea>
+                <div class="field-help">Keys present in YAML but not in the registry. Edit as a JSON object — keys at this layer survive round-trip.</div>
+              </div>
+            </div>`;
+        })()
+      : "";
+
+    return `
+      <div class="cfg-field nested-field nested-parent" style="margin-left: ${indent}px;">
+        <label>${arrow}${escHtml(label)}</label>
+        <div>${hintBlock || `<div class="field-help">Nested structured fields below.</div>`}</div>
+      </div>
+      ${populatedHtml}${unsetHtml}${fallbackHtml}`;
+  }
+
+  // Leaf field (string / int / bool / secret / select / array, OR an
+  // object without explicit `fields` — the latter falls back to JSON).
+  let inp;
+  if (kind === "object") {
+    // Object without explicit registry fields — JSON-textarea fallback so
+    // a YAML-populated subtree still round-trips even without schema.
+    const blobValue = isUnset ? "" : JSON.stringify(value || {}, null, 2);
+    inp = `<textarea id="${fieldId}" data-section="${section}" data-key="${escHtml(dottedKey)}" data-cast="json" placeholder="${isUnset ? 'unset — paste a JSON object to populate' : ''}">${escHtml(blobValue)}</textarea>`;
+  } else {
+    inp = renderLeafInput(fieldId, section, dottedKey, kind, value, { spec }, isUnset);
+  }
+
+  return `
+    <div class="${wrapperClass}" style="margin-left: ${indent}px;">
+      <label for="${fieldId}">${arrow}${escHtml(label)}${secretPill}</label>
+      <div>${inp}${hintBlock}</div>
+    </div>`;
+}
+
 function renderField(section, key, value, opts) {
   // opts: { isUnset: bool, hint: string, kind: string, spec: {…} }
   // - isUnset: render the field as a dashed placeholder (.is-unset) so the
@@ -259,116 +405,25 @@ function renderField(section, key, value, opts) {
   // - hint: one-line operator-facing help (rendered as .field-help).
   // - kind: registry-declared input kind. Overrides the typeof-value
   //   heuristic for known-but-unset entries (we have no value to inspect).
-  // - spec: the raw registry entry — used for nested-object rendering of
-  //   one level of `fields` (deeper nesting is left for subagent 3).
+  // - spec: the raw registry entry — when kind="object" + spec.fields is
+  //   declared, we render a fully-editable structured form (every leaf is
+  //   a real input with a dotted-path data-key so collectSection rebuilds
+  //   the nested patch). When spec.fields is absent / the object isn't in
+  //   the registry, we fall back to the JSON-textarea path.
   opts = opts || {};
-  const fieldId = `f_${section}_${key.replace(/\W/g, "_")}`;
-  const isSecret = isSecretKey(key) || opts.kind === "secret";
-  const wrapperClass = "cfg-field" + (opts.isUnset ? " is-unset" : "");
-  // Pick input shape. For known-but-unset entries the registry's `kind`
-  // wins; for populated fields we infer from typeof(value) like before.
-  const kind = opts.kind || (
-    isSecret ? "secret"
-    : typeof value === "number" ? "int"
-    : typeof value === "boolean" ? "bool"
-    : (value && typeof value === "object") ? "object"
-    : "string"
-  );
-  let input;
-  if (kind === "secret") {
-    const ph = opts.isUnset
-      ? "unset — type to set"
-      : (value === "<empty>" ? "unset — type to set" : "*** — type to overwrite");
-    input = `<input id="${fieldId}" type="password" class="is-secret" data-section="${section}" data-key="${escHtml(key)}" placeholder="${escHtml(ph)}" autocomplete="off">`;
-  } else if (kind === "int") {
-    const v = (value == null || value === "") ? "" : value;
-    input = `<input id="${fieldId}" type="number" data-section="${section}" data-key="${escHtml(key)}" value="${escHtml(v)}">`;
-  } else if (kind === "bool") {
-    const v = !!value;
-    input = `<select id="${fieldId}" data-section="${section}" data-key="${escHtml(key)}" data-cast="bool">
-      <option value="true" ${v ? "selected" : ""}>true</option>
-      <option value="false" ${!v ? "selected" : ""}>false</option>
-    </select>`;
-  } else if (kind === "select" && Array.isArray(opts.spec && opts.spec.options)) {
-    const sel = value == null ? "" : String(value);
-    const options = opts.spec.options.map(o => {
-      const ov = String(o);
-      return `<option value="${escHtml(ov)}" ${sel === ov ? "selected" : ""}>${escHtml(ov)}</option>`;
-    }).join("");
-    input = `<select id="${fieldId}" data-section="${section}" data-key="${escHtml(key)}">${options}</select>`;
-  } else if (kind === "object") {
-    // Two flavours land here:
-    //   1. Existing populated nested object → render as JSON blob (the
-    //      pre-existing path; keeps every key reachable for editing).
-    //   2. Known-but-unset object with a `fields` map → render an empty
-    //      JSON-blob input *and* nested known-field rows below as a hint
-    //      to the operator. Only one level deep — subagent 3 can extend.
-    const blobValue = opts.isUnset ? "" : JSON.stringify(value || {}, null, 2);
-    input = `<textarea id="${fieldId}" data-section="${section}" data-key="${escHtml(key)}" data-cast="json" placeholder="${opts.isUnset ? 'unset — paste a JSON object to populate' : ''}">${escHtml(blobValue)}</textarea>`;
-  } else if (kind === "array") {
-    const blobValue = opts.isUnset ? "" : JSON.stringify(value || [], null, 2);
-    input = `<textarea id="${fieldId}" data-section="${section}" data-key="${escHtml(key)}" data-cast="json" placeholder="${opts.isUnset ? 'unset — paste a JSON array' : ''}">${escHtml(blobValue)}</textarea>`;
-  } else {
-    // Default: text. Use the registry's default when unset, else the
-    // populated value (empty string falls through cleanly).
-    const v = opts.isUnset
-      ? (opts.spec && opts.spec.default != null ? String(opts.spec.default) : "")
-      : (value == null ? "" : value);
-    input = `<input id="${fieldId}" type="text" data-section="${section}" data-key="${escHtml(key)}" value="${escHtml(v)}">`;
+  const isUnset = !!opts.isUnset;
+  const valueForKind = isUnset ? undefined : value;
+  // Registry-declared structured object → delegate to the recursive
+  // nested-form renderer. Replaces the old read-only preview path.
+  if (opts.kind === "object" && opts.spec && opts.spec.fields && typeof opts.spec.fields === "object") {
+    return renderNestedField(section, key, key, valueForKind, opts.spec, 0);
   }
-  const secretPill = isSecret ? '<span class="secret-pill">secret</span>' : "";
-  const hintBlock = opts.hint
-    ? `<div class="field-help">${escHtml(opts.hint)}</div>`
-    : "";
-  // Nested object: emit one level of child rows beneath the parent so the
-  // operator sees the registry-declared sub-fields next to the JSON blob.
-  let childRows = "";
-  if (kind === "object" && opts.spec && opts.spec.fields && typeof opts.spec.fields === "object") {
-    const childValue = (value && typeof value === "object") ? value : {};
-    childRows = Object.keys(opts.spec.fields).sort().map(childKey => {
-      const childSpec = opts.spec.fields[childKey] || {};
-      const present = Object.prototype.hasOwnProperty.call(childValue, childKey);
-      // Render child rows under a synthetic compound key so they round-trip
-      // through the JSON-blob parent (the operator edits the blob; child
-      // rows are display-only). The compound key marks the inputs as
-      // non-collected (data-display-only) so collectSection skips them.
-      const compoundKey = `${key}.${childKey}`;
-      const fieldIdC = `f_${section}_${compoundKey.replace(/\W/g, "_")}`;
-      const isUnsetC = !present;
-      const wrapperClassC = "cfg-field" + (isUnsetC ? " is-unset" : "");
-      const valC = present ? childValue[childKey] : "";
-      const kindC = childSpec.kind || "string";
-      let inp;
-      if (kindC === "bool") {
-        const v = !!valC;
-        inp = `<select id="${fieldIdC}" data-display-only="1">
-          <option value="true" ${v ? "selected" : ""}>true</option>
-          <option value="false" ${!v ? "selected" : ""}>false</option>
-        </select>`;
-      } else if (kindC === "int") {
-        const v = (valC == null || valC === "") ? "" : valC;
-        inp = `<input id="${fieldIdC}" type="number" data-display-only="1" value="${escHtml(v)}">`;
-      } else if (kindC === "secret") {
-        inp = `<input id="${fieldIdC}" type="password" class="is-secret" data-display-only="1" placeholder="set in the JSON above" autocomplete="off">`;
-      } else {
-        const v = present ? valC : (childSpec.default != null ? String(childSpec.default) : "");
-        inp = `<input id="${fieldIdC}" type="text" data-display-only="1" value="${escHtml(v == null ? "" : v)}">`;
-      }
-      const childHint = childSpec.hint
-        ? `<div class="field-help">${escHtml(childSpec.hint)}</div>`
-        : "";
-      return `
-        <div class="${wrapperClassC}" style="margin-left: 24px;">
-          <label for="${fieldIdC}">↳ ${escHtml(childKey)}</label>
-          <div>${inp}${childHint}</div>
-        </div>`;
-    }).join("");
-  }
-  return `
-    <div class="${wrapperClass}">
-      <label for="${fieldId}">${escHtml(key)}${secretPill}</label>
-      <div>${input}${hintBlock}</div>
-    </div>${childRows}`;
+  return renderNestedField(section, key, key, valueForKind, {
+    kind: opts.kind,
+    hint: opts.hint,
+    default: opts.spec && opts.spec.default,
+    options: opts.spec && opts.spec.options,
+  }, 0);
 }
 
 function renderSection(section, payload, knownForSection) {
@@ -479,22 +534,55 @@ function scrubRedactedSecrets(value) {
   return value;
 }
 
+// Split a dotted-path data-key like "bigquery.billing_project" into segments.
+// Used by collectSection to rebuild a nested patch from individual leaf
+// inputs. The "__other__" leaf is the YAML-fallback expander — its parsed
+// content is merged into the parent dict (not nested under the literal key).
+function splitDotted(dotKey) {
+  if (!dotKey) return [];
+  return dotKey.split(".");
+}
+
+// Set value at a nested path inside `out`, creating intermediate dicts as
+// needed. The "__other__" segment is special-cased: its dict value gets
+// merged into the parent rather than stored under the literal segment.
+function setNested(out, segments, value) {
+  if (!segments.length) return;
+  let node = out;
+  for (let i = 0; i < segments.length - 1; i++) {
+    const seg = segments[i];
+    if (typeof node[seg] !== "object" || node[seg] === null || Array.isArray(node[seg])) {
+      node[seg] = {};
+    }
+    node = node[seg];
+  }
+  const last = segments[segments.length - 1];
+  if (last === "__other__") {
+    // Fallback expander: merge the JSON object into the parent. Skip if the
+    // user cleared the textarea or the value isn't an object.
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      Object.assign(node, value);
+    }
+    return;
+  }
+  node[last] = value;
+}
+
 // ── Collect form values for one section ───────────────────────────────
 function collectSection(section) {
   const inputs = document.querySelectorAll(`[data-section="${section}"]`);
   const patch = {};
   for (const el of inputs) {
     if (el.dataset.action) continue; // skip buttons
-    if (el.dataset.displayOnly) continue; // skip nested-known-fields display rows
-    const key = el.dataset.key;
-    if (!key) continue;
+    const dotKey = el.dataset.key;
+    if (!dotKey) continue;
     let raw = el.value;
     // Skip empty secret fields — operator left them blank to preserve the
     // existing value. Sending "" would overwrite the secret with empty.
     if (el.classList.contains("is-secret") && raw === "") continue;
 
     let value;
-    if (key === "__bootstrap__") {
+    if (dotKey === "__bootstrap__") {
       // Bootstrap textarea — parse the entire blob and merge it as the
       // section patch. Skip empty input entirely. Scrub redacted sentinels
       // out of the parsed object so a round-trip can't overwrite real
@@ -507,11 +595,14 @@ function collectSection(section) {
     if (el.dataset.cast === "bool") {
       value = raw === "true";
     } else if (el.dataset.cast === "json") {
-      if (!raw.trim()) { value = null; }
-      else {
-        try { value = scrubRedactedSecrets(JSON.parse(raw)); }
-        catch (e) { throw new Error(`Field ${section}.${key} is not valid JSON: ${e.message}`); }
+      if (!raw.trim()) {
+        // Empty JSON textarea: skip entirely so a blank fallback expander
+        // doesn't wipe its parent. The deep-merge on the server preserves
+        // whatever's already on disk for this slot.
+        continue;
       }
+      try { value = scrubRedactedSecrets(JSON.parse(raw)); }
+      catch (e) { throw new Error(`Field ${section}.${dotKey} is not valid JSON: ${e.message}`); }
     } else if (el.type === "number") {
       value = raw === "" ? null : Number(raw);
     } else {
@@ -520,8 +611,10 @@ function collectSection(section) {
     // If the operator left a secret-keyed scalar at the redaction sentinel
     // — e.g. typed nothing into a `token_env` text input that already shows
     // `"***"` — drop it rather than persisting the placeholder.
-    if (isSecretKey(key) && (value === "***" || value === "<empty>")) continue;
-    patch[key] = value;
+    const segments = splitDotted(dotKey);
+    const leafKey = segments[segments.length - 1] || "";
+    if (isSecretKey(leafKey) && (value === "***" || value === "<empty>")) continue;
+    setNested(patch, segments, value);
   }
   return patch;
 }

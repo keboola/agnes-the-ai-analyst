@@ -11,6 +11,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **admin UI**: `/admin/server-config` renders registry-declared nested
+  fields (`kind="object"` with explicit `fields`) as a fully-editable
+  structured form — every leaf is its own input with a dotted-path
+  `data-key`, and the collector rebuilds a nested patch on save. Replaces
+  the previous read-only preview that forced operators to edit a parent
+  JSON textarea. YAML-only keys outside the registry survive via an
+  "Other (YAML-only) keys" expander per nested layer. Recursion handles
+  arbitrary depth, ready for the upcoming corporate_memory + admins
+  registry entries.
 - **admin UI**: `/admin/server-config` now ships a known-fields registry
   (`_KNOWN_FIELDS` in `app/api/admin.py`, exposed on the GET response as
   `known_fields`). The renderer shows registry-declared knobs as dashed
