@@ -806,12 +806,31 @@ document.getElementById("resources-filter").addEventListener("input", e => {
 });
 
 // Pre-select a group via ?group=<id> deep-link from /admin/groups/{id}.
+// Pre-filter to a table via #table:<id> deep-link from /admin/tables's
+// per-row Manage access button — drops the table_id into the resource
+// filter so the operator sees just that row once they pick a group.
 async function bootstrap() {
   await loadOverview();
   const params = new URLSearchParams(window.location.search);
   const target = params.get("group");
   if (target && state.groups.some(g => g.id === target)) {
     selectGroup(target);
+  }
+  // Hash-based deep link, e.g. #table:in.c-sales.orders → pre-fill the
+  // resource filter with the table_id. The filter is name-substring based
+  // and tables come through with the table_id as their `name`, so this
+  // narrows the visible items to just the clicked row across all groups.
+  const hash = window.location.hash || "";
+  if (hash.startsWith("#table:")) {
+    const tableId = decodeURIComponent(hash.slice("#table:".length));
+    if (tableId) {
+      const filterEl = document.getElementById("resources-filter");
+      if (filterEl) {
+        filterEl.value = tableId;
+        state.filter = tableId;
+        renderResources();
+      }
+    }
   }
 }
 bootstrap();
