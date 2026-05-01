@@ -705,6 +705,13 @@ class TestRebuildFromRegistry:
         assert "orders" in names
 
     def test_missing_project_returns_error(self, e2e_env, monkeypatch):
+        # Reset the instance-config cache so a sibling test's patched
+        # `bigquery: {project: "ok-project"}` doesn't leak into this one's
+        # `bigquery: {}` view. The cache is keyed on the loader's first
+        # call, not on monkeypatch's restore — so monkeypatch.setattr alone
+        # isn't sufficient.
+        from app.instance_config import reset_cache
+        reset_cache()
         monkeypatch.setattr(
             "config.loader.load_instance_config",
             lambda: {"data_source": {"type": "bigquery", "bigquery": {}}},
