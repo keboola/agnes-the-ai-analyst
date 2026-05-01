@@ -159,6 +159,21 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
             table_name = tc["name"]
             query_mode = tc.get("query_mode", "local")
 
+            # Materialized rows are written by the sync trigger pass via
+            # `materialize_query()` — they live as parquets in
+            # /data/extracts/keboola/data/, picked up by the orchestrator's
+            # standard local-parquet discovery. Don't extract here (would
+            # double-write data via the source bucket reference and confuse
+            # sync_state bookkeeping). Mirror of the BQ extractor's skip at
+            # connectors/bigquery/extractor.py:190.
+            if query_mode == "materialized":
+                logger.info(
+                    "Skipping legacy extract for %s — query_mode='materialized', "
+                    "handled by _run_materialized_pass instead",
+                    tc.get("id") or tc.get("name"),
+                )
+                continue
+
             # #81 Group D — refuse rows whose identifiers don't pass the
             # whitelist. The registry is admin-controlled but anyone with
             # write access can otherwise inject SQL via the CREATE VIEW /
