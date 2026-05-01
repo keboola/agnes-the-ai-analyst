@@ -108,6 +108,33 @@
 
   .cfg-loading { padding: 32px 16px; text-align: center; color: var(--text-secondary, #6b7280); font-size: 13px; }
 
+  /* Known-but-unset fields (sourced from the known_fields registry) — render
+     dashed and de-emphasised so the operator sees "this is a knob you can
+     turn" without confusing it with a populated value. */
+  .cfg-field.is-unset label { color: var(--text-secondary, #9ca3af); }
+  .cfg-field.is-unset input[type="text"],
+  .cfg-field.is-unset input[type="password"],
+  .cfg-field.is-unset input[type="number"],
+  .cfg-field.is-unset select,
+  .cfg-field.is-unset textarea {
+    border-style: dashed;
+    background: var(--background, #fafafa);
+  }
+  .cfg-field.is-unset .field-help { font-style: italic; }
+  .cfg-divider {
+    border: 0;
+    border-top: 1px dashed var(--border, #e5e7eb);
+    margin: 12px 0;
+  }
+  .cfg-divider-label {
+    display: block;
+    font-size: 11px;
+    color: var(--text-secondary, #9ca3af);
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
   /* Confirmation modal — danger-zone gate */
   .modal-backdrop {
     position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55);
@@ -224,50 +251,175 @@ function escHtml(s) {
   return d.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
-function renderField(section, key, value) {
+function renderField(section, key, value, opts) {
+  // opts: { isUnset: bool, hint: string, kind: string, spec: {…} }
+  // - isUnset: render the field as a dashed placeholder (.is-unset) so the
+  //   operator can tell at a glance that the value is sourced from the
+  //   known_fields registry rather than the live YAML.
+  // - hint: one-line operator-facing help (rendered as .field-help).
+  // - kind: registry-declared input kind. Overrides the typeof-value
+  //   heuristic for known-but-unset entries (we have no value to inspect).
+  // - spec: the raw registry entry — used for nested-object rendering of
+  //   one level of `fields` (deeper nesting is left for subagent 3).
+  opts = opts || {};
   const fieldId = `f_${section}_${key.replace(/\W/g, "_")}`;
-  const isSecret = isSecretKey(key);
-  // Determine input type — secrets render as password, ports as number,
-  // long strings (>120 chars) as textarea, the rest as text.
+  const isSecret = isSecretKey(key) || opts.kind === "secret";
+  const wrapperClass = "cfg-field" + (opts.isUnset ? " is-unset" : "");
+  // Pick input shape. For known-but-unset entries the registry's `kind`
+  // wins; for populated fields we infer from typeof(value) like before.
+  const kind = opts.kind || (
+    isSecret ? "secret"
+    : typeof value === "number" ? "int"
+    : typeof value === "boolean" ? "bool"
+    : (value && typeof value === "object") ? "object"
+    : "string"
+  );
   let input;
-  if (isSecret) {
-    input = `<input id="${fieldId}" type="password" class="is-secret" data-section="${section}" data-key="${escHtml(key)}" placeholder="${value === '<empty>' ? 'unset — type to set' : '*** — type to overwrite'}" autocomplete="off">`;
-  } else if (typeof value === "number") {
-    input = `<input id="${fieldId}" type="number" data-section="${section}" data-key="${escHtml(key)}" value="${escHtml(value)}">`;
-  } else if (typeof value === "boolean") {
+  if (kind === "secret") {
+    const ph = opts.isUnset
+      ? "unset — type to set"
+      : (value === "<empty>" ? "unset — type to set" : "*** — type to overwrite");
+    input = `<input id="${fieldId}" type="password" class="is-secret" data-section="${section}" data-key="${escHtml(key)}" placeholder="${escHtml(ph)}" autocomplete="off">`;
+  } else if (kind === "int") {
+    const v = (value == null || value === "") ? "" : value;
+    input = `<input id="${fieldId}" type="number" data-section="${section}" data-key="${escHtml(key)}" value="${escHtml(v)}">`;
+  } else if (kind === "bool") {
+    const v = !!value;
     input = `<select id="${fieldId}" data-section="${section}" data-key="${escHtml(key)}" data-cast="bool">
-      <option value="true" ${value ? "selected" : ""}>true</option>
-      <option value="false" ${!value ? "selected" : ""}>false</option>
+      <option value="true" ${v ? "selected" : ""}>true</option>
+      <option value="false" ${!v ? "selected" : ""}>false</option>
     </select>`;
-  } else if (value && typeof value === "object") {
-    // Nested object (e.g. data_source.keboola.{...}) — render the JSON
-    // for now and let the operator edit it as a blob. Keeps the UI simple
-    // while still allowing every field to be reachable.
-    input = `<textarea id="${fieldId}" data-section="${section}" data-key="${escHtml(key)}" data-cast="json">${escHtml(JSON.stringify(value, null, 2))}</textarea>`;
+  } else if (kind === "select" && Array.isArray(opts.spec && opts.spec.options)) {
+    const sel = value == null ? "" : String(value);
+    const options = opts.spec.options.map(o => {
+      const ov = String(o);
+      return `<option value="${escHtml(ov)}" ${sel === ov ? "selected" : ""}>${escHtml(ov)}</option>`;
+    }).join("");
+    input = `<select id="${fieldId}" data-section="${section}" data-key="${escHtml(key)}">${options}</select>`;
+  } else if (kind === "object") {
+    // Two flavours land here:
+    //   1. Existing populated nested object → render as JSON blob (the
+    //      pre-existing path; keeps every key reachable for editing).
+    //   2. Known-but-unset object with a `fields` map → render an empty
+    //      JSON-blob input *and* nested known-field rows below as a hint
+    //      to the operator. Only one level deep — subagent 3 can extend.
+    const blobValue = opts.isUnset ? "" : JSON.stringify(value || {}, null, 2);
+    input = `<textarea id="${fieldId}" data-section="${section}" data-key="${escHtml(key)}" data-cast="json" placeholder="${opts.isUnset ? 'unset — paste a JSON object to populate' : ''}">${escHtml(blobValue)}</textarea>`;
+  } else if (kind === "array") {
+    const blobValue = opts.isUnset ? "" : JSON.stringify(value || [], null, 2);
+    input = `<textarea id="${fieldId}" data-section="${section}" data-key="${escHtml(key)}" data-cast="json" placeholder="${opts.isUnset ? 'unset — paste a JSON array' : ''}">${escHtml(blobValue)}</textarea>`;
   } else {
-    const v = value == null ? "" : value;
+    // Default: text. Use the registry's default when unset, else the
+    // populated value (empty string falls through cleanly).
+    const v = opts.isUnset
+      ? (opts.spec && opts.spec.default != null ? String(opts.spec.default) : "")
+      : (value == null ? "" : value);
     input = `<input id="${fieldId}" type="text" data-section="${section}" data-key="${escHtml(key)}" value="${escHtml(v)}">`;
   }
   const secretPill = isSecret ? '<span class="secret-pill">secret</span>' : "";
+  const hintBlock = opts.hint
+    ? `<div class="field-help">${escHtml(opts.hint)}</div>`
+    : "";
+  // Nested object: emit one level of child rows beneath the parent so the
+  // operator sees the registry-declared sub-fields next to the JSON blob.
+  let childRows = "";
+  if (kind === "object" && opts.spec && opts.spec.fields && typeof opts.spec.fields === "object") {
+    const childValue = (value && typeof value === "object") ? value : {};
+    childRows = Object.keys(opts.spec.fields).sort().map(childKey => {
+      const childSpec = opts.spec.fields[childKey] || {};
+      const present = Object.prototype.hasOwnProperty.call(childValue, childKey);
+      // Render child rows under a synthetic compound key so they round-trip
+      // through the JSON-blob parent (the operator edits the blob; child
+      // rows are display-only). The compound key marks the inputs as
+      // non-collected (data-display-only) so collectSection skips them.
+      const compoundKey = `${key}.${childKey}`;
+      const fieldIdC = `f_${section}_${compoundKey.replace(/\W/g, "_")}`;
+      const isUnsetC = !present;
+      const wrapperClassC = "cfg-field" + (isUnsetC ? " is-unset" : "");
+      const valC = present ? childValue[childKey] : "";
+      const kindC = childSpec.kind || "string";
+      let inp;
+      if (kindC === "bool") {
+        const v = !!valC;
+        inp = `<select id="${fieldIdC}" data-display-only="1">
+          <option value="true" ${v ? "selected" : ""}>true</option>
+          <option value="false" ${!v ? "selected" : ""}>false</option>
+        </select>`;
+      } else if (kindC === "int") {
+        const v = (valC == null || valC === "") ? "" : valC;
+        inp = `<input id="${fieldIdC}" type="number" data-display-only="1" value="${escHtml(v)}">`;
+      } else if (kindC === "secret") {
+        inp = `<input id="${fieldIdC}" type="password" class="is-secret" data-display-only="1" placeholder="set in the JSON above" autocomplete="off">`;
+      } else {
+        const v = present ? valC : (childSpec.default != null ? String(childSpec.default) : "");
+        inp = `<input id="${fieldIdC}" type="text" data-display-only="1" value="${escHtml(v == null ? "" : v)}">`;
+      }
+      const childHint = childSpec.hint
+        ? `<div class="field-help">${escHtml(childSpec.hint)}</div>`
+        : "";
+      return `
+        <div class="${wrapperClassC}" style="margin-left: 24px;">
+          <label for="${fieldIdC}">↳ ${escHtml(childKey)}</label>
+          <div>${inp}${childHint}</div>
+        </div>`;
+    }).join("");
+  }
   return `
-    <div class="cfg-field">
+    <div class="${wrapperClass}">
       <label for="${fieldId}">${escHtml(key)}${secretPill}</label>
-      <div>${input}</div>
-    </div>`;
+      <div>${input}${hintBlock}</div>
+    </div>${childRows}`;
 }
 
-function renderSection(section, payload) {
+function renderSection(section, payload, knownForSection) {
+  // knownForSection: registry slice for this section, e.g.
+  //   { bigquery: { kind: "object", hint: "...", fields: { billing_project: {...} } } }
+  // Keys present in `payload` render as populated; keys present in
+  // `knownForSection` but absent from `payload` render as dashed
+  // placeholders (.is-unset).
   const meta = SECTION_META[section] || { title: section, help: "" };
   const isDanger = DANGER_SECTIONS.has(section);
   const danger = isDanger ? '<span class="danger-pill">danger</span>' : "";
-  const keys = Object.keys(payload || {}).sort();
-  const fieldsHtml = keys.length
-    ? keys.map(k => renderField(section, k, payload[k])).join("")
+  const populatedKeys = Object.keys(payload || {}).sort();
+  const known = knownForSection || {};
+  const populatedSet = new Set(populatedKeys);
+  const knownUnsetKeys = Object.keys(known).filter(k => !populatedSet.has(k)).sort();
+
+  const populatedHtml = populatedKeys.map(k => {
+    const spec = known[k] || {};
+    return renderField(section, k, payload[k], {
+      isUnset: false,
+      hint: spec.hint || "",
+      kind: spec.kind,  // may be undefined; renderField falls back to typeof inference
+      spec,
+    });
+  }).join("");
+
+  const unsetHtml = knownUnsetKeys.map(k => {
+    const spec = known[k] || {};
+    return renderField(section, k, undefined, {
+      isUnset: true,
+      hint: spec.hint || "",
+      kind: spec.kind || "string",
+      spec,
+    });
+  }).join("");
+
+  // Visual divider between populated and known-but-unset rows so the
+  // operator sees at a glance which knobs they're already using vs which
+  // ones the registry exposes for them.
+  const divider = (populatedHtml && unsetHtml)
+    ? `<hr class="cfg-divider"><span class="cfg-divider-label">Available but unset</span>`
+    : (unsetHtml ? `<span class="cfg-divider-label">Available but unset</span>` : "");
+
+  const fieldsHtml = (populatedHtml || unsetHtml)
+    ? (populatedHtml + divider + unsetHtml)
     : `<div class="section-help">No fields populated yet — type below to add common keys, or edit the YAML directly via the API.</div>`;
-  // For empty sections, give the operator a textarea so they can paste a
-  // YAML/JSON blob to bootstrap the section. We persist it via the JSON
-  // cast so non-trivial structures still merge correctly.
-  const bootstrap = keys.length === 0
+  // For empty sections (no populated *and* no known-but-unset), give the
+  // operator a textarea so they can paste a YAML/JSON blob to bootstrap
+  // the section. We persist it via the JSON cast so non-trivial structures
+  // still merge correctly.
+  const bootstrap = (populatedKeys.length === 0 && knownUnsetKeys.length === 0)
     ? `<div class="cfg-field">
         <label for="bootstrap_${section}">JSON patch</label>
         <div>
@@ -297,7 +449,8 @@ function renderSection(section, payload) {
 function renderAll(data) {
   const wrap = document.getElementById("cfg-sections");
   const sections = data.editable_sections || Object.keys(data.sections || {});
-  wrap.innerHTML = sections.map(s => renderSection(s, data.sections[s] || {})).join("");
+  const known = data.known_fields || {};
+  wrap.innerHTML = sections.map(s => renderSection(s, data.sections[s] || {}, known[s] || {})).join("");
   document.getElementById("cfg-loading").style.display = "none";
   wrap.hidden = false;
 
@@ -332,6 +485,7 @@ function collectSection(section) {
   const patch = {};
   for (const el of inputs) {
     if (el.dataset.action) continue; // skip buttons
+    if (el.dataset.displayOnly) continue; // skip nested-known-fields display rows
     const key = el.dataset.key;
     if (!key) continue;
     let raw = el.value;

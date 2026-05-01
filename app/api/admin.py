@@ -181,6 +181,78 @@ _EDITABLE_SECTIONS: tuple[str, ...] = (
 # the right warning copy.
 _DANGER_SECTIONS: tuple[str, ...] = ("auth", "server")
 
+# Known-but-optional config fields per section. The /admin/server-config UI
+# uses this registry alongside the YAML payload to render fields the operator
+# might want to set even though they're not currently in instance.yaml.
+#
+# Schema per field:
+#   {
+#     "kind": "string" | "secret" | "bool" | "int" | "select" | "object" | "array",
+#     "default": <type-appropriate default>  (optional)
+#     "hint": "<one-line operator-facing help>"
+#     "options": [...]              (only for kind="select")
+#     "fields": {<name>: <fieldspec>}  (only for kind="object", nested fields)
+#     "item_kind": "string" | ...   (only for kind="array", element type)
+#     "required": bool             (defaults False; UI marks the label)
+#   }
+#
+# Subagents 2-4 will populate the bodies. The registry enables the UI to
+# render missing-but-known fields with placeholders + hints rather than
+# forcing the operator to discover them via the JSON-patch textarea or
+# hitting a runtime error first. The smoke fixture below
+# (data_source.bigquery.billing_project) proves the renderer wiring works
+# end-to-end so subagents 2-4 only have to add registry entries — they
+# don't need to touch admin_server_config.html.
+_KNOWN_FIELDS: dict[str, dict[str, dict]] = {
+    "instance": {
+        # populated by subagent 2 if any apply; instance has no commonly-missing fields
+    },
+    "data_source": {
+        "bigquery": {
+            "kind": "object",
+            "hint": "BigQuery connection knobs (read more in docs/DEPLOYMENT.md)",
+            "fields": {
+                "billing_project": {
+                    "kind": "string",
+                    "hint": (
+                        "GCP project to bill BQ jobs against. Set when the SA can "
+                        "read the data project but cannot bill there (e.g. shared "
+                        "read-only data project). Defaults to data_source.bigquery.project."
+                    ),
+                },
+            },
+        },
+        # subagent 2 will add bigquery.legacy_wrap_views and
+        # bigquery.max_bytes_per_materialize alongside billing_project.
+    },
+    "email": {
+        # populated by subagent 2 if any apply
+    },
+    "telegram": {
+        # rare enough; leave for now
+    },
+    "jira": {
+        # populated by subagent 2 if any apply
+    },
+    "theme": {
+        # cosmetic; rarely missing
+    },
+    "server": {
+        # rarely missing (TLS knobs are env-side)
+    },
+    "auth": {
+        # rarely missing
+    },
+    "ai": {
+        # populated by subagent 2: base_url
+    },
+    # New sections subagents 3-4 add to _EDITABLE_SECTIONS:
+    # "openmetadata": ...
+    # "corporate_memory": ...
+    # "desktop": ...
+    # "admins": ...
+}
+
 # Keys whose values must be redacted from the audit diff. We match
 # substring (case-insensitive) so `client_secret`, `api_token`,
 # `webapp_secret_key`, `bot_token`, `password`, `smtp_password`, etc. all
@@ -448,6 +520,12 @@ async def get_server_config(
         "editable_sections": list(_EDITABLE_SECTIONS),
         "danger_sections": list(_DANGER_SECTIONS),
         "secret_key_patterns": list(_SECRET_KEY_PATTERNS),
+        # Known-but-optional fields per section so the UI can render
+        # placeholders for fields the operator hasn't set yet (Phase J).
+        # Subagents 2-4 populate the bodies; the renderer ships now so the
+        # mechanism is wired end-to-end and adding entries is purely a
+        # data-edit in `_KNOWN_FIELDS` above.
+        "known_fields": _KNOWN_FIELDS,
     }
 
 

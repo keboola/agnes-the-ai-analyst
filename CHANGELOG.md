@@ -11,6 +11,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **admin UI**: `/admin/server-config` now ships a known-fields registry
+  (`_KNOWN_FIELDS` in `app/api/admin.py`, exposed on the GET response as
+  `known_fields`). The renderer shows registry-declared knobs as dashed
+  placeholders alongside populated values, with a one-line hint per
+  field, so operators discover optional config (e.g.
+  `data_source.bigquery.billing_project`) directly in the UI instead of
+  having to read docs or hit a runtime error first. Subagents 2-4 will
+  populate the bodies; the smoke fixture covers `bigquery.billing_project`.
 - **admin UI**: `/admin/server-config` now exposes three previously
   YAML-only BigQuery knobs in the editor — `data_source.bigquery.billing_project`,
   `legacy_wrap_views`, and `max_bytes_per_materialize`. The GET response
