@@ -385,6 +385,43 @@ class ServerConfigUpdateRequest(BaseModel):
     )
 
 
+# Optional BQ fields whose runtime defaults are documented but which used to
+# be invisible in the editor when YAML omitted them. The data_source.bigquery
+# subtree renders as a JSON textarea; a key that's absent from the GET
+# payload literally cannot appear in the form for the operator to edit. We
+# surface them with their documented defaults so the UI always shows them as
+# editable knobs — see Phase J of the admin-tables-cleanup work.
+#
+#   - billing_project: defaults to data project; explicit value needed when
+#     the SA can read the data project but not bill against it.
+#   - legacy_wrap_views: default False; toggling ON wraps BQ views via
+#     `bigquery_query()` so analysts can `SELECT *` directly.
+#   - max_bytes_per_materialize: cost guardrail for `query_mode='materialized'`
+#     (default 10 GiB; 0 disables; null falls through to the default).
+_BQ_OPTIONAL_FIELD_DEFAULTS: Dict[str, Any] = {
+    "billing_project": "",
+    "legacy_wrap_views": False,
+    "max_bytes_per_materialize": 10737418240,
+}
+
+
+def _ensure_bq_optional_fields(sections: Dict[str, Any]) -> None:
+    """In-place: add missing BQ optional fields to data_source.bigquery so the
+    UI's JSON-textarea renders them as editable keys. Existing values are
+    preserved — only absent keys are populated with their documented default.
+    """
+    ds = sections.get("data_source")
+    if not isinstance(ds, dict):
+        return
+    bq = ds.get("bigquery")
+    if not isinstance(bq, dict):
+        # No BQ subsection — leave alone. Non-BQ instances don't need these
+        # knobs, and creating an empty bigquery dict would be misleading.
+        return
+    for key, default in _BQ_OPTIONAL_FIELD_DEFAULTS.items():
+        bq.setdefault(key, default)
+
+
 @router.get("/server-config")
 async def get_server_config(
     user: dict = Depends(require_admin),
@@ -403,6 +440,9 @@ async def get_server_config(
     # file omits them — operator can populate from scratch without manual
     # JSON edits.
     sections = {section: redacted.get(section, {}) for section in _EDITABLE_SECTIONS}
+    # Always surface the optional BQ knobs so the operator sees them in the
+    # UI's JSON editor instead of having to know they exist (Phase J).
+    _ensure_bq_optional_fields(sections)
     return {
         "sections": sections,
         "editable_sections": list(_EDITABLE_SECTIONS),

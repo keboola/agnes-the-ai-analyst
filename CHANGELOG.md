@@ -11,6 +11,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **admin UI**: `/admin/server-config` now exposes three previously
+  YAML-only BigQuery knobs in the editor — `data_source.bigquery.billing_project`,
+  `legacy_wrap_views`, and `max_bytes_per_materialize`. The GET response
+  always includes them under `data_source.bigquery` (with documented
+  defaults when YAML omits them) so the JSON-textarea UI shows them as
+  editable keys. The section help text describes each. Operators no
+  longer need to SSH to the VM, edit YAML, restart to flip these.
 - **admin UI**: `/admin/tables` is now a per-connector tab interface
   (BigQuery / Keboola / Jira). Each tab has its own Register modal +
   listing scoped to its source_type. Active tab persists in

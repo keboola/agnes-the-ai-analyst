@@ -177,7 +177,7 @@ function isSecretKey(key) {
 // Section copy — kept short; the issue's Scope section explains the rest.
 const SECTION_META = {
   instance: { title: "Instance", help: "Branding shown in the header and emails." },
-  data_source: { title: "Data source", help: "Switch source type or update connection details." },
+  data_source: { title: "Data source", help: "Switch source type or update connection details. BigQuery optional knobs (edit the JSON blob): billing_project (project to bill BQ jobs to — set when SA can read the data project but not bill there); legacy_wrap_views (default false; flip true to wrap BQ VIEWs via bigquery_query() so analysts can SELECT * directly — issue #101); max_bytes_per_materialize (cost guardrail for query_mode='materialized'; default 10737418240 = 10 GiB; 0 disables)." },
   email: { title: "Email (SMTP)", help: "SMTP relay for magic-link login. Leave blank to disable." },
   telegram: { title: "Telegram", help: "Bot credentials for notifications." },
   jira: { title: "Jira", help: "Jira webhook + REST credentials." },
