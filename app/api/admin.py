@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Optional, List, Dict, Any
 import duckdb
 
@@ -172,6 +172,9 @@ _EDITABLE_SECTIONS: tuple[str, ...] = (
     "server",
     "auth",
     "ai",
+    "openmetadata",
+    "desktop",
+    "corporate_memory",
 )
 
 # "Danger-zone" sections — flipping these can lock operators out (auth.*) or
@@ -180,6 +183,404 @@ _EDITABLE_SECTIONS: tuple[str, ...] = (
 # the audit entry can flag the change as high-risk and the UI can surface
 # the right warning copy.
 _DANGER_SECTIONS: tuple[str, ...] = ("auth", "server")
+
+# Known-but-optional config fields per section. The /admin/server-config UI
+# uses this registry alongside the YAML payload to render fields the operator
+# might want to set even though they're not currently in instance.yaml.
+#
+# Schema per field:
+#   {
+#     "kind": "string" | "secret" | "bool" | "int" | "select" | "object" | "array",
+#     "default": <type-appropriate default>  (optional)
+#     "hint": "<one-line operator-facing help>"
+#     "options": [...]              (only for kind="select")
+#     "fields": {<name>: <fieldspec>}  (only for kind="object", nested fields)
+#     "item_kind": "string" | ...   (only for kind="array", element type)
+#     "required": bool             (defaults False; UI marks the label)
+#   }
+#
+# Subagents 2-4 will populate the bodies. The registry enables the UI to
+# render missing-but-known fields with placeholders + hints rather than
+# forcing the operator to discover them via the JSON-patch textarea or
+# hitting a runtime error first. The smoke fixture below
+# (data_source.bigquery.billing_project) proves the renderer wiring works
+# end-to-end so subagents 2-4 only have to add registry entries — they
+# don't need to touch admin_server_config.html.
+_KNOWN_FIELDS: dict[str, dict[str, dict]] = {
+    "instance": {
+        # No commonly-missing instance-level fields. The example YAML's
+        # `name`/`subtitle` are always populated by `da setup` so they
+        # render via the populated path; nothing to surface here.
+    },
+    "data_source": {
+        "bigquery": {
+            "kind": "object",
+            "hint": "BigQuery connection knobs (read more in docs/DEPLOYMENT.md)",
+            "fields": {
+                "billing_project": {
+                    "kind": "string",
+                    "hint": (
+                        "GCP project to bill BQ jobs against. Set when SA can read "
+                        "the data project but cannot bill there (e.g. shared read-only "
+                        "data project). Defaults to data_source.bigquery.project. "
+                        "Mismatch → 403 USER_PROJECT_DENIED on every BQ call."
+                    ),
+                },
+                "legacy_wrap_views": {
+                    "kind": "bool",
+                    "default": False,
+                    "hint": (
+                        "When true, registered VIEWs and MATERIALIZED_VIEWs get a DuckDB "
+                        "master view via bigquery_query() (jobs API) so analysts can "
+                        "SELECT * FROM viewname directly. When false (default), views are "
+                        "catalog-only — analysts use `da fetch` or `da query --remote`. "
+                        "ON for view-heavy deployments where most views are small enough "
+                        "to materialize without 'Response too large' (issue #101)."
+                    ),
+                },
+                "max_bytes_per_materialize": {
+                    "kind": "int",
+                    "default": 10737418240,
+                    "hint": (
+                        "Cost guardrail for query_mode='materialized' BQ scans (dry-run "
+                        "check before running). Bytes processed; exceeds → registration "
+                        "or sync rejected. 0 disables the gate. Default 10737418240 = 10 GiB."
+                    ),
+                },
+            },
+        },
+        "keboola": {
+            "kind": "object",
+            "hint": "Keboola Storage API connection",
+            "fields": {
+                "stack_url": {
+                    "kind": "string",
+                    "hint": (
+                        "e.g. https://connection.keboola.com (instance-specific stack URL). "
+                        "Validated against private-IP allowlist on save (SSRF guard)."
+                    ),
+                },
+                "project_id": {
+                    "kind": "string",
+                    "hint": "Keboola project ID (numeric, but kept as string in YAML).",
+                },
+            },
+        },
+    },
+    "email": {
+        # SMTP fields render via the populated path (always set when email
+        # is enabled); no commonly-missing optional knobs at this layer.
+    },
+    "telegram": {
+        # Rarely missing; leave empty.
+    },
+    "jira": {
+        # Webhook + REST credentials always present when Jira is configured.
+    },
+    "theme": {
+        # Cosmetic only; rarely missing.
+    },
+    "server": {
+        # TLS / hostname knobs are mostly env-side; nothing to surface here.
+    },
+    "auth": {
+        "allowed_domain": {
+            "kind": "string",
+            "hint": (
+                "Comma-separated list of allowed sign-in email domains (e.g. "
+                "'acme.com,acme-internal.com'). Single domain works too. Empty → no "
+                "domain restriction (any verified Google identity can sign in)."
+            ),
+        },
+    },
+    "ai": {
+        "base_url": {
+            "kind": "string",
+            "hint": (
+                "Required for provider='openai_compat' (LiteLLM, OpenRouter, vLLM, etc.). "
+                "Ignored when provider='anthropic'. Examples: https://litellm.example.com, "
+                "https://openrouter.ai/api/v1."
+            ),
+        },
+        "structured_output": {
+            "kind": "select",
+            "options": ["strict", "json", "auto"],
+            "default": "auto",
+            "hint": (
+                "JSON-schema enforcement strategy. strict=Layer 1 only "
+                "(Anthropic/OpenAI native, fail otherwise). json=Layer 1 + Layer 2 "
+                "fallback. auto=all three layers including prompt-based JSON (most "
+                "compatible, least strict)."
+            ),
+        },
+    },
+    "openmetadata": {
+        "url": {
+            "kind": "string",
+            "hint": "Base URL of your OpenMetadata server (e.g. https://catalog.example.com).",
+        },
+        "token": {
+            "kind": "secret",
+            "hint": (
+                "JWT bearer token. Use ${OPENMETADATA_TOKEN} env-var reference "
+                "(don't paste secret directly)."
+            ),
+        },
+        "cache_ttl_seconds": {
+            "kind": "int",
+            "default": 3600,
+            "hint": "How long to cache catalog responses in-process. Default 3600s (1h).",
+        },
+        "verify_ssl": {
+            "kind": "bool",
+            "default": True,
+            "hint": (
+                "TLS verification. Default true. Set false ONLY for internal CAs / "
+                "self-signed certs — sends the JWT over an unverified channel."
+            ),
+        },
+    },
+    "desktop": {
+        "jwt_issuer": {
+            "kind": "string",
+            "default": "data-analyst",
+            "hint": "JWT iss claim. Match what the desktop app verifies.",
+        },
+        "jwt_secret": {
+            "kind": "secret",
+            "hint": "JWT signing secret. Use ${DESKTOP_JWT_SECRET} env-var reference.",
+        },
+        "url_scheme": {
+            "kind": "string",
+            "default": "data-analyst",
+            "hint": "Custom URL scheme registered by the desktop app (data-analyst://...).",
+        },
+    },
+    # corporate_memory governance — optional. When the section is missing
+    # from instance.yaml the system runs in legacy democratic-wiki mode
+    # (no admin review). Schema mirrors config/instance.yaml.example
+    # lines 224-317; renderer handles arbitrary depth + arrays + maps.
+    "corporate_memory": {
+        "distribution_mode": {
+            "kind": "select",
+            "options": ["mandatory_only", "admin_curated", "hybrid"],
+            "default": "hybrid",
+            "hint": (
+                "How knowledge reaches users. mandatory_only = admin-only; "
+                "admin_curated = admin + user voting as feedback; "
+                "hybrid = default (mandatory from admin + optional from user voting)."
+            ),
+        },
+        "approval_mode": {
+            "kind": "select",
+            "options": ["review_queue", "auto_publish", "threshold"],
+            "default": "review_queue",
+            "hint": (
+                "How AI-extracted items enter the system. review_queue = admin "
+                "approval required (default); auto_publish = live immediately; "
+                "threshold = high-confidence auto, low-confidence to queue."
+            ),
+        },
+        "review_period_months": {
+            "kind": "int",
+            "default": 6,
+            "hint": "How often approved/mandatory items are flagged for re-review (months).",
+        },
+        "notify_on_new_items": {
+            "kind": "bool",
+            "default": True,
+            "hint": "Notify km_admins when new pending items arrive.",
+        },
+        "sources": {
+            "kind": "object",
+            "hint": (
+                "Knowledge-source ingestion. Each source has its own enabled "
+                "flag + base confidence."
+            ),
+            "fields": {
+                "claude_local_md": {
+                    "kind": "object",
+                    "fields": {
+                        "enabled": {"kind": "bool", "default": True},
+                        "confidence_base": {
+                            "kind": "float",
+                            "default": 0.50,
+                            "hint": "Confidence assigned to extractions from CLAUDE.local.md (0-1).",
+                        },
+                    },
+                },
+                "session_transcripts": {
+                    "kind": "object",
+                    "fields": {
+                        "enabled": {"kind": "bool", "default": True},
+                        "confidence_base": {"kind": "float", "default": 0.60},
+                        "max_turns_per_session": {
+                            "kind": "int",
+                            "default": 100,
+                            "hint": "Truncate transcripts longer than this many turns.",
+                        },
+                        "detection_types": {
+                            "kind": "array",
+                            "item_kind": "string",
+                            "default": [
+                                "correction",
+                                "confirmation",
+                                "unprompted_definition",
+                            ],
+                            "hint": (
+                                "Which extraction patterns to detect. Each entry "
+                                "is a detection-type tag."
+                            ),
+                        },
+                    },
+                },
+            },
+        },
+        "extraction": {
+            "kind": "object",
+            "fields": {
+                "model": {
+                    "kind": "string",
+                    "default": "claude-haiku-4-5-20251001",
+                    "hint": "LLM used to extract knowledge. Override for cost or quality.",
+                },
+                "sensitivity_check": {"kind": "bool", "default": True},
+                "contradiction_check": {"kind": "bool", "default": True},
+            },
+        },
+        "confidence": {
+            "kind": "object",
+            "hint": "Confidence scoring + decay rules.",
+            "fields": {
+                "base": {
+                    "kind": "map",
+                    "key_kind": "string",
+                    "value_kind": "float",
+                    "default": {
+                        "user_verification.correction": 0.90,
+                        "user_verification.unprompted_definition": 0.90,
+                        "user_verification.confirmation": 0.60,
+                        "admin_mandate": 1.00,
+                        "claude_local_md": 0.50,
+                        "session_transcript": 0.50,
+                    },
+                    "hint": (
+                        "Base score per source/detection. Keys are 'source_type' "
+                        "or 'source_type.detection_type' (the dot is data, not "
+                        "nesting)."
+                    ),
+                },
+                "modifiers": {
+                    # map<string, map<string, float>>. The renderer's structured
+                    # editor for "map of objects with declared subfields" is a
+                    # TODO (see admin_server_config.html); for now this falls
+                    # back to a JSON textarea — admins editing it see the
+                    # schema doc inline via the hint.
+                    "kind": "map",
+                    "key_kind": "string",
+                    "value_kind": "object",
+                    "value_fields": {},  # signals the JSON-textarea fallback
+                    "hint": (
+                        "Per-key modifier step sizes applied to base when "
+                        "optional signals are present (3-level dotted paths). "
+                        "Edit as a JSON object — outer keys mirror confidence.base "
+                        "keys; inner objects map signal name to bonus float."
+                    ),
+                },
+                "decay": {
+                    "kind": "object",
+                    "fields": {
+                        "mode": {
+                            "kind": "select",
+                            "options": ["linear", "exponential"],
+                            "default": "exponential",
+                        },
+                        "half_life_months": {
+                            "kind": "int",
+                            "default": 12,
+                            "hint": "Used when mode=exponential.",
+                        },
+                        "decay_rate_monthly": {
+                            "kind": "float",
+                            "default": 0.02,
+                            "hint": "Used when mode=linear.",
+                        },
+                        "floor": {
+                            "kind": "map",
+                            "key_kind": "string",
+                            "value_kind": "float",
+                            "default": {
+                                "admin_mandate": 0.50,
+                                "user_verification": 0.40,
+                                "default": 0.0,
+                            },
+                            "hint": (
+                                "Per-source minimum confidence — items never decay "
+                                "below this floor."
+                            ),
+                        },
+                    },
+                },
+            },
+        },
+        "contradiction_detection": {
+            "kind": "object",
+            "fields": {
+                "enabled": {"kind": "bool", "default": True},
+                "max_candidates": {
+                    "kind": "int",
+                    "default": 10,
+                    "hint": "Max contradiction candidates to evaluate per new item.",
+                },
+            },
+        },
+        "entity_resolution": {
+            "kind": "object",
+            "fields": {
+                "enabled": {"kind": "bool", "default": True},
+                "entities": {
+                    "kind": "map",
+                    "key_kind": "string",
+                    "value_kind": "array",
+                    "value_item_kind": "string",
+                    "default": {
+                        "metrics": ["churn", "MRR", "ARR", "NPS", "CAC", "LTV"],
+                        "products": ["Platform", "API", "Dashboard"],
+                    },
+                    "hint": (
+                        "Domain-entity vocabulary. Key = domain category; value = "
+                        "canonical names list."
+                    ),
+                },
+            },
+        },
+        "domain_owners": {
+            "kind": "map",
+            "key_kind": "string",
+            "value_kind": "array",
+            "value_item_kind": "string",
+            "hint": (
+                "Per-domain admin emails. Key = domain name; value = email list."
+            ),
+        },
+        "domains": {
+            "kind": "array",
+            "item_kind": "string",
+            "default": [
+                "finance",
+                "engineering",
+                "product",
+                "data",
+                "operations",
+                "infrastructure",
+            ],
+            "hint": (
+                "Knowledge domains analysts can target. Each must match a key "
+                "in domain_owners."
+            ),
+        },
+    },
+}
 
 # Keys whose values must be redacted from the audit diff. We match
 # substring (case-insensitive) so `client_secret`, `api_token`,
@@ -385,6 +786,43 @@ class ServerConfigUpdateRequest(BaseModel):
     )
 
 
+# Optional BQ fields whose runtime defaults are documented but which used to
+# be invisible in the editor when YAML omitted them. The data_source.bigquery
+# subtree renders as a JSON textarea; a key that's absent from the GET
+# payload literally cannot appear in the form for the operator to edit. We
+# surface them with their documented defaults so the UI always shows them as
+# editable knobs — see Phase J of the admin-tables-cleanup work.
+#
+#   - billing_project: defaults to data project; explicit value needed when
+#     the SA can read the data project but not bill against it.
+#   - legacy_wrap_views: default False; toggling ON wraps BQ views via
+#     `bigquery_query()` so analysts can `SELECT *` directly.
+#   - max_bytes_per_materialize: cost guardrail for `query_mode='materialized'`
+#     (default 10 GiB; 0 disables; null falls through to the default).
+_BQ_OPTIONAL_FIELD_DEFAULTS: Dict[str, Any] = {
+    "billing_project": "",
+    "legacy_wrap_views": False,
+    "max_bytes_per_materialize": 10737418240,
+}
+
+
+def _ensure_bq_optional_fields(sections: Dict[str, Any]) -> None:
+    """In-place: add missing BQ optional fields to data_source.bigquery so the
+    UI's JSON-textarea renders them as editable keys. Existing values are
+    preserved — only absent keys are populated with their documented default.
+    """
+    ds = sections.get("data_source")
+    if not isinstance(ds, dict):
+        return
+    bq = ds.get("bigquery")
+    if not isinstance(bq, dict):
+        # No BQ subsection — leave alone. Non-BQ instances don't need these
+        # knobs, and creating an empty bigquery dict would be misleading.
+        return
+    for key, default in _BQ_OPTIONAL_FIELD_DEFAULTS.items():
+        bq.setdefault(key, default)
+
+
 @router.get("/server-config")
 async def get_server_config(
     user: dict = Depends(require_admin),
@@ -403,11 +841,20 @@ async def get_server_config(
     # file omits them — operator can populate from scratch without manual
     # JSON edits.
     sections = {section: redacted.get(section, {}) for section in _EDITABLE_SECTIONS}
+    # Always surface the optional BQ knobs so the operator sees them in the
+    # UI's JSON editor instead of having to know they exist (Phase J).
+    _ensure_bq_optional_fields(sections)
     return {
         "sections": sections,
         "editable_sections": list(_EDITABLE_SECTIONS),
         "danger_sections": list(_DANGER_SECTIONS),
         "secret_key_patterns": list(_SECRET_KEY_PATTERNS),
+        # Known-but-optional fields per section so the UI can render
+        # placeholders for fields the operator hasn't set yet (Phase J).
+        # Subagents 2-4 populate the bodies; the renderer ships now so the
+        # mechanism is wired end-to-end and adding entries is purely a
+        # data-edit in `_KNOWN_FIELDS` above.
+        "known_fields": _KNOWN_FIELDS,
     }
 
 
@@ -654,7 +1101,17 @@ def _sanitize_for_audit(payload: Dict[str, Any]) -> Dict[str, Any]:
 class RegisterTableRequest(BaseModel):
     name: str
     folder: Optional[str] = None
-    sync_strategy: str = "full_refresh"
+    sync_strategy: str = Field(
+        default="full_refresh",
+        deprecated=True,
+        description=(
+            "DEPRECATED: catalog/profiler metadata only. No extractor reads "
+            "this field; every sync is a full overwrite regardless of value. "
+            "profiler.is_partitioned() consumes it for parquet-layout "
+            "detection. Field stays for back-compat; will be removed in a "
+            "future major release."
+        ),
+    )
     # Composite primary keys are real (session-grain MSA tables key on
     # `(session_id, event_date)`, browse rows on more). The frontend sends +
     # reads this as a list; backend stores it JSON-serialized in VARCHAR.
@@ -664,9 +1121,41 @@ class RegisterTableRequest(BaseModel):
     source_type: Optional[str] = None
     bucket: Optional[str] = None
     source_table: Optional[str] = None
+    # Backs query_mode='materialized'. Stored verbatim in
+    # table_registry.source_query (schema v20); the trigger pass runs it
+    # through the DuckDB BQ extension via BqAccess and writes the result
+    # to /data/extracts/bigquery/data/<id>.parquet.
+    source_query: Optional[str] = None
     query_mode: str = "local"
     sync_schedule: Optional[str] = None
-    profile_after_sync: bool = True
+    profile_after_sync: bool = Field(
+        default=True,
+        deprecated=True,
+        description=(
+            "DEPRECATED: not consumed by the runtime (Agent 1 finding "
+            "2026-05-01). Profiler runs unconditionally on every synced "
+            "table; this flag has no effect. Field stays for back-compat."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _check_mode_query_coherence(self):
+        """Enforce query_mode ↔ source_query invariants up front so an admin
+        can't persist a remote/local row carrying an orphan source_query, and
+        materialized rows can't be registered without a SQL body."""
+        sq = (self.source_query or "").strip() or None
+        if self.query_mode == "materialized" and not sq:
+            raise ValueError(
+                "query_mode='materialized' requires a non-empty source_query"
+            )
+        if self.query_mode != "materialized" and sq:
+            raise ValueError(
+                "source_query is only valid when query_mode='materialized'"
+            )
+        # Normalise: stash the trimmed-or-None form so the persisted column
+        # never carries surrounding whitespace or empty-string sentinels.
+        self.source_query = sq
+        return self
 
     @field_validator("primary_key", mode="before")
     @classmethod
@@ -707,12 +1196,67 @@ class RegisterTableRequest(BaseModel):
 def _validate_bigquery_register_payload(req: "RegisterTableRequest") -> None:
     """Enforce BQ-specific shape on a register/precheck request.
 
-    Mutates the model: forces ``query_mode='remote'`` and
-    ``profile_after_sync=False`` (per Decision 7 in #108) so a caller can't
-    accidentally enqueue a parquet profiling pass for a remote view that
-    has no local file. Raises HTTPException(422) for missing required
-    fields and HTTPException(400) for unsafe identifiers / bogus project_id.
+    Two BQ paths:
+
+    - ``query_mode='materialized'`` — admin-registered SQL writes a parquet on
+      schedule. Requires ``source_query``; ``bucket`` / ``source_table`` are
+      not used (the SQL inlines the references). Doesn't force any field; the
+      Pydantic ``model_validator`` already gated the query/mode coherence.
+
+    - ``query_mode='remote'`` (or default) — remote view over a single BQ
+      table. Requires ``bucket`` (BQ dataset) + ``source_table``. Mutates
+      the model: forces ``query_mode='remote'`` and ``profile_after_sync=False``
+      (per Decision 7 in #108) so a caller can't accidentally enqueue a
+      parquet profiling pass for a remote view that has no local file.
+
+    Raises HTTPException(422) for missing required fields and
+    HTTPException(400) for unsafe identifiers / bogus project_id.
     """
+    if req.query_mode == "materialized":
+        # Materialized BQ rows: the SQL body replaces dataset+table refs.
+        # Pydantic model_validator already verified source_query is non-empty;
+        # all we still need is a valid project_id and a safe view name.
+        if not req.source_query or not req.source_query.strip():
+            raise HTTPException(
+                status_code=422,
+                detail="bigquery materialized: 'source_query' is required",
+            )
+        raw_name = req.name or ""
+        if raw_name.strip() != raw_name or not _is_safe_identifier(raw_name):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"bigquery: view name {raw_name!r} is unsafe — must match "
+                    f"^[a-zA-Z_][a-zA-Z0-9_]{{0,63}}$ (DuckDB identifier rules) "
+                    "with no leading/trailing whitespace"
+                ),
+            )
+        from app.instance_config import get_value
+        project_id = get_value("data_source", "bigquery", "project", default="")
+        if not project_id:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "bigquery: data_source.bigquery.project is not set in "
+                    "instance.yaml; configure it via /admin/server-config or "
+                    "/api/admin/configure first"
+                ),
+            )
+        if not _is_safe_project_id(project_id):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"bigquery: data_source.bigquery.project {project_id!r} "
+                    "is malformed — must match GCP project_id grammar "
+                    "^[a-z][a-z0-9-]{4,28}[a-z0-9]$"
+                ),
+            )
+        # Phase C: profile_after_sync is now inert (Pydantic field marked
+        # deprecated; not read by app/api/sync.py:410-438). The runtime
+        # profiles every synced table unconditionally, so we no longer
+        # force-set this here as a "signal."
+        return
+
     if not req.bucket or not req.bucket.strip():
         raise HTTPException(
             status_code=422,
@@ -796,24 +1340,106 @@ def _validate_bigquery_register_payload(req: "RegisterTableRequest") -> None:
                 "must match GCP project_id grammar ^[a-z][a-z0-9-]{4,28}[a-z0-9]$"
             ),
         )
-    # Force the BQ-required mode + flag (Decision 7). The orchestrator and
+    # Force the BQ-required mode (Decision 7). The orchestrator and
     # extractor both assume remote; persisting `local` here would later create
     # a profiling job against a non-existent parquet file.
+    # Phase C: profile_after_sync is now inert (deprecated, not read by the
+    # runtime); no longer force-set here.
     req.query_mode = "remote"
-    req.profile_after_sync = False
 
 
 class UpdateTableRequest(BaseModel):
     name: Optional[str] = None
-    sync_strategy: Optional[str] = None
+    sync_strategy: Optional[str] = Field(
+        default=None,
+        deprecated=True,
+        description=(
+            "DEPRECATED: catalog/profiler metadata only. See "
+            "RegisterTableRequest.sync_strategy."
+        ),
+    )
     primary_key: Optional[List[str]] = None
     description: Optional[str] = None
     source_type: Optional[str] = None
     bucket: Optional[str] = None
     source_table: Optional[str] = None
+    source_query: Optional[str] = None
     query_mode: Optional[str] = None
     sync_schedule: Optional[str] = None
-    profile_after_sync: Optional[bool] = None
+    profile_after_sync: Optional[bool] = Field(
+        default=None,
+        deprecated=True,
+        description=(
+            "DEPRECATED: not consumed by the runtime. See "
+            "RegisterTableRequest.profile_after_sync."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _check_mode_query_coherence(self):
+        """PUT semantics — only the fields explicitly in the body are
+        validated. The body is overlaid on the existing row at the handler
+        level (see ``update_table``), so omitted fields keep their stored
+        values and the synthetic ``RegisterTableRequest`` constructed against
+        the merged record runs the strict cross-field check before persist.
+
+        The only invariants enforceable from the PUT body alone:
+
+        - explicit ``source_query='SELECT ...'`` paired with ``query_mode``
+          that isn't materialized → coherent reject (the SQL would be dead);
+        - explicit ``source_query='SELECT ...'`` without any ``query_mode``
+          in the body → reject; the operator must commit to materialized;
+        - explicit empty/whitespace ``source_query=''`` paired with
+          ``query_mode='materialized'`` → reject (operator clearly
+          mistyped — they sent the field).
+
+        Pre-fix this validator also rejected ``{"query_mode": "materialized",
+        "sync_schedule": "every 12h"}`` because ``source_query`` was None
+        — but that's the canonical "edit the schedule on a materialized
+        row" use-case from the Edit modal, which always sends
+        ``query_mode`` to indicate intent. Devin BUG_0002 on PR #148
+        commit 2219255.
+        """
+        if self.query_mode is None and self.source_query is None:
+            return self
+
+        sq_raw = self.source_query
+        sq = (sq_raw or "").strip() or None
+
+        # Operator explicitly sent source_query as empty/whitespace while
+        # claiming materialized — typo / bad form data, reject.
+        if (
+            self.query_mode == "materialized"
+            and sq_raw is not None
+            and not sq
+        ):
+            raise ValueError(
+                "query_mode='materialized' requires a non-empty source_query"
+            )
+
+        # source_query only makes sense with materialized mode. Allow None
+        # (omitted) to flow through; only reject when explicitly set with
+        # the wrong mode.
+        if (
+            self.query_mode is not None
+            and self.query_mode != "materialized"
+            and sq
+        ):
+            raise ValueError(
+                "source_query is only valid when query_mode='materialized'"
+            )
+        if self.query_mode is None and sq:
+            raise ValueError(
+                "source_query requires query_mode='materialized' to be set "
+                "in the same request"
+            )
+
+        # Normalise: drop whitespace-only strings to None so the persisted
+        # column is clean. Don't touch when source_query was None to begin
+        # with — that signals "PUT didn't touch this field, keep existing".
+        if sq_raw is not None:
+            self.source_query = sq
+        return self
 
     @field_validator("primary_key", mode="before")
     @classmethod
@@ -853,8 +1479,20 @@ class ConfigureRequest(BaseModel):
 @router.get("/discover-tables")
 async def discover_tables(
     user: dict = Depends(require_admin),
+    dataset: Optional[str] = None,
 ):
-    """Discover all available tables from the configured data source."""
+    """Discover available tables from the configured data source.
+
+    For ``data_source.type='keboola'`` returns the full Storage API table
+    list (single round-trip). For ``data_source.type='bigquery'``:
+
+    - Without ``dataset``: list datasets in the configured project.
+    - With ``dataset=name``: list tables (BASE TABLE + VIEW) in that dataset.
+
+    Two-step shape avoids paying the per-dataset list_tables cost up-front
+    on projects with hundreds of datasets — the UI populates the dataset
+    dropdown first, then fetches tables only for the selected dataset.
+    """
     try:
         from app.instance_config import get_data_source_type
         source_type = get_data_source_type()
@@ -870,10 +1508,87 @@ async def discover_tables(
             client = KeboolaClient(token=token, url=url)
             tables = client.discover_all_tables()
             return {"tables": tables, "count": len(tables), "source": "keboola"}
-        else:
-            return {"tables": [], "count": 0, "source": source_type, "error": "Discovery not implemented for this source"}
+
+        if source_type == "bigquery":
+            return _discover_bigquery(dataset=dataset)
+
+        return {
+            "tables": [],
+            "count": 0,
+            "source": source_type,
+            "error": f"Discovery not implemented for source_type={source_type!r}",
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Discovery failed: {e}")
+
+
+def _discover_bigquery(dataset: Optional[str]) -> Dict[str, Any]:
+    """List BQ datasets (when ``dataset`` is None) or tables-in-dataset.
+
+    Routes through ``BqAccess.client()`` so config / auth / error
+    translation matches the rest of the BQ surface (#138 facade). Returns
+    the same shape as the Keboola path so the UI doesn't have to branch.
+    """
+    from connectors.bigquery.access import (
+        get_bq_access,
+        BqAccessError,
+        translate_bq_error,
+    )
+
+    try:
+        bq = get_bq_access()
+        client = bq.client()
+    except BqAccessError as e:
+        raise HTTPException(
+            status_code=BqAccessError.HTTP_STATUS.get(e.kind, 500),
+            detail={"error": e.message, "kind": e.kind, "details": e.details},
+        )
+
+    try:
+        if dataset is None:
+            datasets = []
+            for ds in client.list_datasets():
+                datasets.append({
+                    "dataset_id": ds.dataset_id,
+                    "full_id": f"{ds.project}.{ds.dataset_id}",
+                })
+            return {
+                "datasets": sorted(datasets, key=lambda d: d["dataset_id"]),
+                "count": len(datasets),
+                "source": "bigquery",
+            }
+
+        # List tables in the named dataset. `list_tables` returns
+        # `TableListItem` with `table_id` + `table_type` ('TABLE', 'VIEW',
+        # 'MATERIALIZED_VIEW', 'EXTERNAL', 'SNAPSHOT'). UI maps TABLE → Type
+        # selector "table" and VIEW/MATERIALIZED_VIEW → "view"; the rest are
+        # passed through with their raw type so the operator can decide.
+        tables = []
+        for t in client.list_tables(dataset):
+            tables.append({
+                "table_id": t.table_id,
+                "table_type": t.table_type,
+                "full_id": f"{t.project}.{t.dataset_id}.{t.table_id}",
+            })
+        return {
+            "tables": sorted(tables, key=lambda t: t["table_id"]),
+            "count": len(tables),
+            "source": "bigquery",
+            "dataset": dataset,
+        }
+    except Exception as e:
+        # `translate_bq_error` re-raises non-Google exceptions unchanged,
+        # so wrap in HTTPException to keep the JSON-shape contract.
+        try:
+            err = translate_bq_error(e, bq.projects, bad_request_status="upstream_error")
+        except Exception:
+            raise HTTPException(status_code=502, detail=f"BQ discovery failed: {e}")
+        raise HTTPException(
+            status_code=BqAccessError.HTTP_STATUS.get(err.kind, 502),
+            detail={"error": err.message, "kind": err.kind, "details": err.details},
+        )
 
 
 @router.get("/registry")
@@ -1121,6 +1836,10 @@ def register_table(
     if is_bigquery:
         _validate_bigquery_register_payload(request)
 
+    # Phase C: profile_after_sync is no longer passed — the field is
+    # deprecated and inert at the runtime layer. The DB column keeps its
+    # schema default; the registry response no longer reflects request
+    # values for this flag.
     repo.register(
         id=table_id,
         name=request.name,
@@ -1132,9 +1851,9 @@ def register_table(
         source_type=request.source_type,
         bucket=request.bucket,
         source_table=request.source_table,
+        source_query=request.source_query,
         query_mode=request.query_mode,
         sync_schedule=request.sync_schedule,
-        profile_after_sync=request.profile_after_sync,
     )
 
     # Audit entry — masked params; description kept raw (it's documentation).
@@ -1152,6 +1871,24 @@ def register_table(
         return JSONResponse(
             status_code=201,
             content={"id": table_id, "name": request.name, "status": "registered"},
+        )
+
+    if request.query_mode == "materialized":
+        # Materialized BQ rows are picked up by the trigger pass on the next
+        # scheduled tick (or via POST /api/sync/trigger). No synchronous
+        # rebuild — the COPY can scan multi-GB and would block the request.
+        return JSONResponse(
+            status_code=201,
+            content={
+                "id": table_id,
+                "name": request.name,
+                "status": "registered",
+                "view_name": table_id,
+                "message": (
+                    "Materialized — parquet will be written on the next sync "
+                    "tick. Trigger now via POST /api/sync/trigger."
+                ),
+            },
         )
 
     # BQ post-register: rebuild extract + master views, with timeout fallback.
@@ -1266,6 +2003,28 @@ def register_table_precheck(
     # checks identifier safety, validates project_id from instance.yaml).
     _validate_bigquery_register_payload(request)
 
+    # Materialized BQ rows have no `dataset.source_table` to round-trip —
+    # the SQL body is the contract. Skip the BQ-jobs-API call and return a
+    # validation-only precheck so the CLI's `--dry-run --query-mode
+    # materialized` path doesn't crash on an empty fully-qualified name.
+    if request.query_mode == "materialized":
+        return {
+            "ok": True,
+            "table": {
+                "name": request.name,
+                "source_type": "bigquery",
+                "query_mode": "materialized",
+                "source_query": request.source_query,
+                "rows": None,
+                "size_bytes": None,
+                "columns": [],
+                "note": (
+                    "materialized precheck is validation-only — the SQL is "
+                    "evaluated for cost on each scheduled materialize tick"
+                ),
+            },
+        }
+
     # Round-trip the BQ jobs API to confirm the table exists and the SA can
     # see it. Imports kept local to avoid pulling google-cloud-bigquery into
     # the import chain on non-BQ instances.
@@ -1360,14 +2119,23 @@ async def update_table(
         merged.update(updates)
         merged.pop("id", None)  # avoid duplicate id kwarg
 
+        # When switching the merged record away from materialized mode, drop
+        # the stale source_query — the request validator can't clear it via
+        # the `if v is not None` filter above. Without this, a remote/local
+        # row would carry an orphan source_query in the registry.
+        if merged.get("query_mode") != "materialized":
+            merged["source_query"] = None
+
         if merged.get("source_type") == "bigquery":
             # Reuse the register-time validator. It mutates the request to
-            # force query_mode='remote' / profile_after_sync=False — apply
-            # the same coercion to `merged` so the persisted row matches.
+            # force query_mode='remote' / profile_after_sync=False (or to
+            # leave a materialized row alone) — apply the same coercion to
+            # `merged` so the persisted row matches.
             synthetic = RegisterTableRequest(
                 name=merged.get("name") or table_id,
                 bucket=merged.get("bucket"),
                 source_table=merged.get("source_table"),
+                source_query=merged.get("source_query"),
                 source_type="bigquery",
                 query_mode=merged.get("query_mode") or "remote",
                 profile_after_sync=bool(merged.get("profile_after_sync") or False),
@@ -1380,6 +2148,7 @@ async def update_table(
             _validate_bigquery_register_payload(synthetic)
             merged["query_mode"] = synthetic.query_mode
             merged["profile_after_sync"] = synthetic.profile_after_sync
+            merged["source_query"] = synthetic.source_query
 
         repo.register(id=table_id, **merged)
 

@@ -39,7 +39,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -259,6 +259,7 @@ CREATE TABLE IF NOT EXISTS table_registry (
     source_type VARCHAR,
     bucket VARCHAR,
     source_table VARCHAR,
+    source_query TEXT,
     sync_strategy VARCHAR DEFAULT 'full_refresh',
     query_mode VARCHAR DEFAULT 'local',
     sync_schedule VARCHAR,
@@ -916,6 +917,16 @@ _V16_TO_V17_MIGRATIONS = [
 
 # v17 -> v18: see _v17_to_v18_finalize. Env-conditional, so kept as a Python
 # helper rather than a flat SQL list (the migrate-ladder calls it directly).
+
+
+# v19 -> v20: source_query column backs query_mode='materialized' for BigQuery.
+# Admin-registered SQL stored verbatim; scheduler runs it through the DuckDB BQ
+# extension (via BqAccess) and writes the result to
+# /data/extracts/bigquery/data/<id>.parquet so the existing manifest + da sync
+# flow distributes it to analysts. NULL on existing rows.
+_V19_TO_V20_MIGRATIONS = [
+    "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS source_query TEXT",
+]
 
 
 # Core role seed data — single source of truth. Used by both _seed_core_roles
@@ -1735,6 +1746,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v17_to_v18_finalize(conn)
             if current < 19:
                 _v18_to_v19_finalize(conn)
+            if current < 20:
+                for sql in _V19_TO_V20_MIGRATIONS:
+                    conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

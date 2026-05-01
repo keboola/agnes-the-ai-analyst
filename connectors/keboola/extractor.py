@@ -17,6 +17,66 @@ from src.identifier_validation import (
 logger = logging.getLogger(__name__)
 
 
+def materialize_query(
+    table_id: str,
+    sql: str,
+    *,
+    keboola_access,  # KeboolaAccess (avoid circular import)
+    output_dir: Path,
+) -> dict:
+    """Materialize an admin-registered SELECT against the Keboola Storage
+    API extension into a parquet file.
+
+    Parallel of `connectors/bigquery/extractor.py:materialize_query`.
+    Cost guardrail: the Keboola extension has no analog of BQ dry-run;
+    Storage API cost is download-shaped (per-byte egress + Storage API
+    job). Phase B ships without a guardrail and logs the byte count;
+    a future PR can add a configurable `max_bytes_per_keboola_materialize`
+    gate similar to BQ's `max_bytes_per_materialize`.
+    """
+    import re
+    import hashlib
+
+    # Defense: table_id is interpolated into the parquet filename.
+    # Reject anything that's not a safe identifier.
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table_id):
+        raise ValueError(f"unsafe table_id for materialize: {table_id!r}")
+
+    parquet_path = Path(output_dir) / f"{table_id}.parquet"
+    safe_pq_lit = str(parquet_path).replace("'", "''")
+
+    with keboola_access.duckdb_session() as conn:
+        # Run the admin SELECT and copy the result to parquet.
+        # The COPY wrapper is identical to the existing legacy extract
+        # path at extractor.py:209; the only difference is the SELECT is
+        # admin-supplied rather than `SELECT * FROM kbc.bucket.table`.
+        conn.execute(f"COPY ({sql}) TO '{safe_pq_lit}' (FORMAT PARQUET)")
+
+        # Read back row count.
+        row_count = conn.execute(
+            f"SELECT COUNT(*) FROM read_parquet('{safe_pq_lit}')"
+        ).fetchone()[0]
+
+    file_bytes = parquet_path.read_bytes()
+    md5 = hashlib.md5(file_bytes).hexdigest()
+    size = len(file_bytes)
+
+    if row_count == 0:
+        logger.warning(
+            "Materialized Keboola query for %s wrote 0 rows — verify the "
+            "SQL filters and that the source bucket has data.",
+            table_id,
+        )
+
+    return {
+        "table_id": table_id,
+        "path": str(parquet_path),
+        "rows": row_count,
+        "bytes": size,
+        "md5": md5,
+    }
+
+
 def _create_meta_table(conn: duckdb.DuckDBPyConnection) -> None:
     """Create the _meta table required by the extract.duckdb contract."""
     conn.execute("DROP TABLE IF EXISTS _meta")
@@ -98,6 +158,21 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
         for tc in table_configs:
             table_name = tc["name"]
             query_mode = tc.get("query_mode", "local")
+
+            # Materialized rows are written by the sync trigger pass via
+            # `materialize_query()` — they live as parquets in
+            # /data/extracts/keboola/data/, picked up by the orchestrator's
+            # standard local-parquet discovery. Don't extract here (would
+            # double-write data via the source bucket reference and confuse
+            # sync_state bookkeeping). Mirror of the BQ extractor's skip at
+            # connectors/bigquery/extractor.py:190.
+            if query_mode == "materialized":
+                logger.info(
+                    "Skipping legacy extract for %s — query_mode='materialized', "
+                    "handled by _run_materialized_pass instead",
+                    tc.get("id") or tc.get("name"),
+                )
+                continue
 
             # #81 Group D — refuse rows whose identifiers don't pass the
             # whitelist. The registry is admin-controlled but anyone with
