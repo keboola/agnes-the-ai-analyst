@@ -128,7 +128,6 @@ def migrate_all(data_dir: str = None) -> dict:
                 id=str(uuid.uuid4()),
                 email=email,
                 name=info.get("name", email.split("@")[0]),
-                role="analyst",
                 password_hash=info.get("password_hash"),
             )
             count += 1

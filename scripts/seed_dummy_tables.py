@@ -2,8 +2,8 @@
 
 Used to exercise the /admin/access UI with the new ResourceType.TABLE
 without depending on a real data source. Each entry is registered with
-``is_public=False`` so per-group grants are meaningful (a public table
-would bypass any future enforcement).
+default RBAC (no `is_public` bypass — that column was dropped in v19),
+so per-group grants are required for analyst visibility.
 
 Idempotent — TableRegistryRepository.register() does an UPSERT via
 ON CONFLICT, so re-running this script just refreshes the rows.
@@ -65,7 +65,6 @@ def main() -> None:
                 query_mode="local",
                 description=description,
                 registered_by="seed_dummy_tables",
-                is_public=False,
                 profile_after_sync=False,
             )
         after = len(repo.list_all())

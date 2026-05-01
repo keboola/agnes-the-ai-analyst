@@ -1,6 +1,6 @@
 """Repository round-trips source_query column for query_mode='materialized'.
 
-Lives alongside the schema-v19 migration: register() now accepts source_query
+Lives alongside the schema-v20 migration: register() now accepts source_query
 as an Optional[str] kwarg, and the column flows through SELECT * via list/get.
 """
 import duckdb

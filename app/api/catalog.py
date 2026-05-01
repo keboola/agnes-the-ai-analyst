@@ -50,9 +50,9 @@ async def list_catalog_tables(
     repo = TableRegistryRepository(conn)
     all_tables = repo.list_all()
 
-    # Filter by user's accessible tables (admin sees all)
-    if user.get("role") != "admin":
-        all_tables = [t for t in all_tables if can_access_table(user, t["id"], conn)]
+    # Filter by user's accessible tables. ``can_access_table`` has its own
+    # admin shortcut (Admin group → True), so no need to pre-branch here.
+    all_tables = [t for t in all_tables if can_access_table(user, t["id"], conn)]
 
     tables = [
         {

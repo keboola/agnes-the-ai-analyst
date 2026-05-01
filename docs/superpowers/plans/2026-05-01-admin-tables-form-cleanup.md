@@ -95,7 +95,7 @@ User feedback (2026-05-01): "**Naše změny musí ve výsledku fungovat E2E, tak
 - Nothing (Pydantic fields stay alive with `deprecated=True`).
 
 **Untouched:**
-- `src/db.py` — schema stays at v19. Columns survive.
+- `src/db.py` — schema stays at v20. Columns survive.
 - `src/profiler.py` — keeps reading `sync_strategy` for partition detection.
 - `src/orchestrator.py` — local-parquet walk picks up Keboola materialized parquets the same way it picks up BQ ones today.
 - `connectors/jira/**` — Jira tab is read-only; no register form, no backend change.

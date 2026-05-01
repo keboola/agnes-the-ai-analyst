@@ -15,13 +15,16 @@ admin_app.add_typer(memory_admin_app, name="memory")
 def add_user(
     email: str = typer.Argument(..., help="User email"),
     name: str = typer.Option("", help="User display name"),
-    role: str = typer.Option("analyst", help="Role: viewer, analyst, admin, km_admin"),
 ):
-    """Add a new user."""
-    resp = api_post("/api/users", json={"email": email, "name": name or email.split("@")[0], "role": role})
+    """Add a new user. New users start with no group memberships — to make
+    them admin, add them to the Admin group separately:
+
+        da admin group add-member <admin-group-id> <email>
+    """
+    resp = api_post("/api/users", json={"email": email, "name": name or email.split("@")[0]})
     if resp.status_code == 201:
         data = resp.json()
-        typer.echo(f"Created user: {data['email']} (id: {data['id']}, role: {data['role']})")
+        typer.echo(f"Created user: {data['email']} (id: {data['id']})")
     else:
         typer.echo(f"Failed: {resp.json().get('detail', resp.text)}", err=True)
         raise typer.Exit(1)
@@ -41,8 +44,9 @@ def list_users(as_json: bool = typer.Option(False, "--json")):
     else:
         for u in users:
             status_str = "active" if u.get("active", True) else "DEACTIVATED"
+            admin_flag = "admin" if u.get("is_admin") else "user"
             typer.echo(
-                f"  {u['email']:30s} role={u['role']:10s} {status_str:12s} id={u['id'][:8]}"
+                f"  {u['email']:30s} {admin_flag:6s} {status_str:12s} id={u['id'][:8]}"
             )
 
 
@@ -379,12 +383,18 @@ def _print_user_result(resp, ok_msg: str) -> None:
 @admin_app.command("set-role")
 def set_role(
     user_ref: str = typer.Argument(..., help="User id or email"),
-    role: str = typer.Argument(..., help="viewer | analyst | km_admin | admin"),
+    role: str = typer.Argument(..., help="(removed — see message)"),
 ):
-    """Set a user's role."""
-    uid = _resolve_user_id(user_ref)
-    resp = api_patch(f"/api/users/{uid}", json={"role": role})
-    _print_user_result(resp, f"Updated role for {user_ref} → {role}")
+    """[REMOVED] Roles were replaced by group memberships in v0.25."""
+    typer.echo(
+        "Error: 'da admin set-role' was removed in v0.25.\n"
+        "  Roles were replaced by group memberships.\n"
+        f"  Make {user_ref!r} admin:\n"
+        "    da admin group list                        # find Admin group id\n"
+        f"    da admin group add-member <admin-id> {user_ref}\n",
+        err=True,
+    )
+    raise typer.Exit(2)
 
 
 @admin_app.command("deactivate")
@@ -707,7 +717,6 @@ def break_glass_grant_admin(
                 id=user_id,
                 email=email,
                 name=email.split("@", 1)[0],
-                role="admin",
             )
             typer.echo(f"Created user {email} (id={user_id[:8]}…)")
         else:

@@ -130,18 +130,40 @@ class TestRBACEnforcement:
         resp = c.get("/api/sync/manifest", headers=_auth(t))
         assert resp.status_code == 200
 
-    def test_analyst_can_download_data(self, seeded_app):
+    def test_analyst_can_download_data_after_grant(self, seeded_app):
+        """v19+: no implicit `is_public`. Analyst gets access via an explicit
+        resource_grants(group, "table", id) row."""
         c = seeded_app["client"]
         env = seeded_app["env"]
         create_mock_extract(env["extracts_dir"], "keboola", [
             {"name": "orders", "data": [{"id": "1"}]},
         ])
-        # Register the table so RBAC can check is_public (defaults to True)
         admin_t = seeded_app["admin_token"]
         c.post("/api/admin/register-table", json={
             "name": "orders", "source_type": "keboola", "bucket": "in.c-crm",
             "source_table": "orders", "query_mode": "local",
         }, headers=_auth(admin_t))
+
+        # Mint a TABLE grant for analyst1
+        from src.db import get_system_db
+        from src.repositories.user_groups import UserGroupsRepository
+        from src.repositories.user_group_members import UserGroupMembersRepository
+        from src.repositories.resource_grants import ResourceGrantsRepository
+        conn = get_system_db()
+        try:
+            grp = UserGroupsRepository(conn).create(
+                name="e2e-analyst", description="t", created_by="t",
+            )
+            UserGroupMembersRepository(conn).add_member(
+                "analyst1", grp["id"], source="admin", added_by="t",
+            )
+            ResourceGrantsRepository(conn).create(
+                group_id=grp["id"], resource_type="table", resource_id="orders",
+                assigned_by="t",
+            )
+        finally:
+            conn.close()
+
         t = seeded_app["analyst_token"]
         resp = c.get("/api/data/orders/download", headers=_auth(t))
         assert resp.status_code == 200

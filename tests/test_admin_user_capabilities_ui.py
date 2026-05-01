@@ -36,10 +36,10 @@ def _make_user_and_session(conn, email: str, role: str):
     from tests.helpers.auth import grant_admin
 
     uid = str(uuid.uuid4())
-    UserRepository(conn).create(id=uid, email=email, name=email.split("@")[0], role=role)
+    UserRepository(conn).create(id=uid, email=email, name=email.split("@")[0])
     if role == "admin":
         grant_admin(conn, uid)
-    token = create_access_token(user_id=uid, email=email, role=role)
+    token = create_access_token(user_id=uid, email=email)
     return uid, token
 
 

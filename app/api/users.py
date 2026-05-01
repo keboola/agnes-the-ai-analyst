@@ -44,13 +44,11 @@ def _audit(conn: duckdb.DuckDBPyConnection, actor_id: str, action: str, target_i
 class CreateUserRequest(BaseModel):
     email: str
     name: str
-    role: str = "analyst"
     send_invite: bool = False
 
 
 class UpdateUserRequest(BaseModel):
     name: Optional[str] = None
-    role: Optional[str] = None
     active: Optional[bool] = None
 
 
@@ -261,12 +259,11 @@ async def create_user(
         raise HTTPException(status_code=409, detail="User with this email already exists")
     import secrets
     user_id = str(uuid.uuid4())
-    repo.create(id=user_id, email=payload.email, name=payload.name, role=payload.role)
-    # If the requested role is admin, add to Admin group. Non-admin users start
-    # with no group memberships — admin-managed grants must be explicit.
-    if (payload.role or "").lower() == "admin":
-        _set_admin_membership(user_id, True, user.get("email"), conn)
-    _audit(conn, user["id"], "user.create", user_id, {"email": payload.email, "role": payload.role})
+    repo.create(id=user_id, email=payload.email, name=payload.name)
+    # New users start with no group memberships — admin promotion is an
+    # explicit follow-up step (POST /api/admin/users/{id}/memberships with
+    # the Admin group_id, or POST /api/admin/groups/{admin_id}/members).
+    _audit(conn, user["id"], "user.create", user_id, {"email": payload.email})
 
     invite_url: Optional[str] = None
     invite_email_sent: Optional[bool] = None
@@ -304,21 +301,6 @@ async def update_user(
     if payload.name is not None:
         updates["name"] = payload.name
 
-    role_change: Optional[bool] = None  # None = no change; True = make admin; False = demote
-    if payload.role is not None:
-        wants_admin = payload.role.lower() == "admin"
-        if (
-            target["id"] == user["id"]
-            and target_is_admin
-            and not wants_admin
-            and repo.count_admins(active_only=True) <= 1
-        ):
-            raise HTTPException(status_code=409, detail="Cannot demote the last active admin")
-        if wants_admin != target_is_admin:
-            role_change = wants_admin
-        # Persist the legacy label on users.role for any reader still inspecting it.
-        updates["role"] = payload.role
-
     if payload.active is not None:
         if target["id"] == user["id"] and payload.active is False:
             raise HTTPException(status_code=409, detail="Cannot deactivate yourself")
@@ -339,8 +321,6 @@ async def update_user(
     if updates:
         repo.update(id=user_id, **updates)
         _audit(conn, user["id"], "user.update", user_id, {k: v for k, v in updates.items() if k != "deactivated_at"})
-    if role_change is not None:
-        _set_admin_membership(user_id, role_change, user.get("email"), conn)
     return _to_response(repo.get_by_id(user_id), conn)
 
 

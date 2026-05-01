@@ -73,11 +73,11 @@ class TestUserRepository:
     def test_create_and_get(self, db_conn):
         from src.repositories.users import UserRepository
         repo = UserRepository(db_conn)
-        repo.create(id="u1", email="test@acme.com", name="Test User", role="analyst")
+        repo.create(id="u1", email="test@acme.com", name="Test User")
         user = repo.get_by_id("u1")
         assert user is not None
         assert user["email"] == "test@acme.com"
-        assert user["role"] == "analyst"
+        assert user["name"] == "Test User"
 
     def test_get_by_email(self, db_conn):
         from src.repositories.users import UserRepository
@@ -100,13 +100,13 @@ class TestUserRepository:
         repo.create(id="u2", email="b@acme.com", name="B")
         assert len(repo.list_all()) == 2
 
-    def test_update_role(self, db_conn):
+    def test_update_name(self, db_conn):
         from src.repositories.users import UserRepository
         repo = UserRepository(db_conn)
         repo.create(id="u1", email="test@acme.com", name="Test")
-        repo.update(id="u1", role="admin")
+        repo.update(id="u1", name="Renamed")
         user = repo.get_by_id("u1")
-        assert user["role"] == "admin"
+        assert user["name"] == "Renamed"
 
     def test_delete(self, db_conn):
         from src.repositories.users import UserRepository

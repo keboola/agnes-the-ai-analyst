@@ -675,7 +675,7 @@ class RegisterTableRequest(BaseModel):
     bucket: Optional[str] = None
     source_table: Optional[str] = None
     # Backs query_mode='materialized'. Stored verbatim in
-    # table_registry.source_query (schema v19); the trigger pass runs it
+    # table_registry.source_query (schema v20); the trigger pass runs it
     # through the DuckDB BQ extension via BqAccess and writes the result
     # to /data/extracts/bigquery/data/<id>.parquet.
     source_query: Optional[str] = None

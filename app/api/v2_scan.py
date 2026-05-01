@@ -144,7 +144,7 @@ def estimate(conn, user, raw_request: dict, *, bq: BqAccess) -> dict:
     row = repo.get(req.table_id)
     if not row:
         raise FileNotFoundError(req.table_id)
-    if user.get("role") != "admin" and not can_access_table(user, req.table_id, conn):
+    if not can_access_table(user, req.table_id, conn):
         raise PermissionError(req.table_id)
 
     schema = _resolve_schema(conn, user, req.table_id, bq)
@@ -312,7 +312,7 @@ def run_scan(
     row = repo.get(req.table_id)
     if not row:
         raise FileNotFoundError(req.table_id)
-    if user.get("role") != "admin" and not can_access_table(user, req.table_id, conn):
+    if not can_access_table(user, req.table_id, conn):
         raise PermissionError(req.table_id)
 
     if req.limit and req.limit > _max_limit():

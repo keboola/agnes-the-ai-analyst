@@ -30,54 +30,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   but the Keboola UI had no surface for it — operators had to use the
   `/api/admin/registry/{id}` PUT endpoint or `da admin` CLI. Now they
   can type `every 6h` / `daily 03:00` directly.
-
-### Changed
-- **admin UI**: Keboola Register and Edit modals adopt the same
-  two-question radio model as BigQuery — *What to sync?* (Whole table
-  / Custom SQL). Whole-table mode synthesizes a `SELECT *` and writes
-  it through the materialized path; Custom mode lets the admin filter
-  / aggregate / project. The legacy `query_mode='local'` extractor
-  path remains supported for back-compat but is no longer the default
-  for new Keboola registrations — Whole mode is functionally
-  equivalent and follows the unified materialized pipeline.
-- **admin UI**: `Sync Strategy` dropdown removed from the Keboola form
-  (Register and Edit). Two independent agent reviews (2026-05-01) found
-  the field's hint claimed it controlled extraction but no extractor
-  reads it; only `profiler.is_partitioned()` consumes it for parquet-
-  layout detection. Field stays in the DB and Pydantic model for
-  back-compat (marked `Field(deprecated=True)`); just hidden from the
-  primary form.
-- **admin UI**: `Primary Key` input moved under `<details>Advanced` in
-  both Keboola Register and Edit modals, with a clarifying hint that
-  it's catalog metadata only — Agnes always does full-overwrite sync;
-  no upsert / dedup. Auto-fill from Keboola discovery still works.
-- **admin UI**: Registry listing column "Strategy" replaced with "Mode"
-  (showing `query_mode` instead of decorative `sync_strategy`). The
-  `.col-strategy` / `.strategy-badge` CSS rules removed.
-
-### Deprecated
-- `RegisterTableRequest.sync_strategy` — catalog/profiler metadata only;
-  no extractor reads it. Marked `Field(deprecated=True)`. External API
-  consumers see the signal in OpenAPI; back-compat preserved.
-- `RegisterTableRequest.profile_after_sync` — runtime never read this
-  flag (Agent 1 finding 2026-05-01); profiler runs unconditionally on
-  every synced table. Marked `Field(deprecated=True)` and made inert
-  (the BQ register endpoint no longer force-sets it to `False`).
-  Back-compat preserved — external clients sending the field get no
-  error, no warning, no effect.
-
-### Fixed
-- **admin API**: `update_table` PUT preserves `sync_strategy` and
-  `primary_key` when the Edit modal omits them from the payload (this
-  invariant always held via `request.model_dump()` + `if v is not None`,
-  but Phase I now has an explicit regression-guard test).
-
-## [0.27.0] — 2026-04-30
-
-Minor release. Adds **smart local sync** so analysts get RBAC-filtered parquets pulled at every Claude Code SessionStart and session logs pushed at SessionEnd, plus a new **BigQuery `query_mode='materialized'`** that lets admins register a scheduled SQL query whose result rides the same auto-sync flow as Keboola tables. The auto-sync set per analyst is the intersection of `query_mode IN ('local', 'materialized')` and the `resource_grants` rows — admins curate it via the existing RBAC layer, no new endpoints. The materialize path uses the `BqAccess` facade from #138 so cost-estimate logic and DuckDB-extension session setup live in one place. Devin review iteration during PR #145 surfaced and fixed a `null`-disable trap on the cost guardrail, an empty-hash re-download bug on materialized parquets, and a stale-`source_query` data-integrity gap on PUT — all baked in before this PR was opened.
-
-### Added
-
 - **BigQuery `query_mode='materialized'`** — admin registers a SQL query
   via `da admin register-table --query-mode materialized --query @file.sql
   --sync-schedule "every 6h"`; the sync trigger pass runs it through the
@@ -92,7 +44,7 @@ Minor release. Adds **smart local sync** so analysts get RBAC-filtered parquets 
   via `da fetch` not via remote" contract. Per-user RBAC filtering is
   unchanged: a materialized table is just another row in
   `table_registry` with `resource_grants` controlling which groups see it.
-- **Schema v19** adds `source_query TEXT` column to `table_registry` to
+- **Schema v20** adds `source_query TEXT` column to `table_registry` to
   back the materialized mode. NULL for existing rows. The
   `materialize_query()` function in the BigQuery extractor performs the
   COPY atomically (`<id>.parquet.tmp` → `os.replace`) so a failed query
@@ -134,25 +86,59 @@ Minor release. Adds **smart local sync** so analysts get RBAC-filtered parquets 
   bootstrapping a fresh Claude Code workspace get auto-sync out of the box.
 
 ### Changed
-
+- **admin UI**: Keboola Register and Edit modals adopt the same
+  two-question radio model as BigQuery — *What to sync?* (Whole table
+  / Custom SQL). Whole-table mode synthesizes a `SELECT *` and writes
+  it through the materialized path; Custom mode lets the admin filter
+  / aggregate / project. The legacy `query_mode='local'` extractor
+  path remains supported for back-compat but is no longer the default
+  for new Keboola registrations — Whole mode is functionally
+  equivalent and follows the unified materialized pipeline.
+- **admin UI**: `Sync Strategy` dropdown removed from the Keboola form
+  (Register and Edit). Two independent agent reviews (2026-05-01) found
+  the field's hint claimed it controlled extraction but no extractor
+  reads it; only `profiler.is_partitioned()` consumes it for parquet-
+  layout detection. Field stays in the DB and Pydantic model for
+  back-compat (marked `Field(deprecated=True)`); just hidden from the
+  primary form.
+- **admin UI**: `Primary Key` input moved under `<details>Advanced` in
+  both Keboola Register and Edit modals, with a clarifying hint that
+  it's catalog metadata only — Agnes always does full-overwrite sync;
+  no upsert / dedup. Auto-fill from Keboola discovery still works.
+- **admin UI**: Registry listing column "Strategy" replaced with "Mode"
+  (showing `query_mode` instead of decorative `sync_strategy`). The
+  `.col-strategy` / `.strategy-badge` CSS rules removed.
 - BigQuery `init_extract` no longer creates remote views for rows with
   `query_mode='materialized'`; those live as parquets and surface via
   the orchestrator's standard local-parquet discovery. Skipped rows do
   not appear in `_meta` so cross-source view-name collisions remain
   impossible.
 
-### Fixed
+### Deprecated
+- `RegisterTableRequest.sync_strategy` — catalog/profiler metadata only;
+  no extractor reads it. Marked `Field(deprecated=True)`. External API
+  consumers see the signal in OpenAPI; back-compat preserved.
+- `RegisterTableRequest.profile_after_sync` — runtime never read this
+  flag (Agent 1 finding 2026-05-01); profiler runs unconditionally on
+  every synced table. Marked `Field(deprecated=True)` and made inert
+  (the BQ register endpoint no longer force-sets it to `False`).
+  Back-compat preserved — external clients sending the field get no
+  error, no warning, no effect.
 
+### Fixed
+- **admin API**: `update_table` PUT preserves `sync_strategy` and
+  `primary_key` when the Edit modal omits them from the payload (this
+  invariant always held via `request.model_dump()` + `if v is not None`,
+  but Phase I now has an explicit regression-guard test).
 - `docs/setup/claude_settings.json` no longer references the deleted
   `server/scripts/collect_session.py` — the dead `SessionEnd` hook had
   silently failed in every Claude Code session since the v1→v2 server
   purge. Replaced with `da sync --upload-only --quiet`.
 
 ### Internal
-
 - README mode-first source table; new "Local sync & auto-update" section
   covering `da sync`, hooks, and admin RBAC for auto-sync membership.
-- `CLAUDE.md` schema chain extended to v19 with the `source_query`
+- `CLAUDE.md` schema chain extended through v20 with the `source_query`
   description; four source modes documented in Connector Pattern (added
   Materialized SQL); new "Local sync & Claude Code hooks" subsection
   under Development.
@@ -181,7 +167,6 @@ Minor release. Adds **smart local sync** so analysts get RBAC-filtered parquets 
     confusing downstream "bq is not attached".
 
 ### Known limitations
-
 Operators should be aware of these production-only behaviours; tests
 cannot exercise them and they will be revisited in follow-up PRs:
 
@@ -210,6 +195,32 @@ cannot exercise them and they will be revisited in follow-up PRs:
   the remote-attach path, but the materialized path does not yet.
   In practice: the cron scheduler is single-threaded and manual
   triggers are rare, so the race window is small.
+
+## [0.28.0] — 2026-05-01
+
+### Fixed
+
+- **Analyst CLAUDE.md template now documents BigQuery remote-query capability.** `config/claude_md_template.txt` (used by `da analyst setup`) had **zero mention** of `query_mode: "remote"`, `da fetch`, `da query --remote`, or `--register-bq` — the AI analyst running in a freshly-bootstrapped workspace had no idea remote tables existed. Added a `## Remote Queries (BigQuery)` section covering: discovery via `da catalog` (now called out as canonical, with `data/metadata/schema.json` flagged as local-only); the three query patterns (`da fetch` preferred, `da query --remote` for one-shots, `da query --register-bq` for hybrid joins); permission boundary (BQ access via the agnes server's GCE service account, not personal creds — escalate permission errors to admin); cost awareness (every query bills the SA's project for bytes scanned, `--select`/`--where`/`--estimate` discipline); `da fetch` estimate-first rules; BigQuery SQL flavor reminder; snapshot freshness ritual (`da snapshot drop` + re-fetch when source data updates); concrete hybrid-query example with `--register-bq` joining local + ad-hoc BQ; the unknown-table case (ad-hoc `--register-bq` or ask admin to register); and a cross-reference to `da skills show agnes-data-querying` for deeper guidance. Also clarifies that **personal customizations belong in `.claude/CLAUDE.local.md`**, not CLAUDE.md (which is regenerated by `da analyst setup --force` and would lose edits). Closes #153.
+
+### Removed
+
+- **Legacy `docs/setup/claude_md_template.txt` deleted.** 359-line stale template that documented the deprecated SSH-heredoc remote-query protocol (`ssh data-analyst 'bash ~/server/scripts/remote_query.sh --stdin' < query.json`). The active template lives at `config/claude_md_template.txt`; the docs/ copy was confusing references and at risk of being pulled into a workspace by a future refactor. No code references the deleted file (verified).
+
+## [0.27.0] — 2026-04-30
+
+### Removed
+
+- **BREAKING** Table access fully migrated to per-group `resource_grants` (`ResourceType.TABLE`). Existing `dataset_permissions` rows are dropped on upgrade — admins must re-grant via `/admin/access`. Wildcard bucket grants (`bucket.*`) no longer supported and not replaced: every table needs an explicit grant (or admin override). Per-table bulk action in `/admin/access` covers a whole bucket at once.
+- **BREAKING** `table_registry.is_public` column dropped. The bypass shortcut had no API/UI/CLI surface to set it (only direct DB UPDATE worked) so the legacy data-RBAC layer was de-facto inactive — every table was implicitly public. Post-upgrade non-admin users see **zero tables** until admin grants explicit access. Migrate by minting the relevant `resource_grants(group, "table", id)` rows in `/admin/access` before deploy or immediately after.
+- **BREAKING** Self-service `access_requests` flow removed (table, repository, `/api/access-requests/*` endpoints, "Request Access" catalog modal). Users contact admin out-of-band; admin grants via `/admin/access`.
+- **BREAKING** Legacy `users.role` column dropped (NULL artifact since v13). API contracts: `CreateUserRequest.role`, `UpdateUserRequest.role` removed; `UserResponse.role` becomes a derived `"admin"|"user"` label. CLI: `da admin set-role` removed (hard-fail with a replacement command), `--role` flag removed from `da admin add-user` and `da auth import-token`. JWT `role` claim removed from new tokens (existing tokens keep the claim, ignored on read).
+- **BREAKING** `/api/admin/permissions` endpoints removed (POST/DELETE/GET). Replaced by `/api/admin/grants`. Half-shipped `/admin/permissions` admin UI page removed (template, route).
+- `AGNES_ENABLE_TABLE_GRANTS` env-gate removed from `app/resource_types.py` — `ResourceType.TABLE` is now unconditionally enabled (the gate existed only because runtime enforcement still flowed through legacy `dataset_permissions`).
+- `tests/test_permissions.py`, `tests/test_permissions_api.py`, `tests/test_access_requests_api.py` deleted (covered functionality removed).
+
+### Added
+
+- Schema **v19**: drops `dataset_permissions`, `access_requests` tables and `users.role`, `table_registry.is_public` columns. Implementation in `src/db.py:_v18_to_v19_finalize` uses the table-rebuild idiom (rename → create new → INSERT … SELECT → drop old) to work around DuckDB's `ALTER TABLE DROP COLUMN` limitations on tables that have ever held FK constraints. The INSERT picks the intersection of the legacy and v19 column sets so test fixtures with hand-crafted minimal pre-v19 schemas migrate cleanly.
 
 ## [0.26.0] — 2026-04-30
 

@@ -24,11 +24,10 @@ from app.instance_config import (
     get_theme, get_corporate_memory_config,
 )
 from src.repositories.sync_state import SyncStateRepository
-from src.repositories.sync_settings import SyncSettingsRepository, DatasetPermissionRepository
+from src.repositories.sync_settings import SyncSettingsRepository
 from src.repositories.knowledge import KnowledgeRepository
 from src.repositories.users import UserRepository
 from src.repositories.profiles import ProfileRepository
-from src.repositories.access_requests import AccessRequestRepository
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["web"])
@@ -507,27 +506,23 @@ async def catalog(
     enabled_datasets = settings_repo.get_enabled_datasets(user["id"])
     datasets = get_datasets()
 
-    # Build catalog data from table_registry in DuckDB
+    # Build catalog data from table_registry in DuckDB. Filter pre-render so
+    # the page only lists tables the user actually has access to — Admin
+    # group members see everything (can_access shortcut), other users see
+    # only entries with a matching resource_grants(group, "table", id) row.
     try:
         from src.repositories.table_registry import TableRegistryRepository
+        from app.auth.access import can_access
+        from app.resource_types import ResourceType
         table_repo = TableRegistryRepository(conn)
-        perm_repo = DatasetPermissionRepository(conn)
-        access_repo = AccessRequestRepository(conn)
         registered = table_repo.list_all()
 
-        # Pre-fetch user's pending access requests
         user_id = user.get("id", "")
-        user_requests = access_repo.list_by_user(user_id)
-        pending_request_table_ids = {
-            r["table_id"] for r in user_requests if r.get("status") == "pending"
-        }
-
         tables = []
         for tc in registered:
             table_id = tc.get("id", "")
-            is_public = tc.get("is_public", True)
-            has_access = is_public or perm_repo.has_access(user_id, table_id)
-
+            if not can_access(user_id, ResourceType.TABLE.value, table_id, conn):
+                continue
             table_data = {
                 "id": table_id,
                 "name": tc.get("name", ""),
@@ -536,9 +531,6 @@ async def catalog(
                 "sync_strategy": tc.get("sync_strategy", "full_refresh"),
                 "query_mode": tc.get("query_mode", "local"),
                 "profile": all_profiles.get(table_id),
-                "is_public": is_public,
-                "has_access": has_access,
-                "pending_request": table_id in pending_request_table_ids,
             }
             # Add sync state
             for state in all_states:
@@ -549,7 +541,6 @@ async def catalog(
             tables.append(table_data)
     except Exception as e:
         tables = []
-        pending_request_table_ids = set()
         logger.warning(f"Could not load catalog: {e}")
 
     # Build data_stats for catalog template
@@ -785,17 +776,6 @@ async def admin_server_config_page(
     """
     ctx = _build_context(request, user=user)
     return templates.TemplateResponse(request, "admin_server_config.html", ctx)
-
-
-@router.get("/admin/permissions", response_class=HTMLResponse)
-async def admin_permissions_page(
-    request: Request,
-    user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
-):
-    """Admin page for managing permissions and access requests."""
-    ctx = _build_context(request, user=user)
-    return templates.TemplateResponse(request, "admin_permissions.html", ctx)
 
 
 @router.get("/admin/users", response_class=HTMLResponse)
