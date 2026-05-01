@@ -10,8 +10,67 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-<!-- Add bullets here. Group: Added / Changed / Fixed / Removed / Internal.
-     Mark breaking changes with **BREAKING** at the start of the bullet. -->
+### Added
+- **admin UI**: `/admin/tables` is now a per-connector tab interface
+  (BigQuery / Keboola / Jira). Each tab has its own Register modal +
+  listing scoped to its source_type. Active tab persists in
+  `window.location.hash` so refresh keeps the operator in place.
+- **Keboola materialized SQL**: `query_mode='materialized'` now works
+  for `source_type='keboola'` — admin registers a SELECT against
+  `kbc."bucket"."table"` and the scheduler writes the result to
+  `/data/extracts/keboola/data/<id>.parquet`. Same flow as BigQuery
+  materialized; same `da sync` distribution; same RBAC. Cost guardrail
+  (BQ-style dry-run) intentionally omitted — Keboola extension has no
+  dry-run analog and Storage API cost is download-byte-shaped, not
+  scan-byte-shaped. A future PR can add a configurable byte cap if
+  operators ask for it.
+- **Keboola Sync Schedule**: per-table cron input added to the Keboola
+  tab Register and Edit modals. The scheduler has always honored
+  per-table `sync_schedule` for every source via `is_table_due()`,
+  but the Keboola UI had no surface for it — operators had to use the
+  `/api/admin/registry/{id}` PUT endpoint or `da admin` CLI. Now they
+  can type `every 6h` / `daily 03:00` directly.
+
+### Changed
+- **admin UI**: Keboola Register and Edit modals adopt the same
+  two-question radio model as BigQuery — *What to sync?* (Whole table
+  / Custom SQL). Whole-table mode synthesizes a `SELECT *` and writes
+  it through the materialized path; Custom mode lets the admin filter
+  / aggregate / project. The legacy `query_mode='local'` extractor
+  path remains supported for back-compat but is no longer the default
+  for new Keboola registrations — Whole mode is functionally
+  equivalent and follows the unified materialized pipeline.
+- **admin UI**: `Sync Strategy` dropdown removed from the Keboola form
+  (Register and Edit). Two independent agent reviews (2026-05-01) found
+  the field's hint claimed it controlled extraction but no extractor
+  reads it; only `profiler.is_partitioned()` consumes it for parquet-
+  layout detection. Field stays in the DB and Pydantic model for
+  back-compat (marked `Field(deprecated=True)`); just hidden from the
+  primary form.
+- **admin UI**: `Primary Key` input moved under `<details>Advanced` in
+  both Keboola Register and Edit modals, with a clarifying hint that
+  it's catalog metadata only — Agnes always does full-overwrite sync;
+  no upsert / dedup. Auto-fill from Keboola discovery still works.
+- **admin UI**: Registry listing column "Strategy" replaced with "Mode"
+  (showing `query_mode` instead of decorative `sync_strategy`). The
+  `.col-strategy` / `.strategy-badge` CSS rules removed.
+
+### Deprecated
+- `RegisterTableRequest.sync_strategy` — catalog/profiler metadata only;
+  no extractor reads it. Marked `Field(deprecated=True)`. External API
+  consumers see the signal in OpenAPI; back-compat preserved.
+- `RegisterTableRequest.profile_after_sync` — runtime never read this
+  flag (Agent 1 finding 2026-05-01); profiler runs unconditionally on
+  every synced table. Marked `Field(deprecated=True)` and made inert
+  (the BQ register endpoint no longer force-sets it to `False`).
+  Back-compat preserved — external clients sending the field get no
+  error, no warning, no effect.
+
+### Fixed
+- **admin API**: `update_table` PUT preserves `sync_strategy` and
+  `primary_key` when the Edit modal omits them from the payload (this
+  invariant always held via `request.model_dump()` + `if v is not None`,
+  but Phase I now has an explicit regression-guard test).
 
 ## [0.27.0] — 2026-04-30
 
