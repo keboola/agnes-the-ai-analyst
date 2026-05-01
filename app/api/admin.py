@@ -1098,6 +1098,25 @@ def _sanitize_for_audit(payload: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+# Both the BigQuery and Keboola materialize paths funnel `source_query`
+# through DuckDB (BQ via the bigquery extension's COPY translation, Keboola
+# via an ATTACH'd extension and a direct COPY). DuckDB uses double quotes
+# for quoted identifiers — backticks are a BigQuery-native syntactic form
+# DuckDB's parser does not honor, so a backtick-quoted source_query either
+# parse-errors at COPY time or silently scans nothing. Surfaced from the
+# field validator on RegisterTableRequest AND the merged-record path in
+# `update_table` so neither route can persist a backtick query.
+_BACKTICK_REJECTION_MESSAGE = (
+    "source_query uses BigQuery-native backtick identifiers (e.g. "
+    "`project.dataset.table`), but the materialize path runs the SQL "
+    "through DuckDB's BigQuery extension which uses DuckDB-flavor "
+    "identifiers. Rewrite to DuckDB syntax: bq.\"dataset\".\"table\" "
+    "(with the attached catalog alias `bq` plus double-quoted dataset/"
+    "table). The instance is configured with the data project, so you "
+    "don't need to repeat it in the FROM clause."
+)
+
+
 class RegisterTableRequest(BaseModel):
     name: str
     folder: Optional[str] = None
@@ -1152,6 +1171,17 @@ class RegisterTableRequest(BaseModel):
             raise ValueError(
                 "source_query is only valid when query_mode='materialized'"
             )
+        # The materialize path runs the SQL through DuckDB's parser (BigQuery
+        # extension's COPY pushes it through DuckDB first, and the Keboola
+        # path COPYs the raw SQL through a DuckDB session too). DuckDB does
+        # NOT understand BigQuery-native backtick identifiers — those parse-
+        # error or silently match no rows, leaving no parquet at the
+        # canonical path and no operator-visible failure. Reject at register
+        # time with an actionable message so the bad SQL never lands in
+        # `table_registry.source_query`. See `_run_materialized_pass` for
+        # the runtime path that would otherwise eat the error.
+        if sq and "`" in sq:
+            raise ValueError(_BACKTICK_REJECTION_MESSAGE)
         # Normalise: stash the trimmed-or-None form so the persisted column
         # never carries surrounding whitespace or empty-string sentinels.
         self.source_query = sq
@@ -1596,9 +1626,37 @@ async def list_registry(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Get full table registry."""
+    """Get full table registry.
+
+    Each table row is enriched with `last_sync_error` from sync_state so
+    operators can see WHY a row isn't materializing without trawling
+    scheduler logs. None for rows that have never errored or have already
+    recovered (status='ok'); the per-row error message string otherwise.
+    """
     repo = TableRegistryRepository(conn)
     tables = repo.list_all()
+
+    # Single batched read of sync_state errors — avoid N+1 GETs against
+    # `sync_state` for large registries. The sync_state row is keyed on
+    # `table_id` which mirrors `table_registry.name` (see comment in
+    # _run_materialized_pass / _build_manifest_for_user about name vs id).
+    error_by_name: Dict[str, Optional[str]] = {}
+    try:
+        rows = conn.execute(
+            "SELECT table_id, error FROM sync_state "
+            "WHERE status = 'error' AND error IS NOT NULL AND error <> ''"
+        ).fetchall()
+        error_by_name = {r[0]: r[1] for r in rows}
+    except Exception:
+        # Defensive: if sync_state is unreadable for any reason, the
+        # registry response still serializes — operators just lose the
+        # last_sync_error column on this call.
+        logger.exception("Failed to read sync_state errors for registry")
+
+    for t in tables:
+        # Sync_state.table_id == table_registry.name by convention.
+        t["last_sync_error"] = error_by_name.get(t.get("name"))
+
     return {"tables": tables, "count": len(tables)}
 
 
@@ -2146,6 +2204,16 @@ async def update_table(
                         "(BigQuery) and the stale source_query is cleared "
                         "automatically."
                     ),
+                )
+            # Backtick rejection on the merged record — see
+            # `_BACKTICK_REJECTION_MESSAGE` for the rationale. Catches PATCHes
+            # that flip `source_query` to a backtick form on an already-
+            # materialized row, which the synthetic-RegisterTableRequest below
+            # only re-validates for BQ rows. Apply uniformly so Keboola
+            # materialized rows can't carry one either.
+            if "`" in str(sq):
+                raise HTTPException(
+                    status_code=422, detail=_BACKTICK_REJECTION_MESSAGE,
                 )
 
         if merged.get("source_type") == "bigquery":

@@ -76,7 +76,11 @@ def _materialized_payload(**overrides):
         "name": "orders_90d",
         "source_type": "bigquery",
         "query_mode": "materialized",
-        "source_query": "SELECT date FROM `prj.ds.orders`",
+        # DuckDB-flavor SQL (not BQ-native backticks) — the materialize path
+        # runs the SQL through the DuckDB BQ extension's COPY which uses
+        # double-quoted identifiers. Backticks are now rejected at register
+        # time. See `_BACKTICK_REJECTION_MESSAGE` in app/api/admin.py.
+        "source_query": 'SELECT date FROM bq."ds"."orders"',
         "sync_schedule": "every 6h",
     }
     p.update(overrides)
@@ -308,7 +312,7 @@ def test_register_materialized_persists_source_query_in_registry(seeded_app, bq_
         "/api/admin/register-table",
         json=_materialized_payload(
             name="persist_q",
-            source_query="SELECT col FROM `prj.ds.t` WHERE x = 1",
+            source_query='SELECT col FROM bq."ds"."t" WHERE x = 1',
         ),
         headers=_auth(token),
     )
@@ -320,3 +324,219 @@ def test_register_materialized_persists_source_query_in_registry(seeded_app, bq_
     assert row is not None
     assert row["query_mode"] == "materialized"
     assert "WHERE x = 1" in row["source_query"]
+
+
+# --- Backtick (BigQuery-native) source_query rejection -----------------------
+#
+# DuckDB BQ extension's COPY path interprets the SQL through DuckDB's parser,
+# which does NOT understand backtick-quoted identifiers (it uses double quotes
+# for quoted identifiers). A registered backtick-style source_query like
+# `SELECT * FROM \`prj.ds.t\`` either parse-errors or returns 0 rows at next
+# materialize tick — silently — and no parquet ends up at the canonical path.
+# Reject at registration time with an actionable message.
+
+
+def test_register_materialized_rejects_backtick_source_query(seeded_app, bq_instance):
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.post(
+        "/api/admin/register-table",
+        json=_materialized_payload(
+            name="bt_native",
+            source_query="SELECT * FROM `prj-grp.ds.product_inventory`",
+        ),
+        headers=_auth(token),
+    )
+    assert r.status_code == 422, r.json()
+    detail = str(r.json().get("detail", "")).lower()
+    assert "backtick" in detail
+    assert 'bq."' in detail or "duckdb" in detail
+
+
+def test_update_materialized_rejects_backtick_source_query(
+    seeded_app, bq_instance, stub_bq_extractor,
+):
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+
+    r = c.post(
+        "/api/admin/register-table",
+        json=_materialized_payload(
+            name="bt_update",
+            source_query='SELECT * FROM bq."ds"."t"',
+        ),
+        headers=_auth(token),
+    )
+    assert r.status_code == 201, r.json()
+    table_id = r.json()["id"]
+
+    # PATCH the source_query to a backtick form — must be rejected.
+    r2 = c.put(
+        f"/api/admin/registry/{table_id}",
+        json={
+            "query_mode": "materialized",
+            "source_query": "SELECT * FROM `prj.ds.t`",
+        },
+        headers=_auth(token),
+    )
+    assert r2.status_code == 422, r2.json()
+    detail = str(r2.json().get("detail", "")).lower()
+    assert "backtick" in detail
+
+
+def test_register_materialized_keboola_rejects_backtick_source_query(seeded_app):
+    """The check is generic, not BQ-only — Keboola materialized rows that
+    include backticks would also be silently skipped at materialize time."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.post(
+        "/api/admin/register-table",
+        json={
+            "name": "kbc_bt",
+            "source_type": "keboola",
+            "query_mode": "materialized",
+            "source_query": "SELECT * FROM `bucket.table`",
+        },
+        headers=_auth(token),
+    )
+    assert r.status_code == 422, r.json()
+    detail = str(r.json().get("detail", "")).lower()
+    assert "backtick" in detail
+
+
+# --- Surface materialize errors per-row ---------------------------------------
+#
+# Errors that bubble out of `_run_materialized_pass` per-row used to disappear
+# into scheduler stderr. Operators have no API surface to find out WHY a row
+# isn't materializing. The trigger pass now writes the failure into
+# `sync_state.error` (existing column) so `GET /api/admin/registry` can include
+# `last_sync_error` per row, exposed to `da admin status` / the admin UI.
+
+
+def test_run_materialized_pass_surfaces_error_in_sync_state(seeded_app, bq_instance):
+    """When a per-row materialize call raises, `_run_materialized_pass` writes
+    the error to sync_state.error so it can be surfaced via the registry API.
+    """
+    from app.api.sync import _run_materialized_pass
+    from src.repositories.sync_state import SyncStateRepository
+    from src.repositories.table_registry import TableRegistryRepository
+    from src.db import get_system_db
+
+    sys_conn = get_system_db()
+    try:
+        # Seed a materialized BQ row.
+        TableRegistryRepository(sys_conn).register(
+            id="boom",
+            name="boom",
+            source_type="bigquery",
+            query_mode="materialized",
+            source_query='SELECT * FROM bq."ds"."missing"',
+            sync_schedule="every 1m",
+        )
+
+        # Stub the materialize seam so the per-row branch raises.
+        from unittest.mock import patch
+        with patch(
+            "app.api.sync._materialize_table",
+            side_effect=RuntimeError("boom: missing table"),
+        ):
+            summary = _run_materialized_pass(sys_conn, bq=None)
+
+        assert any(e["table"] == "boom" for e in summary["errors"]), summary
+
+        state = SyncStateRepository(sys_conn).get_table_state("boom")
+        assert state is not None, "sync_state row should be created on error"
+        assert (state.get("status") or "") == "error"
+        assert "boom: missing table" in (state.get("error") or "")
+    finally:
+        # Cleanup so the next test starts clean.
+        try:
+            sys_conn.execute("DELETE FROM table_registry WHERE id='boom'")
+            sys_conn.execute("DELETE FROM sync_state WHERE table_id='boom'")
+        except Exception:
+            pass
+        sys_conn.close()
+
+
+def test_run_materialized_pass_clears_error_on_success(seeded_app, bq_instance):
+    """When a row that previously errored materializes cleanly, the prior
+    sync_state.error is cleared so the registry response stops surfacing
+    a stale failure message."""
+    from app.api.sync import _run_materialized_pass
+    from src.repositories.sync_state import SyncStateRepository
+    from src.repositories.table_registry import TableRegistryRepository
+    from src.db import get_system_db
+
+    sys_conn = get_system_db()
+    try:
+        TableRegistryRepository(sys_conn).register(
+            id="recover",
+            name="recover",
+            source_type="bigquery",
+            query_mode="materialized",
+            source_query='SELECT * FROM bq."ds"."t"',
+            sync_schedule="every 1m",
+        )
+
+        # Pre-seed sync_state with an error so we can verify it gets cleared.
+        SyncStateRepository(sys_conn).set_error("recover", "previous run failed")
+        state_before = SyncStateRepository(sys_conn).get_table_state("recover")
+        assert (state_before.get("status") or "") == "error"
+
+        from unittest.mock import patch
+        # Successful materialize returns a stats dict.
+        with patch(
+            "app.api.sync._materialize_table",
+            return_value={
+                "rows": 5, "size_bytes": 100, "hash": "abc123",
+                "query_mode": "materialized",
+            },
+        ):
+            summary = _run_materialized_pass(sys_conn, bq=None)
+
+        assert "recover" in summary["materialized"], summary
+        state_after = SyncStateRepository(sys_conn).get_table_state("recover")
+        assert (state_after.get("status") or "") == "ok"
+        assert (state_after.get("error") or "") == ""
+    finally:
+        try:
+            sys_conn.execute("DELETE FROM table_registry WHERE id='recover'")
+            sys_conn.execute("DELETE FROM sync_state WHERE table_id='recover'")
+        except Exception:
+            pass
+        sys_conn.close()
+
+
+def test_get_registry_exposes_last_sync_error_per_table(seeded_app, bq_instance):
+    """GET /api/admin/registry includes `last_sync_error` populated from
+    sync_state.error so operators have a UI/API surface to see why a
+    materialize is failing without trawling scheduler logs."""
+    from src.repositories.sync_state import SyncStateRepository
+    from src.repositories.table_registry import TableRegistryRepository
+    from src.db import get_system_db
+
+    sys_conn = get_system_db()
+    try:
+        TableRegistryRepository(sys_conn).register(
+            id="failing_row",
+            name="failing_row",
+            source_type="bigquery",
+            query_mode="materialized",
+            source_query='SELECT * FROM bq."ds"."t"',
+        )
+        SyncStateRepository(sys_conn).set_error(
+            "failing_row", "USER_PROJECT_DENIED on project xxx",
+        )
+    finally:
+        sys_conn.close()
+
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.get("/api/admin/registry", headers=_auth(token))
+    assert r.status_code == 200, r.json()
+    row = next(
+        (t for t in r.json()["tables"] if t["id"] == "failing_row"), None,
+    )
+    assert row is not None, r.json()
+    assert "last_sync_error" in row, list(row.keys())
+    assert "USER_PROJECT_DENIED" in (row["last_sync_error"] or "")

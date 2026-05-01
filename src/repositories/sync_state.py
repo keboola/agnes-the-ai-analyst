@@ -80,3 +80,40 @@ class SyncStateRepository:
             [table_id, limit],
         ).fetchall()
         return self._rows_to_dicts(results)
+
+    def set_error(self, table_id: str, error_message: str) -> None:
+        """Record a per-table sync failure on the existing `error` /`status`
+        columns so admin endpoints can surface it (`GET /api/admin/registry`
+        joins this column into each row's `last_sync_error`).
+
+        Upserts a sync_state row when one doesn't exist yet (a row that
+        errored on its first ever materialize had no prior `update_sync`
+        write). `last_sync` is left NULL on first-ever-error so the manifest
+        doesn't claim a sync happened. Existing rows keep their last
+        successful `last_sync` / `rows` / `hash` fields — only `status` and
+        `error` flip — so analysts who already pulled the prior good
+        parquet via `da sync` keep serving from it while the operator fixes
+        the source.
+        """
+        self.conn.execute(
+            """INSERT INTO sync_state (table_id, status, error)
+            VALUES (?, 'error', ?)
+            ON CONFLICT (table_id) DO UPDATE SET
+                status = 'error',
+                error = excluded.error""",
+            [table_id, error_message],
+        )
+
+    def clear_error(self, table_id: str) -> None:
+        """Clear an `error` / `status='error'` flag without disturbing the
+        rest of the sync_state row. Called after a successful materialize so
+        the registry response stops surfacing stale failure messages.
+        Idempotent — silently no-ops on rows that don't exist or already
+        have status='ok'.
+        """
+        self.conn.execute(
+            """UPDATE sync_state
+            SET status = 'ok', error = ''
+            WHERE table_id = ? AND status = 'error'""",
+            [table_id],
+        )

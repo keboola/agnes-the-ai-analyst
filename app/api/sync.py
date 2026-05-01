@@ -206,10 +206,16 @@ def _run_materialized_pass(conn: duckdb.DuckDBPyConnection, bq) -> dict:
                 "current": e.current,
                 "limit": e.limit,
             })
+            # Persist the failure so `GET /api/admin/registry` can surface
+            # `last_sync_error` to the admin UI / `da admin status`.
+            # Without this, scheduler stderr was the only place the cap
+            # failure showed up and operators had no API path to it.
+            state.set_error(ref_name, str(e))
             continue
         except Exception as e:
             logger.exception("Materialize failed for %s", ref_name)
             summary["errors"].append({"table": ref_name, "error": str(e)})
+            state.set_error(ref_name, str(e))
             continue
 
         # `materialize_query` returns the parquet's MD5 inline — hashing
@@ -223,6 +229,12 @@ def _run_materialized_pass(conn: duckdb.DuckDBPyConnection, bq) -> dict:
             )
             parquet_path = Path(output_dir_for_hash) / "data" / f"{ref_name}.parquet"
             parquet_hash = _file_hash(parquet_path)
+        # `update_sync` resets `status='ok'` / `error=NULL` on the upsert
+        # path (its argument defaults), so a row that previously errored
+        # has the failure cleared by this call. No separate clear_error
+        # needed here — the test invariant is that a successful materialize
+        # leaves status='ok' and error='', which `update_sync` already
+        # establishes.
         state.update_sync(
             table_id=ref_name,
             rows=stats["rows"],

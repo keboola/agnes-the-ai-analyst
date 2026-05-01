@@ -10,6 +10,27 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **admin API**: `POST /api/admin/register-table` and `PUT /api/admin/registry/{id}`
+  now reject `source_query` containing BigQuery-native backtick identifiers
+  (e.g. `` `prj.ds.t` ``) with HTTP 422 and a message pointing operators at
+  the DuckDB-flavor equivalent (`bq."dataset"."table"`). Backtick SQL would
+  silently no-op at the next materialize tick — the BQ extension's COPY runs
+  through DuckDB's parser, which doesn't recognize backticks, so the query
+  either parse-errored or matched zero rows and no parquet ever landed at
+  `/data/extracts/<source>/data/<id>.parquet`. Fix catches the bad SQL at
+  registration time so the row never lands in the registry.
+
+### Added
+- **admin API**: `GET /api/admin/registry` enriches each table row with
+  `last_sync_error` (string or null) sourced from `sync_state.error`. The
+  scheduler's `_run_materialized_pass` now writes per-row failures via
+  `SyncStateRepository.set_error` so cap-exceeded / auth-failure / bad-SQL
+  errors surface to the admin UI and `da admin status` instead of vanishing
+  into scheduler stderr. A row that recovers on the next tick clears the
+  error automatically (the success path of `update_sync` resets
+  `status='ok'` / `error=NULL` on the upsert).
+
 ## [0.30.0] — 2026-05-01
 
 ### Added
