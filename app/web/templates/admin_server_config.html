@@ -214,6 +214,10 @@ const SECTION_META = {
   ai: { title: "AI / LLM", help: "Provider + API key for the corporate-memory extractor. provider=anthropic|openai_compat; api_key uses ${ENV_VAR} so the secret stays in .env." },
   openmetadata: { title: "OpenMetadata", help: "Optional REST catalog enrichment. Without it, the app runs without catalog cross-links." },
   desktop: { title: "Desktop app", help: "JWT auth for the desktop client (rarely changed)." },
+  corporate_memory: {
+    title: "Corporate Memory",
+    help: "Optional governance for AI-extracted knowledge. When the section is unset, the system runs in legacy democratic-wiki mode with no admin review.",
+  },
 };
 const DANGER_SECTIONS = new Set(["auth", "server"]);
 

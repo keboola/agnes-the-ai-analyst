@@ -11,6 +11,27 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **admin UI**: `/admin/server-config` exposes the full **corporate_memory
+  governance schema** in the editor — `distribution_mode`, `approval_mode`,
+  `review_period_months`, `notify_on_new_items`, the `sources` /
+  `extraction` / `confidence` / `contradiction_detection` /
+  `entity_resolution` nested objects, plus the `domain_owners` /
+  `domains` lists. The whole section is optional (omitted = legacy
+  democratic-wiki mode); admins can opt in via the UI without hand-editing
+  YAML. Schema mirrors `config/instance.yaml.example` lines 224-317.
+  `confidence.modifiers` (map<string, map<string, float>>) currently
+  renders as a JSON-textarea fallback with the schema explained inline —
+  full structured editor is a TODO.
+- **admin UI**: server-config renderer learned three new shapes —
+  `kind="array"` with a scalar `item_kind` renders as a vertical stack
+  of typed inputs with +/- row controls; `kind="map"` with scalar
+  `value_kind` renders as key:value rows with +/- controls;
+  `value_kind="array"` inside a map renders the value column as a
+  comma-separated list (pragmatic compromise over a full nested-array
+  UI inside each map row). Leaf inputs now carry `data-path` (JSON-encoded
+  segment array) so map keys with embedded dots —
+  e.g. `confidence.base["user_verification.correction"]` — survive
+  round-trip without being mistaken for nested-path separators.
 - **admin UI**: `/admin/server-config` renders registry-declared nested
   fields (`kind="object"` with explicit `fields`) as a fully-editable
   structured form — every leaf is its own input with a dotted-path

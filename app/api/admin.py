@@ -174,6 +174,7 @@ _EDITABLE_SECTIONS: tuple[str, ...] = (
     "ai",
     "openmetadata",
     "desktop",
+    "corporate_memory",
 )
 
 # "Danger-zone" sections — flipping these can lock operators out (auth.*) or
@@ -355,8 +356,230 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
             "hint": "Custom URL scheme registered by the desktop app (data-analyst://...).",
         },
     },
-    # Future: subagents 3-4 will add corporate_memory + admins entries
-    # (multi-level nesting handled by the recursive renderer).
+    # corporate_memory governance — optional. When the section is missing
+    # from instance.yaml the system runs in legacy democratic-wiki mode
+    # (no admin review). Schema mirrors config/instance.yaml.example
+    # lines 224-317; renderer handles arbitrary depth + arrays + maps.
+    "corporate_memory": {
+        "distribution_mode": {
+            "kind": "select",
+            "options": ["mandatory_only", "admin_curated", "hybrid"],
+            "default": "hybrid",
+            "hint": (
+                "How knowledge reaches users. mandatory_only = admin-only; "
+                "admin_curated = admin + user voting as feedback; "
+                "hybrid = default (mandatory from admin + optional from user voting)."
+            ),
+        },
+        "approval_mode": {
+            "kind": "select",
+            "options": ["review_queue", "auto_publish", "threshold"],
+            "default": "review_queue",
+            "hint": (
+                "How AI-extracted items enter the system. review_queue = admin "
+                "approval required (default); auto_publish = live immediately; "
+                "threshold = high-confidence auto, low-confidence to queue."
+            ),
+        },
+        "review_period_months": {
+            "kind": "int",
+            "default": 6,
+            "hint": "How often approved/mandatory items are flagged for re-review (months).",
+        },
+        "notify_on_new_items": {
+            "kind": "bool",
+            "default": True,
+            "hint": "Notify km_admins when new pending items arrive.",
+        },
+        "sources": {
+            "kind": "object",
+            "hint": (
+                "Knowledge-source ingestion. Each source has its own enabled "
+                "flag + base confidence."
+            ),
+            "fields": {
+                "claude_local_md": {
+                    "kind": "object",
+                    "fields": {
+                        "enabled": {"kind": "bool", "default": True},
+                        "confidence_base": {
+                            "kind": "float",
+                            "default": 0.50,
+                            "hint": "Confidence assigned to extractions from CLAUDE.local.md (0-1).",
+                        },
+                    },
+                },
+                "session_transcripts": {
+                    "kind": "object",
+                    "fields": {
+                        "enabled": {"kind": "bool", "default": True},
+                        "confidence_base": {"kind": "float", "default": 0.60},
+                        "max_turns_per_session": {
+                            "kind": "int",
+                            "default": 100,
+                            "hint": "Truncate transcripts longer than this many turns.",
+                        },
+                        "detection_types": {
+                            "kind": "array",
+                            "item_kind": "string",
+                            "default": [
+                                "correction",
+                                "confirmation",
+                                "unprompted_definition",
+                            ],
+                            "hint": (
+                                "Which extraction patterns to detect. Each entry "
+                                "is a detection-type tag."
+                            ),
+                        },
+                    },
+                },
+            },
+        },
+        "extraction": {
+            "kind": "object",
+            "fields": {
+                "model": {
+                    "kind": "string",
+                    "default": "claude-haiku-4-5-20251001",
+                    "hint": "LLM used to extract knowledge. Override for cost or quality.",
+                },
+                "sensitivity_check": {"kind": "bool", "default": True},
+                "contradiction_check": {"kind": "bool", "default": True},
+            },
+        },
+        "confidence": {
+            "kind": "object",
+            "hint": "Confidence scoring + decay rules.",
+            "fields": {
+                "base": {
+                    "kind": "map",
+                    "key_kind": "string",
+                    "value_kind": "float",
+                    "default": {
+                        "user_verification.correction": 0.90,
+                        "user_verification.unprompted_definition": 0.90,
+                        "user_verification.confirmation": 0.60,
+                        "admin_mandate": 1.00,
+                        "claude_local_md": 0.50,
+                        "session_transcript": 0.50,
+                    },
+                    "hint": (
+                        "Base score per source/detection. Keys are 'source_type' "
+                        "or 'source_type.detection_type' (the dot is data, not "
+                        "nesting)."
+                    ),
+                },
+                "modifiers": {
+                    # map<string, map<string, float>>. The renderer's structured
+                    # editor for "map of objects with declared subfields" is a
+                    # TODO (see admin_server_config.html); for now this falls
+                    # back to a JSON textarea — admins editing it see the
+                    # schema doc inline via the hint.
+                    "kind": "map",
+                    "key_kind": "string",
+                    "value_kind": "object",
+                    "value_fields": {},  # signals the JSON-textarea fallback
+                    "hint": (
+                        "Per-key modifier step sizes applied to base when "
+                        "optional signals are present (3-level dotted paths). "
+                        "Edit as a JSON object — outer keys mirror confidence.base "
+                        "keys; inner objects map signal name to bonus float."
+                    ),
+                },
+                "decay": {
+                    "kind": "object",
+                    "fields": {
+                        "mode": {
+                            "kind": "select",
+                            "options": ["linear", "exponential"],
+                            "default": "exponential",
+                        },
+                        "half_life_months": {
+                            "kind": "int",
+                            "default": 12,
+                            "hint": "Used when mode=exponential.",
+                        },
+                        "decay_rate_monthly": {
+                            "kind": "float",
+                            "default": 0.02,
+                            "hint": "Used when mode=linear.",
+                        },
+                        "floor": {
+                            "kind": "map",
+                            "key_kind": "string",
+                            "value_kind": "float",
+                            "default": {
+                                "admin_mandate": 0.50,
+                                "user_verification": 0.40,
+                                "default": 0.0,
+                            },
+                            "hint": (
+                                "Per-source minimum confidence — items never decay "
+                                "below this floor."
+                            ),
+                        },
+                    },
+                },
+            },
+        },
+        "contradiction_detection": {
+            "kind": "object",
+            "fields": {
+                "enabled": {"kind": "bool", "default": True},
+                "max_candidates": {
+                    "kind": "int",
+                    "default": 10,
+                    "hint": "Max contradiction candidates to evaluate per new item.",
+                },
+            },
+        },
+        "entity_resolution": {
+            "kind": "object",
+            "fields": {
+                "enabled": {"kind": "bool", "default": True},
+                "entities": {
+                    "kind": "map",
+                    "key_kind": "string",
+                    "value_kind": "array",
+                    "value_item_kind": "string",
+                    "default": {
+                        "metrics": ["churn", "MRR", "ARR", "NPS", "CAC", "LTV"],
+                        "products": ["Platform", "API", "Dashboard"],
+                    },
+                    "hint": (
+                        "Domain-entity vocabulary. Key = domain category; value = "
+                        "canonical names list."
+                    ),
+                },
+            },
+        },
+        "domain_owners": {
+            "kind": "map",
+            "key_kind": "string",
+            "value_kind": "array",
+            "value_item_kind": "string",
+            "hint": (
+                "Per-domain admin emails. Key = domain name; value = email list."
+            ),
+        },
+        "domains": {
+            "kind": "array",
+            "item_kind": "string",
+            "default": [
+                "finance",
+                "engineering",
+                "product",
+                "data",
+                "operations",
+                "infrastructure",
+            ],
+            "hint": (
+                "Knowledge domains analysts can target. Each must match a key "
+                "in domain_owners."
+            ),
+        },
+    },
 }
 
 # Keys whose values must be redacted from the audit diff. We match
