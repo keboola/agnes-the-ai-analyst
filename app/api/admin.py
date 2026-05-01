@@ -1402,10 +1402,19 @@ def _validate_source_type_configured(source_type: Optional[str]) -> None:
 
     - it matches the instance's primary ``data_source.type``, OR
     - a non-empty ``data_source.<source_type>`` block exists in the
-      effective `instance.yaml` (multi-source instances),OR
+      effective `instance.yaml` (multi-source instances), OR
     - it's in the small allowlist of types that don't sit under
       `data_source.*` at all (Jira, local — see
       ``_SOURCE_TYPES_INDEPENDENT_OF_DATA_SOURCE``).
+
+    Special case: when the configured primary is ``'local'`` (the default
+    when an instance is freshly bootstrapped and no `data_source.type` has
+    been set yet), the validator stays permissive — refusing registrations
+    here would block the first-time-setup workflow where the operator
+    registers a few tables against a not-yet-fully-configured instance.
+    The misconfiguration that this validator targets is the *explicit
+    mismatch*: `type=bigquery` instance + `source_type=keboola` payload
+    with no `data_source.keboola.*` block. That case still 422s.
 
     A bare/None source_type is tolerated for backward compat with legacy
     CLI scripts; the route resolves it later against
@@ -1427,6 +1436,16 @@ def _validate_source_type_configured(source_type: Optional[str]) -> None:
     secondary_block = get_value("data_source", source_type, default=None)
     if secondary_block:
         # Truthy non-empty dict / mapping / scalar — treat as configured.
+        return
+
+    # Bootstrap-friendliness: a primary of 'local' means the instance hasn't
+    # been pointed at a real source yet (or has been deliberately set to
+    # local-only). Don't gate registrations in that state — the operator is
+    # likely in the middle of first-time setup and will fill in the config
+    # next. The check still fires when primary is an actual source type
+    # (bigquery / keboola) and the requested source_type doesn't match
+    # AND has no secondary block.
+    if configured_primary == "local":
         return
 
     raise HTTPException(
