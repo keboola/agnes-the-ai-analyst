@@ -73,6 +73,25 @@ def test_admin_tables_listing_per_tab(seeded_app):
     assert 'id="jiraTableListing"' in html
 
 
+def test_jira_tab_is_read_only(seeded_app):
+    """Phase G: Jira tables are populated by webhooks, not by admin
+    registration. Tab shows the listing + a hint pointing to docs;
+    no Register button."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.get("/admin/tables", headers=_auth(token))
+    html = r.text
+    jira_tab = html[html.index('id="tab-content-jira"'):]
+    jira_tab = jira_tab[:jira_tab.index('</section>')]
+    # No Register button.
+    assert 'data-register-source="jira"' not in jira_tab
+    assert 'jiraRegisterBtn' not in jira_tab
+    # Hint pointing to docs (webhook-driven model).
+    assert "webhook" in jira_tab.lower()
+    # Listing div present.
+    assert 'id="jiraTableListing"' in jira_tab
+
+
 def test_admin_tables_tab_persists_in_url_hash(seeded_app):
     """Tab switching updates window.location.hash so refresh keeps the
     operator on the right tab. Verify the JS hooks for it are present."""
