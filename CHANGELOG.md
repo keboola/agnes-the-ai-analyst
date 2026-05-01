@@ -20,6 +20,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   either parse-errored or matched zero rows and no parquet ever landed at
   `/data/extracts/<source>/data/<id>.parquet`. Fix catches the bad SQL at
   registration time so the row never lands in the registry.
+- **admin API**: `DELETE /api/admin/registry/{id}` now removes the canonical
+  materialized parquet (`${DATA_DIR}/extracts/<source_type>/data/<name>.parquet`
+  plus any stale `.parquet.tmp`) AND clears the matching `sync_state` /
+  `sync_history` rows. Pre-fix the registry row was dropped but the parquet
+  + sync_state row stayed, so `GET /api/sync/manifest` kept advertising the
+  dropped table to `da sync` and analysts kept downloading it. Defensive
+  failure handling — file-removal errors are logged but don't fail the
+  DELETE.
 
 ### Added
 - **admin API**: `GET /api/admin/registry` enriches each table row with

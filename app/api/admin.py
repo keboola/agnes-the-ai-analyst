@@ -2273,6 +2273,14 @@ async def unregister_table(
     For BQ rows, schedules a background rebuild so the dropped row's
     master view is removed from analytics.duckdb (rather than hanging
     around until the next scheduled sync).
+
+    For materialized rows, also removes the canonical parquet at
+    `${DATA_DIR}/extracts/<source_type>/data/<id>.parquet` and clears
+    the matching `sync_state` row. Without these two cleanups, the
+    manifest endpoint kept advertising the dropped table to `da sync`
+    (sync_state-driven) and the orchestrator's next rebuild could
+    resurrect a master view from the leftover parquet (E2E sub-agent
+    finding 2026-05-01).
     """
     repo = TableRegistryRepository(conn)
     existing = repo.get(table_id)
@@ -2280,7 +2288,58 @@ async def unregister_table(
         raise HTTPException(status_code=404, detail="Table not found")
 
     was_bigquery = existing.get("source_type") == "bigquery"
+    was_materialized = existing.get("query_mode") == "materialized"
+    source_type = existing.get("source_type") or ""
+    name = existing.get("name") or table_id
+
     repo.unregister(table_id)
+
+    # Drop the canonical parquet for materialized rows. Path layout:
+    # `${DATA_DIR}/extracts/<source_type>/data/<name>.parquet` — the
+    # filename is keyed by `table_registry.name` (matches sync_state
+    # bookkeeping convention; see _run_materialized_pass + the manifest
+    # builder for the same name-keyed lookup). Defensively remove the
+    # `.parquet.tmp` sibling too in case a prior materialize crashed
+    # mid-COPY. Failure to remove (file missing, permission error) is
+    # logged but doesn't fail the DELETE — the registry row is already
+    # gone, and the orphan parquet will not produce a master view at
+    # next rebuild because the orchestrator's _meta-driven scan never
+    # picks up bare parquet files.
+    if was_materialized and source_type in ("bigquery", "keboola"):
+        try:
+            data_dir = Path(os.environ.get("DATA_DIR", "./data"))
+            base = data_dir / "extracts" / source_type / "data"
+            for candidate in (
+                base / f"{name}.parquet",
+                base / f"{name}.parquet.tmp",
+            ):
+                if candidate.exists():
+                    candidate.unlink()
+                    logger.info(
+                        "Removed materialized parquet for unregistered table %s: %s",
+                        table_id, candidate,
+                    )
+        except Exception as e:
+            logger.warning(
+                "Failed to remove materialized parquet for %s: %s — registry row is "
+                "still dropped; clean up the file manually if it lingers",
+                table_id, e,
+            )
+
+    # Clear sync_state for any source/mode (a row that was synced at any
+    # point — local/materialized — has a sync_state entry that the manifest
+    # serves regardless of registry state). Pre-fix, the manifest still
+    # advertised the dropped table to `da sync` because sync_state was
+    # never cleaned up, and analysts kept getting it through the manifest.
+    try:
+        conn.execute("DELETE FROM sync_state WHERE table_id = ?", [name])
+        conn.execute("DELETE FROM sync_history WHERE table_id = ?", [name])
+    except Exception as e:
+        logger.warning(
+            "Failed to clear sync_state for unregistered table %s: %s — "
+            "manifest may still advertise the dropped row to da sync",
+            table_id, e,
+        )
 
     AuditRepository(conn).log(
         user_id=user.get("id"),
