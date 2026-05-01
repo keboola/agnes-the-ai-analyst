@@ -85,6 +85,14 @@ def test_admin_tables_renders_two_question_radio_form(seeded_app, bq_instance):
     assert "Milestone 2" not in html
     assert "issue #108" not in html
 
+    # Phase E: form fields are inside the BQ tab content area.
+    bq_tab_content = html[html.index('id="tab-content-bigquery"'):]
+    bq_tab_end = bq_tab_content.index('</section>')
+    bq_section = bq_tab_content[:bq_tab_end]
+    assert 'name="bqAccessMode"' in bq_section
+    assert 'id="bqDataset"' in bq_section
+    assert 'id="bqSourceQuery"' in bq_section
+
 
 def test_edit_modal_has_bq_parity_fields(seeded_app, bq_instance):
     """Edit modal mirrors Register's two-question radio model (Q1 access
@@ -141,8 +149,10 @@ def test_edit_modal_has_bq_parity_fields(seeded_app, bq_instance):
 
 
 def test_admin_tables_keboola_branch_unchanged(seeded_app, monkeypatch):
-    """Negative — when `data_source.type` is NOT bigquery, the BQ form
-    fields don't appear at all (the Jinja `{% if %}` block guards them)."""
+    """Phase E: the BQ form is always rendered (inside #tab-content-bigquery)
+    regardless of data_source.type. On a Keboola instance the BQ tab is
+    just hidden by default; the operator can still click into it. The
+    legacy Type-selector remnant (#bqEntityType) must stay gone."""
     fake_cfg = {"data_source": {"type": "keboola", "keboola": {}}}
     monkeypatch.setattr(
         "app.instance_config.load_instance_config",
@@ -158,8 +168,10 @@ def test_admin_tables_keboola_branch_unchanged(seeded_app, monkeypatch):
         r = c.get("/admin/tables", headers=_auth(token))
         assert r.status_code == 200, r.text
         html = r.text
+        # Legacy Type-selector remnant must stay gone.
         assert 'id="bqEntityType"' not in html
-        assert 'id="bqSourceQuery"' not in html
+        # BQ form now always rendered inside #tab-content-bigquery.
+        assert 'id="bqSourceQuery"' in html
         # Keboola form's regBucket / regTableId still there.
         assert 'id="regTableId"' in html
         assert 'id="regBucket"' in html

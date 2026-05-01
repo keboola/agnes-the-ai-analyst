@@ -703,7 +703,8 @@ class TestAdminTablesUI:
             c.cookies.clear()
         assert resp.status_code == 200, resp.text
         body = resp.text
-        # Modal carries the source type so the JS can branch.
+        # Modal carries the source type so legacy openRegisterModal({}) still
+        # routes through the JS dispatcher.
         assert 'data-source-type="bigquery"' in body
         # BQ-only inputs.
         assert 'id="bqDataset"' in body
@@ -715,9 +716,9 @@ class TestAdminTablesUI:
         assert "every 6h" in body or "daily 03:00" in body
         # BQ-specific panel (Keboola-style discovery panel must not appear).
         assert 'data-test="bq-register-panel"' in body
-        # Keboola-only inputs must NOT be present.
-        assert 'id="regTableId"' not in body
-        assert 'id="regBucket"' not in body
+        # Phase E: BQ + Keboola modals are now both always rendered (each
+        # inside its own tab). On a BQ instance the BQ tab is the visible
+        # one; the Keboola modal is just hidden in a non-active tab.
 
     def test_renders_keboola_fields_when_data_source_keboola(self, seeded_app, monkeypatch):
         from app.instance_config import reset_cache
@@ -741,8 +742,9 @@ class TestAdminTablesUI:
             assert 'id="discoveryResults"' in body
             assert 'id="regBucket"' in body
             assert 'id="regTableName"' in body
-            # BQ-only inputs MUST NOT be present.
-            assert 'id="bqDataset"' not in body
+            # Phase E: BQ form now always rendered (inside #tab-content-bigquery)
+            # — operator can switch tabs to register a BQ table on a Keboola
+            # instance. Tab is hidden by default but the form is in the DOM.
         finally:
             reset_cache()
 
