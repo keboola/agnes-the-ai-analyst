@@ -142,7 +142,21 @@ def test_e2e_register_then_materialize_then_manifest_via_repo(
     assert row["rows"] == 2
 
     # Manifest builder exposes query_mode + hash to admin (no RBAC filter).
-    admin_user = {"id": "u-admin", "email": "admin@test", "role": "admin"}
+    # Post-#150 RBAC: admin shortcut keys on Admin user_group membership,
+    # not the legacy `users.role` column. Seed the user + Admin membership
+    # so `can_access_table` short-circuits to True.
+    conn.execute(
+        "INSERT OR IGNORE INTO users (id, email) VALUES ('u-admin', 'admin@test')"
+    )
+    admin_group_id = conn.execute(
+        "SELECT id FROM user_groups WHERE name = 'Admin'"
+    ).fetchone()[0]
+    conn.execute(
+        "INSERT OR IGNORE INTO user_group_members (user_id, group_id, source) "
+        "VALUES ('u-admin', ?, 'admin')",
+        [admin_group_id],
+    )
+    admin_user = {"id": "u-admin", "email": "admin@test"}
     manifest = sync_mod._build_manifest_for_user(conn, admin_user)
     assert table_id in manifest["tables"]
     entry = manifest["tables"][table_id]
