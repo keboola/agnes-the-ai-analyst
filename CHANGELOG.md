@@ -11,6 +11,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Added
+- **diagnostics**: `/api/health/detailed` (and therefore `da diagnose`) now
+  surfaces a `bq_config` service entry on BigQuery instances. Reports
+  `status="warning"` when `data_source.bigquery.billing_project` resolves
+  equal to `data_source.bigquery.project` — the configuration where a
+  service account with `roles/bigquery.dataViewer` on the data project but
+  no `serviceusage.services.use` 403s every BQ call with
+  USER_PROJECT_DENIED. The warning includes a hint pointing at the
+  `instance.yaml` field and the `/admin/server-config` UI.
 - **admin UI**: `/admin/server-config` exposes the full **corporate_memory
   governance schema** in the editor — `distribution_mode`, `approval_mode`,
   `review_period_months`, `notify_on_new_items`, the `sources` /
