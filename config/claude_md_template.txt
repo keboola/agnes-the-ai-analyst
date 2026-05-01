@@ -21,6 +21,89 @@ This workspace is connected to {server_url}.
 - `da sync --upload-only` — upload sessions and local notes to server
 - Data on the server refreshes every {sync_interval}
 
+## Remote Queries (BigQuery) — when data isn't on the laptop
+
+Not every table is synced. Tables registered with `query_mode: "remote"` live in
+BigQuery, accessed server-side via DuckDB's BQ extension — no parquet on disk.
+Tables you don't see in `data/parquet/` may still be queryable.
+
+### Discovery first
+
+```
+da catalog --json | jq '.[] | {name, source_type, query_mode}'   # see all tables + their modes
+da schema <table>                                                # columns + types
+da describe <table> -n 5                                         # sample rows
+```
+
+For local-mode tables, query directly with `da query "SELECT … FROM <table>"`.
+
+### Three patterns for `query_mode: "remote"` tables
+
+| Pattern | Tool | Use when |
+|---------|------|----------|
+| **`da fetch`** (preferred) | materializes a filtered subset locally → query the snapshot | repeated questions on same slice |
+| **`da query --remote`** | one-shot, server-side execution against BigQuery | single aggregate / cheap probe |
+| **`da query --register-bq`** | hybrid joins between local snapshots and ad-hoc BQ subqueries | crossing local + remote |
+
+### `da fetch` discipline
+
+```
+# 1. ESTIMATE first — refuses to fetch without knowing the cost
+da fetch <table> --select col1,col2 --where "date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)" --estimate
+
+# 2. If reasonable, fetch as a named snapshot
+da fetch <table> --select col1,col2 --where "..." --as my_recent
+
+# 3. Query the local snapshot
+da query "SELECT col1, COUNT(*) FROM my_recent GROUP BY 1"
+
+# 4. List + drop snapshots when done
+da snapshot list
+da snapshot drop my_recent
+```
+
+Rules of thumb:
+- ALWAYS list specific columns in `--select`. Avoid implicit SELECT *.
+- ALWAYS include a `--where` for remote tables; otherwise add `--limit`.
+- ALWAYS run `--estimate` first when the table is `partition_by` / `clustered_by`
+  per `da schema`, or could plausibly exceed 1 GB local bytes.
+- Reuse snapshots across questions in the same conversation — `da snapshot list`
+  before fetching.
+
+### BigQuery SQL flavor for `--where`
+
+Source-typed `bigquery` tables use BigQuery dialect, not DuckDB:
+
+- Date literal: `DATE '2026-01-01'`
+- Timestamp literal: `TIMESTAMP '2026-01-01 00:00:00 UTC'`
+- Now: `CURRENT_DATE()`, `CURRENT_TIMESTAMP()`
+- Date arithmetic: `DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)`
+- Regex: `REGEXP_CONTAINS(col, r'pattern')` (raw string!)
+- Cast: `CAST(x AS INT64)` (NOT `INT`)
+
+### When the table you want isn't in `da catalog`
+
+The table may exist in BigQuery but not be registered with Agnes yet. Two options:
+
+1. **Ad-hoc one-shot** — register a BQ subquery as a view inline, no admin needed
+   if the agnes server SA has BQ access:
+   ```
+   da query --register-bq "live=SELECT * FROM \`project.dataset.table\` WHERE date >= '...' LIMIT 1000" \
+            --sql "SELECT * FROM live"
+   ```
+2. **Ask admin to register** the table with `query_mode: "remote"` so it shows up
+   in `da catalog` and supports `da fetch` / `da query --remote`. This is the
+   right path for any table you'll query repeatedly.
+
+### Deeper guidance
+
+For the full protocol, including hybrid-query examples, snapshot hygiene, and
+when NOT to use `da fetch`, run:
+
+```
+da skills show agnes-data-querying
+```
+
 ## Corporate Memory
 
 Rules injected by `da sync` from the server's corporate knowledge base live in `.claude/rules/km_*.md`. They are automatically loaded by Claude Code on every session start.

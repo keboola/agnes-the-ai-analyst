@@ -10,6 +10,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **Analyst CLAUDE.md template now documents BigQuery remote-query capability.** `config/claude_md_template.txt` (used by `da analyst bootstrap`) had **zero mention** of `query_mode: "remote"`, `da fetch`, `da query --remote`, or `--register-bq` — the AI analyst running in a freshly-bootstrapped workspace had no idea remote tables existed. Added a `## Remote Queries (BigQuery)` section covering: discovery via `da catalog`, the three query patterns (`da fetch` preferred, `da query --remote` for one-shots, `da query --register-bq` for hybrid joins), `da fetch` estimate-first discipline, BigQuery SQL flavor reminder, the unknown-table case (ad-hoc `--register-bq` or ask admin to register), and a cross-reference to `da skills show agnes-data-querying` for deeper guidance. Closes #153.
+
+### Removed
+
+- **Legacy `docs/setup/claude_md_template.txt` deleted.** 359-line stale template that documented the deprecated SSH-heredoc remote-query protocol (`ssh data-analyst 'bash ~/server/scripts/remote_query.sh --stdin' < query.json`). The active template lives at `config/claude_md_template.txt`; the docs/ copy was confusing references and at risk of being pulled into a workspace by a future refactor. No code references the deleted file (verified).
+
 ## [0.27.0] — 2026-04-30
 
 ### Removed
