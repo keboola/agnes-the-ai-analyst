@@ -56,10 +56,15 @@ def _materialize_table(
 
 def _run_materialized_pass(conn: duckdb.DuckDBPyConnection, bq) -> dict:
     """Walk `table_registry` for `query_mode='materialized'` rows and run any
-    that are due. Honors per-table `sync_schedule` via `is_table_due()`,
-    writes the parquet via `_materialize_table`, computes the file hash
-    inline, and updates `sync_state` so the manifest can serve the row to
-    `da sync` without re-hashing on every request.
+    that are due, dispatching by ``source_type`` to the correct connector's
+    materialize_query. Honors per-table `sync_schedule` via `is_table_due()`,
+    computes the file hash inline, and updates `sync_state` so the manifest
+    can serve the row to `da sync` without re-hashing on every request.
+
+    BigQuery rows go through BqAccess + bigquery_query() (jobs API),
+    optionally cost-guarded by ``max_bytes_per_materialize``.
+    Keboola rows go through KeboolaAccess + ATTACH-and-COPY, no
+    guardrail (extension has no dry-run primitive).
 
     Returns:
         ``{"materialized": [ids], "skipped": [ids], "errors": [{table, error}]}``
@@ -73,7 +78,8 @@ def _run_materialized_pass(conn: duckdb.DuckDBPyConnection, bq) -> dict:
     from app.instance_config import get_value
     from connectors.bigquery.extractor import MaterializeBudgetError
 
-    output_dir = str(Path(_get_data_dir()) / "extracts" / "bigquery")
+    bq_output_dir = str(Path(_get_data_dir()) / "extracts" / "bigquery")
+    kb_output_dir = Path(_get_data_dir()) / "extracts" / "keboola" / "data"
 
     # Sentinel: max_bytes <= 0 (or None) disables the guardrail. `get_value()`
     # treats YAML `null` as "missing" → returns the default; operators must use
@@ -100,6 +106,8 @@ def _run_materialized_pass(conn: duckdb.DuckDBPyConnection, bq) -> dict:
     state = SyncStateRepository(conn)
 
     summary = {"materialized": [], "skipped": [], "errors": []}
+    keboola_access = None  # lazy-init on first Keboola row
+
     for row in registry.list_all():
         if row.get("query_mode") != "materialized":
             continue
@@ -120,14 +128,73 @@ def _run_materialized_pass(conn: duckdb.DuckDBPyConnection, bq) -> dict:
             summary["skipped"].append(ref_name)
             continue
 
+        source_type = row.get("source_type") or "bigquery"  # legacy default
+
+        # Dispatch by source_type. BQ rows keep using `_materialize_table`
+        # (the existing test seam); Keboola rows use the new Keboola
+        # materialize_query via a lazily-initialized KeboolaAccess.
         try:
-            stats = _materialize_table(
-                table_id=ref_name,
-                sql=row["source_query"],
-                bq=bq,
-                output_dir=output_dir,
-                max_bytes=bq_max_bytes,
-            )
+            if source_type == "bigquery":
+                stats = _materialize_table(
+                    table_id=ref_name,
+                    sql=row["source_query"],
+                    bq=bq,
+                    output_dir=bq_output_dir,
+                    max_bytes=bq_max_bytes,
+                )
+            elif source_type == "keboola":
+                if keboola_access is None:
+                    from connectors.keboola.access import KeboolaAccess
+                    keboola_url = get_value(
+                        "data_source", "keboola", "url", default=""
+                    ) or ""
+                    token_env = get_value(
+                        "data_source", "keboola", "token_env",
+                        default="KEBOOLA_STORAGE_TOKEN",
+                    ) or "KEBOOLA_STORAGE_TOKEN"
+                    keboola_token = os.environ.get(token_env, "")
+                    if not (keboola_url and keboola_token):
+                        summary["errors"].append({
+                            "table": ref_name,
+                            "error": (
+                                "Keboola URL/token not configured for "
+                                "materialized path (data_source.keboola.url "
+                                f"+ env {token_env})"
+                            ),
+                        })
+                        continue
+                    keboola_access = KeboolaAccess(
+                        url=keboola_url, token=keboola_token,
+                    )
+                kb_output_dir.mkdir(parents=True, exist_ok=True)
+                from connectors.keboola.extractor import (
+                    materialize_query as kb_materialize_query,
+                )
+                kb_stats = kb_materialize_query(
+                    table_id=ref_name,
+                    sql=row["source_query"],
+                    keboola_access=keboola_access,
+                    output_dir=kb_output_dir,
+                )
+                # Normalize Keboola materialize_query output to the shape the
+                # BQ branch uses for downstream sync_state updates. KB returns
+                # {table_id, path, rows, bytes, md5}; map to
+                # {rows, size_bytes, hash}.
+                stats = {
+                    "rows": kb_stats["rows"],
+                    "size_bytes": kb_stats["bytes"],
+                    "hash": kb_stats["md5"],
+                    "query_mode": "materialized",
+                }
+            else:
+                summary["errors"].append({
+                    "table": ref_name,
+                    "error": (
+                        f"materialized path not supported for "
+                        f"source_type={source_type!r}"
+                    ),
+                })
+                continue
         except MaterializeBudgetError as e:
             logger.warning(
                 "Materialize cap exceeded for %s: %s bytes > %s bytes",
@@ -151,7 +218,10 @@ def _run_materialized_pass(conn: duckdb.DuckDBPyConnection, bq) -> dict:
         # reason the stats dict didn't carry it (defensive).
         parquet_hash = stats.get("hash")
         if not parquet_hash:
-            parquet_path = Path(output_dir) / "data" / f"{ref_name}.parquet"
+            output_dir_for_hash = (
+                bq_output_dir if source_type == "bigquery" else str(kb_output_dir.parent)
+            )
+            parquet_path = Path(output_dir_for_hash) / "data" / f"{ref_name}.parquet"
             parquet_hash = _file_hash(parquet_path)
         state.update_sync(
             table_id=ref_name,
