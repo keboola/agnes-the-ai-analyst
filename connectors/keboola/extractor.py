@@ -43,23 +43,41 @@ def materialize_query(
         raise ValueError(f"unsafe table_id for materialize: {table_id!r}")
 
     parquet_path = Path(output_dir) / f"{table_id}.parquet"
-    safe_pq_lit = str(parquet_path).replace("'", "''")
+    tmp_path = Path(output_dir) / f"{table_id}.parquet.tmp"
+    if tmp_path.exists():
+        tmp_path.unlink()
+    safe_tmp_lit = str(tmp_path).replace("'", "''")
 
+    # Atomic write — mirror BQ's pattern at connectors/bigquery/extractor.py:370.
+    # COPY into a `.parquet.tmp`, hash + size from the tmp file, only swap to
+    # the final path on success. A mid-COPY failure (network, disk full,
+    # extension crash) leaves no partial parquet at the canonical path that
+    # the orchestrator rebuild would pick up. Devin finding 2026-05-01:
+    # BUG_pr-review-job-3fbd31c9_0003.
     with keboola_access.duckdb_session() as conn:
-        # Run the admin SELECT and copy the result to parquet.
-        # The COPY wrapper is identical to the existing legacy extract
-        # path at extractor.py:209; the only difference is the SELECT is
-        # admin-supplied rather than `SELECT * FROM kbc.bucket.table`.
-        conn.execute(f"COPY ({sql}) TO '{safe_pq_lit}' (FORMAT PARQUET)")
+        try:
+            conn.execute(f"COPY ({sql}) TO '{safe_tmp_lit}' (FORMAT PARQUET)")
+            row_count = conn.execute(
+                f"SELECT COUNT(*) FROM read_parquet('{safe_tmp_lit}')"
+            ).fetchone()[0]
+        except Exception:
+            if tmp_path.exists():
+                tmp_path.unlink()
+            raise
 
-        # Read back row count.
-        row_count = conn.execute(
-            f"SELECT COUNT(*) FROM read_parquet('{safe_pq_lit}')"
-        ).fetchone()[0]
+    # Streaming MD5 — never read the entire parquet into memory. Keboola
+    # materialized results can reach multi-GB sizes (admin-aggregated
+    # subsets); hashing in 8 KiB chunks keeps memory bounded. Mirror of BQ's
+    # streaming hash at connectors/bigquery/extractor.py:438. Devin finding
+    # 2026-05-01: BUG_pr-review-job-3fbd31c9_0002.
+    h = hashlib.md5()
+    with open(tmp_path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    md5 = h.hexdigest()
+    size = tmp_path.stat().st_size
 
-    file_bytes = parquet_path.read_bytes()
-    md5 = hashlib.md5(file_bytes).hexdigest()
-    size = len(file_bytes)
+    os.replace(tmp_path, parquet_path)
 
     if row_count == 0:
         logger.warning(

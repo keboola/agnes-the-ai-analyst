@@ -93,3 +93,112 @@ def test_materialize_query_rejects_unsafe_table_id(tmp_path):
             keboola_access=FakeAccess(),
             output_dir=output_dir,
         )
+
+
+def test_keboola_materialize_atomic_write_on_failure(tmp_path, monkeypatch):
+    """Devin finding 2026-05-01 (BUG_pr-review-job-3fbd31c9_0003):
+    if the COPY raises mid-stream, no partial file is left at the final
+    .parquet path AND the .parquet.tmp staging file is cleaned up. Pre-fix,
+    materialize_query wrote directly to the final path, so a network/disk
+    error mid-COPY would leave a corrupt parquet that the orchestrator
+    rebuild could pick up and serve to analysts."""
+    from connectors.keboola import extractor as kbe
+
+    output_dir = tmp_path / "data"
+    output_dir.mkdir()
+
+    class FakeAccess:
+        def duckdb_session(self):
+            from contextlib import contextmanager
+
+            class FailingConn:
+                def execute(self, sql, *a, **kw):
+                    if "COPY" in sql:
+                        raise RuntimeError("simulated mid-COPY failure")
+                    raise AssertionError("unexpected execute: " + sql)
+
+                def close(self):
+                    pass
+
+            @contextmanager
+            def _cm():
+                yield FailingConn()
+            return _cm()
+
+    with pytest.raises(RuntimeError, match="simulated mid-COPY failure"):
+        kbe.materialize_query(
+            table_id="atomic_test",
+            sql="SELECT 1",
+            keboola_access=FakeAccess(),
+            output_dir=output_dir,
+        )
+
+    # Final parquet must NOT exist (we never reached os.replace).
+    final_path = output_dir / "atomic_test.parquet"
+    assert not final_path.exists(), (
+        f"Partial parquet left at final path {final_path} — orchestrator "
+        f"rebuild would pick this up and serve corrupt data."
+    )
+    # tmp file also cleaned up (the extractor unlinks it on COPY failure).
+    tmp_path_marker = output_dir / "atomic_test.parquet.tmp"
+    assert not tmp_path_marker.exists(), (
+        f"Stale .parquet.tmp left at {tmp_path_marker}"
+    )
+
+
+def test_keboola_materialize_uses_tmp_path_during_copy(tmp_path):
+    """Atomic-write contract: COPY targets <id>.parquet.tmp first (verifiable
+    via the SQL string passed to conn.execute). After success, the file lands
+    at <id>.parquet (no .tmp suffix). This documents the contract that
+    BUG_pr-review-job-3fbd31c9_0003 closed."""
+    import duckdb
+    from connectors.keboola import extractor as kbe
+
+    real_conn = duckdb.connect(":memory:")
+    real_conn.execute("CREATE TABLE t AS SELECT 1 AS x, 'hello' AS y")
+
+    sqls_seen = []
+
+    class TracingConn:
+        """Thin wrapper that records SQL strings. DuckDBPyConnection.execute
+        is read-only, so monkey-patching the method directly fails."""
+
+        def __init__(self, inner):
+            self._inner = inner
+
+        def execute(self, sql, *args, **kwargs):
+            sqls_seen.append(sql)
+            return self._inner.execute(sql, *args, **kwargs)
+
+        def close(self):
+            self._inner.close()
+
+    class FakeAccess:
+        def duckdb_session(self):
+            from contextlib import contextmanager
+
+            @contextmanager
+            def _cm():
+                yield TracingConn(real_conn)
+            return _cm()
+
+    output_dir = tmp_path / "data"
+    output_dir.mkdir()
+
+    result = kbe.materialize_query(
+        table_id="tmp_path_test",
+        sql="SELECT * FROM t",
+        keboola_access=FakeAccess(),
+        output_dir=output_dir,
+    )
+
+    # COPY SQL targeted .parquet.tmp.
+    copy_sql = next((s for s in sqls_seen if "COPY" in s), None)
+    assert copy_sql is not None, sqls_seen
+    assert ".parquet.tmp" in copy_sql, copy_sql
+
+    # Final file landed without .tmp suffix.
+    assert (output_dir / "tmp_path_test.parquet").exists()
+    assert not (output_dir / "tmp_path_test.parquet.tmp").exists()
+    assert result["path"].endswith(".parquet")
+    assert not result["path"].endswith(".tmp")

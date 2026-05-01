@@ -146,7 +146,7 @@ def _run_materialized_pass(conn: duckdb.DuckDBPyConnection, bq) -> dict:
                 if keboola_access is None:
                     from connectors.keboola.access import KeboolaAccess
                     keboola_url = get_value(
-                        "data_source", "keboola", "url", default=""
+                        "data_source", "keboola", "stack_url", default=""
                     ) or ""
                     token_env = get_value(
                         "data_source", "keboola", "token_env",
@@ -158,7 +158,7 @@ def _run_materialized_pass(conn: duckdb.DuckDBPyConnection, bq) -> dict:
                             "table": ref_name,
                             "error": (
                                 "Keboola URL/token not configured for "
-                                "materialized path (data_source.keboola.url "
+                                "materialized path (data_source.keboola.stack_url "
                                 f"+ env {token_env})"
                             ),
                         })
@@ -434,39 +434,40 @@ sys.exit(compute_exit_code(result, len(configs)))
                     except subprocess.TimeoutExpired:
                         logger.error("Custom connector %s timed out", connector_dir.name)
 
-        # Materialized BigQuery pass — runs admin-registered SQL through the
-        # DuckDB BQ extension (via BqAccess) and writes parquet for due rows.
-        # The orchestrator rebuild below picks the parquets up via the
-        # standard local-parquet discovery. Wrapped so a misconfigured BQ
-        # facade doesn't kill the Keboola path.
+        # Materialized SQL pass — runs admin-registered SQL through the
+        # source's DuckDB extension (BQ via BqAccess, Keboola via
+        # KeboolaAccess) and writes parquet for due rows. _run_materialized_pass
+        # itself dispatches by source_type, so we always run it regardless of
+        # which (or both) source types have a `project` / `stack_url` set —
+        # Keboola-only instances would otherwise silently skip Keboola
+        # materialized rows just because no BQ project is configured (Devin
+        # finding 2026-05-01: BUG_pr-review-job-3fbd31c9_0001). The BQ
+        # branch inside _run_materialized_pass uses a per-row try/except so
+        # the sentinel BqAccess (not_configured) raises a typed error that
+        # gets recorded against that row only — no cascade.
         try:
-            from app.instance_config import get_value as _get_value
-            bq_project = _get_value(
-                "data_source", "bigquery", "project", default=""
-            ) or ""
-            if bq_project:
-                from connectors.bigquery.access import get_bq_access
-                from src.db import get_system_db as _get_system_db
-                bq_access = get_bq_access()
-                mat_conn = _get_system_db()
-                try:
-                    mat_summary = _run_materialized_pass(mat_conn, bq_access)
-                finally:
-                    mat_conn.close()
+            from connectors.bigquery.access import get_bq_access
+            from src.db import get_system_db as _get_system_db
+            bq_access = get_bq_access()  # sentinel if no BQ project; OK
+            mat_conn = _get_system_db()
+            try:
+                mat_summary = _run_materialized_pass(mat_conn, bq_access)
+            finally:
+                mat_conn.close()
+            print(
+                f"[SYNC] Materialized SQL: {len(mat_summary['materialized'])} ok, "
+                f"{len(mat_summary['skipped'])} skipped, "
+                f"{len(mat_summary['errors'])} errors",
+                file=_sys.stderr, flush=True,
+            )
+            for err in mat_summary["errors"]:
                 print(
-                    f"[SYNC] Materialized BQ: {len(mat_summary['materialized'])} ok, "
-                    f"{len(mat_summary['skipped'])} skipped, "
-                    f"{len(mat_summary['errors'])} errors",
+                    f"[SYNC]   {err['table']}: {err['error']}",
                     file=_sys.stderr, flush=True,
                 )
-                for err in mat_summary["errors"]:
-                    print(
-                        f"[SYNC]   {err['table']}: {err['error']}",
-                        file=_sys.stderr, flush=True,
-                    )
         except Exception as e:
             print(
-                f"[SYNC] Materialized BQ pass FAILED: {e}",
+                f"[SYNC] Materialized SQL pass FAILED: {e}",
                 file=_sys.stderr, flush=True,
             )
             traceback.print_exc()
