@@ -748,6 +748,11 @@
             align-items: center;
             margin-bottom: 16px;
         }
+        .tab-actions {
+            display: flex;
+            justify-content: flex-end;
+            margin-bottom: 16px;
+        }
     </style>
     {% include '_theme.html' %}
 </head>
@@ -784,8 +789,7 @@
 
         <section id="tab-content-bigquery" class="tab-content"
                  style="display: {% if initial_tab == 'bigquery' %}block{% else %}none{% endif %};">
-            <div class="tab-header">
-                <h2>BigQuery tables</h2>
+            <div class="tab-actions">
                 <button id="bqRegisterBtn" class="btn btn-primary"
                         onclick="openRegisterModal('bigquery')">Register BigQuery table</button>
             </div>
@@ -956,8 +960,7 @@
 
         <section id="tab-content-keboola" class="tab-content"
                  style="display: {% if initial_tab == 'keboola' %}block{% else %}none{% endif %};">
-            <div class="tab-header">
-                <h2>Keboola tables</h2>
+            <div class="tab-actions">
                 <button id="kbRegisterBtn" class="btn btn-primary"
                         onclick="openRegisterModal('keboola')">Register Keboola table</button>
             </div>
@@ -1205,11 +1208,9 @@
 
         <section id="tab-content-jira" class="tab-content"
                  style="display: {% if initial_tab == 'jira' %}block{% else %}none{% endif %};">
-            <div class="tab-header">
-                <h2>Jira tables</h2>
-                <p class="hint">Jira tables are populated by webhooks. To register a new
-                    Jira webhook integration, see <code>docs/connectors/jira.md</code>.</p>
-            </div>
+            <p class="hint" style="margin-bottom: 16px;">Jira tables are populated by webhooks.
+                To register a new Jira webhook integration, see
+                <code>docs/connectors/jira.md</code>.</p>
             <div id="jiraTableListing"></div>
         </section>
 
