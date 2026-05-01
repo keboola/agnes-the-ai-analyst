@@ -654,7 +654,17 @@ def _sanitize_for_audit(payload: Dict[str, Any]) -> Dict[str, Any]:
 class RegisterTableRequest(BaseModel):
     name: str
     folder: Optional[str] = None
-    sync_strategy: str = "full_refresh"
+    sync_strategy: str = Field(
+        default="full_refresh",
+        deprecated=True,
+        description=(
+            "DEPRECATED: catalog/profiler metadata only. No extractor reads "
+            "this field; every sync is a full overwrite regardless of value. "
+            "profiler.is_partitioned() consumes it for parquet-layout "
+            "detection. Field stays for back-compat; will be removed in a "
+            "future major release."
+        ),
+    )
     # Composite primary keys are real (session-grain MSA tables key on
     # `(session_id, event_date)`, browse rows on more). The frontend sends +
     # reads this as a list; backend stores it JSON-serialized in VARCHAR.
@@ -671,7 +681,15 @@ class RegisterTableRequest(BaseModel):
     source_query: Optional[str] = None
     query_mode: str = "local"
     sync_schedule: Optional[str] = None
-    profile_after_sync: bool = True
+    profile_after_sync: bool = Field(
+        default=True,
+        deprecated=True,
+        description=(
+            "DEPRECATED: not consumed by the runtime (Agent 1 finding "
+            "2026-05-01). Profiler runs unconditionally on every synced "
+            "table; this flag has no effect. Field stays for back-compat."
+        ),
+    )
 
     @model_validator(mode="after")
     def _check_mode_query_coherence(self):
@@ -786,9 +804,10 @@ def _validate_bigquery_register_payload(req: "RegisterTableRequest") -> None:
                     "^[a-z][a-z0-9-]{4,28}[a-z0-9]$"
                 ),
             )
-        # Materialized rows have no remote view to profile. Force-disable
-        # to keep the registry consistent across mode switches.
-        req.profile_after_sync = False
+        # Phase C: profile_after_sync is now inert (Pydantic field marked
+        # deprecated; not read by app/api/sync.py:410-438). The runtime
+        # profiles every synced table unconditionally, so we no longer
+        # force-set this here as a "signal."
         return
 
     if not req.bucket or not req.bucket.strip():
@@ -874,16 +893,24 @@ def _validate_bigquery_register_payload(req: "RegisterTableRequest") -> None:
                 "must match GCP project_id grammar ^[a-z][a-z0-9-]{4,28}[a-z0-9]$"
             ),
         )
-    # Force the BQ-required mode + flag (Decision 7). The orchestrator and
+    # Force the BQ-required mode (Decision 7). The orchestrator and
     # extractor both assume remote; persisting `local` here would later create
     # a profiling job against a non-existent parquet file.
+    # Phase C: profile_after_sync is now inert (deprecated, not read by the
+    # runtime); no longer force-set here.
     req.query_mode = "remote"
-    req.profile_after_sync = False
 
 
 class UpdateTableRequest(BaseModel):
     name: Optional[str] = None
-    sync_strategy: Optional[str] = None
+    sync_strategy: Optional[str] = Field(
+        default=None,
+        deprecated=True,
+        description=(
+            "DEPRECATED: catalog/profiler metadata only. See "
+            "RegisterTableRequest.sync_strategy."
+        ),
+    )
     primary_key: Optional[List[str]] = None
     description: Optional[str] = None
     source_type: Optional[str] = None
@@ -892,7 +919,14 @@ class UpdateTableRequest(BaseModel):
     source_query: Optional[str] = None
     query_mode: Optional[str] = None
     sync_schedule: Optional[str] = None
-    profile_after_sync: Optional[bool] = None
+    profile_after_sync: Optional[bool] = Field(
+        default=None,
+        deprecated=True,
+        description=(
+            "DEPRECATED: not consumed by the runtime. See "
+            "RegisterTableRequest.profile_after_sync."
+        ),
+    )
 
     @model_validator(mode="after")
     def _check_mode_query_coherence(self):
@@ -1355,6 +1389,10 @@ def register_table(
     if is_bigquery:
         _validate_bigquery_register_payload(request)
 
+    # Phase C: profile_after_sync is no longer passed — the field is
+    # deprecated and inert at the runtime layer. The DB column keeps its
+    # schema default; the registry response no longer reflects request
+    # values for this flag.
     repo.register(
         id=table_id,
         name=request.name,
@@ -1369,7 +1407,6 @@ def register_table(
         source_query=request.source_query,
         query_mode=request.query_mode,
         sync_schedule=request.sync_schedule,
-        profile_after_sync=request.profile_after_sync,
     )
 
     # Audit entry — masked params; description kept raw (it's documentation).

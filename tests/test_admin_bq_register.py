@@ -244,7 +244,12 @@ class TestBigQueryRegisterCoercion:
         resp = c.get("/api/admin/registry", headers=_auth(token))
         row = next(t for t in resp.json()["tables"] if t["name"] == "orders")
         assert row["query_mode"] == "remote"
-        assert row["profile_after_sync"] is False
+        # Phase C: profile_after_sync is now inert. The field is accepted in
+        # the request for back-compat but no longer overrides the DB default.
+        # Was: assert row["profile_after_sync"] is False  (when BQ register
+        # forced it to False as a "signal"). Now the row carries the schema
+        # default (True). Profiler runs unconditionally regardless.
+        assert row.get("profile_after_sync") in (True, None)
 
 
 class TestBigQueryRegisterCollision:
