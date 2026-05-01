@@ -48,7 +48,17 @@ def _check_bq_billing_project() -> dict | None:
         billing = bq.projects.billing
         data = bq.projects.data
     except Exception as e:
-        return {"status": "ok", "detail": f"could not resolve BQ projects: {e}"}
+        # Resolution failure (missing google-cloud-bigquery, auth error,
+        # malformed config) is itself a problem worth surfacing. Returning
+        # status='ok' would mask the failure from automated alerting that
+        # keys on `status != 'ok'`. Use 'unknown' so the entry shows as
+        # non-green in operator dashboards but doesn't promote the overall
+        # check to 'degraded' (which 'warning' does). Devin finding
+        # 2026-05-01: ANALYSIS_pr-review-job-642ff90f_0007.
+        return {
+            "status": "unknown",
+            "detail": f"could not resolve BQ projects: {e}",
+        }
 
     if not data:
         # not_configured sentinel — surfaced elsewhere; nothing to warn about here.

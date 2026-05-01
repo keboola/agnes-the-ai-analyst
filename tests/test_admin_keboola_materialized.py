@@ -93,3 +93,41 @@ def test_update_keboola_materialized_clears_stale_source_query_on_mode_switch(se
     rows = r.json()["tables"]
     row = next(t for t in rows if t["id"] == "x")
     assert row.get("source_query") in (None, "")
+
+
+def test_update_keboola_to_materialized_without_source_query_rejected(seeded_app):
+    """Devin finding 2026-05-01 (BUG_pr-review-job-58ae3148_0001):
+    PUT cannot persist a non-BQ materialized row without source_query.
+    Pre-fix, the validation only fired for source_type='bigquery' via the
+    synthetic RegisterTableRequest; Keboola rows could be flipped to
+    materialized with source_query=None and crash at the next sync tick."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    auth = {"Authorization": f"Bearer {token}"}
+
+    # Register a Keboola local row (source_query intentionally absent).
+    r = c.post(
+        "/api/admin/register-table",
+        headers=auth,
+        json={
+            "name": "kb_local",
+            "source_type": "keboola",
+            "bucket": "in.c-foo",
+            "source_table": "events",
+            "query_mode": "local",
+        },
+    )
+    assert r.status_code == 201, r.text
+
+    # Try to flip to materialized WITHOUT shipping source_query.
+    r = c.put(
+        "/api/admin/registry/kb_local",
+        headers=auth,
+        json={"query_mode": "materialized"},
+    )
+    assert r.status_code == 422, r.text
+    body = r.json()
+    detail = body.get("detail", "")
+    if isinstance(detail, list):
+        detail = " ".join(str(d) for d in detail)
+    assert "source_query" in detail.lower(), body

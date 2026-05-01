@@ -109,3 +109,48 @@ def test_diagnose_no_warning_on_keboola_instance(seeded_app, monkeypatch):
     bq_cfg = body.get("services", {}).get("bq_config")
     if bq_cfg is not None:
         assert bq_cfg.get("status") != "warning", bq_cfg
+
+
+def test_diagnose_returns_unknown_status_when_bq_resolution_fails(seeded_app, monkeypatch):
+    """Devin finding 2026-05-01 (ANALYSIS_pr-review-job-642ff90f_0007):
+    if get_bq_access() raises (missing google-cloud-bigquery, auth error,
+    malformed config), the bq_config check must NOT report status='ok' —
+    automated alerting keyed on `status != 'ok'` would silently miss the
+    failure. Use 'unknown' so dashboards surface it without promoting the
+    overall check to 'degraded' (which 'warning' would do)."""
+    fake_cfg = {
+        "data_source": {
+            "type": "bigquery",
+            "bigquery": {"project": "p"},
+        },
+    }
+    monkeypatch.setattr(
+        "app.instance_config.load_instance_config",
+        lambda: fake_cfg, raising=False,
+    )
+    from app.instance_config import reset_cache
+    reset_cache()
+
+    # Force get_bq_access to raise.
+    def _raise(*a, **kw):
+        raise RuntimeError("simulated bq lib missing")
+
+    import connectors.bigquery.access as bq_access_mod
+    monkeypatch.setattr(bq_access_mod, "get_bq_access", _raise)
+
+    try:
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        r = c.get(
+            "/api/health/detailed",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        bq_check = body.get("services", {}).get("bq_config")
+        assert bq_check is not None, body
+        # Must NOT be 'ok' — that would mask the failure from alerting.
+        assert bq_check.get("status") == "unknown", bq_check
+        assert "could not resolve" in bq_check.get("detail", "").lower()
+    finally:
+        reset_cache()

@@ -2126,6 +2126,28 @@ async def update_table(
         if merged.get("query_mode") != "materialized":
             merged["source_query"] = None
 
+        # Cross-source coherence: query_mode='materialized' requires a
+        # non-empty source_query for ALL source types, not just BigQuery.
+        # Pre-fix, only the BQ-specific synthetic-RegisterTableRequest below
+        # caught this — Keboola materialized rows could be PUT without
+        # source_query and persisted with source_query=None, then crash at
+        # the next sync tick when kb_materialize_query received `sql=None`
+        # and DuckDB rejected `COPY (None) TO ...`. Devin finding 2026-05-01:
+        # BUG_pr-review-job-58ae3148_0001.
+        if merged.get("query_mode") == "materialized":
+            sq = merged.get("source_query")
+            if not sq or not str(sq).strip():
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "query_mode='materialized' requires a non-empty "
+                        "source_query. To revert to a non-materialized mode, "
+                        "PATCH query_mode='local' (Keboola) or 'remote' "
+                        "(BigQuery) and the stale source_query is cleared "
+                        "automatically."
+                    ),
+                )
+
         if merged.get("source_type") == "bigquery":
             # Reuse the register-time validator. It mutates the request to
             # force query_mode='remote' / profile_after_sync=False (or to
