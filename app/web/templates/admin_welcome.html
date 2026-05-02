@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Welcome Prompt — {{ config.INSTANCE_NAME }}{% endblock %}
+{% block title %}Agent Setup Prompt — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block content %}
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css"
@@ -202,8 +202,8 @@
 <div class="welcome-page">
   <div class="welcome-toolbar">
     <div>
-      <h2 class="welcome-title">Analyst Welcome Prompt</h2>
-      <p class="welcome-sub">Customise the CLAUDE.md generated for analysts on <code>da analyst setup</code>.</p>
+      <h2 class="welcome-title">Agent Setup Prompt</h2>
+      <p class="welcome-sub">Customise the <code>CLAUDE.md</code> generated for analysts on <code>da analyst setup</code>.</p>
     </div>
     <div id="status-chip">
       {% if is_override %}
