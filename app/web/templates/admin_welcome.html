@@ -1,27 +1,201 @@
 {% extends "base.html" %}
-{% block title %}Welcome Prompt — Admin{% endblock %}
+{% block title %}Welcome Prompt — {{ config.INSTANCE_NAME }}{% endblock %}
+
 {% block content %}
-<div class="admin-page">
-  <h1>Analyst Welcome Prompt</h1>
-  <p class="muted">
-    This is the CLAUDE.md generated for analysts when they run
-    <code>da analyst setup</code>. Edit it to customize the onboarding
-    instructions for this instance. Leave empty (or click <em>Reset to default</em>)
-    to use the OSS-shipped default.
-  </p>
+<style>
+  .container:has(.welcome-page) { max-width: none; padding: 24px 16px; }
+  .welcome-page { max-width: 900px; margin: 0 auto; padding: 0; }
 
-  <p class="status" id="status-line">
-  {% if is_override %}
-    Overridden by <strong>{{ updated_by }}</strong> on
-    {{ updated_at.strftime("%Y-%m-%d %H:%M UTC") if updated_at else "—" }}.
-  {% else %}
-    Using shipped default.
-  {% endif %}
-  </p>
+  .welcome-toolbar {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 16px; margin-bottom: 16px; flex-wrap: wrap;
+  }
+  .welcome-title { margin: 0; font-size: 22px; font-weight: 600; }
+  .welcome-sub { color: var(--text-secondary, #6b7280); font-size: 13px; margin-top: 4px; margin-bottom: 0; }
 
-  <h2>Available placeholders</h2>
-  <pre class="placeholder-cheatsheet">
-{{ "{{ instance.name }}" }}                 — instance display name
+  .origin-chip {
+    display: inline-block;
+    padding: 3px 10px; border-radius: 999px;
+    font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .origin-override { background: #ede9fe; color: #6d28d9; }
+  .origin-default  { background: #f3f4f6; color: #6b7280; }
+
+  .welcome-card {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+    margin-bottom: 16px;
+    overflow: hidden;
+  }
+  .welcome-card-body { padding: 20px 22px; }
+
+  .welcome-desc { font-size: 13px; color: var(--text-secondary, #6b7280); margin: 0 0 16px; }
+
+  /* Placeholder cheatsheet — collapsible */
+  details.welcome-cheatsheet { margin-bottom: 18px; }
+  details.welcome-cheatsheet summary {
+    cursor: pointer; font-size: 13px; font-weight: 500;
+    color: var(--text-primary, #111827); list-style: none;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  details.welcome-cheatsheet summary::-webkit-details-marker { display: none; }
+  details.welcome-cheatsheet summary::before {
+    content: "▶"; font-size: 10px; color: var(--text-secondary, #6b7280);
+    transition: transform 0.15s;
+  }
+  details.welcome-cheatsheet[open] summary::before { transform: rotate(90deg); }
+
+  /* Dark code block (Catppuccin-style, matching install.html) */
+  .code-block {
+    background: #1e1e2e;
+    border-radius: 8px;
+    padding: 14px 16px;
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
+    font-size: 13px;
+    color: #cdd6f4;
+    line-height: 1.6;
+    margin-top: 10px;
+    position: relative;
+  }
+  .code-block .code-body { flex: 1; white-space: pre; overflow-x: auto; }
+  .btn-copy {
+    padding: 6px 14px;
+    background: transparent;
+    border: 1px solid #45475a;
+    color: #cdd6f4;
+    cursor: pointer;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    font-family: inherit;
+    transition: all 0.15s ease;
+    flex-shrink: 0;
+  }
+  .btn-copy:hover { border-color: #89b4fa; color: #89b4fa; background: rgba(137, 180, 250, 0.08); }
+  .btn-copy.copied { border-color: #a6e3a1; color: #a6e3a1; background: rgba(166, 227, 161, 0.08); }
+
+  /* Textarea */
+  .welcome-textarea {
+    width: 100%; min-height: 480px;
+    padding: 9px 12px;
+    border: 1px solid var(--border, #e5e7eb); border-radius: 8px;
+    font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
+    font-size: 13px; resize: vertical;
+    background: var(--surface, #fff); color: var(--text-primary, #111827);
+    box-sizing: border-box;
+    display: block;
+  }
+  .welcome-textarea:focus { outline: 2px solid var(--primary, #6366f1); outline-offset: -1px; }
+
+  /* Action row */
+  .welcome-actions {
+    padding: 14px 22px;
+    background: var(--border-light, #fafafa);
+    border-top: 1px solid var(--border, #e5e7eb);
+    display: flex; gap: 8px; justify-content: flex-end;
+  }
+  .welcome-btn {
+    padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 500;
+    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
+    cursor: pointer; transition: all 0.15s;
+  }
+  .welcome-btn:hover { background: var(--border-light, #f9fafb); }
+  .welcome-btn.primary { background: var(--primary, #6366f1); color: #fff; border-color: var(--primary, #6366f1); }
+  .welcome-btn.primary:hover { filter: brightness(1.05); }
+  .welcome-btn.danger { background: #dc2626; color: #fff; border-color: #dc2626; }
+  .welcome-btn.danger:hover { filter: brightness(1.05); }
+  .welcome-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* Preview pane */
+  .welcome-preview-card {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+    overflow: hidden;
+    margin-bottom: 16px;
+  }
+  .welcome-preview-header {
+    padding: 12px 18px;
+    background: var(--border-light, #f9fafb);
+    border-bottom: 1px solid var(--border, #e5e7eb);
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  }
+  .welcome-preview-header h3 { margin: 0; font-size: 14px; font-weight: 600; }
+
+  /* Modal */
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55);
+    display: none; align-items: center; justify-content: center; z-index: 1000;
+    padding: 16px;
+  }
+  .modal-backdrop.is-open { display: flex; }
+  .modal-card {
+    background: var(--surface, #fff); border-radius: 12px;
+    padding: 24px; width: 100%; max-width: 440px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+  }
+  .modal-card h3 { margin: 0 0 6px; font-size: 17px; font-weight: 600; }
+  .modal-card p.sub { margin: 0 0 18px; font-size: 13px; color: var(--text-secondary, #6b7280); }
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
+  .modal-btn {
+    padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 500;
+    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
+    cursor: pointer;
+  }
+  .modal-btn.danger { background: #dc2626; color: #fff; border-color: #dc2626; }
+
+  /* Toast stack */
+  .toast-stack {
+    position: fixed; bottom: 24px; right: 24px; z-index: 2000;
+    display: flex; flex-direction: column; gap: 8px; pointer-events: none;
+  }
+  .toast {
+    background: #111827; color: #fff; padding: 10px 16px;
+    border-radius: 8px; font-size: 13px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+    opacity: 0; transform: translateY(8px); transition: opacity 0.2s, transform 0.2s;
+    pointer-events: auto; max-width: 380px;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast.success { background: #047857; }
+  .toast.error { background: #b91c1c; }
+</style>
+
+<div class="welcome-page">
+  <div class="welcome-toolbar">
+    <div>
+      <h2 class="welcome-title">Analyst Welcome Prompt</h2>
+      <p class="welcome-sub">Customise the CLAUDE.md generated for analysts on <code>da analyst setup</code>.</p>
+    </div>
+    <div id="status-chip">
+      {% if is_override %}
+        <span class="origin-chip origin-override"
+              title="Overridden by {{ updated_by }} on {{ updated_at.strftime('%Y-%m-%d %H:%M UTC') if updated_at else '—' }}">
+          Override active
+        </span>
+      {% else %}
+        <span class="origin-chip origin-default">Using default</span>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="welcome-card">
+    <div class="welcome-card-body">
+      <p class="welcome-desc">
+        Edit the template below to customise onboarding instructions for analysts on this instance.
+        Leave empty or click <strong>Reset to default</strong> to revert to the OSS-shipped template.
+        The override is rendered server-side — placeholders like
+        <code>{{ "{{ user.name }}" }}</code> are substituted at delivery time.
+      </p>
+
+      <details class="welcome-cheatsheet">
+        <summary>Available placeholders</summary>
+        <div class="code-block">
+          <span id="placeholder-text" class="code-body">{{ "{{ instance.name }}" }}                 — instance display name
 {{ "{{ instance.subtitle }}" }}             — operator name
 {{ "{{ server.url }}" }}                    — full server URL
 {{ "{{ server.hostname }}" }}               — host part
@@ -31,95 +205,213 @@
 {{ "{{ metrics.count }}" }}, {{ "{{ metrics.categories }}" }}
 {{ "{{ marketplaces }}" }}                  — RBAC-filtered list of {slug, name, plugins[]}
 {{ "{{ user.email }}" }}, {{ "{{ user.name }}" }}, {{ "{{ user.is_admin }}" }}, {{ "{{ user.groups }}" }}
-{{ "{{ now }}" }}, {{ "{{ today }}" }}
-  </pre>
+{{ "{{ now }}" }}, {{ "{{ today }}" }}</span>
+          <button class="btn-copy" data-copy-target="placeholder-text">Copy</button>
+        </div>
+      </details>
 
-  <form id="welcome-form" onsubmit="return false">
-    <textarea id="content" rows="30" cols="100">{{ current or default_template }}</textarea>
-    <div class="actions">
-      <button type="button" id="save-btn">Save override</button>
-      <button type="button" id="reset-btn" class="secondary">Reset to default</button>
-      <button type="button" id="preview-btn" class="secondary">Preview</button>
+      <textarea id="content" class="welcome-textarea">{{ current or default_template }}</textarea>
     </div>
-    <div id="result" class="result"></div>
-    <pre id="preview" class="preview" hidden></pre>
-  </form>
+    <div class="welcome-actions">
+      <button type="button" class="welcome-btn" id="preview-btn">Preview</button>
+      <button type="button" class="welcome-btn" id="reset-btn">Reset to default</button>
+      <button type="button" class="welcome-btn primary" id="save-btn">Save override</button>
+    </div>
+  </div>
+
+  <div class="welcome-preview-card" id="preview-card" hidden>
+    <div class="welcome-preview-header">
+      <h3>Rendered preview</h3>
+      <button class="btn-copy" data-copy-target="preview-content">Copy</button>
+    </div>
+    <div class="code-block" style="border-radius:0; margin-bottom:0; border-top:none;">
+      <span id="preview-content" class="code-body"></span>
+    </div>
+  </div>
 </div>
 
+<!-- Reset confirmation modal -->
+<div class="modal-backdrop" id="reset-modal" role="dialog" aria-modal="true" aria-labelledby="reset-modal-title">
+  <div class="modal-card">
+    <h3 id="reset-modal-title">Reset to default?</h3>
+    <p class="sub">Your override will be permanently removed. The OSS-shipped template will be used instead. This cannot be undone.</p>
+    <div class="modal-actions">
+      <button class="modal-btn" data-close-modal="reset-modal">Cancel</button>
+      <button class="modal-btn danger" id="reset-confirm-btn">Reset</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+
 <script>
-  const $ = (id) => document.getElementById(id);
-  const result = $("result");
+const API = "/api/admin/welcome-template";
 
-  async function refreshStatus() {
-    const r = await fetch("/api/admin/welcome-template", {credentials: "include"});
-    if (!r.ok) return;
-    const data = await r.json();
-    const status = $("status-line");
-    if (data.content !== null) {
-      const when = data.updated_at
-        ? new Date(data.updated_at).toISOString().slice(0, 16).replace("T", " ") + " UTC"
-        : "—";
-      status.innerHTML = "Overridden by <strong>" + (data.updated_by || "—") + "</strong> on " + when + ".";
-      $("content").value = data.content;
-    } else {
-      status.textContent = "Using shipped default.";
-      $("content").value = data.default;
-    }
+// ── Toast ─────────────────────────────────────────────────────────────
+function toast(msg, kind) {
+  const el = document.createElement("div");
+  el.className = "toast" + (kind ? " " + kind : "");
+  el.textContent = msg;
+  document.getElementById("toast-stack").appendChild(el);
+  requestAnimationFrame(() => el.classList.add("show"));
+  setTimeout(() => { el.classList.remove("show"); setTimeout(() => el.remove(), 250); }, 3500);
+}
+
+// ── Modal helpers ─────────────────────────────────────────────────────
+function openModal(id) { document.getElementById(id).classList.add("is-open"); }
+function closeModal(id) { document.getElementById(id).classList.remove("is-open"); }
+document.querySelectorAll("[data-close-modal]").forEach(el =>
+  el.addEventListener("click", () => closeModal(el.dataset.closeModal)));
+document.querySelectorAll(".modal-backdrop").forEach(el => {
+  el.addEventListener("click", e => { if (e.target === el) el.classList.remove("is-open"); });
+});
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") document.querySelectorAll(".modal-backdrop.is-open").forEach(m => m.classList.remove("is-open"));
+});
+
+// ── Status chip ───────────────────────────────────────────────────────
+function setStatusChip(data) {
+  const wrap = document.getElementById("status-chip");
+  if (data.content !== null) {
+    const when = data.updated_at
+      ? new Date(data.updated_at).toISOString().slice(0, 16).replace("T", " ") + " UTC"
+      : "—";
+    const who = data.updated_by || "—";
+    wrap.innerHTML = `<span class="origin-chip origin-override" title="Overridden by ${who} on ${when}">Override active</span>`;
+  } else {
+    wrap.innerHTML = `<span class="origin-chip origin-default">Using default</span>`;
   }
+}
 
-  $("save-btn").addEventListener("click", async () => {
-    result.textContent = "Saving…";
-    const r = await fetch("/api/admin/welcome-template", {
+// ── Refresh status + textarea from API ───────────────────────────────
+async function refreshStatus() {
+  const r = await fetch(API, { credentials: "include" });
+  if (!r.ok) return;
+  const data = await r.json();
+  setStatusChip(data);
+  document.getElementById("content").value = data.content !== null ? data.content : data.default;
+}
+
+// ── Save ──────────────────────────────────────────────────────────────
+document.getElementById("save-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("save-btn");
+  btn.disabled = true;
+  try {
+    const r = await fetch(API, {
       method: "PUT",
       credentials: "include",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({content: $("content").value}),
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: document.getElementById("content").value }),
     });
     if (r.ok) {
-      result.textContent = "Saved.";
+      toast("Override saved.", "success");
       await refreshStatus();
     } else {
       let detail = r.statusText;
-      try { detail = (await r.json()).detail || detail; } catch {}
-      result.textContent = "Error: " + detail;
+      try { detail = (await r.json()).detail || detail; } catch (_) {}
+      toast("Save failed: " + detail, "error");
     }
-  });
+  } catch (e) {
+    toast("Save failed: " + e.message, "error");
+  } finally {
+    btn.disabled = false;
+  }
+});
 
-  $("reset-btn").addEventListener("click", async () => {
-    if (!confirm("Reset to OSS default? Your override will be lost.")) return;
-    const r = await fetch("/api/admin/welcome-template", {
-      method: "DELETE",
-      credentials: "include",
-    });
+// ── Reset (with confirm modal) ────────────────────────────────────────
+document.getElementById("reset-btn").addEventListener("click", () => openModal("reset-modal"));
+
+document.getElementById("reset-confirm-btn").addEventListener("click", async () => {
+  closeModal("reset-modal");
+  const btn = document.getElementById("reset-btn");
+  btn.disabled = true;
+  try {
+    const r = await fetch(API, { method: "DELETE", credentials: "include" });
     if (r.ok) {
-      result.textContent = "Reset to default.";
+      toast("Reset to default.", "success");
+      document.getElementById("preview-card").hidden = true;
       await refreshStatus();
     } else {
       let detail = r.statusText;
-      try { detail = (await r.json()).detail || detail; } catch {}
-      result.textContent = "Error: " + detail;
+      try { detail = (await r.json()).detail || detail; } catch (_) {}
+      toast("Reset failed: " + detail, "error");
     }
-  });
+  } catch (e) {
+    toast("Reset failed: " + e.message, "error");
+  } finally {
+    btn.disabled = false;
+  }
+});
 
-  $("preview-btn").addEventListener("click", async () => {
-    result.textContent = "Rendering preview…";
-    const r = await fetch("/api/admin/welcome-template/preview", {
+// ── Preview ───────────────────────────────────────────────────────────
+document.getElementById("preview-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("preview-btn");
+  btn.disabled = true;
+  try {
+    const r = await fetch(API + "/preview", {
       method: "POST",
       credentials: "include",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({content: $("content").value}),
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: document.getElementById("content").value }),
     });
     if (r.ok) {
       const j = await r.json();
-      $("preview").textContent = j.content;
-      $("preview").hidden = false;
-      result.textContent = "Preview rendered.";
+      document.getElementById("preview-content").textContent = j.content;
+      document.getElementById("preview-card").hidden = false;
+      document.getElementById("preview-card").scrollIntoView({ behavior: "smooth", block: "nearest" });
+      toast("Preview rendered.", "success");
     } else {
       let detail = r.statusText;
-      try { detail = (await r.json()).detail || detail; } catch {}
-      result.textContent = "Render error: " + detail;
-      $("preview").hidden = true;
+      try { detail = (await r.json()).detail || detail; } catch (_) {}
+      toast("Preview error: " + detail, "error");
+      document.getElementById("preview-card").hidden = true;
     }
+  } catch (e) {
+    toast("Preview error: " + e.message, "error");
+    document.getElementById("preview-card").hidden = true;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ── Copy widget ───────────────────────────────────────────────────────
+function copyToClipboard(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    return navigator.clipboard.writeText(text);
+  }
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.cssText = "position:fixed;left:-9999px;top:-9999px";
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  return new Promise((resolve, reject) => {
+    try { document.execCommand("copy") ? resolve() : reject(); }
+    finally { document.body.removeChild(ta); }
   });
+}
+
+function flashCopied(button) {
+  const original = button.textContent;
+  button.textContent = "Copied!";
+  button.classList.add("copied");
+  setTimeout(() => { button.textContent = original; button.classList.remove("copied"); }, 1500);
+}
+
+document.querySelectorAll(".btn-copy[data-copy-target]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    const target = document.getElementById(btn.getAttribute("data-copy-target"));
+    if (!target) return;
+    copyToClipboard(target.textContent.trim())
+      .then(() => flashCopied(btn))
+      .catch(() => {
+        const range = document.createRange();
+        range.selectNodeContents(target);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      });
+  });
+});
 </script>
 {% endblock %}
