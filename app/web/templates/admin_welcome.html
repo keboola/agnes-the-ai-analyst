@@ -116,17 +116,16 @@
   .welcome-preview-col {
     border: 1px solid var(--border, #e5e7eb);
     border-radius: 8px;
-    background: #1e1e2e;
-    color: #cdd6f4;
+    background: var(--surface, #fff);
+    color: var(--text-primary, #111827);
     padding: 16px;
-    font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
-    font-size: 13px;
-    white-space: pre-wrap;
+    font-family: var(--font-primary, system-ui, sans-serif);
+    font-size: 14px;
     overflow: auto;
     max-height: 600px;
   }
   .welcome-preview-col h4 {
-    color: #cdd6f4; margin: 0 0 8px; font-size: 12px; opacity: 0.7;
+    color: var(--text-secondary, #6b7280); margin: 0 0 8px; font-size: 12px;
     text-transform: uppercase; letter-spacing: 0.5px;
   }
   .welcome-preview-error {
@@ -203,7 +202,7 @@
   <div class="welcome-toolbar">
     <div>
       <h2 class="welcome-title">Agent Setup Prompt</h2>
-      <p class="welcome-sub">Customise the <code>CLAUDE.md</code> generated for analysts on <code>da analyst setup</code>.</p>
+      <p class="welcome-sub">Customise the banner shown above the setup commands on <code>/setup</code>.</p>
     </div>
     <div id="status-chip">
       {% if is_override %}
@@ -220,33 +219,32 @@
   <div class="welcome-card">
     <div class="welcome-card-body">
       <p class="welcome-desc">
-        Edit the template below to customise onboarding instructions for analysts on this instance.
-        Leave empty or click <strong>Reset to default</strong> to revert to the OSS-shipped template.
-        The override is rendered server-side — placeholders like
-        <code>{{ "{{ user.name }}" }}</code> are substituted at delivery time.
+        This banner is shown above the setup commands on <code>/setup</code>. Empty by default.
+        Use it for organisation-specific notes: VPN requirements, support channel, data classification
+        policy, platform onboarding steps, etc.
+        The override is rendered server-side as HTML — Jinja2 placeholders like
+        <code>{{ "{{ user.name }}" }}</code> are substituted at render time.
+        Output is sanitised post-render: inline <code>&lt;script&gt;</code> tags and
+        <code>on*=</code> event handlers are stripped as a safety net.
       </p>
 
       <details class="welcome-cheatsheet">
         <summary>Available placeholders</summary>
         <div class="code-block">
-          <span id="placeholder-text" class="code-body">{{ "{{ instance.name }}" }}                 — instance display name
-{{ "{{ instance.subtitle }}" }}             — operator name
-{{ "{{ server.url }}" }}                    — full server URL
-{{ "{{ server.hostname }}" }}               — host part
-{{ "{{ sync_interval }}" }}                 — refresh cadence (instance.yaml)
-{{ "{{ data_source.type }}" }}              — keboola | bigquery | local
-{{ "{{ tables }}" }}                        — list of {name, description, query_mode}
-{{ "{{ metrics.count }}" }}, {{ "{{ metrics.categories }}" }}
-{{ "{{ marketplaces }}" }}                  — RBAC-filtered list of {slug, name, plugins[]}
+          <span id="placeholder-text" class="code-body">{{ "{{ instance.name }}" }}       — instance display name
+{{ "{{ instance.subtitle }}" }}   — operator / org name
+{{ "{{ server.url }}" }}          — full server URL
+{{ "{{ server.hostname }}" }}     — host part only
 {{ "{{ user.email }}" }}, {{ "{{ user.name }}" }}, {{ "{{ user.is_admin }}" }}, {{ "{{ user.groups }}" }}
-{{ "{{ now }}" }}, {{ "{{ today }}" }}</span>
+  (user may be null for anonymous visitors — guard with {{ "{% if user %}" }})
+{{ "{{ now }}" }}, {{ "{{ today }}" }}     — server time (UTC) / date string</span>
           <button class="btn-copy" data-copy-target="placeholder-text">Copy</button>
         </div>
       </details>
 
       <div class="welcome-editor-row">
         <div class="welcome-editor-col">
-          <textarea id="content" name="content">{{ current or default_template }}</textarea>
+          <textarea id="content" name="content">{{ current }}</textarea>
         </div>
         <div class="welcome-preview-col">
           <h4>Live preview</h4>
@@ -266,7 +264,7 @@
 <div class="modal-backdrop" id="reset-modal" role="dialog" aria-modal="true" aria-labelledby="reset-modal-title">
   <div class="modal-card">
     <h3 id="reset-modal-title">Reset to default?</h3>
-    <p class="sub">Your override will be permanently removed. The OSS-shipped template will be used instead. This cannot be undone.</p>
+    <p class="sub">Your override will be permanently removed. No banner will be shown on <code>/setup</code>. This cannot be undone.</p>
     <div class="modal-actions">
       <button class="modal-btn" data-close-modal="reset-modal">Cancel</button>
       <button class="modal-btn danger" id="reset-confirm-btn">Reset</button>
@@ -338,7 +336,7 @@ async function renderPreview() {
     });
     if (r.ok) {
       const j = await r.json();
-      previewBox.textContent = j.content;
+      previewBox.innerHTML = j.content;
       previewErr.hidden = true;
     } else {
       let detail = r.statusText;
@@ -398,7 +396,7 @@ async function refreshStatus() {
   if (!r.ok) return;
   const data = await r.json();
   setStatusChip(data);
-  editor.setValue(data.content !== null ? data.content : data.default);
+  editor.setValue(data.content !== null ? data.content : "");
   renderPreview();
 }
 
