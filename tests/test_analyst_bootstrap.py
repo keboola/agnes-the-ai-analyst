@@ -78,7 +78,7 @@ class TestDetectExistingProject:
              patch("cli.commands.analyst._download_metadata"), \
              patch("cli.commands.analyst._download_data", return_value=0), \
              patch("cli.commands.analyst._initialize_duckdb", return_value=0), \
-             patch("cli.commands.analyst._generate_claude_md"):
+             patch("cli.commands.analyst._init_claude_workspace"):
             result = runner.invoke(
                 app,
                 ["analyst", "setup", "--server-url", "http://localhost:8000", "--force"],
@@ -116,65 +116,73 @@ class TestCreateWorkspace:
 
 
 # ---------------------------------------------------------------------------
-# TestGenerateClaudeMd
+# TestInitClaudeWorkspace
 # ---------------------------------------------------------------------------
 
-class TestGenerateClaudeMd:
-    """Server-side render flow: _generate_claude_md fetches /api/welcome.
-
-    The local-fallback path is exercised by tests/test_cli_analyst_welcome.py.
-    These tests cover the side-effects on the workspace (CLAUDE.local.md,
-    settings.json) and verify the new signature is honored.
+class TestInitClaudeWorkspace:
+    """Tests for _init_claude_workspace: no CLAUDE.md written, but
+    .claude/CLAUDE.local.md placeholder and settings.json hooks are created.
     """
 
-    def _patch_httpx_404(self, monkeypatch):
-        """Stub httpx.get to return 404 so _generate_claude_md falls back to embedded text."""
-        import httpx
-
-        def fake_get(url, headers=None, timeout=None):
-            return httpx.Response(
-                status_code=404, json={}, request=httpx.Request("GET", url)
-            )
-
-        monkeypatch.setattr("cli.commands.analyst.httpx", type("_M", (), {"get": fake_get}))
-
-    def test_creates_claude_local_md_when_absent(self, tmp_workspace, monkeypatch):
-        from cli.commands.analyst import _create_workspace, _generate_claude_md
+    def test_does_not_write_claude_md(self, tmp_workspace):
+        from cli.commands.analyst import _create_workspace, _init_claude_workspace
 
         _create_workspace(tmp_workspace)
-        self._patch_httpx_404(monkeypatch)
-        _generate_claude_md(tmp_workspace, server_url="http://localhost:8000", token="t")
+        _init_claude_workspace(tmp_workspace)
+
+        assert not (tmp_workspace / "CLAUDE.md").exists(), (
+            "CLAUDE.md must NOT be written by _init_claude_workspace"
+        )
+
+    def test_creates_claude_local_md_when_absent(self, tmp_workspace):
+        from cli.commands.analyst import _create_workspace, _init_claude_workspace
+
+        _create_workspace(tmp_workspace)
+        _init_claude_workspace(tmp_workspace)
 
         local_md = tmp_workspace / ".claude" / "CLAUDE.local.md"
         assert local_md.exists()
         assert local_md.read_text(encoding="utf-8").strip() != ""
 
-    def test_does_not_overwrite_existing_local_md(self, tmp_workspace, monkeypatch):
-        from cli.commands.analyst import _create_workspace, _generate_claude_md
+    def test_does_not_overwrite_existing_local_md(self, tmp_workspace):
+        from cli.commands.analyst import _create_workspace, _init_claude_workspace
 
         _create_workspace(tmp_workspace)
         local_md = tmp_workspace / ".claude" / "CLAUDE.local.md"
         original_content = "# My custom notes\n\nDo not overwrite me.\n"
         local_md.write_text(original_content, encoding="utf-8")
 
-        self._patch_httpx_404(monkeypatch)
-        _generate_claude_md(tmp_workspace, server_url="http://localhost:8000", token="t")
+        _init_claude_workspace(tmp_workspace)
 
         assert local_md.read_text(encoding="utf-8") == original_content
 
-    def test_writes_settings_json(self, tmp_workspace, monkeypatch):
-        from cli.commands.analyst import _create_workspace, _generate_claude_md
+    def test_writes_settings_json(self, tmp_workspace):
+        from cli.commands.analyst import _create_workspace, _init_claude_workspace
         import json as _json
 
         _create_workspace(tmp_workspace)
-        self._patch_httpx_404(monkeypatch)
-        _generate_claude_md(tmp_workspace, server_url="http://localhost:8000", token="t")
+        _init_claude_workspace(tmp_workspace)
 
         settings = _json.loads(
             (tmp_workspace / ".claude" / "settings.json").read_text(encoding="utf-8")
         )
         assert settings["model"] == "sonnet"
         assert "Read" in settings["permissions"]["allow"]
+
+    def test_installs_session_hooks(self, tmp_workspace):
+        """SessionStart and SessionEnd hooks must be present in settings.json."""
+        from cli.commands.analyst import _create_workspace, _init_claude_workspace
+        import json as _json
+
+        _create_workspace(tmp_workspace)
+        _init_claude_workspace(tmp_workspace)
+
+        settings = _json.loads(
+            (tmp_workspace / ".claude" / "settings.json").read_text(encoding="utf-8")
+        )
+        hooks = settings.get("hooks", {})
+        assert "SessionStart" in hooks
+        assert "SessionEnd" in hooks
 
 
 # ---------------------------------------------------------------------------

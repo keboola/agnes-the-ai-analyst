@@ -294,51 +294,15 @@ def _install_claude_hooks(settings_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Helper: generate CLAUDE.md from server-rendered template
+# Helper: initialise Claude workspace (.claude/ directory)
 # ---------------------------------------------------------------------------
 
-def _generate_claude_md(workspace: Path, server_url: str, token: str) -> None:
-    """Fetch the rendered welcome prompt from the server and write CLAUDE.md.
+def _init_claude_workspace(workspace: Path) -> None:
+    """Initialise the .claude/ directory with placeholder files and hooks.
 
-    Falls back to a minimal embedded template if the server endpoint is
-    unavailable (e.g., older server versions before /api/welcome shipped).
+    Does NOT write CLAUDE.md — workspace-context customisation is handled
+    server-side via the banner on /setup, not as a file in the workspace.
     """
-    from urllib.parse import quote
-
-    server_url = server_url.rstrip("/")
-    headers = {"Authorization": f"Bearer {token}"}
-    url = f"{server_url}/api/welcome?server_url={quote(server_url, safe='')}"
-
-    rendered: Optional[str] = None
-    try:
-        resp = httpx.get(url, headers=headers, timeout=15.0)
-        if resp.status_code == 200:
-            rendered = resp.json().get("content")
-        elif resp.status_code != 404:
-            typer.echo(
-                f"  Warning: server returned {resp.status_code} for /api/welcome; "
-                "using minimal fallback. Tell your admin if this persists.",
-                err=True,
-            )
-    except Exception as e:
-        typer.echo(
-            f"  Warning: couldn't fetch welcome prompt ({e}); using minimal fallback.",
-            err=True,
-        )
-
-    if rendered is None:
-        # Fallback for older servers — keeps the CLI usable, just less rich.
-        rendered = (
-            "# AI Data Analyst\n\n"
-            f"This workspace is connected to {server_url}.\n\n"
-            "## Rules\n"
-            "- Before computing any business metric: run `da metrics show <category>/<name>`\n"
-            "- Save work output to `user/artifacts/`\n"
-            "- Sync data regularly with `da sync`\n"
-        )
-
-    (workspace / "CLAUDE.md").write_text(rendered, encoding="utf-8")
-
     local_md = workspace / ".claude" / "CLAUDE.local.md"
     if not local_md.exists():
         local_md.write_text(
@@ -421,9 +385,9 @@ def setup(
     typer.echo("Initialising DuckDB views...")
     total_rows = _initialize_duckdb(workspace)
 
-    # 7. Generate CLAUDE.md (rendered server-side)
-    typer.echo("Fetching welcome prompt from server...")
-    _generate_claude_md(workspace, server_url, token)
+    # 7. Initialise Claude workspace (.claude/ hooks + placeholder)
+    typer.echo("Initializing Claude workspace...")
+    _init_claude_workspace(workspace)
 
     # 8. Summary
     typer.echo("")
