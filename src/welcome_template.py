@@ -9,6 +9,7 @@ Two layers:
 The Jinja2 environment uses StrictUndefined so that any typo in the
 template raises immediately rather than rendering empty strings.
 """
+# See also: surfaced as the "Agent Setup Prompt" admin editor at /admin/agent-prompt.
 
 from __future__ import annotations
 
