@@ -2,10 +2,18 @@
 {% block title %}Setup Banner — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block content %}
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/material-darker.min.css">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/jinja2/jinja2.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css"
+      integrity="sha512-uf06llspW44/LZpHzHT6qBOIVODjWtv4MxCricRxkzvopAlSWnTf6hpZTFxuuZcuNE9CBQhqE0Seu1CoRk84nQ=="
+      crossorigin="anonymous">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/material-darker.min.css"
+      integrity="sha512-2OhXH4Il3n2tHKwLLSDPhrkgnLBC+6lHGGQzSFi3chgVB6DJ/v6+nbx+XYO9CugQyHVF/8D/0k3Hx1eaUK2K9g=="
+      crossorigin="anonymous">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"
+        integrity="sha512-OeZ4Yrb/W7d2W4rAMOO0HQ9Ro/aWLtpW9BUSR2UOWnSV2hprXLkkYnnCGc9NeLUxxE4ZG7zN16UuT1Elqq8Opg=="
+        crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/jinja2/jinja2.min.js"
+        integrity="sha512-Z4le1RxwhD8lDCrspbBxjTLLP2HGC1+mKb9KHR2N/sEx8uOe2vre5XQo8YMPAz8FQTo43HjefjlDtjY4LtfaaQ=="
+        crossorigin="anonymous"></script>
 
 <style>
   .container:has(.welcome-page) { max-width: none; padding: 24px 16px; }
@@ -101,6 +109,9 @@
   .welcome-editor-col, .welcome-preview-col {
     flex: 1 1 50%;
     min-width: 0;
+  }
+  .welcome-editor-col {
+    min-height: 480px;
   }
   .welcome-preview-col {
     border: 1px solid var(--border, #e5e7eb);
@@ -267,16 +278,39 @@
 <script>
 const API = "/api/admin/setup-banner";
 
-// ── CodeMirror editor ─────────────────────────────────────────────────
-const editor = CodeMirror.fromTextArea(document.getElementById("content"), {
-  mode: "jinja2",
-  lineNumbers: true,
-  lineWrapping: true,
-  theme: "material-darker",
-  indentUnit: 2,
-  tabSize: 2,
-});
-editor.setSize("100%", 480);
+// ── CodeMirror editor (with graceful CDN fallback) ────────────────────
+const ta = document.getElementById("content");
+if (typeof CodeMirror === "undefined") {
+  // CDN unreachable or SRI mismatch — degrade to plain textarea + warn.
+  ta.style.display = "block";
+  ta.style.width = "100%";
+  ta.style.minHeight = "480px";
+  ta.style.fontFamily = "var(--font-mono)";
+  ta.style.fontSize = "13px";
+  ta.style.padding = "9px 12px";
+  ta.style.border = "1px solid var(--border)";
+  ta.style.borderRadius = "8px";
+  // Polyfill the `editor` interface so save/remove/preview still work.
+  window.editor = {
+    getValue: () => ta.value,
+    setValue: (v) => { ta.value = v; },
+    on: () => {},
+    setSize: () => {},
+  };
+  // toast is defined below; defer so the DOM is ready and toast stack exists.
+  setTimeout(() => toast("Code editor failed to load — using plain textarea. Check network/CSP.", "error"), 0);
+} else {
+  // Normal path
+  window.editor = CodeMirror.fromTextArea(ta, {
+    mode: "jinja2",
+    lineNumbers: true,
+    lineWrapping: true,
+    theme: "material-darker",
+    indentUnit: 2,
+    tabSize: 2,
+  });
+  editor.setSize("100%", "calc(100vh - 320px)");
+}
 
 // ── Live preview (debounced) ──────────────────────────────────────────
 let previewTimer = null;

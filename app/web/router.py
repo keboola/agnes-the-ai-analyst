@@ -744,8 +744,13 @@ async def setup_page(
 
 @router.get("/install", response_class=HTMLResponse)
 async def install_redirect(request: Request):
-    """Backwards-compat redirect: /install → /setup (301)."""
-    return RedirectResponse(url="/setup", status_code=301)
+    """Backwards-compat redirect: /install → /setup (302).
+
+    Using 302 (temporary) rather than 301 (permanent) so browsers/proxies
+    don't cache indefinitely — if the path ever changes again, cached 301s
+    require manual cache clearing to recover.
+    """
+    return RedirectResponse(url="/setup", status_code=302)
 
 
 @router.get("/admin/tables", response_class=HTMLResponse)
