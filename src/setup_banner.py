@@ -8,6 +8,7 @@ data classification), not for analyst-side content.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date, datetime, timezone
 from typing import Any, Optional
 from urllib.parse import urlparse
@@ -19,6 +20,38 @@ from app.instance_config import get_instance_name, get_instance_subtitle
 from src.repositories.setup_banner import SetupBannerRepository
 
 _logger = logging.getLogger(__name__)
+
+# Patterns used by _sanitize_banner_html.
+_RE_SCRIPT = re.compile(r"<\s*script[\s\S]*?(?:</\s*script\s*>|$)", re.IGNORECASE)
+_RE_IFRAME = re.compile(r"<\s*iframe[\s\S]*?(?:</\s*iframe\s*>|$)", re.IGNORECASE)
+_RE_ON_ATTR = re.compile(r'\s+on\w+\s*=\s*(?:"[^"]*"|\'[^\']*\'|[^\s>]*)', re.IGNORECASE)
+_RE_JS_URI = re.compile(
+    r'((?:href|src)\s*=\s*["\'])(?:javascript|data):[^"\']*(["\'])',
+    re.IGNORECASE,
+)
+
+
+def _sanitize_banner_html(html: str) -> str:
+    """Strip the most dangerous markup patterns from rendered banner HTML.
+
+    Threat model: admins are trusted to author banner content, but mistakes
+    happen (copy-paste from untrusted sources, accidental script inclusion).
+    This is defense-in-depth, NOT a full XSS defense — for that, render
+    markdown only or add a strict Content-Security-Policy. The whitelist of
+    bad patterns is intentionally narrow so legitimate admin HTML is not
+    mangled.
+
+    What is stripped:
+    - ``<script>...</script>`` blocks (case-insensitive, including unclosed).
+    - ``<iframe>...</iframe>`` blocks.
+    - ``on*=`` event-handler attributes (e.g. onclick, onload, onerror).
+    - ``javascript:`` and ``data:`` URI schemes in href/src attributes.
+    """
+    html = _RE_SCRIPT.sub("", html)
+    html = _RE_IFRAME.sub("", html)
+    html = _RE_ON_ATTR.sub("", html)
+    html = _RE_JS_URI.sub(lambda m: m.group(1) + "#" + m.group(2), html)
+    return html
 
 
 def build_setup_banner_context(
@@ -76,7 +109,8 @@ def render_setup_banner(
     env = Environment(undefined=StrictUndefined, autoescape=True)
     try:
         template = env.from_string(source)
-        return template.render(**build_setup_banner_context(user=user, server_url=server_url))
+        rendered = template.render(**build_setup_banner_context(user=user, server_url=server_url))
+        return _sanitize_banner_html(rendered)
     except TemplateError:
         _logger.warning(
             "setup_banner render failed; returning empty banner. "

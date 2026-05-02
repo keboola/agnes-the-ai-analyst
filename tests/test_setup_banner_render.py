@@ -5,7 +5,7 @@ import pytest
 
 from src.db import _ensure_schema
 from src.repositories.setup_banner import SetupBannerRepository
-from src.setup_banner import build_setup_banner_context, render_setup_banner
+from src.setup_banner import _sanitize_banner_html, build_setup_banner_context, render_setup_banner
 
 
 @pytest.fixture
@@ -78,3 +78,44 @@ def test_autoescape_escapes_html_entities(conn):
     )
     # hostname won't contain < > but the render must succeed without injection
     assert out != ""
+
+
+# ── Sanitizer unit tests ─────────────────────────────────────────────────────
+
+def test_render_strips_script_tags(conn):
+    """render_setup_banner must remove <script> blocks from the output."""
+    SetupBannerRepository(conn).set(
+        '<p>Hello</p><script>alert(1)</script>',
+        updated_by="admin@example.com",
+    )
+    out = render_setup_banner(conn, user=_user(), server_url="https://example.com")
+    assert "<script>" not in out
+    assert "alert" not in out
+    # Safe content preserved
+    assert "Hello" in out
+
+
+def test_render_strips_event_handlers(conn):
+    """render_setup_banner must strip on* event-handler attributes."""
+    SetupBannerRepository(conn).set(
+        '<button onclick="evil()">Click me</button>',
+        updated_by="admin@example.com",
+    )
+    out = render_setup_banner(conn, user=_user(), server_url="https://example.com")
+    assert "onclick" not in out
+    assert "evil" not in out
+    # Button text preserved
+    assert "Click me" in out
+
+
+def test_render_strips_javascript_uri(conn):
+    """render_setup_banner must strip javascript: URI schemes from href/src."""
+    SetupBannerRepository(conn).set(
+        '<a href="javascript:evil()">link</a>',
+        updated_by="admin@example.com",
+    )
+    out = render_setup_banner(conn, user=_user(), server_url="https://example.com")
+    assert "javascript:" not in out
+    assert "evil" not in out
+    # Link text preserved
+    assert "link" in out
