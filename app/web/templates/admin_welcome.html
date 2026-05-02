@@ -2,9 +2,14 @@
 {% block title %}Welcome Prompt — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block content %}
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/material-darker.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/jinja2/jinja2.min.js"></script>
+
 <style>
   .container:has(.welcome-page) { max-width: none; padding: 24px 16px; }
-  .welcome-page { max-width: 900px; margin: 0 auto; padding: 0; }
+  .welcome-page { max-width: 1400px; margin: 0 auto; padding: 0; }
 
   .welcome-toolbar {
     display: flex; justify-content: space-between; align-items: center;
@@ -79,18 +84,52 @@
   .btn-copy:hover { border-color: #89b4fa; color: #89b4fa; background: rgba(137, 180, 250, 0.08); }
   .btn-copy.copied { border-color: #a6e3a1; color: #a6e3a1; background: rgba(166, 227, 161, 0.08); }
 
-  /* Textarea */
-  .welcome-textarea {
-    width: 100%; min-height: 480px;
-    padding: 9px 12px;
-    border: 1px solid var(--border, #e5e7eb); border-radius: 8px;
+  /* CodeMirror editor styling */
+  .welcome-page .CodeMirror {
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px;
+    font-size: 13px;
     font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
-    font-size: 13px; resize: vertical;
-    background: var(--surface, #fff); color: var(--text-primary, #111827);
-    box-sizing: border-box;
-    display: block;
   }
-  .welcome-textarea:focus { outline: 2px solid var(--primary, #6366f1); outline-offset: -1px; }
+
+  /* Split layout: editor left, preview right */
+  .welcome-editor-row {
+    display: flex;
+    gap: 16px;
+    margin-top: 0;
+  }
+  .welcome-editor-col, .welcome-preview-col {
+    flex: 1 1 50%;
+    min-width: 0;
+  }
+  .welcome-preview-col {
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px;
+    background: #1e1e2e;
+    color: #cdd6f4;
+    padding: 16px;
+    font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
+    font-size: 13px;
+    white-space: pre-wrap;
+    overflow: auto;
+    max-height: 600px;
+  }
+  .welcome-preview-col h4 {
+    color: #cdd6f4; margin: 0 0 8px; font-size: 12px; opacity: 0.7;
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .welcome-preview-error {
+    background: rgba(234, 88, 12, 0.15);
+    color: #fca5a5;
+    border: 1px solid rgba(234, 88, 12, 0.4);
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-size: 12px;
+    white-space: pre-wrap;
+  }
+  @media (max-width: 1100px) {
+    .welcome-editor-row { flex-direction: column; }
+  }
 
   /* Action row */
   .welcome-actions {
@@ -110,22 +149,6 @@
   .welcome-btn.danger { background: #dc2626; color: #fff; border-color: #dc2626; }
   .welcome-btn.danger:hover { filter: brightness(1.05); }
   .welcome-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-
-  /* Preview pane */
-  .welcome-preview-card {
-    background: var(--surface, #fff);
-    border: 1px solid var(--border, #e5e7eb);
-    border-radius: 12px;
-    overflow: hidden;
-    margin-bottom: 16px;
-  }
-  .welcome-preview-header {
-    padding: 12px 18px;
-    background: var(--border-light, #f9fafb);
-    border-bottom: 1px solid var(--border, #e5e7eb);
-    display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  }
-  .welcome-preview-header h3 { margin: 0; font-size: 14px; font-weight: 600; }
 
   /* Modal */
   .modal-backdrop {
@@ -210,22 +233,20 @@
         </div>
       </details>
 
-      <textarea id="content" class="welcome-textarea">{{ current or default_template }}</textarea>
+      <div class="welcome-editor-row">
+        <div class="welcome-editor-col">
+          <textarea id="content" name="content">{{ current or default_template }}</textarea>
+        </div>
+        <div class="welcome-preview-col">
+          <h4>Live preview</h4>
+          <div id="preview-content">(rendering…)</div>
+          <div id="preview-error" class="welcome-preview-error" hidden></div>
+        </div>
+      </div>
     </div>
     <div class="welcome-actions">
-      <button type="button" class="welcome-btn" id="preview-btn">Preview</button>
       <button type="button" class="welcome-btn" id="reset-btn">Reset to default</button>
       <button type="button" class="welcome-btn primary" id="save-btn">Save override</button>
-    </div>
-  </div>
-
-  <div class="welcome-preview-card" id="preview-card" hidden>
-    <div class="welcome-preview-header">
-      <h3>Rendered preview</h3>
-      <button class="btn-copy" data-copy-target="preview-content">Copy</button>
-    </div>
-    <div class="code-block" style="border-radius:0; margin-bottom:0; border-top:none;">
-      <span id="preview-content" class="code-body"></span>
     </div>
   </div>
 </div>
@@ -246,6 +267,60 @@
 
 <script>
 const API = "/api/admin/welcome-template";
+
+// ── CodeMirror editor ─────────────────────────────────────────────────
+const editor = CodeMirror.fromTextArea(document.getElementById("content"), {
+  mode: "jinja2",
+  lineNumbers: true,
+  lineWrapping: true,
+  theme: "material-darker",
+  indentUnit: 2,
+  tabSize: 2,
+});
+editor.setSize("100%", 480);
+
+// ── Live preview (debounced) ──────────────────────────────────────────
+let previewTimer = null;
+function schedulePreview() {
+  if (previewTimer) clearTimeout(previewTimer);
+  previewTimer = setTimeout(renderPreview, 500);
+}
+
+async function renderPreview() {
+  const content = editor.getValue();
+  const previewBox = document.getElementById("preview-content");
+  const previewErr = document.getElementById("preview-error");
+  if (!content.trim()) {
+    previewBox.textContent = "(empty)";
+    previewErr.hidden = true;
+    return;
+  }
+  try {
+    const r = await fetch(API + "/preview", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content }),
+    });
+    if (r.ok) {
+      const j = await r.json();
+      previewBox.textContent = j.content;
+      previewErr.hidden = true;
+    } else {
+      let detail = r.statusText;
+      try { detail = (await r.json()).detail || detail; } catch (_) {}
+      previewBox.textContent = "";
+      previewErr.textContent = detail;
+      previewErr.hidden = false;
+    }
+  } catch (e) {
+    previewErr.textContent = "Network error: " + e.message;
+    previewErr.hidden = false;
+  }
+}
+
+editor.on("change", schedulePreview);
+renderPreview();   // initial render on load
 
 // ── Toast ─────────────────────────────────────────────────────────────
 function toast(msg, kind) {
@@ -283,13 +358,14 @@ function setStatusChip(data) {
   }
 }
 
-// ── Refresh status + textarea from API ───────────────────────────────
+// ── Refresh status + editor content from API ─────────────────────────
 async function refreshStatus() {
   const r = await fetch(API, { credentials: "include" });
   if (!r.ok) return;
   const data = await r.json();
   setStatusChip(data);
-  document.getElementById("content").value = data.content !== null ? data.content : data.default;
+  editor.setValue(data.content !== null ? data.content : data.default);
+  renderPreview();
 }
 
 // ── Save ──────────────────────────────────────────────────────────────
@@ -301,7 +377,7 @@ document.getElementById("save-btn").addEventListener("click", async () => {
       method: "PUT",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content: document.getElementById("content").value }),
+      body: JSON.stringify({ content: editor.getValue() }),
     });
     if (r.ok) {
       toast("Override saved.", "success");
@@ -329,7 +405,6 @@ document.getElementById("reset-confirm-btn").addEventListener("click", async () 
     const r = await fetch(API, { method: "DELETE", credentials: "include" });
     if (r.ok) {
       toast("Reset to default.", "success");
-      document.getElementById("preview-card").hidden = true;
       await refreshStatus();
     } else {
       let detail = r.statusText;
@@ -338,37 +413,6 @@ document.getElementById("reset-confirm-btn").addEventListener("click", async () 
     }
   } catch (e) {
     toast("Reset failed: " + e.message, "error");
-  } finally {
-    btn.disabled = false;
-  }
-});
-
-// ── Preview ───────────────────────────────────────────────────────────
-document.getElementById("preview-btn").addEventListener("click", async () => {
-  const btn = document.getElementById("preview-btn");
-  btn.disabled = true;
-  try {
-    const r = await fetch(API + "/preview", {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content: document.getElementById("content").value }),
-    });
-    if (r.ok) {
-      const j = await r.json();
-      document.getElementById("preview-content").textContent = j.content;
-      document.getElementById("preview-card").hidden = false;
-      document.getElementById("preview-card").scrollIntoView({ behavior: "smooth", block: "nearest" });
-      toast("Preview rendered.", "success");
-    } else {
-      let detail = r.statusText;
-      try { detail = (await r.json()).detail || detail; } catch (_) {}
-      toast("Preview error: " + detail, "error");
-      document.getElementById("preview-card").hidden = true;
-    }
-  } catch (e) {
-    toast("Preview error: " + e.message, "error");
-    document.getElementById("preview-card").hidden = true;
   } finally {
     btn.disabled = false;
   }
