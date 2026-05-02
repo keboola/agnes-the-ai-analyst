@@ -43,11 +43,15 @@ The orchestrator scans `/data/extracts/*/extract.duckdb`, attaches each into `an
 | Mode | Distribution | Sources | Use when |
 |------|--------------|---------|----------|
 | **Batch pull** (`local`) | Parquet on disk, scheduled | Keboola | Source has a native bulk-export and the table fits on disk |
-| **Materialized SQL** (`materialized`) | Parquet on disk, scheduled query | BigQuery | Source table is too large to mirror; you want a curated subset on disk |
+| **Materialized SQL** (`materialized`) | Parquet on disk, scheduled query | BigQuery, Keboola | Source table is too large to mirror as-is; you want a curated subset / aggregate on disk |
 | **Remote attach** (`remote`) | View only, no download | BigQuery | Table is too large to materialize; latency cost of remote query is acceptable |
 | **Real-time push** | Incremental parquet | Jira | Source is event-driven and you need sub-minute freshness |
 
 The first three modes are what `da sync` distributes to analysts. The fourth is server-side only — analysts query Jira data through the same `da sync`-distributed parquets.
+
+Admins manage per-source registrations through the `/admin/tables` UI (per-connector tabs for BigQuery / Keboola / Jira) or the `da admin register-table` CLI; per-row "Manage access" deep-links to `/admin/access` for granting tables to user groups via `resource_grants(group, ResourceType.TABLE, table_id)`.
+
+Analysts get a closed loop with Claude Code: `da analyst setup` writes `<workspace>/.claude/settings.json` with SessionStart (`da sync --quiet`) and SessionEnd (`da sync --upload-only --quiet`) hooks so every Claude Code session starts with fresh RBAC-filtered parquets and ends with the session log uploaded back.
 
 Adding a new source means creating `connectors/<name>/extractor.py` that produces `extract.duckdb` with a `_meta` table (`table_name`, `description`, `rows`, `size_bytes`, `extracted_at`, `query_mode`). The orchestrator attaches it automatically.
 
