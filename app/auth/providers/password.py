@@ -263,11 +263,19 @@ async def password_login_web(
 # ---- JSON programmatic setup (backward compat — used by existing tests) ----
 
 @router.post("/setup")
+@_rate_limiter.limit("10/minute")
 async def password_setup(
+    request: Request,
     request_body: PasswordSetupRequest,
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Set initial password using setup token (JSON API)."""
+    """Set initial password using setup token (JSON API).
+
+    Rate limited 10/min per IP — same throttle as the form sibling
+    ``/setup/confirm``. Without this, the new web-form throttle is
+    bypassable: an attacker brute-forcing the ``setup_token`` just
+    switches to this JSON path and resumes at unbounded RPS.
+    """
     repo = UserRepository(conn)
     user = repo.get_by_email(request_body.email)
     if not user:

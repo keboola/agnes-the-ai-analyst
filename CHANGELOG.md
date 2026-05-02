@@ -16,10 +16,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
     - **10/minute** — `POST /auth/token`, `POST /auth/password/login`,
       `POST /auth/password/login/web` (login brute-force throttle).
     - **10/minute** — `POST/GET /auth/email/verify`,
-      `POST /auth/password/reset/confirm`, `POST /auth/password/setup/confirm`
-      (token brute-force throttle: the 32-byte URL-safe tokens are high
-      entropy but partial leaks via logs / proxy referer have surfaced
-      before, and there's no reason to allow unbounded guessing).
+      `POST /auth/password/reset/confirm`, `POST /auth/password/setup/confirm`,
+      `POST /auth/password/setup` (JSON variant — without it, the form
+      `/setup/confirm` throttle is bypassable by switching to the JSON
+      path) (token brute-force throttle: the 32-byte URL-safe tokens are
+      high entropy but partial leaks via logs / proxy referer have
+      surfaced before, and there's no reason to allow unbounded guessing).
     - **5/minute** — `POST /auth/email/send-link`,
       `POST /auth/password/reset`, `POST /auth/password/setup/request`
       (email-bombing throttle: same shape on all three — attacker rotates

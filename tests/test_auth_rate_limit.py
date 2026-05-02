@@ -171,6 +171,28 @@ def test_reset_confirm_rate_limited_after_10_requests(app_with_ratelimit, fresh_
     assert statuses[10] == 429, f"expected 11th to 429, got {statuses[10]} (full: {statuses})"
 
 
+def test_password_setup_json_rate_limited_after_10_requests(app_with_ratelimit, fresh_db):
+    """11th POST /auth/password/setup (JSON variant) → 429.
+
+    Without this, the form-side ``/setup/confirm`` 10/min limit is
+    bypassable — an attacker brute-forcing ``setup_token`` just switches
+    to this JSON path and resumes at unbounded RPS. Caught by an
+    independent code review on PR #165.
+    """
+    statuses = []
+    for i in range(11):
+        resp = app_with_ratelimit.post(
+            "/auth/password/setup",
+            json={
+                "email": "x@example.com",
+                "token": f"guess-{i}",
+                "password": "newpassword123",
+            },
+        )
+        statuses.append(resp.status_code)
+    assert statuses[10] == 429, f"expected 11th to 429, got {statuses[10]} (full: {statuses})"
+
+
 def test_email_verify_get_rate_limited_after_10_requests(app_with_ratelimit, fresh_db):
     """11th GET /auth/email/verify → 429. Closes the click-through bypass:
     the GET variant is what we embed in outgoing emails, so leaving it
