@@ -789,7 +789,7 @@ def test_install_page_uses_versioned_wheel_url(monkeypatch, tmp_path):
     from fastapi.testclient import TestClient
     from app.main import app
     client = TestClient(app)
-    resp = client.get("/install", headers={"host": "agnes.test", "Accept": "text/html"})
+    resp = client.get("/setup", headers={"host": "agnes.test", "Accept": "text/html"})
     assert resp.status_code == 200
     assert "/cli/wheel/agnes_the_ai_analyst-2.0.0-py3-none-any.whl" in resp.text
     # The bare alias must no longer appear in the rendered snippet.

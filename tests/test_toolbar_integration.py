@@ -54,7 +54,7 @@ def app_no_toolbar(monkeypatch, tmp_path, reset_logging_state):
 @pytest.mark.integration
 def test_no_toolbar_when_debug_off(app_no_toolbar):
     client = TestClient(app_no_toolbar)
-    resp = client.get("/setup", follow_redirects=False)
+    resp = client.get("/first-time-setup", follow_redirects=False)
     if resp.status_code in (302, 401):
         # Auth redirect — toolbar wouldn't render anyway. The point of this
         # test is to assert markup ABSENCE; no markup, no failure.
@@ -76,7 +76,7 @@ def test_toolbar_html_present_when_debug(app_with_toolbar):
     client = TestClient(app_with_toolbar)
     # Try several HTML routes — at least one should respond 200 under
     # LOCAL_DEV_MODE=1 (auth bypass).
-    for path in ("/dashboard", "/setup", "/login", "/admin/access"):
+    for path in ("/dashboard", "/first-time-setup", "/login", "/admin/access"):
         resp = client.get(path, follow_redirects=False)
         if resp.status_code == 200 and "text/html" in resp.headers.get("content-type", ""):
             body = resp.text.lower()
