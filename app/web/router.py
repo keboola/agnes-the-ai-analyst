@@ -727,17 +727,13 @@ async def setup_page(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Setup instructions for the local agent (CLI + Claude Code)."""
-    from src.setup_banner import render_setup_banner
-
     base_url = str(request.base_url).rstrip("/")
-    banner_html = render_setup_banner(conn, user=user, server_url=base_url)
     ctx = _build_context(
         request,
         user=user,
         conn=conn,
         server_url=base_url,
         agnes_version=os.environ.get("AGNES_VERSION", "dev"),
-        banner_html=banner_html,
     )
     return templates.TemplateResponse(request, "install.html", ctx)
 
@@ -898,8 +894,8 @@ async def admin_marketplaces_page(
     return templates.TemplateResponse(request, "admin_marketplaces.html", ctx)
 
 
-@router.get("/admin/welcome", response_class=HTMLResponse)
-async def admin_welcome_page(
+@router.get("/admin/agent-prompt", response_class=HTMLResponse)
+async def admin_agent_prompt_page(
     request: Request,
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
@@ -919,25 +915,6 @@ async def admin_welcome_page(
     )
     return templates.TemplateResponse(request, "admin_welcome.html", ctx)
 
-
-@router.get("/admin/setup-banner", response_class=HTMLResponse)
-async def admin_setup_banner_page(
-    request: Request,
-    user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
-):
-    from src.repositories.setup_banner import SetupBannerRepository
-
-    row = SetupBannerRepository(conn).get()
-    ctx = _build_context(
-        request,
-        user=user,
-        current=row["content"] or "",
-        updated_at=row["updated_at"],
-        updated_by=row["updated_by"],
-        is_override=row["content"] is not None,
-    )
-    return templates.TemplateResponse(request, "admin_setup_banner.html", ctx)
 
 
 @router.get("/tokens", response_class=HTMLResponse)
