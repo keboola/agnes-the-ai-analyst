@@ -258,21 +258,6 @@
             background: rgba(166, 227, 161, 0.08);
         }
 
-        /* ── Admin setup banner (shown when admin has set one) ── */
-        .setup-banner {
-            background: var(--surface, #fff);
-            border: 1px solid var(--border, #e5e7eb);
-            border-left: 3px solid var(--primary, #6366f1);
-            border-radius: var(--radius, 8px);
-            padding: 14px 18px;
-            margin-bottom: 20px;
-            font-size: 14px;
-            color: var(--text-primary, #111827);
-            line-height: 1.6;
-        }
-        .setup-banner > *:first-child { margin-top: 0; }
-        .setup-banner > *:last-child  { margin-bottom: 0; }
-
         /* ── Anon sign-in banner (shown only when logged out) ── */
         .auth-banner {
             background: var(--background);
@@ -662,10 +647,6 @@
     {% endwith %}
 
     <main class="main">
-
-        {% if banner_html %}
-        <div class="setup-banner">{{ banner_html | safe }}</div>
-        {% endif %}
 
         <!-- ═══════════════ HERO ═══════════════ -->
         <section class="hero">

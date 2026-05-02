@@ -418,8 +418,8 @@ CREATE TABLE IF NOT EXISTS welcome_template (
     CONSTRAINT singleton CHECK (id = 1)
 );
 
--- v22: customizable banner shown above setup commands on /setup page.
--- Singleton row (id=1). NULL content means "no banner".
+-- v22: reserved (formerly setup_banner — feature dropped, table kept for
+-- forward compatibility with already-migrated instances).
 CREATE TABLE IF NOT EXISTS setup_banner (
     id INTEGER PRIMARY KEY DEFAULT 1,
     content TEXT,
