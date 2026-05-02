@@ -100,7 +100,7 @@ def test_install_page_renders_with_server_url(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
     from app.main import app
     client = TestClient(app)
-    resp = client.get("/install", headers={"host": "agnes.test", "Accept": "text/html"})
+    resp = client.get("/setup", headers={"host": "agnes.test", "Accept": "text/html"})
     assert resp.status_code == 200
     assert "agnes.test" in resp.text
     assert "da auth whoami" in resp.text

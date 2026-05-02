@@ -120,7 +120,7 @@ _URL_MAP = {
     "email_auth.login_email_form": "/login/email",
     "email_auth.send_magic_link": "/auth/email/send-link",
     "register": "/auth/password/setup",
-    "setup": "/setup",
+    "setup": "/first-time-setup",
 }
 
 
@@ -322,9 +322,9 @@ async def index(request: Request, user: Optional[dict] = Depends(get_optional_us
     return RedirectResponse(url="/login", status_code=302)
 
 
-@router.get("/setup", response_class=HTMLResponse)
+@router.get("/first-time-setup", response_class=HTMLResponse)
 async def setup_wizard(request: Request, conn: duckdb.DuckDBPyConnection = Depends(_get_db)):
-    """First-time setup wizard. Redirects to dashboard if users already exist."""
+    """First-time setup wizard. Redirects to login if users already exist."""
     try:
         user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         if user_count > 0:
@@ -720,13 +720,13 @@ async def activity_center(
     return templates.TemplateResponse(request, "activity_center.html", ctx)
 
 
-@router.get("/install", response_class=HTMLResponse)
-async def install_page(
+@router.get("/setup", response_class=HTMLResponse)
+async def setup_page(
     request: Request,
     user: Optional[dict] = Depends(get_optional_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Public install instructions for the CLI."""
+    """Setup instructions for the local agent (CLI + Claude Code)."""
     base_url = str(request.base_url).rstrip("/")
     ctx = _build_context(
         request,
@@ -736,6 +736,12 @@ async def install_page(
         agnes_version=os.environ.get("AGNES_VERSION", "dev"),
     )
     return templates.TemplateResponse(request, "install.html", ctx)
+
+
+@router.get("/install", response_class=HTMLResponse)
+async def install_redirect(request: Request):
+    """Backwards-compat redirect: /install → /setup (301)."""
+    return RedirectResponse(url="/setup", status_code=301)
 
 
 @router.get("/admin/tables", response_class=HTMLResponse)
