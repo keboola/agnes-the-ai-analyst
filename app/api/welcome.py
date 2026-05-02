@@ -135,7 +135,7 @@ async def admin_preview_template(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Render arbitrary template content against the live context for the
-    calling admin, without persisting. Used by the /admin/welcome editor's
+    calling admin, without persisting. Used by the /admin/agent-prompt editor's
     Preview button so admins can see their edits before saving."""
     env = Environment(undefined=StrictUndefined, autoescape=False)
     try:

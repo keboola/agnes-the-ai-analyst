@@ -278,6 +278,18 @@ class TestAdminRoleGuards:
         resp = web_client.get("/corporate-memory/admin", cookies=analyst_cookie)
         assert resp.status_code == 403
 
+    def test_admin_agent_prompt_page_admin_only(self, web_client, admin_cookie, analyst_cookie):
+        """The renamed Agent Setup Prompt page is gated by require_admin."""
+        # Unauthenticated → 302 redirect to login
+        r = web_client.get("/admin/agent-prompt", follow_redirects=False)
+        assert r.status_code in (302, 401, 403)
+        # Non-admin → 403
+        r = web_client.get("/admin/agent-prompt", cookies=analyst_cookie, follow_redirects=False)
+        assert r.status_code == 403
+        # Admin → 200
+        r = web_client.get("/admin/agent-prompt", cookies=admin_cookie, follow_redirects=False)
+        assert r.status_code == 200
+
 
 class TestUnauthenticatedHtmlRedirects:
     def test_dashboard_unauthenticated_redirects_to_login(self, web_client):

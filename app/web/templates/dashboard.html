@@ -1270,66 +1270,6 @@
             cursor: wait;
         }
 
-        /* ── Setup instructions preview (read-only card inside env-setup-cta) ── */
-        .setup-preview-card {
-            margin-top: 18px;
-            background: rgba(0, 0, 0, 0.25);
-            border: 1px solid rgba(255, 255, 255, 0.12);
-            border-radius: 8px;
-            padding: 14px 16px;
-        }
-        .setup-preview-summary {
-            list-style: none;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            user-select: none;
-        }
-        .setup-preview-summary::-webkit-details-marker { display: none; }
-        .setup-preview-chevron {
-            display: inline-block;
-            font-size: 11px;
-            color: rgba(255, 255, 255, 0.7);
-            transition: transform 0.15s ease;
-        }
-        details[open] > .setup-preview-summary .setup-preview-chevron { transform: rotate(90deg); }
-        .setup-preview-title {
-            font-size: 12px;
-            font-weight: 600;
-            letter-spacing: 0.5px;
-            text-transform: uppercase;
-            color: rgba(255, 255, 255, 0.85);
-            margin: 0;
-        }
-        .setup-preview-sub {
-            font-size: 12px;
-            color: rgba(255, 255, 255, 0.65);
-            margin: 0 0 10px 0;
-        }
-        .setup-preview-pre {
-            background: #1e1e2e;
-            border-radius: 6px;
-            padding: 14px 16px;
-            margin: 0;
-            max-height: 400px;
-            overflow-y: auto;
-            font-family: var(--font-mono);
-            font-size: 12.5px;
-            line-height: 1.55;
-            color: #cdd6f4;
-            white-space: pre-wrap;
-            word-break: break-word;
-        }
-        .setup-preview-code { font-family: inherit; font-size: inherit; }
-        .setup-preview-pre .placeholder-token {
-            background: rgba(249, 226, 175, 0.12);
-            color: #f9e2af;
-            padding: 0 4px;
-            border-radius: 3px;
-            font-style: italic;
-        }
-
         /* Fallback modal (when clipboard is blocked) */
         .setup-fallback-overlay {
             position: fixed;
@@ -1394,35 +1334,6 @@
             background: var(--primary);
             color: #FFF;
             border-color: var(--primary);
-        }
-
-        /* ── Setup Banner (bottom, for returning users) ── */
-        .setup-banner {
-            background: var(--background);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 16px 24px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-top: 24px;
-        }
-
-        .setup-banner-text {
-            display: flex;
-            flex-direction: column;
-            gap: 2px;
-        }
-
-        .setup-banner-title {
-            font-size: 14px;
-            font-weight: 600;
-            color: var(--text-primary);
-        }
-
-        .setup-banner-desc {
-            font-size: 12px;
-            color: var(--text-secondary);
         }
 
         .btn-setup-secondary {
@@ -1976,13 +1887,6 @@
 
             .bottom-row {
                 grid-template-columns: 1fr;
-            }
-
-            .setup-banner {
-                flex-direction: column;
-                gap: 20px;
-                text-align: center;
-                padding: 28px 24px;
             }
 
             .onboard-label {

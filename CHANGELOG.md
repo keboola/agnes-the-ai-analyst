@@ -13,7 +13,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Added
 
 - **Agent Setup Prompt** — admins can customise the `CLAUDE.md` generated for analysts by `da analyst setup`. Default ships at `config/claude_md_template.txt` (Jinja2 syntax). Edit at `/admin/agent-prompt` or via REST: `GET /api/admin/welcome-template` returns `{content, default, updated_at, updated_by}`; `PUT` to set; `DELETE` to clear; `POST /api/admin/welcome-template/preview` for live preview without persisting. `GET /api/welcome` returns the prompt rendered for the calling user (RBAC-filtered `marketplaces`). See `docs/agent-setup-prompt.md` for the full placeholder reference.
-- DuckDB schema v21: `welcome_template` singleton table for the per-instance override. Auto-migration v20→v21 on first start.
+- DuckDB schema v21: `welcome_template` singleton table for the per-instance override. Auto-migration on first start (current schema reaches v22 — see also the v22 reservation note below).
 - DuckDB schema v22: reserved (`setup_banner` table retained for forward compatibility with already-migrated instances; feature dropped).
 - New `instance.sync_interval` setting in `instance.yaml` (default `"1 hour"`) — surfaced in the agent setup prompt as `{{ sync_interval }}`.
 
