@@ -727,13 +727,17 @@ async def setup_page(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Setup instructions for the local agent (CLI + Claude Code)."""
+    from src.welcome_template import render_agent_prompt_banner
+
     base_url = str(request.base_url).rstrip("/")
+    banner_html = render_agent_prompt_banner(conn, user=user, server_url=base_url)
     ctx = _build_context(
         request,
         user=user,
         conn=conn,
         server_url=base_url,
         agnes_version=os.environ.get("AGNES_VERSION", "dev"),
+        banner_html=banner_html,
     )
     return templates.TemplateResponse(request, "install.html", ctx)
 
@@ -901,14 +905,12 @@ async def admin_agent_prompt_page(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     from src.repositories.welcome_template import WelcomeTemplateRepository
-    from src.welcome_template import _load_default_template
 
     row = WelcomeTemplateRepository(conn).get()
     ctx = _build_context(
         request,
         user=user,
         current=row["content"] or "",
-        default_template=_load_default_template(),
         updated_at=row["updated_at"],
         updated_by=row["updated_by"],
         is_override=row["content"] is not None,

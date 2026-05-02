@@ -1,4 +1,8 @@
-"""End-to-end tests for /api/welcome and /api/admin/welcome-template."""
+"""End-to-end tests for /api/admin/welcome-template (banner editor endpoints).
+
+GET /api/welcome has been removed — the analyst-facing endpoint is gone.
+These tests cover only the admin CRUD + preview endpoints.
+"""
 
 import duckdb
 
@@ -10,7 +14,8 @@ def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def test_get_welcome_returns_rendered_markdown(seeded_app):
+def test_get_welcome_endpoint_removed(seeded_app):
+    """GET /api/welcome must return 404 — the endpoint was deleted."""
     c = seeded_app["client"]
     token = seeded_app["analyst_token"]
     resp = c.get(
@@ -18,48 +23,39 @@ def test_get_welcome_returns_rendered_markdown(seeded_app):
         params={"server_url": "https://example.com"},
         headers=_auth(token),
     )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert "content" in body
-    assert "AI Data Analyst" in body["content"]
-    assert "https://example.com" in body["content"]
+    assert resp.status_code == 404
 
 
-def test_get_welcome_requires_auth(seeded_app):
+def test_admin_get_template_initially_null(seeded_app):
     c = seeded_app["client"]
-    resp = c.get("/api/welcome", params={"server_url": "https://example.com"})
-    assert resp.status_code == 401
+    admin = _auth(seeded_app["admin_token"])
+
+    r = c.get("/api/admin/welcome-template", headers=admin)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["content"] is None
+    # No longer returns a `default` field — banner default is empty
+    assert "default" not in body or body.get("default") is None
 
 
 def test_admin_can_set_and_reset_template(seeded_app):
     c = seeded_app["client"]
     admin = _auth(seeded_app["admin_token"])
 
-    # GET initial state
-    r = c.get("/api/admin/welcome-template", headers=admin)
-    assert r.status_code == 200
-    body = r.json()
-    assert body["content"] is None
-    # The shipped default starts with the Jinja2 comment block.
-    assert body["default"].startswith("{#")
-
     # PUT override
     r = c.put(
         "/api/admin/welcome-template",
-        json={"content": "Hello {{ user.email }}"},
+        json={"content": "<p>Hello {{ user.email }}</p>"},
         headers=admin,
     )
     assert r.status_code == 200
 
-    # Verify rendered output uses override
-    r = c.get(
-        "/api/welcome",
-        params={"server_url": "https://example.com"},
-        headers=admin,  # admin user can also call /api/welcome
-    )
-    assert r.json()["content"].startswith("Hello ")
+    # GET reflects override
+    r = c.get("/api/admin/welcome-template", headers=admin)
+    assert r.status_code == 200
+    assert r.json()["content"] == "<p>Hello {{ user.email }}</p>"
 
-    # DELETE = reset
+    # DELETE = reset (no banner)
     r = c.delete("/api/admin/welcome-template", headers=admin)
     assert r.status_code == 204
     r = c.get("/api/admin/welcome-template", headers=admin)
@@ -69,7 +65,7 @@ def test_admin_can_set_and_reset_template(seeded_app):
 def test_non_admin_cannot_edit_template(seeded_app):
     c = seeded_app["client"]
     analyst = _auth(seeded_app["analyst_token"])
-    r = c.put("/api/admin/welcome-template", json={"content": "x"}, headers=analyst)
+    r = c.put("/api/admin/welcome-template", json={"content": "<p>x</p>"}, headers=analyst)
     assert r.status_code == 403
 
 
@@ -86,58 +82,29 @@ def test_invalid_jinja2_returns_400(seeded_app):
 
 
 def test_put_rejects_undefined_placeholder(seeded_app):
-    """Templates that parse but reference unknown placeholders must be rejected
-    at PUT time so an admin can fix the typo immediately rather than after an
-    analyst's bootstrap blows up."""
+    """Templates that reference unknown placeholders must be rejected at PUT time."""
     c = seeded_app["client"]
     admin = _auth(seeded_app["admin_token"])
     r = c.put(
         "/api/admin/welcome-template",
-        json={"content": "Hello {{ user.emial }}"},  # typo, would fail StrictUndefined at render
+        json={"content": "<p>{{ user.emial }}</p>"},  # typo
         headers=admin,
     )
     assert r.status_code == 400
     assert "emial" in r.json()["detail"] or "undefined" in r.json()["detail"].lower()
 
 
-def test_get_welcome_500_includes_reset_hint_on_render_failure(seeded_app, monkeypatch):
-    """If an override slips through validation and fails at render time, the
-    user-visible 500 must point at /admin/agent-prompt rather than leaking a
-    Jinja stack trace."""
-    # Stub render_welcome to raise a TemplateError so we exercise the
-    # exception path without needing a malformed override (PUT validation
-    # blocks those now).
-    from jinja2 import UndefinedError
-    import app.api.welcome as welcome_module
-
-    def fake_render(*args, **kwargs):
-        raise UndefinedError("'foo' is undefined")
-
-    monkeypatch.setattr(welcome_module, "render_welcome", fake_render)
-
-    c = seeded_app["client"]
-    admin = _auth(seeded_app["admin_token"])
-    r = c.get(
-        "/api/welcome",
-        params={"server_url": "https://example.com"},
-        headers=admin,
-    )
-    assert r.status_code == 500
-    assert "/admin/agent-prompt" in r.json()["detail"]
-
-
-def test_admin_preview_renders_arbitrary_content(seeded_app):
-    """Preview endpoint must render the supplied content (not whatever's
-    stored), so the admin UI can show pre-save preview."""
+def test_admin_preview_renders_html(seeded_app):
+    """Preview endpoint renders supplied HTML content without persisting."""
     c = seeded_app["client"]
     admin = _auth(seeded_app["admin_token"])
     r = c.post(
         "/api/admin/welcome-template/preview",
-        json={"content": "# Preview {{ user.email }}"},
+        json={"content": "<p>Preview for {{ user.email }}</p>"},
         headers=admin,
     )
     assert r.status_code == 200
-    assert r.json()["content"].startswith("# Preview admin@test.com")
+    assert r.json()["content"].startswith("<p>Preview for admin@test.com")
 
 
 def test_preview_rejects_invalid_template(seeded_app):
@@ -156,26 +123,29 @@ def test_preview_requires_admin(seeded_app):
     analyst = _auth(seeded_app["analyst_token"])
     r = c.post(
         "/api/admin/welcome-template/preview",
-        json={"content": "# x"},
+        json={"content": "<p>x</p>"},
         headers=analyst,
     )
     assert r.status_code == 403
 
 
 def test_validation_stub_matches_build_context_shape(seeded_app, tmp_path, monkeypatch):
-    """If build_context grows new keys, _VALIDATION_STUB_CONTEXT must too —
-    otherwise admins can save templates referencing keys the PUT validator
-    accepts but the live render rejects."""
+    """_VALIDATION_STUB_CONTEXT top-level keys must match build_context() output.
+
+    If build_context gains new keys, the stub must track them so admins can
+    save templates that reference those keys without hitting a live-render
+    rejection after the PUT validation accepted them.
+    """
     from app.api.welcome import _VALIDATION_STUB_CONTEXT
 
-    monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    db_path = tmp_path / "system.duckdb"
-    conn = duckdb.connect(str(db_path))
-    _ensure_schema(conn)
-
-    user = {"id": "u1", "email": "admin@test.com", "name": "Admin", "is_admin": True, "groups": ["Admin"]}
-    real_ctx = build_context(conn, user=user, server_url="https://example.com")
-    conn.close()
+    user = {
+        "id": "u1",
+        "email": "admin@test.com",
+        "name": "Admin",
+        "is_admin": True,
+        "groups": ["Admin"],
+    }
+    real_ctx = build_context(user=user, server_url="https://example.com")
 
     # Top-level keys must match
     assert set(_VALIDATION_STUB_CONTEXT.keys()) == set(real_ctx.keys()), (
@@ -184,9 +154,13 @@ def test_validation_stub_matches_build_context_shape(seeded_app, tmp_path, monke
         f"real has: {set(real_ctx.keys())}"
     )
 
-    # One level deep for nested dicts
-    for key in ("instance", "server", "user"):
-        if isinstance(real_ctx.get(key), dict):
-            assert set(_VALIDATION_STUB_CONTEXT[key].keys()) == set(real_ctx[key].keys()), (
-                f"_VALIDATION_STUB_CONTEXT[{key!r}] drifted from build_context output"
-            )
+    # One level deep for nested dicts (user may be None in real_ctx — compare stub shape)
+    for key in ("instance", "server"):
+        assert set(_VALIDATION_STUB_CONTEXT[key].keys()) == set(real_ctx[key].keys()), (
+            f"_VALIDATION_STUB_CONTEXT[{key!r}] drifted from build_context output"
+        )
+    # user sub-keys
+    if real_ctx.get("user") and _VALIDATION_STUB_CONTEXT.get("user"):
+        assert set(_VALIDATION_STUB_CONTEXT["user"].keys()) == set(real_ctx["user"].keys()), (
+            "_VALIDATION_STUB_CONTEXT['user'] drifted from build_context output"
+        )

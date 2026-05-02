@@ -1,14 +1,15 @@
-"""Unit tests for the welcome-prompt renderer."""
-
-import uuid
-from pathlib import Path
+"""Unit tests for the agent-setup-prompt banner renderer."""
 
 import duckdb
 import pytest
 
 from src.db import _ensure_schema
 from src.repositories.welcome_template import WelcomeTemplateRepository
-from src.welcome_template import build_context, render_welcome
+from src.welcome_template import (
+    _sanitize_banner_html,
+    build_context,
+    render_agent_prompt_banner,
+)
 
 
 @pytest.fixture
@@ -22,144 +23,188 @@ def conn(tmp_path, monkeypatch):
 
 
 def _user(email="alice@example.com"):
-    return {"id": "u1", "email": email, "name": "Alice", "is_admin": False, "groups": ["Everyone"]}
+    return {
+        "id": "u1",
+        "email": email,
+        "name": "Alice",
+        "is_admin": False,
+        "groups": ["Everyone"],
+    }
 
 
-def test_renders_default_when_no_override(conn):
-    out = render_welcome(conn, user=_user(), server_url="https://example.com")
-    assert "AI Data Analyst" in out
-    assert "https://example.com" in out
-    assert "Alice" in out
+# ---------------------------------------------------------------------------
+# Default (no override) → empty string
+# ---------------------------------------------------------------------------
 
+def test_returns_empty_when_no_override(conn):
+    out = render_agent_prompt_banner(conn, user=_user(), server_url="https://example.com")
+    assert out == ""
+
+
+# ---------------------------------------------------------------------------
+# Override renders correctly
+# ---------------------------------------------------------------------------
 
 def test_renders_override(conn):
     WelcomeTemplateRepository(conn).set(
-        "# {{ instance.name }} for {{ user.email }}",
+        "<p>Welcome to {{ instance.name }}!</p>",
         updated_by="admin@example.com",
     )
-    out = render_welcome(conn, user=_user(), server_url="https://example.com")
-    assert out.startswith("# AI Data Analyst for alice@example.com")
+    out = render_agent_prompt_banner(conn, user=_user(), server_url="https://example.com")
+    assert "<p>Welcome to" in out
+    # instance.name comes from instance_config — any non-empty string is fine
+    assert "!" in out
 
 
-def test_strict_undefined_raises_on_missing_placeholder(conn):
+def test_renders_user_placeholder(conn):
+    WelcomeTemplateRepository(conn).set(
+        "<p>Hello {{ user.email }}</p>",
+        updated_by="admin@example.com",
+    )
+    out = render_agent_prompt_banner(
+        conn, user=_user("bob@example.com"), server_url="https://example.com"
+    )
+    assert "bob@example.com" in out
+
+
+def test_renders_server_placeholder(conn):
+    WelcomeTemplateRepository(conn).set(
+        "<p>Server: {{ server.url }}</p>",
+        updated_by="admin@example.com",
+    )
+    out = render_agent_prompt_banner(
+        conn, user=_user(), server_url="https://myserver.example.com"
+    )
+    assert "https://myserver.example.com" in out
+
+
+# ---------------------------------------------------------------------------
+# Anonymous user (user=None)
+# ---------------------------------------------------------------------------
+
+def test_renders_with_anonymous_user(conn):
+    WelcomeTemplateRepository(conn).set(
+        "{% if user %}<p>Hi {{ user.email }}</p>{% else %}<p>Please sign in.</p>{% endif %}",
+        updated_by="admin@example.com",
+    )
+    out = render_agent_prompt_banner(conn, user=None, server_url="https://example.com")
+    assert "Please sign in." in out
+    assert "Hi" not in out
+
+
+def test_returns_empty_for_none_user_with_no_override(conn):
+    out = render_agent_prompt_banner(conn, user=None, server_url="https://example.com")
+    assert out == ""
+
+
+# ---------------------------------------------------------------------------
+# Build context shape
+# ---------------------------------------------------------------------------
+
+def test_context_exposes_documented_keys():
+    ctx = build_context(user=_user(), server_url="https://example.com")
+    for key in ("instance", "server", "user", "now", "today"):
+        assert key in ctx, f"missing context key: {key}"
+    assert "tables" not in ctx
+    assert "metrics" not in ctx
+    assert "marketplaces" not in ctx
+    assert "sync_interval" not in ctx
+    assert "data_source" not in ctx
+
+
+def test_context_user_none():
+    ctx = build_context(user=None, server_url="https://example.com")
+    assert ctx["user"] is None
+
+
+def test_context_instance_keys():
+    ctx = build_context(user=_user(), server_url="https://example.com")
+    assert "name" in ctx["instance"]
+    assert "subtitle" in ctx["instance"]
+
+
+def test_context_server_keys():
+    ctx = build_context(user=_user(), server_url="https://example.com")
+    assert ctx["server"]["url"] == "https://example.com"
+    assert ctx["server"]["hostname"] == "example.com"
+
+
+# ---------------------------------------------------------------------------
+# HTML sanitization
+# ---------------------------------------------------------------------------
+
+def test_sanitize_strips_script_tag():
+    html = '<p>Hello</p><script>alert("xss")</script>'
+    result = _sanitize_banner_html(html)
+    assert "<script>" not in result
+    assert "alert" not in result
+    assert "<p>Hello</p>" in result
+
+
+def test_sanitize_strips_script_with_attributes():
+    html = '<script type="text/javascript">evil()</script><p>ok</p>'
+    result = _sanitize_banner_html(html)
+    assert "evil" not in result
+    assert "<p>ok</p>" in result
+
+
+def test_sanitize_strips_iframe():
+    html = '<p>text</p><iframe src="https://evil.example.com"></iframe>'
+    result = _sanitize_banner_html(html)
+    assert "<iframe" not in result
+    assert "<p>text</p>" in result
+
+
+def test_sanitize_strips_event_handlers():
+    html = '<button onclick="evil()">Click me</button>'
+    result = _sanitize_banner_html(html)
+    assert "onclick" not in result
+    assert "evil" not in result
+    assert "Click me" in result
+
+
+def test_sanitize_strips_onload_on_img():
+    html = '<img src="x" onload="steal()" alt="test">'
+    result = _sanitize_banner_html(html)
+    assert "onload" not in result
+    assert "steal" not in result
+
+
+def test_sanitize_strips_javascript_uri():
+    html = '<a href="javascript:alert(1)">click</a>'
+    result = _sanitize_banner_html(html)
+    assert "javascript:" not in result
+
+
+def test_sanitize_allows_safe_html():
+    html = "<p>VPN required. Contact <a href='https://support.example.com'>support</a>.</p>"
+    result = _sanitize_banner_html(html)
+    assert "<p>" in result
+    assert "<a href" in result
+    assert "support" in result
+
+
+# ---------------------------------------------------------------------------
+# Render failure → empty string (not exception)
+# ---------------------------------------------------------------------------
+
+def test_render_failure_returns_empty_not_exception(conn):
+    # StrictUndefined: referencing an unknown variable raises at render time.
     WelcomeTemplateRepository(conn).set(
         "{{ does_not_exist }}", updated_by="admin@example.com"
     )
-    with pytest.raises(Exception) as exc_info:
-        render_welcome(conn, user=_user(), server_url="https://example.com")
-    assert "does_not_exist" in str(exc_info.value)
+    out = render_agent_prompt_banner(conn, user=_user(), server_url="https://example.com")
+    # Must return empty string, not raise
+    assert out == ""
 
 
-def test_context_exposes_documented_keys(conn):
-    ctx = build_context(conn, user=_user(), server_url="https://example.com")
-    for top in ("instance", "server", "sync_interval", "data_source",
-                "tables", "metrics", "marketplaces", "user", "now", "today"):
-        assert top in ctx, f"missing top-level key: {top}"
-
-
-def test_render_marketplaces_filtered_by_rbac(conn, monkeypatch):
-    """Two users with different group memberships render different marketplace lists."""
-    from app.resource_types import ResourceType
-
-    # ── Seed two marketplaces ────────────────────────────────────────────
-    conn.execute(
-        """INSERT INTO marketplace_registry (id, name, url) VALUES
-           ('mkt-a', 'Marketplace A', 'https://github.com/example/mkt-a'),
-           ('mkt-b', 'Marketplace B', 'https://github.com/example/mkt-b')"""
-    )
-    # Two plugins per marketplace
-    for mkt, plugins in [("mkt-a", ["plugin-1", "plugin-2"]), ("mkt-b", ["plugin-3", "plugin-4"])]:
-        for p in plugins:
-            conn.execute(
-                "INSERT INTO marketplace_plugins (marketplace_id, name) VALUES (?, ?)",
-                [mkt, p],
-            )
-
-    # ── Seed two non-system groups ──────────────────────────────────────
-    gid_a = str(uuid.uuid4())
-    gid_b = str(uuid.uuid4())
-    conn.execute(
-        "INSERT INTO user_groups (id, name) VALUES (?, ?), (?, ?)",
-        [gid_a, "group-a", gid_b, "group-b"],
-    )
-
-    # ── Grant mkt-a/* to group-a and mkt-b/* to group-b ─────────────────
-    rtype = ResourceType.MARKETPLACE_PLUGIN.value
-    for mkt, gid, plugins in [
-        ("mkt-a", gid_a, ["plugin-1", "plugin-2"]),
-        ("mkt-b", gid_b, ["plugin-3", "plugin-4"]),
-    ]:
-        for p in plugins:
-            conn.execute(
-                "INSERT INTO resource_grants (id, group_id, resource_type, resource_id) "
-                "VALUES (?, ?, ?, ?)",
-                [str(uuid.uuid4()), gid, rtype, f"{mkt}/{p}"],
-            )
-
-    # ── Seed two users, each in their own group + Everyone ───────────────
-    everyone_gid = conn.execute(
-        "SELECT id FROM user_groups WHERE name = 'Everyone'"
-    ).fetchone()[0]
-
-    conn.execute(
-        "INSERT INTO users (id, email, name, active) VALUES "
-        "('user-a', 'user-a@example.com', 'User A', TRUE), "
-        "('user-b', 'user-b@example.com', 'User B', TRUE)"
-    )
-    for uid, gid in [("user-a", gid_a), ("user-b", gid_b)]:
-        conn.execute(
-            "INSERT INTO user_group_members (user_id, group_id, source) VALUES (?, ?, ?)",
-            [uid, gid, "admin"],
-        )
-        conn.execute(
-            "INSERT INTO user_group_members (user_id, group_id, source) VALUES (?, ?, ?)",
-            [uid, everyone_gid, "system_seed"],
-        )
-
-    # ── Render for each user ─────────────────────────────────────────────
+def test_sanitize_applied_after_render(conn):
+    """A template that produces <script> output is sanitized before return."""
     WelcomeTemplateRepository(conn).set(
-        "{% for m in marketplaces %}{{ m.slug }}: "
-        "{% for p in m.plugins %}{{ p.name }} {% endfor %}{% endfor %}",
+        "<script>evil()</script><p>safe content</p>",
         updated_by="admin@example.com",
     )
-
-    user_a = {"id": "user-a", "email": "user-a@example.com", "name": "User A", "is_admin": False, "groups": ["group-a"]}
-    user_b = {"id": "user-b", "email": "user-b@example.com", "name": "User B", "is_admin": False, "groups": ["group-b"]}
-
-    out_a = render_welcome(conn, user=user_a, server_url="https://example.com")
-    out_b = render_welcome(conn, user=user_b, server_url="https://example.com")
-
-    # user-a sees mkt-a plugins only
-    assert "mkt-a" in out_a
-    assert "plugin-1" in out_a
-    assert "mkt-b" not in out_a
-    assert "plugin-3" not in out_a
-
-    # user-b sees mkt-b plugins only
-    assert "mkt-b" in out_b
-    assert "plugin-3" in out_b
-    assert "mkt-a" not in out_b
-    assert "plugin-1" not in out_b
-
-
-def test_render_tolerates_missing_optional_tables(tmp_path, monkeypatch):
-    """A bare DuckDB without table_registry / marketplace_registry must still render."""
-    monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    db_path = tmp_path / "bare.duckdb"
-    bare = duckdb.connect(str(db_path))
-    # Only seed the welcome_template singleton manually; no other tables.
-    bare.execute(
-        """CREATE TABLE welcome_template (
-            id INTEGER PRIMARY KEY DEFAULT 1,
-            content TEXT,
-            updated_at TIMESTAMP,
-            updated_by VARCHAR
-        )"""
-    )
-    bare.execute("INSERT INTO welcome_template (id, content) VALUES (1, NULL)")
-
-    out = render_welcome(bare, user=_user(), server_url="https://example.com")
-    bare.close()
-    assert "AI Data Analyst" in out  # default template still renders
-    # No tables → "_No tables registered yet_" branch from the default template
-    assert "No tables registered yet" in out
+    out = render_agent_prompt_banner(conn, user=_user(), server_url="https://example.com")
+    assert "<script>" not in out
+    assert "evil" not in out
+    assert "<p>safe content</p>" in out

@@ -1,139 +1,106 @@
-"""Render the analyst-onboarding welcome prompt (CLAUDE.md).
+"""Render the agent-setup-prompt banner shown on /setup.
 
-Two layers:
-  1. Template source — admin override from welcome_template.content,
-     or the shipped default at config/claude_md_template.txt.
-  2. Render context — built from instance config, table_registry,
-     metric_definitions, and the calling user's RBAC-filtered marketplaces.
+The banner is a small HTML snippet admin-editable at /admin/agent-prompt.
+It appears above the bash bootstrap commands on the /setup page and is
+intended for org-specific operational notes (VPN warning, support channel,
+data classification reminder, platform requirements).
 
-The Jinja2 environment uses StrictUndefined so that any typo in the
-template raises immediately rather than rendering empty strings.
+Default: no banner (empty string). Admins override via the welcome_template
+DB table (singleton, content TEXT).
+
+Security: output is HTML-sanitized after render (script/iframe/event-handler
+strip). The Jinja2 environment uses StrictUndefined with autoescape=True so
+template typos raise immediately rather than silently emitting empty HTML.
 """
 # See also: surfaced as the "Agent Setup Prompt" admin editor at /admin/agent-prompt.
 
 from __future__ import annotations
 
+import logging
+import re
 from datetime import date, datetime, timezone
-from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 import duckdb
-from jinja2 import Environment, StrictUndefined
+from jinja2 import Environment, StrictUndefined, TemplateError
 
 from app.instance_config import (
-    get_data_source_type,
     get_instance_name,
     get_instance_subtitle,
-    get_sync_interval,
 )
-from src.marketplace_filter import resolve_allowed_plugins
 from src.repositories.welcome_template import WelcomeTemplateRepository
 
-_DEFAULT_TEMPLATE_PATH = (
-    Path(__file__).resolve().parent.parent / "config" / "claude_md_template.txt"
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# HTML sanitization
+# ---------------------------------------------------------------------------
+
+_RE_SCRIPT = re.compile(
+    r"<script[\s\S]*?</script>", re.IGNORECASE
+)
+_RE_IFRAME = re.compile(
+    r"<iframe[\s\S]*?(?:</iframe>|/>)", re.IGNORECASE
+)
+_RE_ON_EVENT = re.compile(
+    r"\s+on\w+\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s>]+)", re.IGNORECASE
+)
+_RE_JS_URI = re.compile(
+    r"""(?:href|src|action)\s*=\s*(?:"|')(javascript:|data:)""", re.IGNORECASE
 )
 
 
-def _load_default_template() -> str:
-    if _DEFAULT_TEMPLATE_PATH.exists():
-        return _DEFAULT_TEMPLATE_PATH.read_text(encoding="utf-8")
-    # Last-resort embedded fallback if the OSS template file is missing
-    # from the install (e.g., partial Docker COPY).
-    return (
-        "# {{ instance.name }} — AI Data Analyst\n\n"
-        "This workspace is connected to {{ server.url }}.\n"
-        "Data refreshes every {{ sync_interval }}.\n"
-    )
+def _sanitize_banner_html(html: str) -> str:
+    """Strip dangerous constructs from admin-authored HTML.
 
+    Defense-in-depth only — admins are trusted, but this prevents accidental
+    XSS from copy-pasted snippets reaching the public /setup page.
 
-def _list_tables(conn: duckdb.DuckDBPyConnection) -> list[dict[str, Any]]:
-    try:
-        rows = conn.execute(
-            """SELECT name, description, query_mode
-               FROM table_registry
-               ORDER BY name"""
-        ).fetchall()
-    except duckdb.CatalogException:
-        return []
-    return [
-        {"name": r[0], "description": r[1] or "", "query_mode": r[2] or "local"}
-        for r in rows
-    ]
-
-
-def _metrics_summary(conn: duckdb.DuckDBPyConnection) -> dict[str, Any]:
-    try:
-        rows = conn.execute(
-            "SELECT category, COUNT(*) FROM metric_definitions GROUP BY category"
-        ).fetchall()
-    except duckdb.CatalogException:
-        return {"count": 0, "categories": []}
-    return {
-        "count": sum(r[1] for r in rows),
-        "categories": sorted({r[0] for r in rows if r[0]}),
-    }
-
-
-def _marketplaces_for_user(
-    conn: duckdb.DuckDBPyConnection, user: dict[str, Any]
-) -> list[dict[str, Any]]:
-    """Return marketplaces with the plugins the user is allowed to see.
-
-    Delegates RBAC filtering entirely to resolve_allowed_plugins, which
-    returns List[dict] with marketplace_slug, original_name, etc.
-    Results are grouped by marketplace slug; display names are fetched
-    from marketplace_registry in a single query.
+    Strips:
+    - <script>…</script> blocks (any content)
+    - <iframe>…</iframe> tags
+    - on*= event handler attributes (onclick=, onload=, etc.)
+    - javascript: / data: URI schemes in href/src/action attributes
     """
-    try:
-        allowed = resolve_allowed_plugins(conn, user)
-    except duckdb.CatalogException:
-        return []
-    if not allowed:
-        return []
+    html = _RE_SCRIPT.sub("", html)
+    html = _RE_IFRAME.sub("", html)
+    html = _RE_ON_EVENT.sub("", html)
+    html = _RE_JS_URI.sub(
+        lambda m: m.group(0).replace(m.group(1), "#"), html
+    )
+    return html
 
-    # Build slug → display name lookup from registry
-    slugs = list({p["marketplace_slug"] for p in allowed})
-    placeholders = ",".join(["?"] * len(slugs))
-    try:
-        name_rows = conn.execute(
-            f"SELECT id, name FROM marketplace_registry WHERE id IN ({placeholders})",
-            slugs,
-        ).fetchall()
-        slug_to_name: dict[str, str] = {r[0]: r[1] for r in name_rows}
-    except duckdb.CatalogException:
-        slug_to_name = {}
 
-    grouped: dict[str, dict[str, Any]] = {}
-    for plugin in allowed:
-        slug = plugin["marketplace_slug"]
-        bucket = grouped.setdefault(
-            slug,
-            {
-                "slug": slug,
-                "name": slug_to_name.get(slug, slug),
-                "plugins": [],
-            },
-        )
-        bucket["plugins"].append({"name": plugin["original_name"]})
-
-    return list(grouped.values())
-
+# ---------------------------------------------------------------------------
+# Render context
+# ---------------------------------------------------------------------------
 
 def build_context(
-    conn: duckdb.DuckDBPyConnection,
     *,
-    user: dict[str, Any],
+    user: dict[str, Any] | None,
     server_url: str,
 ) -> dict[str, Any]:
-    """Compose the Jinja2 render context. Pure, no side effects.
+    """Compose the Jinja2 render context for the banner.
 
-    Note: ``now`` is tz-aware UTC; DB-sourced timestamps elsewhere in the
-    codebase are naive (DuckDB stores ``TIMESTAMP``, not ``TIMESTAMPTZ``).
-    Don't subtract or compare them inside templates without normalising.
+    Intentionally small: instance identity, server URL, and the requesting
+    user (may be None for anonymous /setup visitors). No tables, metrics, or
+    marketplaces — the banner is for org-operational notes, not data-catalog
+    content.
+
+    Note: ``now`` is tz-aware UTC.
     """
     now = datetime.now(timezone.utc)
     parsed = urlparse(server_url)
+    user_ctx: dict[str, Any] | None = None
+    if user:
+        user_ctx = {
+            "id": user.get("id", ""),
+            "email": user.get("email", ""),
+            "name": user.get("name") or "",
+            "is_admin": bool(user.get("is_admin")),
+            "groups": user.get("groups") or [],
+        }
     return {
         "instance": {
             "name": get_instance_name(),
@@ -143,36 +110,44 @@ def build_context(
             "url": server_url,
             "hostname": parsed.hostname or "",
         },
-        "sync_interval": get_sync_interval(),
-        "data_source": {"type": get_data_source_type()},
-        "tables": _list_tables(conn),
-        "metrics": _metrics_summary(conn),
-        "marketplaces": _marketplaces_for_user(conn, user),
-        "user": {
-            "id": user.get("id", ""),
-            "email": user.get("email", ""),
-            "name": user.get("name") or "",
-            "is_admin": bool(user.get("is_admin")),
-            "groups": user.get("groups") or [],
-        },
+        "user": user_ctx,
         "now": now,
         "today": date.today().isoformat(),
     }
 
 
-def _resolve_template_source(conn: duckdb.DuckDBPyConnection) -> str:
-    row = WelcomeTemplateRepository(conn).get()
-    return row["content"] if row.get("content") else _load_default_template()
+# ---------------------------------------------------------------------------
+# Banner renderer
+# ---------------------------------------------------------------------------
 
-
-def render_welcome(
+def render_agent_prompt_banner(
     conn: duckdb.DuckDBPyConnection,
     *,
-    user: dict[str, Any],
+    user: dict[str, Any] | None,
     server_url: str,
 ) -> str:
-    """Resolve the active template and render it for the given user."""
-    source = _resolve_template_source(conn)
-    env = Environment(undefined=StrictUndefined, autoescape=False)
-    template = env.from_string(source)
-    return template.render(**build_context(conn, user=user, server_url=server_url))
+    """Render the admin-configured HTML banner for the /setup page.
+
+    Returns an empty string when no override is set (default = no banner).
+    Render failures are swallowed (logged) and return empty string so a
+    broken template never blocks the /setup page from rendering.
+    """
+    row = WelcomeTemplateRepository(conn).get()
+    content = row.get("content")
+    if not content:
+        return ""
+
+    try:
+        env = Environment(undefined=StrictUndefined, autoescape=True)
+        template = env.from_string(content)
+        ctx = build_context(user=user, server_url=server_url)
+        rendered = template.render(**ctx)
+        return _sanitize_banner_html(rendered)
+    except TemplateError as exc:
+        logger.warning(
+            "Agent-prompt banner render failed (template error): %s", exc
+        )
+        return ""
+    except Exception:
+        logger.exception("Agent-prompt banner render failed (unexpected)")
+        return ""
