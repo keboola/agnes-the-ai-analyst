@@ -1,5 +1,10 @@
 """End-to-end tests for /api/welcome and /api/admin/welcome-template."""
 
+import duckdb
+
+from src.db import _ensure_schema
+from src.welcome_template import build_context
+
 
 def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
@@ -155,3 +160,33 @@ def test_preview_requires_admin(seeded_app):
         headers=analyst,
     )
     assert r.status_code == 403
+
+
+def test_validation_stub_matches_build_context_shape(seeded_app, tmp_path, monkeypatch):
+    """If build_context grows new keys, _VALIDATION_STUB_CONTEXT must too —
+    otherwise admins can save templates referencing keys the PUT validator
+    accepts but the live render rejects."""
+    from app.api.welcome import _VALIDATION_STUB_CONTEXT
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    db_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+
+    user = {"id": "u1", "email": "admin@test.com", "name": "Admin", "is_admin": True, "groups": ["Admin"]}
+    real_ctx = build_context(conn, user=user, server_url="https://example.com")
+    conn.close()
+
+    # Top-level keys must match
+    assert set(_VALIDATION_STUB_CONTEXT.keys()) == set(real_ctx.keys()), (
+        f"_VALIDATION_STUB_CONTEXT top-level keys differ from build_context output. "
+        f"Stub has: {set(_VALIDATION_STUB_CONTEXT.keys())}, "
+        f"real has: {set(real_ctx.keys())}"
+    )
+
+    # One level deep for nested dicts
+    for key in ("instance", "server", "user"):
+        if isinstance(real_ctx.get(key), dict):
+            assert set(_VALIDATION_STUB_CONTEXT[key].keys()) == set(real_ctx[key].keys()), (
+                f"_VALIDATION_STUB_CONTEXT[{key!r}] drifted from build_context output"
+            )
