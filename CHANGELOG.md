@@ -12,19 +12,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
-- **Agent Setup Prompt** — admins can customise the `CLAUDE.md` generated for analysts by `da analyst setup`. Default ships at `config/claude_md_template.txt` (Jinja2 syntax). Edit at `/admin/agent-prompt` or via REST: `GET /api/admin/welcome-template` returns `{content, default, updated_at, updated_by}`; `PUT` to set; `DELETE` to clear; `POST /api/admin/welcome-template/preview` for live preview without persisting. `GET /api/welcome` returns the prompt rendered for the calling user (RBAC-filtered `marketplaces`). See `docs/agent-setup-prompt.md` for the full placeholder reference.
-- DuckDB schema v21: `welcome_template` singleton table for the per-instance override. Auto-migration on first start (current schema reaches v22 — see also the v22 reservation note below).
-- DuckDB schema v22: reserved (`setup_banner` table retained for forward compatibility with already-migrated instances; feature dropped).
-- New `instance.sync_interval` setting in `instance.yaml` (default `"1 hour"`) — surfaced in the agent setup prompt as `{{ sync_interval }}`.
+- **Agent Setup Prompt** — customizable HTML banner shown above the bash bootstrap commands on `/setup`. Empty by default. Configure at `/admin/agent-prompt` (Jinja2 HTML editor). REST API: `GET /api/admin/welcome-template` returns `{content, updated_at, updated_by}` (`content` is `null` when no override is set); `PUT` to set an override; `DELETE` to clear; `POST /api/admin/welcome-template/preview` for live HTML preview without persisting. Available placeholders: `instance.{name,subtitle}`, `server.{url,hostname}`, `user` (may be `null` for anonymous visitors), `now`, `today`. HTML sanitization applied post-render (script/iframe/event-handler strip). See `docs/agent-setup-prompt.md`.
+- DuckDB schema v21: `welcome_template` singleton table backing the banner override. Auto-migration v20→v21 on first start.
+- DuckDB schema v22: `setup_banner` table reserved (no consumers; retained for forward compatibility with already-migrated instances).
 
 ### Changed
 
-- **BREAKING (CLI):** `da analyst setup` no longer accepts `--sync-interval`. The cadence shown in the analyst `CLAUDE.md` now comes from the server's `instance.yaml`. Operators who relied on the flag should set `instance.sync_interval` in `instance.yaml` instead.
-- `da analyst setup` now fetches `CLAUDE.md` from `GET /api/welcome` instead of substituting placeholders client-side. The CLI keeps a minimal embedded fallback for older servers without the endpoint and prints a stderr warning when the fetch fails for any reason other than 404.
-
-### Fixed
-
-- Pre-existing bug: the CLI's `_get_instance_name` parsed `instance_name` from `/api/health`, but `/api/health` only ever returned `{"status": "ok"}`, so the configured `instance.name` was never propagated to the analyst's `CLAUDE.md`. The new server-side render path uses `app.instance_config.get_instance_name()` directly.
+- **BREAKING (CLI):** `da analyst setup` no longer generates a `CLAUDE.md` file in the analyst workspace. Workspace-context customisation is handled via the `/setup` page banner instead. Existing analysts with a server-generated `CLAUDE.md` may delete it manually if desired.
+- **BREAKING (API):** `GET /api/welcome` removed. The endpoint was internal-only (consumed only by the CLI's now-removed `CLAUDE.md` generation step).
+- `/install` page renamed to `/setup` ("Setup local agent" nav label) with 302 redirect from `/install`.
+- Dashboard "What Claude Code will receive" inline preview replaced with a link to `/setup` for the canonical view.
 
 ## [0.30.1] — 2026-05-02
 
