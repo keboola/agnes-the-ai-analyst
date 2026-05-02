@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.30.1] — 2026-05-02
+
 ### Security
 - **auth**: per-IP rate limiting now applied across every credential-bearing
   auth endpoint. Defaults:
