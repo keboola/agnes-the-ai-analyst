@@ -118,6 +118,74 @@ def test_bootstrap_rate_limited_after_3_requests(app_with_ratelimit, fresh_db):
     )
 
 
+def test_password_reset_rate_limited_after_5_requests(app_with_ratelimit, fresh_db):
+    """6th /auth/password/reset → 429. Same email-bombing surface as
+    /send-link — anti-enumeration response, sends mail per request, attacker
+    rotates random recipients from a single IP. Pre-fix this endpoint was
+    unthrottled even though /send-link was — code-reviewer flagged the gap."""
+    statuses = []
+    for i in range(6):
+        resp = app_with_ratelimit.post(
+            "/auth/password/reset",
+            data={"email": f"victim-{i}@example.com"},
+        )
+        statuses.append(resp.status_code)
+    # Pre-limit responses are 200 (HTML "check your email" page — anti-enum).
+    assert statuses[:5] == [200] * 5, f"unexpected pre-limit statuses: {statuses[:5]}"
+    assert statuses[5] == 429, f"expected 6th to 429, got {statuses[5]}"
+
+
+def test_password_setup_request_rate_limited_after_5_requests(app_with_ratelimit, fresh_db):
+    """6th /auth/password/setup/request → 429. Same surface as /reset."""
+    statuses = []
+    for i in range(6):
+        resp = app_with_ratelimit.post(
+            "/auth/password/setup/request",
+            data={"email": f"newcomer-{i}@example.com"},
+        )
+        statuses.append(resp.status_code)
+    assert statuses[:5] == [200] * 5
+    assert statuses[5] == 429
+
+
+def test_reset_confirm_rate_limited_after_10_requests(app_with_ratelimit, fresh_db):
+    """11th /auth/password/reset/confirm → 429. Token brute-force throttle:
+    the reset token is high-entropy but partial leaks (logs, referer) have
+    surfaced before; unbounded guess rate would let an attacker exhaust the
+    keyspace adjacent to a leaked prefix."""
+    statuses = []
+    for i in range(11):
+        resp = app_with_ratelimit.post(
+            "/auth/password/reset/confirm",
+            data={
+                "email": "x@example.com",
+                "token": f"guess-{i}",
+                "password": "newpassword123",
+                "confirm_password": "newpassword123",
+            },
+        )
+        statuses.append(resp.status_code)
+    # Pre-limit returns the form re-rendered with 'Invalid or expired'
+    # error (status 200, anti-enum). Whatever the body says, the throttle
+    # must trip on attempt 11.
+    assert statuses[10] == 429, f"expected 11th to 429, got {statuses[10]} (full: {statuses})"
+
+
+def test_email_verify_get_rate_limited_after_10_requests(app_with_ratelimit, fresh_db):
+    """11th GET /auth/email/verify → 429. Closes the click-through bypass:
+    the GET variant is what we embed in outgoing emails, so leaving it
+    unthrottled while throttling POST would let an attacker just hit the
+    GET endpoint to brute-force tokens at unbounded RPS."""
+    statuses = []
+    for i in range(11):
+        resp = app_with_ratelimit.get(
+            f"/auth/email/verify?email=x@example.com&token=guess-{i}",
+            follow_redirects=False,
+        )
+        statuses.append(resp.status_code)
+    assert statuses[10] == 429, f"expected 11th to 429, got {statuses[10]} (full: {statuses})"
+
+
 def test_rate_limit_disabled_via_env(monkeypatch, fresh_db):
     """``AGNES_AUTH_RATELIMIT_ENABLED=0`` (operator escape hatch) must let
     every request through, no matter how many fire in the same window."""

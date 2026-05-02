@@ -306,12 +306,19 @@ async def reset_page(
 
 
 @router.post("/reset")
+@_rate_limiter.limit("5/minute")
 async def reset_request(
     request: Request,
     email: str = Form(""),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Request a password-reset link. Anti-enumeration: same response regardless."""
+    """Request a password-reset link. Anti-enumeration: same response regardless.
+
+    Rate limited at the same 5/min as ``/auth/email/send-link`` — the
+    attack surface is identical (single IP rotates random recipient
+    addresses, anti-enumeration response shape masks which addresses
+    landed, attacker burns SMTP / SendGrid quota + spams real users).
+    """
     # Match the rest of the codebase's case-sensitive lookup (password_login,
     # email magic-link, admin create). Lowercasing here would silently fail
     # for mixed-case emails the admin stored as-is.
@@ -336,6 +343,7 @@ async def reset_request(
 
 
 @router.post("/reset/confirm")
+@_rate_limiter.limit("10/minute")
 async def reset_confirm(
     request: Request,
     email: str = Form(...),
@@ -344,7 +352,13 @@ async def reset_confirm(
     confirm_password: str = Form(...),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Submit a new password using a reset token."""
+    """Submit a new password using a reset token.
+
+    Rate limited 10/min per IP to slow brute-force guessing of the 32-byte
+    URL-safe ``reset_token`` — the token is high-entropy but logs / proxy
+    referer leaks have surfaced partial tokens before, and there's no
+    reason to allow unbounded attempts.
+    """
     if password != confirm_password:
         return _render_reset_form(request, email=email, token=token, error="Passwords do not match.")
     if len(password) < MIN_PASSWORD_LEN:
@@ -426,12 +440,18 @@ async def setup_page(
 
 
 @router.post("/setup/request")
+@_rate_limiter.limit("5/minute")
 async def setup_request(
     request: Request,
     email: str = Form(""),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Self-service 'Request Access' — emails a setup link if user is pre-approved and unset."""
+    """Self-service 'Request Access' — emails a setup link if user is pre-approved and unset.
+
+    Same 5/min rate limit as ``/auth/password/reset`` and ``/send-link``
+    — same email-bombing surface (anti-enumeration response, sends mail
+    on each request).
+    """
     # Match the rest of the codebase's case-sensitive lookup (password_login,
     # email magic-link, admin create). Lowercasing here would silently fail
     # for mixed-case emails the admin stored as-is.
@@ -457,6 +477,7 @@ async def setup_request(
 
 
 @router.post("/setup/confirm")
+@_rate_limiter.limit("10/minute")
 async def setup_confirm(
     request: Request,
     email: str = Form(...),
@@ -466,7 +487,12 @@ async def setup_confirm(
     name: str = Form(""),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Web form: complete initial password setup via setup token."""
+    """Web form: complete initial password setup via setup token.
+
+    Rate limited 10/min per IP — same rationale as ``/reset/confirm``:
+    high-entropy ``setup_token`` should still not be brute-forceable at
+    unbounded RPS in case a partial token leaks via logs / referer.
+    """
     if password != confirm_password:
         return _render_setup_form(request, email=email, token=token, name=name, error="Passwords do not match.")
     if len(password) < MIN_PASSWORD_LEN:

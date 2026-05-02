@@ -187,19 +187,27 @@ def _consume_token(conn: duckdb.DuckDBPyConnection, email: str, token: str) -> d
 
 
 @router.post("/verify")
+@_rate_limiter.limit("10/minute")
 async def verify_magic_link(
-    request: MagicLinkVerify,
+    request: Request,
+    body: MagicLinkVerify,
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Verify a magic link token and issue JWT (JSON API for programmatic clients)."""
-    user = _consume_token(conn, request.email, request.token)
+    """Verify a magic link token and issue JWT (JSON API for programmatic clients).
+
+    Rate limited 10/min per IP to slow brute-forcing the 32-byte
+    ``reset_token`` (the same column doubles as the magic-link token).
+    """
+    user = _consume_token(conn, body.email, body.token)
     role_label = _role_label(user, conn)
     jwt_token = create_access_token(user["id"], user["email"])
     return {"access_token": jwt_token, "token_type": "bearer", "email": user["email"], "role": role_label}
 
 
 @router.get("/verify")
+@_rate_limiter.limit("10/minute")
 async def verify_magic_link_get(
+    request: Request,
     email: str,
     token: str,
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
@@ -208,6 +216,9 @@ async def verify_magic_link_get(
 
     This is the URL we embed in outgoing emails (and the dev-fallback link), so
     clicking it in a mail client logs the user in without a separate API call.
+
+    Rate limited 10/min per IP for the same reason as the POST variant —
+    don't let the click-through path bypass the brute-force throttle.
     """
     user = _consume_token(conn, email, token)
     jwt_token = create_access_token(user["id"], user["email"])

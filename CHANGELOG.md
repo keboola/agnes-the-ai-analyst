@@ -11,17 +11,29 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [Unreleased]
 
 ### Security
-- **auth**: per-IP rate limiting now applied to every auth endpoint
-  (`POST /auth/token`, `POST /auth/bootstrap`, `POST /auth/password/login`,
-  `POST /auth/password/login/web`, `POST /auth/email/send-link`). Defaults:
-  10/minute on the login + token endpoints, 5/minute on `send-link` (covers
-  the email-bombing scenario where an attacker rotates random recipient
-  addresses from a single IP to burn SMTP/SendGrid quota), 3/minute on
-  `bootstrap`. Returns `429` with `Retry-After: 60` once exceeded. Per-IP
-  key uses the leftmost `X-Forwarded-For` hop — same trust model as
+- **auth**: per-IP rate limiting now applied across every credential-bearing
+  auth endpoint. Defaults:
+    - **10/minute** — `POST /auth/token`, `POST /auth/password/login`,
+      `POST /auth/password/login/web` (login brute-force throttle).
+    - **10/minute** — `POST/GET /auth/email/verify`,
+      `POST /auth/password/reset/confirm`, `POST /auth/password/setup/confirm`
+      (token brute-force throttle: the 32-byte URL-safe tokens are high
+      entropy but partial leaks via logs / proxy referer have surfaced
+      before, and there's no reason to allow unbounded guessing).
+    - **5/minute** — `POST /auth/email/send-link`,
+      `POST /auth/password/reset`, `POST /auth/password/setup/request`
+      (email-bombing throttle: same shape on all three — attacker rotates
+      random recipient addresses from a single IP to burn SMTP/SendGrid
+      quota and spam real users; anti-enumeration responses mask which
+      addresses landed).
+    - **3/minute** — `POST /auth/bootstrap` (one-shot in normal use).
+  Returns `429` with `Retry-After: 60` once exceeded. Per-IP key uses the
+  leftmost `X-Forwarded-For` hop — same trust model as
   `app.auth.dependencies._client_ip` (Caddy strips client-supplied XFF in
-  front of the app). Set `AGNES_AUTH_RATELIMIT_ENABLED=0` to disable
-  without a redeploy. New dependency: `slowapi>=0.1.9`. Closes #45.
+  front of the app). Set `AGNES_AUTH_RATELIMIT_ENABLED=0` in env and
+  bounce the container to disable (no image rebuild required; the value
+  is read at process start, matching every other Agnes env knob). New
+  dependency: `slowapi>=0.1.9`. Closes #45.
 - **admin API**: `DELETE /api/admin/users/{id}/memberships/{group_id}` and
   `DELETE /api/admin/groups/{group_id}/members/{user_id}` now refuse to
   remove **anyone** from the seeded `Admin` group when they are the only

@@ -12,12 +12,20 @@ key is the client IP, taken from the leftmost X-Forwarded-For hop (Caddy
 in front of the app strips client-supplied XFF and sets its own — same
 trust model as ``app.auth.dependencies._client_ip``).
 
-Operator override: set ``AGNES_AUTH_RATELIMIT_ENABLED=0`` to disable
-without a redeploy (e.g. while diagnosing a false-positive lockout). The
-test suite flips this off via an autouse conftest fixture and re-enables
-only inside the dedicated rate-limit test, so generous-but-finite limits
-don't bleed into other test files that hammer auth endpoints in tight
-loops.
+Operator override: set ``AGNES_AUTH_RATELIMIT_ENABLED=0`` and restart
+the process (no image rebuild needed — flip the env in the compose
+``.env`` / systemd unit and bounce the container). The value is read at
+process start because the slowapi ``Limiter`` constructor freezes
+``enabled`` at import; that limitation is fine in practice because
+Agnes's other env knobs already require a process restart to take
+effect (see ``.env_overlay`` loader in ``app/main.py`` for the same
+shape — file-based overlay merged at startup, no live reload).
+
+The test suite flips ``limiter.enabled`` directly via an autouse
+conftest fixture (no restart required because tests share a process)
+and re-enables only inside the dedicated rate-limit test, so
+generous-but-finite limits don't bleed into other test files that
+hammer auth endpoints in tight loops.
 """
 
 from __future__ import annotations
