@@ -1,5 +1,10 @@
 """End-to-end tests for /api/admin/setup-banner endpoints."""
 
+import duckdb
+
+from src.db import _ensure_schema
+from src.setup_banner import build_setup_banner_context
+
 
 def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
@@ -102,3 +107,33 @@ def test_preview_rejects_invalid_template(seeded_app):
         headers=admin,
     )
     assert r.status_code == 400
+
+
+def test_validation_stub_matches_build_context_shape(seeded_app, tmp_path, monkeypatch):
+    """If build_setup_banner_context grows new keys, _VALIDATION_STUB_CONTEXT
+    must too — otherwise admins can save templates referencing keys the PUT
+    validator accepts but the live render rejects."""
+    from app.api.setup_banner import _VALIDATION_STUB_CONTEXT
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    db_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    conn.close()
+
+    user = {"id": "u1", "email": "admin@test.com", "name": "Admin", "is_admin": True}
+    real_ctx = build_setup_banner_context(user=user, server_url="https://example.com")
+
+    # Top-level keys must match (stub has user=dict, real has user=dict when logged in)
+    assert set(_VALIDATION_STUB_CONTEXT.keys()) == set(real_ctx.keys()), (
+        f"_VALIDATION_STUB_CONTEXT top-level keys differ from build_setup_banner_context output. "
+        f"Stub has: {set(_VALIDATION_STUB_CONTEXT.keys())}, "
+        f"real has: {set(real_ctx.keys())}"
+    )
+
+    # One level deep for nested dicts
+    for key in ("instance", "server", "user"):
+        if isinstance(real_ctx.get(key), dict):
+            assert set(_VALIDATION_STUB_CONTEXT[key].keys()) == set(real_ctx[key].keys()), (
+                f"_VALIDATION_STUB_CONTEXT[{key!r}] drifted from build_setup_banner_context output"
+            )
