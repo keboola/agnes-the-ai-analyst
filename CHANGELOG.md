@@ -10,6 +10,309 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **admin API**: `POST /api/admin/register-table` and `PUT /api/admin/registry/{id}`
+  now reject `source_query` containing BigQuery-native backtick identifiers
+  (e.g. `` `prj.ds.t` ``) with HTTP 422 and a message pointing operators at
+  the DuckDB-flavor equivalent (`bq."dataset"."table"`). Backtick SQL would
+  silently no-op at the next materialize tick — the BQ extension's COPY runs
+  through DuckDB's parser, which doesn't recognize backticks, so the query
+  either parse-errored or matched zero rows and no parquet ever landed at
+  `/data/extracts/<source>/data/<id>.parquet`. Fix catches the bad SQL at
+  registration time so the row never lands in the registry.
+- **admin API**: `DELETE /api/admin/registry/{id}` now removes the canonical
+  materialized parquet (`${DATA_DIR}/extracts/<source_type>/data/<name>.parquet`
+  plus any stale `.parquet.tmp`) AND clears the matching `sync_state` /
+  `sync_history` rows. Pre-fix the registry row was dropped but the parquet
+  + sync_state row stayed, so `GET /api/sync/manifest` kept advertising the
+  dropped table to `da sync` and analysts kept downloading it. Defensive
+  failure handling — file-removal errors are logged but don't fail the
+  DELETE.
+
+### Added
+- **admin API**: `GET /api/admin/registry` enriches each table row with
+  `last_sync_error` (string or null) sourced from `sync_state.error`. The
+  scheduler's `_run_materialized_pass` now writes per-row failures via
+  `SyncStateRepository.set_error` so cap-exceeded / auth-failure / bad-SQL
+  errors surface to the admin UI and `da admin status` instead of vanishing
+  into scheduler stderr. A row that recovers on the next tick clears the
+  error automatically (the success path of `update_sync` resets
+  `status='ok'` / `error=NULL` on the upsert).
+- **admin API**: `POST /api/admin/register-table` now refuses requests whose
+  `source_type` isn't actually configured on the instance — pre-fix, an
+  admin could register `source_type='keboola'` on a BQ-only instance and
+  the row would land in the registry but never sync (no Keboola URL/token
+  to ATTACH against). Returns 422 with a message naming the configured
+  primary source and pointing at `/admin/server-config` for enabling a
+  secondary source. `jira` / `local` are exempt — they don't sit under
+  `data_source.*`. Omitted source_type still tolerated for legacy CLI
+  callers. Stays permissive when primary is `'local'` (bootstrap workflow
+  — instance not yet pointed at a real source).
+- **query API**: `POST /api/query` now returns a materialize-aware error
+  when the failed SQL references a table id that's registered with
+  `query_mode='materialized'` but doesn't yet exist as a master view in
+  this instance's `analytics.duckdb` (e.g. fresh instance, no scheduler
+  tick yet). The hint names the table, points at `da sync` /
+  `POST /api/sync/trigger`, and — when the registry row carries a
+  bucket+source_table — surfaces the equivalent direct-source query
+  (`bq."dataset"."table"` or `kbc."bucket"."table"`) so the operator has a
+  concrete next step. Falls back to DuckDB's raw error for non-materialized
+  unknowns.
+
+## [0.30.0] — 2026-05-01
+
+### Added
+- **admin UI**: each row in `/admin/tables` listings now has a per-row
+  **Manage access** icon button (between Edit and Delete) that deep-links
+  to `/admin/access#table:<table_id>`. The grant editor reads the hash on
+  load and pre-fills the resource filter so the operator lands on the
+  picked table once they select a group — shortcut for the common
+  "I just registered table X, who should see it?" workflow without
+  manual navigation through the resource tree.
+- **docs**: `config/instance.yaml.example` documents every field newly
+  exposed by `/admin/server-config` — `data_source.bigquery.billing_project`
+  (with the USER_PROJECT_DENIED hint), `data_source.bigquery.legacy_wrap_views`,
+  `data_source.bigquery.max_bytes_per_materialize`, `ai.base_url`,
+  `openmetadata.*`, `desktop.*`, and the full `corporate_memory.*` block.
+  Each cross-references the admin UI so operators discover the editor exists.
+- **diagnostics**: `/api/health/detailed` (and therefore `da diagnose`) now
+  surfaces a `bq_config` service entry on BigQuery instances. Reports
+  `status="warning"` when `data_source.bigquery.billing_project` resolves
+  equal to `data_source.bigquery.project` — the configuration where a
+  service account with `roles/bigquery.dataViewer` on the data project but
+  no `serviceusage.services.use` 403s every BQ call with
+  USER_PROJECT_DENIED. The warning includes a hint pointing at the
+  `instance.yaml` field and the `/admin/server-config` UI.
+- **admin UI**: `/admin/server-config` exposes the full **corporate_memory
+  governance schema** in the editor — `distribution_mode`, `approval_mode`,
+  `review_period_months`, `notify_on_new_items`, the `sources` /
+  `extraction` / `confidence` / `contradiction_detection` /
+  `entity_resolution` nested objects, plus the `domain_owners` /
+  `domains` lists. The whole section is optional (omitted = legacy
+  democratic-wiki mode); admins can opt in via the UI without hand-editing
+  YAML. Schema mirrors `config/instance.yaml.example` lines 224-317.
+  `confidence.modifiers` (map<string, map<string, float>>) currently
+  renders as a JSON-textarea fallback with the schema explained inline —
+  full structured editor is a TODO.
+- **admin UI**: server-config renderer learned three new shapes —
+  `kind="array"` with a scalar `item_kind` renders as a vertical stack
+  of typed inputs with +/- row controls; `kind="map"` with scalar
+  `value_kind` renders as key:value rows with +/- controls;
+  `value_kind="array"` inside a map renders the value column as a
+  comma-separated list (pragmatic compromise over a full nested-array
+  UI inside each map row). Leaf inputs now carry `data-path` (JSON-encoded
+  segment array) so map keys with embedded dots —
+  e.g. `confidence.base["user_verification.correction"]` — survive
+  round-trip without being mistaken for nested-path separators.
+- **admin UI**: `/admin/server-config` renders registry-declared nested
+  fields (`kind="object"` with explicit `fields`) as a fully-editable
+  structured form — every leaf is its own input with a dotted-path
+  `data-key`, and the collector rebuilds a nested patch on save. Replaces
+  the previous read-only preview that forced operators to edit a parent
+  JSON textarea. YAML-only keys outside the registry survive via an
+  "Other (YAML-only) keys" expander per nested layer. Recursion handles
+  arbitrary depth, ready for the upcoming corporate_memory + admins
+  registry entries.
+- **admin UI**: `/admin/server-config` now ships a known-fields registry
+  (`_KNOWN_FIELDS` in `app/api/admin.py`, exposed on the GET response as
+  `known_fields`). The renderer shows registry-declared knobs as dashed
+  placeholders alongside populated values, with a one-line hint per
+  field, so operators discover optional config (e.g.
+  `data_source.bigquery.billing_project`) directly in the UI instead of
+  having to read docs or hit a runtime error first. Subagents 2-4 will
+  populate the bodies; the smoke fixture covers `bigquery.billing_project`.
+- **admin UI**: `/admin/server-config` now exposes three previously
+  YAML-only BigQuery knobs in the editor — `data_source.bigquery.billing_project`,
+  `legacy_wrap_views`, and `max_bytes_per_materialize`. The GET response
+  always includes them under `data_source.bigquery` (with documented
+  defaults when YAML omits them) so the JSON-textarea UI shows them as
+  editable keys. The section help text describes each. Operators no
+  longer need to SSH to the VM, edit YAML, restart to flip these.
+- **admin UI**: `/admin/tables` is now a per-connector tab interface
+  (BigQuery / Keboola / Jira). Each tab has its own Register modal +
+  listing scoped to its source_type. Active tab persists in
+  `window.location.hash` so refresh keeps the operator in place.
+- **Keboola materialized SQL**: `query_mode='materialized'` now works
+  for `source_type='keboola'` — admin registers a SELECT against
+  `kbc."bucket"."table"` and the scheduler writes the result to
+  `/data/extracts/keboola/data/<id>.parquet`. Same flow as BigQuery
+  materialized; same `da sync` distribution; same RBAC. Cost guardrail
+  (BQ-style dry-run) intentionally omitted — Keboola extension has no
+  dry-run analog and Storage API cost is download-byte-shaped, not
+  scan-byte-shaped. A future PR can add a configurable byte cap if
+  operators ask for it.
+- **Keboola Sync Schedule**: per-table cron input added to the Keboola
+  tab Register and Edit modals. The scheduler has always honored
+  per-table `sync_schedule` for every source via `is_table_due()`,
+  but the Keboola UI had no surface for it — operators had to use the
+  `/api/admin/registry/{id}` PUT endpoint or `da admin` CLI. Now they
+  can type `every 6h` / `daily 03:00` directly.
+- **BigQuery `query_mode='materialized'`** — admin registers a SQL query
+  via `da admin register-table --query-mode materialized --query @file.sql
+  --sync-schedule "every 6h"`; the sync trigger pass runs it through the
+  DuckDB BigQuery extension via the `BqAccess` facade on each tick that's
+  due (per-table `sync_schedule` honored via `is_table_due()`) and writes
+  the result to `/data/extracts/bigquery/data/<name>.parquet`. The
+  manifest endpoint exposes the row to `da sync`, which distributes the
+  parquet to analysts; analysts query it through their **local** DuckDB
+  view. The server-side orchestrator does **not** create a master view
+  for materialized tables — they are intentionally local-only for
+  analyst distribution, mirroring the v2 fetch primitives' "queryable
+  via `da fetch` not via remote" contract. Per-user RBAC filtering is
+  unchanged: a materialized table is just another row in
+  `table_registry` with `resource_grants` controlling which groups see it.
+- **Schema v20** adds `source_query TEXT` column to `table_registry` to
+  back the materialized mode. NULL for existing rows. The
+  `materialize_query()` function in the BigQuery extractor performs the
+  COPY atomically (`<id>.parquet.tmp` → `os.replace`) so a failed query
+  never leaves a half-written parquet.
+- BigQuery cost guardrail for `query_mode='materialized'` tables: before
+  each COPY the scheduler runs a BQ dry-run (reusing
+  `app.api.v2_scan._bq_dry_run_bytes` so cost-estimate logic lives in
+  exactly one place) and raises `MaterializeBudgetError` (skips the row)
+  when the estimate exceeds `data_source.bigquery.max_bytes_per_materialize`.
+  Default 10 GiB; explicit `0` disables (YAML `null` falls through to
+  the default — documented in `config/instance.yaml.example`).
+  Fail-open when the dry-run itself errors (library missing, DuckDB
+  three-part syntax the native BQ client can't parse, transient API
+  failure) — logs a warning instead of blocking the COPY.
+- Admin API: `POST /api/admin/register-table` and
+  `PUT /api/admin/registry/{id}` accept `source_query` field. Validator
+  enforces that `query_mode='materialized'` requires `source_query` and
+  `query_mode in ('local', 'remote')` forbids it. PUT also rejects
+  `source_query` set without `query_mode` in the same request body and
+  clears the stale `source_query` when switching the merged record away
+  from materialized mode.
+- CLI: `da admin register-table --query <SQL>` accepts inline SQL or
+  `@path/to.sql` shorthand for reading from disk. Reuses the existing
+  `--sync-schedule` flag for the cron string.
+- `da sync --quiet` flag suppresses Rich progress + multi-line summary,
+  intended for use from Claude Code SessionStart/SessionEnd hooks and
+  cron jobs. Errors still surface on stderr; the no-op case is silent.
+  The terse summary line in `--quiet` mode (`sync: N tables, M errors`)
+  lands on stderr so stdout stays clean for hook callers.
+- `da analyst setup` now installs `SessionStart` (pull) and `SessionEnd`
+  (upload) hooks into `<workspace>/.claude/settings.json`, idempotently,
+  preserving any existing user-owned hooks. Workspace-level (not
+  user-home) so the hooks fire only when Claude Code is opened in the
+  analyst workspace, not in unrelated sessions on the same machine.
+  Hooks assume `da` is on `PATH`. If the CLI is not installed system-wide
+  (e.g. via `pipx` or `pip install -e .`), the hooks no-op silently —
+  expected graceful degradation, never blocks a session.
+- `docs/setup/claude_settings.json` ships the same two hooks so operators
+  bootstrapping a fresh Claude Code workspace get auto-sync out of the box.
+
+### Changed
+- **admin UI**: Keboola Register and Edit modals adopt the same
+  two-question radio model as BigQuery — *What to sync?* (Whole table
+  / Custom SQL). Whole-table mode synthesizes a `SELECT *` and writes
+  it through the materialized path; Custom mode lets the admin filter
+  / aggregate / project. The legacy `query_mode='local'` extractor
+  path remains supported for back-compat but is no longer the default
+  for new Keboola registrations — Whole mode is functionally
+  equivalent and follows the unified materialized pipeline.
+- **admin UI**: `Sync Strategy` dropdown removed from the Keboola form
+  (Register and Edit). Two independent agent reviews (2026-05-01) found
+  the field's hint claimed it controlled extraction but no extractor
+  reads it; only `profiler.is_partitioned()` consumes it for parquet-
+  layout detection. Field stays in the DB and Pydantic model for
+  back-compat (marked `Field(deprecated=True)`); just hidden from the
+  primary form.
+- **admin UI**: `Primary Key` input moved under `<details>Advanced` in
+  both Keboola Register and Edit modals, with a clarifying hint that
+  it's catalog metadata only — Agnes always does full-overwrite sync;
+  no upsert / dedup. Auto-fill from Keboola discovery still works.
+- **admin UI**: Registry listing column "Strategy" replaced with "Mode"
+  (showing `query_mode` instead of decorative `sync_strategy`). The
+  `.col-strategy` / `.strategy-badge` CSS rules removed.
+- BigQuery `init_extract` no longer creates remote views for rows with
+  `query_mode='materialized'`; those live as parquets and surface via
+  the orchestrator's standard local-parquet discovery. Skipped rows do
+  not appear in `_meta` so cross-source view-name collisions remain
+  impossible.
+
+### Deprecated
+- `RegisterTableRequest.sync_strategy` — catalog/profiler metadata only;
+  no extractor reads it. Marked `Field(deprecated=True)`. External API
+  consumers see the signal in OpenAPI; back-compat preserved.
+- `RegisterTableRequest.profile_after_sync` — runtime never read this
+  flag (Agent 1 finding 2026-05-01); profiler runs unconditionally on
+  every synced table. Marked `Field(deprecated=True)` and made inert
+  (the BQ register endpoint no longer force-sets it to `False`).
+  Back-compat preserved — external clients sending the field get no
+  error, no warning, no effect.
+
+### Fixed
+- **admin API**: `update_table` PUT preserves `sync_strategy` and
+  `primary_key` when the Edit modal omits them from the payload (this
+  invariant always held via `request.model_dump()` + `if v is not None`,
+  but Phase I now has an explicit regression-guard test).
+- `docs/setup/claude_settings.json` no longer references the deleted
+  `server/scripts/collect_session.py` — the dead `SessionEnd` hook had
+  silently failed in every Claude Code session since the v1→v2 server
+  purge. Replaced with `da sync --upload-only --quiet`.
+
+### Internal
+- README mode-first source table; new "Local sync & auto-update" section
+  covering `da sync`, hooks, and admin RBAC for auto-sync membership.
+- `CLAUDE.md` schema chain extended through v20 with the `source_query`
+  description; four source modes documented in Connector Pattern (added
+  Materialized SQL); new "Local sync & Claude Code hooks" subsection
+  under Development.
+- `cli/skills/connectors.md` — "BigQuery: pick a mode" decision table
+  with cost / guardrail / registration example.
+- `docs/architecture.md` — new "BigQuery — Materialized SQL" subsection
+  describing the COPY pipeline, BqAccess integration, and cost guardrail.
+- BQ cost guardrail dry-run is performed via the native
+  `google-cloud-bigquery` client (through `BqAccess.client()`), which
+  does not parse DuckDB three-part identifiers (`bq."ds"."t"`). Queries
+  written in DuckDB syntax fall through fail-open and log a warning
+  instead of engaging the cap. Operators who need the cap to be
+  enforceable must register the materialized SQL using native BQ
+  identifiers (`\`project.ds.t\``).
+- Hardenings landed during devil's-advocate review of PR #145:
+  - `materialize_query` computes the parquet MD5 inline (after COPY,
+    before `os.replace`) instead of re-reading the file in
+    `_run_materialized_pass` — saves a full sequential read on the
+    request thread for multi-GB parquets.
+  - 0-row materializations log a `WARNING` so an empty result set
+    can't masquerade as "the SQL is fine, today there's nothing".
+  - The ATTACH-tolerated `except duckdb.Error: pass` is narrowed to
+    the "alias already attached" case; real errors (cross-project
+    permission, malformed project_id) propagate so the per-row
+    aggregator records them correctly instead of surfacing a
+    confusing downstream "bq is not attached".
+
+### Known limitations
+Operators should be aware of these production-only behaviours; tests
+cannot exercise them and they will be revisited in follow-up PRs:
+
+- **GCE metadata token expiry mid-COPY (catastrophic for very long
+  scans).** The DuckDB BQ extension caches the token in a session
+  SECRET created at session-open. A `materialize_query` call that
+  takes longer than the token's remaining lifetime (~1h) will see
+  silent 401s downstream and may produce a truncated parquet. No
+  current mitigation; if your materialized SQL scans more than ~30
+  GiB on a single COPY, run it via the BQ console / Storage Read
+  API offline and `da fetch` the result instead until token refresh
+  is wired into the BQ extension's session.
+- **DuckDB `bigquery` community extension is unpinned** —
+  `INSTALL bigquery FROM community; LOAD bigquery;` picks up the
+  latest published version on every cold start. A breaking change
+  upstream surfaces as a production failure with no test signal.
+- **Schema drift after a SQL edit silently breaks analyst queries.**
+  Editing `source_query` to drop a column writes a new parquet with
+  the new shape; analysts' queries that referenced the dropped
+  column 500 on the next sync without warning. No diff or version
+  field surfaces this. Workaround: announce changes in the team
+  channel before editing materialized SQL.
+- **`materialize_query` is not concurrency-locked.** Two concurrent
+  `/api/sync/trigger` calls for the same materialized row race on
+  `<id>.parquet.tmp`. `init_extract` has `_INIT_EXTRACT_LOCK` for
+  the remote-attach path, but the materialized path does not yet.
+  In practice: the cron scheduler is single-threaded and manual
+  triggers are rare, so the race window is small.
+
 ## [0.29.0] — 2026-05-01
 
 ### Fixed

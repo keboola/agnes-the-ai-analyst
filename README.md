@@ -40,11 +40,14 @@ The orchestrator scans `/data/extracts/*/extract.duckdb`, attaches each into `an
 
 ## Supported Data Sources
 
-| Source | Mode | Description |
-|--------|------|-------------|
-| **Keboola** | Batch pull | DuckDB Keboola extension downloads tables to Parquet on a schedule |
-| **BigQuery** | Remote attach | DuckDB BQ extension; queries execute in BigQuery, no local download |
-| **Jira** | Real-time push | Webhook receiver updates Parquet files incrementally |
+| Mode | Distribution | Sources | Use when |
+|------|--------------|---------|----------|
+| **Batch pull** (`local`) | Parquet on disk, scheduled | Keboola | Source has a native bulk-export and the table fits on disk |
+| **Materialized SQL** (`materialized`) | Parquet on disk, scheduled query | BigQuery | Source table is too large to mirror; you want a curated subset on disk |
+| **Remote attach** (`remote`) | View only, no download | BigQuery | Table is too large to materialize; latency cost of remote query is acceptable |
+| **Real-time push** | Incremental parquet | Jira | Source is event-driven and you need sub-minute freshness |
+
+The first three modes are what `da sync` distributes to analysts. The fourth is server-side only — analysts query Jira data through the same `da sync`-distributed parquets.
 
 Adding a new source means creating `connectors/<name>/extractor.py` that produces `extract.duckdb` with a `_meta` table (`table_name`, `description`, `rows`, `size_bytes`, `extracted_at`, `query_mode`). The orchestrator attaches it automatically.
 
@@ -76,6 +79,44 @@ Once running, the FastAPI app is available at `http://localhost:8000` (or `https
 ```bash
 curl -X POST http://localhost:8000/api/sync/trigger
 ```
+
+## Local sync & auto-update
+
+Analysts run Claude Code against a local DuckDB built from RBAC-filtered parquets pulled from the server. `da sync` is the distribution path:
+
+```bash
+da sync             # delta-pull: manifest → MD5 compare → download changed → rebuild views
+da sync --quiet     # same, no progress output (for hooks/cron)
+da sync --upload-only  # push session jsonl + CLAUDE.local.md back to the server
+```
+
+`da analyst setup` writes Claude Code lifecycle hooks into `<workspace>/.claude/settings.json`:
+
+- `SessionStart` → `da sync --quiet` — fresh data on every session
+- `SessionEnd` → `da sync --upload-only --quiet` — uploads notes and session log
+
+Hooks live at workspace level so they only fire in this analyst workspace, not in unrelated Claude Code sessions on the same machine.
+
+### Admin: which tables auto-sync to whom
+
+The auto-sync set per analyst is the intersection of:
+
+1. Tables with `query_mode IN ('local', 'materialized')` — these have parquets on disk and end up in the manifest
+2. Tables granted to one of the analyst's groups via `resource_grants(group, ResourceType.TABLE, table_id)` (see [`docs/RBAC.md`](docs/RBAC.md))
+
+To enroll a new table for auto-sync, register it (or update its `query_mode`) and grant it to the relevant groups in `/admin/access`. New analysts get the same set on their next `da sync`.
+
+For BigQuery, register a `query_mode='materialized'` table with a SQL body:
+
+```bash
+da admin register-table orders_90d \
+    --source-type bigquery \
+    --query-mode materialized \
+    --query @docs/queries/orders_90d.sql \
+    --schedule "every 6h"
+```
+
+The scheduler runs the query through the DuckDB BigQuery extension on each tick that's due, writes the result as a parquet, and the analyst picks it up on the next `da sync`. Cost guardrail: `data_source.bigquery.max_bytes_per_materialize` (default 10 GiB) — operations exceeding the BQ dry-run estimate are skipped.
 
 ## Development Setup
 

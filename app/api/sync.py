@@ -36,6 +36,216 @@ def _file_hash(path: Path) -> str:
     return h.hexdigest()
 
 
+def _materialize_table(
+    *,
+    table_id: str,
+    sql: str,
+    bq,
+    output_dir: str,
+    max_bytes: Optional[int],
+) -> dict:
+    """Thin wrapper around `connectors.bigquery.extractor.materialize_query`
+    so the trigger pass can be unit-tested by patching this seam without
+    touching the real BqAccess factory or the duckdb import."""
+    from connectors.bigquery.extractor import materialize_query
+    return materialize_query(
+        table_id=table_id, sql=sql, bq=bq,
+        output_dir=output_dir, max_bytes=max_bytes,
+    )
+
+
+def _run_materialized_pass(conn: duckdb.DuckDBPyConnection, bq) -> dict:
+    """Walk `table_registry` for `query_mode='materialized'` rows and run any
+    that are due, dispatching by ``source_type`` to the correct connector's
+    materialize_query. Honors per-table `sync_schedule` via `is_table_due()`,
+    computes the file hash inline, and updates `sync_state` so the manifest
+    can serve the row to `da sync` without re-hashing on every request.
+
+    BigQuery rows go through BqAccess + bigquery_query() (jobs API),
+    optionally cost-guarded by ``max_bytes_per_materialize``.
+    Keboola rows go through KeboolaAccess + ATTACH-and-COPY, no
+    guardrail (extension has no dry-run primitive).
+
+    Returns:
+        ``{"materialized": [ids], "skipped": [ids], "errors": [{table, error}]}``
+
+    Errors are aggregated per row — one budget-blown table doesn't stop a
+    healthy sibling. ``MaterializeBudgetError`` is caught and rendered with
+    its structured fields so operator alerting can pick out the cap-vs-actual
+    bytes from the log line.
+    """
+    from src.scheduler import is_table_due
+    from app.instance_config import get_value
+    from connectors.bigquery.extractor import MaterializeBudgetError
+
+    bq_output_dir = str(Path(_get_data_dir()) / "extracts" / "bigquery")
+    kb_output_dir = Path(_get_data_dir()) / "extracts" / "keboola" / "data"
+
+    # Sentinel: max_bytes <= 0 (or None) disables the guardrail. `get_value()`
+    # treats YAML `null` as "missing" → returns the default; operators must use
+    # the explicit `0` sentinel to disable. See config/instance.yaml.example.
+    # YAML accepts floats too (e.g. `10737418240.0`), and operators may
+    # write `1e10` for readability; coerce to int and tolerate non-numeric
+    # entries by falling through to the disable path with a warning.
+    raw_max = get_value(
+        "data_source", "bigquery", "max_bytes_per_materialize",
+        default=10 * 2**30,
+    )
+    try:
+        n = int(raw_max) if raw_max is not None else 0
+    except (TypeError, ValueError):
+        logger.warning(
+            "data_source.bigquery.max_bytes_per_materialize is not numeric "
+            "(%r); cost guardrail disabled. Set an integer or 0 to disable.",
+            raw_max,
+        )
+        n = 0
+    bq_max_bytes = n if n > 0 else None
+
+    registry = TableRegistryRepository(conn)
+    state = SyncStateRepository(conn)
+
+    summary = {"materialized": [], "skipped": [], "errors": []}
+    keboola_access = None  # lazy-init on first Keboola row
+
+    for row in registry.list_all():
+        if row.get("query_mode") != "materialized":
+            continue
+
+        # Convention across connectors: sync_state.table_id and the parquet
+        # filename are keyed by `table_registry.name` (matches Keboola's
+        # `_meta.table_name`) so the manifest's `registry_by_name` lookup
+        # at `_build_manifest_for_user` resolves cleanly. Without this,
+        # admins who register `name="Orders_90d"` (id slugified to
+        # `orders_90d`) would see `query_mode` default to `"local"` in the
+        # manifest because the lookup misses on `id`.
+        ref_name = row["name"]
+
+        last = state.get_last_sync(ref_name)
+        last_iso = last.isoformat() if last else None
+        schedule = row.get("sync_schedule") or "every 1h"
+        if not is_table_due(schedule, last_iso):
+            summary["skipped"].append(ref_name)
+            continue
+
+        source_type = row.get("source_type") or "bigquery"  # legacy default
+
+        # Dispatch by source_type. BQ rows keep using `_materialize_table`
+        # (the existing test seam); Keboola rows use the new Keboola
+        # materialize_query via a lazily-initialized KeboolaAccess.
+        try:
+            if source_type == "bigquery":
+                stats = _materialize_table(
+                    table_id=ref_name,
+                    sql=row["source_query"],
+                    bq=bq,
+                    output_dir=bq_output_dir,
+                    max_bytes=bq_max_bytes,
+                )
+            elif source_type == "keboola":
+                if keboola_access is None:
+                    from connectors.keboola.access import KeboolaAccess
+                    keboola_url = get_value(
+                        "data_source", "keboola", "stack_url", default=""
+                    ) or ""
+                    token_env = get_value(
+                        "data_source", "keboola", "token_env",
+                        default="KEBOOLA_STORAGE_TOKEN",
+                    ) or "KEBOOLA_STORAGE_TOKEN"
+                    keboola_token = os.environ.get(token_env, "")
+                    if not (keboola_url and keboola_token):
+                        summary["errors"].append({
+                            "table": ref_name,
+                            "error": (
+                                "Keboola URL/token not configured for "
+                                "materialized path (data_source.keboola.stack_url "
+                                f"+ env {token_env})"
+                            ),
+                        })
+                        continue
+                    keboola_access = KeboolaAccess(
+                        url=keboola_url, token=keboola_token,
+                    )
+                kb_output_dir.mkdir(parents=True, exist_ok=True)
+                from connectors.keboola.extractor import (
+                    materialize_query as kb_materialize_query,
+                )
+                kb_stats = kb_materialize_query(
+                    table_id=ref_name,
+                    sql=row["source_query"],
+                    keboola_access=keboola_access,
+                    output_dir=kb_output_dir,
+                )
+                # Normalize Keboola materialize_query output to the shape the
+                # BQ branch uses for downstream sync_state updates. KB returns
+                # {table_id, path, rows, bytes, md5}; map to
+                # {rows, size_bytes, hash}.
+                stats = {
+                    "rows": kb_stats["rows"],
+                    "size_bytes": kb_stats["bytes"],
+                    "hash": kb_stats["md5"],
+                    "query_mode": "materialized",
+                }
+            else:
+                summary["errors"].append({
+                    "table": ref_name,
+                    "error": (
+                        f"materialized path not supported for "
+                        f"source_type={source_type!r}"
+                    ),
+                })
+                continue
+        except MaterializeBudgetError as e:
+            logger.warning(
+                "Materialize cap exceeded for %s: %s bytes > %s bytes",
+                e.table_id, f"{e.current:,}", f"{e.limit:,}",
+            )
+            summary["errors"].append({
+                "table": ref_name,
+                "error": str(e),
+                "current": e.current,
+                "limit": e.limit,
+            })
+            # Persist the failure so `GET /api/admin/registry` can surface
+            # `last_sync_error` to the admin UI / `da admin status`.
+            # Without this, scheduler stderr was the only place the cap
+            # failure showed up and operators had no API path to it.
+            state.set_error(ref_name, str(e))
+            continue
+        except Exception as e:
+            logger.exception("Materialize failed for %s", ref_name)
+            summary["errors"].append({"table": ref_name, "error": str(e)})
+            state.set_error(ref_name, str(e))
+            continue
+
+        # `materialize_query` returns the parquet's MD5 inline — hashing
+        # there means we don't re-read a multi-GB file on the request
+        # thread. Fallback to `_file_hash(parquet_path)` if for some
+        # reason the stats dict didn't carry it (defensive).
+        parquet_hash = stats.get("hash")
+        if not parquet_hash:
+            output_dir_for_hash = (
+                bq_output_dir if source_type == "bigquery" else str(kb_output_dir.parent)
+            )
+            parquet_path = Path(output_dir_for_hash) / "data" / f"{ref_name}.parquet"
+            parquet_hash = _file_hash(parquet_path)
+        # `update_sync` resets `status='ok'` / `error=NULL` on the upsert
+        # path (its argument defaults), so a row that previously errored
+        # has the failure cleared by this call. No separate clear_error
+        # needed here — the test invariant is that a successful materialize
+        # leaves status='ok' and error='', which `update_sync` already
+        # establishes.
+        state.update_sync(
+            table_id=ref_name,
+            rows=stats["rows"],
+            file_size_bytes=stats["size_bytes"],
+            hash=parquet_hash,
+        )
+        summary["materialized"].append(ref_name)
+
+    return summary
+
+
 def _run_sync(tables: Optional[List[str]] = None):
     """Run extractor as subprocess + orchestrator rebuild.
 
@@ -106,20 +316,38 @@ def _run_sync(tables: Optional[List[str]] = None):
                 except Exception as e:
                     logger.warning("Auto-discovery failed: %s", e)
 
-            if not table_configs:
-                logger.warning("No tables to sync for source_type=%s", source_type)
-                return
+        # CRITICAL: don't early-return when local-mode tables are empty.
+        # `list_local("bigquery")` is always empty on BQ-only deployments
+        # (BQ rows are always remote or materialized, never local), so an
+        # early return would prevent the materialized pass AND the
+        # orchestrator rebuild from ever firing on a BQ-only instance.
+        # Devin BUG_0002 on PR #148 commit 2fa44f2. Just flag whether the
+        # Keboola subprocess + custom-connectors should run; everything
+        # below (materialized pass, orchestrator rebuild, profiler) runs
+        # unconditionally so a registry with materialized rows but no
+        # local rows still publishes them.
+        run_extractor_subprocess = bool(table_configs)
+        if not run_extractor_subprocess:
+            logger.info(
+                "No local-mode tables to sync for source_type=%s — "
+                "skipping extractor subprocess; materialized pass + "
+                "orchestrator rebuild still run.",
+                source_type,
+            )
 
-        # Serialize configs — strip non-serializable fields
-        serializable = []
-        for tc in table_configs:
-            serializable.append({k: (v.isoformat() if hasattr(v, 'isoformat') else v)
-                                 for k, v in tc.items() if v is not None})
-
-        # Run extractor subprocess with table configs via stdin
-        # Subprocess does NOT open system.duckdb — no lock conflict
         env = {**os.environ}
-        cmd = [sys.executable, "-c", """
+        import sys as _sys
+
+        if run_extractor_subprocess:
+            # Serialize configs — strip non-serializable fields
+            serializable = []
+            for tc in table_configs:
+                serializable.append({k: (v.isoformat() if hasattr(v, 'isoformat') else v)
+                                     for k, v in tc.items() if v is not None})
+
+            # Run extractor subprocess with table configs via stdin
+            # Subprocess does NOT open system.duckdb — no lock conflict
+            cmd = [sys.executable, "-c", """
 import json, sys, os, logging
 from pathlib import Path
 
@@ -147,58 +375,114 @@ print(json.dumps(result))
 sys.exit(compute_exit_code(result, len(configs)))
 """]
 
-        import sys as _sys
-        print(f"[SYNC] Starting extractor subprocess for {len(table_configs)} tables", file=_sys.stderr, flush=True)
+            print(f"[SYNC] Starting extractor subprocess for {len(table_configs)} tables", file=_sys.stderr, flush=True)
 
-        result = subprocess.run(
-            cmd, input=_json.dumps(serializable), capture_output=True, text=True,
-            timeout=1800, env=env,
-            cwd=str(Path(__file__).parent.parent.parent),
-        )
+            try:
+                result = subprocess.run(
+                    cmd, input=_json.dumps(serializable), capture_output=True, text=True,
+                    timeout=1800, env=env,
+                    cwd=str(Path(__file__).parent.parent.parent),
+                )
+            except subprocess.TimeoutExpired:
+                # Catch the timeout LOCALLY so the materialized BQ pass and
+                # orchestrator rebuild below still fire. Pre-fix the timeout
+                # propagated to the outer except handler and skipped the rest
+                # of `_run_sync` — on a dual-source deployment a slow Keboola
+                # extractor would silently block all materialized parquets +
+                # master-view rebuild until the next trigger. Devin BUG_0001
+                # on PR #148 commit 2219255. Mirrors the per-custom-connector
+                # timeout pattern below (line ~347).
+                print(
+                    "[SYNC] Extractor timed out after 1800s — continuing to "
+                    "materialized pass + orchestrator rebuild",
+                    file=_sys.stderr, flush=True,
+                )
+                result = None
 
-        if result.stdout:
-            print(f"[SYNC] Extractor stdout: {result.stdout.strip()[-500:]}", file=_sys.stderr, flush=True)
-        if result.stderr:
-            print(f"[SYNC] Extractor stderr: {result.stderr[-500:]}", file=_sys.stderr, flush=True)
-        # Issue #81 Group B: three exit codes. 0 = full success,
-        # 1 = full failure, 2 = partial. Partial is a data-quality
-        # alert, not a crash — the orchestrator's per-table _meta
-        # machinery already captured which tables succeeded; we just
-        # need to log loudly so operator alerting can pick it up.
-        if result.returncode == 0:
-            print(f"[SYNC] Extractor OK", file=_sys.stderr, flush=True)
-        elif result.returncode == 2:
+            if result is not None:
+                if result.stdout:
+                    print(f"[SYNC] Extractor stdout: {result.stdout.strip()[-500:]}", file=_sys.stderr, flush=True)
+                if result.stderr:
+                    print(f"[SYNC] Extractor stderr: {result.stderr[-500:]}", file=_sys.stderr, flush=True)
+                # Issue #81 Group B: three exit codes. 0 = full success,
+                # 1 = full failure, 2 = partial. Partial is a data-quality
+                # alert, not a crash — the orchestrator's per-table _meta
+                # machinery already captured which tables succeeded; we just
+                # need to log loudly so operator alerting can pick it up.
+                if result.returncode == 0:
+                    print(f"[SYNC] Extractor OK", file=_sys.stderr, flush=True)
+                elif result.returncode == 2:
+                    print(
+                        f"[SYNC] Extractor PARTIAL FAILURE (exit 2) — some tables "
+                        f"succeeded, some failed; see stderr for per-table errors. "
+                        f"Successful tables will still be published by the orchestrator.",
+                        file=_sys.stderr, flush=True,
+                    )
+                else:
+                    print(f"[SYNC] Extractor FAILED (exit {result.returncode})", file=_sys.stderr, flush=True)
+
+            # Run custom connectors (Tier A: local mount) — only when there
+            # were local-mode tables to drive the extractor. Custom connectors
+            # currently piggyback on the same env as the Keboola extractor.
+            connectors_dir = Path(os.environ.get("CONNECTORS_DIR", str(Path(__file__).parent.parent.parent / "connectors" / "custom")))
+            if connectors_dir.exists():
+                for connector_dir in sorted(connectors_dir.iterdir()):
+                    if not connector_dir.is_dir():
+                        continue
+                    extractor = connector_dir / "extractor.py"
+                    if not extractor.exists():
+                        continue
+                    logger.info("Running custom connector: %s", connector_dir.name)
+                    try:
+                        custom_result = subprocess.run(
+                            [sys.executable, str(extractor)],
+                            env=env, capture_output=True, text=True, timeout=600,
+                            cwd=str(Path(__file__).parent.parent.parent),
+                        )
+                        if custom_result.returncode != 0:
+                            logger.error("Custom connector %s failed: %s", connector_dir.name, custom_result.stderr[-500:])
+                        else:
+                            logger.info("Custom connector %s completed", connector_dir.name)
+                    except subprocess.TimeoutExpired:
+                        logger.error("Custom connector %s timed out", connector_dir.name)
+
+        # Materialized SQL pass — runs admin-registered SQL through the
+        # source's DuckDB extension (BQ via BqAccess, Keboola via
+        # KeboolaAccess) and writes parquet for due rows. _run_materialized_pass
+        # itself dispatches by source_type, so we always run it regardless of
+        # which (or both) source types have a `project` / `stack_url` set —
+        # Keboola-only instances would otherwise silently skip Keboola
+        # materialized rows just because no BQ project is configured (Devin
+        # finding 2026-05-01: BUG_pr-review-job-3fbd31c9_0001). The BQ
+        # branch inside _run_materialized_pass uses a per-row try/except so
+        # the sentinel BqAccess (not_configured) raises a typed error that
+        # gets recorded against that row only — no cascade.
+        try:
+            from connectors.bigquery.access import get_bq_access
+            from src.db import get_system_db as _get_system_db
+            bq_access = get_bq_access()  # sentinel if no BQ project; OK
+            mat_conn = _get_system_db()
+            try:
+                mat_summary = _run_materialized_pass(mat_conn, bq_access)
+            finally:
+                mat_conn.close()
             print(
-                f"[SYNC] Extractor PARTIAL FAILURE (exit 2) — some tables "
-                f"succeeded, some failed; see stderr for per-table errors. "
-                f"Successful tables will still be published by the orchestrator.",
+                f"[SYNC] Materialized SQL: {len(mat_summary['materialized'])} ok, "
+                f"{len(mat_summary['skipped'])} skipped, "
+                f"{len(mat_summary['errors'])} errors",
                 file=_sys.stderr, flush=True,
             )
-        else:
-            print(f"[SYNC] Extractor FAILED (exit {result.returncode})", file=_sys.stderr, flush=True)
-
-        # Run custom connectors (Tier A: local mount)
-        connectors_dir = Path(os.environ.get("CONNECTORS_DIR", str(Path(__file__).parent.parent.parent / "connectors" / "custom")))
-        if connectors_dir.exists():
-            for connector_dir in sorted(connectors_dir.iterdir()):
-                if not connector_dir.is_dir():
-                    continue
-                extractor = connector_dir / "extractor.py"
-                if not extractor.exists():
-                    continue
-                logger.info("Running custom connector: %s", connector_dir.name)
-                try:
-                    custom_result = subprocess.run(
-                        [sys.executable, str(extractor)],
-                        env=env, capture_output=True, text=True, timeout=600,
-                        cwd=str(Path(__file__).parent.parent.parent),
-                    )
-                    if custom_result.returncode != 0:
-                        logger.error("Custom connector %s failed: %s", connector_dir.name, custom_result.stderr[-500:])
-                    else:
-                        logger.info("Custom connector %s completed", connector_dir.name)
-                except subprocess.TimeoutExpired:
-                    logger.error("Custom connector %s timed out", connector_dir.name)
+            for err in mat_summary["errors"]:
+                print(
+                    f"[SYNC]   {err['table']}: {err['error']}",
+                    file=_sys.stderr, flush=True,
+                )
+        except Exception as e:
+            print(
+                f"[SYNC] Materialized SQL pass FAILED: {e}",
+                file=_sys.stderr, flush=True,
+            )
+            traceback.print_exc()
 
         # Rebuild master views (reads extract.duckdb files, no write conflict)
         from src.orchestrator import SyncOrchestrator

@@ -70,6 +70,32 @@ def bq_instance(monkeypatch):
 
 
 @pytest.fixture
+def keboola_instance(monkeypatch):
+    """Mirror of bq_instance for Keboola — required by tests that POST
+    `source_type='keboola'` payloads. The new register-table source-type
+    availability validator (see _validate_source_type_configured) refuses
+    Keboola registrations on the default unconfigured test instance,
+    which `get_data_source_type()` resolves to 'local'."""
+    fake_cfg = {
+        "data_source": {
+            "type": "keboola",
+            "keboola": {
+                "stack_url": "https://connection.keboola.com",
+                "project_id": "1234",
+                "token_env": "KEBOOLA_STORAGE_TOKEN",
+            },
+        },
+    }
+    monkeypatch.setattr(
+        "app.instance_config.load_instance_config", lambda: fake_cfg, raising=False,
+    )
+    from app.instance_config import reset_cache
+    reset_cache()
+    yield fake_cfg
+    reset_cache()
+
+
+@pytest.fixture
 def stub_bq_extractor(monkeypatch):
     """Replace rebuild_from_registry + SyncOrchestrator.rebuild with mocks
     so the API's post-register materialize doesn't try to hit real BQ."""
@@ -244,7 +270,12 @@ class TestBigQueryRegisterCoercion:
         resp = c.get("/api/admin/registry", headers=_auth(token))
         row = next(t for t in resp.json()["tables"] if t["name"] == "orders")
         assert row["query_mode"] == "remote"
-        assert row["profile_after_sync"] is False
+        # Phase C: profile_after_sync is now inert. The field is accepted in
+        # the request for back-compat but no longer overrides the DB default.
+        # Was: assert row["profile_after_sync"] is False  (when BQ register
+        # forced it to False as a "signal"). Now the row carries the schema
+        # default (True). Profiler runs unconditionally regardless.
+        assert row.get("profile_after_sync") in (True, None)
 
 
 class TestBigQueryRegisterCollision:
@@ -503,7 +534,7 @@ class TestRegistryAuditLog:
         from src.repositories.audit import AuditRepository
         return AuditRepository(conn).query(action=action, limit=10)
 
-    def test_register_keboola_writes_audit_entry(self, seeded_app):
+    def test_register_keboola_writes_audit_entry(self, seeded_app, keboola_instance):
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
         resp = c.post(
@@ -561,7 +592,7 @@ class TestRegistryAuditLog:
         assert out["primary_key"] == ["id"]  # whitelisted
         assert out["description"] == "raw description stays raw"
 
-    def test_update_writes_audit_entry(self, seeded_app):
+    def test_update_writes_audit_entry(self, seeded_app, keboola_instance):
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
         c.post(
@@ -584,7 +615,7 @@ class TestRegistryAuditLog:
             conn.close()
         assert any(r["resource"] == "kb_upd" for r in rows)
 
-    def test_unregister_writes_audit_entry(self, seeded_app):
+    def test_unregister_writes_audit_entry(self, seeded_app, keboola_instance):
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
         c.post(
@@ -674,6 +705,13 @@ class TestRebuildFromRegistry:
         assert "orders" in names
 
     def test_missing_project_returns_error(self, e2e_env, monkeypatch):
+        # Reset the instance-config cache so a sibling test's patched
+        # `bigquery: {project: "ok-project"}` doesn't leak into this one's
+        # `bigquery: {}` view. The cache is keyed on the loader's first
+        # call, not on monkeypatch's restore — so monkeypatch.setattr alone
+        # isn't sufficient.
+        from app.instance_config import reset_cache
+        reset_cache()
         monkeypatch.setattr(
             "config.loader.load_instance_config",
             lambda: {"data_source": {"type": "bigquery", "bigquery": {}}},
@@ -698,20 +736,25 @@ class TestAdminTablesUI:
             c.cookies.clear()
         assert resp.status_code == 200, resp.text
         body = resp.text
-        # Modal carries the source type so the JS can branch.
+        # Modal carries the source type so legacy openRegisterModal({}) still
+        # routes through the JS dispatcher.
         assert 'data-source-type="bigquery"' in body
         # BQ-only inputs.
         assert 'id="bqDataset"' in body
         assert 'id="bqSourceTable"' in body
         assert 'id="bqViewName"' in body
         assert 'id="bqSyncSchedule"' in body
-        # Inline hint about scheduler-not-yet-wired (Decision 3).
-        assert "scheduler" in body.lower()
-        # BQ-specific panel (no discovery for BQ in M1).
-        assert 'data-test="bq-register-panel"' in body
-        # Keboola-only inputs must NOT be present.
-        assert 'id="regTableId"' not in body
-        assert 'id="regBucket"' not in body
+        # Cron-style schedule examples are surfaced near the field
+        # (operator-facing copy explains the syntax).
+        assert "every 6h" in body or "daily 03:00" in body
+        # BQ tab content section (legacy out-of-tab BQ register panel was
+        # removed when the user-visible cleanup landed — each tab now owns
+        # its own header + Register button).
+        assert 'id="tab-content-bigquery"' in body
+        assert 'id="bqRegisterBtn"' in body
+        # Phase E: BQ + Keboola modals are now both always rendered (each
+        # inside its own tab). On a BQ instance the BQ tab is the visible
+        # one; the Keboola modal is just hidden in a non-active tab.
 
     def test_renders_keboola_fields_when_data_source_keboola(self, seeded_app, monkeypatch):
         from app.instance_config import reset_cache
@@ -731,12 +774,22 @@ class TestAdminTablesUI:
             assert resp.status_code == 200
             body = resp.text
             assert 'data-source-type="keboola"' in body
-            # Keboola path — discovery panel + Keboola inputs.
-            assert 'id="discoveryResults"' in body
-            assert 'id="regBucket"' in body
-            assert 'id="regTableName"' in body
-            # BQ-only inputs MUST NOT be present.
-            assert 'id="bqDataset"' not in body
+            # Keboola tab content section + Register-Keboola button (legacy
+            # global Discovery panel was removed when the user-visible
+            # cleanup landed — Keboola discovery is per-modal now).
+            assert 'id="tab-content-keboola"' in body
+            assert 'id="kbRegisterBtn"' in body
+            # C3: legacy #registerModal is gone; the Phase F Keboola modal
+            # at #registerKeboolaModal owns the Keboola register flow now.
+            assert 'id="registerModal"' not in body
+            assert 'id="regBucket"' not in body
+            assert 'id="regTableName"' not in body
+            # The Phase F Keboola modal's inputs are present.
+            assert 'id="kbBucket"' in body
+            assert 'id="kbViewName"' in body
+            # Phase E: BQ form now always rendered (inside #tab-content-bigquery)
+            # — operator can switch tabs to register a BQ table on a Keboola
+            # instance. Tab is hidden by default but the form is in the DOM.
         finally:
             reset_cache()
 
@@ -886,7 +939,7 @@ class TestKeboolaRegisterStatusCode:
     its decorator — each branch returns its own. Keboola (non-BQ) must still
     explicitly return 201 with the registered-row body."""
 
-    def test_keboola_register_returns_201(self, seeded_app):
+    def test_keboola_register_returns_201(self, seeded_app, keboola_instance):
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
         resp = c.post(
@@ -916,13 +969,21 @@ class TestUpdateTableBigQueryValidation:
     ):
         from app.instance_config import reset_cache
         # Set a malformed project_id in instance.yaml so the BQ validator
-        # rejects the merged row at PUT time.
+        # rejects the merged row at PUT time. Configure both `bigquery`
+        # AND `keboola` blocks so the test's initial Keboola register
+        # passes the source_type-availability validator (multi-source
+        # instance shape — see _validate_source_type_configured).
         monkeypatch.setattr(
             "app.instance_config.load_instance_config",
             lambda: {
                 "data_source": {
                     "type": "bigquery",
                     "bigquery": {"project": "Bad Project With Spaces"},
+                    "keboola": {
+                        "stack_url": "https://connection.keboola.com",
+                        "project_id": "1234",
+                        "token_env": "KEBOOLA_STORAGE_TOKEN",
+                    },
                 }
             },
             raising=False,
@@ -983,7 +1044,7 @@ class TestUpdateTableBigQueryValidation:
         )
         assert resp.status_code == 400, resp.text
 
-    def test_put_preserves_registered_at_across_edits(self, seeded_app):
+    def test_put_preserves_registered_at_across_edits(self, seeded_app, keboola_instance):
         """Issue #130 — PUT /api/admin/registry/{id} must NOT reset
         registered_at on every edit. The original timestamp from the initial
         register call must survive subsequent PUTs."""
@@ -1546,11 +1607,17 @@ class TestKeboolaModalUsesDiscoveredTableId:
     """Review IMPORTANT 5: the JS that builds the Keboola register payload
     must derive `source_table` from the discovered table's storage ID
     (`t.id` minus the bucket prefix), NOT the human-friendly display name
-    (`t.name`). We verify by static template inspection — this is enough
-    to catch a regression that drops the hidden field or reverts the JS
-    to reading `regTableName`."""
+    (`t.name`). We verify by static template inspection.
 
-    def test_template_has_hidden_source_table_field(self, seeded_app, monkeypatch):
+    C3: the legacy #registerModal that owned regTableName / regSourceTable
+    was removed. The Phase F #registerKeboolaModal uses kbBucket /
+    kbSourceTable and a different payload builder (`_buildKeboolaPayload`)
+    that already keeps storage identifier separate from display name. The
+    tests below were rewritten to gate the Phase F flow."""
+
+    def test_phase_f_modal_separates_storage_id_from_display_name(
+        self, seeded_app, monkeypatch,
+    ):
         from app.instance_config import reset_cache
         monkeypatch.setattr(
             "app.instance_config.load_instance_config",
@@ -1567,22 +1634,25 @@ class TestKeboolaModalUsesDiscoveredTableId:
                 c.cookies.clear()
             assert resp.status_code == 200, resp.text
             body = resp.text
-            # Hidden field must exist so the JS can stash the bare
-            # storage identifier separately from the display name.
-            assert 'id="regSourceTable"' in body
-            # And the build function must read from that hidden field
-            # (NOT from regTableName, which is the display name).
-            assert "getElementById('regSourceTable').value" in body
+            # Phase F modal owns the Keboola Register flow now.
+            assert 'id="registerKeboolaModal"' in body
+            # The source-table input is NOT the same field as the
+            # human-friendly view name input.
+            assert 'id="kbSourceTable"' in body
+            assert 'id="kbViewName"' in body
+            # The payload builder reads kbSourceTable for the storage
+            # identifier (used in SELECT * FROM kbc."b"."t").
+            assert "getElementById('kbSourceTable').value" in body
         finally:
             reset_cache()
 
-    def test_template_does_not_send_display_name_as_source_table(
+    def test_legacy_regtablename_payload_path_is_gone(
         self, seeded_app, monkeypatch,
     ):
-        """Regression check: pre-fix the payload had
-        `source_table: document.getElementById('regTableName').value`.
-        After the fix, that exact line must be gone (the build function
-        reads from the hidden `regSourceTable` first)."""
+        """Regression check: the pre-fix payload line
+        `source_table: document.getElementById('regTableName').value`
+        must remain absent. C3 removed the entire legacy modal so no
+        regTableName-based payload can be reintroduced."""
         from app.instance_config import reset_cache
         monkeypatch.setattr(
             "app.instance_config.load_instance_config",
@@ -1598,11 +1668,14 @@ class TestKeboolaModalUsesDiscoveredTableId:
             finally:
                 c.cookies.clear()
             body = resp.text
-            # No occurrence of the buggy direct assignment.
             assert (
                 "source_table: document.getElementById('regTableName').value"
                 not in body
             )
+            # C3: the regTableName / regSourceTable inputs themselves are
+            # gone with the legacy modal.
+            assert 'id="regTableName"' not in body
+            assert 'id="regSourceTable"' not in body
         finally:
             reset_cache()
 

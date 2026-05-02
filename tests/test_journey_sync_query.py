@@ -12,6 +12,32 @@ def _auth(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
+@pytest.fixture(autouse=True)
+def _keboola_instance(monkeypatch):
+    """Keboola instance fixture — required by tests that POST
+    `source_type='keboola'` payloads. The register-table source-type
+    availability validator refuses Keboola registrations on the default
+    unconfigured test instance (where get_data_source_type() returns
+    'local')."""
+    fake_cfg = {
+        "data_source": {
+            "type": "keboola",
+            "keboola": {
+                "stack_url": "https://connection.keboola.com",
+                "project_id": "1234",
+                "token_env": "KEBOOLA_STORAGE_TOKEN",
+            },
+        },
+    }
+    monkeypatch.setattr(
+        "app.instance_config.load_instance_config", lambda: fake_cfg, raising=False,
+    )
+    from app.instance_config import reset_cache
+    reset_cache()
+    yield
+    reset_cache()
+
+
 @pytest.mark.journey
 class TestSyncAndQuery:
     def test_register_create_rebuild_query(self, seeded_app, mock_extract_factory):

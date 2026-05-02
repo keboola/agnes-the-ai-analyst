@@ -17,6 +17,84 @@ from src.identifier_validation import (
 logger = logging.getLogger(__name__)
 
 
+def materialize_query(
+    table_id: str,
+    sql: str,
+    *,
+    keboola_access,  # KeboolaAccess (avoid circular import)
+    output_dir: Path,
+) -> dict:
+    """Materialize an admin-registered SELECT against the Keboola Storage
+    API extension into a parquet file.
+
+    Parallel of `connectors/bigquery/extractor.py:materialize_query`.
+    Cost guardrail: the Keboola extension has no analog of BQ dry-run;
+    Storage API cost is download-shaped (per-byte egress + Storage API
+    job). Phase B ships without a guardrail and logs the byte count;
+    a future PR can add a configurable `max_bytes_per_keboola_materialize`
+    gate similar to BQ's `max_bytes_per_materialize`.
+    """
+    import re
+    import hashlib
+
+    # Defense: table_id is interpolated into the parquet filename.
+    # Reject anything that's not a safe identifier.
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table_id):
+        raise ValueError(f"unsafe table_id for materialize: {table_id!r}")
+
+    parquet_path = Path(output_dir) / f"{table_id}.parquet"
+    tmp_path = Path(output_dir) / f"{table_id}.parquet.tmp"
+    if tmp_path.exists():
+        tmp_path.unlink()
+    safe_tmp_lit = str(tmp_path).replace("'", "''")
+
+    # Atomic write — mirror BQ's pattern at connectors/bigquery/extractor.py:370.
+    # COPY into a `.parquet.tmp`, hash + size from the tmp file, only swap to
+    # the final path on success. A mid-COPY failure (network, disk full,
+    # extension crash) leaves no partial parquet at the canonical path that
+    # the orchestrator rebuild would pick up. Devin finding 2026-05-01:
+    # BUG_pr-review-job-3fbd31c9_0003.
+    with keboola_access.duckdb_session() as conn:
+        try:
+            conn.execute(f"COPY ({sql}) TO '{safe_tmp_lit}' (FORMAT PARQUET)")
+            row_count = conn.execute(
+                f"SELECT COUNT(*) FROM read_parquet('{safe_tmp_lit}')"
+            ).fetchone()[0]
+        except Exception:
+            if tmp_path.exists():
+                tmp_path.unlink()
+            raise
+
+    # Streaming MD5 — never read the entire parquet into memory. Keboola
+    # materialized results can reach multi-GB sizes (admin-aggregated
+    # subsets); hashing in 8 KiB chunks keeps memory bounded. Mirror of BQ's
+    # streaming hash at connectors/bigquery/extractor.py:438. Devin finding
+    # 2026-05-01: BUG_pr-review-job-3fbd31c9_0002.
+    h = hashlib.md5()
+    with open(tmp_path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    md5 = h.hexdigest()
+    size = tmp_path.stat().st_size
+
+    os.replace(tmp_path, parquet_path)
+
+    if row_count == 0:
+        logger.warning(
+            "Materialized Keboola query for %s wrote 0 rows — verify the "
+            "SQL filters and that the source bucket has data.",
+            table_id,
+        )
+
+    return {
+        "table_id": table_id,
+        "path": str(parquet_path),
+        "rows": row_count,
+        "bytes": size,
+        "md5": md5,
+    }
+
+
 def _create_meta_table(conn: duckdb.DuckDBPyConnection) -> None:
     """Create the _meta table required by the extract.duckdb contract."""
     conn.execute("DROP TABLE IF EXISTS _meta")
@@ -98,6 +176,21 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
         for tc in table_configs:
             table_name = tc["name"]
             query_mode = tc.get("query_mode", "local")
+
+            # Materialized rows are written by the sync trigger pass via
+            # `materialize_query()` — they live as parquets in
+            # /data/extracts/keboola/data/, picked up by the orchestrator's
+            # standard local-parquet discovery. Don't extract here (would
+            # double-write data via the source bucket reference and confuse
+            # sync_state bookkeeping). Mirror of the BQ extractor's skip at
+            # connectors/bigquery/extractor.py:190.
+            if query_mode == "materialized":
+                logger.info(
+                    "Skipping legacy extract for %s — query_mode='materialized', "
+                    "handled by _run_materialized_pass instead",
+                    tc.get("id") or tc.get("name"),
+                )
+                continue
 
             # #81 Group D — refuse rows whose identifiers don't pass the
             # whitelist. The registry is admin-controlled but anyone with

@@ -51,3 +51,28 @@ The `_meta` table must have columns:
 - Instance-level config: `config/instance.yaml` (connection details)
 - Table definitions: DuckDB `table_registry` table
 - Credentials: environment variables
+
+## BigQuery: pick a mode
+
+| Need | Mode | Why |
+|------|------|-----|
+| Latency under 100 ms, table fits on disk | `materialized` | Local parquet, no BQ roundtrip |
+| Table too large for analyst's disk, occasional ad-hoc query | `remote` | DuckDB BQ extension, no download |
+| Table too large for disk AND analyst hits it constantly | `materialized` with aggregation/filter | Scheduled COPY of a slice |
+| One-off subquery joined with local data | (no registry row) | Use `da query --register-bq …` for ad-hoc |
+
+Cost: `materialized` runs once per `sync_schedule` regardless of how many analysts query it; `remote` runs once per analyst-query. The break-even is roughly query frequency × bytes scanned vs. one COPY × bytes scanned.
+
+Guardrail: `data_source.bigquery.max_bytes_per_materialize` (default 10 GiB) blocks the COPY when BQ's dry-run estimate exceeds the cap. Set it explicitly per environment in `instance.yaml`.
+
+Register a materialized table:
+
+```bash
+da admin register-table orders_90d \
+    --source-type bigquery \
+    --query-mode materialized \
+    --query @docs/queries/orders_90d.sql \
+    --schedule "every 6h"
+```
+
+`--query` also accepts inline SQL.

@@ -67,11 +67,19 @@ def register_table(
     source_type: str = typer.Option("keboola", help="Source type: keboola | bigquery | jira | local"),
     bucket: str = typer.Option("", help="Source bucket (Keboola) or dataset (BigQuery)"),
     source_table: str = typer.Option("", help="Source table name in the bucket/dataset"),
-    query_mode: str = typer.Option("local", help="Query mode: local or remote (forced to 'remote' for bigquery)"),
+    query_mode: str = typer.Option("local", help="Query mode: local | remote | materialized"),
+    query: str = typer.Option(
+        "",
+        "--query",
+        help=(
+            "SQL body for query_mode='materialized' (BigQuery only). "
+            "Inline SQL or `@path/to.sql` to read from disk."
+        ),
+    ),
     description: str = typer.Option("", help="Table description"),
     sync_schedule: str = typer.Option(
         "",
-        help="Cron schedule (BigQuery only — note: scheduler not yet wired, see #79 / M3 of #108)",
+        help="Cron schedule (e.g. 'every 6h' / 'daily 03:00'); honored by materialized BQ rows",
     ),
     dry_run: bool = typer.Option(
         False,
@@ -81,11 +89,38 @@ def register_table(
 ):
     """Register a single table.
 
-    For BigQuery: dataset goes in --bucket, the BQ table/view name in
-    --source-table, the DuckDB view name in NAME. The server forces
-    query_mode=remote and profile_after_sync=False; --dry-run goes
-    through /precheck and prints rows + size + columns without writing.
+    Modes:
+    - **local** (Keboola): batch pull, parquet on disk.
+    - **remote** (BigQuery): view only, queries go to BQ. Requires
+      `--bucket` + `--source-table`.
+    - **materialized** (BigQuery): server-side scheduled SQL → parquet.
+      Requires `--query` (inline or `@file.sql`); `--bucket` /
+      `--source-table` ignored.
+
+    `--dry-run` goes through /precheck (BQ remote only — for materialized
+    rows, dry-run is a no-op since the SQL itself is the contract).
     """
+    from pathlib import Path
+
+    # Resolve --query @file.sql shorthand.
+    source_query = ""
+    if query:
+        if query.startswith("@"):
+            sql_path = Path(query[1:])
+            if not sql_path.exists():
+                typer.echo(f"Error: SQL file not found: {sql_path}", err=True)
+                raise typer.Exit(2)
+            source_query = sql_path.read_text(encoding="utf-8").strip()
+        else:
+            source_query = query.strip()
+
+    if query_mode == "materialized" and not source_query:
+        typer.echo(
+            "Error: --query-mode materialized requires --query (literal SQL or @path.sql)",
+            err=True,
+        )
+        raise typer.Exit(2)
+
     payload = {
         "name": name,
         "source_type": source_type,
@@ -94,6 +129,11 @@ def register_table(
         "query_mode": query_mode,
         "description": description,
     }
+    # Omit empty optional fields so the server-side validator doesn't see
+    # `source_query=""` on a remote/local row (which would trigger the
+    # "source_query forbidden" branch).
+    if source_query:
+        payload["source_query"] = source_query
     if sync_schedule:
         payload["sync_schedule"] = sync_schedule
 

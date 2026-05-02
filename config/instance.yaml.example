@@ -115,17 +115,30 @@ data_source:
     location: "${BIGQUERY_LOCATION}"     # BigQuery location (e.g., "us-central1", "US")
     # Uses ADC (Application Default Credentials) - VM service account on GCP
     # Data can live in a different project -- use fully-qualified table IDs in data_description.md
-    # billing_project: ""                # Optional: GCP project to bill BQ jobs to / submit jobs from.
-    #                                    # Defaults to `project`. Set this when the SA has bigquery.data.* on
-    #                                    # the data project but lacks serviceusage.services.use there (i.e.,
-    #                                    # cross-project read pattern). Submission/billing target must be a
-    #                                    # project the SA can use; data project just needs read.
-    # legacy_wrap_views: false           # Set true to restore pre-v2 wrap views for BQ VIEW/MATERIALIZED_VIEW
-    #                                    # tables in analytics.duckdb (migration escape hatch; default: false)
+    # billing_project: "prj-billing"     # GCP project to bill BQ jobs to / submit jobs from.
+    #                                    # Defaults to `project`. Set when the SA has bigquery.data.* on
+    #                                    # the data project but lacks serviceusage.services.use there.
+    #                                    # Mismatch -> every BQ call 403 USER_PROJECT_DENIED.
+    #                                    # `da diagnose` warns when this falls back to `project`.
+    #                                    # Configurable via /admin/server-config UI.
+    # legacy_wrap_views: false           # When true, registered VIEWs and MATERIALIZED_VIEWs get a DuckDB
+    #                                    # master view via bigquery_query() (jobs API) so analysts can
+    #                                    # `SELECT * FROM viewname` directly. When false (default), views
+    #                                    # are catalog-only -- analysts use `da fetch viewname` or
+    #                                    # `da query --remote`. ON can cause "Response too large" on big
+    #                                    # views; OFF requires analyst-side discipline (CLAUDE.md rails).
+    #                                    # Toggle ON for view-heavy deployments where most views are small.
+    #                                    # Configurable via /admin/server-config UI.
+    # max_bytes_per_materialize: 10737418240
+    #                                    # Cost guardrail (bytes) for query_mode='materialized' BQ scans.
+    #                                    # Dry-run check before running; exceeding -> registration / sync
+    #                                    # rejected. Default 10 GiB (10737418240). Set 0 to disable.
+    #                                    # null falls through to default. Configurable via /admin/server-config UI.
 
 # --- OpenMetadata catalog (optional) ---
 # Enriches table and column metadata from OpenMetadata REST API.
 # If not configured, app works normally without catalog enrichment.
+# All openmetadata.* fields configurable via /admin/server-config UI.
 # openmetadata:
 #   url: "https://your-catalog.example.com"
 #   token: "${OPENMETADATA_TOKEN}"        # JWT bearer token
@@ -147,6 +160,7 @@ email:
   smtp_password: "${SMTP_PASSWORD}"
 
 # --- Desktop app (optional) ---
+# All desktop.* fields configurable via /admin/server-config UI (rarely changed once set).
 desktop:
   jwt_issuer: "data-analyst"
   jwt_secret: "${DESKTOP_JWT_SECRET}"
@@ -174,7 +188,9 @@ jira:
 ai:
   provider: "anthropic"                    # or "openai_compat"
   api_key: "${ANTHROPIC_API_KEY}"          # or "${LLM_API_KEY}" for proxy
-  # base_url: "https://litellm.example.com"  # required for openai_compat
+  # base_url: "https://litellm.example.com"  # Required for provider='openai_compat' (LiteLLM,
+                                              # OpenRouter, vLLM). Ignored when provider='anthropic'.
+                                              # Configurable via /admin/server-config UI.
   model: "claude-haiku-4-5-20251001"       # any model available on your provider
   # --- Structured output quality control ---
   # AI models can return JSON in three ways, each with different reliability:
@@ -224,6 +240,10 @@ ai:
 # --- Corporate Memory governance (optional) ---
 # Controls how AI-extracted knowledge is reviewed and distributed.
 # If not present, system operates in legacy mode (democratic wiki, no admin review).
+#
+# The corporate_memory.* schema is editable via /admin/server-config UI; you can
+# also continue to manage it via this YAML file. The UI surfaces every leaf with
+# a hint, so use it to discover the schema if this comment block has aged.
 #
 # corporate_memory:
 #   # How knowledge reaches users:
