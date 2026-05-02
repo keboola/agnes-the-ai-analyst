@@ -2046,20 +2046,7 @@
                 <a href="/setup" class="env-setup-link">Or open the full setup page →</a>
             </div>
             <div id="setupClaudeError" class="setup-error" role="alert" style="display:none;"></div>
-            <details class="setup-preview-card" aria-label="Preview of the clipboard payload">
-                <summary class="setup-preview-summary">
-                    <span class="setup-preview-chevron" aria-hidden="true">▸</span>
-                    <span class="setup-preview-title">What Claude Code will receive</span>
-                </summary>
-                <p class="setup-preview-sub">
-                    Read-only preview. The real token is generated the moment
-                    you click the button above and is placed directly in your
-                    clipboard — never shown on this page.
-                </p>
-                {% with preview_mode=True %}
-                    {% include "_claude_setup_instructions.jinja" %}
-                {% endwith %}
-            </details>
+            <a href="/setup" class="env-setup-link" style="display: block; margin-top: 8px;">View what Claude Code will receive on /setup →</a>
         </div>
         {% endif %}
 

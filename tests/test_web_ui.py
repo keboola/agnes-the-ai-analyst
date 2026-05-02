@@ -233,14 +233,16 @@ class TestClaudeSetupPreview:
         assert "da diagnose" in body
         assert "da auth whoami" in body
 
-    def test_dashboard_preview_visible(self, web_client, admin_cookie):
+    def test_dashboard_setup_cta_links_to_setup(self, web_client, admin_cookie):
+        """Dashboard setup CTA shows env-setup-cta and a link to /setup instead
+        of an inline collapsed preview."""
         resp = web_client.get("/dashboard", cookies=admin_cookie)
         assert resp.status_code == 200
         body = resp.text
         assert "env-setup-cta" in body
-        assert "setup-preview-pre" in body
-        assert "What Claude Code will receive" in body
-        assert "&lt;will be generated on click&gt;" in body
+        assert "View what Claude Code will receive on /setup" in body
+        # inline <details> preview block must no longer appear
+        assert 'aria-label="Preview of the clipboard payload"' not in body
 
     def test_install_mcp_card_removed(self, web_client):
         """The stale 'Use with Claude Code / MCP' card on /setup has been

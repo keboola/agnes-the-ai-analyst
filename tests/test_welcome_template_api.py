@@ -102,7 +102,7 @@ def test_put_rejects_undefined_placeholder(seeded_app):
 
 def test_get_welcome_500_includes_reset_hint_on_render_failure(seeded_app, monkeypatch):
     """If an override slips through validation and fails at render time, the
-    user-visible 500 must point at /admin/welcome rather than leaking a
+    user-visible 500 must point at /admin/agent-prompt rather than leaking a
     Jinja stack trace."""
     # Stub render_welcome to raise a TemplateError so we exercise the
     # exception path without needing a malformed override (PUT validation
@@ -123,7 +123,7 @@ def test_get_welcome_500_includes_reset_hint_on_render_failure(seeded_app, monke
         headers=admin,
     )
     assert r.status_code == 500
-    assert "/admin/welcome" in r.json()["detail"]
+    assert "/admin/agent-prompt" in r.json()["detail"]
 
 
 def test_admin_preview_renders_arbitrary_content(seeded_app):

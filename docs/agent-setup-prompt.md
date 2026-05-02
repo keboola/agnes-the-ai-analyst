@@ -1,6 +1,6 @@
-# Welcome prompt customization
+# Agent Setup Prompt
 
-The welcome prompt is the `CLAUDE.md` file generated in an analyst's local
+The agent setup prompt is the `CLAUDE.md` file generated in an analyst's local
 workspace by `da analyst setup`. It instructs Claude Code on how to behave in
 that workspace — which commands to use, where to read schema metadata, what
 metrics exist, what plugins are available.
@@ -15,7 +15,7 @@ no admin action is required.
 
 Admins can override the template via:
 
-- **Admin UI:** `/admin/welcome` — textarea editor with placeholder cheatsheet
+- **Admin UI:** `/admin/agent-prompt` — textarea editor with placeholder cheatsheet
   and live preview button. Save sends a `PUT` to `/api/admin/welcome-template`.
 - **REST API:**
   - `GET /api/admin/welcome-template` — returns `{content, default, updated_at, updated_by}`. `content` is `null` when no override is set.
@@ -32,7 +32,7 @@ audit trail (`updated_at`, `updated_by`) is preserved.
 [Jinja2](https://jinja.palletsprojects.com/) with `StrictUndefined`. Any
 typo in a placeholder name raises an error at render time rather than
 silently emitting an empty string. Server returns HTTP 500 with a hint
-pointing at `/admin/welcome`; the admin UI rejects syntax errors AND
+pointing at `/admin/agent-prompt`; the admin UI rejects syntax errors AND
 undefined-placeholder errors with HTTP 400 on save (validated by rendering
 the template against a stub context before persisting).
 

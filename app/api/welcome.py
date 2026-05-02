@@ -81,7 +81,7 @@ async def get_welcome(
         logger.warning("Welcome render failed: %s", e, exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail="Welcome template render failed. An admin can fix it at /admin/welcome.",
+            detail="Welcome template render failed. An admin can fix it at /admin/agent-prompt.",
         )
     return WelcomeResponse(content=rendered)
 

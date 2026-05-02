@@ -3358,9 +3358,9 @@
         ]
       }
     },
-    "/admin/welcome": {
+    "/admin/agent-prompt": {
       "get": {
-        "operationId": "admin_welcome_page_admin_welcome_get",
+        "operationId": "admin_agent_prompt_page_admin_agent_prompt_get",
         "parameters": [
           {
             "in": "header",
