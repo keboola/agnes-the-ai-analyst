@@ -6,7 +6,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 import duckdb
@@ -14,6 +14,7 @@ import duckdb
 from app.auth.jwt import create_access_token
 from app.auth.access import is_user_admin
 from app.auth.dependencies import _get_db, is_local_dev_mode
+from app.auth.rate_limit import limiter as _rate_limiter
 from src.repositories.users import UserRepository
 
 
@@ -59,8 +60,10 @@ def _build_magic_link(email: str, token: str) -> str:
 
 
 @router.post("/send-link")
+@_rate_limiter.limit("5/minute")
 async def send_magic_link(
-    request: MagicLinkRequest,
+    request: Request,
+    body: MagicLinkRequest,
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Send a magic link to the user's email.
@@ -70,7 +73,7 @@ async def send_magic_link(
     click it without an email transport.
     """
     repo = UserRepository(conn)
-    user = repo.get_by_email(request.email)
+    user = repo.get_by_email(body.email)
 
     # Always return success to prevent email enumeration
     if not user:
@@ -84,20 +87,20 @@ async def send_magic_link(
         reset_token_created=datetime.now(timezone.utc),
     )
 
-    link = _build_magic_link(request.email, token)
+    link = _build_magic_link(body.email, token)
     send_error: str | None = None
     if _has_email_transport():
         try:
-            _send_email(request.email, token)
+            _send_email(body.email, token)
         except Exception as e:
             send_error = str(e)
-            logger.error("Failed to send magic link email to %s: %s", request.email, e)
+            logger.error("Failed to send magic link email to %s: %s", body.email, e)
 
     # Dev fallback: expose the link in logs + response so you can click it without SMTP.
     # Scoped strictly to LOCAL_DEV_MODE so test and production behavior are unchanged.
     if is_local_dev_mode():
         logger.warning("=" * 60)
-        logger.warning("Magic link for %s (LOCAL_DEV_MODE fallback):", request.email)
+        logger.warning("Magic link for %s (LOCAL_DEV_MODE fallback):", body.email)
         logger.warning("    %s", link)
         logger.warning("=" * 60)
         response: dict = {

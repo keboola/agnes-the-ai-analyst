@@ -52,6 +52,10 @@ dependencies = [
     # In-process TTL cache for marketplace etag (transitively present via
     # google-auth, declared explicitly here because we depend on it directly).
     "cachetools>=5.3.0",
+    # Per-IP rate limiting on auth endpoints (#45). In-process counters by
+    # default — fine for single-replica deploys. Multi-replica rollouts can
+    # swap the storage backend via slowapi's `storage_uri` (Redis, Memcached).
+    "slowapi>=0.1.9",
 ]
 
 [project.optional-dependencies]

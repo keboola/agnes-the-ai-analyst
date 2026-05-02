@@ -16,6 +16,7 @@ from argon2.exceptions import VerifyMismatchError
 from app.auth.jwt import create_access_token
 from app.auth.access import is_user_admin
 from app.auth.dependencies import _get_db, is_local_dev_mode
+from app.auth.rate_limit import limiter as _rate_limiter
 from src.repositories.users import UserRepository
 
 
@@ -197,13 +198,15 @@ def send_setup_email(request: Request, email: str, token: str) -> bool:
 # ---- Existing flows ----
 
 @router.post("/login")
+@_rate_limiter.limit("10/minute")
 async def password_login(
-    request: PasswordLoginRequest,
+    request: Request,
+    body: PasswordLoginRequest,
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Login with email + password."""
     repo = UserRepository(conn)
-    user = repo.get_by_email(request.email)
+    user = repo.get_by_email(body.email)
     if not user or not user.get("password_hash"):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if not bool(user.get("active", True)):
@@ -211,7 +214,7 @@ async def password_login(
 
     try:
         ph = PasswordHasher()
-        ph.verify(user["password_hash"], request.password)
+        ph.verify(user["password_hash"], body.password)
     except VerifyMismatchError:
         raise HTTPException(status_code=401, detail="Invalid email or password")
     except Exception:
@@ -224,7 +227,9 @@ async def password_login(
 
 
 @router.post("/login/web")
+@_rate_limiter.limit("10/minute")
 async def password_login_web(
+    request: Request,
     email: str = Form(...),
     password: str = Form(""),
     next: str = Form(""),

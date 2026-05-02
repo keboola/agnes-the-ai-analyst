@@ -24,6 +24,29 @@ os.makedirs(os.path.join(os.environ["DATA_DIR"], "notifications"), exist_ok=True
 os.makedirs(os.path.join(os.environ["DATA_DIR"], "state"), exist_ok=True)
 
 
+@pytest.fixture(autouse=True)
+def _disable_auth_rate_limit_in_tests():
+    """Disable the slowapi auth rate limiter for every test by default.
+
+    Production limits (e.g. 10/minute on /auth/password/login) would otherwise
+    bleed into test files that hammer auth endpoints in tight loops — those
+    tests existed long before the limiter and shouldn't have to know about
+    its bucket sizes. The dedicated rate-limit test in test_auth_rate_limit.py
+    flips ``limiter.enabled = True`` and resets state inside its own scope.
+    """
+    from app.auth.rate_limit import limiter
+    was_enabled = limiter.enabled
+    limiter.enabled = False
+    try:
+        limiter.reset()
+    except Exception:
+        # In-memory backend always resets cleanly; defensive guard for
+        # third-party storage backends operators might wire in later.
+        pass
+    yield
+    limiter.enabled = was_enabled
+
+
 @pytest.fixture
 def e2e_env(tmp_path, monkeypatch):
     """Set up complete E2E environment with DATA_DIR, create dirs."""

@@ -23,7 +23,7 @@ import duckdb
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.auth.access import require_admin
+from app.auth.access import is_user_admin, require_admin
 from app.auth.dependencies import _get_db, get_current_user
 from app.resource_types import RESOURCE_TYPES, ResourceType, list_resource_types
 from src.repositories.audit import AuditRepository
@@ -564,18 +564,23 @@ async def remove_member(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     members = UserGroupMembersRepository(conn)
-    # Block removing yourself from Admin if you're the last admin — same
-    # protection as the user-management endpoints.
+    # Last-admin guard: refuse to remove anyone from the seeded Admin group
+    # when they are the only active admin — recovery from zero admins
+    # requires direct DB access. Same protection as delete_user / update_user
+    # (active=False) in app/api/users.py.
     group = UserGroupsRepository(conn).get(group_id)
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
     _guard_google_managed(group)
-    if group["name"] == "Admin" and user_id == user["id"]:
-        if UserRepository(conn).count_admins(active_only=True) <= 1:
-            raise HTTPException(
-                status_code=409,
-                detail="Cannot remove yourself from Admin — you are the last admin",
-            )
+    if (
+        group["name"] == "Admin"
+        and is_user_admin(user_id, conn)
+        and UserRepository(conn).count_admins(active_only=True) <= 1
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot remove the last admin — at least one user must remain in the Admin group",
+        )
     # Only delete admin-source rows from this endpoint. Google-sync rows
     # rebuild themselves on next login; system_seed rows survive deploys.
     removed = members.remove_member(user_id, group_id, require_source="admin")
@@ -845,19 +850,23 @@ async def remove_user_from_group(
     """Remove a user from a group from the user-centric page.
 
     Only deletes admin-source rows (Google-sync / system-seed managed
-    elsewhere). Last-admin guard: refuse to remove yourself from Admin
-    when you'd be the only remaining admin — keeps the system unlockable.
+    elsewhere). Last-admin guard: refuse to remove anyone from Admin
+    when they are the only active admin — recovery from zero admins
+    requires direct DB access.
     """
     group = UserGroupsRepository(conn).get(group_id)
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
     _guard_google_managed(group)
-    if group["name"] == "Admin" and user_id == user["id"]:
-        if UserRepository(conn).count_admins(active_only=True) <= 1:
-            raise HTTPException(
-                status_code=409,
-                detail="Cannot remove yourself from Admin — you are the last admin",
-            )
+    if (
+        group["name"] == "Admin"
+        and is_user_admin(user_id, conn)
+        and UserRepository(conn).count_admins(active_only=True) <= 1
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot remove the last admin — at least one user must remain in the Admin group",
+        )
     members = UserGroupMembersRepository(conn)
     removed = members.remove_member(user_id, group_id, require_source="admin")
     if not removed:
@@ -906,8 +915,6 @@ async def user_effective_access(
     """
     if not UserRepository(conn).get_by_id(user_id):
         raise HTTPException(status_code=404, detail="User not found")
-
-    from app.auth.access import is_user_admin
 
     # JOIN user's group memberships with their grants. group_concat-style
     # aggregation isn't worth it — render side-by-side rows and let the UI
@@ -961,8 +968,6 @@ async def my_effective_access(
     the profile page audits the actual grant graph; runtime authorization
     still gives Admin god-mode regardless of this list."""
     user_id = user["id"]
-    from app.auth.access import is_user_admin
-
     rows = conn.execute(
         """SELECT rg.resource_type, rg.resource_id,
                   g.id AS group_id, g.name AS group_name

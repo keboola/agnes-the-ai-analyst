@@ -293,6 +293,79 @@ def test_deactivated_admin_rejected_by_active_check(app_client, fresh_db):
     assert "deactivated" in resp.json().get("detail", "").lower()
 
 
+def test_cannot_remove_last_admin_via_user_memberships(app_client, fresh_db):
+    """v19 #151: DELETE /api/admin/users/{id}/memberships/{group_id} must
+    refuse to remove the only active admin from the seeded Admin group —
+    even when the caller is a different admin (covers the case where
+    a second admin was added then the first was deactivated, leaving
+    one active admin who could otherwise be demoted to zero)."""
+    from src.db import SYSTEM_ADMIN_GROUP, get_system_db
+    admin_id, token = _seed_admin(fresh_db)
+    conn = get_system_db()
+    try:
+        admin_gid = conn.execute(
+            "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    # Sole-admin case: try to demote the only admin via the user-keyed
+    # memberships endpoint.
+    resp = app_client.delete(
+        f"/api/admin/users/{admin_id}/memberships/{admin_gid}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 409
+    assert "last admin" in resp.json()["detail"].lower()
+
+
+def test_cannot_remove_last_admin_via_group_members(app_client, fresh_db):
+    """v19 #151: DELETE /api/admin/groups/{group_id}/members/{user_id} must
+    refuse to demote the only active admin (group-keyed mirror of the
+    user-keyed membership endpoint)."""
+    from src.db import SYSTEM_ADMIN_GROUP, get_system_db
+    admin_id, token = _seed_admin(fresh_db)
+    conn = get_system_db()
+    try:
+        admin_gid = conn.execute(
+            "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    resp = app_client.delete(
+        f"/api/admin/groups/{admin_gid}/members/{admin_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 409
+    assert "last admin" in resp.json()["detail"].lower()
+
+
+def test_can_remove_admin_when_another_active_admin_exists(app_client, fresh_db):
+    """Sanity: with two active admins, demoting one via the membership
+    endpoint must succeed — the guard fires only at count_admins <= 1."""
+    import uuid
+    from src.db import SYSTEM_ADMIN_GROUP, get_system_db
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    from src.repositories.users import UserRepository
+    admin_id, token = _seed_admin(fresh_db)
+    conn = get_system_db()
+    try:
+        admin_gid = conn.execute(
+            "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
+        ).fetchone()[0]
+        other_id = str(uuid.uuid4())
+        UserRepository(conn).create(id=other_id, email="other@test", name="Other")
+        UserGroupMembersRepository(conn).add_member(
+            other_id, admin_gid, source="admin", added_by="admin@test",
+        )
+    finally:
+        conn.close()
+    resp = app_client.delete(
+        f"/api/admin/users/{other_id}/memberships/{admin_gid}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 204
+
+
 def test_cannot_deactivate_last_admin(app_client, fresh_db):
     """v19: try to deactivate the last active admin → 409.
     Admin demotion is now done via group membership (DELETE /api/admin/users/{id}/memberships/{group_id}),
