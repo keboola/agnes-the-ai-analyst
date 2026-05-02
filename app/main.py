@@ -122,6 +122,7 @@ from app.api.v2_sample import router as v2_sample_router
 from app.api.v2_scan import router as v2_scan_router
 from app.api.marketplaces import router as marketplaces_router
 from app.api.welcome import router as welcome_router
+from app.api.setup_banner import router as setup_banner_router
 from app.marketplace_server.router import router as marketplace_server_router
 from app.marketplace_server.git_router import make_git_wsgi_app
 from app.web.router import router as web_router
@@ -529,6 +530,7 @@ def create_app() -> FastAPI:
     app.include_router(v2_scan_router)
     app.include_router(marketplaces_router)
     app.include_router(welcome_router)
+    app.include_router(setup_banner_router)
     app.include_router(marketplace_server_router)
 
     # Git smart-HTTP endpoint for Claude Code: /marketplace.git/*
