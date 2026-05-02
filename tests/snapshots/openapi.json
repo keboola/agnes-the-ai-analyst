@@ -1893,6 +1893,8 @@
           },
           "profile_after_sync": {
             "default": true,
+            "deprecated": true,
+            "description": "DEPRECATED: not consumed by the runtime (Agent 1 finding 2026-05-01). Profiler runs unconditionally on every synced table; this flag has no effect. Field stays for back-compat.",
             "title": "Profile After Sync",
             "type": "boolean"
           },
@@ -1900,6 +1902,17 @@
             "default": "local",
             "title": "Query Mode",
             "type": "string"
+          },
+          "source_query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Query"
           },
           "source_table": {
             "anyOf": [
@@ -1936,6 +1949,8 @@
           },
           "sync_strategy": {
             "default": "full_refresh",
+            "deprecated": true,
+            "description": "DEPRECATED: catalog/profiler metadata only. No extractor reads this field; every sync is a full overwrite regardless of value. profiler.is_partitioned() consumes it for parquet-layout detection. Field stays for back-compat; will be removed in a future major release.",
             "title": "Sync Strategy",
             "type": "string"
           }
@@ -2065,6 +2080,83 @@
           }
         },
         "title": "TableSubscriptionUpdate",
+        "type": "object"
+      },
+      "TemplateGetResponse": {
+        "properties": {
+          "content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content"
+          },
+          "default": {
+            "title": "Default",
+            "type": "string"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "updated_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated By"
+          }
+        },
+        "required": [
+          "content",
+          "default"
+        ],
+        "title": "TemplateGetResponse",
+        "type": "object"
+      },
+      "TemplatePreviewRequest": {
+        "properties": {
+          "content": {
+            "maxLength": 200000,
+            "minLength": 1,
+            "title": "Content",
+            "type": "string"
+          }
+        },
+        "required": [
+          "content"
+        ],
+        "title": "TemplatePreviewRequest",
+        "type": "object"
+      },
+      "TemplatePutRequest": {
+        "properties": {
+          "content": {
+            "maxLength": 200000,
+            "minLength": 1,
+            "title": "Content",
+            "type": "string"
+          }
+        },
+        "required": [
+          "content"
+        ],
+        "title": "TemplatePutRequest",
         "type": "object"
       },
       "TokenListItem": {
@@ -2329,6 +2421,8 @@
                 "type": "null"
               }
             ],
+            "deprecated": true,
+            "description": "DEPRECATED: not consumed by the runtime. See RegisterTableRequest.profile_after_sync.",
             "title": "Profile After Sync"
           },
           "query_mode": {
@@ -2341,6 +2435,17 @@
               }
             ],
             "title": "Query Mode"
+          },
+          "source_query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Query"
           },
           "source_table": {
             "anyOf": [
@@ -2384,6 +2489,8 @@
                 "type": "null"
               }
             ],
+            "deprecated": true,
+            "description": "DEPRECATED: catalog/profiler metadata only. See RegisterTableRequest.sync_strategy.",
             "title": "Sync Strategy"
           }
         },
@@ -2641,13 +2748,26 @@
         ],
         "title": "VoteRequest",
         "type": "object"
+      },
+      "WelcomeResponse": {
+        "properties": {
+          "content": {
+            "title": "Content",
+            "type": "string"
+          }
+        },
+        "required": [
+          "content"
+        ],
+        "title": "WelcomeResponse",
+        "type": "object"
       }
     }
   },
   "info": {
     "description": "Data distribution platform for AI analytical systems",
     "title": "AI Data Analyst",
-    "version": "2.1.0"
+    "version": "2.0.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -3238,6 +3358,55 @@
         ]
       }
     },
+    "/admin/welcome": {
+      "get": {
+        "operationId": "admin_welcome_page_admin_welcome_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Welcome Page",
+        "tags": [
+          "web"
+        ]
+      }
+    },
     "/api/admin/access-overview": {
       "get": {
         "description": "One-shot snapshot for the /admin/access page.\n\nReturns:\n  - ``groups``: every user_group with member + grant counts\n  - ``grants``: every (group_id, resource_type, resource_id) row\n  - ``resources``: per-resource-type hierarchical layout, where each\n    type has a list of *blocks* (parent entities, e.g. a marketplace)\n    and each block has *items* (concrete grantable resources).\n\nUI stitches the three pieces into the two-column layout: groups on\nthe left, resources tree on the right with per-item checkboxes whose\nstate derives from ``grants``.",
@@ -3398,9 +3567,25 @@
     },
     "/api/admin/discover-tables": {
       "get": {
-        "description": "Discover all available tables from the configured data source.",
+        "description": "Discover available tables from the configured data source.\n\nFor ``data_source.type='keboola'`` returns the full Storage API table\nlist (single round-trip). For ``data_source.type='bigquery'``:\n\n- Without ``dataset``: list datasets in the configured project.\n- With ``dataset=name``: list tables (BASE TABLE + VIEW) in that dataset.\n\nTwo-step shape avoids paying the per-dataset list_tables cost up-front\non projects with hundreds of datasets \u2014 the UI populates the dataset\ndropdown first, then fetches tables only for the selected dataset.",
         "operationId": "discover_tables_api_admin_discover_tables_get",
         "parameters": [
+          {
+            "in": "query",
+            "name": "dataset",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Dataset"
+            }
+          },
           {
             "in": "header",
             "name": "authorization",
@@ -4591,7 +4776,7 @@
     },
     "/api/admin/registry": {
       "get": {
-        "description": "Get full table registry.",
+        "description": "Get full table registry.\n\nEach table row is enriched with `last_sync_error` from sync_state so\noperators can see WHY a row isn't materializing without trawling\nscheduler logs. None for rows that have never errored or have already\nrecovered (status='ok'); the per-row error message string otherwise.",
         "operationId": "list_registry_api_admin_registry_get",
         "parameters": [
           {
@@ -4639,7 +4824,7 @@
     },
     "/api/admin/registry/{table_id}": {
       "delete": {
-        "description": "Unregister a table from the system.\n\nFor BQ rows, schedules a background rebuild so the dropped row's\nmaster view is removed from analytics.duckdb (rather than hanging\naround until the next scheduled sync).",
+        "description": "Unregister a table from the system.\n\nFor BQ rows, schedules a background rebuild so the dropped row's\nmaster view is removed from analytics.duckdb (rather than hanging\naround until the next scheduled sync).\n\nFor materialized rows, also removes the canonical parquet at\n`${DATA_DIR}/extracts/<source_type>/data/<id>.parquet` and clears\nthe matching `sync_state` row. Without these two cleanups, the\nmanifest endpoint kept advertising the dropped table to `da sync`\n(sync_state-driven) and the orchestrator's next rebuild could\nresurrect a master view from the leftover parquet (E2E sub-agent\nfinding 2026-05-01).",
         "operationId": "unregister_table_api_admin_registry__table_id__delete",
         "parameters": [
           {
@@ -5160,6 +5345,210 @@
         "summary": "Remove User From Group",
         "tags": [
           "access"
+        ]
+      }
+    },
+    "/api/admin/welcome-template": {
+      "delete": {
+        "operationId": "admin_reset_template_api_admin_welcome_template_delete",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Reset Template",
+        "tags": [
+          "welcome"
+        ]
+      },
+      "get": {
+        "operationId": "admin_get_template_api_admin_welcome_template_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplateGetResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Get Template",
+        "tags": [
+          "welcome"
+        ]
+      },
+      "put": {
+        "operationId": "admin_put_template_api_admin_welcome_template_put",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TemplatePutRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Put Template",
+        "tags": [
+          "welcome"
+        ]
+      }
+    },
+    "/api/admin/welcome-template/preview": {
+      "post": {
+        "description": "Render arbitrary template content against the live context for the\ncalling admin, without persisting. Used by the /admin/welcome editor's\nPreview button so admins can see their edits before saving.",
+        "operationId": "admin_preview_template_api_admin_welcome_template_preview_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TemplatePreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WelcomeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Preview Template",
+        "tags": [
+          "welcome"
         ]
       }
     },
@@ -9900,6 +10289,67 @@
         ]
       }
     },
+    "/api/welcome": {
+      "get": {
+        "description": "Render the welcome prompt for the calling user. Returns rendered markdown.",
+        "operationId": "get_welcome_api_welcome_get",
+        "parameters": [
+          {
+            "description": "The server URL the analyst is bootstrapping against",
+            "in": "query",
+            "name": "server_url",
+            "required": true,
+            "schema": {
+              "description": "The server URL the analyst is bootstrapping against",
+              "title": "Server Url",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WelcomeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Welcome",
+        "tags": [
+          "welcome"
+        ]
+      }
+    },
     "/auth/admin/tokens": {
       "get": {
         "operationId": "admin_list_tokens_auth_admin_tokens_get",
@@ -11153,28 +11603,10 @@
         ]
       }
     },
-    "/install": {
+    "/first-time-setup": {
       "get": {
-        "description": "Public install instructions for the CLI.",
-        "operationId": "install_page_install_get",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          }
-        ],
+        "description": "First-time setup wizard. Redirects to login if users already exist.",
+        "operationId": "setup_wizard_first_time_setup_get",
         "responses": {
           "200": {
             "content": {
@@ -11185,19 +11617,31 @@
               }
             },
             "description": "Successful Response"
-          },
-          "422": {
+          }
+        },
+        "summary": "Setup Wizard",
+        "tags": [
+          "web"
+        ]
+      }
+    },
+    "/install": {
+      "get": {
+        "description": "Backwards-compat redirect: /install \u2192 /setup (301).",
+        "operationId": "install_redirect_install_get",
+        "responses": {
+          "200": {
             "content": {
-              "application/json": {
+              "text/html": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "type": "string"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "Successful Response"
           }
         },
-        "summary": "Install Page",
+        "summary": "Install Redirect",
         "tags": [
           "web"
         ]
@@ -11511,8 +11955,26 @@
     },
     "/setup": {
       "get": {
-        "description": "First-time setup wizard. Redirects to dashboard if users already exist.",
-        "operationId": "setup_wizard_setup_get",
+        "description": "Setup instructions for the local agent (CLI + Claude Code).",
+        "operationId": "setup_page_setup_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -11523,9 +11985,19 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
-        "summary": "Setup Wizard",
+        "summary": "Setup Page",
         "tags": [
           "web"
         ]

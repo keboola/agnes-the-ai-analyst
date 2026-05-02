@@ -41,20 +41,20 @@ def test_parquet_path_is_not_gzipped(isolated_client, tmp_path, monkeypatch):
 
 
 def test_install_page_is_gzipped(isolated_client):
-    """/install is HTML above the threshold — gzip should kick in when the
+    """/setup is HTML above the threshold — gzip should kick in when the
     client advertises gzip support. TestClient may decompress transparently,
     so we accept either the header or readable body as proof that the
     middleware decided to handle the response (i.e. did not skip)."""
-    resp = isolated_client.get("/install", headers={"Accept-Encoding": "gzip"})
+    resp = isolated_client.get("/setup", headers={"Accept-Encoding": "gzip"})
     assert resp.status_code == 200
     enc = resp.headers.get("content-encoding", "")
     # Either we see the encoding on the wire OR TestClient auto-decoded it.
-    assert "gzip" in enc or "install" in resp.text.lower()
+    assert "gzip" in enc or "setup" in resp.text.lower()
 
 
 def test_no_accept_encoding_means_no_gzip_anywhere(isolated_client):
     """Client that doesn't advertise gzip gets uncompressed body."""
-    resp = isolated_client.get("/install", headers={"Accept-Encoding": "identity"})
+    resp = isolated_client.get("/setup", headers={"Accept-Encoding": "identity"})
     assert resp.status_code == 200
     assert "gzip" not in resp.headers.get("content-encoding", "")
 

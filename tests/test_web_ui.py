@@ -214,7 +214,7 @@ class TestClaudeSetupPreview:
     """
 
     def test_install_preview_visible_for_signed_in_user(self, web_client, admin_cookie):
-        resp = web_client.get("/install", cookies=admin_cookie)
+        resp = web_client.get("/setup", cookies=admin_cookie)
         assert resp.status_code == 200
         body = resp.text
         # Preview card + placeholder token render
@@ -243,10 +243,10 @@ class TestClaudeSetupPreview:
         assert "&lt;will be generated on click&gt;" in body
 
     def test_install_mcp_card_removed(self, web_client):
-        """The stale 'Use with Claude Code / MCP' card on /install has been
+        """The stale 'Use with Claude Code / MCP' card on /setup has been
         removed — there is no Agnes MCP server today.
         """
-        resp = web_client.get("/install")
+        resp = web_client.get("/setup")
         assert resp.status_code == 200
         body = resp.text
         assert "Use with Claude Code / MCP" not in body

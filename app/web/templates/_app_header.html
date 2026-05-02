@@ -11,7 +11,7 @@
     <div class="app-header-right">
         {% set _path = request.url.path %}
         <a class="app-nav-link {% if _path == '/dashboard' or _path == '/' %}is-active{% endif %}" href="/dashboard">Dashboard</a>
-        <a class="app-nav-link {% if _path.startswith('/install') %}is-active{% endif %}" href="/install">Install CLI</a>
+        <a class="app-nav-link {% if _path.startswith('/setup') or _path.startswith('/install') %}is-active{% endif %}" href="/setup">Setup local agent</a>
         {% if session.user.is_admin %}
         <a class="app-nav-link {% if _path.startswith('/admin/marketplaces') %}is-active{% endif %}" href="/admin/marketplaces">Marketplaces</a>
         {% set _admin_active = _path.startswith('/admin/tables') or _path.startswith('/admin/tokens') or _path.startswith('/admin/users') or _path.startswith('/admin/groups') or _path.startswith('/admin/access') or _path.startswith('/admin/server-config') or _path.startswith('/admin/welcome') %}
