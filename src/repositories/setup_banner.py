@@ -1,7 +1,7 @@
 """Repository for the per-instance setup-page banner override (singleton row)."""
 
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 
 import duckdb
 
