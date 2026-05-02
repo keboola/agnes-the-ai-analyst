@@ -3,7 +3,7 @@
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 import duckdb
@@ -13,6 +13,7 @@ from argon2.exceptions import VerifyMismatchError
 from app.auth.jwt import create_access_token
 from app.auth.access import is_user_admin
 from app.auth.dependencies import _get_db
+from app.auth.rate_limit import limiter as _rate_limiter
 from src.db import SYSTEM_ADMIN_GROUP
 from src.repositories.users import UserRepository
 from src.repositories.user_group_members import UserGroupMembersRepository
@@ -59,13 +60,15 @@ def _audit(user_id: str, action: str, result: str | None = None) -> None:
 
 
 @router.post("/token", response_model=TokenResponse)
+@_rate_limiter.limit("10/minute")
 async def create_token(
-    request: TokenRequest,
+    request: Request,
+    body: TokenRequest,
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Issue a JWT token. Requires password authentication."""
     repo = UserRepository(conn)
-    user = repo.get_by_email(request.email)
+    user = repo.get_by_email(body.email)
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
     if not bool(user.get("active", True)):
@@ -74,11 +77,11 @@ async def create_token(
 
     # If user has password_hash, require and verify it
     if user.get("password_hash"):
-        if not request.password:
+        if not body.password:
             raise HTTPException(status_code=401, detail="Password required")
         try:
             ph = PasswordHasher()
-            ph.verify(user["password_hash"], request.password)
+            ph.verify(user["password_hash"], body.password)
         except VerifyMismatchError:
             _audit(user["id"], "login_failed", result="invalid_password")
             raise HTTPException(status_code=401, detail="Invalid password")
@@ -107,8 +110,10 @@ async def create_token(
 
 
 @router.post("/bootstrap", response_model=TokenResponse)
+@_rate_limiter.limit("3/minute")
 async def bootstrap(
-    request: BootstrapRequest,
+    request: Request,
+    body: BootstrapRequest,
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Bootstrap the first admin account.
@@ -136,10 +141,10 @@ async def bootstrap(
             detail="Bootstrap disabled — a user with a password already exists. Use /auth/password/login.",
         )
 
-    password_hash = PasswordHasher().hash(request.password) if request.password else None
+    password_hash = PasswordHasher().hash(body.password) if body.password else None
 
     # If a matching user already exists (e.g. seed), update it; else create fresh.
-    existing_user = next((u for u in existing if u.get("email") == request.email), None)
+    existing_user = next((u for u in existing if u.get("email") == body.email), None)
     if existing_user:
         user_id = existing_user["id"]
         repo.update(id=user_id, password_hash=password_hash)
@@ -148,8 +153,8 @@ async def bootstrap(
         user_id = str(uuid.uuid4())
         repo.create(
             id=user_id,
-            email=request.email,
-            name=request.name or request.email.split("@")[0],
+            email=body.email,
+            name=body.name or body.email.split("@")[0],
             password_hash=password_hash,
         )
         _audit(user_id, "bootstrap_completed")
@@ -167,10 +172,10 @@ async def bootstrap(
             added_by="auth.bootstrap",
         )
 
-    token = create_access_token(user_id=user_id, email=request.email)
+    token = create_access_token(user_id=user_id, email=body.email)
     return TokenResponse(
         access_token=token,
         user_id=user_id,
-        email=request.email,
+        email=body.email,
         role="admin",
     )

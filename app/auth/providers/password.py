@@ -16,6 +16,7 @@ from argon2.exceptions import VerifyMismatchError
 from app.auth.jwt import create_access_token
 from app.auth.access import is_user_admin
 from app.auth.dependencies import _get_db, is_local_dev_mode
+from app.auth.rate_limit import limiter as _rate_limiter
 from src.repositories.users import UserRepository
 
 
@@ -197,13 +198,15 @@ def send_setup_email(request: Request, email: str, token: str) -> bool:
 # ---- Existing flows ----
 
 @router.post("/login")
+@_rate_limiter.limit("10/minute")
 async def password_login(
-    request: PasswordLoginRequest,
+    request: Request,
+    body: PasswordLoginRequest,
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Login with email + password."""
     repo = UserRepository(conn)
-    user = repo.get_by_email(request.email)
+    user = repo.get_by_email(body.email)
     if not user or not user.get("password_hash"):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if not bool(user.get("active", True)):
@@ -211,7 +214,7 @@ async def password_login(
 
     try:
         ph = PasswordHasher()
-        ph.verify(user["password_hash"], request.password)
+        ph.verify(user["password_hash"], body.password)
     except VerifyMismatchError:
         raise HTTPException(status_code=401, detail="Invalid email or password")
     except Exception:
@@ -224,7 +227,9 @@ async def password_login(
 
 
 @router.post("/login/web")
+@_rate_limiter.limit("10/minute")
 async def password_login_web(
+    request: Request,
     email: str = Form(...),
     password: str = Form(""),
     next: str = Form(""),
@@ -258,11 +263,19 @@ async def password_login_web(
 # ---- JSON programmatic setup (backward compat — used by existing tests) ----
 
 @router.post("/setup")
+@_rate_limiter.limit("10/minute")
 async def password_setup(
+    request: Request,
     request_body: PasswordSetupRequest,
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Set initial password using setup token (JSON API)."""
+    """Set initial password using setup token (JSON API).
+
+    Rate limited 10/min per IP — same throttle as the form sibling
+    ``/setup/confirm``. Without this, the new web-form throttle is
+    bypassable: an attacker brute-forcing the ``setup_token`` just
+    switches to this JSON path and resumes at unbounded RPS.
+    """
     repo = UserRepository(conn)
     user = repo.get_by_email(request_body.email)
     if not user:
@@ -301,12 +314,19 @@ async def reset_page(
 
 
 @router.post("/reset")
+@_rate_limiter.limit("5/minute")
 async def reset_request(
     request: Request,
     email: str = Form(""),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Request a password-reset link. Anti-enumeration: same response regardless."""
+    """Request a password-reset link. Anti-enumeration: same response regardless.
+
+    Rate limited at the same 5/min as ``/auth/email/send-link`` — the
+    attack surface is identical (single IP rotates random recipient
+    addresses, anti-enumeration response shape masks which addresses
+    landed, attacker burns SMTP / SendGrid quota + spams real users).
+    """
     # Match the rest of the codebase's case-sensitive lookup (password_login,
     # email magic-link, admin create). Lowercasing here would silently fail
     # for mixed-case emails the admin stored as-is.
@@ -331,6 +351,7 @@ async def reset_request(
 
 
 @router.post("/reset/confirm")
+@_rate_limiter.limit("10/minute")
 async def reset_confirm(
     request: Request,
     email: str = Form(...),
@@ -339,7 +360,13 @@ async def reset_confirm(
     confirm_password: str = Form(...),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Submit a new password using a reset token."""
+    """Submit a new password using a reset token.
+
+    Rate limited 10/min per IP to slow brute-force guessing of the 32-byte
+    URL-safe ``reset_token`` — the token is high-entropy but logs / proxy
+    referer leaks have surfaced partial tokens before, and there's no
+    reason to allow unbounded attempts.
+    """
     if password != confirm_password:
         return _render_reset_form(request, email=email, token=token, error="Passwords do not match.")
     if len(password) < MIN_PASSWORD_LEN:
@@ -421,12 +448,18 @@ async def setup_page(
 
 
 @router.post("/setup/request")
+@_rate_limiter.limit("5/minute")
 async def setup_request(
     request: Request,
     email: str = Form(""),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Self-service 'Request Access' — emails a setup link if user is pre-approved and unset."""
+    """Self-service 'Request Access' — emails a setup link if user is pre-approved and unset.
+
+    Same 5/min rate limit as ``/auth/password/reset`` and ``/send-link``
+    — same email-bombing surface (anti-enumeration response, sends mail
+    on each request).
+    """
     # Match the rest of the codebase's case-sensitive lookup (password_login,
     # email magic-link, admin create). Lowercasing here would silently fail
     # for mixed-case emails the admin stored as-is.
@@ -452,6 +485,7 @@ async def setup_request(
 
 
 @router.post("/setup/confirm")
+@_rate_limiter.limit("10/minute")
 async def setup_confirm(
     request: Request,
     email: str = Form(...),
@@ -461,7 +495,12 @@ async def setup_confirm(
     name: str = Form(""),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Web form: complete initial password setup via setup token."""
+    """Web form: complete initial password setup via setup token.
+
+    Rate limited 10/min per IP — same rationale as ``/reset/confirm``:
+    high-entropy ``setup_token`` should still not be brute-forceable at
+    unbounded RPS in case a partial token leaks via logs / referer.
+    """
     if password != confirm_password:
         return _render_setup_form(request, email=email, token=token, name=name, error="Passwords do not match.")
     if len(password) < MIN_PASSWORD_LEN:
