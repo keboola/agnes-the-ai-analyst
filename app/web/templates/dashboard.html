@@ -1232,6 +1232,29 @@
             margin-left: auto;
         }
 
+        .env-setup-link {
+            display: inline-block;
+            margin-left: 12px;
+            font-size: 13px;
+            color: var(--primary);
+            text-decoration: none;
+        }
+        .env-setup-link:hover { text-decoration: underline; }
+
+        .setup-link-banner {
+            margin-top: 12px;
+            padding: 10px 16px;
+            font-size: 13px;
+            color: var(--text-secondary, #6b7280);
+            text-align: center;
+        }
+        .setup-link-banner a {
+            color: var(--primary);
+            text-decoration: none;
+            font-weight: 500;
+        }
+        .setup-link-banner a:hover { text-decoration: underline; }
+
         /* Error banner for setup flow */
         .setup-error {
             margin-top: 12px;
@@ -2020,6 +2043,7 @@
                     Setup a new Claude Code
                 </button>
                 <span class="env-hint">Valid 90 days · token stays in clipboard only</span>
+                <a href="/setup" class="env-setup-link">Or open the full setup page →</a>
             </div>
             <div id="setupClaudeError" class="setup-error" role="alert" style="display:none;"></div>
             <details class="setup-preview-card" aria-label="Preview of the clipboard payload">
@@ -2506,6 +2530,12 @@
                 {# Step 5 (Claude Code setup) appears on dashboard after account creation #}
             </div>
         </div>
+
+        {% if account_details and account_details.last_sync_display %}
+        <div class="setup-link-banner">
+            Need to set up another machine? <a href="/setup">Open the setup page →</a>
+        </div>
+        {% endif %}
 
         <div class="support-banner" style="margin-top: 16px;">
             {{ config.INSTANCE_NAME }} - need help? Contact your platform team.
