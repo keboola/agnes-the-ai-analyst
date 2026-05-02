@@ -7,6 +7,7 @@
 """
 
 import datetime
+import logging
 from typing import Optional
 
 import duckdb
@@ -17,7 +18,9 @@ from pydantic import BaseModel, Field
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db, get_current_user
 from src.repositories.welcome_template import WelcomeTemplateRepository
-from src.welcome_template import _load_default_template, render_welcome
+from src.welcome_template import _load_default_template, build_context, render_welcome
+
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter(tags=["welcome"])
@@ -75,9 +78,10 @@ async def get_welcome(
     try:
         rendered = render_welcome(conn, user=user, server_url=server_url)
     except TemplateError as e:
+        logger.warning("Welcome render failed: %s", e, exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Welcome template render failed: {e}. An admin can reset it via /admin/welcome.",
+            detail="Welcome template render failed. An admin can fix it at /admin/welcome.",
         )
     return WelcomeResponse(content=rendered)
 
@@ -133,8 +137,6 @@ async def admin_preview_template(
     """Render arbitrary template content against the live context for the
     calling admin, without persisting. Used by the /admin/welcome editor's
     Preview button so admins can see their edits before saving."""
-    from src.welcome_template import build_context
-
     env = Environment(undefined=StrictUndefined, autoescape=False)
     try:
         template = env.from_string(payload.content)
