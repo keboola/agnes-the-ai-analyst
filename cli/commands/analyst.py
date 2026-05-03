@@ -17,16 +17,16 @@ analyst_app = typer.Typer(help="Analyst workspace bootstrap and status")
 # Helper: detect existing workspace
 # ---------------------------------------------------------------------------
 
-_CLAUDE_MD_MARKER = "AI Data Analyst"
-
-
 def _detect_existing_project(workspace: Path) -> bool:
-    """Return True if CLAUDE.md with the analyst identifier already exists."""
-    claude_md = workspace / "CLAUDE.md"
-    if claude_md.exists():
-        content = claude_md.read_text(encoding="utf-8")
-        return _CLAUDE_MD_MARKER in content
-    return False
+    """Return True if .claude/settings.json with the agnes da-sync hooks exists."""
+    settings = workspace / ".claude" / "settings.json"
+    if not settings.exists():
+        return False
+    try:
+        content = settings.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return "da sync" in content
 
 
 # ---------------------------------------------------------------------------

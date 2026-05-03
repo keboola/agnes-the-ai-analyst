@@ -7,7 +7,7 @@ script (TLS trust, CLI install, login, marketplace, skills).  When an
 override is saved it replaces the default everywhere: both the /setup page
 display and the dashboard clipboard CTA.
 
-Override content is a Jinja2 template (autoescape=True, StrictUndefined).
+Override content is a Jinja2 template (autoescape=False, StrictUndefined).
 Available placeholders: instance.{name,subtitle}, server.{url,hostname},
 user (may be None for anonymous visitors), now, today.
 
@@ -215,9 +215,11 @@ def render_agent_prompt_banner(
     content = row.get("content")
 
     if content:
-        # Admin-authored override — render as Jinja2 HTML, sanitize.
+        # Admin-authored override — render as Jinja2, sanitize.
+        # autoescape=False to match /setup rendering — the outer Jinja2 template
+        # applies escaping where needed.
         try:
-            env = Environment(undefined=StrictUndefined, autoescape=True)
+            env = Environment(undefined=StrictUndefined, autoescape=False)
             template = env.from_string(content)
             ctx = build_context(user=user, server_url=server_url)
             rendered = template.render(**ctx)

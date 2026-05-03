@@ -119,7 +119,9 @@ async def admin_preview_template(
     """Render arbitrary template content against the live context for the
     calling admin, without persisting. Used by the /admin/agent-prompt editor's
     Preview button so admins can see their edits before saving."""
-    env = Environment(undefined=StrictUndefined, autoescape=True)
+    # autoescape=False to match /setup rendering — the outer Jinja2 template
+    # applies escaping where needed.
+    env = Environment(undefined=StrictUndefined, autoescape=False)
     try:
         template = env.from_string(payload.content)
         ctx = build_context(

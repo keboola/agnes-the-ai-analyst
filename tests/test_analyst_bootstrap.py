@@ -34,45 +34,64 @@ def tmp_workspace(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 class TestDetectExistingProject:
-    def test_no_claude_md_returns_false(self, tmp_workspace):
+    def test_no_settings_json_returns_false(self, tmp_workspace):
         from cli.commands.analyst import _detect_existing_project
 
         assert _detect_existing_project(tmp_workspace) is False
 
-    def test_claude_md_with_marker_returns_true(self, tmp_workspace):
+    def test_settings_json_with_da_sync_returns_true(self, tmp_workspace):
         from cli.commands.analyst import _detect_existing_project
+        import json as _json
 
-        (tmp_workspace / "CLAUDE.md").write_text(
-            "# Acme — AI Data Analyst\n\nThis workspace is connected to http://localhost:8000.\n",
-            encoding="utf-8",
-        )
+        claude_dir = tmp_workspace / ".claude"
+        claude_dir.mkdir(parents=True, exist_ok=True)
+        settings = {
+            "hooks": {
+                "SessionStart": [{"hooks": [{"type": "command", "command": "da sync --quiet 2>/dev/null || true"}]}],
+            }
+        }
+        (claude_dir / "settings.json").write_text(_json.dumps(settings), encoding="utf-8")
         assert _detect_existing_project(tmp_workspace) is True
 
-    def test_claude_md_without_marker_returns_false(self, tmp_workspace):
+    def test_settings_json_without_da_sync_returns_false(self, tmp_workspace):
         from cli.commands.analyst import _detect_existing_project
+        import json as _json
 
-        (tmp_workspace / "CLAUDE.md").write_text(
-            "# Some Other Project\n\nNot an analyst workspace.\n",
-            encoding="utf-8",
+        claude_dir = tmp_workspace / ".claude"
+        claude_dir.mkdir(parents=True, exist_ok=True)
+        (claude_dir / "settings.json").write_text(
+            _json.dumps({"model": "sonnet"}), encoding="utf-8"
         )
         assert _detect_existing_project(tmp_workspace) is False
 
     def test_setup_blocked_when_existing_without_force(self, tmp_workspace):
         """Setup must exit(1) when workspace exists and --force not supplied."""
-        (tmp_workspace / "CLAUDE.md").write_text(
-            "# Acme — AI Data Analyst\nThis workspace is connected to http://localhost:8000.\n",
-            encoding="utf-8",
-        )
+        import json as _json
+
+        claude_dir = tmp_workspace / ".claude"
+        claude_dir.mkdir(parents=True, exist_ok=True)
+        settings = {
+            "hooks": {
+                "SessionStart": [{"hooks": [{"type": "command", "command": "da sync --quiet 2>/dev/null || true"}]}],
+            }
+        }
+        (claude_dir / "settings.json").write_text(_json.dumps(settings), encoding="utf-8")
         result = runner.invoke(app, ["analyst", "setup", "--server-url", "http://localhost:8000"])
         assert result.exit_code == 1
         assert "force" in result.output.lower() or "force" in (result.stderr or "").lower()
 
     def test_setup_proceeds_with_force(self, tmp_workspace):
         """--force bypasses existing-project detection."""
-        (tmp_workspace / "CLAUDE.md").write_text(
-            "# Acme — AI Data Analyst\nThis workspace is connected to http://localhost:8000.\n",
-            encoding="utf-8",
-        )
+        import json as _json
+
+        claude_dir = tmp_workspace / ".claude"
+        claude_dir.mkdir(parents=True, exist_ok=True)
+        settings = {
+            "hooks": {
+                "SessionStart": [{"hooks": [{"type": "command", "command": "da sync --quiet 2>/dev/null || true"}]}],
+            }
+        }
+        (claude_dir / "settings.json").write_text(_json.dumps(settings), encoding="utf-8")
 
         with patch("cli.commands.analyst._connect_to_instance", return_value="tok"), \
              patch("cli.commands.analyst._download_metadata"), \

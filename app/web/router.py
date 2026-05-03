@@ -734,7 +734,7 @@ async def setup_page(
     setup_instructions.resolve_lines() is used.
     """
     from src.repositories.welcome_template import WelcomeTemplateRepository
-    from src.welcome_template import compute_default_agent_prompt
+    from src.welcome_template import compute_default_agent_prompt, _sanitize_banner_html
     from jinja2 import Environment, StrictUndefined, TemplateError
 
     base_url = str(request.base_url).rstrip("/")
@@ -751,7 +751,7 @@ async def setup_page(
             env = Environment(undefined=StrictUndefined, autoescape=False)
             template = env.from_string(override_content)
             ctx_vars = _build_banner_ctx(user=user, server_url=base_url)
-            setup_script_text = template.render(**ctx_vars)
+            setup_script_text = _sanitize_banner_html(template.render(**ctx_vars))
         except (TemplateError, Exception) as exc:
             logger.warning("setup_page: override render failed (%s); falling back to default", exc)
             setup_script_text = compute_default_agent_prompt(conn, user=user, server_url=base_url)
