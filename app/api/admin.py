@@ -225,6 +225,13 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                         "data project). Defaults to data_source.bigquery.project. "
                         "Mismatch → 403 USER_PROJECT_DENIED on every BQ call."
                     ),
+                    # Issue #160 §4.7.5: when this field is empty in the
+                    # admin form, the JS template shows "(defaults to <project>)"
+                    # as placeholder text — surfacing the access.py:339-340
+                    # fallback rule directly in the UI without the operator
+                    # having to read source. Path is walked against the
+                    # `original` config payload from GET /api/admin/server-config.
+                    "placeholder_from": ["data_source", "bigquery", "project"],
                 },
                 "max_bytes_per_materialize": {
                     "kind": "int",
