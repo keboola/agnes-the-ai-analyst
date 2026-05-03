@@ -139,19 +139,64 @@ class TestCreateWorkspace:
 # ---------------------------------------------------------------------------
 
 class TestInitClaudeWorkspace:
-    """Tests for _init_claude_workspace: no CLAUDE.md written, but
-    .claude/CLAUDE.local.md placeholder and settings.json hooks are created.
-    """
+    """Tests for _init_claude_workspace."""
 
-    def test_does_not_write_claude_md(self, tmp_workspace):
+    def test_does_not_write_claude_md_when_no_server_url(self, tmp_workspace):
+        """Without server_url, CLAUDE.md must not be written."""
         from cli.commands.analyst import _create_workspace, _init_claude_workspace
 
         _create_workspace(tmp_workspace)
         _init_claude_workspace(tmp_workspace)
 
         assert not (tmp_workspace / "CLAUDE.md").exists(), (
-            "CLAUDE.md must NOT be written by _init_claude_workspace"
+            "CLAUDE.md must NOT be written when no server_url is provided"
         )
+
+    def test_writes_claude_md_when_server_returns_200(self, tmp_workspace):
+        """When /api/welcome returns 200, CLAUDE.md is written."""
+        from cli.commands.analyst import _create_workspace, _init_claude_workspace
+        from unittest.mock import MagicMock, patch
+
+        _create_workspace(tmp_workspace)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"content": "# My CLAUDE.md\nHello analyst."}
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch("cli.commands.analyst.httpx.get", return_value=mock_resp):
+            _init_claude_workspace(tmp_workspace, server_url="https://example.com", token="tok")
+
+        claude_md = tmp_workspace / "CLAUDE.md"
+        assert claude_md.exists()
+        assert "My CLAUDE.md" in claude_md.read_text(encoding="utf-8")
+
+    def test_does_not_write_claude_md_when_no_claude_md_flag(self, tmp_workspace):
+        """When server_url/token are empty (--no-claude-md path), CLAUDE.md is not written."""
+        from cli.commands.analyst import _create_workspace, _init_claude_workspace
+
+        _create_workspace(tmp_workspace)
+        _init_claude_workspace(tmp_workspace, server_url="", token="")
+
+        assert not (tmp_workspace / "CLAUDE.md").exists()
+
+    def test_does_not_write_claude_md_on_404(self, tmp_workspace):
+        """When /api/welcome returns 404 (older server), CLAUDE.md is skipped gracefully."""
+        from cli.commands.analyst import _create_workspace, _init_claude_workspace
+        from unittest.mock import MagicMock, patch
+        import httpx
+
+        _create_workspace(tmp_workspace)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 404
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch("cli.commands.analyst.httpx.get", return_value=mock_resp):
+            # Must not raise
+            _init_claude_workspace(tmp_workspace, server_url="https://example.com", token="tok")
+
+        assert not (tmp_workspace / "CLAUDE.md").exists()
 
     def test_creates_claude_local_md_when_absent(self, tmp_workspace):
         from cli.commands.analyst import _create_workspace, _init_claude_workspace

@@ -297,11 +297,15 @@ def _install_claude_hooks(settings_path: Path) -> None:
 # Helper: initialise Claude workspace (.claude/ directory)
 # ---------------------------------------------------------------------------
 
-def _init_claude_workspace(workspace: Path) -> None:
+def _init_claude_workspace(
+    workspace: Path,
+    server_url: str = "",
+    token: str = "",
+) -> None:
     """Initialise the .claude/ directory with placeholder files and hooks.
 
-    Does NOT write CLAUDE.md — workspace-context customisation is handled
-    server-side via the banner on /setup, not as a file in the workspace.
+    Writes CLAUDE.md from the server (GET /api/welcome) unless ``server_url``
+    or ``token`` are empty, or the request fails (graceful degradation).
     """
     local_md = workspace / ".claude" / "CLAUDE.local.md"
     if not local_md.exists():
@@ -319,6 +323,57 @@ def _init_claude_workspace(workspace: Path) -> None:
         settings_path.write_text(json.dumps(settings, indent=2))
 
     _install_claude_hooks(settings_path)
+
+    # Write CLAUDE.md from the server
+    if server_url and token:
+        _write_claude_md(workspace, server_url, token)
+
+
+def _write_claude_md(workspace: Path, server_url: str, token: str) -> None:
+    """Fetch the rendered CLAUDE.md from the server and write it to the workspace.
+
+    Gracefully handles:
+    - 404: older server without the endpoint — skip with warning.
+    - Other HTTP errors / network errors — skip with warning.
+    """
+    from urllib.parse import urlencode
+    import httpx
+
+    server_url = server_url.rstrip("/")
+    params = urlencode({"server_url": server_url})
+    url = f"{server_url}/api/welcome?{params}"
+    try:
+        resp = httpx.get(
+            url,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=30.0,
+        )
+        if resp.status_code == 404:
+            typer.echo(
+                "Warning: server does not support CLAUDE.md generation (older version). Skipping.",
+                err=True,
+            )
+            return
+        if resp.status_code == 401 or resp.status_code == 403:
+            typer.echo(
+                f"Warning: CLAUDE.md fetch failed ({resp.status_code} {resp.reason_phrase}). Skipping.",
+                err=True,
+            )
+            return
+        resp.raise_for_status()
+        data = resp.json()
+        content = data.get("content", "")
+        if content:
+            (workspace / "CLAUDE.md").write_text(content, encoding="utf-8")
+        else:
+            typer.echo("Warning: server returned empty CLAUDE.md content. Skipping.", err=True)
+    except httpx.HTTPStatusError as e:
+        typer.echo(
+            f"Warning: CLAUDE.md fetch failed (HTTP {e.response.status_code}). Skipping.",
+            err=True,
+        )
+    except Exception as e:
+        typer.echo(f"Warning: CLAUDE.md fetch failed: {e}. Skipping.", err=True)
 
 
 # ---------------------------------------------------------------------------
@@ -352,6 +407,7 @@ def setup(
     server_url: str = typer.Option(..., "--server-url", help="URL of the AI Data Analyst server"),
     force: bool = typer.Option(False, "--force", help="Re-initialise even if workspace already exists"),
     workspace_dir: Optional[str] = typer.Option(None, "--workspace", help="Workspace directory (default: current dir)"),
+    no_claude_md: bool = typer.Option(False, "--no-claude-md", help="Skip writing CLAUDE.md to workspace"),
 ):
     """Bootstrap a new analyst workspace from a remote server."""
     workspace = Path(workspace_dir).resolve() if workspace_dir else Path.cwd()
@@ -385,9 +441,13 @@ def setup(
     typer.echo("Initialising DuckDB views...")
     total_rows = _initialize_duckdb(workspace)
 
-    # 7. Initialise Claude workspace (.claude/ hooks + placeholder)
+    # 7. Initialise Claude workspace (.claude/ hooks + placeholder + CLAUDE.md)
     typer.echo("Initializing Claude workspace...")
-    _init_claude_workspace(workspace)
+    _init_claude_workspace(
+        workspace,
+        server_url=server_url if not no_claude_md else "",
+        token=token if not no_claude_md else "",
+    )
 
     # 8. Summary
     typer.echo("")
@@ -396,6 +456,8 @@ def setup(
     typer.echo(f"  Tables   : {n_downloaded} downloaded, {total_rows} total rows")
     typer.echo(f"  Workspace: {workspace}")
     typer.echo(f"  Hooks    : SessionStart/End installed in {workspace}/.claude/settings.json")
+    if not no_claude_md:
+        typer.echo(f"  CLAUDE.md: written from server template")
     typer.echo("")
     typer.echo("Next steps:")
     typer.echo("  da sync          — refresh data")
