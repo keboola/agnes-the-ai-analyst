@@ -25,12 +25,15 @@ def test_blocked_keyword_carries_keyword_in_details():
     try:
         engine.execute("DROP TABLE foo")
     except RemoteQueryError as exc:
-        assert exc.error_type == "blocked_keyword", exc.error_type
-        # 'drop' is the keyword that triggers the block.
+        # Blocked-keyword raise lives at src/remote_query.py:134-138 with
+        # error_type="query_error" (not "blocked_keyword" — that's the
+        # keyword name in details, not the type).
+        assert exc.error_type == "query_error", exc.error_type
         assert exc.details, "blocked_keyword raise must populate details"
         assert "blocked_keyword" in exc.details
+        assert exc.details["blocked_keyword"] == "drop "
     else:
-        raise AssertionError("expected blocked_keyword RemoteQueryError")
+        raise AssertionError("expected RemoteQueryError")
 
 
 def test_query_must_be_select_carries_no_unnecessary_details():

@@ -37,11 +37,15 @@ class TestRemoteQuery:
         assert result.exit_code == 0
 
     def test_remote_query_failure(self):
-        """--remote prints error message on API failure."""
+        """--remote prints error message on API failure (#160 §4.7: shared
+        renderer surfaces the detail; the prior `Query failed: ...` prefix
+        was dropped in favor of HTTP-status + structured detail)."""
         with patch("cli.client.api_post", return_value=_resp(400, {"detail": "bad SQL"})):
             result = runner.invoke(app, ["query", "SELECT bad", "--remote"])
         assert result.exit_code == 1
-        assert "Query failed" in result.output
+        # Renderer formats string-detail as `HTTP 400: bad SQL`
+        assert "HTTP 400" in result.output
+        assert "bad SQL" in result.output
 
     def test_remote_query_truncated(self):
         """Truncated result shows warning."""
