@@ -37,13 +37,30 @@ def _register_bq_remote_row(name: str, bucket: str, source_table: str) -> None:
 @pytest.fixture
 def mock_dry_run(monkeypatch):
     """Replace `_bq_dry_run_bytes` with a controllable stub. Each test sets
-    `mock_dry_run.bytes_to_return` to control what /api/query sees."""
+    `mock_dry_run["bytes"]` to control what /api/query sees. Also stubs
+    `get_bq_access` so the guardrail doesn't require a real BQ connection
+    in the test env."""
     state = {"bytes": 0}
 
-    def fake(*args, **kwargs):
+    def fake_dry_run(*args, **kwargs):
         return state["bytes"]
 
-    monkeypatch.setattr("app.api.query._bq_dry_run_bytes", fake, raising=False)
+    monkeypatch.setattr("app.api.query._bq_dry_run_bytes", fake_dry_run, raising=False)
+
+    # Stub get_bq_access so the guardrail's BqAccess construction doesn't
+    # fail with `not_configured` in tests that don't set up real BQ.
+    class _FakeProjects:
+        data = "test-data-prj"
+        billing = "test-billing-prj"
+
+    class _FakeBqAccess:
+        projects = _FakeProjects()
+
+    monkeypatch.setattr(
+        "app.api.query.get_bq_access",
+        lambda: _FakeBqAccess(),
+        raising=False,
+    )
     return state
 
 

@@ -68,7 +68,7 @@ def test_query_records_bytes_against_shared_quota(seeded_app, fresh_quota, mock_
 
     # Pre-flight: tracker has zero usage for this user.
     tracker = fresh_quota._build_quota_tracker()
-    user_id = "admin"  # seeded_app's admin user id
+    user_id = "admin1"  # seeded_app's admin user id
     before = tracker.bytes_used_today(user_id)
 
     r = c.post(
@@ -93,7 +93,7 @@ def test_query_pre_flight_rejects_user_over_daily_cap(seeded_app, fresh_quota, m
 
     # Plant the user's daily counter already at the cap by injecting bytes.
     tracker = fresh_quota._build_quota_tracker()
-    user_id = "admin"
+    user_id = "admin1"
     # Push counter past the cap (default 50 GiB).
     tracker.record_bytes(user_id, tracker._max_daily_bytes + 1)
 
@@ -111,7 +111,7 @@ def test_non_bq_query_skips_quota_path(seeded_app, fresh_quota, mock_dry_run):
     """A query that doesn't touch any registered remote BQ row must NOT
     decrement quota. Quota wiring runs only when dry_run_set is non-empty."""
     tracker = fresh_quota._build_quota_tracker()
-    user_id = "admin"
+    user_id = "admin1"
     before = tracker.bytes_used_today(user_id)
 
     c = seeded_app["client"]
