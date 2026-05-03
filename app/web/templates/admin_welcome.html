@@ -8,11 +8,15 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/material-darker.min.css"
       integrity="sha512-2OhXH4Il3n2tHKwLLSDPhrkgnLBC+6lHGGQzSFi3chgVB6DJ/v6+nbx+XYO9CugQyHVF/8D/0k3Hx1eaUK2K9g=="
       crossorigin="anonymous">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/shell/shell.min.css"
+      crossorigin="anonymous">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"
         integrity="sha512-OeZ4Yrb/W7d2W4rAMOO0HQ9Ro/aWLtpW9BUSR2UOWnSV2hprXLkkYnnCGc9NeLUxxE4ZG7zN16UuT1Elqq8Opg=="
         crossorigin="anonymous"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/jinja2/jinja2.min.js"
         integrity="sha512-Z4le1RxwhD8lDCrspbBxjTLLP2HGC1+mKb9KHR2N/sEx8uOe2vre5XQo8YMPAz8FQTo43HjefjlDtjY4LtfaaQ=="
+        crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/shell/shell.min.js"
         crossorigin="anonymous"></script>
 
 <style>
@@ -202,7 +206,7 @@
   <div class="welcome-toolbar">
     <div>
       <h2 class="welcome-title">Agent Setup Prompt</h2>
-      <p class="welcome-sub">Customise the banner shown above the setup commands on <code>/setup</code>.</p>
+      <p class="welcome-sub">The bash setup script shown on <code>/setup</code> and copied by the dashboard CTA.</p>
     </div>
     <div id="status-chip">
       {% if is_override %}
@@ -219,17 +223,19 @@
   <div class="welcome-card">
     <div class="welcome-card-body">
       <p class="welcome-desc">
-        This banner is shown above the setup commands on <code>/setup</code>. Empty by default.
-        Use it for organisation-specific notes: VPN requirements, support channel, data classification
-        policy, platform onboarding steps, etc.
-        The override is rendered server-side as HTML — Jinja2 placeholders like
-        <code>{{ "{{ user.name }}" }}</code> are substituted at render time.
-        Output is sanitised post-render: inline <code>&lt;script&gt;</code> tags and
-        <code>on*=</code> event handlers are stripped as a safety net.
+        <strong>Default:</strong> the auto-generated bash bootstrap script (TLS trust, CLI install,
+        login, marketplace, skills). When you save an override, it replaces the default
+        everywhere — the <code>/setup</code> page display and the dashboard clipboard CTA.
+      </p>
+      <p class="welcome-desc">
+        <strong>Placeholders:</strong> <code>{server_url}</code> and <code>{token}</code> are
+        substituted by JavaScript at clipboard-copy time — leave them literal in your edits.
+        Jinja2 variables (<code>{{ "{{ instance.name }}" }}</code>, <code>{{ "{{ user.email }}" }}</code>, etc.)
+        are server-rendered before the page is served.
       </p>
 
       <details class="welcome-cheatsheet">
-        <summary>Available placeholders</summary>
+        <summary>Available Jinja2 placeholders</summary>
         <div class="code-block">
           <span id="placeholder-text" class="code-body">{{ "{{ instance.name }}" }}       — instance display name
 {{ "{{ instance.subtitle }}" }}   — operator / org name
@@ -237,18 +243,22 @@
 {{ "{{ server.hostname }}" }}     — host part only
 {{ "{{ user.email }}" }}, {{ "{{ user.name }}" }}, {{ "{{ user.is_admin }}" }}, {{ "{{ user.groups }}" }}
   (user may be null for anonymous visitors — guard with {{ "{% if user %}" }})
-{{ "{{ now }}" }}, {{ "{{ today }}" }}     — server time (UTC) / date string</span>
+{{ "{{ now }}" }}, {{ "{{ today }}" }}     — server time (UTC) / date string
+
+# JS-substituted at clipboard-copy time (leave as literal placeholders):
+{server_url}   — full server origin (https://agnes.example.com)
+{token}        — the user's freshly-generated personal access token</span>
           <button class="btn-copy" data-copy-target="placeholder-text">Copy</button>
         </div>
       </details>
 
       <div class="welcome-editor-row">
         <div class="welcome-editor-col">
-          <textarea id="content" name="content">{{ current }}</textarea>
+          <textarea id="content" name="content">{{ current or default_template }}</textarea>
         </div>
         <div class="welcome-preview-col">
           <h4>Live preview</h4>
-          <div id="preview-content">(rendering…)</div>
+          <pre id="preview-content" style="white-space: pre-wrap; word-break: break-word; font-family: var(--font-mono, monospace); font-size: 12px; margin: 0;">(rendering…)</pre>
           <div id="preview-error" class="welcome-preview-error" hidden></div>
         </div>
       </div>
@@ -264,7 +274,7 @@
 <div class="modal-backdrop" id="reset-modal" role="dialog" aria-modal="true" aria-labelledby="reset-modal-title">
   <div class="modal-card">
     <h3 id="reset-modal-title">Reset to default?</h3>
-    <p class="sub">Your override will be permanently removed. No banner will be shown on <code>/setup</code>. This cannot be undone.</p>
+    <p class="sub">Your override will be permanently removed. The auto-generated bash bootstrap script will be shown on <code>/setup</code> instead. This cannot be undone.</p>
     <div class="modal-actions">
       <button class="modal-btn" data-close-modal="reset-modal">Cancel</button>
       <button class="modal-btn danger" id="reset-confirm-btn">Reset</button>
@@ -336,7 +346,8 @@ async function renderPreview() {
     });
     if (r.ok) {
       const j = await r.json();
-      previewBox.innerHTML = j.content;
+      // Use textContent (not innerHTML) — content is bash/text, not trusted HTML
+      previewBox.textContent = j.content;
       previewErr.hidden = true;
     } else {
       let detail = r.statusText;
@@ -396,7 +407,9 @@ async function refreshStatus() {
   if (!r.ok) return;
   const data = await r.json();
   setStatusChip(data);
-  editor.setValue(data.content !== null ? data.content : "");
+  // When an override is set, show it; otherwise show the live default so the
+  // editor is never empty and admins can see what they're overriding.
+  editor.setValue(data.content !== null ? data.content : (data.default || ""));
   renderPreview();
 }
 

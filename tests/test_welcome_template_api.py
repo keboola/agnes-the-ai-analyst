@@ -34,8 +34,11 @@ def test_admin_get_template_initially_null(seeded_app):
     assert r.status_code == 200
     body = r.json()
     assert body["content"] is None
-    # No longer returns a `default` field — banner default is empty
-    assert "default" not in body or body.get("default") is None
+    # default field must be present and contain the live setup script
+    assert "default" in body
+    assert body["default"]  # non-empty
+    # Must contain setup-script markers
+    assert "da auth" in body["default"] or "uv tool install" in body["default"] or "curl" in body["default"]
 
 
 def test_admin_can_set_and_reset_template(seeded_app):
@@ -164,3 +167,48 @@ def test_validation_stub_matches_build_context_shape(seeded_app, tmp_path, monke
         assert set(_VALIDATION_STUB_CONTEXT["user"].keys()) == set(real_ctx["user"].keys()), (
             "_VALIDATION_STUB_CONTEXT['user'] drifted from build_context output"
         )
+
+
+def test_setup_page_uses_override_when_set(seeded_app):
+    """When admin saves an override, /setup serves the override instead of the
+    auto-generated setup_instructions output."""
+    c = seeded_app["client"]
+    admin = _auth(seeded_app["admin_token"])
+
+    # Save override (plain text — no Jinja2 needed here; PUT validates with stub ctx)
+    r = c.put(
+        "/api/admin/welcome-template",
+        json={"content": "# Custom setup script\necho hello"},
+        headers=admin,
+    )
+    assert r.status_code == 200
+
+    # /setup should now contain the override content
+    r = c.get("/setup")
+    assert r.status_code == 200
+    assert "Custom setup script" in r.text
+    assert "echo hello" in r.text
+
+    # Reset to default
+    r = c.delete("/api/admin/welcome-template", headers=admin)
+    assert r.status_code == 204
+
+    # /setup back to default — should NOT contain the custom override
+    r = c.get("/setup")
+    assert r.status_code == 200
+    assert "Custom setup script" not in r.text
+    # Default contains setup_instructions output
+    assert "da analyst setup" in r.text or "da auth" in r.text or "curl" in r.text
+
+
+def test_get_template_default_field_has_server_url_placeholder(seeded_app):
+    """{server_url} placeholder must survive in the default — it is a JS-substituted
+    single-brace placeholder and must NOT be consumed by Jinja2 at render time."""
+    c = seeded_app["client"]
+    admin = _auth(seeded_app["admin_token"])
+
+    r = c.get("/api/admin/welcome-template", headers=admin)
+    assert r.status_code == 200
+    body = r.json()
+    assert "{server_url}" in body["default"]
+    assert "{token}" in body["default"]

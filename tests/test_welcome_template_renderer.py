@@ -1,4 +1,4 @@
-"""Unit tests for the agent-setup-prompt banner renderer."""
+"""Unit tests for the agent-setup-prompt renderer."""
 
 import duckdb
 import pytest
@@ -8,6 +8,7 @@ from src.repositories.welcome_template import WelcomeTemplateRepository
 from src.welcome_template import (
     _sanitize_banner_html,
     build_context,
+    compute_default_agent_prompt,
     render_agent_prompt_banner,
 )
 
@@ -33,12 +34,43 @@ def _user(email="alice@example.com"):
 
 
 # ---------------------------------------------------------------------------
-# Default (no override) → empty string
+# Default (no override) → live setup script, not empty string
 # ---------------------------------------------------------------------------
 
-def test_returns_empty_when_no_override(conn):
+def test_returns_default_script_when_no_override(conn):
+    """When no override is set, render_agent_prompt_banner returns the live
+    setup script (not an empty string)."""
     out = render_agent_prompt_banner(conn, user=_user(), server_url="https://example.com")
-    assert out == ""
+    # Must be non-empty — the default IS the setup script
+    assert out != ""
+    # Must contain key markers from setup_instructions.resolve_lines()
+    assert "da analyst setup" in out or "da auth" in out or "curl" in out
+
+
+def test_compute_default_returns_setup_script(conn):
+    """compute_default_agent_prompt returns a non-empty string with setup
+    script markers including {server_url} and da-related commands."""
+    out = compute_default_agent_prompt(conn, user=_user(), server_url="https://example.com")
+    assert out != ""
+    # {server_url} placeholder must survive (not replaced by Jinja2)
+    assert "{server_url}" in out
+    # Should reference da auth or CLI install
+    assert "da auth" in out or "uv tool install" in out
+
+
+def test_compute_default_server_url_placeholder_survives(conn):
+    """{server_url} and {token} are single-brace JS placeholders.
+    compute_default_agent_prompt must NOT replace them — they stay literal."""
+    out = compute_default_agent_prompt(conn, user=_user(), server_url="https://example.com")
+    assert "{server_url}" in out
+    assert "{token}" in out
+
+
+def test_returns_empty_for_none_user_with_no_override(conn):
+    """Anonymous visitor with no override → still returns the default script."""
+    out = render_agent_prompt_banner(conn, user=None, server_url="https://example.com")
+    # No override → default (non-empty bash script)
+    assert out != ""
 
 
 # ---------------------------------------------------------------------------
@@ -90,11 +122,6 @@ def test_renders_with_anonymous_user(conn):
     out = render_agent_prompt_banner(conn, user=None, server_url="https://example.com")
     assert "Please sign in." in out
     assert "Hi" not in out
-
-
-def test_returns_empty_for_none_user_with_no_override(conn):
-    out = render_agent_prompt_banner(conn, user=None, server_url="https://example.com")
-    assert out == ""
 
 
 # ---------------------------------------------------------------------------
@@ -188,14 +215,16 @@ def test_sanitize_allows_safe_html():
 # Render failure → empty string (not exception)
 # ---------------------------------------------------------------------------
 
-def test_render_failure_returns_empty_not_exception(conn):
+def test_render_failure_falls_back_to_default_not_exception(conn):
     # StrictUndefined: referencing an unknown variable raises at render time.
     WelcomeTemplateRepository(conn).set(
         "{{ does_not_exist }}", updated_by="admin@example.com"
     )
     out = render_agent_prompt_banner(conn, user=_user(), server_url="https://example.com")
-    # Must return empty string, not raise
-    assert out == ""
+    # Must not raise — falls back to the live default script (non-empty)
+    assert out != ""
+    # Must contain default setup script markers
+    assert "da auth" in out or "uv tool install" in out or "curl" in out
 
 
 def test_sanitize_applied_after_render(conn):

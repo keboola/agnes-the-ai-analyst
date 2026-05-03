@@ -726,18 +726,52 @@ async def setup_page(
     user: Optional[dict] = Depends(get_optional_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Setup instructions for the local agent (CLI + Claude Code)."""
-    from src.welcome_template import render_agent_prompt_banner
+    """Setup instructions for the local agent (CLI + Claude Code).
+
+    When an admin override is saved, the override replaces the auto-generated
+    setup_instructions output everywhere (both the /setup page display and the
+    dashboard clipboard CTA).  When no override is set, the live default from
+    setup_instructions.resolve_lines() is used.
+    """
+    from src.repositories.welcome_template import WelcomeTemplateRepository
+    from src.welcome_template import compute_default_agent_prompt
+    from jinja2 import Environment, StrictUndefined, TemplateError
 
     base_url = str(request.base_url).rstrip("/")
-    banner_html = render_agent_prompt_banner(conn, user=user, server_url=base_url)
+
+    # Determine the script text: override (Jinja2-rendered) or live default.
+    row = WelcomeTemplateRepository(conn).get()
+    override_content = row.get("content")
+    if override_content:
+        # Admin override — render Jinja2 placeholders server-side.
+        # {server_url} and {token} survive because Jinja2 only processes
+        # double-brace {{ }} syntax; single-brace {x} pass through unchanged.
+        try:
+            from src.welcome_template import build_context as _build_banner_ctx
+            env = Environment(undefined=StrictUndefined, autoescape=False)
+            template = env.from_string(override_content)
+            ctx_vars = _build_banner_ctx(user=user, server_url=base_url)
+            setup_script_text = template.render(**ctx_vars)
+        except (TemplateError, Exception) as exc:
+            logger.warning("setup_page: override render failed (%s); falling back to default", exc)
+            setup_script_text = compute_default_agent_prompt(conn, user=user, server_url=base_url)
+    else:
+        setup_script_text = compute_default_agent_prompt(conn, user=user, server_url=base_url)
+
+    # Split for the legacy setup_instructions_lines list variable that the
+    # Jinja2 partial (_claude_setup_instructions.jinja) uses.
+    setup_instructions_lines = setup_script_text.split("\n")
+
     ctx = _build_context(
         request,
         user=user,
         conn=conn,
         server_url=base_url,
         agnes_version=os.environ.get("AGNES_VERSION", "dev"),
-        banner_html=banner_html,
+        banner_html="",  # no separate banner — the script IS the content
+        # Override both variables so the partial and the JS array stay in sync.
+        setup_instructions_lines=setup_instructions_lines,
+        setup_script_text=setup_script_text,
     )
     return templates.TemplateResponse(request, "install.html", ctx)
 
@@ -905,12 +939,16 @@ async def admin_agent_prompt_page(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     from src.repositories.welcome_template import WelcomeTemplateRepository
+    from src.welcome_template import compute_default_agent_prompt
 
     row = WelcomeTemplateRepository(conn).get()
+    base_url = str(request.base_url).rstrip("/")
+    default_template = compute_default_agent_prompt(conn, user=user, server_url=base_url)
     ctx = _build_context(
         request,
         user=user,
         current=row["content"] or "",
+        default_template=default_template,
         updated_at=row["updated_at"],
         updated_by=row["updated_by"],
         is_override=row["content"] is not None,

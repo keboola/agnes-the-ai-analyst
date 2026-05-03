@@ -1,8 +1,8 @@
-"""REST endpoints for the agent-setup-prompt banner.
+"""REST endpoints for the agent-setup-prompt.
 
-- GET  /api/admin/welcome-template   : raw template override (admin)
+- GET  /api/admin/welcome-template   : raw template override + live default (admin)
 - PUT  /api/admin/welcome-template   : set override (admin)
-- DELETE /api/admin/welcome-template : reset to default / no banner (admin)
+- DELETE /api/admin/welcome-template : reset to default (admin)
 - POST /api/admin/welcome-template/preview : live preview without persisting (admin)
 """
 
@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
 from src.repositories.welcome_template import WelcomeTemplateRepository
-from src.welcome_template import build_context, render_agent_prompt_banner
+from src.welcome_template import build_context, compute_default_agent_prompt, render_agent_prompt_banner
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +50,7 @@ class BannerResponse(BaseModel):
 
 class TemplateGetResponse(BaseModel):
     content: Optional[str]
+    default: str  # live default from setup_instructions.resolve_lines()
     updated_at: Optional[str] = None
     updated_by: Optional[str] = None
 
@@ -64,12 +65,16 @@ class TemplatePreviewRequest(BaseModel):
 
 @router.get("/api/admin/welcome-template", response_model=TemplateGetResponse)
 async def admin_get_template(
+    request: Request,
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     row = WelcomeTemplateRepository(conn).get()
+    server_url = str(request.base_url).rstrip("/")
+    live_default = compute_default_agent_prompt(conn, user=user, server_url=server_url)
     return TemplateGetResponse(
         content=row["content"],
+        default=live_default,
         updated_at=row["updated_at"].isoformat() if row["updated_at"] else None,
         updated_by=row["updated_by"],
     )

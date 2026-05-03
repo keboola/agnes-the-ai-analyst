@@ -1,24 +1,29 @@
-"""Render the agent-setup-prompt banner shown on /setup.
+"""Render the agent-setup-prompt for the /setup page.
 
-The banner is a small HTML snippet admin-editable at /admin/agent-prompt.
-It appears above the bash bootstrap commands on the /setup page and is
-intended for org-specific operational notes (VPN warning, support channel,
-data classification reminder, platform requirements).
+The prompt is admin-editable at /admin/agent-prompt.  When no override is
+set, the default content is the live output of
+``app.web.setup_instructions.resolve_lines()`` — the full bash bootstrap
+script (TLS trust, CLI install, login, marketplace, skills).  When an
+override is saved it replaces the default everywhere: both the /setup page
+display and the dashboard clipboard CTA.
 
-Default: no banner (empty string). Admins override via the welcome_template
-DB table (singleton, content TEXT).
+Override content is a Jinja2 template (autoescape=True, StrictUndefined).
+Available placeholders: instance.{name,subtitle}, server.{url,hostname},
+user (may be None for anonymous visitors), now, today.
 
-Security: output is HTML-sanitized after render (script/iframe/event-handler
-strip). The Jinja2 environment uses StrictUndefined with autoescape=True so
-template typos raise immediately rather than silently emitting empty HTML.
+The bash default is **not** HTML-sanitized (it is bash, not HTML).  Override
+content IS HTML-sanitized after render: script/iframe/event-handler strip.
+
+See also: surfaced as the "Agent Setup Prompt" admin editor at /admin/agent-prompt.
 """
-# See also: surfaced as the "Agent Setup Prompt" admin editor at /admin/agent-prompt.
 
 from __future__ import annotations
 
 import logging
+import os
 import re
 from datetime import date, datetime, timezone
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -117,7 +122,72 @@ def build_context(
 
 
 # ---------------------------------------------------------------------------
-# Banner renderer
+# Default content — live setup script
+# ---------------------------------------------------------------------------
+
+def compute_default_agent_prompt(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    user: dict[str, Any] | None,
+    server_url: str,
+) -> str:
+    """Return the live default setup script from setup_instructions.resolve_lines().
+
+    This is the full bash bootstrap prompt that /setup shows when no admin
+    override is set.  The returned string is bash (not HTML) — callers must
+    NOT pass it through _sanitize_banner_html.
+
+    ``conn`` and ``user`` are forwarded to resolve the RBAC-filtered plugin
+    install list (anonymous visitors / no conn get the no-marketplace layout).
+    ``server_url`` is used to derive the server host for the marketplace block.
+    """
+    try:
+        from app.web.setup_instructions import resolve_lines
+        from app.api.cli_artifacts import _find_wheel
+
+        _wheel = _find_wheel()
+        _wheel_filename = _wheel.name if _wheel else "agnes.whl"
+
+        plugin_install_names: list[str] = []
+        if user and conn is not None:
+            try:
+                from src import marketplace_filter
+                plugin_install_names = [
+                    p["manifest_name"]
+                    for p in marketplace_filter.resolve_allowed_plugins(conn, user)
+                ]
+            except Exception:
+                logger.exception("compute_default_agent_prompt: marketplace plugin resolution failed")
+
+        self_signed_tls = os.environ.get("AGNES_DEBUG_AUTH", "").strip().lower() in (
+            "1", "true", "yes",
+        )
+        from urllib.parse import urlparse as _urlparse
+        parsed = _urlparse(server_url)
+        server_host = parsed.netloc or parsed.hostname or ""
+
+        ca_pem: str | None = None
+        try:
+            from app.web.router import _read_agnes_ca_pem
+            ca_pem = _read_agnes_ca_pem()
+        except Exception:
+            pass
+
+        lines = resolve_lines(
+            _wheel_filename,
+            plugin_install_names=plugin_install_names,
+            self_signed_tls=self_signed_tls,
+            server_host=server_host,
+            ca_pem=ca_pem,
+        )
+        return "\n".join(lines)
+    except Exception:
+        logger.exception("compute_default_agent_prompt: unexpected error; returning empty")
+        return ""
+
+
+# ---------------------------------------------------------------------------
+# Prompt renderer (override or default)
 # ---------------------------------------------------------------------------
 
 def render_agent_prompt_banner(
@@ -126,28 +196,40 @@ def render_agent_prompt_banner(
     user: dict[str, Any] | None,
     server_url: str,
 ) -> str:
-    """Render the admin-configured HTML banner for the /setup page.
+    """Render the agent setup prompt for the /setup page.
 
-    Returns an empty string when no override is set (default = no banner).
-    Render failures are swallowed (logged) and return empty string so a
-    broken template never blocks the /setup page from rendering.
+    When an admin override is set:
+      - Renders via Jinja2 (autoescape=True, StrictUndefined).
+      - HTML-sanitizes the output.
+      - Returns the sanitized HTML string.
+
+    When no override is set:
+      - Returns the live default from compute_default_agent_prompt() — the
+        full bash bootstrap script.  This is bash, not HTML, so no
+        sanitization is applied.
+
+    Render failures on the override path are swallowed (logged) and fall back
+    to the live default so a broken template never blocks /setup.
     """
     row = WelcomeTemplateRepository(conn).get()
     content = row.get("content")
-    if not content:
-        return ""
 
-    try:
-        env = Environment(undefined=StrictUndefined, autoescape=True)
-        template = env.from_string(content)
-        ctx = build_context(user=user, server_url=server_url)
-        rendered = template.render(**ctx)
-        return _sanitize_banner_html(rendered)
-    except TemplateError as exc:
-        logger.warning(
-            "Agent-prompt banner render failed (template error): %s", exc
-        )
-        return ""
-    except Exception:
-        logger.exception("Agent-prompt banner render failed (unexpected)")
-        return ""
+    if content:
+        # Admin-authored override — render as Jinja2 HTML, sanitize.
+        try:
+            env = Environment(undefined=StrictUndefined, autoescape=True)
+            template = env.from_string(content)
+            ctx = build_context(user=user, server_url=server_url)
+            rendered = template.render(**ctx)
+            return _sanitize_banner_html(rendered)
+        except TemplateError as exc:
+            logger.warning(
+                "Agent-prompt banner render failed (template error): %s", exc
+            )
+            # Fall through to default
+        except Exception:
+            logger.exception("Agent-prompt banner render failed (unexpected)")
+            # Fall through to default
+
+    # No override (or broken override) — return live default bash script.
+    return compute_default_agent_prompt(conn, user=user, server_url=server_url)

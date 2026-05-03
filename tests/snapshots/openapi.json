@@ -2108,6 +2108,10 @@
             ],
             "title": "Content"
           },
+          "default": {
+            "title": "Default",
+            "type": "string"
+          },
           "updated_at": {
             "anyOf": [
               {
@@ -2132,7 +2136,8 @@
           }
         },
         "required": [
-          "content"
+          "content",
+          "default"
         ],
         "title": "TemplateGetResponse",
         "type": "object"
@@ -11889,7 +11894,7 @@
     },
     "/setup": {
       "get": {
-        "description": "Setup instructions for the local agent (CLI + Claude Code).",
+        "description": "Setup instructions for the local agent (CLI + Claude Code).\n\nWhen an admin override is saved, the override replaces the auto-generated\nsetup_instructions output everywhere (both the /setup page display and the\ndashboard clipboard CTA).  When no override is set, the live default from\nsetup_instructions.resolve_lines() is used.",
         "operationId": "setup_page_setup_get",
         "parameters": [
           {
