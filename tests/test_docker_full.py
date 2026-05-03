@@ -40,12 +40,17 @@ def require_docker():
 
 
 def test_app_health():
-    """Health endpoint returns 200 with status and version fields."""
+    """/api/health is the auth-free LB probe — status + db_schema only.
+    Version metadata moved to /api/version (see app/api/health.py)."""
     resp = httpx.get(f"{DOCKER_BASE_URL}/api/health", timeout=10)
     assert resp.status_code == 200
     data = resp.json()
-    assert "status" in data
-    assert "version" in data
+    assert data.get("status") == "ok"
+    assert data.get("db_schema") == "ok"
+
+    ver = httpx.get(f"{DOCKER_BASE_URL}/api/version", timeout=10)
+    assert ver.status_code == 200
+    assert "version" in ver.json()
 
 
 def test_app_returns_html_on_root():

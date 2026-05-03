@@ -99,6 +99,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   concrete next step. Falls back to DuckDB's raw error for non-materialized
   unknowns.
 
+### Internal
+- **tests**: refresh `docker-e2e` health asserts to match the current
+  `/api/health` shape (auth-free, returns `status` + `db_schema` only).
+  `version` moved to `/api/version` in 0.10-era refactor; richer
+  `services.duckdb_state` lives in `/api/health/detailed` (auth-gated).
+  Tests had drifted and broke nightly e2e on main.
+
 ## [0.30.0] — 2026-05-01
 
 ### Added

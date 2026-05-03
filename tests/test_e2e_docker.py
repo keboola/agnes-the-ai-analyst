@@ -68,19 +68,22 @@ def docker_env():
 
 class TestDockerHealth:
     def test_health_endpoint(self, docker_env):
+        # /api/health returns 'ok' or 'unhealthy' (never 'healthy' — that's
+        # the detailed endpoint's vocabulary). See app/api/health.py:111-118.
         import httpx
         resp = httpx.get(f"{docker_env}/api/health")
         assert resp.status_code == 200
         data = resp.json()
-        assert data.get("status") in ("ok", "healthy")
+        assert data.get("status") == "ok"
 
     def test_health_has_duckdb(self, docker_env):
+        # /api/health touches system.duckdb to read schema_version, so
+        # db_schema='ok' implies DuckDB is reachable. The richer
+        # services.duckdb_state lives in /api/health/detailed (auth-gated).
         import httpx
         resp = httpx.get(f"{docker_env}/api/health")
         data = resp.json()
-        services = data.get("services", {})
-        assert "duckdb_state" in services
-        assert services["duckdb_state"]["status"] == "ok"
+        assert data.get("db_schema") == "ok"
 
 
 class TestDockerFullFlow:
