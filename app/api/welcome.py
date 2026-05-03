@@ -86,9 +86,11 @@ async def admin_put_template(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    # Validate with autoescape=True (matches runtime environment) and
-    # StrictUndefined so unknown placeholders are caught at save time.
-    env = Environment(undefined=StrictUndefined, autoescape=True)
+    # Validate with autoescape=False to match every runtime render path
+    # (/setup page, preview endpoint, render_agent_prompt_banner). The
+    # outer template applies escaping where needed via `| e`. StrictUndefined
+    # is kept so unknown placeholders are caught at save time.
+    env = Environment(undefined=StrictUndefined, autoescape=False)
     try:
         template = env.from_string(payload.content)
         # Render against a stub context so undefined placeholders or runtime

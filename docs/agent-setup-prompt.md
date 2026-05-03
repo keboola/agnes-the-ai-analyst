@@ -34,11 +34,16 @@ row id=1). The `DELETE` endpoint NULLs `content`; the audit trail
 
 ## Template language
 
-[Jinja2](https://jinja.palletsprojects.com/) with `autoescape=True` and
-`StrictUndefined`. Autoescape is on because the output is rendered into HTML.
-Any typo in a placeholder name raises an error at PUT validation time rather
-than silently emitting an empty string — the editor reports the error
-immediately so the admin can fix it before saving.
+[Jinja2](https://jinja.palletsprojects.com/) with `autoescape=False` and
+`StrictUndefined`. Autoescape is off because the rendered output is composed
+into the surrounding `/setup` template which applies HTML escaping where
+needed via `| e`; doubling the escape would corrupt characters like `&` or `<`
+inside code blocks. All four render sites (PUT validation, preview endpoint,
+`/setup` page render, `render_agent_prompt_banner`) share the same setting,
+so the editor's preview matches what analysts see live. Any typo in a
+placeholder name raises an error at PUT validation time rather than silently
+emitting an empty string — the editor reports the error immediately so the
+admin can fix it before saving.
 
 ## Available placeholders
 
