@@ -121,14 +121,6 @@ data_source:
     #                                    # Mismatch -> every BQ call 403 USER_PROJECT_DENIED.
     #                                    # `da diagnose` warns when this falls back to `project`.
     #                                    # Configurable via /admin/server-config UI.
-    # legacy_wrap_views: false           # When true, registered VIEWs and MATERIALIZED_VIEWs get a DuckDB
-    #                                    # master view via bigquery_query() (jobs API) so analysts can
-    #                                    # `SELECT * FROM viewname` directly. When false (default), views
-    #                                    # are catalog-only -- analysts use `da fetch viewname` or
-    #                                    # `da query --remote`. ON can cause "Response too large" on big
-    #                                    # views; OFF requires analyst-side discipline (CLAUDE.md rails).
-    #                                    # Toggle ON for view-heavy deployments where most views are small.
-    #                                    # Configurable via /admin/server-config UI.
     # max_bytes_per_materialize: 10737418240
     #                                    # Cost guardrail (bytes) for query_mode='materialized' BQ scans.
     #                                    # Dry-run check before running; exceeding -> registration / sync

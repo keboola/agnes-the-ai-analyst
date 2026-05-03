@@ -316,7 +316,9 @@ class TestViewVsTableTemplates:
             "BASE TABLE should not use bigquery_query() function"
 
     def test_view_uses_bigquery_query_function(self, tmp_path, monkeypatch):
-        """For VIEW with legacy_wrap_views=True, generated DuckDB view wraps bigquery_query() (jobs API path)."""
+        """For VIEW entity, generated DuckDB master view wraps bigquery_query()
+        (jobs API path). Same SQL form as the prior `legacy_wrap_views=True`
+        branch — now unconditional per #160."""
         from connectors.bigquery.extractor import init_extract
 
         monkeypatch.setattr(
@@ -336,12 +338,6 @@ class TestViewVsTableTemplates:
             return _CapturingProxy(real_conn, captured)
 
         monkeypatch.setattr("connectors.bigquery.extractor.duckdb.connect", spy_connect)
-
-        # Enable legacy toggle so this test verifies the old wrap-view path still works.
-        monkeypatch.setattr(
-            "connectors.bigquery.extractor.get_value",
-            lambda *args, default=None, **kw: True if "legacy_wrap_views" in args else default,
-        )
 
         init_extract(
             str(tmp_path),
@@ -575,88 +571,16 @@ class TestExtractorMainModule:
         assert exc_info.value.code == 2
 
 
-class TestDropWrapViewForBQViews:
-    def test_view_entity_does_not_create_master_view_by_default(self, tmp_path, monkeypatch):
-        from connectors.bigquery.extractor import init_extract
-        monkeypatch.setattr("connectors.bigquery.extractor.get_metadata_token", lambda: "tok")
-        monkeypatch.setattr("connectors.bigquery.extractor._detect_table_type", lambda *a, **kw: "VIEW")
-
-        # Stub BQ extension calls to avoid hitting real BQ
-        real_connect = duckdb.connect
-
-        captured = []
-
-        def safe_connect(*a, **kw):
-            return _CapturingProxy(real_connect(*a, **kw), captured)
-        monkeypatch.setattr("connectors.bigquery.extractor.duckdb.connect", safe_connect)
-
-        # legacy toggle is OFF by default → expect no CREATE VIEW for the BQ view
-        monkeypatch.setattr(
-            "connectors.bigquery.extractor.get_value",
-            lambda *args, default=None, **kw: False if "legacy_wrap_views" in args else default,
-            raising=False,
-        )
-
-        init_extract(
-            str(tmp_path),
-            "my-project",
-            [{"name": "myview", "bucket": "ds", "source_table": "myview", "description": ""}],
-        )
-
-        # Confirm extract.duckdb has _meta + _remote_attach but NO master view for myview
-        c = duckdb.connect(str(tmp_path / "extract.duckdb"), read_only=True)
-        try:
-            views = c.execute(
-                "SELECT view_name FROM duckdb_views() WHERE view_name='myview'"
-            ).fetchall()
-            assert views == [], f"expected no wrap view for VIEW entity by default; got {views}"
-            meta = c.execute("SELECT table_name FROM _meta").fetchall()
-            assert ("myview",) in meta, "_meta must still record the view"
-        finally:
-            c.close()
-
-    def test_legacy_wrap_views_toggle_restores_old_behavior(self, tmp_path, monkeypatch):
-        from connectors.bigquery.extractor import init_extract
-        monkeypatch.setattr("connectors.bigquery.extractor.get_metadata_token", lambda: "tok")
-        monkeypatch.setattr("connectors.bigquery.extractor._detect_table_type", lambda *a, **kw: "VIEW")
-
-        real_connect = duckdb.connect
-        captured = []
-
-        def safe_connect(*a, **kw):
-            return _CapturingProxy(real_connect(*a, **kw), captured)
-        monkeypatch.setattr("connectors.bigquery.extractor.duckdb.connect", safe_connect)
-
-        # legacy toggle ON → should still create the wrap view
-        monkeypatch.setattr(
-            "connectors.bigquery.extractor.get_value",
-            lambda *args, default=None, **kw: True if "legacy_wrap_views" in args else default,
-            raising=False,
-        )
-
-        init_extract(
-            str(tmp_path),
-            "my-project",
-            [{"name": "myview", "bucket": "ds", "source_table": "myview", "description": ""}],
-        )
-
-        # With legacy ON the wrap view SQL should have been emitted
-        view_sqls = [s for s in captured if "CREATE OR REPLACE VIEW" in s.upper()]
-        myview_sqls = [s for s in view_sqls if '"myview"' in s]
-        assert myview_sqls != [], \
-            f"expected wrap view SQL for VIEW entity when legacy_wrap_views=True; captured={captured}"
-        assert any("bigquery_query(" in s for s in myview_sqls), \
-            f"legacy wrap view should use bigquery_query(); got: {myview_sqls}"
-
-    # ---- #160 always-wrap tests ------------------------------------------
-    # Issue #160: query_mode='remote' BQ rows whose entity is VIEW or
-    # MATERIALIZED_VIEW must get a master view via bigquery_query() by default.
-    # Today (legacy_wrap_views=False default) they don't — `da query --remote`
-    # against such a table returns DuckDB catalog error. Fix: always wrap.
+class TestWrapViewForBQViews:
+    """Issue #160: query_mode='remote' BQ rows whose entity is VIEW or
+    MATERIALIZED_VIEW must get a master view via bigquery_query() — for any
+    other entity type we don't have proven runtime support for, skip both
+    the master view AND the _meta row."""
 
     def test_view_creates_wrap_view_with_default_config(self, tmp_path, monkeypatch):
-        """VIEW entity must get a bigquery_query() wrap view by default
-        (not just when legacy_wrap_views=True). Closes #160."""
+        """VIEW entity must get a bigquery_query() wrap view (the previous
+        opt-in path under `legacy_wrap_views=True`, now unconditional).
+        Closes #160."""
         from connectors.bigquery.extractor import init_extract
         import app.instance_config as _ic
         monkeypatch.setattr(_ic, "_instance_config", None, raising=False)
@@ -670,7 +594,6 @@ class TestDropWrapViewForBQViews:
             return _CapturingProxy(real_connect(*a, **kw), captured)
         monkeypatch.setattr("connectors.bigquery.extractor.duckdb.connect", safe_connect)
 
-        # Default config — no monkeypatch setting legacy_wrap_views
         init_extract(
             str(tmp_path),
             "my-project",
