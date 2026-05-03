@@ -10,6 +10,80 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- **`/admin/server-config` BQ test connection**: admin-only `POST
+  /api/admin/bigquery/test-connection` runs a 10s-timeout `SELECT 1`
+  against BigQuery via the saved `data_source.bigquery` config and
+  returns typed structured feedback (`200 ok` / `400 not_configured` /
+  `502 cross_project_forbidden` / `504 timeout`). The
+  /admin/server-config UI gets a "Test BigQuery connection" button next
+  to the data_source Save button; on failure the inline result uses the
+  same structured shape as the CLI renderer so operators see the same
+  hint format admins do.
+- **`api.query.bq_max_scan_bytes` server-config knob** (default 5 GiB):
+  caps the BigQuery scan that `da query --remote` will issue against
+  `query_mode='remote'` BQ rows. Exceeded queries are rejected with a
+  structured `400 remote_scan_too_large` detail naming the bytes,
+  tables, and a `da fetch` suggestion. Quota usage is recorded against
+  the same daily byte cap as `/api/v2/scan`.
+- **`data_source.bigquery.billing_project` placeholder UI**: the admin
+  form now shows `(defaults to <project>)` greyed under an empty
+  billing_project input, surfacing the access.py:339-340 fallback rule
+  directly in the UI.
+
+### Fixed
+- **`da query --remote` against `query_mode='remote'` BigQuery rows
+  whose underlying entity is a `VIEW` or `MATERIALIZED_VIEW`** now
+  resolves correctly (issue #160). The BQ extractor creates a master
+  view via the catalog path (`bq."<dataset>"."<source_table>"`) for
+  `BASE TABLE` (Storage Read API; predicate pushdown) and via
+  `bigquery_query()` for `VIEW`/`MATERIALIZED_VIEW` (jobs API). Other
+  BQ entity types (`EXTERNAL`, `SNAPSHOT`, `CLONE`) are logged + skipped
+  at extraction with no `_meta` row, so the orchestrator doesn't strand
+  a registered name with a non-existent inner view.
+- **Direct `bq."<dataset>"."<source_table>"` references in `/api/query`
+  are now registry-gated**: unregistered paths return 403
+  `bq_path_not_registered`; registered paths are subject to the same
+  per-name grant check as registered names. Closes a pre-existing RBAC
+  bypass where direct catalog-path syntax skipped the master-view
+  forbidden-table check entirely. Quoted catalog tokens
+  (`"bq"."ds"."tbl"`) are caught by the same regex.
+- **`bigquery_query()` direct calls in user SQL are now blocked** by the
+  `/api/query` keyword blocklist. Closes a pre-existing function-call
+  bypass that ran arbitrary BQ jobs API calls against any reachable
+  dataset, ignoring the registry. Wrap views internal to the BQ
+  extractor still use `bigquery_query()` inside their `CREATE VIEW`
+  body — those run via DuckDB's view resolution at query time, never
+  via user-submitted SQL, so the blocklist doesn't break them.
+- **CLI commands (`da query --remote`, `da query --register-bq`,
+  `da fetch`, `da schema`, etc.) pretty-print structured BigQuery
+  errors** — `cross_project_forbidden`, `bq_forbidden`, `auth_failed`,
+  `not_configured`, `remote_scan_too_large`, `bq_path_not_registered`,
+  etc. — instead of dumping the truncated JSON body. The hint that
+  explains how to fix `USER_PROJECT_DENIED` (set
+  `data_source.bigquery.billing_project` in /admin/server-config) is
+  now actually visible to the operator.
+- **`/api/query/hybrid` now returns dict `detail`** for typed errors
+  (was flattening to `f"BQ '{alias}': {error_type}: {message}"`), so
+  the new CLI renderer surfaces the structured shape consistently
+  across both endpoints.
+
+### Changed
+- **BREAKING (config-only): `data_source.bigquery.legacy_wrap_views`
+  removed**. The flag was opt-in for the wrap-view behavior that is now
+  the default. Keys still present in operator overlays are silently
+  ignored — no action required. Operators who previously set
+  `legacy_wrap_views: false` (the prior default) get the new behavior
+  for VIEW / MATERIALIZED_VIEW rows: a master view is created (via the
+  BQ jobs API), and `da query --remote` works against the registered
+  name. The cost concern that motivated the prior default is now
+  addressed by the server-side guardrail (see Added).
+- **Quota tracker relocated**: `_build_quota_tracker` and
+  `_quota_singleton` moved from `app/api/v2_scan.py` to
+  `app/api/v2_quota.py` (their natural home). `v2_scan.py` re-exports
+  the function for backwards compat; existing test sites that call
+  `v2_scan._build_quota_tracker()` keep working.
+
 ## [0.30.1] — 2026-05-02
 
 ### Security

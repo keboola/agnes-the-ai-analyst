@@ -316,7 +316,21 @@ function renderLeafInput(fieldId, section, pathSegments, kind, value, opts, isUn
   const v = isUnset
     ? (opts && opts.spec && opts.spec.default != null ? String(opts.spec.default) : "")
     : (value == null ? "" : value);
-  return `<input id="${fieldId}" type="text" data-section="${section}" data-key="${escHtml(dottedKey)}" data-path="${dataPath}" value="${escHtml(v)}">`;
+  // Issue #160 §4.7.5: `placeholder_from: ["a","b","c"]` walks the loaded
+  // `original` config dict and shows "(defaults to <resolved>)" greyed in
+  // the empty input. Used by data_source.bigquery.billing_project to
+  // surface the access.py:339-340 billing→data fallback in the UI.
+  let placeholderAttr = "";
+  if (isUnset && opts && opts.spec && Array.isArray(opts.spec.placeholder_from)) {
+    const resolved = opts.spec.placeholder_from.reduce(
+      (cur, k) => (cur && typeof cur === "object" ? cur[k] : undefined),
+      original,
+    );
+    if (resolved !== undefined && resolved !== null && resolved !== "") {
+      placeholderAttr = ` placeholder="(defaults to ${escHtml(String(resolved))})"`;
+    }
+  }
+  return `<input id="${fieldId}" type="text" data-section="${section}" data-key="${escHtml(dottedKey)}" data-path="${dataPath}" value="${escHtml(v)}"${placeholderAttr}>`;
 }
 
 // Cast a string raw value to the JS type implied by an item_kind / value_kind.
@@ -680,6 +694,10 @@ function renderSection(section, payload, knownForSection) {
       </div>
       <div class="section-actions">
         <button class="cfg-btn primary" data-action="save-section" data-section="${section}">Save ${escHtml(meta.title.toLowerCase())}</button>
+        ${section === "data_source" ? `
+        <button class="cfg-btn" data-action="test-bigquery" type="button">Test BigQuery connection</button>
+        <span class="bq-test-result" data-section="${section}" hidden style="margin-left: 1ex;"></span>
+        ` : ""}
       </div>
     </section>`;
 }
@@ -694,6 +712,12 @@ function renderAll(data) {
 
   wrap.querySelectorAll('[data-action="save-section"]').forEach(btn =>
     btn.addEventListener("click", () => onSaveSection(btn.dataset.section)));
+
+  // Issue #160 §4.9: Test BigQuery connection — admin probe to verify the
+  // saved data_source.bigquery config is reachable WITHOUT having to
+  // ssh to the VM or wait for an analyst's failed query.
+  wrap.querySelectorAll('[data-action="test-bigquery"]').forEach(btn =>
+    btn.addEventListener("click", () => onTestBigQuery(btn)));
 
   // Wire array-of-scalars + map-of-scalars add/remove buttons via event
   // delegation on the wrapper. Re-attaching after every renderAll() is
@@ -972,6 +996,39 @@ function collectSection(section) {
     setNested(patch, segments, value);
   }
   return patch;
+}
+
+// ── BigQuery test connection (#160 §4.9) ───────────────────────────────
+async function onTestBigQuery(btn) {
+  const resultEl = btn.parentElement.querySelector(".bq-test-result");
+  resultEl.hidden = false;
+  resultEl.textContent = "Testing…";
+  resultEl.style.color = "";
+  btn.disabled = true;
+  try {
+    const r = await fetch("/api/admin/bigquery/test-connection", {
+      method: "POST",
+      credentials: "include",
+    });
+    if (r.ok) {
+      const body = await r.json();
+      resultEl.textContent = `✓ ok (${body.elapsed_ms} ms; billing=${body.billing_project}, data=${body.data_project})`;
+      resultEl.style.color = "#2a8c4a";
+    } else {
+      let body;
+      try { body = await r.json(); } catch (_) { body = await r.text(); }
+      const detail = body && typeof body === "object" ? body.detail : body;
+      const kind = detail && typeof detail === "object" ? (detail.kind || "error") : "error";
+      const hint = detail && typeof detail === "object" ? (detail.hint || detail.message || "") : String(detail);
+      resultEl.textContent = `✗ ${kind}${hint ? " — " + hint : ""}`;
+      resultEl.style.color = "#c0392b";
+    }
+  } catch (e) {
+    resultEl.textContent = `✗ network error — ${e.message}`;
+    resultEl.style.color = "#c0392b";
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 // ── Save flow ─────────────────────────────────────────────────────────

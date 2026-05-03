@@ -222,25 +222,26 @@ def _init_extract_locked(
                         f"BQ entity {project_id}.{dataset}.{source_table} not found"
                     )
 
-                legacy_wrap_views = bool(
-                    get_value("data_source", "bigquery", "legacy_wrap_views", default=False)
-                )
-
+                # Issue #160: always create a master view for query_mode='remote'
+                # rows we have proven runtime support for.
+                #   BASE TABLE → catalog path (Storage Read API, predicate pushdown)
+                #   VIEW / MATERIALIZED_VIEW → bigquery_query() (jobs API, no
+                #   pushdown — cost is bounded by the /api/query guardrail)
+                # Other entity types (EXTERNAL, SNAPSHOT, CLONE, future) are
+                # logged + skipped, with NO _meta row, since orchestrator-side
+                # master-view creation requires a corresponding inner view.
                 if entity_type == "BASE TABLE":
-                    # Storage Read API — fast for full scans
                     view_sql = (
                         f'CREATE OR REPLACE VIEW "{table_name}" AS '
                         f'SELECT * FROM bq."{dataset}"."{source_table}"'
                     )
                     conn.execute(view_sql)
-                elif legacy_wrap_views:
-                    # Backwards compatibility — for one release cycle only.
-                    if entity_type not in ("VIEW", "MATERIALIZED_VIEW"):
-                        logger.warning(
-                            "Unknown BQ entity type %r for %s.%s.%s — using bigquery_query() path",
-                            entity_type, project_id, dataset, source_table,
-                        )
-                    # VIEW or MATERIALIZED_VIEW — use jobs API
+                elif entity_type in ("VIEW", "MATERIALIZED_VIEW"):
+                    # `dataset` and `source_table` are validated above by
+                    # validate_quoted_identifier; project_id is validated at
+                    # the entry boundary of init_extract (lines 152-160).
+                    # The .replace("'", "''") is defense-in-depth on the
+                    # inline literal.
                     bq_inner = f"SELECT * FROM `{project_id}.{dataset}.{source_table}`"
                     bq_inner_escaped = bq_inner.replace("'", "''")
                     view_sql = (
@@ -249,13 +250,17 @@ def _init_extract_locked(
                     )
                     conn.execute(view_sql)
                 else:
-                    # Default: VIEW / MATERIALIZED_VIEW are recorded in _meta but no master
-                    # view created. Analyst must use `da fetch` (v2 primitives) to materialise
-                    # a snapshot locally.
-                    logger.info(
-                        "Skipping wrap view for %s entity %s.%s.%s — use `da fetch`",
+                    # Unverified entity type. Skip both the wrap view and
+                    # the _meta row. The registry row remains; /api/v2/scan
+                    # can still operate from it (builds BQ SQL from
+                    # bucket+source_table), and `da fetch` works.
+                    logger.warning(
+                        "Unverified BQ entity_type %r for %s.%s.%s — master view skipped. "
+                        "Use `da fetch` for this row, or file an issue with a repro to "
+                        "request native support.",
                         entity_type, project_id, dataset, source_table,
                     )
+                    continue  # Do NOT insert _meta — no inner view to point at.
 
                 conn.execute(
                     "INSERT INTO _meta VALUES (?, ?, 0, 0, ?, 'remote')",

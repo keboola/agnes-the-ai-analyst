@@ -43,7 +43,7 @@ For local-mode tables, query directly with `da query "SELECT … FROM <table>"`.
 | Pattern | Tool | Use when |
 |---------|------|----------|
 | **`da fetch`** (preferred) | materializes a filtered subset locally → query the snapshot | repeated questions on same slice |
-| **`da query --remote`** | one-shot, server-side execution against BigQuery | single aggregate / cheap probe |
+| **`da query --remote`** | one-shot, server-side execution against BigQuery (works for BASE TABLE rows directly + VIEW/MATERIALIZED_VIEW rows via the BQ jobs API; cost-guarded by a 5 GiB scan cap configurable in /admin/server-config) | single aggregate / cheap probe |
 | **`da query --register-bq`** | hybrid joins between local snapshots and ad-hoc BQ subqueries | crossing local + remote |
 
 ### Permission model + cost — important

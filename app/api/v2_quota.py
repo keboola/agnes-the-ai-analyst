@@ -118,3 +118,45 @@ class QuotaTracker:
     def bytes_used_today(self, user: str) -> int:
         with self._lock:
             return self._ensure_bucket(user)["bytes"]
+
+
+# Module-level singleton (process-local quota state per spec §3.8). FastAPI
+# dispatches sync handlers via a thread pool, so two concurrent first-time
+# requests can both observe `_quota_singleton is None` and each construct a
+# separate tracker; the second assignment wins and the first reference leaks
+# split-brain quota state. Guard with an init lock + double-check.
+#
+# Note: `_quota_singleton` and `_quota_init_lock` are intentionally
+# module-private. Callers MUST go through `_build_quota_tracker()` so the
+# singleton stays single. Re-exporting `_quota_singleton` from another
+# module via `from app.api.v2_quota import _quota_singleton` would copy the
+# initial-None binding at import time and never see subsequent updates —
+# that's a footgun. The function re-export is safe (it always reads the
+# live module-global).
+_quota_init_lock = threading.Lock()
+_quota_singleton: "QuotaTracker | None" = None
+
+
+def _build_quota_tracker() -> QuotaTracker:
+    """Returns or constructs the process-local quota tracker (thread-safe).
+
+    Shared across `/api/v2/scan` (the original caller) and `/api/query`
+    (issue #160 cost guardrail) so the per-user daily byte cap accumulates
+    across both BQ-touching paths.
+    """
+    from app.instance_config import get_value
+    global _quota_singleton
+    if _quota_singleton is not None:
+        return _quota_singleton
+    with _quota_init_lock:
+        if _quota_singleton is None:
+            _quota_singleton = QuotaTracker(
+                max_concurrent_per_user=int(
+                    get_value("api", "scan", "max_concurrent_per_user", default=5) or 5
+                ),
+                max_daily_bytes_per_user=int(
+                    get_value("api", "scan", "max_daily_bytes_per_user", default=53687091200)
+                    or 53687091200
+                ),
+            )
+    return _quota_singleton
