@@ -89,6 +89,12 @@ class _SelectiveGZipMiddleware:
                 return
         await self._gzip(scope, receive, send)
 
+from app.auth.rate_limit import (
+    SlowAPIMiddleware as _AuthRateLimitMiddleware,
+    RateLimitExceeded as _AuthRateLimitExceeded,
+    _rate_limit_exceeded_handler as _auth_rate_limit_handler,
+    limiter as _auth_rate_limiter,
+)
 from app.auth.router import router as auth_router
 from app.api.health import router as health_router
 from app.api.sync import router as sync_router
@@ -271,6 +277,15 @@ def create_app() -> FastAPI:
             "/marketplace.git",  # git smart-HTTP is self-chunked; double-gzip bloats
         ),
     )
+
+    # Per-IP rate limiting on auth endpoints (#45). Wired here so the
+    # SlowAPIMiddleware sits in the standard middleware chain (above CORS,
+    # below GZip — order doesn't affect correctness, only metric/log
+    # ordering). The limiter singleton is created at import time in
+    # app.auth.rate_limit; we just register state + middleware + handler.
+    app.state.limiter = _auth_rate_limiter
+    app.add_middleware(_AuthRateLimitMiddleware)
+    app.add_exception_handler(_AuthRateLimitExceeded, _auth_rate_limit_handler)
 
     # Session middleware (required for OAuth state)
     from app.secrets import get_session_secret
