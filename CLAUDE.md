@@ -203,7 +203,13 @@ Tables in `da catalog` have a `query_mode`:
 - **`remote`** (typically BigQuery): the parquet does NOT exist on the laptop.
   You MUST either:
   1. **`da fetch`** a filtered subset → query the local snapshot, OR
-  2. **`da query --remote`** for one-shot server-side execution, OR
+  2. **`da query --remote`** for one-shot server-side execution. Works on
+     all `query_mode='remote'` rows regardless of upstream BQ entity type
+     (BASE TABLE → Storage Read API with predicate pushdown; VIEW /
+     MATERIALIZED_VIEW → BQ jobs API, no pushdown). Cost-guarded by a
+     5 GiB scan cap (configurable in /admin/server-config). Direct
+     `bq."<dataset>"."<table>"` paths are registry-gated — unregistered
+     paths return 403 `bq_path_not_registered`.
   3. **`da query --register-bq`** for hybrid joins (rarely needed).
 
 ### `da fetch` workflow (preferred for remote tables)
@@ -257,10 +263,17 @@ in your `da query` calls — there's no `--where` on local since fetch is implic
 
 ### When NOT to use `da fetch`
 
-- Single aggregate on remote table (`SELECT COUNT(*) FROM remote`):
+- Single aggregate on remote BASE TABLE (`SELECT COUNT(*) FROM remote`):
   use `da query --remote "SELECT COUNT(*) FROM web_sessions_example"`.
-  No materialization needed; cheap.
-- Throwaway exploration with raw BQ syntax: `da query --remote`.
+  Storage Read API pushes the COUNT into BQ — cheap, no materialization.
+- Single aggregate on remote VIEW/MATERIALIZED_VIEW: same syntax works
+  (#160), but the BQ jobs API can't push WHERE/COUNT into the view body.
+  Cost guardrail (default 5 GiB) catches expensive scans → 400
+  `remote_scan_too_large` with `da fetch` suggestion. Pivot to
+  `da fetch <id> --where '<predicate>'` if the cap is hit.
+- Throwaway exploration: `da query --remote "SELECT … FROM <registered_id>"`.
+  Direct `bq."<dataset>"."<table>"` paths are now registry-gated — register
+  first or use the catalog id.
 - Cross-table JOIN with both tables remote: combine `da fetch` for one
   side + `da query --remote` for the other; full cross-remote JOIN
   requires more thought (see #101 for design space).
