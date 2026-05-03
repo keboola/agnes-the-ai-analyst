@@ -34,52 +34,70 @@ def tmp_workspace(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 class TestDetectExistingProject:
-    def test_no_claude_md_returns_false(self, tmp_workspace):
+    def test_no_settings_json_returns_false(self, tmp_workspace):
         from cli.commands.analyst import _detect_existing_project
 
         assert _detect_existing_project(tmp_workspace) is False
 
-    def test_claude_md_with_marker_returns_true(self, tmp_workspace):
+    def test_settings_json_with_da_sync_returns_true(self, tmp_workspace):
         from cli.commands.analyst import _detect_existing_project
+        import json as _json
 
-        (tmp_workspace / "CLAUDE.md").write_text(
-            "# Acme — AI Data Analyst\n\nThis workspace is connected to http://localhost:8000.\n",
-            encoding="utf-8",
-        )
+        claude_dir = tmp_workspace / ".claude"
+        claude_dir.mkdir(parents=True, exist_ok=True)
+        settings = {
+            "hooks": {
+                "SessionStart": [{"hooks": [{"type": "command", "command": "da sync --quiet 2>/dev/null || true"}]}],
+            }
+        }
+        (claude_dir / "settings.json").write_text(_json.dumps(settings), encoding="utf-8")
         assert _detect_existing_project(tmp_workspace) is True
 
-    def test_claude_md_without_marker_returns_false(self, tmp_workspace):
+    def test_settings_json_without_da_sync_returns_false(self, tmp_workspace):
         from cli.commands.analyst import _detect_existing_project
+        import json as _json
 
-        (tmp_workspace / "CLAUDE.md").write_text(
-            "# Some Other Project\n\nNot an analyst workspace.\n",
-            encoding="utf-8",
+        claude_dir = tmp_workspace / ".claude"
+        claude_dir.mkdir(parents=True, exist_ok=True)
+        (claude_dir / "settings.json").write_text(
+            _json.dumps({"model": "sonnet"}), encoding="utf-8"
         )
         assert _detect_existing_project(tmp_workspace) is False
 
     def test_setup_blocked_when_existing_without_force(self, tmp_workspace):
         """Setup must exit(1) when workspace exists and --force not supplied."""
-        (tmp_workspace / "CLAUDE.md").write_text(
-            "# Acme — AI Data Analyst\nThis workspace is connected to http://localhost:8000.\n",
-            encoding="utf-8",
-        )
+        import json as _json
+
+        claude_dir = tmp_workspace / ".claude"
+        claude_dir.mkdir(parents=True, exist_ok=True)
+        settings = {
+            "hooks": {
+                "SessionStart": [{"hooks": [{"type": "command", "command": "da sync --quiet 2>/dev/null || true"}]}],
+            }
+        }
+        (claude_dir / "settings.json").write_text(_json.dumps(settings), encoding="utf-8")
         result = runner.invoke(app, ["analyst", "setup", "--server-url", "http://localhost:8000"])
         assert result.exit_code == 1
         assert "force" in result.output.lower() or "force" in (result.stderr or "").lower()
 
     def test_setup_proceeds_with_force(self, tmp_workspace):
         """--force bypasses existing-project detection."""
-        (tmp_workspace / "CLAUDE.md").write_text(
-            "# Acme — AI Data Analyst\nThis workspace is connected to http://localhost:8000.\n",
-            encoding="utf-8",
-        )
+        import json as _json
+
+        claude_dir = tmp_workspace / ".claude"
+        claude_dir.mkdir(parents=True, exist_ok=True)
+        settings = {
+            "hooks": {
+                "SessionStart": [{"hooks": [{"type": "command", "command": "da sync --quiet 2>/dev/null || true"}]}],
+            }
+        }
+        (claude_dir / "settings.json").write_text(_json.dumps(settings), encoding="utf-8")
 
         with patch("cli.commands.analyst._connect_to_instance", return_value="tok"), \
              patch("cli.commands.analyst._download_metadata"), \
              patch("cli.commands.analyst._download_data", return_value=0), \
              patch("cli.commands.analyst._initialize_duckdb", return_value=0), \
-             patch("cli.commands.analyst._get_instance_name", return_value="Acme"), \
-             patch("cli.commands.analyst._generate_claude_md"):
+             patch("cli.commands.analyst._init_claude_workspace"):
             result = runner.invoke(
                 app,
                 ["analyst", "setup", "--server-url", "http://localhost:8000", "--force"],
@@ -117,79 +135,73 @@ class TestCreateWorkspace:
 
 
 # ---------------------------------------------------------------------------
-# TestGenerateClaudeMd
+# TestInitClaudeWorkspace
 # ---------------------------------------------------------------------------
 
-class TestGenerateClaudeMd:
-    def test_template_substitution(self, tmp_workspace):
-        from cli.commands.analyst import _create_workspace, _generate_claude_md
+class TestInitClaudeWorkspace:
+    """Tests for _init_claude_workspace: no CLAUDE.md written, but
+    .claude/CLAUDE.local.md placeholder and settings.json hooks are created.
+    """
+
+    def test_does_not_write_claude_md(self, tmp_workspace):
+        from cli.commands.analyst import _create_workspace, _init_claude_workspace
 
         _create_workspace(tmp_workspace)
-        _generate_claude_md(
-            tmp_workspace,
-            instance_name="Acme Corp",
-            server_url="https://data.acme.com",
-            sync_interval="2 hours",
-        )
+        _init_claude_workspace(tmp_workspace)
 
-        content = (tmp_workspace / "CLAUDE.md").read_text(encoding="utf-8")
-        assert "Acme Corp" in content
-        assert "https://data.acme.com" in content
-        assert "2 hours" in content
+        assert not (tmp_workspace / "CLAUDE.md").exists(), (
+            "CLAUDE.md must NOT be written by _init_claude_workspace"
+        )
 
     def test_creates_claude_local_md_when_absent(self, tmp_workspace):
-        from cli.commands.analyst import _create_workspace, _generate_claude_md
+        from cli.commands.analyst import _create_workspace, _init_claude_workspace
 
         _create_workspace(tmp_workspace)
-        _generate_claude_md(
-            tmp_workspace,
-            instance_name="Acme",
-            server_url="http://localhost:8000",
-            sync_interval="1 hour",
-        )
+        _init_claude_workspace(tmp_workspace)
 
         local_md = tmp_workspace / ".claude" / "CLAUDE.local.md"
         assert local_md.exists()
         assert local_md.read_text(encoding="utf-8").strip() != ""
 
     def test_does_not_overwrite_existing_local_md(self, tmp_workspace):
-        from cli.commands.analyst import _create_workspace, _generate_claude_md
+        from cli.commands.analyst import _create_workspace, _init_claude_workspace
 
         _create_workspace(tmp_workspace)
         local_md = tmp_workspace / ".claude" / "CLAUDE.local.md"
         original_content = "# My custom notes\n\nDo not overwrite me.\n"
         local_md.write_text(original_content, encoding="utf-8")
 
-        _generate_claude_md(
-            tmp_workspace,
-            instance_name="Acme",
-            server_url="http://localhost:8000",
-            sync_interval="1 hour",
-        )
+        _init_claude_workspace(tmp_workspace)
 
         assert local_md.read_text(encoding="utf-8") == original_content
 
-    def test_uses_template_file_if_available(self, tmp_workspace):
-        """Smoke-test that the real template file is found and substituted."""
-        from cli.commands.analyst import _create_workspace, _generate_claude_md
+    def test_writes_settings_json(self, tmp_workspace):
+        from cli.commands.analyst import _create_workspace, _init_claude_workspace
+        import json as _json
 
         _create_workspace(tmp_workspace)
-        _generate_claude_md(
-            tmp_workspace,
-            instance_name="TestCo",
-            server_url="https://test.example.com",
-            sync_interval="30 minutes",
-        )
+        _init_claude_workspace(tmp_workspace)
 
-        content = (tmp_workspace / "CLAUDE.md").read_text(encoding="utf-8")
-        # Template contains these literals after substitution
-        assert "TestCo" in content
-        assert "https://test.example.com" in content
-        assert "30 minutes" in content
-        # Ensure placeholders are gone
-        assert "{instance_name}" not in content
-        assert "{server_url}" not in content
-        assert "{sync_interval}" not in content
+        settings = _json.loads(
+            (tmp_workspace / ".claude" / "settings.json").read_text(encoding="utf-8")
+        )
+        assert settings["model"] == "sonnet"
+        assert "Read" in settings["permissions"]["allow"]
+
+    def test_installs_session_hooks(self, tmp_workspace):
+        """SessionStart and SessionEnd hooks must be present in settings.json."""
+        from cli.commands.analyst import _create_workspace, _init_claude_workspace
+        import json as _json
+
+        _create_workspace(tmp_workspace)
+        _init_claude_workspace(tmp_workspace)
+
+        settings = _json.loads(
+            (tmp_workspace / ".claude" / "settings.json").read_text(encoding="utf-8")
+        )
+        hooks = settings.get("hooks", {})
+        assert "SessionStart" in hooks
+        assert "SessionEnd" in hooks
 
 
 # ---------------------------------------------------------------------------

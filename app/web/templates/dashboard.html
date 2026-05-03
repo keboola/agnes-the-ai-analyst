@@ -1226,11 +1226,38 @@
             color: white;
         }
 
+        .env-setup-row .env-meta {
+            display: inline-flex;
+            align-items: center;
+            gap: 12px;
+        }
+
         .env-setup-row .env-hint {
             font-size: 12px;
             color: rgba(255, 255, 255, 0.6);
-            margin-left: auto;
         }
+
+        .env-setup-link {
+            font-size: 13px;
+            color: rgba(255, 255, 255, 0.9);
+            text-decoration: underline;
+            text-underline-offset: 2px;
+        }
+        .env-setup-link:hover { color: #fff; }
+
+        .setup-link-banner {
+            margin-top: 12px;
+            padding: 10px 16px;
+            font-size: 13px;
+            color: var(--text-secondary, #6b7280);
+            text-align: center;
+        }
+        .setup-link-banner a {
+            color: var(--primary);
+            text-decoration: none;
+            font-weight: 500;
+        }
+        .setup-link-banner a:hover { text-decoration: underline; }
 
         /* Error banner for setup flow */
         .setup-error {
@@ -1245,66 +1272,6 @@
         .env-setup-cta .btn-setup[disabled] {
             opacity: 0.7;
             cursor: wait;
-        }
-
-        /* ── Setup instructions preview (read-only card inside env-setup-cta) ── */
-        .setup-preview-card {
-            margin-top: 18px;
-            background: rgba(0, 0, 0, 0.25);
-            border: 1px solid rgba(255, 255, 255, 0.12);
-            border-radius: 8px;
-            padding: 14px 16px;
-        }
-        .setup-preview-summary {
-            list-style: none;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            user-select: none;
-        }
-        .setup-preview-summary::-webkit-details-marker { display: none; }
-        .setup-preview-chevron {
-            display: inline-block;
-            font-size: 11px;
-            color: rgba(255, 255, 255, 0.7);
-            transition: transform 0.15s ease;
-        }
-        details[open] > .setup-preview-summary .setup-preview-chevron { transform: rotate(90deg); }
-        .setup-preview-title {
-            font-size: 12px;
-            font-weight: 600;
-            letter-spacing: 0.5px;
-            text-transform: uppercase;
-            color: rgba(255, 255, 255, 0.85);
-            margin: 0;
-        }
-        .setup-preview-sub {
-            font-size: 12px;
-            color: rgba(255, 255, 255, 0.65);
-            margin: 0 0 10px 0;
-        }
-        .setup-preview-pre {
-            background: #1e1e2e;
-            border-radius: 6px;
-            padding: 14px 16px;
-            margin: 0;
-            max-height: 400px;
-            overflow-y: auto;
-            font-family: var(--font-mono);
-            font-size: 12.5px;
-            line-height: 1.55;
-            color: #cdd6f4;
-            white-space: pre-wrap;
-            word-break: break-word;
-        }
-        .setup-preview-code { font-family: inherit; font-size: inherit; }
-        .setup-preview-pre .placeholder-token {
-            background: rgba(249, 226, 175, 0.12);
-            color: #f9e2af;
-            padding: 0 4px;
-            border-radius: 3px;
-            font-style: italic;
         }
 
         /* Fallback modal (when clipboard is blocked) */
@@ -1371,35 +1338,6 @@
             background: var(--primary);
             color: #FFF;
             border-color: var(--primary);
-        }
-
-        /* ── Setup Banner (bottom, for returning users) ── */
-        .setup-banner {
-            background: var(--background);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 16px 24px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-top: 24px;
-        }
-
-        .setup-banner-text {
-            display: flex;
-            flex-direction: column;
-            gap: 2px;
-        }
-
-        .setup-banner-title {
-            font-size: 14px;
-            font-weight: 600;
-            color: var(--text-primary);
-        }
-
-        .setup-banner-desc {
-            font-size: 12px;
-            color: var(--text-secondary);
         }
 
         .btn-setup-secondary {
@@ -1955,13 +1893,6 @@
                 grid-template-columns: 1fr;
             }
 
-            .setup-banner {
-                flex-direction: column;
-                gap: 20px;
-                text-align: center;
-                padding: 28px 24px;
-            }
-
             .onboard-label {
                 flex-wrap: wrap;
             }
@@ -2019,23 +1950,12 @@
                     </svg>
                     Setup a new Claude Code
                 </button>
-                <span class="env-hint">Valid 90 days · token stays in clipboard only</span>
+                <span class="env-meta">
+                    <span class="env-hint">Valid 90 days · token stays in clipboard only</span>
+                    <a href="/setup" class="env-setup-link">Open the full setup page →</a>
+                </span>
             </div>
             <div id="setupClaudeError" class="setup-error" role="alert" style="display:none;"></div>
-            <details class="setup-preview-card" aria-label="Preview of the clipboard payload">
-                <summary class="setup-preview-summary">
-                    <span class="setup-preview-chevron" aria-hidden="true">▸</span>
-                    <span class="setup-preview-title">What Claude Code will receive</span>
-                </summary>
-                <p class="setup-preview-sub">
-                    Read-only preview. The real token is generated the moment
-                    you click the button above and is placed directly in your
-                    clipboard — never shown on this page.
-                </p>
-                {% with preview_mode=True %}
-                    {% include "_claude_setup_instructions.jinja" %}
-                {% endwith %}
-            </details>
         </div>
         {% endif %}
 
@@ -2413,6 +2333,12 @@
 
             </div><!-- /right-column -->
         </div><!-- /dashboard-grid -->
+
+        {% if account_details and account_details.last_sync_display %}
+        <div class="setup-link-banner">
+            Need to set up another machine? <a href="/setup">Open the setup page →</a>
+        </div>
+        {% endif %}
 
     </main>
 

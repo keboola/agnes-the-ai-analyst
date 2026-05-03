@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Install CLI — {{ config.INSTANCE_NAME }}</title>
+    <title>Setup local agent — {{ config.INSTANCE_NAME }}</title>
     {% if not config.THEME_FONT_URL %}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -628,6 +628,21 @@
             .manual-summary { padding: 14px 18px; }
             .manual-body { padding: 16px 18px 18px; }
         }
+
+        /* ── Admin-configured banner (above setup commands) ── */
+        .setup-banner {
+            background: var(--background, #f6f7f9);
+            border: 1px solid var(--border, #e1e4e8);
+            border-left: 3px solid var(--primary, #0073D1);
+            border-radius: 8px;
+            padding: 14px 18px;
+            margin-bottom: 20px;
+            font-size: 14px;
+            line-height: 1.6;
+            color: var(--text-primary);
+        }
+        .setup-banner > *:first-child { margin-top: 0; }
+        .setup-banner > *:last-child { margin-bottom: 0; }
     </style>
     {% include '_theme.html' %}
 </head>
@@ -647,6 +662,9 @@
     {% endwith %}
 
     <main class="main">
+
+        <!-- ═══════════════ ADMIN BANNER (optional) ═══════════════ -->
+        {% if banner_html %}<div class="setup-banner">{{ banner_html | safe }}</div>{% endif %}
 
         <!-- ═══════════════ HERO ═══════════════ -->
         <section class="hero">

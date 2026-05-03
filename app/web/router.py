@@ -120,7 +120,7 @@ _URL_MAP = {
     "email_auth.login_email_form": "/login/email",
     "email_auth.send_magic_link": "/auth/email/send-link",
     "register": "/auth/password/setup",
-    "setup": "/setup",
+    "setup": "/first-time-setup",
 }
 
 
@@ -247,51 +247,45 @@ def _build_context(
                 return {k: v for k, v in theme.items() if v}
             return {}
 
-    # Lines + server_url for the "Setup a new Claude Code" preview/clipboard
-    # partial; single source of truth lives in app/web/setup_instructions.py.
-    # Resolve the wheel filename server-side so the URL in the setup snippet
-    # is a PEP 427-compliant path — `uv tool install` rejects bare `agnes.whl`.
-    from app.web.setup_instructions import resolve_lines
-    from app.api.cli_artifacts import _find_wheel
-    _wheel = _find_wheel()
-    _wheel_filename = _wheel.name if _wheel else "agnes.whl"
-
-    # Inline the user's RBAC-allowed marketplace plugins as `claude plugin
-    # install` commands so a single paste also bootstraps the marketplace
-    # and plugin set. Anonymous viewers (no user, or no DB conn) get the
-    # original 6-step layout.
-    plugin_install_names: list[str] = []
-    if user and conn is not None:
-        try:
-            from src import marketplace_filter
-            plugin_install_names = [
-                p["manifest_name"]
-                for p in marketplace_filter.resolve_allowed_plugins(conn, user)
-            ]
-        except Exception:  # pragma: no cover — defensive: never block dashboard render
-            logger.exception("Failed to resolve marketplace plugins for setup prompt")
-            plugin_install_names = []
-
-    # `AGNES_DEBUG_AUTH` is the existing dev/staging gate (see
-    # `app/api/me_debug.py`, `app/web/router.py` template ConfigProxy).
-    # When on, the setup prompt also disables host-scoped git TLS verify
-    # so `claude plugin marketplace add` works against self-signed instances.
-    # Subsumed by the cert trust block when `ca_pem` is loaded below.
-    self_signed_tls = os.environ.get("AGNES_DEBUG_AUTH", "").strip().lower() in (
-        "1", "true", "yes",
-    )
-    server_host = request.url.netloc
-
-    ca_pem = _read_agnes_ca_pem()
-
-    setup_instructions_lines = resolve_lines(
-        _wheel_filename,
-        plugin_install_names=plugin_install_names,
-        self_signed_tls=self_signed_tls,
-        server_host=server_host,
-        ca_pem=ca_pem,
-    )
     ctx_server_url = str(request.base_url).rstrip("/")
+
+    # Lines for the "Setup a new Claude Code" preview/clipboard partial.
+    #
+    # When a DB connection is available, we go through render_agent_prompt_banner
+    # which checks for an admin override first (stored in welcome_template) and
+    # falls back to the live default from setup_instructions.resolve_lines().
+    # This guarantees that both /setup and /dashboard clipboard CTA always reflect
+    # the same content — the override is honoured everywhere.
+    #
+    # When no conn is supplied (e.g. public pages that don't need a DB round-trip)
+    # we fall back to resolve_lines() directly with anonymous/no-plugin context.
+    if conn is not None:
+        from src.welcome_template import render_agent_prompt_banner
+        _script_text = render_agent_prompt_banner(
+            conn, user=user, server_url=ctx_server_url
+        )
+        setup_instructions_lines = _script_text.split("\n")
+    else:
+        # No DB connection — use the unauthenticated default (no override possible,
+        # no marketplace plugins).
+        from app.web.setup_instructions import resolve_lines
+        from app.api.cli_artifacts import _find_wheel
+        _wheel = _find_wheel()
+        _wheel_filename = _wheel.name if _wheel else "agnes.whl"
+
+        self_signed_tls = os.environ.get("AGNES_DEBUG_AUTH", "").strip().lower() in (
+            "1", "true", "yes",
+        )
+        server_host = request.url.netloc
+        ca_pem = _read_agnes_ca_pem()
+
+        setup_instructions_lines = resolve_lines(
+            _wheel_filename,
+            plugin_install_names=[],
+            self_signed_tls=self_signed_tls,
+            server_host=server_host,
+            ca_pem=ca_pem,
+        )
 
     ctx = {
         "request": request,
@@ -322,9 +316,9 @@ async def index(request: Request, user: Optional[dict] = Depends(get_optional_us
     return RedirectResponse(url="/login", status_code=302)
 
 
-@router.get("/setup", response_class=HTMLResponse)
+@router.get("/first-time-setup", response_class=HTMLResponse)
 async def setup_wizard(request: Request, conn: duckdb.DuckDBPyConnection = Depends(_get_db)):
-    """First-time setup wizard. Redirects to dashboard if users already exist."""
+    """First-time setup wizard. Redirects to login if users already exist."""
     try:
         user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         if user_count > 0:
@@ -720,22 +714,71 @@ async def activity_center(
     return templates.TemplateResponse(request, "activity_center.html", ctx)
 
 
-@router.get("/install", response_class=HTMLResponse)
-async def install_page(
+@router.get("/setup", response_class=HTMLResponse)
+async def setup_page(
     request: Request,
     user: Optional[dict] = Depends(get_optional_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Public install instructions for the CLI."""
+    """Setup instructions for the local agent (CLI + Claude Code).
+
+    When an admin override is saved, the override replaces the auto-generated
+    setup_instructions output everywhere (both the /setup page display and the
+    dashboard clipboard CTA).  When no override is set, the live default from
+    setup_instructions.resolve_lines() is used.
+    """
+    from src.repositories.welcome_template import WelcomeTemplateRepository
+    from src.welcome_template import compute_default_agent_prompt, _sanitize_banner_html
+    from jinja2 import Environment, StrictUndefined, TemplateError
+
     base_url = str(request.base_url).rstrip("/")
+
+    # Determine the script text: override (Jinja2-rendered) or live default.
+    row = WelcomeTemplateRepository(conn).get()
+    override_content = row.get("content")
+    if override_content:
+        # Admin override — render Jinja2 placeholders server-side.
+        # {server_url} and {token} survive because Jinja2 only processes
+        # double-brace {{ }} syntax; single-brace {x} pass through unchanged.
+        try:
+            from src.welcome_template import build_context as _build_banner_ctx
+            env = Environment(undefined=StrictUndefined, autoescape=False)
+            template = env.from_string(override_content)
+            ctx_vars = _build_banner_ctx(user=user, server_url=base_url)
+            setup_script_text = _sanitize_banner_html(template.render(**ctx_vars))
+        except (TemplateError, Exception) as exc:
+            logger.warning("setup_page: override render failed (%s); falling back to default", exc)
+            setup_script_text = compute_default_agent_prompt(conn, user=user, server_url=base_url)
+    else:
+        setup_script_text = compute_default_agent_prompt(conn, user=user, server_url=base_url)
+
+    # Split for the legacy setup_instructions_lines list variable that the
+    # Jinja2 partial (_claude_setup_instructions.jinja) uses.
+    setup_instructions_lines = setup_script_text.split("\n")
+
     ctx = _build_context(
         request,
         user=user,
         conn=conn,
         server_url=base_url,
         agnes_version=os.environ.get("AGNES_VERSION", "dev"),
+        banner_html="",  # no separate banner — the script IS the content
+        # Override both variables so the partial and the JS array stay in sync.
+        setup_instructions_lines=setup_instructions_lines,
+        setup_script_text=setup_script_text,
     )
     return templates.TemplateResponse(request, "install.html", ctx)
+
+
+@router.get("/install", response_class=HTMLResponse)
+async def install_redirect(request: Request):
+    """Backwards-compat redirect: /install → /setup (302).
+
+    Using 302 (temporary) rather than 301 (permanent) so browsers/proxies
+    don't cache indefinitely — if the path ever changes again, cached 301s
+    require manual cache clearing to recover.
+    """
+    return RedirectResponse(url="/setup", status_code=302)
 
 
 @router.get("/admin/tables", response_class=HTMLResponse)
@@ -881,6 +924,31 @@ async def admin_marketplaces_page(
     """Admin page for marketplace git repositories (register / sync / delete)."""
     ctx = _build_context(request, user=user)
     return templates.TemplateResponse(request, "admin_marketplaces.html", ctx)
+
+
+@router.get("/admin/agent-prompt", response_class=HTMLResponse)
+async def admin_agent_prompt_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    from src.repositories.welcome_template import WelcomeTemplateRepository
+    from src.welcome_template import compute_default_agent_prompt
+
+    row = WelcomeTemplateRepository(conn).get()
+    base_url = str(request.base_url).rstrip("/")
+    default_template = compute_default_agent_prompt(conn, user=user, server_url=base_url)
+    ctx = _build_context(
+        request,
+        user=user,
+        current=row["content"] or "",
+        default_template=default_template,
+        updated_at=row["updated_at"],
+        updated_by=row["updated_by"],
+        is_override=row["content"] is not None,
+    )
+    return templates.TemplateResponse(request, "admin_welcome.html", ctx)
+
 
 
 @router.get("/tokens", response_class=HTMLResponse)

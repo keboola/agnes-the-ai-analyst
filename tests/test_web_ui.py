@@ -214,7 +214,7 @@ class TestClaudeSetupPreview:
     """
 
     def test_install_preview_visible_for_signed_in_user(self, web_client, admin_cookie):
-        resp = web_client.get("/install", cookies=admin_cookie)
+        resp = web_client.get("/setup", cookies=admin_cookie)
         assert resp.status_code == 200
         body = resp.text
         # Preview card + placeholder token render
@@ -233,20 +233,23 @@ class TestClaudeSetupPreview:
         assert "da diagnose" in body
         assert "da auth whoami" in body
 
-    def test_dashboard_preview_visible(self, web_client, admin_cookie):
+    def test_dashboard_setup_cta_links_to_setup(self, web_client, admin_cookie):
+        """Dashboard setup CTA shows env-setup-cta and a link to /setup instead
+        of an inline collapsed preview."""
         resp = web_client.get("/dashboard", cookies=admin_cookie)
         assert resp.status_code == 200
         body = resp.text
         assert "env-setup-cta" in body
-        assert "setup-preview-pre" in body
-        assert "What Claude Code will receive" in body
-        assert "&lt;will be generated on click&gt;" in body
+        assert "Open the full setup page" in body
+        assert 'href="/setup"' in body
+        # inline <details> preview block must no longer appear
+        assert 'aria-label="Preview of the clipboard payload"' not in body
 
     def test_install_mcp_card_removed(self, web_client):
-        """The stale 'Use with Claude Code / MCP' card on /install has been
+        """The stale 'Use with Claude Code / MCP' card on /setup has been
         removed — there is no Agnes MCP server today.
         """
-        resp = web_client.get("/install")
+        resp = web_client.get("/setup")
         assert resp.status_code == 200
         body = resp.text
         assert "Use with Claude Code / MCP" not in body
@@ -275,6 +278,18 @@ class TestAdminRoleGuards:
     def test_analyst_cannot_access_corporate_memory_admin(self, web_client, admin_cookie, analyst_cookie):
         resp = web_client.get("/corporate-memory/admin", cookies=analyst_cookie)
         assert resp.status_code == 403
+
+    def test_admin_agent_prompt_page_admin_only(self, web_client, admin_cookie, analyst_cookie):
+        """The renamed Agent Setup Prompt page is gated by require_admin."""
+        # Unauthenticated → 302 redirect to login
+        r = web_client.get("/admin/agent-prompt", follow_redirects=False)
+        assert r.status_code in (302, 401, 403)
+        # Non-admin → 403
+        r = web_client.get("/admin/agent-prompt", cookies=analyst_cookie, follow_redirects=False)
+        assert r.status_code == 403
+        # Admin → 200
+        r = web_client.get("/admin/agent-prompt", cookies=admin_cookie, follow_redirects=False)
+        assert r.status_code == 200
 
 
 class TestUnauthenticatedHtmlRedirects:

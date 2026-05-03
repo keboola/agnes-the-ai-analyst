@@ -1,0 +1,520 @@
+{% extends "base.html" %}
+{% block title %}Agent Setup Prompt — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block content %}
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css"
+      integrity="sha512-uf06llspW44/LZpHzHT6qBOIVODjWtv4MxCricRxkzvopAlSWnTf6hpZTFxuuZcuNE9CBQhqE0Seu1CoRk84nQ=="
+      crossorigin="anonymous">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/material-darker.min.css"
+      integrity="sha512-2OhXH4Il3n2tHKwLLSDPhrkgnLBC+6lHGGQzSFi3chgVB6DJ/v6+nbx+XYO9CugQyHVF/8D/0k3Hx1eaUK2K9g=="
+      crossorigin="anonymous">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/shell/shell.min.css"
+      crossorigin="anonymous">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"
+        integrity="sha512-OeZ4Yrb/W7d2W4rAMOO0HQ9Ro/aWLtpW9BUSR2UOWnSV2hprXLkkYnnCGc9NeLUxxE4ZG7zN16UuT1Elqq8Opg=="
+        crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/jinja2/jinja2.min.js"
+        integrity="sha512-Z4le1RxwhD8lDCrspbBxjTLLP2HGC1+mKb9KHR2N/sEx8uOe2vre5XQo8YMPAz8FQTo43HjefjlDtjY4LtfaaQ=="
+        crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/shell/shell.min.js"
+        crossorigin="anonymous"></script>
+
+<style>
+  .container:has(.welcome-page) { max-width: none; padding: 24px 16px; }
+  .welcome-page { max-width: 1400px; margin: 0 auto; padding: 0; }
+
+  .welcome-toolbar {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 16px; margin-bottom: 16px; flex-wrap: wrap;
+  }
+  .welcome-title { margin: 0; font-size: 22px; font-weight: 600; }
+  .welcome-sub { color: var(--text-secondary, #6b7280); font-size: 13px; margin-top: 4px; margin-bottom: 0; }
+
+  .origin-chip {
+    display: inline-block;
+    padding: 3px 10px; border-radius: 999px;
+    font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .origin-override { background: #ede9fe; color: #6d28d9; }
+  .origin-default  { background: #f3f4f6; color: #6b7280; }
+
+  .welcome-card {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+    margin-bottom: 16px;
+    overflow: hidden;
+  }
+  .welcome-card-body { padding: 20px 22px; }
+
+  .welcome-desc { font-size: 13px; color: var(--text-secondary, #6b7280); margin: 0 0 16px; }
+
+  /* Placeholder cheatsheet — collapsible */
+  details.welcome-cheatsheet { margin-bottom: 18px; }
+  details.welcome-cheatsheet summary {
+    cursor: pointer; font-size: 13px; font-weight: 500;
+    color: var(--text-primary, #111827); list-style: none;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  details.welcome-cheatsheet summary::-webkit-details-marker { display: none; }
+  details.welcome-cheatsheet summary::before {
+    content: "▶"; font-size: 10px; color: var(--text-secondary, #6b7280);
+    transition: transform 0.15s;
+  }
+  details.welcome-cheatsheet[open] summary::before { transform: rotate(90deg); }
+
+  /* Dark code block (Catppuccin-style, matching install.html) */
+  .code-block {
+    background: #1e1e2e;
+    border-radius: 8px;
+    padding: 14px 16px;
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
+    font-size: 13px;
+    color: #cdd6f4;
+    line-height: 1.6;
+    margin-top: 10px;
+    position: relative;
+  }
+  .code-block .code-body { flex: 1; white-space: pre; overflow-x: auto; }
+  .btn-copy {
+    padding: 6px 14px;
+    background: transparent;
+    border: 1px solid #45475a;
+    color: #cdd6f4;
+    cursor: pointer;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    font-family: inherit;
+    transition: all 0.15s ease;
+    flex-shrink: 0;
+  }
+  .btn-copy:hover { border-color: #89b4fa; color: #89b4fa; background: rgba(137, 180, 250, 0.08); }
+  .btn-copy.copied { border-color: #a6e3a1; color: #a6e3a1; background: rgba(166, 227, 161, 0.08); }
+
+  /* CodeMirror editor styling */
+  .welcome-page .CodeMirror {
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px;
+    font-size: 13px;
+    font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
+  }
+
+  /* Split layout: editor left, preview right */
+  .welcome-editor-row {
+    display: flex;
+    gap: 16px;
+    margin-top: 0;
+  }
+  .welcome-pane {
+    flex: 1 1 50%;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .welcome-pane-label {
+    color: var(--text-secondary, #6b7280);
+    margin: 0 0 8px;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .welcome-editor-col, .welcome-preview-col {
+    flex: 1 1 auto;
+    min-height: 480px;
+    height: calc(100vh - 360px);
+    display: flex;
+    flex-direction: column;
+  }
+  .welcome-preview-col {
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px;
+    background: var(--surface, #fff);
+    color: var(--text-primary, #111827);
+    padding: 16px;
+    font-family: var(--font-primary, system-ui, sans-serif);
+    font-size: 14px;
+    overflow: auto;
+  }
+  .welcome-preview-error {
+    background: rgba(234, 88, 12, 0.15);
+    color: #fca5a5;
+    border: 1px solid rgba(234, 88, 12, 0.4);
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-size: 12px;
+    white-space: pre-wrap;
+  }
+  @media (max-width: 1100px) {
+    .welcome-editor-row { flex-direction: column; }
+  }
+
+  /* Action row */
+  .welcome-actions {
+    padding: 14px 22px;
+    background: var(--border-light, #fafafa);
+    border-top: 1px solid var(--border, #e5e7eb);
+    display: flex; gap: 8px; justify-content: flex-end;
+  }
+  .welcome-btn {
+    padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 500;
+    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
+    cursor: pointer; transition: all 0.15s;
+  }
+  .welcome-btn:hover { background: var(--border-light, #f9fafb); }
+  .welcome-btn.primary { background: var(--primary, #6366f1); color: #fff; border-color: var(--primary, #6366f1); }
+  .welcome-btn.primary:hover { filter: brightness(1.05); }
+  .welcome-btn.danger { background: #dc2626; color: #fff; border-color: #dc2626; }
+  .welcome-btn.danger:hover { filter: brightness(1.05); }
+  .welcome-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* Modal */
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55);
+    display: none; align-items: center; justify-content: center; z-index: 1000;
+    padding: 16px;
+  }
+  .modal-backdrop.is-open { display: flex; }
+  .modal-card {
+    background: var(--surface, #fff); border-radius: 12px;
+    padding: 24px; width: 100%; max-width: 440px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+  }
+  .modal-card h3 { margin: 0 0 6px; font-size: 17px; font-weight: 600; }
+  .modal-card p.sub { margin: 0 0 18px; font-size: 13px; color: var(--text-secondary, #6b7280); }
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
+  .modal-btn {
+    padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 500;
+    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
+    cursor: pointer;
+  }
+  .modal-btn.danger { background: #dc2626; color: #fff; border-color: #dc2626; }
+
+  /* Toast stack */
+  .toast-stack {
+    position: fixed; bottom: 24px; right: 24px; z-index: 2000;
+    display: flex; flex-direction: column; gap: 8px; pointer-events: none;
+  }
+  .toast {
+    background: #111827; color: #fff; padding: 10px 16px;
+    border-radius: 8px; font-size: 13px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+    opacity: 0; transform: translateY(8px); transition: opacity 0.2s, transform 0.2s;
+    pointer-events: auto; max-width: 380px;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast.success { background: #047857; }
+  .toast.error { background: #b91c1c; }
+</style>
+
+<div class="welcome-page">
+  <div class="welcome-toolbar">
+    <div>
+      <h2 class="welcome-title">Agent Setup Prompt</h2>
+      <p class="welcome-sub">The bash setup script shown on <code>/setup</code> and copied by the dashboard CTA.</p>
+    </div>
+    <div id="status-chip">
+      {% if is_override %}
+        <span class="origin-chip origin-override"
+              title="Overridden by {{ updated_by }} on {{ updated_at.strftime('%Y-%m-%d %H:%M UTC') if updated_at else '—' }}">
+          Override active
+        </span>
+      {% else %}
+        <span class="origin-chip origin-default">Using default</span>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="welcome-card">
+    <div class="welcome-card-body">
+      <p class="welcome-desc">
+        <strong>Default:</strong> the auto-generated bash bootstrap script (TLS trust, CLI install,
+        login, marketplace, skills). When you save an override, it replaces the default
+        everywhere — the <code>/setup</code> page display and the dashboard clipboard CTA.
+      </p>
+      <p class="welcome-desc">
+        <strong>Placeholders:</strong> <code>{server_url}</code> and <code>{token}</code> are
+        substituted by JavaScript at clipboard-copy time — leave them literal in your edits.
+        Jinja2 variables (<code>{{ "{{ instance.name }}" }}</code>, <code>{{ "{{ user.email }}" }}</code>, etc.)
+        are server-rendered before the page is served.
+      </p>
+
+      <details class="welcome-cheatsheet">
+        <summary>Available Jinja2 placeholders</summary>
+        <div class="code-block">
+          <span id="placeholder-text" class="code-body">{{ "{{ instance.name }}" }}       — instance display name
+{{ "{{ instance.subtitle }}" }}   — operator / org name
+{{ "{{ server.url }}" }}          — full server URL
+{{ "{{ server.hostname }}" }}     — host part only
+{{ "{{ user.email }}" }}, {{ "{{ user.name }}" }}, {{ "{{ user.is_admin }}" }}, {{ "{{ user.groups }}" }}
+  (user may be null for anonymous visitors — guard with {{ "{% if user %}" }})
+{{ "{{ now }}" }}, {{ "{{ today }}" }}     — server time (UTC) / date string
+
+# JS-substituted at clipboard-copy time (leave as literal placeholders):
+{server_url}   — full server origin (https://agnes.example.com)
+{token}        — the user's freshly-generated personal access token</span>
+          <button class="btn-copy" data-copy-target="placeholder-text">Copy</button>
+        </div>
+      </details>
+
+      <div class="welcome-editor-row">
+        <div class="welcome-pane">
+          <h4 class="welcome-pane-label">Editor</h4>
+          <div class="welcome-editor-col">
+            <textarea id="content" name="content">{{ current or default_template }}</textarea>
+          </div>
+        </div>
+        <div class="welcome-pane">
+          <h4 class="welcome-pane-label">Live preview</h4>
+          <div class="welcome-preview-col">
+            <pre id="preview-content" style="white-space: pre-wrap; word-break: break-word; font-family: var(--font-mono, monospace); font-size: 12px; margin: 0;">(rendering…)</pre>
+            <div id="preview-error" class="welcome-preview-error" hidden></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="welcome-actions">
+      <button type="button" class="welcome-btn" id="reset-btn">Reset to default</button>
+      <button type="button" class="welcome-btn primary" id="save-btn">Save override</button>
+    </div>
+  </div>
+</div>
+
+<!-- Reset confirmation modal -->
+<div class="modal-backdrop" id="reset-modal" role="dialog" aria-modal="true" aria-labelledby="reset-modal-title">
+  <div class="modal-card">
+    <h3 id="reset-modal-title">Reset to default?</h3>
+    <p class="sub">Your override will be permanently removed. The auto-generated bash bootstrap script will be shown on <code>/setup</code> instead. This cannot be undone.</p>
+    <div class="modal-actions">
+      <button class="modal-btn" data-close-modal="reset-modal">Cancel</button>
+      <button class="modal-btn danger" id="reset-confirm-btn">Reset</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+
+<script>
+const API = "/api/admin/welcome-template";
+
+// ── CodeMirror editor (with graceful CDN fallback) ────────────────────
+const ta = document.getElementById("content");
+if (typeof CodeMirror === "undefined") {
+  // CDN unreachable or SRI mismatch — degrade to plain textarea + warn.
+  ta.style.display = "block";
+  ta.style.width = "100%";
+  ta.style.minHeight = "480px";
+  ta.style.fontFamily = "var(--font-mono)";
+  ta.style.fontSize = "13px";
+  ta.style.padding = "9px 12px";
+  ta.style.border = "1px solid var(--border)";
+  ta.style.borderRadius = "8px";
+  // Polyfill the `editor` interface so save/reset/preview still work.
+  window.editor = {
+    getValue: () => ta.value,
+    setValue: (v) => { ta.value = v; },
+    on: () => {},
+    setSize: () => {},
+  };
+  // toast is defined below; defer so the DOM is ready and toast stack exists.
+  setTimeout(() => toast("Code editor failed to load — using plain textarea. Check network/CSP.", "error"), 0);
+} else {
+  // Normal path
+  window.editor = CodeMirror.fromTextArea(ta, {
+    mode: "jinja2",
+    lineNumbers: true,
+    lineWrapping: true,
+    theme: "material-darker",
+    indentUnit: 2,
+    tabSize: 2,
+  });
+  editor.setSize("100%", "100%");
+}
+
+// ── Live preview (debounced) ──────────────────────────────────────────
+let previewTimer = null;
+function schedulePreview() {
+  if (previewTimer) clearTimeout(previewTimer);
+  previewTimer = setTimeout(renderPreview, 500);
+}
+
+async function renderPreview() {
+  const content = editor.getValue();
+  const previewBox = document.getElementById("preview-content");
+  const previewErr = document.getElementById("preview-error");
+  if (!content.trim()) {
+    previewBox.textContent = "(empty)";
+    previewErr.hidden = true;
+    return;
+  }
+  try {
+    const r = await fetch(API + "/preview", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content }),
+    });
+    if (r.ok) {
+      const j = await r.json();
+      // Use textContent (not innerHTML) — content is bash/text, not trusted HTML
+      previewBox.textContent = j.content;
+      previewErr.hidden = true;
+    } else {
+      let detail = r.statusText;
+      try { detail = (await r.json()).detail || detail; } catch (_) {}
+      previewBox.textContent = "";
+      previewErr.textContent = detail;
+      previewErr.hidden = false;
+    }
+  } catch (e) {
+    previewErr.textContent = "Network error: " + e.message;
+    previewErr.hidden = false;
+  }
+}
+
+editor.on("change", schedulePreview);
+renderPreview();   // initial render on load
+
+// ── Toast ─────────────────────────────────────────────────────────────
+function toast(msg, kind) {
+  const el = document.createElement("div");
+  el.className = "toast" + (kind ? " " + kind : "");
+  el.textContent = msg;
+  document.getElementById("toast-stack").appendChild(el);
+  requestAnimationFrame(() => el.classList.add("show"));
+  setTimeout(() => { el.classList.remove("show"); setTimeout(() => el.remove(), 250); }, 3500);
+}
+
+// ── Modal helpers ─────────────────────────────────────────────────────
+function openModal(id) { document.getElementById(id).classList.add("is-open"); }
+function closeModal(id) { document.getElementById(id).classList.remove("is-open"); }
+document.querySelectorAll("[data-close-modal]").forEach(el =>
+  el.addEventListener("click", () => closeModal(el.dataset.closeModal)));
+document.querySelectorAll(".modal-backdrop").forEach(el => {
+  el.addEventListener("click", e => { if (e.target === el) el.classList.remove("is-open"); });
+});
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") document.querySelectorAll(".modal-backdrop.is-open").forEach(m => m.classList.remove("is-open"));
+});
+
+// ── Status chip ───────────────────────────────────────────────────────
+function setStatusChip(data) {
+  const wrap = document.getElementById("status-chip");
+  if (data.content !== null) {
+    const when = data.updated_at
+      ? new Date(data.updated_at).toISOString().slice(0, 16).replace("T", " ") + " UTC"
+      : "—";
+    const who = data.updated_by || "—";
+    wrap.innerHTML = `<span class="origin-chip origin-override" title="Overridden by ${who} on ${when}">Override active</span>`;
+  } else {
+    wrap.innerHTML = `<span class="origin-chip origin-default">Using default</span>`;
+  }
+}
+
+// ── Refresh status + editor content from API ─────────────────────────
+async function refreshStatus() {
+  const r = await fetch(API, { credentials: "include" });
+  if (!r.ok) return;
+  const data = await r.json();
+  setStatusChip(data);
+  // When an override is set, show it; otherwise show the live default so the
+  // editor is never empty and admins can see what they're overriding.
+  editor.setValue(data.content !== null ? data.content : (data.default || ""));
+  renderPreview();
+}
+
+// ── Save ──────────────────────────────────────────────────────────────
+document.getElementById("save-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("save-btn");
+  btn.disabled = true;
+  try {
+    const r = await fetch(API, {
+      method: "PUT",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: editor.getValue() }),
+    });
+    if (r.ok) {
+      toast("Override saved.", "success");
+      await refreshStatus();
+    } else {
+      let detail = r.statusText;
+      try { detail = (await r.json()).detail || detail; } catch (_) {}
+      toast("Save failed: " + detail, "error");
+    }
+  } catch (e) {
+    toast("Save failed: " + e.message, "error");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ── Reset (with confirm modal) ────────────────────────────────────────
+document.getElementById("reset-btn").addEventListener("click", () => openModal("reset-modal"));
+
+document.getElementById("reset-confirm-btn").addEventListener("click", async () => {
+  closeModal("reset-modal");
+  const btn = document.getElementById("reset-btn");
+  btn.disabled = true;
+  try {
+    const r = await fetch(API, { method: "DELETE", credentials: "include" });
+    if (r.ok) {
+      toast("Reset to default.", "success");
+      await refreshStatus();
+    } else {
+      let detail = r.statusText;
+      try { detail = (await r.json()).detail || detail; } catch (_) {}
+      toast("Reset failed: " + detail, "error");
+    }
+  } catch (e) {
+    toast("Reset failed: " + e.message, "error");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ── Copy widget ───────────────────────────────────────────────────────
+function copyToClipboard(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    return navigator.clipboard.writeText(text);
+  }
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.cssText = "position:fixed;left:-9999px;top:-9999px";
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  return new Promise((resolve, reject) => {
+    try { document.execCommand("copy") ? resolve() : reject(); }
+    finally { document.body.removeChild(ta); }
+  });
+}
+
+function flashCopied(button) {
+  const original = button.textContent;
+  button.textContent = "Copied!";
+  button.classList.add("copied");
+  setTimeout(() => { button.textContent = original; button.classList.remove("copied"); }, 1500);
+}
+
+document.querySelectorAll(".btn-copy[data-copy-target]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    const target = document.getElementById(btn.getAttribute("data-copy-target"));
+    if (!target) return;
+    copyToClipboard(target.textContent.trim())
+      .then(() => flashCopied(btn))
+      .catch(() => {
+        const range = document.createRange();
+        range.selectNodeContents(target);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      });
+  });
+});
+</script>
+{% endblock %}
