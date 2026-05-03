@@ -110,11 +110,24 @@
     gap: 16px;
     margin-top: 0;
   }
-  .welcome-editor-col, .welcome-preview-col {
+  .welcome-pane {
     flex: 1 1 50%;
     min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .welcome-pane-label {
+    color: var(--text-secondary, #6b7280);
+    margin: 0 0 8px;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .welcome-editor-col, .welcome-preview-col {
+    flex: 1 1 auto;
     min-height: 480px;
-    height: calc(100vh - 320px);
+    height: calc(100vh - 360px);
     display: flex;
     flex-direction: column;
   }
@@ -127,10 +140,6 @@
     font-family: var(--font-primary, system-ui, sans-serif);
     font-size: 14px;
     overflow: auto;
-  }
-  .welcome-preview-col h4 {
-    color: var(--text-secondary, #6b7280); margin: 0 0 8px; font-size: 12px;
-    text-transform: uppercase; letter-spacing: 0.5px;
   }
   .welcome-preview-error {
     background: rgba(234, 88, 12, 0.15);
@@ -253,13 +262,18 @@
       </details>
 
       <div class="welcome-editor-row">
-        <div class="welcome-editor-col">
-          <textarea id="content" name="content">{{ current or default_template }}</textarea>
+        <div class="welcome-pane">
+          <h4 class="welcome-pane-label">Editor</h4>
+          <div class="welcome-editor-col">
+            <textarea id="content" name="content">{{ current or default_template }}</textarea>
+          </div>
         </div>
-        <div class="welcome-preview-col">
-          <h4>Live preview</h4>
-          <pre id="preview-content" style="white-space: pre-wrap; word-break: break-word; font-family: var(--font-mono, monospace); font-size: 12px; margin: 0;">(rendering…)</pre>
-          <div id="preview-error" class="welcome-preview-error" hidden></div>
+        <div class="welcome-pane">
+          <h4 class="welcome-pane-label">Live preview</h4>
+          <div class="welcome-preview-col">
+            <pre id="preview-content" style="white-space: pre-wrap; word-break: break-word; font-family: var(--font-mono, monospace); font-size: 12px; margin: 0;">(rendering…)</pre>
+            <div id="preview-error" class="welcome-preview-error" hidden></div>
+          </div>
         </div>
       </div>
     </div>
