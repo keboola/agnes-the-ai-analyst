@@ -346,13 +346,15 @@ class SyncOrchestrator:
                 if not _validate_identifier(table_name, "table_name"):
                     continue
                 if table_name not in inner_objects:
-                    # `_meta` row without an inner object — typically a BQ
-                    # VIEW entity in the v2 fetch-primitives flow. Skip the
-                    # master-view creation (use `da fetch` to materialize),
-                    # but still process subsequent rows. No claim, no view.
+                    # `_meta` row without an inner object. Post-#160 the
+                    # BigQuery extractor no longer emits these for unsupported
+                    # entity types (it skips both the view AND the _meta row),
+                    # so this branch fires for the keboola use_extension=False
+                    # path and any future connector that splits writes across
+                    # commits. Skip master-view creation; subsequent rows
+                    # continue normally.
                     logger.info(
-                        "Skipping master view for %s.%s — no inner object "
-                        "(use `da fetch` for BQ views)",
+                        "Skipping master view for %s.%s — no inner object",
                         source_name, table_name,
                     )
                     continue
