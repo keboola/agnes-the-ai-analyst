@@ -226,18 +226,6 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                         "Mismatch → 403 USER_PROJECT_DENIED on every BQ call."
                     ),
                 },
-                "legacy_wrap_views": {
-                    "kind": "bool",
-                    "default": False,
-                    "hint": (
-                        "When true, registered VIEWs and MATERIALIZED_VIEWs get a DuckDB "
-                        "master view via bigquery_query() (jobs API) so analysts can "
-                        "SELECT * FROM viewname directly. When false (default), views are "
-                        "catalog-only — analysts use `da fetch` or `da query --remote`. "
-                        "ON for view-heavy deployments where most views are small enough "
-                        "to materialize without 'Response too large' (issue #101)."
-                    ),
-                },
                 "max_bytes_per_materialize": {
                     "kind": "int",
                     "default": 10737418240,
@@ -795,13 +783,10 @@ class ServerConfigUpdateRequest(BaseModel):
 #
 #   - billing_project: defaults to data project; explicit value needed when
 #     the SA can read the data project but not bill against it.
-#   - legacy_wrap_views: default False; toggling ON wraps BQ views via
-#     `bigquery_query()` so analysts can `SELECT *` directly.
 #   - max_bytes_per_materialize: cost guardrail for `query_mode='materialized'`
 #     (default 10 GiB; 0 disables; null falls through to the default).
 _BQ_OPTIONAL_FIELD_DEFAULTS: Dict[str, Any] = {
     "billing_project": "",
-    "legacy_wrap_views": False,
     "max_bytes_per_materialize": 10737418240,
 }
 

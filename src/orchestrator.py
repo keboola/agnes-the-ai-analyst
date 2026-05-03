@@ -328,9 +328,12 @@ class SyncOrchestrator:
             ).fetchall()
 
             # Pre-fetch the set of names that actually exist as views/tables in
-            # the attached extract.duckdb. The BQ connector with
-            # legacy_wrap_views=False inserts _meta rows for VIEW entities
-            # without creating inner views — those need a different code path.
+            # the attached extract.duckdb. Most connectors emit a `_meta` row
+            # alongside an inner view per registered name; the keboola
+            # extractor with `use_extension=False` (and other connectors)
+            # may insert `_meta` rows whose inner view doesn't exist yet —
+            # skip those to avoid creating a master view that would resolve
+            # to nothing.
             inner_objects = {
                 row[0]
                 for row in conn.execute(

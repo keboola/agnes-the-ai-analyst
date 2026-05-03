@@ -176,10 +176,11 @@ def test_bigquery_subfields_populated(seeded_app):
     assert r.status_code == 200
     fields = r.json()["known_fields"]["data_source"]["bigquery"]["fields"]
     assert "billing_project" in fields
-    assert "legacy_wrap_views" in fields
     assert "max_bytes_per_materialize" in fields
-    assert fields["legacy_wrap_views"]["kind"] == "bool"
-    assert fields["legacy_wrap_views"]["default"] is False
+    # legacy_wrap_views was removed in #160 — VIEW/MATERIALIZED_VIEW are now
+    # always wrapped via bigquery_query() (the previous opt-in path).
+    assert "legacy_wrap_views" not in fields, \
+        "legacy_wrap_views config knob was removed; #160 makes the wrap behavior unconditional"
     assert fields["max_bytes_per_materialize"]["kind"] == "int"
     assert fields["max_bytes_per_materialize"]["default"] == 10737418240
 

@@ -120,12 +120,12 @@ The flag is the inverse of the new behavior. With "always wrap" as the only mode
 
 Total: 33 references across 9 files. Verified by per-file `grep -c` (rev3 review).
 
-After all edits: `grep -rn 'legacy_wrap_views' connectors app src tests config cli` must return zero. `docs/` is **excluded** from the gate — `docs/superpowers/plans/2026-04-27-claude-fetch-primitives.md` (8 hits) and `docs/superpowers/specs/2026-04-27-claude-fetch-primitives-design.md` (1 hit) are historical planning artifacts that document the design decision to introduce the flag; rewriting history would be revisionist. CHANGELOG history retained on the same logic.
+After all edits: `grep -rn 'legacy_wrap_views' connectors app src config cli` (production code only) must return zero. `tests/` is excluded — historical references in `assert "legacy_wrap_views" not in ...` regression guards and "removed in #160" docstring breadcrumbs have anti-regression value (they catch a future contributor who tries to re-add the flag). `docs/` is excluded for the same reason — `docs/superpowers/plans/2026-04-27-claude-fetch-primitives.md` (8 hits) and `docs/superpowers/specs/2026-04-27-claude-fetch-primitives-design.md` (1 hit) are historical planning artifacts; rewriting them would be revisionist. CHANGELOG history retained on the same logic.
 
-Verification command in CI / pre-commit: 
+Verification command in CI / pre-commit:
 
 ```
-test "$(grep -rn 'legacy_wrap_views' connectors app src tests config cli | wc -l)" -eq 0
+test "$(grep -rn 'legacy_wrap_views' connectors app src config cli | wc -l)" -eq 0
 ```
 
 No DB migration. Operators who explicitly set `legacy_wrap_views: true` in their overlay get the new (equivalent) behavior automatically; the unrecognized key is ignored by the YAML loader. Operators who explicitly set `legacy_wrap_views: false` get the new behavior as a fix, not a regression.
