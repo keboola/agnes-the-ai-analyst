@@ -240,7 +240,8 @@ class TestClaudeSetupPreview:
         assert resp.status_code == 200
         body = resp.text
         assert "env-setup-cta" in body
-        assert "View what Claude Code will receive on /setup" in body
+        assert "Open the full setup page" in body
+        assert 'href="/setup"' in body
         # inline <details> preview block must no longer appear
         assert 'aria-label="Preview of the clipboard payload"' not in body
 
