@@ -557,6 +557,12 @@ class TestExtractorMainModule:
 
     def test_main_exits_when_project_missing(self, tmp_path, monkeypatch):
         """__main__ must SystemExit(2) when data_source.bigquery.project is empty/missing."""
+        # Reset the app.instance_config cache — `test_main_reads_data_source_bigquery_project`
+        # above populated it with a config that has the project set, and the
+        # cache survives across tests. Without this reset, `_resolve_bq_project_id`
+        # returns the stale cached value instead of the no-project mock below.
+        from app.instance_config import reset_cache
+        reset_cache()
         monkeypatch.setattr(
             "config.loader.load_instance_config",
             lambda: {"data_source": {"type": "bigquery"}},  # no .bigquery.project
@@ -641,6 +647,115 @@ class TestDropWrapViewForBQViews:
             f"expected wrap view SQL for VIEW entity when legacy_wrap_views=True; captured={captured}"
         assert any("bigquery_query(" in s for s in myview_sqls), \
             f"legacy wrap view should use bigquery_query(); got: {myview_sqls}"
+
+    # ---- #160 always-wrap tests ------------------------------------------
+    # Issue #160: query_mode='remote' BQ rows whose entity is VIEW or
+    # MATERIALIZED_VIEW must get a master view via bigquery_query() by default.
+    # Today (legacy_wrap_views=False default) they don't — `da query --remote`
+    # against such a table returns DuckDB catalog error. Fix: always wrap.
+
+    def test_view_creates_wrap_view_with_default_config(self, tmp_path, monkeypatch):
+        """VIEW entity must get a bigquery_query() wrap view by default
+        (not just when legacy_wrap_views=True). Closes #160."""
+        from connectors.bigquery.extractor import init_extract
+        import app.instance_config as _ic
+        monkeypatch.setattr(_ic, "_instance_config", None, raising=False)
+        monkeypatch.setattr("connectors.bigquery.extractor.get_metadata_token", lambda: "tok")
+        monkeypatch.setattr("connectors.bigquery.extractor._detect_table_type", lambda *a, **kw: "VIEW")
+
+        real_connect = duckdb.connect
+        captured = []
+
+        def safe_connect(*a, **kw):
+            return _CapturingProxy(real_connect(*a, **kw), captured)
+        monkeypatch.setattr("connectors.bigquery.extractor.duckdb.connect", safe_connect)
+
+        # Default config — no monkeypatch setting legacy_wrap_views
+        init_extract(
+            str(tmp_path),
+            "my-project",
+            [{"name": "ue", "bucket": "finance", "source_table": "ue", "description": ""}],
+        )
+
+        view_sqls = [s for s in captured if "CREATE OR REPLACE VIEW" in s.upper() and '"ue"' in s]
+        assert view_sqls != [], \
+            f"VIEW entity must produce a wrap view by default; captured={captured}"
+        assert any("bigquery_query(" in s for s in view_sqls), \
+            f"VIEW wrap view must use bigquery_query(); got: {view_sqls}"
+        assert any("`my-project.finance.ue`" in s for s in view_sqls), \
+            f"wrap view must reference full project.dataset.table path; got: {view_sqls}"
+
+    def test_materialized_view_creates_wrap_view_with_default_config(self, tmp_path, monkeypatch):
+        """MATERIALIZED_VIEW entity must get a bigquery_query() wrap view by default."""
+        from connectors.bigquery.extractor import init_extract
+        import app.instance_config as _ic
+        monkeypatch.setattr(_ic, "_instance_config", None, raising=False)
+        monkeypatch.setattr("connectors.bigquery.extractor.get_metadata_token", lambda: "tok")
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor._detect_table_type",
+            lambda *a, **kw: "MATERIALIZED_VIEW",
+        )
+
+        real_connect = duckdb.connect
+        captured = []
+
+        def safe_connect(*a, **kw):
+            return _CapturingProxy(real_connect(*a, **kw), captured)
+        monkeypatch.setattr("connectors.bigquery.extractor.duckdb.connect", safe_connect)
+
+        init_extract(
+            str(tmp_path),
+            "my-project",
+            [{"name": "mv", "bucket": "ds", "source_table": "mv", "description": ""}],
+        )
+
+        view_sqls = [s for s in captured if "CREATE OR REPLACE VIEW" in s.upper() and '"mv"' in s]
+        assert view_sqls != [], \
+            f"MATERIALIZED_VIEW must produce a wrap view by default; captured={captured}"
+        assert any("bigquery_query(" in s for s in view_sqls)
+
+    def test_unsupported_entity_type_skips_meta_and_view(self, tmp_path, monkeypatch):
+        """For entity_types we don't have proven runtime support for
+        (EXTERNAL, SNAPSHOT, CLONE, future types), skip BOTH the master
+        view AND the _meta row. Today the _meta row is inserted
+        unconditionally → orchestrator sees a `_meta` entry pointing to a
+        non-existent inner view, then skips master-view creation, leaving
+        the operator with a registered-but-unqueryable name."""
+        from connectors.bigquery.extractor import init_extract
+        import app.instance_config as _ic
+        monkeypatch.setattr(_ic, "_instance_config", None, raising=False)
+        monkeypatch.setattr("connectors.bigquery.extractor.get_metadata_token", lambda: "tok")
+        monkeypatch.setattr(
+            "connectors.bigquery.extractor._detect_table_type",
+            lambda *a, **kw: "EXTERNAL",
+        )
+
+        real_connect = duckdb.connect
+        captured = []
+
+        def safe_connect(*a, **kw):
+            return _CapturingProxy(real_connect(*a, **kw), captured)
+        monkeypatch.setattr("connectors.bigquery.extractor.duckdb.connect", safe_connect)
+
+        init_extract(
+            str(tmp_path),
+            "my-project",
+            [{"name": "ext_tbl", "bucket": "ds", "source_table": "ext_tbl", "description": ""}],
+        )
+
+        # No CREATE VIEW for ext_tbl
+        view_sqls = [s for s in captured if "CREATE OR REPLACE VIEW" in s.upper() and '"ext_tbl"' in s]
+        assert view_sqls == [], \
+            f"unsupported entity_type must NOT produce a wrap view; got {view_sqls}"
+
+        # _meta row also skipped — no INSERT INTO _meta for ext_tbl
+        c = duckdb.connect(str(tmp_path / "extract.duckdb"), read_only=True)
+        try:
+            meta = c.execute("SELECT table_name FROM _meta").fetchall()
+            assert ("ext_tbl",) not in meta, \
+                f"unsupported entity_type must NOT insert _meta row; got {meta}"
+        finally:
+            c.close()
 
 
 class TestInitExtractProjectIdValidation:
