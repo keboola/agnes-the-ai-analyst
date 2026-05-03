@@ -113,9 +113,10 @@
   .welcome-editor-col, .welcome-preview-col {
     flex: 1 1 50%;
     min-width: 0;
-  }
-  .welcome-editor-col {
     min-height: 480px;
+    height: calc(100vh - 320px);
+    display: flex;
+    flex-direction: column;
   }
   .welcome-preview-col {
     border: 1px solid var(--border, #e5e7eb);
@@ -126,7 +127,6 @@
     font-family: var(--font-primary, system-ui, sans-serif);
     font-size: 14px;
     overflow: auto;
-    max-height: 600px;
   }
   .welcome-preview-col h4 {
     color: var(--text-secondary, #6b7280); margin: 0 0 8px; font-size: 12px;
@@ -318,7 +318,7 @@ if (typeof CodeMirror === "undefined") {
     indentUnit: 2,
     tabSize: 2,
   });
-  editor.setSize("100%", "calc(100vh - 320px)");
+  editor.setSize("100%", "100%");
 }
 
 // ── Live preview (debounced) ──────────────────────────────────────────

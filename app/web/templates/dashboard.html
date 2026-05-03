@@ -1226,20 +1226,25 @@
             color: white;
         }
 
+        .env-setup-row .env-meta {
+            margin-left: auto;
+            display: inline-flex;
+            align-items: center;
+            gap: 12px;
+        }
+
         .env-setup-row .env-hint {
             font-size: 12px;
             color: rgba(255, 255, 255, 0.6);
-            margin-left: auto;
         }
 
         .env-setup-link {
-            display: inline-block;
-            margin-left: 12px;
             font-size: 13px;
-            color: var(--primary);
-            text-decoration: none;
+            color: rgba(255, 255, 255, 0.9);
+            text-decoration: underline;
+            text-underline-offset: 2px;
         }
-        .env-setup-link:hover { text-decoration: underline; }
+        .env-setup-link:hover { color: #fff; }
 
         .setup-link-banner {
             margin-top: 12px;
@@ -1946,11 +1951,12 @@
                     </svg>
                     Setup a new Claude Code
                 </button>
-                <span class="env-hint">Valid 90 days · token stays in clipboard only</span>
-                <a href="/setup" class="env-setup-link">Or open the full setup page →</a>
+                <span class="env-meta">
+                    <span class="env-hint">Valid 90 days · token stays in clipboard only</span>
+                    <a href="/setup" class="env-setup-link">Open the full setup page →</a>
+                </span>
             </div>
             <div id="setupClaudeError" class="setup-error" role="alert" style="display:none;"></div>
-            <a href="/setup" class="env-setup-link" style="display: block; margin-top: 8px;">View what Claude Code will receive on /setup →</a>
         </div>
         {% endif %}
 
