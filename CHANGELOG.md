@@ -10,18 +10,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-## [0.31.0] — 2026-05-03
-
 ### Added
 
+- **Agent Workspace Prompt** — admin-editable Jinja2 markdown template for the analyst's `CLAUDE.md`, surfaced in their workspace by `da analyst setup`. Default = rich briefing with RBAC-filtered tables/metrics/marketplaces context. Edit at `/admin/workspace-prompt`. Endpoints: `GET /api/welcome` (analyst-facing, auth required), `GET/PUT/DELETE /api/admin/workspace-prompt-template`, `POST /api/admin/workspace-prompt-template/preview`. CLI: `da analyst setup` writes `CLAUDE.md` by default; new `--no-claude-md` flag opts out. See `docs/agent-workspace-prompt.md`.
 - **Agent Setup Prompt** — customizable bash setup script shown on `/setup` and copied by the dashboard clipboard CTA. Default = the live `setup_instructions.resolve_lines()` output (TLS trust bootstrap, CLI install, login, marketplace, skills). Admin override at `/admin/agent-prompt` — full replacement of the default, not a banner added on top. Override flows to both the `/setup` page display and the dashboard clipboard payload. Jinja2 is available for `{{ instance.name }}` etc.; `{server_url}` and `{token}` are JS-substituted at clipboard-copy time and survive Jinja2 rendering unchanged. REST API: `GET /api/admin/welcome-template` returns `{content, default, updated_at, updated_by}` (`content` is `null` when no override is set; `default` is always the live computed script); `PUT` to set an override; `DELETE` to clear; `POST /api/admin/welcome-template/preview` for live preview without persisting. Available Jinja2 placeholders: `instance.{name,subtitle}`, `server.{url,hostname}`, `user` (may be `null` for anonymous visitors), `now`, `today`. Override content is HTML-sanitized post-render (script/iframe/event-handler strip). See `docs/agent-setup-prompt.md`.
-- DuckDB schema v21: `welcome_template` singleton table backing the banner override. Auto-migration v20→v21 on first start.
+- DuckDB schema v21: `welcome_template` singleton table backing the Agent Setup Prompt override. Auto-migration v20→v21 on first start.
 - DuckDB schema v22: `setup_banner` table reserved (no consumers; retained for forward compatibility with already-migrated instances).
+- DuckDB schema v23: `claude_md_template` singleton table backing the Agent Workspace Prompt override. Auto-migration v22→v23.
 
 ### Changed
 
-- **BREAKING (CLI):** `da analyst setup` no longer generates a `CLAUDE.md` file in the analyst workspace. Workspace-context customisation is handled via the `/setup` page banner instead. Existing analysts with a server-generated `CLAUDE.md` may delete it manually if desired.
-- **BREAKING (API):** `GET /api/welcome` removed. The endpoint was internal-only (consumed only by the CLI's now-removed `CLAUDE.md` generation step).
+- `da analyst setup` writes `CLAUDE.md` to the analyst workspace from the server-rendered template (fetched via `GET /api/welcome`). Use `--no-claude-md` to opt out. Analysts who ran setup while CLAUDE.md generation was temporarily absent will have their file written on the next `da analyst setup` run.
 - `/install` page renamed to `/setup` ("Setup local agent" nav label) with 302 redirect from `/install`.
 - Dashboard "What Claude Code will receive" inline preview replaced with a link to `/setup` for the canonical view.
 

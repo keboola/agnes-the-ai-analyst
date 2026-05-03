@@ -397,6 +397,19 @@
         "title": "BulkUpdateRequest",
         "type": "object"
       },
+      "ClaudeMdResponse": {
+        "properties": {
+          "content": {
+            "title": "Content",
+            "type": "string"
+          }
+        },
+        "required": [
+          "content"
+        ],
+        "title": "ClaudeMdResponse",
+        "type": "object"
+      },
       "ColumnMetadataItem": {
         "properties": {
           "basetype": {
@@ -3407,6 +3420,55 @@
         ]
       }
     },
+    "/admin/workspace-prompt": {
+      "get": {
+        "operationId": "admin_workspace_prompt_page_admin_workspace_prompt_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Workspace Prompt Page",
+        "tags": [
+          "web"
+        ]
+      }
+    },
     "/api/admin/access-overview": {
       "get": {
         "description": "One-shot snapshot for the /admin/access page.\n\nReturns:\n  - ``groups``: every user_group with member + grant counts\n  - ``grants``: every (group_id, resource_type, resource_id) row\n  - ``resources``: per-resource-type hierarchical layout, where each\n    type has a list of *blocks* (parent entities, e.g. a marketplace)\n    and each block has *items* (concrete grantable resources).\n\nUI stitches the three pieces into the two-column layout: groups on\nthe left, resources tree on the right with per-item checkboxes whose\nstate derives from ``grants``.",
@@ -5549,6 +5611,211 @@
         "summary": "Admin Preview Template",
         "tags": [
           "welcome"
+        ]
+      }
+    },
+    "/api/admin/workspace-prompt-template": {
+      "delete": {
+        "operationId": "admin_reset_workspace_template_api_admin_workspace_prompt_template_delete",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Reset Workspace Template",
+        "tags": [
+          "claude_md"
+        ]
+      },
+      "get": {
+        "operationId": "admin_get_workspace_template_api_admin_workspace_prompt_template_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplateGetResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Get Workspace Template",
+        "tags": [
+          "claude_md"
+        ]
+      },
+      "put": {
+        "description": "Save an admin override for the analyst CLAUDE.md template.\n\nTwo-pass Jinja2 validation (autoescape=False, StrictUndefined):\n- Pass 1: render with an authenticated user stub \u2014 catches undefined\n  placeholders and syntax errors.\n- Pass 2: render with a minimal anon-style user stub \u2014 catches templates\n  that hard-depend on admin-only context fields.",
+        "operationId": "admin_put_workspace_template_api_admin_workspace_prompt_template_put",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TemplatePutRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Put Workspace Template",
+        "tags": [
+          "claude_md"
+        ]
+      }
+    },
+    "/api/admin/workspace-prompt-template/preview": {
+      "post": {
+        "description": "Render arbitrary template content against the live RBAC context for the\ncalling admin, without persisting. Used by the /admin/workspace-prompt editor's\nPreview button so admins can see their edits before saving.",
+        "operationId": "admin_preview_workspace_template_api_admin_workspace_prompt_template_preview_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TemplatePreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaudeMdResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Preview Workspace Template",
+        "tags": [
+          "claude_md"
         ]
       }
     },
@@ -10286,6 +10553,74 @@
         "summary": "Version Info",
         "tags": [
           "health"
+        ]
+      }
+    },
+    "/api/welcome": {
+      "get": {
+        "description": "Return the rendered CLAUDE.md for the authenticated analyst.\n\nThe CLI calls this endpoint during ``da analyst setup`` to write\n``<workspace>/CLAUDE.md``. The content is RBAC-filtered per the\ncalling user.\n\n``server_url`` query param lets the CLI pass the origin it knows so\nthe rendered content references the correct server URL rather than the\nrequest host (which may differ behind a proxy).",
+        "operationId": "get_welcome_api_welcome_get",
+        "parameters": [
+          {
+            "description": "Server URL used in rendered CLAUDE.md",
+            "in": "query",
+            "name": "server_url",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Server URL used in rendered CLAUDE.md",
+              "title": "Server Url"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaudeMdResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Welcome",
+        "tags": [
+          "claude_md"
         ]
       }
     },
