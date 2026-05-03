@@ -25,6 +25,9 @@ def regex():
     ('SELECT * FROM bq.finance."ue"', ('finance', '"ue"')),
     # Case-insensitive
     ('select * from BQ.Finance.UE', ('Finance', 'UE')),
+    # Quoted catalog token "bq" — Phase 3 review evasion: must be caught
+    ('SELECT * FROM "bq"."finance"."ue"', ('"finance"', '"ue"')),
+    ('SELECT * FROM "BQ"."ds"."tbl"', ('"ds"', '"tbl"')),
     # With WHERE
     ('SELECT a FROM bq.ds.tbl WHERE x=1', ('ds', 'tbl')),
     # Inside CTE body
@@ -55,6 +58,7 @@ def test_regex_finds_multiple_paths_in_one_statement(regex):
     ('SELECT bq.col FROM tbl', '2-part bq.col is column qualifier, not catalog'),
     ('SELECT count(*) FROM unit_economics', 'aggregate on bare name'),
     ('SELECT * FROM other_bq.ds.tbl', 'prefix that contains bq'),
+    ('SELECT * FROM "my_bq".ds.tbl', 'quoted prefix that contains bq'),
     ('SELECT * FROM x.bq.ds.tbl', 'bq is middle component, not catalog'),
 ])
 def test_regex_rejects_non_bq_paths(regex, sql, reason):

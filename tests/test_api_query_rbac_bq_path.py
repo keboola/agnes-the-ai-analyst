@@ -36,6 +36,24 @@ def _register_bq_remote_row(name: str, bucket: str, source_table: str) -> None:
         sys_conn.close()
 
 
+def test_quoted_bq_catalog_token_rejected_403(seeded_app):
+    """Phase 3 review evasion: `SELECT * FROM "bq"."ds"."tbl"` (catalog
+    token quoted) must be caught by the same RBAC check as the unquoted
+    form. DuckDB resolves `"bq"` to the same ATTACHed BQ catalog, so the
+    quoted variant is a real bypass we have to close."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.post(
+        "/api/query",
+        json={"sql": 'SELECT * FROM "bq"."secret_ds"."secret_tbl"'},
+        headers=_auth(token),
+    )
+    assert r.status_code == 403, r.json()
+    detail = r.json().get("detail", {})
+    if isinstance(detail, dict):
+        assert detail.get("reason") == "bq_path_not_registered", detail
+
+
 def test_unregistered_bq_path_rejected_403(seeded_app):
     """Direct reference to a `bq.<ds>.<tbl>` that no registry row points at:
     403 with `bq_path_not_registered`. Caller has admin token (no per-name

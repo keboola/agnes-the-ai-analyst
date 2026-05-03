@@ -31,12 +31,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/query", tags=["query"])
 
 # Issue #160 §4.3.1 — direct `bq.<dataset>.<source_table>` references in user
-# SQL. Matches all 16 cases verified empirically (fully-quoted, unquoted,
-# mixed quoting, case-insensitive, inside CTE bodies, multiple in one stmt).
+# SQL. Catalog token accepts both `bq` (the unquoted DuckDB-style name) and
+# `"bq"` (quoted identifier). DuckDB resolves both to the same ATTACHed
+# catalog, so the security-boundary regex must accept both — Phase 3 review
+# caught the quoted variant as an RBAC + cost-cap bypass.
 # Lookahead `(?=\W|$)` works where `\b` doesn't (after a closing quote).
-# Negative lookbehind `(?<![\w.])` rejects `other_bq.x.y` and `x.bq.y.z`.
+# Negative lookbehind `(?<![\w.])` rejects `other_bq.x.y`, `my_bq.ds.tbl`,
+# and `x.bq.y.z` so the regex doesn't fire on column qualifiers or
+# look-alike-prefixed identifiers.
 BQ_PATH = re.compile(
-    r'(?<![\w.])bq\s*\.\s*("[^"]+"|\w+)\s*\.\s*("[^"]+"|\w+)(?=\W|$)',
+    r'(?<![\w.])(?:"bq"|bq)\s*\.\s*("[^"]+"|\w+)\s*\.\s*("[^"]+"|\w+)(?=\W|$)',
     re.IGNORECASE,
 )
 
