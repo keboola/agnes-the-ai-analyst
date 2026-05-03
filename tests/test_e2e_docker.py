@@ -75,12 +75,13 @@ class TestDockerHealth:
         assert data.get("status") in ("ok", "healthy")
 
     def test_health_has_duckdb(self, docker_env):
+        # /api/health touches system.duckdb to read schema_version, so
+        # db_schema='ok' implies DuckDB is reachable. The richer
+        # services.duckdb_state lives in /api/health/detailed (auth-gated).
         import httpx
         resp = httpx.get(f"{docker_env}/api/health")
         data = resp.json()
-        services = data.get("services", {})
-        assert "duckdb_state" in services
-        assert services["duckdb_state"]["status"] == "ok"
+        assert data.get("db_schema") == "ok"
 
 
 class TestDockerFullFlow:
