@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.31.0] — 2026-05-03
+
 ### Added
 
 - **Agent Setup Prompt** — customizable bash setup script shown on `/setup` and copied by the dashboard clipboard CTA. Default = the live `setup_instructions.resolve_lines()` output (TLS trust bootstrap, CLI install, login, marketplace, skills). Admin override at `/admin/agent-prompt` — full replacement of the default, not a banner added on top. Override flows to both the `/setup` page display and the dashboard clipboard payload. Jinja2 is available for `{{ instance.name }}` etc.; `{server_url}` and `{token}` are JS-substituted at clipboard-copy time and survive Jinja2 rendering unchanged. REST API: `GET /api/admin/welcome-template` returns `{content, default, updated_at, updated_by}` (`content` is `null` when no override is set; `default` is always the live computed script); `PUT` to set an override; `DELETE` to clear; `POST /api/admin/welcome-template/preview` for live preview without persisting. Available Jinja2 placeholders: `instance.{name,subtitle}`, `server.{url,hostname}`, `user` (may be `null` for anonymous visitors), `now`, `today`. Override content is HTML-sanitized post-render (script/iframe/event-handler strip). See `docs/agent-setup-prompt.md`.
