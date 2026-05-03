@@ -43,6 +43,14 @@ _VALIDATION_STUB_CONTEXT = {
     "today": "2026-01-01",
 }
 
+# Same stub with user=None to validate templates against anonymous /setup visitors.
+# /setup is publicly accessible — templates that reference user.* without an
+# {% if user %} guard will crash with StrictUndefined for anon visitors.
+_VALIDATION_STUB_CONTEXT_ANON = {
+    **{k: v for k, v in _VALIDATION_STUB_CONTEXT.items() if k != "user"},
+    "user": None,
+}
+
 
 class BannerResponse(BaseModel):
     content: str
@@ -93,11 +101,29 @@ async def admin_put_template(
     env = Environment(undefined=StrictUndefined, autoescape=False)
     try:
         template = env.from_string(payload.content)
-        # Render against a stub context so undefined placeholders or runtime
-        # errors are caught here, not when /setup renders for a real user.
+        # Pass 1 — render with an authenticated user stub so undefined
+        # placeholders or runtime errors are caught at save time.
         template.render(**_VALIDATION_STUB_CONTEXT)
     except TemplateError as e:
         raise HTTPException(status_code=400, detail=f"Template invalid: {e}")
+
+    # Pass 2 — render with user=None to catch templates that reference user.*
+    # fields without an {% if user %} guard.  /setup is publicly accessible to
+    # anonymous visitors, so a guard-less template would crash with
+    # StrictUndefined at runtime and silently fall back to the default — the
+    # admin would have no idea their override is broken for anon visitors.
+    try:
+        template.render(**_VALIDATION_STUB_CONTEXT_ANON)
+    except TemplateError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Template fails for anonymous /setup visitors: {e}. "
+                "Wrap user-dependent expressions in {{% if user %}}...{{% endif %}} — "
+                "/setup is publicly accessible to non-logged-in users."
+            ),
+        )
+
     WelcomeTemplateRepository(conn).set(payload.content, updated_by=user["email"])
     return {"status": "ok"}
 

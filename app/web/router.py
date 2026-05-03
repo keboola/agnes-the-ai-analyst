@@ -247,51 +247,45 @@ def _build_context(
                 return {k: v for k, v in theme.items() if v}
             return {}
 
-    # Lines + server_url for the "Setup a new Claude Code" preview/clipboard
-    # partial; single source of truth lives in app/web/setup_instructions.py.
-    # Resolve the wheel filename server-side so the URL in the setup snippet
-    # is a PEP 427-compliant path — `uv tool install` rejects bare `agnes.whl`.
-    from app.web.setup_instructions import resolve_lines
-    from app.api.cli_artifacts import _find_wheel
-    _wheel = _find_wheel()
-    _wheel_filename = _wheel.name if _wheel else "agnes.whl"
-
-    # Inline the user's RBAC-allowed marketplace plugins as `claude plugin
-    # install` commands so a single paste also bootstraps the marketplace
-    # and plugin set. Anonymous viewers (no user, or no DB conn) get the
-    # original 6-step layout.
-    plugin_install_names: list[str] = []
-    if user and conn is not None:
-        try:
-            from src import marketplace_filter
-            plugin_install_names = [
-                p["manifest_name"]
-                for p in marketplace_filter.resolve_allowed_plugins(conn, user)
-            ]
-        except Exception:  # pragma: no cover — defensive: never block dashboard render
-            logger.exception("Failed to resolve marketplace plugins for setup prompt")
-            plugin_install_names = []
-
-    # `AGNES_DEBUG_AUTH` is the existing dev/staging gate (see
-    # `app/api/me_debug.py`, `app/web/router.py` template ConfigProxy).
-    # When on, the setup prompt also disables host-scoped git TLS verify
-    # so `claude plugin marketplace add` works against self-signed instances.
-    # Subsumed by the cert trust block when `ca_pem` is loaded below.
-    self_signed_tls = os.environ.get("AGNES_DEBUG_AUTH", "").strip().lower() in (
-        "1", "true", "yes",
-    )
-    server_host = request.url.netloc
-
-    ca_pem = _read_agnes_ca_pem()
-
-    setup_instructions_lines = resolve_lines(
-        _wheel_filename,
-        plugin_install_names=plugin_install_names,
-        self_signed_tls=self_signed_tls,
-        server_host=server_host,
-        ca_pem=ca_pem,
-    )
     ctx_server_url = str(request.base_url).rstrip("/")
+
+    # Lines for the "Setup a new Claude Code" preview/clipboard partial.
+    #
+    # When a DB connection is available, we go through render_agent_prompt_banner
+    # which checks for an admin override first (stored in welcome_template) and
+    # falls back to the live default from setup_instructions.resolve_lines().
+    # This guarantees that both /setup and /dashboard clipboard CTA always reflect
+    # the same content — the override is honoured everywhere.
+    #
+    # When no conn is supplied (e.g. public pages that don't need a DB round-trip)
+    # we fall back to resolve_lines() directly with anonymous/no-plugin context.
+    if conn is not None:
+        from src.welcome_template import render_agent_prompt_banner
+        _script_text = render_agent_prompt_banner(
+            conn, user=user, server_url=ctx_server_url
+        )
+        setup_instructions_lines = _script_text.split("\n")
+    else:
+        # No DB connection — use the unauthenticated default (no override possible,
+        # no marketplace plugins).
+        from app.web.setup_instructions import resolve_lines
+        from app.api.cli_artifacts import _find_wheel
+        _wheel = _find_wheel()
+        _wheel_filename = _wheel.name if _wheel else "agnes.whl"
+
+        self_signed_tls = os.environ.get("AGNES_DEBUG_AUTH", "").strip().lower() in (
+            "1", "true", "yes",
+        )
+        server_host = request.url.netloc
+        ca_pem = _read_agnes_ca_pem()
+
+        setup_instructions_lines = resolve_lines(
+            _wheel_filename,
+            plugin_install_names=[],
+            self_signed_tls=self_signed_tls,
+            server_host=server_host,
+            ca_pem=ca_pem,
+        )
 
     ctx = {
         "request": request,
