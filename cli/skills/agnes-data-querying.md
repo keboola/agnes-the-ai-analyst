@@ -101,8 +101,9 @@ For `source_type=keboola` / `source_type=jira` (local), use **DuckDB SQL** in yo
 
 | Scenario | Use instead |
 |----------|------------|
-| Single aggregate on remote table (`SELECT COUNT(*)`) | `da query --remote "SELECT COUNT(*) FROM web_sessions_example"` — cheap, no fetch needed |
-| Throwaway exploration with raw BQ syntax | `da query --remote` — one-shot, no snapshot |
+| Single aggregate on remote BASE TABLE (`SELECT COUNT(*)`) | `da query --remote "SELECT COUNT(*) FROM web_sessions_example"` — cheap, no fetch needed (Storage Read API pushes the COUNT into BQ) |
+| Single aggregate on remote VIEW/MATERIALIZED_VIEW | Same syntax works (#160) but the BQ jobs API can't push WHERE/COUNT into the view body. Cost guardrail (default 5 GiB) catches expensive scans → 400 `remote_scan_too_large` with `da fetch` suggestion. Pivot to `da fetch <id> --where '<predicate>'` if rejected. |
+| Throwaway exploration with raw BQ syntax | `da query --remote "SELECT … FROM <registered_id>"` — direct `bq."<dataset>"."<table>"` paths are now registry-gated (403 `bq_path_not_registered` if not registered). Register first or use the catalog id. |
 | Cross-table JOIN with both remote | Use `da fetch` for one side + `da query --remote` for the other; full cross-remote JOIN needs design (see #101) |
 
 ## When the table you need isn't in `da catalog`

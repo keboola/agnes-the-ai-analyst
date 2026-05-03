@@ -118,7 +118,7 @@ Returns `204 No Content` on success, `404` if the id doesn't exist. **The underl
 
 ## When NOT to register
 
-- The user wants to inspect a table once, doesn't intend to share it: use `da query --remote "SELECT … FROM \`<project>.<dataset>.<table>\`"` instead.
+- The user wants to inspect a table once, doesn't intend to share it: register the row once with `query_mode='remote'` (admin-only, ~30s) and query it via `da query --remote "SELECT … FROM <registered_id>"`. Direct `bq."<dataset>"."<table>"` syntax is now registry-gated — unregistered paths return 403 `bq_path_not_registered` (closes the pre-existing RBAC + cost-cap bypass).
 - The data lives in a third source not yet supported by a connector: implement the connector first (see `connectors.md` skill), then register.
 - The dataset already has a registered "parent" view that exposes the rows you want: register-table is for distinct catalog entities, not for slicing existing ones — slice with `da fetch --where`.
 
