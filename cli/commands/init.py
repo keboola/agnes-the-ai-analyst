@@ -100,7 +100,7 @@ def init(
         if resp.status_code == 401:
             typer.echo(render_error(401, {"detail": {
                 "kind": "auth_failed",
-                "hint": f"Token expired or invalid — get a fresh one at {server_url}/setup?role=analyst",
+                "hint": f"Token expired or invalid — get a fresh one at {server_url}/setup",
             }}), err=True)
             raise typer.Exit(1)
         resp.raise_for_status()
