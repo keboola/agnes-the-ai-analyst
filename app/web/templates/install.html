@@ -996,7 +996,12 @@
         // Role from the Jinja ctx — drives the PAT mint shape below
         // (analyst tile mints a 1h scope=bootstrap-analyst PAT, admin keeps
         // the historical 90-day general-purpose PAT).
-        const ROLE = "{{ role }}";
+        // `tojson` produces a JSON-quoted JS string literal, which doubles as
+        // defense-in-depth: even if `role` ever became attacker-influenced,
+        // tojson would JSON-escape any embedded quotes/backslashes/script
+        // sequences. (Today FastAPI's Literal validator already constrains
+        // `role` to {"analyst","admin"}, so this is belt-and-suspenders.)
+        const ROLE = {{ role | tojson }};
 
         function copyToClipboard(text) {
             if (navigator.clipboard && window.isSecureContext) {
