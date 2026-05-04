@@ -47,3 +47,35 @@ def test_render_analyst_with_ca_pem():
     assert "AGNES_CA_PEM" in text  # heredoc marker from trust block
     assert "ca-bundle.pem" in text
     assert "agnes init" in text  # analyst-specific step still present
+
+
+def test_render_analyst_confirm_is_step_4():
+    """Pin the analyst Confirm step number so a future renumbering breaks the test
+    instead of silently emitting `4) Confirm:` while step 3 has actually moved.
+    Steps: 0 (TLS optional), 1 (install), 2 (init), 3 (verify), 4 (confirm).
+    """
+    text = render_setup_instructions(
+        server_url="https://agnes.example.com",
+        token="agnes_pat_TEST",
+        wheel_filename="agnes-0.32.0-py3-none-any.whl",
+        role="analyst",
+    )
+    assert "4) Confirm:" in text
+    # Also pin the init/verify step numbers
+    assert "2) Bootstrap your analyst workspace" in text
+    assert "3) Verify the data is queryable" in text
+
+
+def test_render_analyst_finale_mentions_workspace_md():
+    """Confirm bullets reference both CLAUDE.md and AGNES_WORKSPACE.md
+    (which `agnes init` writes per Task 11). Init-step prose must also mention
+    AGNES_WORKSPACE.md so the operator knows what to verify."""
+    text = render_setup_instructions(
+        server_url="https://agnes.example.com",
+        token="agnes_pat_TEST",
+        wheel_filename="agnes-0.32.0-py3-none-any.whl",
+        role="analyst",
+    )
+    assert "AGNES_WORKSPACE.md" in text
+    # Mentioned twice — once in the init prose, once in the confirm bullet
+    assert text.count("AGNES_WORKSPACE.md") >= 2
