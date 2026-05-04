@@ -417,5 +417,5 @@ catalog:
 # Lower it only if you know your materialize never exceeds the new
 # value AND your host has a habit of hard-killing processes.
 # Min 60 (1 minute), max 604800 (7 days). Configurable via /admin/server-config UI.
-# materialize:
-#   lock_ttl_seconds: 86400
+materialize:
+  lock_ttl_seconds: 86400
