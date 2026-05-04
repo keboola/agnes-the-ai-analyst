@@ -188,7 +188,6 @@ def compute_default_agent_prompt(
             self_signed_tls=self_signed_tls,
             server_host=server_host,
             ca_pem=ca_pem,
-            role=role,
         )
         return "\n".join(lines)
     except Exception:

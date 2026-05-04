@@ -303,14 +303,14 @@ def test_resolve_lines_with_plugins_uses_install_first_diagnose_last_layout():
         assert stray not in joined
     # Crucial ordering invariants for the new layout.
     install_idx = joined.index("1) Install the CLI")
-    login_idx = joined.index("2) Log in")
-    verify_idx = joined.index("3) Verify the login:")
+    init_idx = joined.index("2) Bootstrap your Agnes workspace")
+    catalog_idx = joined.index("3) Verify the data is queryable:")
     git_idx = joined.index("4) Make sure git is installed")
     market_idx = joined.index("5) Register the Agnes Claude Code marketplace")
     diag_idx = joined.index("6) Run diagnostics:")
     skills_idx = joined.index("7) Skills")
     confirm_idx = joined.index("8) Confirm:")
-    assert install_idx < login_idx < verify_idx < git_idx < market_idx < diag_idx < skills_idx < confirm_idx
+    assert install_idx < init_idx < catalog_idx < git_idx < market_idx < diag_idx < skills_idx < confirm_idx
     # No git-config sslVerify=false line unless self_signed_tls is set.
     assert "git config --global" not in joined
     # server_host is server-side substituted; the placeholder must be gone.
