@@ -3,6 +3,7 @@
 No data is downloaded. All queries go directly to BigQuery via DuckDB extension ATTACH.
 """
 
+import hashlib
 import logging
 import os
 import re
@@ -89,10 +90,11 @@ def _wrap_admin_sql_for_jobs_api(billing_project: str, inner_sql: str) -> str:
             should fail closed not silently lose budget to the wrong
             project).
         inner_sql: BigQuery-flavor SQL the admin registered as
-            ``source_query``. Must use BQ syntax (backticks for dashed
-            identifiers, native function calls). DuckDB-flavor `bq."ds"."t"`
-            is NOT acceptable here — the v24 migration converts existing
-            rows; new registrations are validated upstream.
+            ``source_query``. Should be BigQuery-native; DuckDB-flavor
+            `bq."ds"."t"` references are not enforced here but will fail at
+            COPY time inside the BQ jobs API. Existing rows are converted by
+            the v24 schema migration; new rows are validated upstream at
+            register/PUT.
 
     Returns:
         A DuckDB-parseable SQL fragment suitable as the operand of
@@ -471,7 +473,7 @@ def materialize_query(
             )
 
         try:
-            safe_path = str(tmp_path).replace("'", "''")
+            safe_path = _escape_sql_string_literal(str(tmp_path))
             conn.execute(
                 f"COPY ({wrapped_sql}) TO '{safe_path}' (FORMAT PARQUET)"
             )
@@ -489,7 +491,6 @@ def materialize_query(
     # thread — a 10 GiB parquet means 50+ seconds of disk I/O blocking other
     # requests. Hashing here keeps the open-file handle hot from the COPY
     # round and removes the second read. Devil's-advocate review item.
-    import hashlib
     h = hashlib.md5()
     with open(tmp_path, "rb") as f:
         for chunk in iter(lambda: f.read(8192), b""):
