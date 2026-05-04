@@ -47,9 +47,10 @@ BQ_PATH = re.compile(
 
 def _default_remote_query_cap_bytes() -> int:
     """5 GiB default cap on /api/query BQ-touching scans. Configurable via
-    `api.query.bq_max_scan_bytes` in /admin/server-config.
+    `data_source.bigquery.bq_max_scan_bytes` in /admin/server-config —
+    sits next to `max_bytes_per_materialize` for visual symmetry.
     """
-    raw = get_value("api", "query", "bq_max_scan_bytes", default=5_368_709_120)
+    raw = get_value("data_source", "bigquery", "bq_max_scan_bytes", default=5_368_709_120)
     try:
         return int(raw) if raw is not None else 5_368_709_120
     except (TypeError, ValueError):

@@ -242,6 +242,16 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                         "or sync rejected. 0 disables the gate. Default 10737418240 = 10 GiB."
                     ),
                 },
+                "bq_max_scan_bytes": {
+                    "kind": "int",
+                    "default": 5368709120,
+                    "hint": (
+                        "Cost guardrail for `da query --remote` against query_mode='remote' "
+                        "BQ rows (dry-run check on the underlying SELECT before execute). "
+                        "Bytes processed; exceeds → 400 remote_scan_too_large with a "
+                        "`da fetch` suggestion. 0 disables the gate. Default 5368709120 = 5 GiB."
+                    ),
+                },
             },
         },
         "keboola": {
@@ -795,6 +805,7 @@ class ServerConfigUpdateRequest(BaseModel):
 _BQ_OPTIONAL_FIELD_DEFAULTS: Dict[str, Any] = {
     "billing_project": "",
     "max_bytes_per_materialize": 10737418240,
+    "bq_max_scan_bytes": 5368709120,
 }
 
 
