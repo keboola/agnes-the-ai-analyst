@@ -18,57 +18,11 @@ Covers PR #145 (re-implementation against 0.24.0 base):
 Shares the seeded_app + bq_instance fixtures from conftest /
 test_admin_bq_register.py for parity with the existing BQ test surface.
 """
-from unittest.mock import MagicMock
-
 import pytest
 
 
 def _auth(token):
     return {"Authorization": f"Bearer {token}"}
-
-
-@pytest.fixture
-def stub_bq_extractor(monkeypatch):
-    """Mirror tests/test_admin_bq_register.py — bypasses real-BQ traffic
-    in the post-register rebuild path so the test stays offline. Required
-    whenever the test seeds a remote-mode BQ row via the HTTP API."""
-    rebuild_mock = MagicMock(return_value={
-        "project_id": "my-test-project",
-        "tables_registered": 1, "errors": [], "skipped": False,
-    })
-    monkeypatch.setattr(
-        "connectors.bigquery.extractor.rebuild_from_registry",
-        rebuild_mock,
-    )
-    monkeypatch.setattr(
-        "src.orchestrator.SyncOrchestrator",
-        lambda *a, **kw: MagicMock(),
-    )
-    return rebuild_mock
-
-
-@pytest.fixture
-def bq_instance(monkeypatch):
-    """Force instance.yaml to look like a BigQuery deployment.
-
-    Mirrors tests/test_admin_bq_register.py::bq_instance so the
-    project_id read inside _validate_bigquery_register_payload succeeds.
-    """
-    fake_cfg = {
-        "data_source": {
-            "type": "bigquery",
-            "bigquery": {"project": "my-test-project", "location": "us"},
-        },
-    }
-    monkeypatch.setattr(
-        "app.instance_config.load_instance_config",
-        lambda: fake_cfg,
-        raising=False,
-    )
-    from app.instance_config import reset_cache
-    reset_cache()
-    yield fake_cfg
-    reset_cache()
 
 
 def _materialized_payload(**overrides):

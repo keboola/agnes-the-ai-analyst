@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import duckdb
 import pytest
@@ -301,3 +302,68 @@ def bq_access():
     yield _build
     from app.main import app as _app
     _app.dependency_overrides.pop(get_bq_access, None)
+
+
+@pytest.fixture
+def bq_instance(monkeypatch):
+    """Force instance.yaml to look like a BigQuery deployment for the
+    duration of one test. Patches the cached load_instance_config so
+    /admin/server-config reads / get_value('data_source.bigquery.project')
+    return what we want, without touching the on-disk instance.yaml.
+
+    Tests that need BigQuery-specific admin API behaviour (project_id
+    validation, materialized source_query checks, etc.) depend on this
+    fixture. Yields the fake config dict so callers can inspect it.
+
+    Note: several test files (test_admin_bq_register.py,
+    test_admin_tables_ui_materialized.py, …) define their own local
+    ``bq_instance`` fixture. Those local definitions shadow this one
+    inside those files — the conftest copy is the canonical provider for
+    any new test file that imports from this module."""
+    fake_cfg = {
+        "data_source": {
+            "type": "bigquery",
+            "bigquery": {"project": "my-test-project", "location": "us"},
+        },
+    }
+    monkeypatch.setattr(
+        "app.instance_config.load_instance_config",
+        lambda: fake_cfg,
+        raising=False,
+    )
+    from app.instance_config import reset_cache
+    reset_cache()
+    yield fake_cfg
+    reset_cache()
+
+
+@pytest.fixture
+def stub_bq_extractor(monkeypatch):
+    """Mirror tests/test_admin_bq_register.py — bypasses real-BQ traffic
+    in the post-register rebuild path so the test stays offline. Required
+    whenever the test seeds a remote-mode BQ row via the HTTP API.
+
+    Patches:
+    - ``connectors.bigquery.extractor.rebuild_from_registry`` — returns a
+      minimal success dict so the admin register endpoint's 200/201 path
+      completes without touching a real BQ project.
+    - ``src.orchestrator.SyncOrchestrator`` — replaced with a no-op mock so
+      the post-register orchestrator.rebuild() call doesn't scan the
+      (empty) extracts directory during tests.
+
+    Returns the ``rebuild_from_registry`` MagicMock directly so callers
+    that only need the side-effect patcher can ignore the return value,
+    and callers that want to assert call args can inspect it."""
+    rebuild_mock = MagicMock(return_value={
+        "project_id": "my-test-project",
+        "tables_registered": 1, "errors": [], "skipped": False,
+    })
+    monkeypatch.setattr(
+        "connectors.bigquery.extractor.rebuild_from_registry",
+        rebuild_mock,
+    )
+    monkeypatch.setattr(
+        "src.orchestrator.SyncOrchestrator",
+        lambda *a, **kw: MagicMock(),
+    )
+    return rebuild_mock
