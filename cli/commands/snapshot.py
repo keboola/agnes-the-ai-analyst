@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import duckdb
+import httpx
 import pyarrow.parquet as pq
 import typer
 
@@ -272,6 +273,17 @@ def create_cmd(
         except V2ClientError as e:
             typer.echo(f"Error: estimate failed: {e}", err=True)
             raise typer.Exit(_exit_code_for(e))
+        except httpx.HTTPError as e:
+            # Connection refused / DNS / TLS / timeout — friendly render so
+            # `agnes snapshot create … --estimate` in a pre-init dir (no
+            # server configured, defaults to http://localhost:8000) prints
+            # a hint instead of leaking an httpx traceback to stderr.
+            typer.echo(
+                f"Error: could not reach server ({e.__class__.__name__}). "
+                f"Run `agnes init --server-url <url> --token <pat>` first.",
+                err=True,
+            )
+            raise typer.Exit(7)
         typer.echo(f"Estimate for {table_id}:")
         _print_estimate(est)
     if estimate:
