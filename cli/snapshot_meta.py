@@ -39,7 +39,7 @@ def _meta_path(snap_dir: Path, name: str) -> Path:
 
 def write_meta(snap_dir: Path, meta: SnapshotMeta) -> None:
     snap_dir.mkdir(parents=True, exist_ok=True)
-    with _meta_path(snap_dir, meta.name).open("w") as f:
+    with _meta_path(snap_dir, meta.name).open("w", encoding="utf-8") as f:
         json.dump(asdict(meta), f, indent=2)
 
 
@@ -47,7 +47,7 @@ def read_meta(snap_dir: Path, name: str) -> Optional[SnapshotMeta]:
     p = _meta_path(snap_dir, name)
     if not p.exists():
         return None
-    data = json.loads(p.read_text())
+    data = json.loads(p.read_text(encoding="utf-8"))
     return SnapshotMeta(**data)
 
 
@@ -57,7 +57,7 @@ def list_snapshots(snap_dir: Path) -> list[SnapshotMeta]:
     out = []
     for meta_file in snap_dir.glob("*.meta.json"):
         try:
-            data = json.loads(meta_file.read_text())
+            data = json.loads(meta_file.read_text(encoding="utf-8"))
             out.append(SnapshotMeta(**data))
         except (json.JSONDecodeError, TypeError):
             continue
@@ -85,7 +85,7 @@ def snapshot_lock(snap_dir: Path):
     if _fcntl is None:
         raise RuntimeError(
             "snapshot_lock requires POSIX fcntl — Windows is not supported. "
-            "Run `da` from a Mac or Linux machine, or use a WSL shell."
+            "Run `agnes` from a Mac or Linux machine, or use a WSL shell."
         )
     snap_dir.mkdir(parents=True, exist_ok=True)
     lock_file = snap_dir / ".lock"

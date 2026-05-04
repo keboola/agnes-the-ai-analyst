@@ -88,7 +88,7 @@ def _read_cache() -> Optional[dict]:
     if not p.exists():
         return None
     try:
-        return json.loads(p.read_text())
+        return json.loads(p.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
 
@@ -97,7 +97,7 @@ def _write_cache(entry: dict) -> None:
     p = _cache_path()
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(entry))
+        p.write_text(json.dumps(entry), encoding="utf-8")
     except OSError:
         pass  # best-effort — cache failure must not break the flow
 

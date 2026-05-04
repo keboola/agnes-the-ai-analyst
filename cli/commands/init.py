@@ -155,7 +155,7 @@ def init(
         settings_path.write_text(json.dumps(
             {"model": "sonnet", "permissions": {"allow": ["Read", "Bash", "Grep", "Glob"]}},
             indent=2,
-        ))
+        ), encoding="utf-8")
     install_claude_hooks(workspace)
 
     # ------------------------------------------------------------------
