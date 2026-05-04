@@ -1,7 +1,7 @@
 """End-to-end tests for /api/admin/welcome-template (banner editor endpoints).
 
-GET /api/welcome has been removed — the analyst-facing endpoint is gone.
-These tests cover only the admin CRUD + preview endpoints.
+These tests cover the admin CRUD + preview endpoints for the Agent Setup Prompt.
+GET /api/welcome is handled by test_claude_md_api.py (Agent Workspace Prompt).
 """
 
 import duckdb
@@ -14,8 +14,8 @@ def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def test_get_welcome_endpoint_removed(seeded_app):
-    """GET /api/welcome must return 404 — the endpoint was deleted."""
+def test_get_welcome_endpoint_exists(seeded_app):
+    """GET /api/welcome must return 200 for authenticated analysts (endpoint restored)."""
     c = seeded_app["client"]
     token = seeded_app["analyst_token"]
     resp = c.get(
@@ -23,7 +23,8 @@ def test_get_welcome_endpoint_removed(seeded_app):
         params={"server_url": "https://example.com"},
         headers=_auth(token),
     )
-    assert resp.status_code == 404
+    assert resp.status_code == 200
+    assert "content" in resp.json()
 
 
 def test_admin_get_template_initially_null(seeded_app):

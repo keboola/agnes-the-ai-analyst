@@ -13,8 +13,8 @@ import duckdb
 from src.db import SCHEMA_VERSION, _ensure_schema, get_schema_version
 
 
-def test_schema_version_is_22():
-    assert SCHEMA_VERSION == 22
+def test_schema_version_is_23():
+    assert SCHEMA_VERSION == 23
 
 
 def test_v20_adds_source_query(tmp_path):
@@ -29,7 +29,29 @@ def test_v20_adds_source_query(tmp_path):
         ).fetchall()
     }
     assert "source_query" in cols, f"source_query missing from {cols}"
-    assert get_schema_version(conn) == 22
+    assert get_schema_version(conn) == 23
+    conn.close()
+
+
+def test_v23_adds_claude_md_template(tmp_path):
+    """v23 must create the claude_md_template singleton table."""
+    db_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+
+    tables = {
+        r[0] for r in conn.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = 'main'"
+        ).fetchall()
+    }
+    assert "claude_md_template" in tables, f"claude_md_template missing from {tables}"
+
+    # Singleton row seeded
+    row = conn.execute("SELECT id, content FROM claude_md_template WHERE id = 1").fetchone()
+    assert row is not None
+    assert row[0] == 1
+    assert row[1] is None  # default = no override
     conn.close()
 
 
@@ -61,7 +83,7 @@ def test_v19_db_migrates_to_v20(tmp_path):
 
     _ensure_schema(conn)
 
-    assert get_schema_version(conn) == 22
+    assert get_schema_version(conn) == 23
     cols = {
         r[0] for r in conn.execute(
             "SELECT column_name FROM information_schema.columns "

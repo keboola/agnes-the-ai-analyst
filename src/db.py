@@ -39,7 +39,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 23
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -421,6 +421,18 @@ CREATE TABLE IF NOT EXISTS welcome_template (
 -- v22: reserved (formerly setup_banner — feature dropped, table kept for
 -- forward compatibility with already-migrated instances).
 CREATE TABLE IF NOT EXISTS setup_banner (
+    id INTEGER PRIMARY KEY DEFAULT 1,
+    content TEXT,
+    updated_at TIMESTAMP,
+    updated_by VARCHAR,
+    CONSTRAINT singleton CHECK (id = 1)
+);
+
+-- v23: customizable analyst-workspace CLAUDE.md template.
+-- Singleton row (id=1). NULL content means "use the default template
+-- shipped at config/claude_md_template.txt" (Jinja2 markdown). Admin override
+-- stores the raw Jinja2 source string.
+CREATE TABLE IF NOT EXISTS claude_md_template (
     id INTEGER PRIMARY KEY DEFAULT 1,
     content TEXT,
     updated_at TIMESTAMP,
@@ -1658,6 +1670,17 @@ _V21_TO_V22_MIGRATIONS = [
     "INSERT INTO setup_banner (id, content) VALUES (1, NULL) ON CONFLICT (id) DO NOTHING",
 ]
 
+_V22_TO_V23_MIGRATIONS = [
+    """CREATE TABLE IF NOT EXISTS claude_md_template (
+        id INTEGER PRIMARY KEY DEFAULT 1,
+        content TEXT,
+        updated_at TIMESTAMP,
+        updated_by VARCHAR,
+        CONSTRAINT singleton CHECK (id = 1)
+    )""",
+    "INSERT INTO claude_md_template (id, content) VALUES (1, NULL) ON CONFLICT (id) DO NOTHING",
+]
+
 
 def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
     """Create tables if they don't exist. Apply migrations if schema version changed.
@@ -1722,6 +1745,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             )
             conn.execute(
                 "INSERT INTO setup_banner (id, content) VALUES (1, NULL) "
+                "ON CONFLICT (id) DO NOTHING"
+            )
+            conn.execute(
+                "INSERT INTO claude_md_template (id, content) VALUES (1, NULL) "
                 "ON CONFLICT (id) DO NOTHING"
             )
             # Fresh-install seed is handled by the unconditional
@@ -1806,6 +1833,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                     conn.execute(sql)
             if current < 22:
                 for sql in _V21_TO_V22_MIGRATIONS:
+                    conn.execute(sql)
+            if current < 23:
+                for sql in _V22_TO_V23_MIGRATIONS:
                     conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",

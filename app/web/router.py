@@ -950,6 +950,30 @@ async def admin_agent_prompt_page(
     return templates.TemplateResponse(request, "admin_welcome.html", ctx)
 
 
+@router.get("/admin/workspace-prompt", response_class=HTMLResponse)
+async def admin_workspace_prompt_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    from src.repositories.claude_md_template import ClaudeMdTemplateRepository
+    from src.claude_md import compute_default_claude_md
+
+    row = ClaudeMdTemplateRepository(conn).get()
+    server_url = str(request.base_url).rstrip("/")
+    default_template = compute_default_claude_md(conn, user=user, server_url=server_url)
+    ctx = _build_context(
+        request,
+        user=user,
+        current=row["content"] or "",
+        default_template=default_template,
+        updated_at=row["updated_at"],
+        updated_by=row["updated_by"],
+        is_override=row["content"] is not None,
+    )
+    return templates.TemplateResponse(request, "admin_workspace_prompt.html", ctx)
+
+
 
 @router.get("/tokens", response_class=HTMLResponse)
 async def my_tokens_page(
