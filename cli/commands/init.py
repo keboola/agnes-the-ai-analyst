@@ -186,6 +186,22 @@ def init(
         }}), err=True)
         raise typer.Exit(1)
 
+    # `run_pull` records per-stage failures into `result.errors` and only
+    # raises for programming errors. A manifest-stage failure here means
+    # the analyst has a saved token + saved server URL but no parquets,
+    # no DuckDB views — surface a typed error so the operator knows the
+    # workspace is not actually queryable. Common cause: PAT validates
+    # against /api/catalog/tables but lacks resource_grants for any tables.
+    manifest_err = next((e for e in result.errors if e.get("stage") == "manifest"), None)
+    if manifest_err:
+        typer.echo(render_error(0, {"detail": {
+            "kind": "manifest_unauthorized",
+            "hint": "Manifest fetch failed — workspace partially set up. "
+                    "Check that the PAT has resource_grants for at least one table.",
+            "message": manifest_err.get("error", ""),
+        }}), err=True)
+        raise typer.Exit(1)
+
     # ------------------------------------------------------------------
     # Step 8: render AGNES_WORKSPACE.md from the static client-side
     # template. Three placeholders: created_at, server_url, workspace_path.
