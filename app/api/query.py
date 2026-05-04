@@ -128,8 +128,22 @@ async def execute_query(
                 "SELECT table_name FROM information_schema.tables WHERE table_type='VIEW'"
             ).fetchall()}
 
+            # `allowed` carries registry IDs (resource_grants.resource_id);
+            # DuckDB master views are named by registry display `name`.
+            # Build a name->id map so the forbidden check compares apples to
+            # apples — when id != name, the prior `all_views - set(allowed)`
+            # over-denied authorized users (Devin Review iter #5 on PR #168;
+            # pre-existing class of name/id mismatch flagged across this
+            # PR's BQ guardrail too).
+            allowed_ids = set(allowed)
+            registry_rows = TableRegistryRepository(conn).list_all()
+            allowed_view_names = {
+                r["name"] for r in registry_rows
+                if r.get("name") and r.get("id") in allowed_ids
+            }
+
             # Check if query references any forbidden tables (word-boundary match)
-            forbidden = all_views - set(allowed)
+            forbidden = all_views - allowed_view_names
             for table in forbidden:
                 pattern = r'\b' + re.escape(table.lower()) + r'\b'
                 if re.search(pattern, sql_lower):
