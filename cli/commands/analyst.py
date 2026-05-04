@@ -301,11 +301,15 @@ def _init_claude_workspace(
     workspace: Path,
     server_url: str = "",
     token: str = "",
-) -> None:
+) -> bool:
     """Initialise the .claude/ directory with placeholder files and hooks.
 
     Writes CLAUDE.md from the server (GET /api/welcome) unless ``server_url``
     or ``token`` are empty, or the request fails (graceful degradation).
+
+    Returns True if CLAUDE.md was written from the server, False otherwise
+    (skipped because caller passed empty server_url/token, or fetch failed —
+    in the latter case a warning was already printed to stderr).
     """
     local_md = workspace / ".claude" / "CLAUDE.local.md"
     if not local_md.exists():
@@ -326,15 +330,19 @@ def _init_claude_workspace(
 
     # Write CLAUDE.md from the server
     if server_url and token:
-        _write_claude_md(workspace, server_url, token)
+        return _write_claude_md(workspace, server_url, token)
+    return False
 
 
-def _write_claude_md(workspace: Path, server_url: str, token: str) -> None:
+def _write_claude_md(workspace: Path, server_url: str, token: str) -> bool:
     """Fetch the rendered CLAUDE.md from the server and write it to the workspace.
 
     Gracefully handles:
     - 404: older server without the endpoint — skip with warning.
     - Other HTTP errors / network errors — skip with warning.
+
+    Returns True iff a non-empty CLAUDE.md was successfully written; False on
+    any skipped or failed path (the caller already saw a stderr warning).
     """
     from urllib.parse import urlencode
     import httpx
@@ -353,27 +361,30 @@ def _write_claude_md(workspace: Path, server_url: str, token: str) -> None:
                 "Warning: server does not support CLAUDE.md generation (older version). Skipping.",
                 err=True,
             )
-            return
+            return False
         if resp.status_code == 401 or resp.status_code == 403:
             typer.echo(
                 f"Warning: CLAUDE.md fetch failed ({resp.status_code} {resp.reason_phrase}). Skipping.",
                 err=True,
             )
-            return
+            return False
         resp.raise_for_status()
         data = resp.json()
         content = data.get("content", "")
         if content:
             (workspace / "CLAUDE.md").write_text(content, encoding="utf-8")
-        else:
-            typer.echo("Warning: server returned empty CLAUDE.md content. Skipping.", err=True)
+            return True
+        typer.echo("Warning: server returned empty CLAUDE.md content. Skipping.", err=True)
+        return False
     except httpx.HTTPStatusError as e:
         typer.echo(
             f"Warning: CLAUDE.md fetch failed (HTTP {e.response.status_code}). Skipping.",
             err=True,
         )
+        return False
     except Exception as e:
         typer.echo(f"Warning: CLAUDE.md fetch failed: {e}. Skipping.", err=True)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -443,7 +454,7 @@ def setup(
 
     # 7. Initialise Claude workspace (.claude/ hooks + placeholder + CLAUDE.md)
     typer.echo("Initializing Claude workspace...")
-    _init_claude_workspace(
+    claude_md_written = _init_claude_workspace(
         workspace,
         server_url=server_url if not no_claude_md else "",
         token=token if not no_claude_md else "",
@@ -456,8 +467,12 @@ def setup(
     typer.echo(f"  Tables   : {n_downloaded} downloaded, {total_rows} total rows")
     typer.echo(f"  Workspace: {workspace}")
     typer.echo(f"  Hooks    : SessionStart/End installed in {workspace}/.claude/settings.json")
-    if not no_claude_md:
+    if no_claude_md:
+        typer.echo(f"  CLAUDE.md: skipped (--no-claude-md)")
+    elif claude_md_written:
         typer.echo(f"  CLAUDE.md: written from server template")
+    else:
+        typer.echo(f"  CLAUDE.md: skipped (see warnings above)")
     typer.echo("")
     typer.echo("Next steps:")
     typer.echo("  da sync          — refresh data")
