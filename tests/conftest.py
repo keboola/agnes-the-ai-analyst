@@ -47,6 +47,42 @@ def _disable_auth_rate_limit_in_tests():
     limiter.enabled = was_enabled
 
 
+@pytest.fixture(autouse=True)
+def _reset_module_caches():
+    """Reset module-level caches that survive across tests on the same
+    pytest-xdist worker process. Without this, a test that populates
+    `app.instance_config._instance_config` (e.g. via `runpy.run_module`
+    in test_bigquery_extractor's __main__ tests, or via any path that
+    calls `app.instance_config.get_value`) leaves stale config visible
+    to the next test on that worker — including config that points at
+    a different DATA_DIR than the next test's e2e_env set.
+
+    Caches reset:
+    - app.instance_config._instance_config — instance.yaml deep-merge cache
+    - get_bq_access (functools.cache) — BqAccess(BqProjects(...)) lru
+    - app.api.v2_quota._quota_singleton — per-user quota tracker
+
+    Pre-existing flakiness; surfaced by issue #160 PR #168 shifting the
+    test bucket distribution on xdist worker gw2.
+    """
+    try:
+        import app.instance_config as _ic
+        _ic._instance_config = None
+        try:
+            from connectors.bigquery.access import get_bq_access
+            get_bq_access.cache_clear()
+        except (ImportError, AttributeError):
+            pass
+    except ImportError:
+        pass
+    try:
+        import app.api.v2_quota as _q
+        _q._quota_singleton = None
+    except ImportError:
+        pass
+    yield
+
+
 @pytest.fixture
 def e2e_env(tmp_path, monkeypatch):
     """Set up complete E2E environment with DATA_DIR, create dirs."""

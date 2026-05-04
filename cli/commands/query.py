@@ -86,10 +86,19 @@ def _query_local(sql: str, fmt: str, limit: int):
 def _query_remote(sql: str, fmt: str, limit: int):
     """Run query against server DuckDB via API."""
     from cli.client import api_post
+    from cli.error_render import render_error
 
     resp = api_post("/api/query", json={"sql": sql, "limit": limit})
     if resp.status_code != 200:
-        typer.echo(f"Query failed: {resp.json().get('detail', resp.text)}", err=True)
+        # Parse JSON body if possible, fall back to text. The shared
+        # renderer pretty-prints typed BQ errors (cross_project_forbidden,
+        # remote_scan_too_large, bq_path_not_registered) instead of
+        # flattening the structured detail to a single truncated line.
+        try:
+            body = resp.json()
+        except Exception:
+            body = resp.text
+        typer.echo(render_error(resp.status_code, body), err=True)
         raise typer.Exit(1)
 
     data = resp.json()
@@ -137,13 +146,29 @@ def _query_hybrid(sql: str, fmt: str, limit: int, register_bq_specs: List[str]):
                     err=True,
                 )
             except RemoteQueryError as exc:
-                typer.echo(f"BQ registration failed for '{alias}': {exc}", err=True)
+                # Use the shared renderer so typed BqAccessError details
+                # (carried via RemoteQueryError.details) surface as a
+                # multi-line block with the operator-facing hint.
+                from cli.error_render import render_error
+                synthetic = {"detail": {
+                    "kind": exc.error_type,
+                    "alias": alias,
+                    "message": str(exc),
+                    **(exc.details or {}),
+                }}
+                typer.echo(render_error(400, synthetic), err=True)
                 raise typer.Exit(1)
 
         try:
             result = engine.execute(sql)
         except RemoteQueryError as exc:
-            typer.echo(f"Query error: {exc}", err=True)
+            from cli.error_render import render_error
+            synthetic = {"detail": {
+                "kind": exc.error_type,
+                "message": str(exc),
+                **(exc.details or {}),
+            }}
+            typer.echo(render_error(400, synthetic), err=True)
             raise typer.Exit(1)
 
         _output(result["columns"], result["rows"], fmt)

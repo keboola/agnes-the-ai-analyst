@@ -225,18 +225,13 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                         "data project). Defaults to data_source.bigquery.project. "
                         "Mismatch → 403 USER_PROJECT_DENIED on every BQ call."
                     ),
-                },
-                "legacy_wrap_views": {
-                    "kind": "bool",
-                    "default": False,
-                    "hint": (
-                        "When true, registered VIEWs and MATERIALIZED_VIEWs get a DuckDB "
-                        "master view via bigquery_query() (jobs API) so analysts can "
-                        "SELECT * FROM viewname directly. When false (default), views are "
-                        "catalog-only — analysts use `da fetch` or `da query --remote`. "
-                        "ON for view-heavy deployments where most views are small enough "
-                        "to materialize without 'Response too large' (issue #101)."
-                    ),
+                    # Issue #160 §4.7.5: when this field is empty in the
+                    # admin form, the JS template shows "(defaults to <project>)"
+                    # as placeholder text — surfacing the access.py:339-340
+                    # fallback rule directly in the UI without the operator
+                    # having to read source. Path is walked against the
+                    # `original` config payload from GET /api/admin/server-config.
+                    "placeholder_from": ["data_source", "bigquery", "project"],
                 },
                 "max_bytes_per_materialize": {
                     "kind": "int",
@@ -245,6 +240,16 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                         "Cost guardrail for query_mode='materialized' BQ scans (dry-run "
                         "check before running). Bytes processed; exceeds → registration "
                         "or sync rejected. 0 disables the gate. Default 10737418240 = 10 GiB."
+                    ),
+                },
+                "bq_max_scan_bytes": {
+                    "kind": "int",
+                    "default": 5368709120,
+                    "hint": (
+                        "Cost guardrail for `da query --remote` against query_mode='remote' "
+                        "BQ rows (dry-run check on the underlying SELECT before execute). "
+                        "Bytes processed; exceeds → 400 remote_scan_too_large with a "
+                        "`da fetch` suggestion. 0 disables the gate. Default 5368709120 = 5 GiB."
                     ),
                 },
             },
@@ -795,14 +800,18 @@ class ServerConfigUpdateRequest(BaseModel):
 #
 #   - billing_project: defaults to data project; explicit value needed when
 #     the SA can read the data project but not bill against it.
-#   - legacy_wrap_views: default False; toggling ON wraps BQ views via
-#     `bigquery_query()` so analysts can `SELECT *` directly.
 #   - max_bytes_per_materialize: cost guardrail for `query_mode='materialized'`
 #     (default 10 GiB; 0 disables; null falls through to the default).
 _BQ_OPTIONAL_FIELD_DEFAULTS: Dict[str, Any] = {
-    "billing_project": "",
-    "legacy_wrap_views": False,
+    # `billing_project` intentionally NOT seeded here. The empty-string
+    # default would inject `billing_project: ""` into every GET payload,
+    # which makes the JS `isUnset = (value === undefined)` check evaluate
+    # False — and the `(defaults to <project>)` placeholder feature
+    # (#160 §4.7.5) would never render. Leaving it absent keeps the
+    # field in the unset rendering path so placeholder_from fires.
+    # Devin Review iter #3 on PR #168.
     "max_bytes_per_materialize": 10737418240,
+    "bq_max_scan_bytes": 5368709120,
 }
 
 

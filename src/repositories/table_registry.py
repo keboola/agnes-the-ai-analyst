@@ -141,6 +141,41 @@ class TableRegistryRepository:
         columns = [desc[0] for desc in self.conn.description]
         return [self._decode_row(dict(zip(columns, row))) for row in results]
 
+    def find_by_bq_path(
+        self, bucket: str, source_table: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Look up a BigQuery row by `(bucket, source_table)`.
+
+        Used by /api/query's RBAC patch to decide whether a direct
+        `bq."<dataset>"."<source_table>"` reference in user SQL points at a
+        registered row. If no row matches, the caller has bypassed the
+        registry — the request is rejected before execute.
+
+        Match is case-insensitive on `bucket` and `source_table`. NULL values
+        in either column are excluded so a legacy NULL-bucket row never
+        masks a legitimate non-NULL lookup.
+
+        When 2+ rows match (no UNIQUE constraint on the
+        (source_type, bucket, source_table) triple — admins can register a
+        BQ table twice with different ids/names), return the oldest by
+        `registered_at` so callers see deterministic resolution.
+        """
+        result = self.conn.execute(
+            """SELECT * FROM table_registry
+            WHERE source_type = 'bigquery'
+              AND bucket IS NOT NULL
+              AND source_table IS NOT NULL
+              AND lower(bucket) = lower(?)
+              AND lower(source_table) = lower(?)
+            ORDER BY registered_at ASC
+            LIMIT 1""",
+            [bucket, source_table],
+        ).fetchone()
+        if not result:
+            return None
+        columns = [desc[0] for desc in self.conn.description]
+        return self._decode_row(dict(zip(columns, result)))
+
     def list_local(self, source_type: Optional[str] = None) -> List[Dict[str, Any]]:
         """List tables with query_mode='local' (data downloaded to parquet)."""
         if source_type:
