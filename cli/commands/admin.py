@@ -5,9 +5,11 @@ import json
 import typer
 
 from cli.client import api_get, api_post, api_delete, api_patch
+from cli.commands.admin_metrics import admin_metrics_app
 from cli.commands.memory_admin import memory_admin_app
 
 admin_app = typer.Typer(help="Admin operations (requires admin role)")
+admin_app.add_typer(admin_metrics_app, name="metrics")
 admin_app.add_typer(memory_admin_app, name="memory")
 
 
