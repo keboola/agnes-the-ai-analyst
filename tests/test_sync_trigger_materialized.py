@@ -102,7 +102,8 @@ def test_materialized_pass_skips_undue_rows(system_db, stub_bq):
         summary = sync_mod._run_materialized_pass(system_db, stub_bq)
 
     mock_mat.assert_not_called()
-    assert "orders_daily" in summary["skipped"]
+    # summary["skipped"] is now list[dict] — see PR zs/materialize-sync-fix
+    assert {"table": "orders_daily", "reason": "due_check"} in summary["skipped"]
 
 
 def test_materialized_pass_skips_non_materialized_rows(system_db, stub_bq):
