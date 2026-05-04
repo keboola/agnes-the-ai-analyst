@@ -838,7 +838,13 @@ class TestServerConfigBigQueryFields:
         resp = c.get("/api/admin/server-config", headers=_auth(token))
         assert resp.status_code == 200, resp.text
         bq = resp.json()["sections"]["data_source"]["bigquery"]
-        assert "billing_project" in bq, f"billing_project missing from GET: {bq}"
+        # `billing_project` intentionally NOT auto-seeded into GET payload
+        # — that would inject empty string and break the placeholder_from
+        # render path. The field still appears in `known_fields` (so the
+        # UI knows about it) and renders via the unset path with the
+        # `(defaults to <project>)` placeholder. Devin Review iter #3.
+        assert "billing_project" not in bq, \
+            f"billing_project should not be auto-seeded in sections; got: {bq}"
         assert "max_bytes_per_materialize" in bq, \
             f"max_bytes_per_materialize missing from GET: {bq}"
         # legacy_wrap_views was removed in #160; UI must NOT surface it any

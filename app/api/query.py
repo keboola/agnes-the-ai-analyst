@@ -318,6 +318,15 @@ def _bq_guardrail_inputs(
     # 1. Bare-name pass: look up registered remote-BQ names that appear in
     # the user SQL as word-boundary tokens. Reuses the same regex shape as
     # the existing forbidden-table loop above.
+    #
+    # `accessible_set` comes from `get_accessible_tables()` which returns
+    # `resource_grants.resource_id` values — i.e. table registry IDs, NOT
+    # display names. Devin Review iter #3 caught the mismatch: when
+    # `id != name` (e.g. id="bq.finance.ue", name="ue"), legitimate
+    # accessible rows were skipped, under-counting dry-run bytes for the
+    # cost cap. The user SQL still references the display `name` (that's
+    # what shows in `da catalog`), so the regex match below uses `name`,
+    # but the access gate uses `id`.
     dry_run: list = []
     seen_paths: set = set()
     accessible_set = set(allowed) if allowed is not None else None
@@ -327,9 +336,10 @@ def _bq_guardrail_inputs(
         bucket = r.get("bucket")
         source_table = r.get("source_table")
         name = r.get("name")
-        if not (bucket and source_table and name):
+        row_id = r.get("id")
+        if not (bucket and source_table and name and row_id):
             continue
-        if accessible_set is not None and name not in accessible_set:
+        if accessible_set is not None and row_id not in accessible_set:
             # Forbidden-table loop above will have rejected the request
             # before we get here. Defensive skip.
             continue
@@ -357,9 +367,12 @@ def _bq_guardrail_inputs(
                     "registered name from `da catalog`."
                 ),
             }
-        # Row exists. Per-name grant check (non-admin only).
+        # Row exists. Per-id grant check (non-admin only).
+        # `accessible_set` is keyed by registry id (resource_grants
+        # resource_id), so use `row["id"]` here, not display name.
+        # Devin Review iter #3.
         if not is_admin:
-            if accessible_set is None or row["name"] not in accessible_set:
+            if accessible_set is None or row["id"] not in accessible_set:
                 return [], {
                     "reason": "bq_path_access_denied",
                     "path": f'bq."{bucket_raw}"."{source_table_raw}"',

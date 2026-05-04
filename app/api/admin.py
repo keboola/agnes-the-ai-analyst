@@ -803,7 +803,13 @@ class ServerConfigUpdateRequest(BaseModel):
 #   - max_bytes_per_materialize: cost guardrail for `query_mode='materialized'`
 #     (default 10 GiB; 0 disables; null falls through to the default).
 _BQ_OPTIONAL_FIELD_DEFAULTS: Dict[str, Any] = {
-    "billing_project": "",
+    # `billing_project` intentionally NOT seeded here. The empty-string
+    # default would inject `billing_project: ""` into every GET payload,
+    # which makes the JS `isUnset = (value === undefined)` check evaluate
+    # False — and the `(defaults to <project>)` placeholder feature
+    # (#160 §4.7.5) would never render. Leaving it absent keeps the
+    # field in the unset rendering path so placeholder_from fires.
+    # Devin Review iter #3 on PR #168.
     "max_bytes_per_materialize": 10737418240,
     "bq_max_scan_bytes": 5368709120,
 }
