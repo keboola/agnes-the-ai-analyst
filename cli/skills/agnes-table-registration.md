@@ -5,7 +5,7 @@ description: Use when adding tables to the Agnes catalog so analysts can query t
 
 # Registering tables in Agnes
 
-`agnes catalog` lists tables from `system.duckdb::table_registry`. A table you can `da fetch` exists in that registry. This skill is the protocol for getting tables into and out of it.
+`agnes catalog` lists tables from `system.duckdb::table_registry`. A table you can `agnes snapshot create` exists in that registry. This skill is the protocol for getting tables into and out of it.
 
 **Auth:** every command here requires admin role. The CLI sends the active PAT (`agnes auth import-token`); REST examples use `Authorization: Bearer $PAT` against the configured server.
 
@@ -21,7 +21,7 @@ user wants to add tables
 
 ## Before you register — verify the source exists
 
-Registering a table that does NOT exist at the source is silent: the row lands in the registry, but every later `da fetch` / `agnes query` against it 404s or 500s with an opaque message. Always verify first.
+Registering a table that does NOT exist at the source is silent: the row lands in the registry, but every later `agnes snapshot create` / `agnes query` against it 404s or 500s with an opaque message. Always verify first.
 
 For BigQuery (`source-type=bigquery`):
 
@@ -107,7 +107,7 @@ curl -sS -X DELETE \
     "$AGNES_SERVER_URL/api/admin/registry/<table_id>"
 ```
 
-Returns `204 No Content` on success, `404` if the id doesn't exist. **The underlying source data is NOT touched** — only the catalog entry. Local snapshots created via `da fetch` also remain on the analyst's laptop until they `agnes snapshot drop` them.
+Returns `204 No Content` on success, `404` if the id doesn't exist. **The underlying source data is NOT touched** — only the catalog entry. Local snapshots created via `agnes snapshot create` also remain on the analyst's laptop until they `agnes snapshot drop` them.
 
 ## Heuristics
 
@@ -120,7 +120,7 @@ Returns `204 No Content` on success, `404` if the id doesn't exist. **The underl
 
 - The user wants to inspect a table once, doesn't intend to share it: register the row once with `query_mode='remote'` (admin-only, ~30s) and query it via `agnes query --remote "SELECT … FROM <registered_id>"`. Direct `bq."<dataset>"."<table>"` syntax is now registry-gated — unregistered paths return 403 `bq_path_not_registered` (closes the pre-existing RBAC + cost-cap bypass).
 - The data lives in a third source not yet supported by a connector: implement the connector first (see `connectors.md` skill), then register.
-- The dataset already has a registered "parent" view that exposes the rows you want: register-table is for distinct catalog entities, not for slicing existing ones — slice with `da fetch --where`.
+- The dataset already has a registered "parent" view that exposes the rows you want: register-table is for distinct catalog entities, not for slicing existing ones — slice with `agnes snapshot create --where`.
 
 ## Confirmation flow
 

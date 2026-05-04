@@ -235,10 +235,16 @@ def create_cmd(
     # Guard: refuse to create snapshots before `agnes pull` has bootstrapped
     # the local DuckDB. Otherwise we'd open an empty DB and confuse later
     # `agnes pull` runs.
-    local_db = _local_dir() / "user" / "duckdb" / "analytics.duckdb"
-    if not local_db.exists():
-        typer.echo("Local DuckDB not found. Run: agnes pull first.", err=True)
-        raise typer.Exit(1)
+    #
+    # `--estimate` is exempt: it's a server-side dry-run cost check that
+    # never touches the local DuckDB, so it doesn't need the DB to exist
+    # (and analysts use it pre-bootstrap to scope a fetch before deciding
+    # to materialize).
+    if not estimate:
+        local_db = _local_dir() / "user" / "duckdb" / "analytics.duckdb"
+        if not local_db.exists():
+            typer.echo("Local DuckDB not found. Run: agnes pull first.", err=True)
+            raise typer.Exit(1)
 
     snap_dir = _local_dir() / "user" / "snapshots"
     snap_dir.mkdir(parents=True, exist_ok=True)

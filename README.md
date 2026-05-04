@@ -35,7 +35,7 @@ The orchestrator scans `/data/extracts/*/extract.duckdb`, attaches each into `an
               ┌──────────┼──────────┐
               ▼          ▼          ▼
           FastAPI      CLI
-          (serve)    (da sync)
+          (serve)    (agnes pull)
 ```
 
 ## Supported Data Sources
@@ -47,11 +47,11 @@ The orchestrator scans `/data/extracts/*/extract.duckdb`, attaches each into `an
 | **Remote attach** (`remote`) | View only, no download | BigQuery | Table is too large to materialize; latency cost of remote query is acceptable |
 | **Real-time push** | Incremental parquet | Jira | Source is event-driven and you need sub-minute freshness |
 
-The first three modes are what `da sync` distributes to analysts. The fourth is server-side only — analysts query Jira data through the same `da sync`-distributed parquets.
+The first three modes are what `agnes pull` distributes to analysts. The fourth is server-side only — analysts query Jira data through the same `agnes pull`-distributed parquets.
 
 Admins manage per-source registrations through the `/admin/tables` UI (per-connector tabs for BigQuery / Keboola / Jira) or the `agnes admin register-table` CLI; per-row "Manage access" deep-links to `/admin/access` for granting tables to user groups via `resource_grants(group, ResourceType.TABLE, table_id)`.
 
-Analysts get a closed loop with Claude Code: `da analyst setup` writes `<workspace>/.claude/settings.json` with SessionStart (`da sync --quiet`) and SessionEnd (`da sync --upload-only --quiet`) hooks so every Claude Code session starts with fresh RBAC-filtered parquets and ends with the session log uploaded back.
+Analysts get a closed loop with Claude Code: `agnes init` writes `<workspace>/.claude/settings.json` with SessionStart (`agnes pull --quiet`) and SessionEnd (`agnes push --quiet`) hooks so every Claude Code session starts with fresh RBAC-filtered parquets and ends with the session log uploaded back.
 
 Adding a new source means creating `connectors/<name>/extractor.py` that produces `extract.duckdb` with a `_meta` table (`table_name`, `description`, `rows`, `size_bytes`, `extracted_at`, `query_mode`). The orchestrator attaches it automatically.
 
@@ -86,18 +86,18 @@ curl -X POST http://localhost:8000/api/sync/trigger
 
 ## Local sync & auto-update
 
-Analysts run Claude Code against a local DuckDB built from RBAC-filtered parquets pulled from the server. `da sync` is the distribution path:
+Analysts run Claude Code against a local DuckDB built from RBAC-filtered parquets pulled from the server. `agnes pull` is the distribution path:
 
 ```bash
-da sync             # delta-pull: manifest → MD5 compare → download changed → rebuild views
-da sync --quiet     # same, no progress output (for hooks/cron)
-da sync --upload-only  # push session jsonl + CLAUDE.local.md back to the server
+agnes pull             # delta-pull: manifest → MD5 compare → download changed → rebuild views
+agnes pull --quiet     # same, no progress output (for hooks/cron)
+agnes push  # push session jsonl + CLAUDE.local.md back to the server
 ```
 
-`da analyst setup` writes Claude Code lifecycle hooks into `<workspace>/.claude/settings.json`:
+`agnes init` writes Claude Code lifecycle hooks into `<workspace>/.claude/settings.json`:
 
-- `SessionStart` → `da sync --quiet` — fresh data on every session
-- `SessionEnd` → `da sync --upload-only --quiet` — uploads notes and session log
+- `SessionStart` → `agnes pull --quiet` — fresh data on every session
+- `SessionEnd` → `agnes push --quiet` — uploads notes and session log
 
 Hooks live at workspace level so they only fire in this analyst workspace, not in unrelated Claude Code sessions on the same machine.
 
@@ -108,7 +108,7 @@ The auto-sync set per analyst is the intersection of:
 1. Tables with `query_mode IN ('local', 'materialized')` — these have parquets on disk and end up in the manifest
 2. Tables granted to one of the analyst's groups via `resource_grants(group, ResourceType.TABLE, table_id)` (see [`docs/RBAC.md`](docs/RBAC.md))
 
-To enroll a new table for auto-sync, register it (or update its `query_mode`) and grant it to the relevant groups in `/admin/access`. New analysts get the same set on their next `da sync`.
+To enroll a new table for auto-sync, register it (or update its `query_mode`) and grant it to the relevant groups in `/admin/access`. New analysts get the same set on their next `agnes pull`.
 
 For BigQuery, register a `query_mode='materialized'` table with a SQL body:
 
@@ -120,7 +120,7 @@ agnes admin register-table orders_90d \
     --schedule "every 6h"
 ```
 
-The scheduler runs the query through the DuckDB BigQuery extension on each tick that's due, writes the result as a parquet, and the analyst picks it up on the next `da sync`. Cost guardrail: `data_source.bigquery.max_bytes_per_materialize` (default 10 GiB) — operations exceeding the BQ dry-run estimate are skipped.
+The scheduler runs the query through the DuckDB BigQuery extension on each tick that's due, writes the result as a parquet, and the analyst picks it up on the next `agnes pull`. Cost guardrail: `data_source.bigquery.max_bytes_per_materialize` (default 10 GiB) — operations exceeding the BQ dry-run estimate are skipped.
 
 ## Development Setup
 
@@ -156,7 +156,7 @@ pytest tests/ -v
 │   ├── keboola/            # Keboola: extractor.py (DuckDB extension) + client.py (fallback)
 │   ├── bigquery/           # BigQuery: extractor.py (remote-only via DuckDB BQ extension)
 │   └── jira/               # Jira: webhook + incremental parquet → extract.duckdb
-├── cli/                    # CLI tool (`da sync`, `agnes query`, `agnes admin`)
+├── cli/                    # CLI tool (`agnes pull`, `agnes query`, `agnes admin`)
 ├── services/               # Standalone services (scheduler, telegram_bot, ws_gateway, etc.)
 ├── scripts/                # Utility + migration scripts
 ├── config/                 # Configuration templates (instance.yaml.example)

@@ -249,7 +249,7 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                         "Cost guardrail for `agnes query --remote` against query_mode='remote' "
                         "BQ rows (dry-run check on the underlying SELECT before execute). "
                         "Bytes processed; exceeds → 400 remote_scan_too_large with a "
-                        "`da fetch` suggestion. 0 disables the gate. Default 5368709120 = 5 GiB."
+                        "`agnes snapshot create` suggestion. 0 disables the gate. Default 5368709120 = 5 GiB."
                     ),
                 },
             },

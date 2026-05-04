@@ -35,7 +35,6 @@ This workspace is connected to {{ server.url }}.
 
 ## Data Sync
 - `agnes pull` — download current data from server
-- `agnes pull --docs-only` — just metadata and metrics (fast refresh)
 - `agnes push` — upload sessions and local notes to server
 - Data on the server refreshes every {{ sync_interval }}
 

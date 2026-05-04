@@ -246,7 +246,7 @@ def _materialized_hint_for_query_error(
     text; a hit means the operator picked a name that exists in the
     registry but isn't queryable in this instance. The hint is the same
     in both arms of the OR — it tells them what the table needs and what
-    they can do today (`da sync` or query `bq."dataset"."table"`
+    they can do today (`agnes pull` or query `bq."dataset"."table"`
     directly using the bucket/source_table from the registry row).
     """
     # Cheap fast-path — only inspect the registry when DuckDB's error
@@ -299,7 +299,7 @@ def _build_materialized_hint(row: dict) -> str:
     return (
         f"Table {tid!r} is registered as query_mode='materialized' but is "
         f"not yet materialized in this instance's analytics views. Run "
-        f"`da sync` (or wait for the scheduler tick / hit POST "
+        f"`agnes pull` (or wait for the scheduler tick / hit POST "
         f"/api/sync/trigger) to materialize the parquet"
         f"{direct_hint}."
     )
@@ -486,7 +486,7 @@ def _bq_quota_and_cap_guard(*, user_id: str, dry_run_set: list, sql: str):
                     "limit_bytes": cap_bytes,
                     "tables": tables,
                     "suggestion": (
-                        "Use `da fetch <id> --select <cols> --where <predicate> "
+                        "Use `agnes snapshot create <id> --select <cols> --where <predicate> "
                         "--estimate` to materialize a filtered subset, then query "
                         "the snapshot locally."
                     ),

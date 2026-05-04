@@ -45,7 +45,7 @@ def create(
     typer.echo(f"name:    {data['name']}")
     typer.echo(f"expires: {data.get('expires_at') or 'never'}")
     typer.echo("")
-    typer.echo("Export it so `da` can use it:")
+    typer.echo("Export it so `agnes` can use it:")
     typer.echo(f"    export AGNES_TOKEN={data['token']}")
 
 

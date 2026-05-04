@@ -26,21 +26,21 @@ Tables in `agnes catalog` have a `query_mode`:
 | Mode | Means | How to query |
 |------|-------|--------------|
 | `local` | parquet synced on laptop | `agnes query "SELECT …"` directly |
-| `remote` (BigQuery) | parquet NOT on laptop | `da fetch` subset → snapshot, OR `agnes query --remote` one-shot |
+| `remote` (BigQuery) | parquet NOT on laptop | `agnes snapshot create` subset → snapshot, OR `agnes query --remote` one-shot |
 
 For **remote tables**, you MUST either:
-1. `da fetch` a filtered subset → query the local snapshot (preferred), OR
+1. `agnes snapshot create` a filtered subset → query the local snapshot (preferred), OR
 2. `agnes query --remote` for one-shot server-side execution, OR
 3. `agnes query --register-bq` for hybrid joins (rare; see docs)
 
-## The `da fetch` workflow (preferred for remote tables)
+## The `agnes snapshot create` workflow (preferred for remote tables)
 
 ### 1. Estimate first
 
 Always estimate before fetching:
 
 ```bash
-da fetch web_sessions_example \
+agnes snapshot create web_sessions_example \
     --select event_date,country_code,session_id \
     --where "event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY) 
              AND country_code = 'CZ'" \
@@ -52,7 +52,7 @@ Output tells you scan cost, expected rows, and local bytes — so you know if it
 ### 2. If reasonable, fetch to snapshot
 
 ```bash
-da fetch web_sessions_example \
+agnes snapshot create web_sessions_example \
     --select event_date,country_code,session_id \
     --where "event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY) 
              AND country_code = 'CZ'" \
@@ -65,7 +65,7 @@ da fetch web_sessions_example \
 agnes query "SELECT event_date, COUNT(*) FROM cz_recent GROUP BY 1 ORDER BY 1"
 ```
 
-## Heuristics for `da fetch`
+## Heuristics for `agnes snapshot create`
 
 | Requirement | Why |
 |-------------|-----|
@@ -97,14 +97,14 @@ For `source_type=keboola` / `source_type=jira` (local), use **DuckDB SQL** in yo
 - Drop with `agnes snapshot drop <name>` when done with a topic
 - Check total cache size with `agnes disk-info`
 
-## When NOT to use `da fetch`
+## When NOT to use `agnes snapshot create`
 
 | Scenario | Use instead |
 |----------|------------|
 | Single aggregate on remote BASE TABLE (`SELECT COUNT(*)`) | `agnes query --remote "SELECT COUNT(*) FROM web_sessions_example"` — cheap, no fetch needed (Storage Read API pushes the COUNT into BQ) |
-| Single aggregate on remote VIEW/MATERIALIZED_VIEW | Same syntax works (#160) but the BQ jobs API can't push WHERE/COUNT into the view body. Cost guardrail (default 5 GiB) catches expensive scans → 400 `remote_scan_too_large` with `da fetch` suggestion. Pivot to `da fetch <id> --where '<predicate>'` if rejected. |
+| Single aggregate on remote VIEW/MATERIALIZED_VIEW | Same syntax works (#160) but the BQ jobs API can't push WHERE/COUNT into the view body. Cost guardrail (default 5 GiB) catches expensive scans → 400 `remote_scan_too_large` with `agnes snapshot create` suggestion. Pivot to `agnes snapshot create <id> --where '<predicate>'` if rejected. |
 | Throwaway exploration with raw BQ syntax | `agnes query --remote "SELECT … FROM <registered_id>"` — direct `bq."<dataset>"."<table>"` paths are now registry-gated (403 `bq_path_not_registered` if not registered). Register first or use the catalog id. |
-| Cross-table JOIN with both remote | Use `da fetch` for one side + `agnes query --remote` for the other; full cross-remote JOIN needs design (see #101) |
+| Cross-table JOIN with both remote | Use `agnes snapshot create` for one side + `agnes query --remote` for the other; full cross-remote JOIN needs design (see #101) |
 
 ## When the table you need isn't in `agnes catalog`
 
@@ -118,7 +118,7 @@ The catalog reads from `system.duckdb::table_registry` — entries land there on
 
 1. **Discover**: `agnes catalog`, `agnes schema`, `agnes describe`
 2. **Check query_mode**: local (direct) or remote (fetch or --remote)?
-3. **For remote**: `--estimate` first, then `da fetch` with `--select` + `--where`
+3. **For remote**: `--estimate` first, then `agnes snapshot create` with `--select` + `--where`
 4. **Snapshot name**: descriptive (`cz_recent`), reuse across questions
 5. **Query**: `agnes query` against snapshot; DuckDB SQL syntax
 6. **Cleanup**: `agnes snapshot drop` when done; `agnes disk-info` to check size

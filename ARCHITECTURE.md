@@ -21,7 +21,7 @@
               ┌──────────┼──────────┐
               ▼          ▼          ▼
           FastAPI      CLI
-          (serve)    (da sync)
+          (serve)    (agnes pull)
 ```
 
 Three source types:
@@ -115,14 +115,14 @@ Command-line tool `da` for sync, query, and admin operations.
 
 | Command | Role |
 |---------|------|
-| `da sync` | Trigger data sync |
+| `agnes pull` | Trigger data sync |
 | `agnes query` | Run SQL against analytics.duckdb |
 | `agnes admin group *` | Manage user groups |
 | `agnes admin grant *` | Manage resource grants |
 | `agnes admin register-table` | Register tables in table_registry |
 | `agnes admin break-glass <user>` | Emergency admin access recovery |
-| `da tokens *` | Manage personal access tokens |
-| `da metrics *` | Business metric definitions |
+| `agnes auth token *` | Manage personal access tokens |
+| `agnes admin metrics *` | Business metric definitions |
 | `agnes skills *` | List/show bundled skills |
 
 ### 5. Authentication (`app/auth/`)

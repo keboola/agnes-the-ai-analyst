@@ -116,7 +116,7 @@ def import_token(
 
     Decodes the JWT locally to extract the email claim, verifies it
     against the server, and writes it to ~/.config/agnes/token.json using the
-    canonical format so subsequent `agnes auth whoami` / `da sync` calls
+    canonical format so subsequent `agnes auth whoami` / `agnes pull` calls
     authenticate cleanly.
 
     Example:
