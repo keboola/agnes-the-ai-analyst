@@ -26,6 +26,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - `/install` page renamed to `/setup` ("Setup local agent" nav label) with 302 redirect from `/install`.
 - Dashboard "What Claude Code will receive" inline preview replaced with a link to `/setup` for the canonical view.
 
+### Fixed
+
+- `da analyst setup` summary now accurately reflects whether `CLAUDE.md` was written, skipped (`--no-claude-md`), or skipped due to a server error — previously it always claimed "written from server template" even when the fetch failed (404, 401/403, network), contradicting its own stderr warning.
+
 ## [0.30.1] — 2026-05-02
 
 ### Security
