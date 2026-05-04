@@ -50,6 +50,7 @@ def create_access_token(
     token_id: Optional[str] = None,
     typ: str = "session",
     omit_exp: bool = False,
+    extra_claims: Optional[dict] = None,
 ) -> str:
     """Create a JWT. `typ` is "session" (interactive login) or "pat" (long-lived).
 
@@ -57,6 +58,11 @@ def create_access_token(
     "no expiry" — the authoritative expiry check is the DB row in
     `personal_access_tokens.expires_at`, and a claim-less JWT avoids the
     misleading ~100y horizon that previously pretended to be "never".
+
+    `extra_claims` merges arbitrary key/value pairs into the JWT payload
+    after the reserved identity/metadata claims. Reserved keys (sub, email,
+    typ, iat, jti, exp) are protected — they cannot be overridden by the
+    caller.
 
     No ``role`` claim — authorization is derived from
     ``user_group_members`` at request time via ``app.auth.access.is_user_admin``.
@@ -74,6 +80,12 @@ def create_access_token(
             expires_delta or timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS)
         )
         payload["exp"] = expire
+    if extra_claims:
+        _reserved = {"sub", "email", "typ", "iat", "jti", "exp"}
+        for k, v in extra_claims.items():
+            if k in _reserved:
+                continue
+            payload[k] = v
     return jwt.encode(payload, _get_cached_secret_key(), algorithm=ALGORITHM)
 
 

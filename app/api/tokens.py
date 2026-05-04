@@ -23,6 +23,14 @@ admin_router = APIRouter(prefix="/auth/admin/tokens", tags=["tokens-admin"])
 class CreateTokenRequest(BaseModel):
     name: str
     expires_in_days: Optional[int] = 90  # null = no expiry
+    # Informational tag carried in the JWT (`scope` claim) and the audit log.
+    # The special value "bootstrap-analyst" force-clamps the resolved TTL to
+    # at most 1 hour regardless of the requested lifetime, so the bootstrap
+    # PAT can't be repurposed as a long-lived credential.
+    scope: str = "general"
+    # If set, wins over expires_in_days. Mirrors the same 10-year cap as
+    # expires_in_days (3650 days * 86400 = 315_360_000 seconds).
+    ttl_seconds: Optional[int] = None
 
 
 class CreateTokenResponse(BaseModel):
@@ -99,22 +107,44 @@ async def create_token(
     # expires_at on the datetime object).
     if payload.expires_in_days is not None and payload.expires_in_days > 3650:
         raise HTTPException(status_code=400, detail="expires_in_days must not exceed 3650 (10 years)")
+    if payload.ttl_seconds is not None and payload.ttl_seconds <= 0:
+        raise HTTPException(status_code=400, detail="ttl_seconds must be a positive integer")
+    # Mirror the 10-year cap: 3650 days * 86400 s/day = 315_360_000 seconds.
+    if payload.ttl_seconds is not None and payload.ttl_seconds > 315_360_000:
+        raise HTTPException(status_code=400, detail="ttl_seconds must not exceed 315360000 (10 years)")
+
+    # Resolve TTL: ttl_seconds wins; fall back to expires_in_days; else "no expiry".
+    expires_delta: Optional[timedelta] = None
+    omit_exp = False
+    if payload.ttl_seconds is not None:
+        expires_delta = timedelta(seconds=payload.ttl_seconds)
+    elif payload.expires_in_days is not None:
+        expires_delta = timedelta(days=payload.expires_in_days)
+    else:
+        omit_exp = True  # "no expiry" — DB stores expires_at=NULL and the JWT
+        # carries no `exp` claim. The authoritative expiry check lives in
+        # app/auth/dependencies.py (via the DB row).
+
+    # Force-clamp bootstrap-analyst PATs to <= 1 h regardless of request, so
+    # an init-time PAT can't be repurposed as a long-lived credential.
+    if payload.scope == "bootstrap-analyst":
+        ONE_HOUR = timedelta(hours=1)
+        if expires_delta is None or expires_delta > ONE_HOUR:
+            expires_delta = ONE_HOUR
+        omit_exp = False
+
+    expires_at: Optional[datetime] = None
+    if expires_delta is not None:
+        expires_at = datetime.now(timezone.utc) + expires_delta
+
     repo = AccessTokenRepository(conn)
     token_id = str(uuid.uuid4())
-    expires_at: Optional[datetime] = None
-    expires_delta: Optional[timedelta] = None
-    omit_exp = payload.expires_in_days is None
-    if payload.expires_in_days is not None:
-        expires_delta = timedelta(days=payload.expires_in_days)
-        expires_at = datetime.now(timezone.utc) + expires_delta
-    # else: "no expiry" — DB stores expires_at=NULL and the JWT carries no
-    # `exp` claim. The authoritative expiry check lives in
-    # app/auth/dependencies.py (via the DB row).
     # Build the JWT that embeds jti=token_id and typ=pat
     jwt_token = create_access_token(
         user_id=user["id"], email=user["email"],
         token_id=token_id, typ="pat",
         expires_delta=expires_delta, omit_exp=omit_exp,
+        extra_claims={"scope": payload.scope},
     )
     # Prefix: first 8 chars of the jti (UUID) — uniquely identifies the token in UI
     # without exposing JWT headers (which all start with "eyJhbGci…" and are useless
@@ -126,7 +156,8 @@ async def create_token(
         id=token_id, user_id=user["id"], name=payload.name.strip(),
         token_hash=token_hash, prefix=prefix, expires_at=expires_at,
     )
-    _audit(conn, user["id"], "token.create", token_id, {"name": payload.name})
+    _audit(conn, user["id"], "token.create", token_id,
+           {"name": payload.name, "scope": payload.scope})
     return CreateTokenResponse(
         id=token_id, name=payload.name.strip(), prefix=prefix,
         token=jwt_token,  # returned EXACTLY ONCE; never retrievable again
