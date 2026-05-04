@@ -75,7 +75,13 @@ def stub_bq_extractor(monkeypatch):
 @pytest.fixture
 def stub_bq():
     """Real-shape BqAccess wired to in-memory DuckDB factories so the
-    materialize_query path can run end-to-end without GCP."""
+    materialize_query path can run end-to-end without GCP.
+
+    A `bigquery_query(project, sql_text)` table macro is registered so the
+    wrapping added by `_wrap_admin_sql_for_jobs_api` (Task 2 — routes COPY
+    through the BQ jobs API for views) resolves against the in-memory tables
+    without needing the real BQ extension.
+    """
     @contextmanager
     def _session(_p):
         conn = duckdb.connect(":memory:")
@@ -86,6 +92,12 @@ def stub_bq():
                 "CREATE OR REPLACE TABLE bq.test.orders AS "
                 "SELECT 'EU' AS region, 100 AS revenue UNION ALL "
                 "SELECT 'US' AS region, 250 AS revenue"
+            )
+            # Stub bigquery_query() so materialize_query's wrapped COPY works
+            # against the in-memory bq catalog without the real BQ extension.
+            conn.execute(
+                "CREATE OR REPLACE MACRO bigquery_query(project, sql_text) "
+                "AS TABLE SELECT * FROM query(sql_text)"
             )
             yield conn
         finally:
@@ -265,12 +277,18 @@ def test_materialized_zero_rows_logs_warning(stub_bq, tmp_path, caplog):
             conn.execute("CREATE SCHEMA bq.test")
             conn.execute("CREATE OR REPLACE TABLE bq.test.empty AS "
                          "SELECT 1 AS n WHERE FALSE")
+            # Stub bigquery_query() so materialize_query's wrapped COPY works
+            # against the in-memory bq catalog without the real BQ extension.
+            conn.execute(
+                "CREATE OR REPLACE MACRO bigquery_query(project, sql_text) "
+                "AS TABLE SELECT * FROM query(sql_text)"
+            )
             yield conn
         finally:
             conn.close()
 
     bq_empty = BqAccess(
-        BqProjects(billing="t", data="t"),
+        BqProjects(billing="test-project", data="test-project"),
         client_factory=lambda _p: MagicMock(),
         duckdb_session_factory=_session_empty,
     )
@@ -323,7 +341,7 @@ def test_attach_real_error_propagates(stub_bq, tmp_path):
             conn.close()
 
     bq_bad = BqAccess(
-        BqProjects(billing="t", data="t"),
+        BqProjects(billing="test-project", data="test-project"),
         client_factory=lambda _p: MagicMock(),
         duckdb_session_factory=_session_attach_fails,
     )
