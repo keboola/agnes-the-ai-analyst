@@ -153,7 +153,8 @@ class TestInitClaudeWorkspace:
         )
 
     def test_writes_claude_md_when_server_returns_200(self, tmp_workspace):
-        """When /api/welcome returns 200, CLAUDE.md is written."""
+        """When /api/welcome returns 200, CLAUDE.md is written and the helper
+        returns True so the caller can label its summary line accurately."""
         from cli.commands.analyst import _create_workspace, _init_claude_workspace
         from unittest.mock import MagicMock, patch
 
@@ -165,11 +166,45 @@ class TestInitClaudeWorkspace:
         mock_resp.raise_for_status = MagicMock()
 
         with patch("cli.commands.analyst.httpx.get", return_value=mock_resp):
-            _init_claude_workspace(tmp_workspace, server_url="https://example.com", token="tok")
+            written = _init_claude_workspace(
+                tmp_workspace, server_url="https://example.com", token="tok"
+            )
 
+        assert written is True
         claude_md = tmp_workspace / "CLAUDE.md"
         assert claude_md.exists()
         assert "My CLAUDE.md" in claude_md.read_text(encoding="utf-8")
+
+    def test_returns_false_when_server_returns_404(self, tmp_workspace):
+        """When the server is too old for /api/welcome (404), the helper
+        returns False so the caller can render the summary as 'skipped' instead
+        of contradicting its own stderr warning."""
+        from cli.commands.analyst import _create_workspace, _init_claude_workspace
+        from unittest.mock import MagicMock, patch
+
+        _create_workspace(tmp_workspace)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 404
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch("cli.commands.analyst.httpx.get", return_value=mock_resp):
+            written = _init_claude_workspace(
+                tmp_workspace, server_url="https://example.com", token="tok"
+            )
+
+        assert written is False
+        assert not (tmp_workspace / "CLAUDE.md").exists()
+
+    def test_returns_false_when_no_server_url(self, tmp_workspace):
+        """Caller passing empty server_url/token (e.g. --no-claude-md) gets False back."""
+        from cli.commands.analyst import _create_workspace, _init_claude_workspace
+
+        _create_workspace(tmp_workspace)
+        written = _init_claude_workspace(tmp_workspace, server_url="", token="")
+
+        assert written is False
+        assert not (tmp_workspace / "CLAUDE.md").exists()
 
     def test_does_not_write_claude_md_when_no_claude_md_flag(self, tmp_workspace):
         """When server_url/token are empty (--no-claude-md path), CLAUDE.md is not written."""
