@@ -2785,3 +2785,119 @@ async def discover_and_register(
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Discovery and registration failed: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Scheduler-driven LLM pipeline endpoints (#176)
+#
+# The scheduler container drives these via HTTP rather than running them
+# in-process — same reasoning as the existing /api/marketplaces/sync-all
+# job: DuckDB allows only one writer per file across processes, and the
+# app keeps a long-lived handle on system.duckdb. Routing through the app
+# inherits the existing connection without contention.
+#
+# Each endpoint is `def` (sync), so FastAPI runs it in a thread pool —
+# the underlying jobs do blocking I/O (LLM calls, DuckDB writes,
+# filesystem scans). Running on the asyncio thread would block health
+# checks for the duration of a job.
+# ---------------------------------------------------------------------------
+
+
+@router.post("/run-session-collector")
+def run_session_collector(
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Trigger the session-collector job from the scheduler.
+
+    Walks /home/*/user/sessions/*.jsonl and copies new files into
+    /data/user_sessions/<user>/. Idempotent — already-collected files
+    are skipped.
+    """
+    from services.session_collector import collector
+
+    rc = collector.main()
+    AuditRepository(conn).log(
+        user_id=user.get("id"),
+        action="run_session_collector",
+        resource="job:session-collector",
+        params={"rc": rc},
+    )
+    return {"ok": rc == 0, "details": {"rc": rc}}
+
+
+@router.post("/run-verification-detector")
+def run_verification_detector(
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Trigger the verification-detector job from the scheduler.
+
+    Reads collected session transcripts, extracts verified knowledge
+    via the LLM, and writes pending items to knowledge_items. The
+    /corporate-memory/admin queue picks them up for triage.
+    """
+    from connectors.llm import create_extractor_from_env_or_config
+    from services.verification_detector import detector
+    from src.db import get_system_db
+
+    # Build the extractor lazily so the endpoint surfaces a 500 with the
+    # factory's actionable error when no ai: block + no env keys are set.
+    try:
+        from config.loader import load_instance_config
+        try:
+            instance_config = load_instance_config()
+        except (ValueError, FileNotFoundError):
+            instance_config = {}
+        ai_config = instance_config.get("ai") if instance_config else None
+        extractor = create_extractor_from_env_or_config(ai_config)
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    job_conn = get_system_db()
+    try:
+        stats = detector.run(job_conn, extractor, dry_run=False)
+    finally:
+        try:
+            job_conn.close()
+        except Exception:
+            pass
+
+    AuditRepository(conn).log(
+        user_id=user.get("id"),
+        action="run_verification_detector",
+        resource="job:verification-detector",
+        params={
+            "items_created": stats.get("items_created", 0),
+            "errors": len(stats.get("errors", [])),
+        },
+    )
+    return {"ok": not stats.get("errors"), "details": stats}
+
+
+@router.post("/run-corporate-memory")
+def run_corporate_memory(
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Trigger the corporate-memory catalog refresh from the scheduler.
+
+    Reads all CLAUDE.local.md files, sends them through the LLM with the
+    existing catalog, and writes an updated catalog to knowledge.json.
+    """
+    from services.corporate_memory.collector import collect_all
+
+    stats = collect_all(dry_run=False)
+
+    AuditRepository(conn).log(
+        user_id=user.get("id"),
+        action="run_corporate_memory",
+        resource="job:corporate-memory",
+        params={
+            "items_new": stats.get("items_new", 0),
+            "items_filtered": stats.get("items_filtered", 0),
+            "errors": len(stats.get("errors", [])),
+            "skipped": stats.get("skipped", False),
+        },
+    )
+    return {"ok": not stats.get("errors"), "details": stats}

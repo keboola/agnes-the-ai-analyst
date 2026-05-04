@@ -137,10 +137,16 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
             f"cadence by up to one tick"
         )
     return [
-        ("data-refresh",  _seconds_to_schedule(refresh), "/api/sync/trigger",          "POST", 120),
-        ("health-check",  _seconds_to_schedule(health),  "/api/health",                "GET",   30),
-        ("script-runner", _seconds_to_schedule(scripts), "/api/scripts/run-due",       "POST", 600),
-        ("marketplaces",  "daily 03:00",                 "/api/marketplaces/sync-all", "POST", 900),
+        ("data-refresh",          _seconds_to_schedule(refresh), "/api/sync/trigger",                    "POST", 120),
+        ("health-check",          _seconds_to_schedule(health),  "/api/health",                          "GET",   30),
+        ("script-runner",         _seconds_to_schedule(scripts), "/api/scripts/run-due",                 "POST", 600),
+        ("marketplaces",          "daily 03:00",                 "/api/marketplaces/sync-all",           "POST", 900),
+        # LLM pipeline (#176). Cadences are deliberately offset (10m / 15m
+        # / 17m, all coprime modulo 30s tick) so the three LLM-driven jobs
+        # don't fire on the same tick and stack their API + DB load.
+        ("session-collector",     "every 10m",                   "/api/admin/run-session-collector",     "POST", 300),
+        ("verification-detector", "every 15m",                   "/api/admin/run-verification-detector", "POST", 900),
+        ("corporate-memory",      "every 17m",                   "/api/admin/run-corporate-memory",      "POST", 900),
     ]
 
 _running = True
