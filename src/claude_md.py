@@ -18,7 +18,7 @@ See also: surfaced as the "Agent Workspace Prompt" admin editor at
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -53,13 +53,28 @@ def _load_default_template() -> str:
     )
 
 
-def _list_tables(conn: duckdb.DuckDBPyConnection) -> list[dict[str, Any]]:
+def _list_tables(conn: duckdb.DuckDBPyConnection, *, user: dict) -> list[dict[str, Any]]:
+    """Return registered tables filtered by the calling user's RBAC grants.
+
+    For admins, returns all tables. For non-admins, returns only tables the
+    user has explicit ``resource_grants(resource_type='table')`` access to.
+    """
+    from src.rbac import get_accessible_tables
     try:
-        rows = conn.execute(
-            """SELECT name, description, query_mode
-               FROM table_registry
-               ORDER BY name"""
-        ).fetchall()
+        allowed_ids = get_accessible_tables(user, conn)   # None=admin, list=non-admin
+        if allowed_ids is None:
+            rows = conn.execute(
+                "SELECT name, description, query_mode FROM table_registry ORDER BY name"
+            ).fetchall()
+        elif not allowed_ids:
+            return []
+        else:
+            placeholders = ",".join(["?"] * len(allowed_ids))
+            rows = conn.execute(
+                f"SELECT name, description, query_mode FROM table_registry "
+                f"WHERE id IN ({placeholders}) ORDER BY name",
+                allowed_ids,
+            ).fetchall()
     except duckdb.CatalogException:
         return []
     return [
@@ -148,7 +163,7 @@ def build_claude_md_context(
         },
         "sync_interval": get_sync_interval(),
         "data_source": {"type": get_data_source_type()},
-        "tables": _list_tables(conn),
+        "tables": _list_tables(conn, user=user),
         "metrics": _metrics_summary(conn),
         "marketplaces": _marketplaces_for_user(conn, user),
         "user": {
@@ -159,7 +174,7 @@ def build_claude_md_context(
             "groups": user.get("groups") or [],
         },
         "now": now,
-        "today": date.today().isoformat(),
+        "today": now.date().isoformat(),
     }
 
 
