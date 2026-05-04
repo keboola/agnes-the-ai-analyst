@@ -38,6 +38,7 @@ End-to-end clean-analyst-bootstrap rewrite. The web `/setup?role=analyst` page n
 - `agnes snapshot create` (formerly `da fetch`) no longer materializes an empty `user/duckdb/analytics.duckdb` when run before any `agnes pull`. Friendly hint redirects to `agnes pull`.
 - Workspace `agnes status` reads from the canonical `server/parquet/` and `user/duckdb/analytics.duckdb` paths (was reading legacy `data/parquet/`, `data/metadata/last_sync.json`).
 - `agnes init` and `agnes pull` errors now use the `cli/error_render.py` typed-error renderer (added in 0.32.0), so analyst-facing error UX matches the structured shape `agnes query --remote` already produces.
+- `agnes push` now reads Claude Code session jsonls from `~/.claude/projects/<encoded-cwd>/` (where Claude Code actually writes them), instead of `<workspace>/user/sessions/` (which the SessionEnd hook never populated — the previous code uploaded an empty list every time). Encoding logic in `cli/lib/claude_sessions.py` probes both Claude Code variants — older `/`→`-` and newer all-non-alphanumeric→`-` — and unions the result, so users who have upgraded Claude Code mid-project see sessions from both encoded dirs. Falls back to `<workspace>/user/sessions/` for back-compat.
 
 ### Removed
 - `da analyst setup`, `da analyst status`, `da sync`, `da fetch`, `da metrics`. See **Changed** for replacements.

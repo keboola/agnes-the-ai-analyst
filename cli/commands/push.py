@@ -68,16 +68,16 @@ def push(
         raise typer.Exit(1)
 
     workspace = Path(os.environ.get("AGNES_LOCAL_DIR", ".")).resolve()
-    sessions_dir = workspace / "user" / "sessions"
     local_md = workspace / ".claude" / "CLAUDE.local.md"
 
-    # Lazy: only enumerate when the directory actually exists. We must not
-    # mkdir here - the empty-workspace case must leave disk untouched so
-    # the SessionEnd hook stays a true no-op for analysts who haven't
-    # produced any sessions yet.
-    session_files = (
-        sorted(sessions_dir.glob("*.jsonl")) if sessions_dir.exists() else []
-    )
+    # Claude Code writes session jsonls to ~/.claude/projects/<encoded-cwd>/
+    # — the encoding varies by Claude Code version (older: `/` -> `-`,
+    # newer: all non-alphanumeric -> `-`). The helper tries both encodings
+    # and also falls back to the legacy <workspace>/user/sessions/ for
+    # setups that mirror sessions there explicitly. See
+    # cli/lib/claude_sessions.py for details.
+    from cli.lib.claude_sessions import list_session_files
+    session_files = list_session_files(workspace)
     has_local_md = local_md.exists()
 
     if dry_run:
