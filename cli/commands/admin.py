@@ -92,12 +92,18 @@ def register_table(
     """Register a single table.
 
     Modes:
-    - **local** (Keboola): batch pull, parquet on disk.
+    - **local** (Keboola): batch pull, parquet on disk. Requires
+      `--bucket` + `--source-table`.
     - **remote** (BigQuery): view only, queries go to BQ. Requires
       `--bucket` + `--source-table`.
     - **materialized** (BigQuery): server-side scheduled SQL → parquet.
-      Requires `--query` (inline or `@file.sql`); `--bucket` /
-      `--source-table` ignored.
+      Requires `--query` (inline or `@file.sql`) AND `--bucket` (BQ
+      dataset of the destination identifier). `--source-table` defaults
+      to the registered `name` when omitted; explicit override is rare.
+      Note: `agnes schema <name>` builds the BQ identifier as
+      `bq.<bucket>.<source_table>` even for materialized rows, so an
+      empty `--bucket` here registers the row but breaks subsequent
+      schema/describe calls.
 
     `--dry-run` goes through /precheck (BQ remote only — for materialized
     rows, dry-run is a no-op since the SQL itself is the contract).
@@ -119,6 +125,22 @@ def register_table(
     if query_mode == "materialized" and not source_query:
         typer.echo(
             "Error: --query-mode materialized requires --query (literal SQL or @path.sql)",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    # Bucket is load-bearing for the BQ destination identifier on
+    # materialized rows. Without it, registration succeeds but
+    # subsequent `agnes schema <name>` builds `bq."".."<src>"` from
+    # the empty bucket and the server rejects with HTTP 400 "unsafe
+    # BQ identifier in registry". Catch this at register time so the
+    # operator gets a clear error pointing at the right knob.
+    if query_mode == "materialized" and not bucket:
+        typer.echo(
+            "Error: --query-mode materialized requires --bucket (the BQ "
+            "dataset for the destination identifier). Without it the row "
+            "registers but `agnes schema <name>` later fails with "
+            "'unsafe BQ identifier in registry'.",
             err=True,
         )
         raise typer.Exit(2)
@@ -176,6 +198,33 @@ def register_table(
             typer.echo(f"Registered (materializing in background): {name}")
         else:
             typer.echo(f"Registered: {name}")
+
+        # Post-success hints. Two operator gotchas this catches:
+        #
+        # 1. `agnes pull` does not auto-materialize newly-registered
+        #    rows — registration adds a registry row, but the parquet
+        #    is built only when the scheduler tick runs (or first-sync
+        #    is triggered manually). Without this hint operators see
+        #    "Updated 0 tables" on `agnes pull` and assume something
+        #    is broken.
+        # 2. `register-table` does NOT auto-grant. `agnes catalog`
+        #    filters per-user via `resource_grants`, so operators
+        #    other than the registering admin won't see the new row
+        #    until a grant is created.
+        #
+        # Hint #1 only fires for `local` and `materialized` (the modes
+        # that actually produce a parquet); 202-async path covers a
+        # different signal, so don't double-message there.
+        if query_mode in ("local", "materialized") and resp.status_code != 202:
+            typer.echo(
+                "  Next: run `agnes setup first-sync` to materialize "
+                "the parquet (or wait for the scheduler tick)."
+            )
+        typer.echo(
+            f"  Note: register-table does not auto-grant. Run "
+            f"`agnes admin grant create <group> table {name}` to "
+            f"make this visible in `agnes catalog` for non-admin users."
+        )
     elif resp.status_code == 409:
         typer.echo(f"Already exists: {name}")
     else:

@@ -29,6 +29,7 @@ def test_register_materialized_with_inline_query(monkeypatch):
         "admin", "register-table", "orders_90d",
         "--source-type", "bigquery",
         "--query-mode", "materialized",
+        "--bucket", "fin",
         "--query", "SELECT date FROM `prj.ds.orders`",
         "--sync-schedule", "every 6h",
     ])
@@ -59,6 +60,7 @@ def test_register_materialized_reads_query_from_file(tmp_path, monkeypatch):
         "admin", "register-table", "orders_90d",
         "--source-type", "bigquery",
         "--query-mode", "materialized",
+        "--bucket", "fin",
         "--query", f"@{sql_file}",
         "--sync-schedule", "daily 03:00",
     ])
@@ -155,3 +157,71 @@ def test_register_remote_path_unchanged(monkeypatch):
     assert "source_query" not in captured["json"]
     assert captured["json"]["bucket"] == "analytics"
     assert captured["json"]["source_table"] == "orders"
+
+
+def test_register_materialized_without_bucket_fails_with_clear_error(monkeypatch):
+    """`--query-mode materialized` without `--bucket` is a client-side
+    error. Pre-fix the CLI sent `bucket=""` to the server; registration
+    succeeded but `agnes schema <name>` later 400ed with "unsafe BQ
+    identifier in registry" because the schema endpoint built
+    `bq.\"\".\"<src>\"` from the empty bucket. Catching this at register
+    time gives operators a clear pointer at the right knob instead of
+    accept-then-fail-later UX."""
+    called = {"count": 0}
+
+    def fake_post(*args, **kwargs):
+        called["count"] += 1
+        return _fake_resp(201)
+
+    monkeypatch.setattr("cli.commands.admin.api_post", fake_post)
+
+    runner = CliRunner()
+    result = runner.invoke(app, [
+        "admin", "register-table", "category_summary",
+        "--source-type", "bigquery",
+        "--query-mode", "materialized",
+        "--query", "SELECT 1",
+        # No --bucket on purpose.
+    ])
+
+    assert result.exit_code != 0
+    # API never called — fail fast on client side.
+    assert called["count"] == 0
+    combined = result.stdout + (result.stderr or "")
+    assert "--bucket" in combined
+    # The error must explain WHY it's required, not just say "missing".
+    assert "schema" in combined.lower() or "identifier" in combined.lower()
+
+
+def test_register_table_emits_first_sync_and_grant_hints(monkeypatch):
+    """After a successful register-table for a materialized row, the CLI
+    output must point operators at:
+    (a) `agnes setup first-sync` — registration adds a registry row but
+        does NOT trigger a parquet build, and `agnes pull` then reports
+        "Updated 0 tables (1 total)" until the next scheduler tick.
+    (b) `agnes admin grant create <group> table <id>` — `agnes catalog`
+        is RBAC-filtered, so non-admin users won't see the new row
+        until a grant is created.
+
+    Without these hints operators bounce between symptoms and assume
+    something's broken when it's just unstated post-register UX."""
+    monkeypatch.setattr(
+        "cli.commands.admin.api_post",
+        lambda *a, **kw: _fake_resp(201),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, [
+        "admin", "register-table", "category_summary",
+        "--source-type", "bigquery",
+        "--query-mode", "materialized",
+        "--bucket", "analytics",
+        "--query", "SELECT category, SUM(rev) FROM `prj.ds.tx` GROUP BY 1",
+    ])
+    assert result.exit_code == 0, result.stdout
+    out = result.stdout
+    assert "agnes setup first-sync" in out
+    assert "agnes admin grant create" in out
+    # The grant hint should mention the registered name so operators can
+    # copy-paste the next command verbatim.
+    assert "category_summary" in out
