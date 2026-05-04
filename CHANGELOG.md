@@ -10,15 +10,46 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+End-to-end clean-analyst-bootstrap rewrite. The web `/setup?role=analyst` page now produces a single paste prompt that, dropped into Claude Code in an empty folder, fully bootstraps an analyst workspace — installs the CLI, authenticates, fetches `CLAUDE.md`, installs SessionStart/End hooks, runs the first data refresh, and writes a human-readable workspace docs file (`AGNES_WORKSPACE.md`). 26 implementation tasks across 6 phases.
+
+### Changed
+- **BREAKING** CLI binary renamed from `da` to `agnes`. No backward-compat alias is shipped. Update shell aliases, hook commands in any pre-existing `.claude/settings.json`, scripts, and cron jobs. Reinstall via `uv tool install <wheel>`; the wheel now ships an `agnes` entry point.
+- **BREAKING** Environment variables and config dir renamed: `DA_CONFIG_DIR/DA_SERVER/DA_NO_UPDATE_CHECK/DA_LOCAL_DIR/DA_TOKEN/DA_STREAM_RETRIES` → `AGNES_*`; `~/.config/da/` → `~/.config/agnes/`. Hard cutover, no fallback. Existing analysts re-authenticate via `agnes auth import-token`.
+- **BREAKING** Analyst bootstrap rewritten end-to-end. `da analyst setup` is removed; replaced by `agnes init` (non-interactive, requires `--server-url` and `--token`). `da sync` is split into `agnes pull` (refresh) and `agnes push` (upload). `da fetch` is folded into `agnes snapshot create`. `da metrics list/show` is folded into `agnes catalog --metrics`; `da metrics import/export/validate` move to `agnes admin metrics {import,export,validate}`. The `da analyst` namespace is removed; the workspace status command is now `agnes status`. The previous `da status` (server-health overview) becomes `agnes diagnose system`.
+- **BREAKING** Workspace layout simplified. Removed: `data/parquet/`, `data/duckdb/`, `data/metadata/`, `user/artifacts/`. Canonical paths: `server/parquet/` (synced parquets), `user/duckdb/analytics.duckdb` (DuckDB views), `user/snapshots/` (ad-hoc snapshots), `user/sessions/` (recorded sessions). Lazy-mkdir contract — no empty pre-allocated directories.
+- The `/setup` web page now branches on a `role` query parameter: `/setup?role=analyst` renders the analyst workspace bootstrap prompt (TLS trust → install CLI → `agnes init` → `agnes catalog` smoke verify); `/setup?role=admin` renders the admin CLI install prompt (existing flow). `/install` continues to 302 to `/setup`. Two role tiles render at top of page; clicking the analyst tile mints a `scope="bootstrap-analyst"` PAT (1h TTL) instead of the historical 90-day general PAT.
+- `CLAUDE.md` server-side template + repo-root `CLAUDE.md` updated to reference the new CLI verbs and workspace paths. The admin UI for the `claude_md_template` DB override (`/admin/workspace-prompt`) renders a yellow banner when the saved override contains legacy strings (`data/parquet/`, `da sync`, `da fetch`, `da analyst setup`, `da metrics list/show`); admins re-author and save to clear it. Migration is manual.
+
 ### Added
-- **`/setup?role=analyst|admin` query-param branching**: the setup page now
-  renders two role tiles (Analyst workspace / Admin CLI) at the top, with
-  the matching tile styled as active. `?role=analyst` short-circuits the
-  bash bootstrap to the trimmed analyst-workspace flow (no marketplace,
-  no plugins). Default is `admin` — unspecified or invalid values fall
-  back to the existing admin layout, so any caller that doesn't pass
-  `?role=` keeps the byte-identical pre-Task-4 page. `/install` still
-  302-redirects to `/setup`.
+- `agnes init <opts>` — non-interactive workspace bootstrap orchestrator. 8 steps: detect existing workspace, verify PAT (`GET /api/catalog/tables`), save config + token globally, fetch `CLAUDE.md` from `/api/welcome`, install SessionStart/End hooks via `cli/lib/hooks.py:install_claude_hooks`, write `CLAUDE.local.md` stub (preserved on `--force`), run first `agnes pull`, write `AGNES_WORKSPACE.md`. Errors render via `cli/error_render.py:render_error()` with typed kinds (`auth_failed`, `server_unreachable`, `partial_state`, `manifest_unauthorized`).
+- `agnes pull` / `agnes push` — split from the old `da sync` / `da sync --upload-only`. `--quiet` / `--json` / `--dry-run` flags. SessionStart hook runs `agnes pull --quiet`; SessionEnd hook runs `agnes push --quiet`.
+- `agnes snapshot create <table>` — folded from `da fetch`. Adds `if not local_db.exists()` guard so `agnes snapshot create` no longer silently materializes an empty DuckDB file when run before any `agnes pull`.
+- `agnes catalog --metrics` (replaces `da metrics list`) and `agnes catalog --metrics --show <id>` (replaces `da metrics show`).
+- `agnes admin metrics {import,export,validate}` — write paths relocated from the deleted `da metrics` namespace.
+- `agnes diagnose system` — server-side health check (was the old `da status`).
+- `AGNES_WORKSPACE.md` — human-readable workspace docs file generated by `agnes init` in the workspace root. Documents global install, workspace layout, hooks, cheat sheet, uninstall recipe.
+- PAT request body now accepts `scope: str = "general"` and `ttl_seconds: int | None = None` fields. PATs minted with `scope="bootstrap-analyst"` are TTL-clamped to ≤ 1 h server-side. Existing `expires_in_days` field continues to work; `ttl_seconds` wins when both are set. `ttl_seconds` upper bound is 315_360_000 (matches `expires_in_days <= 3650` cap). JWT carries the `scope` claim via new `extra_claims` parameter on `create_access_token`; reserved keys (`sub`/`email`/`typ`/`iat`/`jti`/`exp`) cannot be overridden via `extra_claims`. Audit log includes the scope.
+- `cli/lib/` shared-library tree with `cli/lib/pull.py:run_pull` (data-refresh primitive callable from both the Typer wrapper and `agnes init`) and `cli/lib/hooks.py:install_claude_hooks` (workspace-scoped, idempotent Claude Code hook installer).
+- `_scan_legacy_strings` helper + `legacy_strings_detected` field on `GET /api/admin/workspace-prompt-template` — server scans saved CLAUDE.md overrides for stale CLI verbs / paths; the admin UI banner consumes the field.
+
+### Fixed
+- `agnes pull` (formerly `da sync`) no longer creates `.claude/rules/` when the corporate-memory bundle is empty.
+- `agnes pull` no longer creates `server/parquet/` when the manifest is empty (mkdir is lazy — only on first per-table write).
+- `agnes snapshot create` (formerly `da fetch`) no longer materializes an empty `user/duckdb/analytics.duckdb` when run before any `agnes pull`. Friendly hint redirects to `agnes pull`.
+- Workspace `agnes status` reads from the canonical `server/parquet/` and `user/duckdb/analytics.duckdb` paths (was reading legacy `data/parquet/`, `data/metadata/last_sync.json`).
+- `agnes init` and `agnes pull` errors now use the `cli/error_render.py` typed-error renderer (added in 0.32.0), so analyst-facing error UX matches the structured shape `agnes query --remote` already produces.
+
+### Removed
+- `da analyst setup`, `da analyst status`, `da sync`, `da fetch`, `da metrics`. See **Changed** for replacements.
+- `da metrics` namespace as a top-level group (subcommands moved to `agnes catalog --metrics` for read-only views and `agnes admin metrics …` for write operations).
+- Legacy workspace directories `data/parquet/`, `data/duckdb/`, `data/metadata/`, `user/artifacts/`. Existing analyst workspaces should be reinitialized with `agnes init --server-url ... --token ... --force` (a fresh empty folder is recommended).
+
+### Internal
+- `cli/lib/__init__.py` (empty) makes `cli/lib/` a proper package picked up by Hatchling for wheel inclusion. `.gitignore` allowlists `cli/lib/` from the generic `lib/` rule.
+- `tests/fixtures/analyst_bootstrap.py` — reusable test fixtures (`fastapi_test_server`, `web_session`, `test_pat`, `test_pat_no_grants`, `zero_grants_workspace`, `NONEXISTENT_TABLE`) for clean-install verification.
+- `tests/test_reader_smoke_matrix.py` — load-bearing parametrized test: every reader CLI command runs on a freshly-bootstrapped zero-grants workspace without a Python traceback.
+- `tests/test_clean_install_integration.py` — end-to-end happy-path tests (minimal grants, zero grants, force preserves CLAUDE.local.md, readers in pre-init dir).
+- `docs/RELEASE_CHECKLIST.md` — manual clean-install protocol mandated for any PR touching the bootstrap path.
 
 ## [0.32.0] — 2026-05-04
 
