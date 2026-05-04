@@ -79,7 +79,7 @@ dev = [
 ]
 
 [project.scripts]
-da = "cli.main:app"
+agnes = "cli.main:app"
 
 [build-system]
 requires = ["hatchling"]

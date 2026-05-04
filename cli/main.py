@@ -44,13 +44,13 @@ def _cli_version() -> str:
 
 def _version_callback(value: bool) -> None:
     if value:
-        typer.echo(f"da {_cli_version()}")
+        typer.echo(f"agnes {_cli_version()}")
         raise typer.Exit()
 
 
 app = typer.Typer(
-    name="da",
-    help="AI Data Analyst CLI — data sync, queries, and admin for AI agents",
+    name="agnes",
+    help="Agnes — AI Data Analyst CLI",
     no_args_is_help=True,
 )
 
