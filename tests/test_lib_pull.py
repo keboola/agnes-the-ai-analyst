@@ -100,3 +100,6 @@ def test_run_pull_dry_run_writes_nothing(tmp_path, fake_server):
     run_pull(server_url="http://x", token="t", workspace=tmp_path, dry_run=True)
     assert not (tmp_path / "server").exists()
     assert not (tmp_path / "user" / "duckdb").exists()
+    # No user-home state file either — dry_run must be hermetic.
+    # The autouse fixture sandboxes AGNES_CONFIG_DIR to tmp_path/_agnes_cfg.
+    assert not (tmp_path / "_agnes_cfg" / "sync_state.json").exists()

@@ -72,6 +72,15 @@ def _override_server_env(server_url: str, token: str) -> Iterator[None]:
     `cli.config.get_server_url` / `get_token` already honor these env vars,
     which is the same mechanism used in production. Restores prior values
     on exit so the caller's environment isn't mutated permanently.
+
+    Caveats:
+    - **Token override is honored only when no `~/.config/agnes/token.json`
+      exists.** `get_token()` reads the file first and only falls back to
+      `AGNES_TOKEN`. `agnes init` writes `token.json` before calling
+      `run_pull` so the values agree in production; isolated tests/callers
+      that pass a different token must clear the on-disk token first.
+    - **Not safe for concurrent invocation in the same process** — env-var
+      swap is global. Single-threaded use only.
     """
     prev_server = os.environ.get("AGNES_SERVER")
     prev_token = os.environ.get("AGNES_TOKEN")
@@ -175,6 +184,11 @@ def run_pull(
                 result.errors.append({"table": tid, "error": str(exc)})
 
         # 5. Persist sync state (only on real runs).
+        # TODO(workspace-scoped-sync-state): currently saved to
+        # ~/.config/agnes/sync_state.json (per legacy sync.py behavior).
+        # Two workspaces sharing one user account share this state.
+        # Future: scope to <workspace>/.agnes/sync_state.json so workspace
+        # bootstrap leaves no residue outside <workspace>/.
         local_state["tables"] = local_tables
         local_state["last_sync"] = datetime.now(timezone.utc).isoformat()
         save_sync_state(local_state)
