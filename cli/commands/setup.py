@@ -23,7 +23,7 @@ def setup_init(
 
     import yaml
     config = {"server": server}
-    config_file.write_text(yaml.dump(config))
+    config_file.write_text(yaml.dump(config), encoding="utf-8")
     typer.echo(f"Config saved to {config_file}")
     os.environ["DA_SERVER"] = server
     typer.echo("\nNext: da setup bootstrap --email admin@company.com")

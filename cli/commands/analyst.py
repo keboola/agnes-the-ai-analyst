@@ -324,7 +324,7 @@ def _init_claude_workspace(
         # First-run defaults: model + permissions. _install_claude_hooks below
         # will merge in the SessionStart/End hooks on top of these.
         settings = {"model": "sonnet", "permissions": {"allow": ["Read", "Bash", "Grep", "Glob"]}}
-        settings_path.write_text(json.dumps(settings, indent=2))
+        settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
 
     _install_claude_hooks(settings_path)
 

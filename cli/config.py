@@ -20,7 +20,7 @@ def get_server_url() -> str:
 def get_token() -> Optional[str]:
     token_file = _config_dir() / "token.json"
     if token_file.exists():
-        data = json.loads(token_file.read_text())
+        data = json.loads(token_file.read_text(encoding="utf-8"))
         return data.get("access_token")
     return os.environ.get("DA_TOKEN")
 
@@ -37,7 +37,7 @@ def save_token(token: str, email: str, role: Optional[str] = None):
     token_file.write_text(json.dumps({
         "access_token": token,
         "email": email,
-    }, indent=2))
+    }, indent=2), encoding="utf-8")
 
 
 def clear_token():
@@ -50,20 +50,20 @@ def load_config() -> dict:
     config_file = _config_dir() / "config.yaml"
     if config_file.exists():
         import yaml
-        return yaml.safe_load(config_file.read_text()) or {}
+        return yaml.safe_load(config_file.read_text(encoding="utf-8")) or {}
     return {}
 
 
 def get_sync_state() -> dict:
     state_file = _config_dir() / "sync_state.json"
     if state_file.exists():
-        return json.loads(state_file.read_text())
+        return json.loads(state_file.read_text(encoding="utf-8"))
     return {}
 
 
 def save_sync_state(state: dict):
     state_file = _config_dir() / "sync_state.json"
-    state_file.write_text(json.dumps(state, indent=2))
+    state_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
 def save_config(data: dict):
@@ -73,6 +73,6 @@ def save_config(data: dict):
     config_file = _config_dir() / "config.yaml"
     existing = {}
     if config_file.exists():
-        existing = yaml.safe_load(config_file.read_text()) or {}
+        existing = yaml.safe_load(config_file.read_text(encoding="utf-8")) or {}
     existing.update(data)
-    config_file.write_text(yaml.dump(existing, default_flow_style=False))
+    config_file.write_text(yaml.dump(existing, default_flow_style=False), encoding="utf-8")

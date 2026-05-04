@@ -3,10 +3,25 @@
 Primary interface for AI agents. Install: uv tool install data-analyst
 """
 
+import sys
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 
 import typer
+
+# Force UTF-8 on Windows stdout/stderr at import time. The default Windows
+# console codepage (cp1250 on cs-CZ, cp1252 on en-US, …) cannot encode the
+# Braille spinner glyphs Rich uses for `da sync` progress, nor the em-dash /
+# accented chars that show up in skill markdown via `da skills list`. Both
+# crash with UnicodeEncode/DecodeError before any command-level code runs.
+# `reconfigure` is a no-op on non-TextIOWrapper streams (pytest capture,
+# pipes wrapped by other tooling) — swallow the AttributeError there.
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError):
+        pass
 
 from cli.commands.auth import auth_app
 from cli.commands.sync import sync_app

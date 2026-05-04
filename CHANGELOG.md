@@ -10,6 +10,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **Windows: `da skills list` and `da sync` no longer crash on cp1250 consoles.**
+  On a Czech-locale Windows console (default codepage `cp1250`), Rich's
+  Braille spinner glyphs and skill markdown's UTF-8 chars (em-dash, accents)
+  triggered `UnicodeEncodeError` / `UnicodeDecodeError` before any
+  command-level code ran. Two fixes: (1) `cli/main.py` reconfigures
+  stdout/stderr to UTF-8 with `errors="replace"` at import time on
+  `sys.platform == "win32"`, so Rich's legacy-Windows render path emits
+  decodable bytes; (2) all `Path.read_text()` / `Path.write_text()` in `cli/`
+  now pass `encoding="utf-8"` explicitly — defensive coverage for the
+  `cli/config.py`, `cli/update_check.py`, `cli/snapshot_meta.py`,
+  `cli/commands/skills.py`, `cli/commands/analyst.py`, `cli/commands/setup.py`
+  call sites that were previously relying on the locale default.
+
 ## [0.32.0] — 2026-05-04
 
 Closes #160. Headline fix: `da query --remote` now resolves
