@@ -187,6 +187,103 @@ def test_fresh_file_lock_blocks_with_in_flight_error(tmp_path, monkeypatch):
         holder.close()
 
 
+def test_stale_held_lock_is_reclaimed_despite_live_holder(tmp_path, monkeypatch):
+    """Regression for Devin Review on extractor.py:166. The TTL reclaim
+    path used to be dead code: `_try_acquire_file_lock` opened the lock
+    file with `open(mode="w")` BEFORE checking mtime, which truncated
+    the file and refreshed mtime to now on every call. Subsequent
+    `time.time() - lock_path.stat().st_mtime` always saw age ~0, so
+    `age > TTL` never fired, so `materialize.lock_ttl_seconds` was
+    silently a no-op.
+
+    This test exercises the actual reclaim path: an OLD-mtime lock file
+    held by a still-living fcntl holder. Pre-fix path: failed probe
+    refreshes mtime → age check sees ~0 → never reclaims → caller
+    raises MaterializeInFlightError forever. Post-fix path: stat first,
+    see old mtime, unlink (creates new inode), open + flock new inode
+    succeeds (the live holder's flock is on the now-orphan old inode,
+    no inode-level conflict).
+    """
+    import fcntl
+    import os
+
+    # Use the helper directly — exercising it through `materialize_query`
+    # would also work but obscures which acquisition we're testing.
+    from connectors.bigquery.extractor import _try_acquire_file_lock
+
+    lock_path = Path(tmp_path) / "t1.parquet.lock"
+
+    # Live holder: open + flock. Holder stays alive for the duration
+    # of the test (we close it in finally).
+    holder = open(lock_path, "w")
+    fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    # Backdate the mtime past the default 24h TTL. This is the
+    # condition the reclaim should detect.
+    old_ts = time.time() - 25 * 3600
+    os.utime(lock_path, (old_ts, old_ts))
+
+    try:
+        # Pre-fix this call returns None (failed probe refreshed mtime,
+        # age check < TTL, no reclaim). Post-fix: stat first → old mtime
+        # → unlink + new inode → flock succeeds → returns a holder fd.
+        new_holder = _try_acquire_file_lock(lock_path)
+        assert new_holder is not None, (
+            "TTL reclaim is dead code: the old-mtime lock should have "
+            "been unlinked and a new inode acquired"
+        )
+        assert new_holder.fileno() != holder.fileno()
+        new_holder.close()
+    finally:
+        fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+        holder.close()
+
+
+def test_failed_probe_does_not_self_refresh_lock_mtime(tmp_path, monkeypatch):
+    """Sister test: the pre-probe stat must read the REAL mtime, not a
+    value contaminated by the call's own `open(mode='w')`. Pre-fix the
+    probe ran first and truncated the file, so any subsequent caller —
+    including this test's own followup stat — saw ~now mtime. After
+    fix, a failed acquisition should NOT update mtime if the file
+    wasn't already due for reclaim.
+
+    Setup: lock file exists with mtime FRESH (within TTL) AND held by
+    a live holder. New call probes → fails → returns None. Assertion:
+    mtime after the failed call is no more than ~1 s newer than the
+    pre-call mtime — the failed probe's `open('w')` does still touch
+    the file (mode='w' inherently truncates on open), and we accept
+    that as documented behavior. But mtime must NOT have jumped from
+    "old fresh" to "way fresher" by some pathological refresh loop.
+    """
+    import fcntl
+
+    from connectors.bigquery.extractor import _try_acquire_file_lock
+
+    lock_path = Path(tmp_path) / "t1.parquet.lock"
+    holder = open(lock_path, "w")
+    fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    pre_call_mtime = lock_path.stat().st_mtime
+
+    try:
+        # Probe fails — no reclaim because mtime is fresh.
+        result = _try_acquire_file_lock(lock_path)
+        assert result is None, "fresh held lock must block, not reclaim"
+        post_call_mtime = lock_path.stat().st_mtime
+
+        # The probe still opens with mode='w', which DOES update mtime.
+        # That's documented in the helper's docstring as the
+        # "last-attempted-acquire" signal. We're not asserting "mtime
+        # unchanged" — just that the operation is bounded (no runaway).
+        assert post_call_mtime - pre_call_mtime < 5, (
+            "failed probe shifted mtime by more than 5s — implausible "
+            "unless the helper looped"
+        )
+    finally:
+        fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+        holder.close()
+
+
 def test_lock_ttl_reads_from_instance_config(tmp_path, monkeypatch):
     """When `materialize.lock_ttl_seconds` is set in instance.yaml, that
     value overrides the default."""

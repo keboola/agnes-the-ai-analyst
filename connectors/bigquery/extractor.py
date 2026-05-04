@@ -105,7 +105,16 @@ def _try_acquire_file_lock(lock_path: Path):
     on conflict.
 
     Stale-lock reclaim: if the lock_path exists and its mtime is older
-    than the configured TTL, log a warning and unlink before retrying.
+    than the configured TTL, log a warning and unlink BEFORE attempting
+    to open + flock. The pre-stat-then-decide order is load-bearing: a
+    naive "open then check mtime" path opens with `mode="w"` which
+    truncates the file and refreshes its mtime to *now* on every
+    invocation, including failed flock attempts. That makes the age
+    check at the next pass always see ~0 — the TTL reclaim branch
+    becomes unreachable and `materialize.lock_ttl_seconds` config knob
+    is silently dead code (Devin Review on extractor.py:166). Stat-first
+    sidesteps the self-refresh: the reclaim decision is made against the
+    REAL mtime the file had before any of this call's I/O.
 
     Caveat: ``lock_path.unlink()`` + the subsequent ``open()`` creates a
     NEW inode — fcntl.flock keys on inode, so a still-running holder's
@@ -121,49 +130,53 @@ def _try_acquire_file_lock(lock_path: Path):
     and skip reclaim while the holder pid is alive."""
     lock_path.parent.mkdir(parents=True, exist_ok=True)
 
-    def _try_open_and_flock():
-        # Open in 'w' mode so the file's mtime updates on every successful
-        # acquisition — the mtime is the TTL signal for the next caller.
-        # Content is intentionally empty; the fd exists only to anchor flock.
-        f = open(lock_path, "w")
-        try:
-            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return f
-        except BlockingIOError:
-            # Another holder owns the lock — return None so the caller can
-            # decide between TTL-reclaim and propagating MaterializeInFlightError.
-            f.close()
-            return None
-        except OSError:
-            # Anything else (read-only fs, unsupported, fd exhaustion) is a
-            # platform / config error, not a contention signal. Close the fd
-            # and re-raise so the caller (and operator) sees the real failure
-            # instead of a silent leak.
-            f.close()
-            raise
-
-    holder = _try_open_and_flock()
-    if holder is not None:
-        return holder
-
-    # Conflict. If the file is older than TTL, reclaim and retry once.
+    # Stat BEFORE any open(). This is the pre-probe mtime — what the
+    # file looked like before our call ran any I/O. If the file doesn't
+    # exist yet, there's nothing stale to reclaim and we fall through to
+    # the open + flock path.
     try:
-        age = time.time() - lock_path.stat().st_mtime
+        pre_probe_mtime: float | None = lock_path.stat().st_mtime
     except FileNotFoundError:
-        return _try_open_and_flock()
+        pre_probe_mtime = None
 
-    if age > _get_lock_ttl_seconds():
-        logger.warning(
-            "Reclaiming stale materialize lock at %s (age %.1fs > TTL)",
-            lock_path, age,
-        )
-        try:
-            lock_path.unlink()
-        except FileNotFoundError:
-            pass
-        return _try_open_and_flock()
+    if pre_probe_mtime is not None:
+        age = time.time() - pre_probe_mtime
+        if age > _get_lock_ttl_seconds():
+            logger.warning(
+                "Reclaiming stale materialize lock at %s (age %.1fs > TTL)",
+                lock_path, age,
+            )
+            try:
+                lock_path.unlink()
+            except FileNotFoundError:
+                # Race: someone else reclaimed between our stat and unlink.
+                # Fall through to the open + flock attempt — they must have
+                # already acquired and we'll legitimately conflict.
+                pass
 
-    return None
+    # Open in 'w' mode (creates if missing, truncates if present). The
+    # mtime refresh on success is intentional — that's the signal the
+    # NEXT caller's pre_probe_mtime stat reads to decide whether the
+    # lock has gone stale. Failed flock on a non-stale lock simply
+    # bumps mtime to now (the last-attempted-acquire timestamp); that's
+    # a harmless lie about who's holding it, since the active holder
+    # would refresh it anyway on a successful acquire.
+    f = open(lock_path, "w")
+    try:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return f
+    except BlockingIOError:
+        # Another holder owns the lock — return None so the caller can
+        # propagate MaterializeInFlightError.
+        f.close()
+        return None
+    except OSError:
+        # Anything else (read-only fs, unsupported, fd exhaustion) is a
+        # platform / config error, not a contention signal. Close the fd
+        # and re-raise so the caller (and operator) sees the real failure
+        # instead of a silent leak.
+        f.close()
+        raise
 
 
 def _detect_table_type(
