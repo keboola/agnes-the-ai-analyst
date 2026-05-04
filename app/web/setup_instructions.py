@@ -264,7 +264,7 @@ def _tls_trust_block(ca_pem: str) -> list[str]:
 
 
 def _install_cli_lines(*, has_ca: bool, server_url_placeholder: str = "{server_url}") -> list[str]:
-    """Step 1 — install the `da` CLI.
+    """Step 1 — install the `agnes` CLI.
 
     When the trust block was emitted (`has_ca=True`), we MUST avoid
     `uv tool install <https-url>` against the Agnes wheel endpoint:
@@ -294,7 +294,7 @@ def _install_cli_lines(*, has_ca: bool, server_url_placeholder: str = "{server_u
             f"   curl -fsSL --cacert ~/.agnes/ca.pem -o \"$WHEEL\" {server_url_placeholder}/cli/wheel/{{wheel_filename}}",
             "   uv tool install --native-tls --force \"$WHEEL\"",
             "",
-            "   If `da --version` fails after install because ~/.local/bin is not on PATH:",
+            "   If `agnes --version` fails after install because ~/.local/bin is not on PATH:",
             "     export PATH=\"$HOME/.local/bin:$PATH\"",
             "     # persist: append the same line to your ~/.zshrc or ~/.bashrc",
             "     # (the trust block in step 0 already does this for you on first run).",
@@ -306,7 +306,7 @@ def _install_cli_lines(*, has_ca: bool, server_url_placeholder: str = "{server_u
         "   If uv is not installed yet:",
         "     curl -LsSf https://astral.sh/uv/install.sh | sh",
         "",
-        "   If `da --version` fails after install because ~/.local/bin is not on PATH:",
+        "   If `agnes --version` fails after install because ~/.local/bin is not on PATH:",
         "     export PATH=\"$HOME/.local/bin:$PATH\"",
         "     # persist: append the same line to your ~/.zshrc or ~/.bashrc",
     ]
@@ -381,7 +381,7 @@ def _finale_lines(*, confirm_step_num: str, has_ca: bool, has_marketplace: bool)
     Skills + diagnose + version + whoami always render, so their bullets
     are unconditional."""
     bullets = [
-        "   - `da --version` output",
+        "   - `agnes --version` output",
         "   - `agnes auth whoami` output (email + role)",
         "   - Whether skills were copied or left on-demand",
         "   - The `agnes diagnose` overall status",
