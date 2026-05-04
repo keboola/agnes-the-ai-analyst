@@ -428,11 +428,11 @@ def _init_extract_locked(
                     # Unverified entity type. Skip both the wrap view and
                     # the _meta row. The registry row remains; /api/v2/scan
                     # can still operate from it (builds BQ SQL from
-                    # bucket+source_table), and `da fetch` works.
+                    # bucket+source_table), and `agnes snapshot create` works.
                     logger.warning(
                         "Unverified BQ entity_type %r for %s.%s.%s — master view skipped. "
-                        "Use `da fetch` for this row, or file an issue with a repro to "
-                        "request native support.",
+                        "Use `agnes snapshot create` for this row, or file an issue with "
+                        "a repro to request native support.",
                         entity_type, project_id, dataset, source_table,
                     )
                     continue  # Do NOT insert _meta — no inner view to point at.

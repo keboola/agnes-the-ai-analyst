@@ -74,7 +74,7 @@ bigquery:
 
 Registers BigQuery tables and views as remote DuckDB views (no data download). Queries
 issued through the master `analytics.duckdb` are forwarded to BigQuery via the DuckDB
-BigQuery extension. See also `da fetch` for the analytical workflow that materializes
+BigQuery extension. See also `agnes snapshot create` for the analytical workflow that materializes
 filtered subsets locally.
 
 ### Requirements
@@ -82,7 +82,7 @@ filtered subsets locally.
 - DuckDB BigQuery extension (auto-installed by the extractor on first run).
 - A GCP service account with `bigquery.metadata.get` on the dataset and
   `bigquery.data.viewer` (or finer) on the table; `bigquery.jobs.create` on the
-  billing project for views and `da fetch` queries.
+  billing project for views and `agnes snapshot create` queries.
 - Credentials resolution: GCE metadata server first, then Application Default
   Credentials (`gcloud auth application-default login` or
   `GOOGLE_APPLICATION_CREDENTIALS`). See `connectors/bigquery/auth.py`.

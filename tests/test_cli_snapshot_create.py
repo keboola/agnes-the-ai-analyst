@@ -1,4 +1,4 @@
-"""Tests for `agnes snapshot create` (folded from `da fetch`)."""
+"""Tests for `agnes snapshot create`."""
 
 from typer.testing import CliRunner
 
