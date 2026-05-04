@@ -738,7 +738,7 @@
                                 aria-label="Copy install command to clipboard">Copy</button>
                     </div>
                     <p class="card-sub" style="margin-top: 10px; margin-bottom: 0;">
-                        If <code>da</code> is not found in a new shell, add
+                        If <code>agnes</code> is not found in a new shell, add
                         <code>~/.local/bin</code> to your <code>PATH</code>:
                     </p>
                     <div class="code-block" style="margin-top: 6px;">
@@ -757,7 +757,7 @@
                 {% else %}
                 <p class="card-sub">
                     Run this in your terminal (Linux / macOS). The installer
-                    downloads the wheel and seeds <code>~/.config/da/config.yaml</code>
+                    downloads the wheel and seeds <code>~/.config/agnes/config.yaml</code>
                     with this server URL.
                 </p>
                 <p class="card-sub" style="font-weight: 500;">
@@ -773,7 +773,7 @@
                             aria-label="Copy install command to clipboard">Copy</button>
                 </div>
                 <p class="card-sub" style="margin-top: 14px; margin-bottom: 0;">
-                    If <code>da</code> is not found in a new shell, add
+                    If <code>agnes</code> is not found in a new shell, add
                     <code>~/.local/bin</code> to your <code>PATH</code>:
                 </p>
                 <div class="code-block" style="margin-top: 6px;">
@@ -823,7 +823,7 @@
                 </p>
                 <div class="code-block">
                     <span class="prompt">$</span>
-                    <span class="cmd" id="cmd-export">export DA_TOKEN=&lt;your-token&gt;</span>
+                    <span class="cmd" id="cmd-export">export AGNES_TOKEN=&lt;your-token&gt;</span>
                     <button type="button"
                             class="btn-copy" aria-live="polite"
                             data-copy-target="cmd-export"
@@ -831,7 +831,7 @@
                 </div>
                 <div class="code-block">
                     <span class="prompt">$</span>
-                    <span class="cmd" id="cmd-whoami">da auth whoami</span>
+                    <span class="cmd" id="cmd-whoami">agnes auth whoami</span>
                     <button type="button"
                             class="btn-copy" aria-live="polite"
                             data-copy-target="cmd-whoami"
@@ -888,7 +888,7 @@
                             activated virtualenv.
                         </p>
                         <p class="card-sub" style="margin-top: 10px; margin-bottom: 0;">
-                            If <code>da</code> is not found after install, ensure
+                            If <code>agnes</code> is not found after install, ensure
                             <code>~/.local/bin</code> is on your <code>PATH</code>:
                         </p>
                         <div class="code-block" style="margin-top: 6px;">
@@ -908,7 +908,7 @@
                         Seed the server URL:
                         <div class="code-block" style="margin-top: 8px;">
                             <span class="prompt">$</span>
-                            <span class="cmd" id="cmd-seed-config">mkdir -p ~/.config/da &amp;&amp; echo "server: {{ server_url }}" &gt; ~/.config/da/config.yaml</span>
+                            <span class="cmd" id="cmd-seed-config">mkdir -p ~/.config/agnes &amp;&amp; echo "server: {{ server_url }}" &gt; ~/.config/agnes/config.yaml</span>
                             <button type="button"
                                     class="btn-copy" aria-live="polite"
                                     data-copy-target="cmd-seed-config"

@@ -12,26 +12,26 @@ When asked about ANY data in Agnes, follow this protocol: **discover → choose 
 Before writing ANY query, understand what's available:
 
 ```bash
-da catalog --json | jq <filter>     # know what's available
-da schema <table>                    # learn columns + types
-da describe <table> -n 5             # see real values for shape
+agnes catalog --json | jq <filter>     # know what's available
+agnes schema <table>                    # learn columns + types
+agnes describe <table> -n 5             # see real values for shape
 ```
 
 **Never** write `SELECT * FROM <table>` blindly. For local-mode tables it's wasteful; for remote-mode tables it can blow up at 225M+ rows.
 
 ## Choose the right tool
 
-Tables in `da catalog` have a `query_mode`:
+Tables in `agnes catalog` have a `query_mode`:
 
 | Mode | Means | How to query |
 |------|-------|--------------|
-| `local` | parquet synced on laptop | `da query "SELECT …"` directly |
-| `remote` (BigQuery) | parquet NOT on laptop | `da fetch` subset → snapshot, OR `da query --remote` one-shot |
+| `local` | parquet synced on laptop | `agnes query "SELECT …"` directly |
+| `remote` (BigQuery) | parquet NOT on laptop | `da fetch` subset → snapshot, OR `agnes query --remote` one-shot |
 
 For **remote tables**, you MUST either:
 1. `da fetch` a filtered subset → query the local snapshot (preferred), OR
-2. `da query --remote` for one-shot server-side execution, OR
-3. `da query --register-bq` for hybrid joins (rare; see docs)
+2. `agnes query --remote` for one-shot server-side execution, OR
+3. `agnes query --register-bq` for hybrid joins (rare; see docs)
 
 ## The `da fetch` workflow (preferred for remote tables)
 
@@ -62,7 +62,7 @@ da fetch web_sessions_example \
 ### 3. Query the local snapshot
 
 ```bash
-da query "SELECT event_date, COUNT(*) FROM cz_recent GROUP BY 1 ORDER BY 1"
+agnes query "SELECT event_date, COUNT(*) FROM cz_recent GROUP BY 1 ORDER BY 1"
 ```
 
 ## Heuristics for `da fetch`
@@ -72,11 +72,11 @@ da query "SELECT event_date, COUNT(*) FROM cz_recent GROUP BY 1 ORDER BY 1"
 | **Always `--select` specific columns** | Avoid implicit `SELECT *` on remote (expensive) |
 | **Always `--where` for remote tables** | Otherwise add `--limit` to keep result bounded |
 | **Always `--estimate` first if unsure** | Partition/clustering metadata + shape matters; dry runs are free |
-| **Reuse snapshots across questions** | `da snapshot list` before fetching — existing snapshot? Skip the fetch |
+| **Reuse snapshots across questions** | `agnes snapshot list` before fetching — existing snapshot? Skip the fetch |
 
 ## BigQuery SQL flavor for `--where`
 
-For `source_type=bigquery` (per `da catalog`), use BigQuery SQL syntax:
+For `source_type=bigquery` (per `agnes catalog`), use BigQuery SQL syntax:
 
 | Syntax | Example |
 |--------|---------|
@@ -88,37 +88,37 @@ For `source_type=bigquery` (per `da catalog`), use BigQuery SQL syntax:
 | NULL check | `col IS NOT NULL` (standard) |
 | Cast | `CAST(x AS INT64)` (NOT `INT`) |
 
-For `source_type=keboola` / `source_type=jira` (local), use **DuckDB SQL** in your `da query` calls — there's no `--where` on local since fetch is implicit.
+For `source_type=keboola` / `source_type=jira` (local), use **DuckDB SQL** in your `agnes query` calls — there's no `--where` on local since fetch is implicit.
 
 ## Snapshot hygiene
 
 - Reuse snapshots across questions in the same conversation
 - Use descriptive names: `cz_recent`, `orders_q1_us`, `sessions_today`
-- Drop with `da snapshot drop <name>` when done with a topic
-- Check total cache size with `da disk-info`
+- Drop with `agnes snapshot drop <name>` when done with a topic
+- Check total cache size with `agnes disk-info`
 
 ## When NOT to use `da fetch`
 
 | Scenario | Use instead |
 |----------|------------|
-| Single aggregate on remote BASE TABLE (`SELECT COUNT(*)`) | `da query --remote "SELECT COUNT(*) FROM web_sessions_example"` — cheap, no fetch needed (Storage Read API pushes the COUNT into BQ) |
+| Single aggregate on remote BASE TABLE (`SELECT COUNT(*)`) | `agnes query --remote "SELECT COUNT(*) FROM web_sessions_example"` — cheap, no fetch needed (Storage Read API pushes the COUNT into BQ) |
 | Single aggregate on remote VIEW/MATERIALIZED_VIEW | Same syntax works (#160) but the BQ jobs API can't push WHERE/COUNT into the view body. Cost guardrail (default 5 GiB) catches expensive scans → 400 `remote_scan_too_large` with `da fetch` suggestion. Pivot to `da fetch <id> --where '<predicate>'` if rejected. |
-| Throwaway exploration with raw BQ syntax | `da query --remote "SELECT … FROM <registered_id>"` — direct `bq."<dataset>"."<table>"` paths are now registry-gated (403 `bq_path_not_registered` if not registered). Register first or use the catalog id. |
-| Cross-table JOIN with both remote | Use `da fetch` for one side + `da query --remote` for the other; full cross-remote JOIN needs design (see #101) |
+| Throwaway exploration with raw BQ syntax | `agnes query --remote "SELECT … FROM <registered_id>"` — direct `bq."<dataset>"."<table>"` paths are now registry-gated (403 `bq_path_not_registered` if not registered). Register first or use the catalog id. |
+| Cross-table JOIN with both remote | Use `da fetch` for one side + `agnes query --remote` for the other; full cross-remote JOIN needs design (see #101) |
 
-## When the table you need isn't in `da catalog`
+## When the table you need isn't in `agnes catalog`
 
-The catalog reads from `system.duckdb::table_registry` — entries land there only via admin registration, not auto-discovery. If `da catalog` doesn't show what the user is asking about:
+The catalog reads from `system.duckdb::table_registry` — entries land there only via admin registration, not auto-discovery. If `agnes catalog` doesn't show what the user is asking about:
 
 1. Tell the user the table isn't registered
 2. Hand off to an admin (or, if you have admin role yourself, follow the **agnes-table-registration** skill)
-3. Don't `da query --remote` your way around it — the catalog gap means the registry doesn't track this dataset, RBAC can't gate it, and quotas don't apply
+3. Don't `agnes query --remote` your way around it — the catalog gap means the registry doesn't track this dataset, RBAC can't gate it, and quotas don't apply
 
 ## Protocol summary
 
-1. **Discover**: `da catalog`, `da schema`, `da describe`
+1. **Discover**: `agnes catalog`, `agnes schema`, `agnes describe`
 2. **Check query_mode**: local (direct) or remote (fetch or --remote)?
 3. **For remote**: `--estimate` first, then `da fetch` with `--select` + `--where`
 4. **Snapshot name**: descriptive (`cz_recent`), reuse across questions
-5. **Query**: `da query` against snapshot; DuckDB SQL syntax
-6. **Cleanup**: `da snapshot drop` when done; `da disk-info` to check size
+5. **Query**: `agnes query` against snapshot; DuckDB SQL syntax
+6. **Cleanup**: `agnes snapshot drop` when done; `agnes disk-info` to check size

@@ -13,8 +13,8 @@ runner = CliRunner()
 
 @pytest.fixture(autouse=True)
 def tmp_config(tmp_path, monkeypatch):
-    monkeypatch.setenv("DA_CONFIG_DIR", str(tmp_path / "config"))
-    monkeypatch.setenv("DA_LOCAL_DIR", str(tmp_path / "local"))
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path / "local"))
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-for-cli-tests")
     (tmp_path / "config").mkdir()
@@ -63,20 +63,20 @@ class TestCLIVersion:
     def test_version_long_flag(self):
         result = runner.invoke(app, ["--version"])
         assert result.exit_code == 0
-        assert result.output.startswith("da ")
-        # Version string must be non-empty after the `da ` prefix.
-        assert result.output.strip() != "da"
+        assert result.output.startswith("agnes ")
+        # Version string must be non-empty after the `agnes ` prefix.
+        assert result.output.strip() != "agnes"
 
     def test_version_short_flag(self):
         result = runner.invoke(app, ["-V"])
         assert result.exit_code == 0
-        assert result.output.startswith("da ")
+        assert result.output.startswith("agnes ")
 
     def test_version_exits_before_subcommand_resolution(self):
         """Eager callback must run even when an unknown subcommand follows."""
         result = runner.invoke(app, ["--version", "bogus-subcommand"])
         assert result.exit_code == 0
-        assert "da " in result.output
+        assert "agnes " in result.output
 
 
 class TestSkills:
@@ -180,7 +180,7 @@ class TestQuery:
 
 class TestAdminCommands:
     def test_register_table(self, tmp_config):
-        """Test da admin register-table calls the API and reports success."""
+        """Test agnes admin register-table calls the API and reports success."""
         mock_resp = MagicMock()
         mock_resp.status_code = 201
         mock_resp.json.return_value = {"id": "tbl-1", "name": "orders"}
@@ -200,7 +200,7 @@ class TestAdminCommands:
             assert call_args[1]["json"]["name"] == "orders"
 
     def test_register_table_conflict(self, tmp_config):
-        """Test da admin register-table when table already exists."""
+        """Test agnes admin register-table when table already exists."""
         mock_resp = MagicMock()
         mock_resp.status_code = 409
         mock_resp.json.return_value = {"detail": "Table already exists"}
@@ -211,7 +211,7 @@ class TestAdminCommands:
             assert "Already exists: orders" in result.output
 
     def test_list_tables(self, tmp_config):
-        """Test da admin list-tables returns table listing."""
+        """Test agnes admin list-tables returns table listing."""
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {
@@ -230,7 +230,7 @@ class TestAdminCommands:
             assert "customers" in result.output
 
     def test_list_tables_json(self, tmp_config):
-        """Test da admin list-tables --json outputs valid JSON."""
+        """Test agnes admin list-tables --json outputs valid JSON."""
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {
@@ -247,7 +247,7 @@ class TestAdminCommands:
             assert data["count"] == 1
 
     def test_list_tables_api_failure(self, tmp_config):
-        """Test da admin list-tables handles API errors."""
+        """Test agnes admin list-tables handles API errors."""
         mock_resp = MagicMock()
         mock_resp.status_code = 500
         mock_resp.text = "Internal Server Error"

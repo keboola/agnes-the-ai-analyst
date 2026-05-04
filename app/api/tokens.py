@@ -141,7 +141,7 @@ async def list_tokens(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     # PATs may list their owner's own tokens — required by the documented
-    # `da auth token list` CLI flow (HEADLESS_USAGE.md). Only `create_token`
+    # `agnes auth token list` CLI flow (HEADLESS_USAGE.md). Only `create_token`
     # is session-only (to block PAT-spawning-PAT chains).
     rows = AccessTokenRepository(conn).list_for_user(user["id"])
     return [_row_to_item(r) for r in rows]

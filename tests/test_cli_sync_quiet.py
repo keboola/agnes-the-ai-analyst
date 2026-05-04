@@ -42,8 +42,8 @@ def test_quiet_suppresses_stdout_when_downloading(tmp_path, monkeypatch):
     """Manifest has tables that actually trigger downloads. Without --quiet
     stdout would contain 'Downloading' / 'Downloaded:'. With --quiet stdout
     stays empty and the terse summary lands on stderr."""
-    monkeypatch.setenv("DA_LOCAL_DIR", str(tmp_path))
-    monkeypatch.setenv("DA_CONFIG_DIR", str(tmp_path / "_cfg"))
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "_cfg"))
     runner = CliRunner()
 
     with patch("cli.commands.sync.api_get", return_value=_fake_manifest_one_table()), \
@@ -61,8 +61,8 @@ def test_quiet_suppresses_stdout_when_downloading(tmp_path, monkeypatch):
 def test_noisy_mode_prints_to_stdout(tmp_path, monkeypatch):
     """Anchor: the noisy path DOES print download chatter to stdout, so the
     contrast in the quiet test above is meaningful."""
-    monkeypatch.setenv("DA_LOCAL_DIR", str(tmp_path))
-    monkeypatch.setenv("DA_CONFIG_DIR", str(tmp_path / "_cfg"))
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "_cfg"))
     runner = CliRunner()
 
     with patch("cli.commands.sync.api_get", return_value=_fake_manifest_one_table()), \
@@ -79,8 +79,8 @@ def test_noisy_mode_prints_to_stdout(tmp_path, monkeypatch):
 def test_quiet_manifest_failure_exits_nonzero(tmp_path, monkeypatch):
     """SessionStart hook contract: server unreachable → non-zero exit (so
     `|| true` swallows it cleanly), error message on stderr."""
-    monkeypatch.setenv("DA_LOCAL_DIR", str(tmp_path))
-    monkeypatch.setenv("DA_CONFIG_DIR", str(tmp_path / "_cfg"))
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "_cfg"))
     runner = CliRunner()
 
     fake_resp = MagicMock()
@@ -97,8 +97,8 @@ def test_quiet_skips_remote_mode_tables(tmp_path, monkeypatch):
     """Materialized rows go through the download path; remote rows do not.
     Locks in the contract that --quiet honors the same skipped_remote
     filter as the noisy path."""
-    monkeypatch.setenv("DA_LOCAL_DIR", str(tmp_path))
-    monkeypatch.setenv("DA_CONFIG_DIR", str(tmp_path / "_cfg"))
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "_cfg"))
 
     resp = MagicMock()
     resp.json.return_value = {

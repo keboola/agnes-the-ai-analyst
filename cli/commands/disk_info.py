@@ -1,4 +1,4 @@
-"""`da disk-info` — show snapshot dir disk usage (spec §4.3)."""
+"""`agnes disk-info` — show snapshot dir disk usage (spec §4.3)."""
 
 import json as json_lib
 import os
@@ -10,7 +10,7 @@ disk_info_app = typer.Typer(help="Show snapshot disk usage")
 
 
 def _local_dir() -> Path:
-    return Path(os.environ.get("DA_LOCAL_DIR", ".")).resolve()
+    return Path(os.environ.get("AGNES_LOCAL_DIR", ".")).resolve()
 
 
 def _format_size(n: int) -> str:

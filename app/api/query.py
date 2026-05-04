@@ -339,7 +339,7 @@ def _bq_guardrail_inputs(
     # `id != name` (e.g. id="bq.finance.ue", name="ue"), legitimate
     # accessible rows were skipped, under-counting dry-run bytes for the
     # cost cap. The user SQL still references the display `name` (that's
-    # what shows in `da catalog`), so the regex match below uses `name`,
+    # what shows in `agnes catalog`), so the regex match below uses `name`,
     # but the access gate uses `id`.
     dry_run: list = []
     seen_paths: set = set()
@@ -377,8 +377,8 @@ def _bq_guardrail_inputs(
                 "path": f'bq."{bucket_raw}"."{source_table_raw}"',
                 "hint": (
                     "Direct bq.* references must point to a registered table. "
-                    "Register via `da admin register-table` or use the "
-                    "registered name from `da catalog`."
+                    "Register via `agnes admin register-table` or use the "
+                    "registered name from `agnes catalog`."
                 ),
             }
         # Row exists. Per-id grant check (non-admin only).

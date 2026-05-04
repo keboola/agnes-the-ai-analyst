@@ -1,4 +1,4 @@
-"""Admin commands — da admin."""
+"""Admin commands — agnes admin."""
 
 import json
 
@@ -19,7 +19,7 @@ def add_user(
     """Add a new user. New users start with no group memberships — to make
     them admin, add them to the Admin group separately:
 
-        da admin group add-member <admin-group-id> <email>
+        agnes admin group add-member <admin-group-id> <email>
     """
     resp = api_post("/api/users", json={"email": email, "name": name or email.split("@")[0]})
     if resp.status_code == 201:
@@ -387,11 +387,11 @@ def set_role(
 ):
     """[REMOVED] Roles were replaced by group memberships in v0.25."""
     typer.echo(
-        "Error: 'da admin set-role' was removed in v0.25.\n"
+        "Error: 'agnes admin set-role' was removed in v0.25.\n"
         "  Roles were replaced by group memberships.\n"
         f"  Make {user_ref!r} admin:\n"
-        "    da admin group list                        # find Admin group id\n"
-        f"    da admin group add-member <admin-id> {user_ref}\n",
+        "    agnes admin group list                        # find Admin group id\n"
+        f"    agnes admin group add-member <admin-id> {user_ref}\n",
         err=True,
     )
     raise typer.Exit(2)

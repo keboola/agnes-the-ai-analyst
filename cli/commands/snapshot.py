@@ -1,4 +1,4 @@
-"""`da snapshot list/refresh/drop/prune` (spec §4.2)."""
+"""`agnes snapshot list/refresh/drop/prune` (spec §4.2)."""
 
 from __future__ import annotations
 import hashlib
@@ -21,7 +21,7 @@ snapshot_app = typer.Typer(help="Manage local snapshots")
 
 
 def _local_dir() -> Path:
-    return Path(os.environ.get("DA_LOCAL_DIR", ".")).resolve()
+    return Path(os.environ.get("AGNES_LOCAL_DIR", ".")).resolve()
 
 
 def _snap_dir() -> Path:

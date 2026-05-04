@@ -410,7 +410,7 @@ def test_register_materialized_keboola_rejects_backtick_source_query(seeded_app)
 # into scheduler stderr. Operators have no API surface to find out WHY a row
 # isn't materializing. The trigger pass now writes the failure into
 # `sync_state.error` (existing column) so `GET /api/admin/registry` can include
-# `last_sync_error` per row, exposed to `da admin status` / the admin UI.
+# `last_sync_error` per row, exposed to `agnes admin status` / the admin UI.
 
 
 def test_run_materialized_pass_surfaces_error_in_sync_state(seeded_app, bq_instance):

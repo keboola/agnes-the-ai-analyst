@@ -103,7 +103,7 @@ def test_install_page_renders_with_server_url(tmp_path, monkeypatch):
     resp = client.get("/setup", headers={"host": "agnes.test", "Accept": "text/html"})
     assert resp.status_code == 200
     assert "agnes.test" in resp.text
-    assert "da auth whoami" in resp.text
+    assert "agnes auth whoami" in resp.text
 
 
 def test_safe_url_re_accepts_reverse_proxy_path_prefix():

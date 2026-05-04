@@ -48,8 +48,8 @@ step() { echo; echo "==> $*"; }
 if [ "$YES" -eq 0 ] && [ "$DRY" -eq 0 ]; then
     cat <<EOF
 This will remove the Agnes client install from this machine:
-  - 'da' CLI (uv tool uninstall)
-  - ~/.config/da (token, server URL, sync state)
+  - 'agnes' CLI (uv tool uninstall)
+  - ~/.config/agnes (token, server URL, sync state)
   - ~/.agnes (CA cert, ca-bundle, marketplace clone)
   - ~/.claude/skills/agnes
   - Claude Code marketplace 'agnes' + its plugins
@@ -127,9 +127,9 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 3. The 'da' CLI itself, installed via 'uv tool install'.
+# 3. The 'agnes' CLI itself, installed via 'uv tool install'.
 # ---------------------------------------------------------------------------
-step "Uninstall 'da' CLI"
+step "Uninstall 'agnes' CLI"
 if command -v uv >/dev/null 2>&1; then
     if uv tool list 2>/dev/null | grep -q '^agnes-the-ai-analyst'; then
         run "uv tool uninstall agnes-the-ai-analyst"
@@ -139,17 +139,17 @@ if command -v uv >/dev/null 2>&1; then
 else
     echo "  (uv not found — skipping)"
     # Defensive cleanup if uv is gone but the binary lingers.
-    [ -e "$HOME/.local/bin/da" ] && run "rm -f \"$HOME/.local/bin/da\""
+    [ -e "$HOME/.local/bin/agnes" ] && run "rm -f \"$HOME/.local/bin/agnes\""
 fi
 
 # ---------------------------------------------------------------------------
 # 4. Filesystem state directories.
 # ---------------------------------------------------------------------------
 step "Remove Agnes filesystem state"
-# Honor the same DA_CONFIG_DIR override the CLI reads.
-DA_CONFIG_DIR_RESOLVED="${DA_CONFIG_DIR:-$HOME/.config/da}"
+# Honor the same AGNES_CONFIG_DIR override the CLI reads.
+AGNES_CONFIG_DIR_RESOLVED="${AGNES_CONFIG_DIR:-$HOME/.config/agnes}"
 for path in \
-    "$DA_CONFIG_DIR_RESOLVED" \
+    "$AGNES_CONFIG_DIR_RESOLVED" \
     "$HOME/.agnes" \
     "$HOME/.claude/skills/agnes" \
 ; do
@@ -213,8 +213,8 @@ exports drop out of the environment. You can now re-run the onboarding prompt
 from /install on the Agnes server to validate a fresh-machine install.
 
 Sanity checks for "fresh state":
-  command -v da              # should be absent
-  ls ~/.config/da ~/.agnes   # both should not exist
+  command -v agnes           # should be absent
+  ls ~/.config/agnes ~/.agnes   # both should not exist
   env | grep -E 'AGNES|SSL_CERT_FILE|NODE_EXTRA_CA_CERTS'   # empty
   claude plugin marketplace list   # no 'agnes' entry
 EOF

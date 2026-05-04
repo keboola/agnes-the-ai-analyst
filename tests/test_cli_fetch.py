@@ -15,7 +15,7 @@ def _seed_local_dir(tmp_path):
 
 @pytest.fixture
 def cli_env(tmp_path, monkeypatch):
-    monkeypatch.setenv("DA_LOCAL_DIR", str(_seed_local_dir(tmp_path)))
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(_seed_local_dir(tmp_path)))
     yield tmp_path
 
 

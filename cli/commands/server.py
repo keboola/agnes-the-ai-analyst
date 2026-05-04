@@ -1,4 +1,4 @@
-"""Server management commands — da server deploy/rollback/logs/status/backup."""
+"""Server management commands — agnes server deploy/rollback/logs/status/backup."""
 
 import subprocess
 import sys

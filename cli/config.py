@@ -7,14 +7,14 @@ from typing import Optional
 
 
 def _config_dir() -> Path:
-    d = Path(os.environ.get("DA_CONFIG_DIR", os.path.expanduser("~/.config/da")))
+    d = Path(os.environ.get("AGNES_CONFIG_DIR", os.path.expanduser("~/.config/agnes")))
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 def get_server_url() -> str:
     config = load_config()
-    return os.environ.get("DA_SERVER", config.get("server", "http://localhost:8000"))
+    return os.environ.get("AGNES_SERVER", config.get("server", "http://localhost:8000"))
 
 
 def get_token() -> Optional[str]:
@@ -22,11 +22,11 @@ def get_token() -> Optional[str]:
     if token_file.exists():
         data = json.loads(token_file.read_text())
         return data.get("access_token")
-    return os.environ.get("DA_TOKEN")
+    return os.environ.get("AGNES_TOKEN")
 
 
 def save_token(token: str, email: str, role: Optional[str] = None):
-    """Persist token + email to ~/.config/da/token.json.
+    """Persist token + email to ~/.config/agnes/token.json.
 
     The ``role`` parameter is accepted for back-compat with older callers
     but is no longer written — authorization derives from group memberships

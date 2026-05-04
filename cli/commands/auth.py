@@ -1,4 +1,4 @@
-"""Auth commands — da login, da logout, da whoami, da auth import-token."""
+"""Auth commands — agnes login, agnes logout, agnes whoami, agnes auth import-token."""
 
 import httpx
 import typer
@@ -33,7 +33,7 @@ def login(
     """
     if server:
         import os
-        os.environ["DA_SERVER"] = server
+        os.environ["AGNES_SERVER"] = server
 
     body = {"email": email}
     if password:
@@ -55,7 +55,7 @@ def login(
             typer.echo(
                 "This account uses a magic link / OAuth provider. "
                 "Sign in via the web UI, open /tokens, and create a personal "
-                "access token — then export it as DA_TOKEN.",
+                "access token — then export it as AGNES_TOKEN.",
                 err=True,
             )
         else:
@@ -80,7 +80,7 @@ def whoami():
     """Show current user info."""
     token = get_token()
     if not token:
-        typer.echo("Not logged in. Run: da login")
+        typer.echo("Not logged in. Run: agnes login")
         raise typer.Exit(1)
 
     import jwt
@@ -89,7 +89,7 @@ def whoami():
         typer.echo(f"Email: {payload.get('email', 'unknown')}")
         typer.echo(f"Server: {get_server_url()}")
     except Exception:
-        typer.echo("Invalid token. Run: da login")
+        typer.echo("Invalid token. Run: agnes login")
         raise typer.Exit(1)
 
 
@@ -99,7 +99,7 @@ def import_token(
     server: str = typer.Option(
         None,
         "--server",
-        help="Server URL (defaults to ~/.config/da/config.yaml or $DA_SERVER)",
+        help="Server URL (defaults to ~/.config/agnes/config.yaml or $AGNES_SERVER)",
     ),
     email: str = typer.Option(
         None,
@@ -115,14 +115,14 @@ def import_token(
     """Import a personal access token non-interactively.
 
     Decodes the JWT locally to extract the email claim, verifies it
-    against the server, and writes it to ~/.config/da/token.json using the
-    canonical format so subsequent `da auth whoami` / `da sync` calls
+    against the server, and writes it to ~/.config/agnes/token.json using the
+    canonical format so subsequent `agnes auth whoami` / `da sync` calls
     authenticate cleanly.
 
     Example:
 
-        da auth import-token --token "$AGNES_PAT"
-        da auth import-token --token "$AGNES_PAT" --server https://agnes.example.com
+        agnes auth import-token --token "$AGNES_PAT"
+        agnes auth import-token --token "$AGNES_PAT" --server https://agnes.example.com
     """
     import os
     import jwt as pyjwt
@@ -130,13 +130,13 @@ def import_token(
     # 1) Seed server URL so the verify call below uses the right base URL.
     if server:
         save_config({"server": server})
-        os.environ["DA_SERVER"] = server
+        os.environ["AGNES_SERVER"] = server
     else:
         cfg = load_config()
-        if not os.environ.get("DA_SERVER") and not cfg.get("server"):
+        if not os.environ.get("AGNES_SERVER") and not cfg.get("server"):
             typer.echo(
                 "No server configured. Pass --server https://<host> or set "
-                "DA_SERVER, or seed ~/.config/da/config.yaml first.",
+                "AGNES_SERVER, or seed ~/.config/agnes/config.yaml first.",
                 err=True,
             )
             raise typer.Exit(1)

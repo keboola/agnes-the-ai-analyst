@@ -1,4 +1,4 @@
-"""Status commands — da status."""
+"""Status commands — agnes status."""
 
 import json
 

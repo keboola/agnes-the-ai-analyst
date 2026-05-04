@@ -1,6 +1,6 @@
-"""Admin commands for corporate memory — ``da admin memory ...``.
+"""Admin commands for corporate memory — ``agnes admin memory ...``.
 
-Mounted under the existing ``da admin`` Typer group. API/CLI parity is the
+Mounted under the existing ``agnes admin`` Typer group. API/CLI parity is the
 design rule (issue #62): every endpoint exposed by ``app/api/memory.py``'s
 admin surface has a CLI counterpart here. Output defaults to a compact
 human-readable form; pass ``--json`` for machine-friendly output.

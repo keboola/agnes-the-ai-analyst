@@ -22,7 +22,7 @@ sync_app = typer.Typer(help="Data synchronization")
 
 
 def _local_data_dir() -> Path:
-    return Path(os.environ.get("DA_LOCAL_DIR", "."))
+    return Path(os.environ.get("AGNES_LOCAL_DIR", "."))
 
 
 @sync_app.callback(invoke_without_command=True)

@@ -1,4 +1,4 @@
-"""`da schema <table>` — show columns + BQ flavor hints (spec §4.1)."""
+"""`agnes schema <table>` — show columns + BQ flavor hints (spec §4.1)."""
 
 import json as json_lib
 import typer

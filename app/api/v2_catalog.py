@@ -40,7 +40,7 @@ def _examples_for(source_type: str) -> list[str]:
 def _fetch_hint(table_id: str, source_type: str) -> str:
     if source_type == "bigquery":
         return f"da fetch {table_id} --select <cols> --where '<BQ predicate>' --limit <N>"
-    return "already local — query directly via `da query`"
+    return "already local — query directly via `agnes query`"
 
 
 def build_catalog(conn: duckdb.DuckDBPyConnection, user: dict) -> dict:

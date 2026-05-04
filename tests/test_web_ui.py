@@ -227,11 +227,11 @@ class TestClaudeSetupPreview:
         # because it validates the PEP 427 filename in the URL before fetch).
         assert "/cli/wheel/" in body
         assert "/cli/agnes.whl" not in body
-        # New numbered headers + da diagnose step
+        # New numbered headers + agnes diagnose step
         assert "1) Install the CLI" in body
         assert "4) Run diagnostics" in body
-        assert "da diagnose" in body
-        assert "da auth whoami" in body
+        assert "agnes diagnose" in body
+        assert "agnes auth whoami" in body
 
     def test_dashboard_setup_cta_links_to_setup(self, web_client, admin_cookie):
         """Dashboard setup CTA shows env-setup-cta and a link to /setup instead

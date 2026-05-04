@@ -39,7 +39,7 @@ def test_admin_get_template_initially_null(seeded_app):
     assert "default" in body
     assert body["default"]  # non-empty
     # Must contain setup-script markers
-    assert "da auth" in body["default"] or "uv tool install" in body["default"] or "curl" in body["default"]
+    assert "agnes auth" in body["default"] or "uv tool install" in body["default"] or "curl" in body["default"]
 
 
 def test_admin_can_set_and_reset_template(seeded_app):
@@ -199,7 +199,7 @@ def test_setup_page_uses_override_when_set(seeded_app):
     assert r.status_code == 200
     assert "Custom setup script" not in r.text
     # Default contains setup_instructions output
-    assert "da analyst setup" in r.text or "da auth" in r.text or "curl" in r.text
+    assert "da analyst setup" in r.text or "agnes auth" in r.text or "curl" in r.text
 
 
 def test_get_template_default_field_has_server_url_placeholder(seeded_app):

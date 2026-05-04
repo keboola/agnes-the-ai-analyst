@@ -10,7 +10,7 @@ Covers issue #108 Milestone 1:
   bigquery.extractor.rebuild_from_registry + SyncOrchestrator.rebuild
 - Admin UI: /admin/tables renders BQ vs Keboola fields based on
   data_source.type
-- CLI: da admin register-table --dry-run hits /precheck
+- CLI: agnes admin register-table --dry-run hits /precheck
 """
 
 import json
@@ -803,7 +803,7 @@ class TestAdminTablesUI:
         assert resp.status_code in (302, 401, 403)
 
 
-# --- CLI: da admin register-table --dry-run ----------------------------------
+# --- CLI: agnes admin register-table --dry-run ----------------------------------
 
 
 class TestCliRegisterTableDryRun:
@@ -845,7 +845,7 @@ class TestCliRegisterTableDryRun:
                 },
             )
 
-        monkeypatch.setenv("DA_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path))
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         with patch("cli.commands.admin.api_post", side_effect=fake_post):
             result = runner.invoke(app, [
@@ -868,7 +868,7 @@ class TestCliRegisterTableDryRun:
         from cli.main import app
         runner = CliRunner()
 
-        monkeypatch.setenv("DA_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path))
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         with patch(
             "cli.commands.admin.api_post",
@@ -890,7 +890,7 @@ class TestCliRegisterTableDryRun:
         from cli.main import app
         runner = CliRunner()
 
-        monkeypatch.setenv("DA_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path))
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
 
         captured = {}
@@ -914,7 +914,7 @@ class TestCliRegisterTableDryRun:
         from cli.main import app
         runner = CliRunner()
 
-        monkeypatch.setenv("DA_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path))
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
 
         with patch(
@@ -1717,7 +1717,7 @@ class TestBigQueryUITwoStepFlow:
 
 
 class TestCliDiscoverAndRegisterAcceptsAllSuccessCodes:
-    """Review NIT 6: `da admin discover-and-register` must accept 200
+    """Review NIT 6: `agnes admin discover-and-register` must accept 200
     (BQ sync OK) and 202 (BQ background) as success, not just 201.
     Pre-fix every successful BQ row counted as an error."""
 

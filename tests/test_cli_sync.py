@@ -13,8 +13,8 @@ runner = CliRunner()
 
 @pytest.fixture(autouse=True)
 def tmp_config(tmp_path, monkeypatch):
-    monkeypatch.setenv("DA_CONFIG_DIR", str(tmp_path / "config"))
-    monkeypatch.setenv("DA_LOCAL_DIR", str(tmp_path / "local"))
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path / "local"))
     (tmp_path / "config").mkdir()
     (tmp_path / "local").mkdir()
     yield tmp_path
@@ -208,8 +208,8 @@ class TestStreamDownloadAtomicAndRetry:
 
     def test_atomic_write_via_tmp_then_rename(self, tmp_path, monkeypatch):
         """Target file must not exist before os.replace runs; writes go to .tmp first."""
-        monkeypatch.setenv("DA_CONFIG_DIR", str(tmp_path))
-        monkeypatch.setenv("DA_SERVER_URL", "http://localhost:9999")
+        monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("AGNES_SERVER_URL", "http://localhost:9999")
 
         target = tmp_path / "x.parquet"
         observed_paths: list[str] = []
@@ -241,9 +241,9 @@ class TestStreamDownloadAtomicAndRetry:
 
     def test_retries_on_transient_error(self, tmp_path, monkeypatch):
         """Transient network errors (ConnectError) trigger retry; eventual success is transparent."""
-        monkeypatch.setenv("DA_CONFIG_DIR", str(tmp_path))
-        monkeypatch.setenv("DA_SERVER_URL", "http://localhost:9999")
-        monkeypatch.setenv("DA_STREAM_RETRIES", "3")
+        monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("AGNES_SERVER_URL", "http://localhost:9999")
+        monkeypatch.setenv("AGNES_STREAM_RETRIES", "3")
 
         target = tmp_path / "x.parquet"
         calls = {"n": 0}
@@ -276,8 +276,8 @@ class TestStreamDownloadAtomicAndRetry:
 
     def test_no_retry_on_4xx(self, tmp_path, monkeypatch):
         """4xx (auth, 404) must surface immediately — retries are for transient issues only."""
-        monkeypatch.setenv("DA_CONFIG_DIR", str(tmp_path))
-        monkeypatch.setenv("DA_SERVER_URL", "http://localhost:9999")
+        monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("AGNES_SERVER_URL", "http://localhost:9999")
 
         import httpx
         calls = {"n": 0}

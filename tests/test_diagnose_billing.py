@@ -1,6 +1,6 @@
-"""Phase K — `da diagnose` warning when BQ billing_project == project.
+"""Phase K — `agnes diagnose` warning when BQ billing_project == project.
 
-Surfaces via /api/health/detailed (which `da diagnose` already consumes):
+Surfaces via /api/health/detailed (which `agnes diagnose` already consumes):
 when data_source.type == 'bigquery' and the resolved BqProjects.billing equals
 BqProjects.data, the response includes a `services.bq_config` entry with
 status='warning' and a hint about the 403 USER_PROJECT_DENIED footgun.

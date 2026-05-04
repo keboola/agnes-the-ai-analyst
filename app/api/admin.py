@@ -209,7 +209,7 @@ _DANGER_SECTIONS: tuple[str, ...] = ("auth", "server")
 _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
     "instance": {
         # No commonly-missing instance-level fields. The example YAML's
-        # `name`/`subtitle` are always populated by `da setup` so they
+        # `name`/`subtitle` are always populated by `agnes setup` so they
         # render via the populated path; nothing to surface here.
     },
     "data_source": {
@@ -246,7 +246,7 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                     "kind": "int",
                     "default": 5368709120,
                     "hint": (
-                        "Cost guardrail for `da query --remote` against query_mode='remote' "
+                        "Cost guardrail for `agnes query --remote` against query_mode='remote' "
                         "BQ rows (dry-run check on the underlying SELECT before execute). "
                         "Bytes processed; exceeds → 400 remote_scan_too_large with a "
                         "`da fetch` suggestion. 0 disables the gate. Default 5368709120 = 5 GiB."
@@ -1405,7 +1405,7 @@ def _validate_source_type_configured(source_type: Optional[str]) -> None:
     BQ-only instance — the row landed in the registry but the scheduler had
     no Keboola URL/token to ATTACH against, so it silently never synced.
     No upfront error, no operator-visible signal until they noticed the
-    table was missing from `da catalog`.
+    table was missing from `agnes catalog`.
 
     A source_type is considered configured when:
 
@@ -1980,7 +1980,7 @@ def register_table(
     # row landed in the registry but never synced because there was no
     # Keboola URL/token (or BQ project) to ATTACH against. Surfaces the
     # misconfig at registration time so the operator sees the gap before
-    # they wonder why `da catalog` is missing the table.
+    # they wonder why `agnes catalog` is missing the table.
     _validate_source_type_configured(request.source_type)
 
     # BQ rows go through the extra validation + post-insert materialization

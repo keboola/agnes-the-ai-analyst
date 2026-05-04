@@ -1,4 +1,4 @@
-"""Skills command — da skills. Knowledge base for AI agents."""
+"""Skills command — agnes skills. Knowledge base for AI agents."""
 
 from pathlib import Path
 
@@ -27,6 +27,6 @@ def show_skill(name: str = typer.Argument(..., help="Skill name to display")):
     """Display a skill's content."""
     skill_file = SKILLS_DIR / f"{name}.md"
     if not skill_file.exists():
-        typer.echo(f"Skill '{name}' not found. Run: da skills list", err=True)
+        typer.echo(f"Skill '{name}' not found. Run: agnes skills list", err=True)
         raise typer.Exit(1)
     typer.echo(skill_file.read_text())

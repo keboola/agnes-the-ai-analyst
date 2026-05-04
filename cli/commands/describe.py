@@ -1,4 +1,4 @@
-"""`da describe <table>` — schema + sample rows (spec §4.1)."""
+"""`agnes describe <table>` — schema + sample rows (spec §4.1)."""
 
 import json as json_lib
 import typer

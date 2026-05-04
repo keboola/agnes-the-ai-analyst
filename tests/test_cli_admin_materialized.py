@@ -1,4 +1,4 @@
-"""`da admin register-table --query-mode materialized --query @file.sql`
+"""`agnes admin register-table --query-mode materialized --query @file.sql`
 sends source_query in the payload; existing local/remote paths still work
 unchanged."""
 from typer.testing import CliRunner

@@ -207,7 +207,7 @@ def _run_materialized_pass(conn: duckdb.DuckDBPyConnection, bq) -> dict:
                 "limit": e.limit,
             })
             # Persist the failure so `GET /api/admin/registry` can surface
-            # `last_sync_error` to the admin UI / `da admin status`.
+            # `last_sync_error` to the admin UI / `agnes admin status`.
             # Without this, scheduler stderr was the only place the cap
             # failure showed up and operators had no API path to it.
             state.set_error(ref_name, str(e))

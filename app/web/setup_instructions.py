@@ -77,7 +77,7 @@ The numbered steps are arranged so that:
   - The interactive question (skills copy vs on-demand) is the LAST step
     before Confirm — by that point everything else is done, the user only
     needs to decide one thing, and the assistant blocks on their answer.
-  - `da diagnose` runs late so it doubles as a final smoke test after
+  - `agnes diagnose` runs late so it doubles as a final smoke test after
     plugins are in place, instead of gating them.
 
 Layout (with marketplace plugins to install):
@@ -314,10 +314,10 @@ def _install_cli_lines(*, has_ca: bool, server_url_placeholder: str = "{server_u
 _LOGIN_VERIFY_LINES: list[str] = [
     "",
     "2) Log in (also saves the server URL):",
-    "   da auth import-token --token \"{token}\" --server \"{server_url}\"",
+    "   agnes auth import-token --token \"{token}\" --server \"{server_url}\"",
     "",
     "3) Verify the login:",
-    "   da auth whoami",
+    "   agnes auth whoami",
 ]
 
 
@@ -327,7 +327,7 @@ def _diagnose_skills_lines(*, diagnose_num: str, skills_num: str) -> list[str]:
     Putting these last (instead of right after `whoami`) means: by the time
     we ask the user the skills question, all installation work is finished —
     the only thing the prompt is still waiting on is one human-loop answer.
-    `da diagnose` then doubles as a server-health smoke test that runs after
+    `agnes diagnose` then doubles as a server-health smoke test that runs after
     plugins are in place, not as a gate before them. With the new ordering
     skills is the LAST step before Confirm, so the assistant must wait for
     the user's answer before finalizing — there's no "run other steps in
@@ -339,7 +339,7 @@ def _diagnose_skills_lines(*, diagnose_num: str, skills_num: str) -> list[str]:
     return [
         "",
         f"{diagnose_num}) Run diagnostics:",
-        "   da diagnose",
+        "   agnes diagnose",
         "",
         "   This should print \"Overall: healthy\". `db_schema: unknown` and",
         "   `data: 0 tables` are NORMAL in two cases:",
@@ -351,19 +351,19 @@ def _diagnose_skills_lines(*, diagnose_num: str, skills_num: str) -> list[str]:
         f"{skills_num}) Skills (ask the user — this is the last interactive step before Confirm):",
         "   The CLI ships with reusable markdown skills (setup, connectors,",
         "   corporate-memory, deploy, notifications, security, troubleshoot),",
-        "   listable via `da skills list` and readable via `da skills show <name>`.",
+        "   listable via `agnes skills list` and readable via `agnes skills show <name>`.",
         "",
         "   Ask the user verbatim: \"Do you want me to copy the Agnes skills into",
         "   ~/.claude/skills/agnes/ so they are always loaded in Claude Code,",
-        "   or should I pull them on-demand via `da skills show <name>` when",
+        "   or should I pull them on-demand via `agnes skills show <name>` when",
         "   needed?\"",
         "",
         "   Wait for the user's answer before moving to Confirm.",
         "",
         "   If they say copy:",
         "     mkdir -p ~/.claude/skills/agnes",
-        "     for s in $(da skills list | awk '{print $1}'); do",
-        "       da skills show \"$s\" > ~/.claude/skills/agnes/\"$s\".md",
+        "     for s in $(agnes skills list | awk '{print $1}'); do",
+        "       agnes skills show \"$s\" > ~/.claude/skills/agnes/\"$s\".md",
         "     done",
         "     echo \"Copied skills to ~/.claude/skills/agnes/\"",
     ]
@@ -380,9 +380,9 @@ def _finale_lines(*, confirm_step_num: str, has_ca: bool, has_marketplace: bool)
     are unconditional."""
     bullets = [
         "   - `da --version` output",
-        "   - `da auth whoami` output (email + role)",
+        "   - `agnes auth whoami` output (email + role)",
         "   - Whether skills were copied or left on-demand",
-        "   - The `da diagnose` overall status",
+        "   - The `agnes diagnose` overall status",
     ]
     if has_ca:
         bullets.append(

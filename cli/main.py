@@ -1,4 +1,4 @@
-"""da — CLI tool for AI Data Analyst.
+"""agnes — CLI tool for AI Data Analyst.
 
 Primary interface for AI agents. Install: uv tool install data-analyst
 """
@@ -70,8 +70,8 @@ def _root(
 
     Update check runs before subcommand dispatch but after the --version flag
     (which exits early). It's best-effort: any failure is swallowed so a bad
-    network never blocks a working `da` command. Disable with
-    `DA_NO_UPDATE_CHECK=1`.
+    network never blocks a working `agnes` command. Disable with
+    `AGNES_NO_UPDATE_CHECK=1`.
     """
     _maybe_warn_outdated()
 

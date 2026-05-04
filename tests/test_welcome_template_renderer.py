@@ -44,7 +44,7 @@ def test_returns_default_script_when_no_override(conn):
     # Must be non-empty — the default IS the setup script
     assert out != ""
     # Must contain key markers from setup_instructions.resolve_lines()
-    assert "da analyst setup" in out or "da auth" in out or "curl" in out
+    assert "da analyst setup" in out or "agnes auth" in out or "curl" in out
 
 
 def test_compute_default_returns_setup_script(conn):
@@ -54,8 +54,8 @@ def test_compute_default_returns_setup_script(conn):
     assert out != ""
     # {server_url} placeholder must survive (not replaced by Jinja2)
     assert "{server_url}" in out
-    # Should reference da auth or CLI install
-    assert "da auth" in out or "uv tool install" in out
+    # Should reference agnes auth or CLI install
+    assert "agnes auth" in out or "uv tool install" in out
 
 
 def test_compute_default_server_url_placeholder_survives(conn):
@@ -224,7 +224,7 @@ def test_render_failure_falls_back_to_default_not_exception(conn):
     # Must not raise — falls back to the live default script (non-empty)
     assert out != ""
     # Must contain default setup script markers
-    assert "da auth" in out or "uv tool install" in out or "curl" in out
+    assert "agnes auth" in out or "uv tool install" in out or "curl" in out
 
 
 def test_sanitize_applied_after_render(conn):

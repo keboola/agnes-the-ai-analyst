@@ -1,10 +1,10 @@
 """CLI commands route BQ-typed errors through the shared renderer.
 
 Three CLI paths surface BQ errors today:
-- `da query --remote` (cli/commands/query.py:_query_remote → /api/query)
-- `da query --register-bq` (cli/commands/query.py:_query_hybrid via
+- `agnes query --remote` (cli/commands/query.py:_query_remote → /api/query)
+- `agnes query --register-bq` (cli/commands/query.py:_query_hybrid via
   RemoteQueryError, which wraps server-side BqAccessError)
-- `da fetch` / `da schema` / etc. (cli/v2_client.V2ClientError → v2 endpoints)
+- `da fetch` / `agnes schema` / etc. (cli/v2_client.V2ClientError → v2 endpoints)
 
 After the refactor they all call cli.error_render.render_error so analyst
 output is consistent and structured. Closes part of #160 §4.7.3.

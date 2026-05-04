@@ -1,4 +1,4 @@
-"""Diagnose command — da diagnose."""
+"""Diagnose command — agnes diagnose."""
 
 import json
 
@@ -51,10 +51,10 @@ def diagnose(
     actions = []
     for c in checks:
         if c["status"] == "error" and c["name"] == "api":
-            actions.append("Server unreachable. Check: docker compose ps, da server logs")
+            actions.append("Server unreachable. Check: docker compose ps, agnes server logs")
         if c.get("stale_tables"):
             for t in c["stale_tables"]:
-                actions.append(f"Table '{t}' is stale. Run: da server logs scheduler | grep {t}")
+                actions.append(f"Table '{t}' is stale. Run: agnes server logs scheduler | grep {t}")
 
     result = {
         "overall": overall,

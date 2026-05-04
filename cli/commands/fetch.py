@@ -24,7 +24,7 @@ fetch_app = typer.Typer(
 
 
 def _local_dir() -> Path:
-    return Path(os.environ.get("DA_LOCAL_DIR", ".")).resolve()
+    return Path(os.environ.get("AGNES_LOCAL_DIR", ".")).resolve()
 
 
 def _print_estimate(d: dict) -> None:
@@ -108,7 +108,7 @@ def fetch(
         typer.echo(
             f"Error: snapshot {name!r} already exists "
             f"(fetched {existing.fetched_at}, {existing.rows:,} rows). "
-            f"Pass --force to overwrite, or 'da snapshot refresh {name}' to update in place.",
+            f"Pass --force to overwrite, or 'agnes snapshot refresh {name}' to update in place.",
             err=True,
         )
         raise typer.Exit(6)

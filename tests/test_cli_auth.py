@@ -1,4 +1,4 @@
-"""Tests for da auth login/logout/whoami commands."""
+"""Tests for agnes auth login/logout/whoami commands."""
 
 import json
 import pytest
@@ -12,8 +12,8 @@ runner = CliRunner()
 
 @pytest.fixture(autouse=True)
 def tmp_config(tmp_path, monkeypatch):
-    monkeypatch.setenv("DA_CONFIG_DIR", str(tmp_path / "config"))
-    monkeypatch.setenv("DA_LOCAL_DIR", str(tmp_path / "local"))
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path / "local"))
     (tmp_path / "config").mkdir()
     (tmp_path / "local").mkdir()
     yield tmp_path
@@ -89,7 +89,7 @@ class TestAuthImportToken:
 
     def test_import_token_success_writes_canonical_format(self, tmp_path, monkeypatch):
         """Valid JWT + 200 from server -> canonical token.json on disk."""
-        monkeypatch.setenv("DA_SERVER", "http://example.test")
+        monkeypatch.setenv("AGNES_SERVER", "http://example.test")
         token = self._make_jwt(email="bob@example.com")
 
         with self._mock_verify(200):
@@ -107,7 +107,7 @@ class TestAuthImportToken:
 
     def test_import_token_401_does_not_overwrite_existing(self, tmp_path, monkeypatch):
         """A 401 response aborts import and leaves the prior token file untouched."""
-        monkeypatch.setenv("DA_SERVER", "http://example.test")
+        monkeypatch.setenv("AGNES_SERVER", "http://example.test")
         existing = {"access_token": "keep-me", "email": "old@example.com"}
         token_file = tmp_path / "config" / "token.json"
         token_file.write_text(json.dumps(existing))
@@ -125,10 +125,10 @@ class TestAuthImportToken:
     def test_import_token_with_server_flag_persists_server_to_config_yaml(
         self, tmp_path, monkeypatch
     ):
-        """Passing --server should write `server: URL` to ~/.config/da/config.yaml
+        """Passing --server should write `server: URL` to ~/.config/agnes/config.yaml
         so the user never has to configure the server in a separate step."""
-        # No DA_SERVER env var — rely entirely on the --server flag for persistence.
-        monkeypatch.delenv("DA_SERVER", raising=False)
+        # No AGNES_SERVER env var — rely entirely on the --server flag for persistence.
+        monkeypatch.delenv("AGNES_SERVER", raising=False)
         token = self._make_jwt(email="dave@example.com")
 
         with self._mock_verify(200):
@@ -152,7 +152,7 @@ class TestAuthImportToken:
         """Missing email claim -> refuse without --email, accept with it.
         v19 dropped the --role flag (token.json no longer carries role)."""
         import jwt as pyjwt
-        monkeypatch.setenv("DA_SERVER", "http://example.test")
+        monkeypatch.setenv("AGNES_SERVER", "http://example.test")
         # JWT without email claim — simulates a malformed or minimal token.
         token = pyjwt.encode({"sub": "u-1", "typ": "pat"}, "unused", algorithm="HS256")
 

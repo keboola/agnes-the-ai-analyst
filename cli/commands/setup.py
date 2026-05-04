@@ -1,4 +1,4 @@
-"""Setup commands — da setup init/bootstrap/test-connection/first-sync/verify."""
+"""Setup commands — agnes setup init/bootstrap/test-connection/first-sync/verify."""
 
 import json
 import os
@@ -25,8 +25,8 @@ def setup_init(
     config = {"server": server}
     config_file.write_text(yaml.dump(config))
     typer.echo(f"Config saved to {config_file}")
-    os.environ["DA_SERVER"] = server
-    typer.echo("\nNext: da setup bootstrap --email admin@company.com")
+    os.environ["AGNES_SERVER"] = server
+    typer.echo("\nNext: agnes setup bootstrap --email admin@company.com")
 
 
 @setup_app.command("bootstrap")
@@ -39,10 +39,10 @@ def bootstrap(
     """Create the first admin user on a fresh instance.
 
     Only works when the database has zero users.
-    After this, use 'da login' for normal auth.
+    After this, use 'agnes login' for normal auth.
     """
     if server:
-        os.environ["DA_SERVER"] = server
+        os.environ["AGNES_SERVER"] = server
 
     typer.echo("Bootstrapping first admin user...")
     try:
@@ -58,10 +58,10 @@ def bootstrap(
             save_token(data["access_token"], data["email"])
             typer.echo(f"Admin user created: {data['email']}")
             typer.echo(f"Token saved — you are now logged in as admin.")
-            typer.echo("\nNext: da setup test-connection")
+            typer.echo("\nNext: agnes setup test-connection")
         elif resp.status_code == 403:
             typer.echo(f"Bootstrap disabled: {resp.json().get('detail', '')}")
-            typer.echo("Users already exist. Use: da login --email your@email.com")
+            typer.echo("Users already exist. Use: agnes login --email your@email.com")
         else:
             typer.echo(f"Failed: {resp.text}", err=True)
             raise typer.Exit(1)
@@ -94,7 +94,7 @@ def test_connection():
             if detailed.get("status") == "healthy":
                 typer.echo("\nServer is healthy.")
             else:
-                typer.echo("\nServer has issues. Check: da diagnose --json")
+                typer.echo("\nServer has issues. Check: agnes diagnose --json")
         except Exception:
             # Auth may not be configured yet — minimal check is sufficient
             typer.echo("\nServer is reachable (detailed check requires auth).")
@@ -103,7 +103,7 @@ def test_connection():
         typer.echo(f"  FAILED: {e}", err=True)
         raise typer.Exit(1)
 
-    typer.echo("\nNext: da setup first-sync")
+    typer.echo("\nNext: agnes setup first-sync")
 
 
 @setup_app.command("first-sync")
@@ -118,7 +118,7 @@ def first_sync():
             typer.echo(f"  {data.get('message', '')}")
         elif resp.status_code == 403:
             typer.echo("  Permission denied. Are you logged in as admin?")
-            typer.echo("  Run: da login --email admin@company.com")
+            typer.echo("  Run: agnes login --email admin@company.com")
             raise typer.Exit(1)
         else:
             typer.echo(f"  Failed: {resp.text}", err=True)
@@ -127,7 +127,7 @@ def first_sync():
         typer.echo(f"  Error: {e}", err=True)
         raise typer.Exit(1)
 
-    typer.echo("\nWait for sync to complete, then: da setup verify")
+    typer.echo("\nWait for sync to complete, then: agnes setup verify")
 
 
 @setup_app.command("verify")
@@ -177,7 +177,7 @@ def verify(as_json: bool = typer.Option(False, "--json", help="Output as JSON"))
         except Exception as e:
             checks.append({"name": "auth", "status": "fail", "detail": str(e)})
     else:
-        checks.append({"name": "auth", "status": "fail", "detail": "no token — run: da login"})
+        checks.append({"name": "auth", "status": "fail", "detail": "no token — run: agnes login"})
 
     # 3. Data available
     try:
@@ -188,7 +188,7 @@ def verify(as_json: bool = typer.Option(False, "--json", help="Output as JSON"))
         if table_count > 0:
             checks.append({"name": "data", "status": "pass", "detail": f"{table_count} tables, {total_rows:,} rows"})
         else:
-            checks.append({"name": "data", "status": "warn", "detail": "0 tables — run: da setup first-sync"})
+            checks.append({"name": "data", "status": "warn", "detail": "0 tables — run: agnes setup first-sync"})
     except Exception as e:
         checks.append({"name": "data", "status": "fail", "detail": str(e)})
 

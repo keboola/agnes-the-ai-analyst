@@ -64,8 +64,8 @@ Expected: `{"status": "healthy", ...}`
 From your LOCAL machine (not the server):
 
 ```bash
-da setup init --server http://SERVER_IP:8000
-da setup bootstrap admin@company.com
+agnes setup init --server http://SERVER_IP:8000
+agnes setup bootstrap admin@company.com
 ```
 
 Or directly via curl:
@@ -80,7 +80,7 @@ This returns a JWT token. Save it.
 ### 6. Trigger first data sync
 
 ```bash
-da setup first-sync
+agnes setup first-sync
 ```
 
 Or via curl:
@@ -92,7 +92,7 @@ curl -X POST http://SERVER_IP:8000/api/sync/trigger \
 ### 7. Verify everything works
 
 ```bash
-da setup verify --json
+agnes setup verify --json
 ```
 
 Expected: all checks PASS.
@@ -100,7 +100,7 @@ Expected: all checks PASS.
 ### 8. Add more users
 
 ```bash
-da admin add-user analyst@company.com --role analyst
+agnes admin add-user analyst@company.com --role analyst
 ```
 
 ## Troubleshooting

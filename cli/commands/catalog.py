@@ -1,4 +1,4 @@
-"""`da catalog` — list registered tables (spec §4.1)."""
+"""`agnes catalog` — list registered tables (spec §4.1)."""
 
 import json as json_lib
 import typer

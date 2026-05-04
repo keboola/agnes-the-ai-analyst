@@ -3,7 +3,7 @@
 returns a helpful, materialize-aware error instead of a raw "Table does
 not exist" string from DuckDB.
 
-E2E sub-agent finding 2026-05-01: `da query --remote "SELECT * FROM
+E2E sub-agent finding 2026-05-01: `agnes query --remote "SELECT * FROM
 e2e2_synced_table LIMIT 5"` on a synced materialized table failed with
 DuckDB's bare error message even though the table is in the registry.
 The fix improves the surfaced message so the operator sees the

@@ -1,4 +1,4 @@
-"""Tests for da server subcommands (delegate to subprocess)."""
+"""Tests for agnes server subcommands (delegate to subprocess)."""
 
 import subprocess
 import pytest
