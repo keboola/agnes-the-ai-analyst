@@ -52,7 +52,7 @@ See `docs/DEPLOYMENT.md` → **TLS** for cert provisioning + `scripts/ops/agnes-
 │   ├── keboola/            # Keboola: extractor.py (DuckDB extension) + client.py (fallback)
 │   ├── bigquery/           # BigQuery: extractor.py (remote-only via DuckDB BQ extension)
 │   └── jira/               # Jira: webhook + incremental parquet → extract.duckdb
-├── cli/                    # CLI tool (`da sync`, `da query`, `da admin`)
+├── cli/                    # CLI tool (`agnes pull`, `da query`, `da admin`)
 ├── app/auth/               # Authentication (FastAPI-based providers)
 ├── services/               # Standalone services (scheduler, telegram_bot, ws_gateway, etc.)
 ├── server/                 # Legacy deployment infrastructure
@@ -114,13 +114,13 @@ The SyncOrchestrator scans `/data/extracts/*/extract.duckdb`, ATTACHes each into
               ┌──────────┼──────────┐
               ▼          ▼          ▼
           FastAPI      CLI
-          (serve)    (da sync)
+          (serve)    (agnes pull)
 ```
 
 Source modes:
 - **Batch pull** (Keboola, `query_mode='local'`): DuckDB extension downloads to parquet, scheduled
 - **Remote attach** (BigQuery, `query_mode='remote'`): DuckDB BQ extension, no download, queries go to BQ
-- **Materialized SQL** (BigQuery, `query_mode='materialized'`): scheduler runs admin-registered SQL through DuckDB BQ extension (via `BqAccess` from `connectors/bigquery/access.py`) and writes the result to `/data/extracts/bigquery/data/<id>.parquet`. Distributed via the same manifest + `da sync` flow as Keboola tables. Cost guardrail via `data_source.bigquery.max_bytes_per_materialize` (default 10 GiB; set `0` to disable — YAML `null` falls through to the default).
+- **Materialized SQL** (BigQuery, `query_mode='materialized'`): scheduler runs admin-registered SQL through DuckDB BQ extension (via `BqAccess` from `connectors/bigquery/access.py`) and writes the result to `/data/extracts/bigquery/data/<id>.parquet`. Distributed via the same manifest + `agnes pull` flow as Keboola tables. Cost guardrail via `data_source.bigquery.max_bytes_per_materialize` (default 10 GiB; set `0` to disable — YAML `null` falls through to the default).
 - **Real-time push** (Jira): Webhooks update parquets incrementally
 
 ## Configuration
@@ -151,29 +151,29 @@ docker compose up
 
 ### Local sync & Claude Code hooks
 
-`da sync` is the canonical analyst-side distribution path: pulls the RBAC-filtered manifest from the server, downloads parquets whose MD5 changed (skipping `query_mode='remote'` rows), rebuilds local DuckDB views over them.
+`agnes pull` is the canonical analyst-side distribution path: pulls the RBAC-filtered manifest from the server, downloads parquets whose MD5 changed (skipping `query_mode='remote'` rows), rebuilds local DuckDB views over them. `agnes push` mirrors it for the upload direction (sessions, CLAUDE.local.md).
 
-`da analyst setup` writes two hooks into `<workspace>/.claude/settings.json`:
+`agnes init` writes two hooks into `<workspace>/.claude/settings.json`:
 
-- `SessionStart` → `da sync --quiet` — pulls fresh parquets at the start of every Claude Code session
-- `SessionEnd`   → `da sync --upload-only --quiet` — uploads session jsonl + `CLAUDE.local.md` to the server
+- `SessionStart` → `agnes pull --quiet` — pulls fresh parquets at the start of every Claude Code session
+- `SessionEnd`   → `agnes push --quiet` — uploads session jsonl + `CLAUDE.local.md` to the server
 
 Both pass `--quiet` so they don't pollute Claude Code stdout, and trail with `|| true` so a server outage never blocks a session. Workspace-level (not user-home) so the hooks fire only when Claude Code opens this analyst workspace, not in unrelated sessions on the same machine.
 
-Admin RBAC for auto-sync: `query_mode IN ('local', 'materialized')` plus a `resource_grants` row for one of the analyst's groups → table appears in their manifest → `da sync` downloads it. No per-user sync config; the admin layer is the single source of truth.
+Admin RBAC for auto-sync: `query_mode IN ('local', 'materialized')` plus a `resource_grants` row for one of the analyst's groups → table appears in their manifest → `agnes pull` downloads it. No per-user sync config; the admin layer is the single source of truth.
 
 ## Business Metrics
 
 Standardized metric definitions live in DuckDB (`metric_definitions` table). Import starter pack:
 
 ```bash
-da metrics import docs/metrics/
+agnes admin metrics import docs/metrics/
 ```
 
 ### For AI agents analyzing data:
 Before computing any business metric, look up the canonical definition:
-1. `da metrics list` — find the relevant metric
-2. `da metrics show revenue/mrr` — read the SQL and business rules
+1. `agnes catalog --metrics` — find the relevant metric
+2. `agnes catalog --metrics --show revenue/mrr` — read the SQL and business rules
 3. Use the SQL from the metric definition, adapt to the specific question
 
 Never invent metric calculations — always use the canonical definitions.
@@ -197,12 +197,12 @@ wasteful; for remote-mode tables it can blow up at 225M rows.
 
 Tables in `da catalog` have a `query_mode`:
 
-- **`local`**: data is on the laptop as parquet (synced via `da sync`).
+- **`local`**: data is on the laptop as parquet (synced via `agnes pull`).
   Query directly with `da query "SELECT … FROM <table>"`.
 
 - **`remote`** (typically BigQuery): the parquet does NOT exist on the laptop.
   You MUST either:
-  1. **`da fetch`** a filtered subset → query the local snapshot, OR
+  1. **`agnes snapshot create`** a filtered subset → query the local snapshot, OR
   2. **`da query --remote`** for one-shot server-side execution. Works on
      all `query_mode='remote'` rows regardless of upstream BQ entity type
      (BASE TABLE → Storage Read API with predicate pushdown; VIEW /
@@ -212,10 +212,10 @@ Tables in `da catalog` have a `query_mode`:
      paths return 403 `bq_path_not_registered`.
   3. **`da query --register-bq`** for hybrid joins (rarely needed).
 
-### `da fetch` workflow (preferred for remote tables)
+### `agnes snapshot create` workflow (preferred for remote tables)
 
     # 1. estimate first
-    da fetch web_sessions_example \
+    agnes snapshot create web_sessions_example \
         --select event_date,country_code,session_id \
         --where "event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY) 
                  AND country_code = 'CZ'" \
@@ -223,12 +223,12 @@ Tables in `da catalog` have a `query_mode`:
     # → "estimated_scan_bytes: 4.2 GB, result: ~250k rows, 12 MB locally"
 
     # 2. if reasonable, fetch
-    da fetch web_sessions_example ... --as cz_recent
+    agnes snapshot create web_sessions_example ... --as cz_recent
 
     # 3. query the local snapshot
     da query "SELECT event_date, COUNT(*) FROM cz_recent GROUP BY 1 ORDER BY 1"
 
-### Heuristics for `da fetch`
+### Heuristics for `agnes snapshot create`
 
 - ALWAYS list specific columns in `--select`. Avoid implicit SELECT *.
 - ALWAYS include a `--where` for remote tables; otherwise add `--limit`.
@@ -261,7 +261,7 @@ in your `da query` calls — there's no `--where` on local since fetch is implic
 - Drop with `da snapshot drop <name>` when done with a topic.
 - `da disk-info` to see total cache size.
 
-### When NOT to use `da fetch`
+### When NOT to use `agnes snapshot create`
 
 - Single aggregate on remote BASE TABLE (`SELECT COUNT(*) FROM remote`):
   use `da query --remote "SELECT COUNT(*) FROM web_sessions_example"`.
@@ -269,12 +269,12 @@ in your `da query` calls — there's no `--where` on local since fetch is implic
 - Single aggregate on remote VIEW/MATERIALIZED_VIEW: same syntax works
   (#160), but the BQ jobs API can't push WHERE/COUNT into the view body.
   Cost guardrail (default 5 GiB) catches expensive scans → 400
-  `remote_scan_too_large` with `da fetch` suggestion. Pivot to
-  `da fetch <id> --where '<predicate>'` if the cap is hit.
+  `remote_scan_too_large` with `agnes snapshot create` suggestion. Pivot to
+  `agnes snapshot create <id> --where '<predicate>'` if the cap is hit.
 - Throwaway exploration: `da query --remote "SELECT … FROM <registered_id>"`.
   Direct `bq."<dataset>"."<table>"` paths are now registry-gated — register
   first or use the catalog id.
-- Cross-table JOIN with both tables remote: combine `da fetch` for one
+- Cross-table JOIN with both tables remote: combine `agnes snapshot create` for one
   side + `da query --remote` for the other; full cross-remote JOIN
   requires more thought (see #101 for design space).
 
