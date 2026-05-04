@@ -5,7 +5,7 @@
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "da sync --quiet 2>/dev/null || true"
+                        "command": "agnes pull --quiet 2>/dev/null || true"
                     }
                 ]
             }
@@ -15,7 +15,7 @@
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "da sync --upload-only --quiet 2>/dev/null || true"
+                        "command": "agnes push --quiet 2>/dev/null || true"
                     }
                 ]
             }

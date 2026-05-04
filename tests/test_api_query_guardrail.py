@@ -3,7 +3,7 @@
 When user SQL references a registered remote-BQ name (or a direct
 `bq."<ds>"."<tbl>"` path), run a BQ dry-run before execute. If the
 estimated scan exceeds the configured cap, reject with 400 +
-`remote_scan_too_large` so the operator pivots to `da fetch`.
+`remote_scan_too_large` so the operator pivots to `agnes snapshot create`.
 
 Default cap: 5 GiB per request. Configurable via
 `api.query.bq_max_scan_bytes` in /admin/server-config (#160 §4.4).
@@ -107,8 +107,10 @@ def test_query_over_cap_rejected_400(seeded_app, mock_dry_run, monkeypatch):
     if isinstance(detail, dict):
         assert detail.get("reason") == "remote_scan_too_large", detail
         assert detail.get("scan_bytes") >= 10 * 1024 * 1024 * 1024
-        assert "da fetch" in detail.get("suggestion", "").lower() or \
-               "fetch" in detail.get("suggestion", "").lower()
+        # Suggestion text was renamed in the agnes-bootstrap PR (`da fetch`
+        # → `agnes snapshot create`). Accept the new shape.
+        suggestion = detail.get("suggestion", "").lower()
+        assert "agnes snapshot create" in suggestion or "snapshot create" in suggestion
         assert "ue" in detail.get("tables", []) or \
                any("ue" in t for t in detail.get("tables", []))
 

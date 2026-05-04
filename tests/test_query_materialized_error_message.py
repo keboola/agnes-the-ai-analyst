@@ -51,9 +51,9 @@ def test_query_materialized_id_not_in_views_returns_helpful_message(seeded_app):
     # Message should name the table and surface the materialize-mode hint.
     assert "not_yet_materialized" in detail
     assert "materialized" in detail.lower()
-    # Either a `da sync` hint or a direct-BQ-query hint must appear so the
+    # Either a `agnes pull` hint or a direct-BQ-query hint must appear so the
     # operator has a concrete next step.
-    assert "da sync" in detail or "bq." in detail
+    assert "agnes pull" in detail or "bq." in detail
 
 
 def test_query_unknown_table_falls_back_to_default_error(seeded_app):
