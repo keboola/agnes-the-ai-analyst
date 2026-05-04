@@ -31,8 +31,8 @@ agnes query "SELECT 1"
     AGNES_TOKEN: ${{ secrets.AGNES_TOKEN }}
     AGNES_SERVER: https://agnes.example.com
   run: |
-    pip install data-analyst
-    da sync --all
+    uv tool install "$AGNES_SERVER/cli/wheel/agnes.whl"
+    agnes pull
 ```
 
 ## Revoke

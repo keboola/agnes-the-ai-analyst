@@ -156,7 +156,7 @@ def test_materialized_pass_collects_errors_per_row(system_db, stub_bq, tmp_path)
 
 def test_materialized_pass_records_parquet_hash(system_db, stub_bq, tmp_path):
     """sync_state.hash must be the MD5 of the parquet file — otherwise the
-    manifest reports an empty hash and every da sync re-downloads."""
+    manifest reports an empty hash and every agnes pull re-downloads."""
     repo = TableRegistryRepository(system_db)
     repo.register(
         id="hashed", name="hashed",

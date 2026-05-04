@@ -55,6 +55,7 @@ End-to-end clean-analyst-bootstrap rewrite. The web `/setup?role=analyst` page n
 - `tests/test_reader_smoke_matrix.py` — load-bearing parametrized test: every reader CLI command runs on a freshly-bootstrapped zero-grants workspace without a Python traceback.
 - `tests/test_clean_install_integration.py` — end-to-end happy-path tests (minimal grants, zero grants, force preserves CLAUDE.local.md, readers in pre-init dir).
 - `docs/RELEASE_CHECKLIST.md` — manual clean-install protocol mandated for any PR touching the bootstrap path.
+- Audited and replaced stale `da` verbs left over from prior merges in admin UI text, audit-log messages, code comments, operator runbooks, analyst-facing skill docs, and test docstrings (welcome template renderer/API tests now assert exact emitted markers — `agnes init` for analyst flow, `agnes auth` for admin flow — with explicit absence checks on legacy verbs). Vendor-specific `/opt/data-analyst/` install paths in jira backfill/consistency scripts and operator docs replaced with `<install-dir>/` and an `AGNES_ENV_FILE` env-var override. Intentional stale-marker tuples (`_LEGACY_STRINGS` in `app/api/claude_md.py`, `_OUR_COMMAND_MARKERS` in `cli/lib/hooks.py`) and tests that seed legacy hook content (`tests/test_lib_hooks.py`, `tests/test_legacy_strings_scan.py`) are preserved by design.
 
 ## [0.33.0] — 2026-05-04
 

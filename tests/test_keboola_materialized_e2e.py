@@ -1,5 +1,5 @@
 """End-to-end: register a Keboola materialized row -> trigger sync ->
-parquet appears -> manifest serves it -> CLI da sync would download it.
+parquet appears -> manifest serves it -> CLI agnes pull would download it.
 
 Skipped unless KBC_TEST_URL + KBC_TEST_TOKEN + KBC_TEST_BUCKET +
 KBC_TEST_TABLE are present.
@@ -68,4 +68,4 @@ def test_register_trigger_manifest_path(seeded_app, monkeypatch, tmp_path):
     assert smoke is not None
     assert smoke["source_type"] == "keboola"
     assert smoke["query_mode"] == "local"  # materialized parquets surface as local
-    assert smoke["md5"]  # has a hash for da sync delta detection
+    assert smoke["md5"]  # has a hash for agnes pull delta detection

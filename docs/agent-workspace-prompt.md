@@ -1,23 +1,23 @@
 # Agent Workspace Prompt
 
 The agent workspace prompt is the `CLAUDE.md` file written to each analyst's
-workspace by `da analyst setup`. It gives Claude Code context about the
+workspace by `agnes init`. It gives Claude Code context about the
 connected instance: available tables (RBAC-filtered), business metrics, installed
 plugins, and operational rules for the analyst.
 
 ## When is CLAUDE.md written?
 
-`da analyst setup` fetches `GET /api/welcome` and writes the rendered markdown
+`agnes init` fetches `GET /api/welcome` and writes the rendered markdown
 to `<workspace>/CLAUDE.md` on every run (including `--force` re-initialisation).
 
 To skip writing CLAUDE.md:
 
 ```bash
-da analyst setup --server-url https://agnes.example.com --no-claude-md
+agnes init --server-url https://agnes.example.com --no-claude-md
 ```
 
 **Analysts who ran setup while CLAUDE.md generation was temporarily absent** will
-have their file written on the next `da analyst setup` run. Any existing
+have their file written on the next `agnes init` run. Any existing
 `CLAUDE.md` is overwritten with the current server template.
 
 The companion `CLAUDE.local.md` (at `.claude/CLAUDE.local.md`) is **never**
@@ -110,5 +110,5 @@ PUT validation time, so the admin is notified immediately.
 
 Click **Reset to default** in the admin UI, or call
 `DELETE /api/admin/workspace-prompt-template`. The next analyst who runs
-`da analyst setup` will receive the rich default template from
+`agnes init` will receive the rich default template from
 `config/claude_md_template.txt`.

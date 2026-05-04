@@ -1,6 +1,6 @@
 """DELETE /api/admin/registry/{id} for materialized rows must remove the
 materialized parquet file too — otherwise sync_state still has the row,
-the manifest still serves it, and `da sync` keeps trying to download
+the manifest still serves it, and `agnes pull` keeps trying to download
 data for a table that no longer has a registry entry. The orchestrator's
 rebuild path additionally skips parquets that lack a matching
 table_registry row, so a transient race (or operator-deleted parquet)
@@ -184,7 +184,7 @@ def test_delete_remote_bq_row_does_not_touch_data_dir(
 
 def test_delete_clears_sync_state_for_materialized_row(seeded_app, keboola_instance):
     """DELETE must also clear the sync_state row so the manifest stops
-    advertising the dropped table to `da sync`."""
+    advertising the dropped table to `agnes pull`."""
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
 

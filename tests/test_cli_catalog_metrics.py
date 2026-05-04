@@ -1,4 +1,4 @@
-"""Tests for `agnes catalog --metrics` (folded from `da metrics list/show`)."""
+"""Tests for `agnes catalog --metrics`."""
 
 from typer.testing import CliRunner
 

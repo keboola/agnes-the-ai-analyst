@@ -23,7 +23,7 @@ def _auth(token: str) -> dict:
 def test_query_materialized_id_not_in_views_returns_helpful_message(seeded_app):
     """An admin querying a materialized id that isn't yet materialized in
     the local analytics.duckdb gets a 400 whose detail names the
-    query_mode and points at `da sync` / direct-BQ-query."""
+    query_mode and points at `agnes pull` / direct-BQ-query."""
     from src.db import get_system_db
     sys_conn = get_system_db()
     try:

@@ -21,7 +21,7 @@ def test_template_has_session_end_upload():
     ends = cfg.get("hooks", {}).get("SessionEnd", [])
     cmds = [h["command"] for entry in ends for h in entry.get("hooks", [])]
     assert any("agnes push" in c for c in cmds), (
-        f"Expected `da sync --upload-only` in SessionEnd, got {cmds}"
+        f"Expected `agnes push` in SessionEnd, got {cmds}"
     )
 
 

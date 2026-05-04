@@ -285,7 +285,7 @@ class TestCatalogMetrics:
     def test_catalog_metrics_help(self):
         result = runner.invoke(app, ["catalog", "--help"])
         assert result.exit_code == 0
-        # `agnes catalog --metrics` replaces the old `da metrics list/show`.
+        # `agnes catalog --metrics` lists business-metric definitions.
         assert "metrics" in result.output.lower()
 
     def test_admin_metrics_help(self):

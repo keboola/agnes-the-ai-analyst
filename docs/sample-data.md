@@ -169,12 +169,13 @@ diff -r run1 run2  # no differences
 To use sample data on a deployed server (instead of connecting a data adapter):
 
 ```bash
-# On the server
-cd /opt/data-analyst/repo
+# On the server, from the install directory containing your repo checkout
+# and Python venv (paths vary per deployment):
+cd <install-dir>/repo
 
 # Generate Parquet files directly using project's ParquetManager
 # (snappy compression, proper column types, metadata embedding)
-/opt/data-analyst/.venv/bin/python scripts/generate_sample_data.py \
+<install-dir>/.venv/bin/python scripts/generate_sample_data.py \
     --size m --format parquet --output /data/src_data/parquet --seed 42
 
 # Set correct permissions

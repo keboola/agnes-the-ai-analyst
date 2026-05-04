@@ -19,8 +19,8 @@ ssh user@your-server-ip
 ### 2. Clone the repository
 
 ```bash
-git clone https://github.com/keboola/agnes-the-ai-analyst.git /opt/data-analyst
-cd /opt/data-analyst
+git clone https://github.com/keboola/agnes-the-ai-analyst.git <install-dir>
+cd <install-dir>
 git checkout main
 ```
 

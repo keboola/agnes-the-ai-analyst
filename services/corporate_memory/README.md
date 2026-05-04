@@ -78,7 +78,7 @@ Corporate Memory solves this by making institutional knowledge:
            └──────────┬───────────┘
                       │
            ┌──────────▼───────────┐
-           │    da sync           │
+           │    agnes pull        │
            │                      │
            │  .claude/rules/      │
            │    km_<id>.md        │  ← one per mandatory item
@@ -238,7 +238,7 @@ The highest-ranked facts enter the agent's context first. Mandatory items bypass
 
 ### Claude Code integration
 
-`da sync` writes the bundle as files in `.claude/rules/`:
+`agnes pull` writes the bundle as files in `.claude/rules/`:
 
 ```
 .claude/rules/
@@ -368,7 +368,7 @@ agnes-the-ai-analyst/
 ├── src/repositories/knowledge.py   ← DuckDB CRUD (no SQL in API layer)
 ├── src/db.py                       ← Schema: knowledge_items + 4 supporting tables
 │
-└── cli/commands/sync.py            ← da sync step 7: fetch bundle → write km_*.md
+└── cli/commands/pull.py            ← agnes pull step 7: fetch bundle → write km_*.md
 ```
 
 ---
@@ -401,7 +401,7 @@ An analyst working on sensitive M&A data marks their items as personal. The note
 
 | | Corporate Memory | Static `CLAUDE.md` | Vector RAG | Fine-tuning |
 |---|---|---|---|---|
-| **Update latency** | Next `da sync` (~minutes) | Manual edit + redeploy | Near-realtime | Days to weeks |
+| **Update latency** | Next `agnes pull` (~minutes) | Manual edit + redeploy | Near-realtime | Days to weeks |
 | **Governance** | Approve / reject / audit | None | None | Training data curation |
 | **Confidence scoring** | Yes (source + decay) | No | Similarity score only | Baked into weights |
 | **Contradiction detection** | Yes (auto, per domain) | No | No | No (invisible) |
@@ -454,7 +454,7 @@ Scans `/data/user_sessions/*.jsonl`, extracts knowledge from unprocessed session
 Corporate Memory is wired into Agnes' sync pipeline automatically:
 
 ```
-da sync
+agnes pull
   step 1–6: download tables, rebuild DuckDB views
   step 7: fetch /api/memory/bundle → write .claude/rules/km_*.md
 ```

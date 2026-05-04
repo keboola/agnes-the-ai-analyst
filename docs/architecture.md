@@ -13,7 +13,7 @@ ai-data-analyst/
 │   ├── auth/             Auth providers (JWT, Google OAuth, email magic link, password)
 │   └── web/              HTML dashboard routes
 ├── services/             Standalone background services (scheduler, telegram_bot, ws_gateway, …)
-├── cli/                  CLI tool (da sync, agnes query, agnes admin)
+├── cli/                  CLI tool (agnes pull, agnes query, agnes admin)
 ├── scripts/              Utility and migration scripts
 ├── config/               Instance configuration templates
 ├── tests/                Test suite
@@ -185,7 +185,7 @@ POST /api/sync/trigger (admin)
 - Runs admin-registered SQL through the DuckDB BigQuery extension via `BqAccess.duckdb_session()` and writes the result to `/data/extracts/bigquery/data/<id>.parquet` atomically (`<id>.parquet.tmp` → `os.replace`).
 - Triggered by `_run_materialized_pass` in `app/api/sync.py` between custom-connectors and orchestrator rebuild on every `/api/sync/trigger`. Per-table `sync_schedule` honored via `is_table_due()`.
 - Cost guardrail: BQ dry-run via `app.api.v2_scan._bq_dry_run_bytes` (single source of truth for cost-estimate logic). `data_source.bigquery.max_bytes_per_materialize` (default 10 GiB; `0` disables). Fail-open when dry-run errors (DuckDB three-part syntax the native BQ client can't parse) — log warning + proceed.
-- Distribution: result parquet rides the same manifest + `da sync` flow as Keboola tables. Per-user RBAC unchanged (`resource_grants(group, ResourceType.TABLE, table_id)`).
+- Distribution: result parquet rides the same manifest + `agnes pull` flow as Keboola tables. Per-user RBAC unchanged (`resource_grants(group, ResourceType.TABLE, table_id)`).
 
 ### Jira — Real-Time Push
 

@@ -6,7 +6,7 @@ Downloads all issues from Jira using JQL search with pagination.
 Reuses the webapp's JiraService for consistent data handling.
 
 Usage:
-    # On server (uses /opt/data-analyst/.env):
+    # On server (loads .env from <install-dir>/.env or the current directory):
     python -m connectors.jira.scripts.backfill
 
     # With custom settings:
@@ -58,12 +58,15 @@ class Config:
     @classmethod
     def from_env(cls) -> "Config":
         """Load configuration from environment variables."""
-        # Try to load .env file from common locations
+        # Try to load .env file from common locations.
+        # Customer-specific install paths (e.g. /opt/<deployment>/.env) can be
+        # injected via the AGNES_ENV_FILE env var without editing this list.
         env_paths = [
-            Path("/opt/data-analyst/.env"),
+            Path(os.environ["AGNES_ENV_FILE"]) if os.environ.get("AGNES_ENV_FILE") else None,
             Path.cwd() / ".env",
             Path(__file__).parent.parent / ".env",
         ]
+        env_paths = [p for p in env_paths if p is not None]
         for env_path in env_paths:
             if env_path.exists():
                 load_dotenv(env_path)

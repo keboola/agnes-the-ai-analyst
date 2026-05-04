@@ -7,7 +7,7 @@ and embeds them into existing issue JSON files. This enables the
 Parquet transform to extract remote_links table data.
 
 Usage:
-    # On server (uses /opt/data-analyst/.env):
+    # On server (loads .env from <install-dir>/.env or the current directory):
     python -m connectors.jira.scripts.backfill_remote_links
 
     # With parallel workers:
@@ -44,11 +44,14 @@ logger = logging.getLogger(__name__)
 
 def load_config() -> dict:
     """Load configuration from environment variables."""
+    # Customer-specific install paths (e.g. /opt/<deployment>/.env) can be
+    # injected via the AGNES_ENV_FILE env var without editing this list.
     env_paths = [
-        Path("/opt/data-analyst/.env"),
+        Path(os.environ["AGNES_ENV_FILE"]) if os.environ.get("AGNES_ENV_FILE") else None,
         Path.cwd() / ".env",
         Path(__file__).parent.parent / ".env",
     ]
+    env_paths = [p for p in env_paths if p is not None]
     for env_path in env_paths:
         if env_path.exists():
             load_dotenv(env_path)

@@ -48,7 +48,6 @@
 7. Trigger a data sync:
    ```bash
    curl -X POST http://localhost:8000/api/sync/trigger
-   # Or: da sync
    ```
 
 ## Docker Deployment

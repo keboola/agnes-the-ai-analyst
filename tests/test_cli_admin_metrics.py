@@ -1,4 +1,4 @@
-"""Tests for `agnes admin metrics {import,export,validate}` (lifted from `da metrics`)."""
+"""Tests for `agnes admin metrics {import,export,validate}`."""
 
 from typer.testing import CliRunner
 
