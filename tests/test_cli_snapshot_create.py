@@ -2,6 +2,11 @@
 
 from typer.testing import CliRunner
 
+# CI-safety: Typer/rich emits ANSI escapes in --help output. Strip before asserts.
+_ANSI_RE = __import__("re").compile(r"\x1b\[[0-9;]*m")
+def _clean(s: str) -> str:
+    return _ANSI_RE.sub("", s)
+
 from cli.commands.snapshot import snapshot_app
 
 
@@ -19,7 +24,7 @@ def test_snapshot_create_help():
         "--no-estimate",
         "--force",
     ]:
-        assert flag in result.output
+        assert flag in _clean(result.output)
 
 
 def test_snapshot_create_no_duckdb_friendly_exit(tmp_path, monkeypatch):

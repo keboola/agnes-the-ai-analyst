@@ -2,6 +2,11 @@
 
 from typer.testing import CliRunner
 
+# CI-safety: Typer/rich emits ANSI escapes in --help output. Strip before asserts.
+_ANSI_RE = __import__("re").compile(r"\x1b\[[0-9;]*m")
+def _clean(s: str) -> str:
+    return _ANSI_RE.sub("", s)
+
 from cli.commands.init import init_app
 
 runner = CliRunner()
@@ -42,10 +47,10 @@ def _make_api_get():
 def test_init_help():
     result = runner.invoke(init_app, ["--help"])
     assert result.exit_code == 0
-    assert "--server-url" in result.output
-    assert "--token" in result.output
-    assert "--force" in result.output
-    assert "--workspace" in result.output
+    assert "--server-url" in _clean(result.output)
+    assert "--token" in _clean(result.output)
+    assert "--force" in _clean(result.output)
+    assert "--workspace" in _clean(result.output)
 
 
 def test_init_writes_expected_files(tmp_path, monkeypatch):
@@ -130,7 +135,7 @@ def test_init_partial_state_friendly_exit(tmp_path, monkeypatch):
         "--workspace", str(workspace),
     ])
     assert result.exit_code == 1
-    assert "Traceback" not in (result.output + (result.stderr or ""))
+    assert "Traceback" not in (_clean(result.output) + _clean(result.stderr or ''))
 
 
 def test_init_auth_failed_on_401(tmp_path, monkeypatch):

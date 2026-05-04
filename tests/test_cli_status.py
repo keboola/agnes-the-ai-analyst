@@ -3,6 +3,11 @@
 import json
 from typer.testing import CliRunner
 
+# CI-safety: Typer/rich emits ANSI escapes in --help output. Strip before asserts.
+_ANSI_RE = __import__("re").compile(r"\x1b\[[0-9;]*m")
+def _clean(s: str) -> str:
+    return _ANSI_RE.sub("", s)
+
 from cli.commands.status import status_app
 
 runner = CliRunner()
@@ -15,7 +20,7 @@ def test_status_uninitialized_workspace(tmp_path, monkeypatch):
     assert result.exit_code in (0, 1)
     out = result.output.lower()
     assert "no" in out  # "Initialized: no" or similar
-    assert "agnes init" in result.output  # hint to initialize
+    assert "agnes init" in _clean(result.output)  # hint to initialize
 
 
 def test_status_initialized_workspace(tmp_path, monkeypatch):
@@ -31,7 +36,7 @@ def test_status_initialized_workspace(tmp_path, monkeypatch):
     assert result.exit_code == 0
     out = result.output.lower()
     assert "yes" in out  # "Initialized: yes"
-    assert "1" in result.output  # one parquet
+    assert "1" in _clean(result.output)  # one parquet
 
 
 def test_status_json(tmp_path, monkeypatch):
