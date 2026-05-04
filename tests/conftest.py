@@ -301,3 +301,21 @@ def bq_access():
     yield _build
     from app.main import app as _app
     _app.dependency_overrides.pop(get_bq_access, None)
+
+
+# ---------------------------------------------------------------------------
+# Clean-bootstrap test suite (Task 20).
+#
+# Re-export the analyst-bootstrap fixtures so individual test modules can
+# request them by name without an explicit import. Imported at module level
+# so pytest collection sees the names; the fixtures themselves don't run
+# until a test pulls them in.
+# ---------------------------------------------------------------------------
+from tests.fixtures.analyst_bootstrap import (  # noqa: E402,F401
+    NONEXISTENT_TABLE,
+    fastapi_test_server,
+    test_pat,
+    test_pat_no_grants,
+    web_session,
+    zero_grants_workspace,
+)
