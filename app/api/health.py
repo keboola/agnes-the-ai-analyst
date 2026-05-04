@@ -2,6 +2,7 @@
 
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import APIRouter, Depends
 import duckdb
@@ -85,6 +86,113 @@ def _check_bq_billing_project() -> dict | None:
         "billing_project": billing,
         "data_project": data,
     }
+
+
+def _check_session_pipeline(conn: duckdb.DuckDBPyConnection) -> dict:
+    """Detect a stuck session pipeline: jsonls land but never get processed.
+
+    Heuristic (#176):
+      max(mtime of /data/user_sessions/**/*.jsonl) <=
+      max(processed_at in session_extraction_state) + grace_seconds
+
+    grace_seconds = 2 × the verification-detector cadence (default 15m → 30m).
+    Operators with a custom SCHEDULER_VERIFICATION_DETECTOR_INTERVAL can
+    extend the grace by setting that env var.
+
+    Returns ``warning`` (never ``error``) — the LLM may be down for
+    maintenance, not a hard failure. Returns ``ok`` when no session
+    files exist (cold-start case).
+    """
+    # Resolve user_sessions dir from the same DATA_DIR conftest sets up.
+    data_dir = Path(os.environ.get("DATA_DIR", "/data"))
+    user_sessions = data_dir / "user_sessions"
+
+    try:
+        session_files = list(user_sessions.glob("**/*.jsonl"))
+    except OSError:
+        # Permission / FS error — surface as 'unknown' rather than ok/warning.
+        return {"status": "unknown", "detail": "could not scan user_sessions"}
+
+    if not session_files:
+        return {"status": "ok", "detail": "no session files yet"}
+
+    try:
+        latest_session_mtime = max(f.stat().st_mtime for f in session_files)
+    except OSError:
+        return {"status": "unknown", "detail": "could not stat session files"}
+
+    # Look up the most recent processed_at.
+    try:
+        row = conn.execute(
+            "SELECT MAX(processed_at) FROM session_extraction_state"
+        ).fetchone()
+    except Exception as e:
+        return {"status": "unknown", "detail": f"could not query session_extraction_state: {e}"}
+
+    last_processed = row[0] if row else None
+
+    grace_seconds = _verification_detector_grace_seconds()
+
+    if last_processed is None:
+        # Files exist but state table is empty — pipeline never ran here.
+        if (datetime.now(timezone.utc).timestamp() - latest_session_mtime) > grace_seconds:
+            return {
+                "status": "warning",
+                "detail": (
+                    "session_extraction_state is empty but jsonl files exist. "
+                    "Check the verification-detector scheduler job."
+                ),
+                "session_files": len(session_files),
+            }
+        return {"status": "ok", "session_files": len(session_files)}
+
+    # Both available — compare. session_extraction_state.processed_at is
+    # stored as DuckDB TIMESTAMP (naive). DuckDB converts tz-aware writes
+    # to local time before storing, so the only safe interpretation is
+    # local-naive on read. Compute the lag against `datetime.now()` (also
+    # local-naive) and only convert to epoch via the OS's local timezone
+    # mapping at the comparison boundary.
+    now_local_naive = datetime.now()
+    if hasattr(last_processed, "tzinfo") and last_processed.tzinfo is not None:
+        last_processed = last_processed.replace(tzinfo=None)
+    proc_age_seconds = (now_local_naive - last_processed).total_seconds()
+    file_age_seconds = time_now() - latest_session_mtime
+
+    # File is newer than the last processed_at by more than grace_seconds.
+    if proc_age_seconds - file_age_seconds > grace_seconds:
+        lag_seconds = int(proc_age_seconds - file_age_seconds)
+        return {
+            "status": "warning",
+            "detail": (
+                f"session jsonls newer than session_extraction_state by ~{lag_seconds}s "
+                f"(grace={grace_seconds}s). Check the verification-detector scheduler "
+                f"job — uploads are not being processed."
+            ),
+            "lag_seconds": lag_seconds,
+            "session_files": len(session_files),
+        }
+
+    return {"status": "ok", "session_files": len(session_files)}
+
+
+def time_now() -> float:
+    """Wall-clock seconds since epoch — separated out for test seam parity."""
+    import time as _t
+    return _t.time()
+
+
+def _verification_detector_grace_seconds() -> int:
+    """Compute the staleness grace window for the session pipeline check."""
+    cadence_seconds_default = 15 * 60
+    raw = os.environ.get("SCHEDULER_VERIFICATION_DETECTOR_INTERVAL")
+    if raw:
+        try:
+            cadence_seconds = int(raw)
+            if cadence_seconds > 0:
+                return 2 * cadence_seconds
+        except ValueError:
+            pass
+    return 2 * cadence_seconds_default
 
 
 def _check_db_schema() -> dict:
@@ -176,6 +284,13 @@ async def health_check_detailed(
     bq_cfg = _check_bq_billing_project()
     if bq_cfg is not None:
         checks["bq_config"] = bq_cfg
+
+    # Session pipeline (#176): warn when uploaded jsonls aren't getting
+    # processed by the verification-detector cadence.
+    try:
+        checks["session_pipeline"] = _check_session_pipeline(conn)
+    except Exception as e:
+        checks["session_pipeline"] = {"status": "unknown", "detail": str(e)}
 
     overall = "healthy"
     for check in checks.values():
