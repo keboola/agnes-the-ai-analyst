@@ -974,6 +974,7 @@ async def admin_workspace_prompt_page(
 ):
     from src.repositories.claude_md_template import ClaudeMdTemplateRepository
     from src.claude_md import compute_default_claude_md
+    from app.api.claude_md import _scan_legacy_strings
 
     row = ClaudeMdTemplateRepository(conn).get()
     server_url = str(request.base_url).rstrip("/")
@@ -986,6 +987,7 @@ async def admin_workspace_prompt_page(
         updated_at=row["updated_at"],
         updated_by=row["updated_by"],
         is_override=row["content"] is not None,
+        legacy_strings_detected=_scan_legacy_strings(row["content"] or ""),
     )
     return templates.TemplateResponse(request, "admin_workspace_prompt.html", ctx)
 

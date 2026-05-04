@@ -271,6 +271,20 @@
         </div>
       </details>
 
+      {% if legacy_strings_detected %}
+      <div id="legacy-banner"
+           role="alert"
+           style="background:#fff3cd; border:1px solid #ffc107; padding:0.75rem 1rem; border-radius:8px; margin-bottom:14px; color:#664d03;">
+        <strong>This override references CLI verbs / paths that were renamed:</strong>
+        <ul style="margin:0.5rem 0 0 1.5rem; padding:0;">
+          {% for hit in legacy_strings_detected %}
+          <li><code>{{ hit }}</code></li>
+          {% endfor %}
+        </ul>
+        <p style="margin:0.5rem 0 0 0;">Re-author and Save to clear this warning. See <code>CHANGELOG.md</code> for the rename list.</p>
+      </div>
+      {% endif %}
+
       <div class="welcome-editor-row">
         <div class="welcome-pane">
           <h4 class="welcome-pane-label">Editor</h4>
