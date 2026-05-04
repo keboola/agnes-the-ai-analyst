@@ -1,70 +1,68 @@
-"""Status commands — agnes status."""
+"""`agnes status` — workspace status: initialized? data fresh? hooks active?
+
+Replaces the old `da analyst status` command. The previous server-health
+content (which used to live here) has moved to `agnes diagnose system`
+under the existing `agnes diagnose` group (Task 13).
+"""
+
+from __future__ import annotations
 
 import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
 
 import typer
 
-from cli.client import api_get
-from cli.config import get_sync_state
 
-status_app = typer.Typer(help="System status")
+_INIT_MARKER = "AI Data Analyst"
+
+
+status_app = typer.Typer(help="Show workspace status (initialized? data fresh? hooks active?)")
 
 
 @status_app.callback(invoke_without_command=True)
 def status(
-    local: bool = typer.Option(False, "--local", help="Show local-only status (no server)"),
-    as_json: bool = typer.Option(False, "--json", help="Output as JSON"),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable output"),
 ):
-    """Show system health and sync status."""
-    if local:
-        state = get_sync_state()
-        info = {
-            "mode": "local",
-            "tables_synced": len(state.get("tables", {})),
-            "last_sync": state.get("last_sync", "never"),
-            "tables": state.get("tables", {}),
-        }
-        if as_json:
-            typer.echo(json.dumps(info, indent=2))
-        else:
-            typer.echo(f"Mode: offline (local data)")
-            typer.echo(f"Tables synced: {info['tables_synced']}")
-            typer.echo(f"Last sync: {info['last_sync']}")
+    workspace = Path(os.environ.get("AGNES_LOCAL_DIR", ".")).resolve()
+
+    initialized = False
+    claude_md = workspace / "CLAUDE.md"
+    if claude_md.exists():
+        initialized = _INIT_MARKER in claude_md.read_text(encoding="utf-8")
+
+    parquet_dir = workspace / "server" / "parquet"
+    parquets = list(parquet_dir.glob("*.parquet")) if parquet_dir.exists() else []
+
+    db_path = workspace / "user" / "duckdb" / "analytics.duckdb"
+    last_synced = None
+    if db_path.exists():
+        last_synced = datetime.fromtimestamp(db_path.stat().st_mtime, tz=timezone.utc).isoformat()
+
+    sessions_dir = workspace / "user" / "sessions"
+    session_count = len(list(sessions_dir.glob("*.jsonl"))) if sessions_dir.exists() else 0
+
+    info = {
+        "workspace": str(workspace),
+        "initialized": initialized,
+        "parquet_tables": len(parquets),
+        "duckdb_exists": db_path.exists(),
+        "last_synced": last_synced,
+        "sessions_pending_upload": session_count,
+    }
+
+    if as_json:
+        typer.echo(json.dumps(info, indent=2))
         return
 
-    try:
-        # Minimal health ping first
-        resp = api_get("/api/health")
-        minimal = resp.json()
-        if minimal.get("status") != "ok":
-            if as_json:
-                typer.echo(json.dumps(minimal, indent=2))
-            else:
-                typer.echo(f"Status: {minimal.get('status', 'unknown')}")
-            return
+    typer.echo(f"Workspace : {workspace}")
+    typer.echo(f"Initialized: {'yes' if initialized else 'no'}")
+    typer.echo(f"Parquets  : {info['parquet_tables']}")
+    typer.echo(f"DuckDB    : {'yes' if info['duckdb_exists'] else 'no'}")
+    typer.echo(f"Last sync : {last_synced or 'never'}")
+    typer.echo(f"Pending uploads: {session_count} sessions")
 
-        # Detailed health (auth required) for service-level info
-        try:
-            resp = api_get("/api/health/detailed")
-            data = resp.json()
-        except Exception:
-            data = minimal
-
-        if as_json:
-            typer.echo(json.dumps(data, indent=2))
-        else:
-            typer.echo(f"Status: {data.get('status', 'unknown')}")
-            for name, check in data.get("services", {}).items():
-                s = check.get("status", "?")
-                detail = ""
-                if "tables" in check:
-                    detail = f" ({check['tables']} tables, {check.get('total_rows', 0)} rows)"
-                if "count" in check:
-                    detail = f" ({check['count']})"
-                if check.get("stale_tables"):
-                    detail += f" [stale: {', '.join(check['stale_tables'])}]"
-                typer.echo(f"  {name}: {s}{detail}")
-    except Exception as e:
-        typer.echo(f"Cannot reach server: {e}", err=True)
-        typer.echo("Use --local for offline status.")
-        raise typer.Exit(1)
+    if not initialized:
+        typer.echo("")
+        typer.echo("Run `agnes init --server-url <URL> --token <PAT>` to bootstrap.")

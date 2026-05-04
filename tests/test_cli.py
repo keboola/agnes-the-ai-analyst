@@ -144,13 +144,17 @@ class TestAuth:
 
 
 class TestStatus:
+    """Legacy `--local` status content moved to `agnes diagnose system` per the
+    clean-bootstrap spec (Tasks 12 + 13). `agnes status` itself now reports
+    workspace state — see tests/test_cli_status.py."""
+
     def test_local_status_empty(self):
-        result = runner.invoke(app, ["status", "--local"])
+        result = runner.invoke(app, ["diagnose", "system", "--local"])
         assert result.exit_code == 0
         assert "Tables synced: 0" in result.output
 
     def test_local_status_json(self):
-        result = runner.invoke(app, ["status", "--local", "--json"])
+        result = runner.invoke(app, ["diagnose", "system", "--local", "--json"])
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["mode"] == "local"
