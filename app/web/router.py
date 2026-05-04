@@ -602,6 +602,11 @@ async def corporate_memory(
     categories = sorted(set(i.get("category", "") for i in all_items if i.get("category")))
     domains = sorted(set(i.get("domain", "") for i in all_items if i.get("domain")))
 
+    # #176: surface the pending review queue to admins. Without this the
+    # main page silently filtered status='pending' items and operators had
+    # no breadcrumb to /corporate-memory/admin.
+    pending_count = sum(1 for i in all_items if i.get("status") == "pending")
+
     # "My contributions" — items the caller authored. Personal items are
     # always visible to their author regardless of audience filtering;
     # this is the surface the user uses to mark/unmark `is_personal`.
@@ -612,6 +617,7 @@ async def corporate_memory(
         item["upvotes"] = votes["upvotes"]
         item["downvotes"] = votes["downvotes"]
 
+    is_admin_view = is_user_admin(user["id"], conn)
     ctx = _build_context(
         request, user=user,
         knowledge_items=items,
@@ -621,7 +627,7 @@ async def corporate_memory(
         domains=domains,
         stats={"total": len(all_items), "approved": len([i for i in all_items if i.get("status") == "approved"])},
         user_votes={},
-        is_km_admin=is_user_admin(user["id"], conn),
+        is_km_admin=is_admin_view,
         user_contributions=user_contributions,
         user_stats={"authored": len(user_contributions), "votes_given": 0},
         # Template expects knowledge as object with .items and .total_pages
@@ -630,6 +636,8 @@ async def corporate_memory(
         current_page=1,
         page=1,
         per_page=100,
+        # #176: pending banner is admin-only.
+        pending_review_count=pending_count if is_admin_view else 0,
     )
     return templates.TemplateResponse(request, "corporate_memory.html", ctx)
 
