@@ -32,19 +32,16 @@ def client(tmp_path, monkeypatch):
     close_system_db()
 
 
-def test_setup_page_default_role_is_admin(client):
-    """No `role` query param → admin layout (default, preserves existing flow)."""
+def test_setup_page_default_role_is_analyst(client):
+    """No `role` query param → analyst layout (most users are analysts;
+    admin layout is opt-in via the admin tile, which only renders to admins)."""
     resp = client.get("/setup", follow_redirects=True)
     assert resp.status_code == 200
     text = resp.text
-    # Both tiles present in markup; admin tile is the active one.
-    assert "role=analyst" in text
-    assert "role=admin" in text or 'href="/setup"' in text
-    # Active state lives on the admin tile when role=admin (default).
-    # Asserting the tile labels are both rendered keeps the assertion
-    # robust against future styling tweaks.
+    # Analyst tile rendered; analyst layout is what the unauthenticated /
+    # non-admin caller gets by default.
     assert "Analyst workspace" in text
-    assert "Admin CLI" in text
+    assert "role=analyst" in text
 
 
 def test_setup_page_analyst_role(client):
@@ -53,10 +50,33 @@ def test_setup_page_analyst_role(client):
     assert resp.status_code == 200
     text = resp.text
     assert "Analyst workspace" in text
-    assert "Admin CLI" in text
     # The page must reflect the analyst selection somewhere — either via
     # the active-state CSS class or the `role=analyst` link being rendered.
     assert "role=analyst" in text
+
+
+def test_setup_page_admin_tile_hidden_for_non_admin(client):
+    """Non-admin caller (anonymous in this test) must NOT see the admin tile —
+    the admin paste prompt references admin-only endpoints (marketplace
+    registration, skills install) that a non-admin PAT can't authenticate
+    against, so showing it would lead to a confusing failure.
+    """
+    resp = client.get("/setup", follow_redirects=True)
+    assert resp.status_code == 200
+    assert "Admin CLI" not in resp.text
+    assert "role=admin" not in resp.text
+
+
+def test_setup_page_admin_role_downgraded_for_non_admin(client):
+    """Non-admin requesting `?role=admin` is silently downgraded to analyst.
+    The page must NOT render admin instructions (no `claude plugin marketplace
+    add` in the rendered prompt) for someone who can't execute them."""
+    resp = client.get("/setup?role=admin", follow_redirects=True)
+    assert resp.status_code == 200
+    # Admin-only steps must NOT appear (would surface admin paste prompt).
+    assert "claude plugin marketplace add" not in resp.text
+    # Analyst-only step IS present (downgrade landed on analyst layout).
+    assert "agnes init" in resp.text
 
 
 def test_install_redirects_to_setup(client):
@@ -168,13 +188,30 @@ def test_setup_page_analyst_clipboard_renders_analyst_layout(client):
     )
 
 
-def test_setup_page_admin_clipboard_renders_admin_layout(client):
-    """Counterpart to the analyst test — admin tile MUST keep the existing
-    full marketplace/plugins flow byte-equivalent (no regression from Task 4).
+def test_setup_page_admin_clipboard_renders_admin_layout(client, monkeypatch):
+    """Counterpart to the analyst test — admin caller asking for `?role=admin`
+    sees the full marketplace/plugins flow.
+
+    Admin layout is now admin-gated (non-admins are silently downgraded to
+    analyst). To exercise the admin path, monkeypatch `get_optional_user` to
+    return an admin user dict. This avoids spinning up a full session-cookie
+    fixture for one assertion.
     """
     import re
+    from app.web.router import get_optional_user
+    from fastapi import Request
 
-    resp = client.get("/setup?role=admin", follow_redirects=True)
+    async def _admin_user(request: Request):  # type: ignore[no-redef]
+        return {"id": "admin-1", "email": "admin@example.com",
+                "is_admin": True, "name": "Admin"}
+
+    # Override the FastAPI dependency on the running app.
+    client.app.dependency_overrides[get_optional_user] = _admin_user
+    try:
+        resp = client.get("/setup?role=admin", follow_redirects=True)
+    finally:
+        client.app.dependency_overrides.pop(get_optional_user, None)
+
     assert resp.status_code == 200
     text = resp.text
 
@@ -186,21 +223,14 @@ def test_setup_page_admin_clipboard_renders_admin_layout(client):
     assert match, "SETUP_INSTRUCTIONS_TEMPLATE array not found in rendered HTML"
     clipboard_block = match.group(1)
 
-    # Admin layout marker MUST be present. `agnes auth import-token` is the
-    # admin login step (analyst replaces it with `agnes init`); `agnes skills`
-    # is admin-only post-auth setup. Either one anchors the admin layout
-    # without depending on RBAC plugin grants (which the unauthenticated
-    # TestClient won't have).
+    # Admin layout marker MUST be present.
     assert "agnes auth import-token" in clipboard_block, (
-        "Admin clipboard payload missing `agnes auth import-token` — "
-        "Task 4 should not have changed admin behavior."
+        "Admin clipboard payload missing `agnes auth import-token`"
     )
     assert "agnes skills" in clipboard_block, (
         "Admin clipboard payload missing the skills setup step"
     )
-    # Analyst-only marker MUST NOT appear in admin layout. `agnes init` is
-    # the analyst-only auth + workspace bootstrap; admin uses
-    # `agnes auth import-token` instead.
+    # Analyst-only marker MUST NOT appear in admin layout.
     assert "agnes init" not in clipboard_block, (
         "Admin clipboard block leaked the analyst `agnes init` step"
     )

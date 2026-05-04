@@ -214,7 +214,9 @@ class TestClaudeSetupPreview:
     """
 
     def test_install_preview_visible_for_signed_in_user(self, web_client, admin_cookie):
-        resp = web_client.get("/setup", cookies=admin_cookie)
+        # /setup defaults to ?role=analyst (the common visitor case).
+        # Admin can switch to ?role=admin to see the marketplace + plugins flow.
+        resp = web_client.get("/setup?role=admin", cookies=admin_cookie)
         assert resp.status_code == 200
         body = resp.text
         # Preview card + placeholder token render
@@ -227,11 +229,32 @@ class TestClaudeSetupPreview:
         # because it validates the PEP 427 filename in the URL before fetch).
         assert "/cli/wheel/" in body
         assert "/cli/agnes.whl" not in body
-        # New numbered headers + agnes diagnose step
+        # Admin layout: numbered headers + diagnose step
         assert "1) Install the CLI" in body
         assert "4) Run diagnostics" in body
         assert "agnes diagnose" in body
         assert "agnes auth whoami" in body
+
+    def test_install_preview_default_role_is_analyst(self, web_client, admin_cookie):
+        """Bare /setup defaults to analyst layout — even for admin users.
+        Admin opts in via the admin tile (?role=admin) when they want the
+        marketplace/plugins flow."""
+        import re
+        resp = web_client.get("/setup", cookies=admin_cookie)
+        assert resp.status_code == 200
+        body = resp.text
+        # The clipboard payload (SETUP_INSTRUCTIONS_TEMPLATE JS array)
+        # carries the analyst layout. Admin tile label "Admin CLI" still
+        # appears as a tile heading (admin user sees both tiles), but the
+        # default rendered prompt is the analyst flow.
+        match = re.search(
+            r"var\s+SETUP_INSTRUCTIONS_TEMPLATE\s*=\s*\[(.*?)\]\.join\(",
+            body, re.DOTALL,
+        )
+        assert match, "SETUP_INSTRUCTIONS_TEMPLATE array missing"
+        clipboard = match.group(1)
+        assert "agnes init" in clipboard
+        assert "claude plugin marketplace add" not in clipboard
 
     def test_dashboard_setup_cta_links_to_setup(self, web_client, admin_cookie):
         """Dashboard setup CTA shows env-setup-cta and a link to /setup instead

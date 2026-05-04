@@ -244,4 +244,11 @@ def render_agent_prompt_banner(
             # Fall through to default
 
     # No override (or broken override) — return live default bash script.
-    return compute_default_agent_prompt(conn, user=user, server_url=server_url)
+    # Pick role by user identity: admins get the full CLI install + marketplace
+    # flow (existing behavior). Everyone else gets the analyst workspace
+    # bootstrap. The dashboard CTA hits this path; without role-by-identity,
+    # analysts would get admin instructions they can't actually execute.
+    role = "admin" if (user and user.get("is_admin")) else "analyst"
+    return compute_default_agent_prompt(
+        conn, user=user, server_url=server_url, role=role,
+    )

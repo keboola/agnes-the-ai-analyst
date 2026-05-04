@@ -717,18 +717,19 @@ async def activity_center(
 @router.get("/setup", response_class=HTMLResponse)
 async def setup_page(
     request: Request,
-    role: Literal["analyst", "admin"] = Query(default="admin"),
+    role: Literal["analyst", "admin"] = Query(default="analyst"),
     user: Optional[dict] = Depends(get_optional_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Setup instructions for the local agent (CLI + Claude Code).
 
     The `role` query param picks the layout:
-      - `admin` (default) → full marketplace + skills + diagnose flow,
-        byte-identical to the pre-Task-4 page for any caller that doesn't
-        pass `?role=`.
-      - `analyst` → trimmed workspace-bootstrap flow rendered by
+      - `analyst` (default) → trimmed workspace-bootstrap flow rendered by
         `_resolve_analyst_lines` (no marketplace, no plugins).
+      - `admin` → full marketplace + skills + diagnose flow. Admin-only:
+        non-admin callers asking for `?role=admin` are silently downgraded
+        to `analyst` so the page never shows them instructions they can't
+        execute.
 
     When an admin override is saved, the override replaces the auto-generated
     setup_instructions output everywhere (both the /setup page display and the
@@ -738,6 +739,13 @@ async def setup_page(
     from src.repositories.welcome_template import WelcomeTemplateRepository
     from src.welcome_template import compute_default_agent_prompt, _sanitize_banner_html
     from jinja2 import Environment, StrictUndefined, TemplateError
+
+    # Gate the admin layout on user.is_admin. Non-admins requesting `?role=admin`
+    # silently fall back to analyst — admin instructions reference admin-only
+    # endpoints (marketplace registration, skills install) that a non-admin
+    # PAT can't authenticate against.
+    if role == "admin" and not (user and user.get("is_admin")):
+        role = "analyst"
 
     base_url = str(request.base_url).rstrip("/")
 

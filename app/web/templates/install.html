@@ -704,6 +704,8 @@
     <main class="main">
 
         <!-- ═══════════════ ROLE TILES ═══════════════ -->
+        {# Admin tile is admin-only — non-admins see the analyst tile alone. #}
+        {% set _show_admin_tile = user and user.is_admin %}
         <nav class="role-tiles" aria-label="Choose setup role">
             <a href="/setup?role=analyst"
                class="role-tile{% if role == 'analyst' %} is-active{% endif %}"
@@ -711,12 +713,14 @@
                 <h3>Analyst workspace</h3>
                 <p>Bootstrap a workspace folder with CLAUDE.md, hooks, and synced data.</p>
             </a>
+            {% if _show_admin_tile %}
             <a href="/setup?role=admin"
                class="role-tile{% if role != 'analyst' %} is-active{% endif %}"
                {% if role != 'analyst' %}aria-current="page"{% endif %}>
                 <h3>Admin CLI</h3>
                 <p>Install the CLI, register the marketplace, set up admin tooling.</p>
             </a>
+            {% endif %}
         </nav>
 
         <!-- ═══════════════ ADMIN BANNER (optional) ═══════════════ -->
