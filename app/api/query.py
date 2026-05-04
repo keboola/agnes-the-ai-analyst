@@ -431,12 +431,22 @@ def _rewrite_user_sql_for_bq_dry_run(
     Two transformations:
 
     1. Each registered remote-BQ name (word-boundary, case-insensitive)
-       → ``\\`<project>.<bucket>.<source_table>\\````. Sorted longest-first
-       so a longer name (`unit_economics_summary`) is rewritten before a
-       shorter one that's a prefix (`unit_economics`) and we don't end up
-       with a partially-rewritten identifier.
+       → ``\\`<project>.<bucket>.<source_table>\\````. A SINGLE re.sub call
+       with an alternation regex sorted longest-first replaces every
+       occurrence in one pass — important to avoid cross-contamination
+       (Devin Review on query.py:464). The previous iterative approach
+       (one re.sub per name, longest-first) corrupted output when the
+       project ID contained a registered table name as a hyphen-delimited
+       word: Pass 1 iter N's `\\bname\\b` regex would match INSIDE the
+       backticked replacement text from a prior iter. Concrete repro:
+       project = `my-ue-project`, registered names `orders` + `ue`, SQL
+       `FROM orders JOIN ue` → after iter 1 (orders): the backticked path
+       contains `my-ue-project`, then iter 2 (ue) matches the `ue` inside
+       it. Single-pass alternation processes each source position exactly
+       once, so the freshly-inserted backticked text isn't re-scanned.
 
     2. ``bq."<ds>"."<tbl>"`` (and the unquoted variant) → ``\\`<project>.<ds>.<tbl>\\````.
+       Distinct pattern from Pass 1, no overlap, separate re.sub.
 
     The rewrite is regex-only (no SQL parser): a registered name appearing
     inside a string literal (e.g. an `IN (...)` value or a `LIKE` pattern)
@@ -451,17 +461,32 @@ def _rewrite_user_sql_for_bq_dry_run(
     physical table — likely an over-estimate. Same fallback path covers this.
     """
     out = sql
-    # Pass 1: bare-name rewrite, longest names first.
-    for name, bucket, source_table in sorted(
-        name_lookups, key=lambda t: -len(t[0])
-    ):
-        target = f"`{project}.{bucket}.{source_table}`"
-        out = re.sub(
-            r"\b" + re.escape(name) + r"\b",
-            target,
-            out,
-            flags=re.IGNORECASE,
-        )
+
+    # Pass 1: bare-name rewrite. Build a single alternation regex sorted
+    # longest-first, with a function-replacement that looks the matched
+    # name up in a case-insensitive dict. Single-pass means freshly
+    # inserted backticked text isn't re-scanned, fixing the
+    # project-ID-contains-name corruption (Devin Review on query.py:464).
+    if name_lookups:
+        # Map name (lower-cased) → backticked target. Names are
+        # case-insensitive on the input side per the existing helper
+        # contract (see test_rewrite_helper_is_case_insensitive_on_bare_names).
+        name_to_target: dict[str, str] = {}
+        for name, bucket, source_table in name_lookups:
+            name_to_target[name.lower()] = f"`{project}.{bucket}.{source_table}`"
+
+        # Alternation pattern, longest-first. Longer match wins at any
+        # given position because Python's re tries alternatives
+        # left-to-right and stops at the first match — pinning longest
+        # entries to the front preserves the prefix-collision invariant
+        # exercised by test_rewrite_helper_longer_name_wins_over_prefix.
+        sorted_names = sorted(name_to_target.keys(), key=len, reverse=True)
+        pattern = r"\b(" + "|".join(re.escape(n) for n in sorted_names) + r")\b"
+
+        def _name_repl(m: re.Match) -> str:
+            return name_to_target[m.group(1).lower()]
+
+        out = re.sub(pattern, _name_repl, out, flags=re.IGNORECASE)
 
     # Pass 2: bq."ds"."tbl" / bq.ds.tbl → `<project>.<ds>.<tbl>`.
     def _bq_path_repl(m: re.Match) -> str:

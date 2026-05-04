@@ -369,6 +369,54 @@ def test_rewrite_helper_longer_name_wins_over_prefix():
     assert "`p.fin.ue`" not in rewritten
 
 
+def test_rewrite_helper_does_not_corrupt_when_project_id_contains_registered_name():
+    """Regression for Devin Review on query.py:464.
+
+    Pre-fix the rewriter ran one `re.sub(\\bname\\b, ...)` per registered
+    table, longest-first. When the GCP project ID contained a registered
+    table name as a hyphen-delimited word (e.g. project=`my-ue-project`,
+    registered name=`ue`), iter N's `\\b` regex would match INSIDE the
+    backticked replacement text from a PRIOR iter, corrupting the output.
+
+    Concrete trace:
+    - SQL: ``FROM orders JOIN ue ON ...``
+    - Iter 1 (orders): produces ``FROM `my-ue-project.fin.orders` JOIN ue ON``
+    - Iter 2 (ue): `\\bue\\b` matches `ue` inside `my-ue-project` (hyphen =
+      word boundary on both sides) → corrupts the iter-1 path.
+
+    Post-fix: single `re.sub` with an alternation regex processes each
+    source position exactly once. Freshly-inserted backticked text is
+    NOT re-scanned by subsequent name patterns.
+    """
+    from app.api.query import _rewrite_user_sql_for_bq_dry_run
+
+    rewritten = _rewrite_user_sql_for_bq_dry_run(
+        sql="SELECT * FROM orders JOIN ue ON orders.id = ue.id",
+        name_lookups=[
+            ("orders", "fin", "orders"),
+            ("ue", "analytics", "ue_metrics"),
+        ],
+        project="my-ue-project",
+    )
+
+    # Both names rewritten exactly once. Critically, the orders path is
+    # NOT corrupted by a stray rewrite of `ue` inside `my-ue-project`.
+    assert "`my-ue-project.fin.orders`" in rewritten
+    assert "`my-ue-project.analytics.ue_metrics`" in rewritten
+
+    # The corruption signature: the orders path would contain a nested
+    # backtick-fenced ue path. Pinning this absence is the load-bearing
+    # assertion — it fails on the pre-fix iterative rewriter.
+    assert "`my-`my-ue-project.analytics.ue_metrics`-project" not in rewritten
+
+    # Bare `ue` outside backticks (the JOIN clause) should be rewritten.
+    # The 2nd `ue.id` was already rewritten by the same single-pass call.
+    # No `\\bue\\b` survives outside backticks.
+    import re as _re
+    bare_ue_matches = _re.findall(r"(?<!\\.)\\bue\\b(?![.`])", rewritten)
+    assert not bare_ue_matches, f"unrewritten bare `ue` left: {bare_ue_matches!r}"
+
+
 def test_rewrite_helper_is_case_insensitive_on_bare_names():
     """Bare-name match in `_bq_guardrail_inputs` is case-insensitive (it
     runs against `sql_lower`). The rewriter must match the same set of
