@@ -214,9 +214,11 @@ class TestClaudeSetupPreview:
     """
 
     def test_install_preview_visible_for_signed_in_user(self, web_client, admin_cookie):
-        # /setup defaults to ?role=analyst (the common visitor case).
-        # Admin can switch to ?role=admin to see the marketplace + plugins flow.
-        resp = web_client.get("/setup?role=admin", cookies=admin_cookie)
+        # /setup is now a single unified flow regardless of caller's role.
+        # Admin sees the same layout as everyone else; the marketplace
+        # block appears iff the caller has plugin grants in
+        # `resource_grants` (the seeded admin in this fixture has none).
+        resp = web_client.get("/setup", cookies=admin_cookie)
         assert resp.status_code == 200
         body = resp.text
         # Preview card + placeholder token render
@@ -229,24 +231,29 @@ class TestClaudeSetupPreview:
         # because it validates the PEP 427 filename in the URL before fetch).
         assert "/cli/wheel/" in body
         assert "/cli/agnes.whl" not in body
-        # Admin layout: numbered headers + diagnose step
+        # Unified layout: numbered headers + diagnose step
         assert "1) Install the CLI" in body
         assert "4) Run diagnostics" in body
         assert "agnes diagnose" in body
-        assert "agnes auth whoami" in body
+        # `agnes init` is now the mandatory bootstrap step.
+        assert "agnes init" in body
+        # The generated /setup prompt's "Log in" / "Verify the login"
+        # admin-only headers are gone (agnes init subsumes them).
+        # `agnes auth whoami` survives as a static manual-install
+        # example elsewhere on the page (not in the generated prompt).
+        assert "2) Log in" not in body
+        assert "3) Verify the login" not in body
 
-    def test_install_preview_default_role_is_analyst(self, web_client, admin_cookie):
-        """Bare /setup defaults to analyst layout — even for admin users.
-        Admin opts in via the admin tile (?role=admin) when they want the
-        marketplace/plugins flow."""
+    def test_install_preview_unified_layout(self, web_client, admin_cookie):
+        """The clipboard payload (SETUP_INSTRUCTIONS_TEMPLATE JS array)
+        carries the unified layout for every caller — admin-vs-analyst
+        is no longer a layout branch. Without plugin grants, the
+        marketplace block is omitted (no `claude plugin marketplace
+        add` line)."""
         import re
         resp = web_client.get("/setup", cookies=admin_cookie)
         assert resp.status_code == 200
         body = resp.text
-        # The clipboard payload (SETUP_INSTRUCTIONS_TEMPLATE JS array)
-        # carries the analyst layout. Admin tile label "Admin CLI" still
-        # appears as a tile heading (admin user sees both tiles), but the
-        # default rendered prompt is the analyst flow.
         match = re.search(
             r"var\s+SETUP_INSTRUCTIONS_TEMPLATE\s*=\s*\[(.*?)\]\.join\(",
             body, re.DOTALL,
@@ -255,6 +262,12 @@ class TestClaudeSetupPreview:
         clipboard = match.group(1)
         assert "agnes init" in clipboard
         assert "claude plugin marketplace add" not in clipboard
+        # Legacy admin-only auth verbs are gone from the generated prompt.
+        assert "agnes auth import-token" not in clipboard
+        # `agnes auth whoami` was the old admin step 3; subsumed by
+        # `agnes init` + `agnes catalog` smoke verify.
+        assert "3) Verify the login" not in clipboard
+        assert "2) Log in" not in clipboard
 
     def test_dashboard_setup_cta_links_to_setup(self, web_client, admin_cookie):
         """Dashboard setup CTA shows env-setup-cta and a link to /setup instead

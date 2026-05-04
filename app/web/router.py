@@ -7,10 +7,10 @@ import logging
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Optional
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Query, Request, HTTPException
+from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 import duckdb
@@ -717,42 +717,31 @@ async def activity_center(
 @router.get("/setup", response_class=HTMLResponse)
 async def setup_page(
     request: Request,
-    role: Literal["analyst", "admin"] = Query(default="analyst"),
     user: Optional[dict] = Depends(get_optional_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Setup instructions for the local agent (CLI + Claude Code).
 
-    The `role` query param picks the layout:
-      - `analyst` (default) → trimmed workspace-bootstrap flow rendered by
-        `_resolve_analyst_lines` (no marketplace, no plugins).
-      - `admin` → full marketplace + skills + diagnose flow. Admin-only:
-        non-admin callers asking for `?role=admin` are silently downgraded
-        to `analyst` so the page never shows them instructions they can't
-        execute.
+    Single unified flow for everyone — admin-vs-analyst is no longer a
+    layout branch. The marketplace + plugins block appears iff the
+    caller has plugin grants in `resource_grants` (resolved inside
+    `compute_default_agent_prompt`).
 
-    When an admin override is saved, the override replaces the auto-generated
-    setup_instructions output everywhere (both the /setup page display and the
-    dashboard clipboard CTA).  When no override is set, the live default from
+    When an admin override is saved, the override replaces the
+    auto-generated setup_instructions output everywhere (both the
+    /setup page display and the dashboard clipboard CTA). When no
+    override is set, the live default from
     setup_instructions.resolve_lines() is used.
     """
     from src.repositories.welcome_template import WelcomeTemplateRepository
     from src.welcome_template import compute_default_agent_prompt, _sanitize_banner_html
     from jinja2 import Environment, StrictUndefined, TemplateError
 
-    # Gate the admin layout on user.is_admin. Non-admins requesting `?role=admin`
-    # silently fall back to analyst — admin instructions reference admin-only
-    # endpoints (marketplace registration, skills install) that a non-admin
-    # PAT can't authenticate against.
-    if role == "admin" and not (user and user.get("is_admin")):
-        role = "analyst"
-
     base_url = str(request.base_url).rstrip("/")
 
     # Determine the script text: override (Jinja2-rendered) or live default.
-    # The override is role-agnostic by design — admins who set an override are
-    # opting into the exact text they wrote, regardless of which tile the
-    # caller picked. Only the live default branches on `role`.
+    # The override is per-instance, applies to every caller — admins who set
+    # an override are opting into the exact text they wrote.
     row = WelcomeTemplateRepository(conn).get()
     override_content = row.get("content")
     if override_content:
@@ -789,7 +778,6 @@ async def setup_page(
         # Override both variables so the partial and the JS array stay in sync.
         setup_instructions_lines=setup_instructions_lines,
         setup_script_text=setup_script_text,
-        role=role,
     )
     return templates.TemplateResponse(request, "install.html", ctx)
 
