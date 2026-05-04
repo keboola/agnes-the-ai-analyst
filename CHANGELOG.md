@@ -13,9 +13,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Added
 - **`/admin/server-config` BQ test connection**: admin-only `POST
   /api/admin/bigquery/test-connection` runs a 10s-timeout `SELECT 1`
-  against BigQuery via the saved `data_source.bigquery` config and
-  returns typed structured feedback (`200 ok` / `400 not_configured` /
-  `502 cross_project_forbidden` / `504 timeout`). The
+  against BigQuery via the **process-cached** `BqAccess`
+  (`@functools.cache` on `get_bq_access`) and returns typed structured
+  feedback (`200 ok` / `400 not_configured` / `502 cross_project_forbidden`
+  / `504 timeout`). Tests the config active in the running process —
+  after a `data_source.bigquery` save the response shape includes
+  `restart_required: True`; click "Test connection" AFTER restart to
+  validate the freshly-saved values. The
   /admin/server-config UI gets a "Test BigQuery connection" button next
   to the data_source Save button; on failure the inline result uses the
   same structured shape as the CLI renderer so operators see the same

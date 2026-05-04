@@ -100,3 +100,19 @@ def test_falls_back_when_detail_is_string(render_error):
     body = {"detail": "Only single SELECT queries are allowed"}
     out = render_error(400, body)
     assert "Only single SELECT" in out
+
+
+def test_renders_empty_string_as_empty_marker(render_error):
+    """Devin Review iter #6: `billing_project: ""` in cross_project_forbidden
+    is the key diagnostic showing WHY the operator hits USER_PROJECT_DENIED.
+    The renderer must show empty strings as `(empty)`, not silently drop them."""
+    body = {"detail": {
+        "kind": "cross_project_forbidden",
+        "billing_project": "",            # the key diagnostic
+        "data_project": "prj-example",
+        "hint": "Set data_source.bigquery.billing_project",
+    }}
+    out = render_error(502, body)
+    assert "billing_project: (empty)" in out, \
+        f"empty billing_project must render as (empty); got:\n{out}"
+    assert "data_project: prj-example" in out

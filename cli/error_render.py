@@ -77,11 +77,15 @@ def _format_dict(status_code: int, detail: dict) -> str:
 
     # Only the key actually used in the label is hidden from the kv block.
     seen: set[str] = {label_key} if label_key else set()
-    # Priority keys first
+    # Priority keys first. Filter only None — `_kv_line` already renders
+    # empty strings as `(empty)`, which is the key diagnostic for
+    # `billing_project: ""` in cross_project_forbidden errors. Earlier
+    # `not in (None, "")` filter dropped exactly the field the operator
+    # needs to see (Devin Review iter #6 on PR #168).
     for key in _PRIORITY_KEYS:
         if key in seen:
             continue
-        if key in detail and detail[key] not in (None, ""):
+        if key in detail and detail[key] is not None:
             lines.append(_kv_line(key, detail[key]))
             seen.add(key)
 
@@ -89,7 +93,7 @@ def _format_dict(status_code: int, detail: dict) -> str:
     for key, value in detail.items():
         if key in seen or key in _WRAP_KEYS:
             continue
-        if value not in (None, ""):
+        if value is not None:
             lines.append(_kv_line(key, value))
             seen.add(key)
 
