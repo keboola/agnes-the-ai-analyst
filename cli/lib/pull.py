@@ -136,15 +136,33 @@ def run_pull(
 
         # 2. Compute the download set, skipping remote-mode tables (no
         # parquet on the server) and unchanged hashes.
+        #
+        # The parquet-existence check is load-bearing: a stale `sync_state.json`
+        # entry (hash matches server) is NOT proof the file is on disk. The
+        # file can disappear between runs — manual rm, disk corruption, an
+        # operator nuking `server/parquet/` during cleanup, a different
+        # workspace sharing the same `~/.config/agnes/sync_state.json`
+        # (TODO(workspace-scoped-sync-state) below) writing one workspace's
+        # parquets while another reads sync_state and assumes "I already
+        # have these." Without the existence guard, `agnes pull` would skip
+        # the download and the downstream DuckDB view rebuild fails on a
+        # missing file. Hash-equal-but-file-missing → force re-download.
         to_download: list[str] = []
         non_remote_total = 0
+        parquet_dir = workspace / "server" / "parquet"
         for tid, info in server_tables.items():
             if info.get("query_mode") == "remote":
                 continue
             non_remote_total += 1
             local_hash = local_tables.get(tid, {}).get("hash", "")
             server_hash = info.get("hash", "")
-            if server_hash != local_hash or tid not in local_tables or not server_hash:
+            target = parquet_dir / f"{tid}.parquet"
+            if (
+                server_hash != local_hash
+                or tid not in local_tables
+                or not server_hash
+                or not target.exists()
+            ):
                 to_download.append(tid)
         result.parquets_total = non_remote_total
 
@@ -156,7 +174,6 @@ def run_pull(
 
         # 4. Download parquets. Lazy mkdir: only create server/parquet/
         # when we have at least one table to write into it.
-        parquet_dir = workspace / "server" / "parquet"
         for tid in to_download:
             if not parquet_dir.exists():
                 parquet_dir.mkdir(parents=True, exist_ok=True)
