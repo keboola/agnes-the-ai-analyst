@@ -1928,7 +1928,7 @@ Read this when you want to know "what is this thing", "how does it work", or
 
 | Path | What it is | How to remove |
 |------|------------|---------------|
-| `~/.local/bin/da` | The `agnes` CLI binary | `uv tool uninstall agnes-the-ai-analyst` |
+| `~/.local/bin/agnes` | The `agnes` CLI binary | `uv tool uninstall agnes-the-ai-analyst` |
 | `~/.config/da/config.yaml` | Default Agnes server URL | `rm -rf ~/.config/da/` |
 | `~/.config/da/token.json` | Personal access token (PAT) | `rm ~/.config/da/token.json` |
 | `~/.agnes/ca.pem` | Server's CA cert (private CA installs only) | `rm ~/.agnes/ca.pem` |
@@ -3124,20 +3124,20 @@ from tests.fixtures.analyst_bootstrap import NONEXISTENT_TABLE
 
 
 READER_COMMANDS = [
-    ["da", "catalog"],
-    ["da", "catalog", "--metrics"],
-    ["da", "schema", NONEXISTENT_TABLE],
-    ["da", "describe", NONEXISTENT_TABLE],
-    ["da", "query", "SELECT 1"],
-    ["da", "explore", NONEXISTENT_TABLE],
-    ["da", "disk-info"],
-    ["da", "snapshot", "list"],
-    ["da", "snapshot", "create", NONEXISTENT_TABLE, "--as", "x", "--estimate"],
-    ["da", "status"],
-    ["da", "diagnose"],
-    ["da", "auth", "whoami"],
-    ["da", "skills", "list"],
-    ["da", "skills", "show", "agnes-data-querying"],
+    ["agnes", "catalog"],
+    ["agnes", "catalog", "--metrics"],
+    ["agnes", "schema", NONEXISTENT_TABLE],
+    ["agnes", "describe", NONEXISTENT_TABLE],
+    ["agnes", "query", "SELECT 1"],
+    ["agnes", "explore", NONEXISTENT_TABLE],
+    ["agnes", "disk-info"],
+    ["agnes", "snapshot", "list"],
+    ["agnes", "snapshot", "create", NONEXISTENT_TABLE, "--as", "x", "--estimate"],
+    ["agnes", "status"],
+    ["agnes", "diagnose"],
+    ["agnes", "auth", "whoami"],
+    ["agnes", "skills", "list"],
+    ["agnes", "skills", "show", "agnes-data-querying"],
 ]
 
 
@@ -3264,11 +3264,11 @@ def test_clean_install_zero_grants(fastapi_test_server, tmp_path, test_pat_no_gr
 def test_init_force_preserves_local_md(fastapi_test_server, tmp_path, test_pat):
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    subprocess.run(["da", "init", "--server-url", fastapi_test_server.url,
+    subprocess.run(["agnes", "init", "--server-url", fastapi_test_server.url,
                     "--token", test_pat, "--workspace", str(workspace)], check=True)
     (workspace / ".claude" / "CLAUDE.local.md").write_text("# my private notes\n")
 
-    subprocess.run(["da", "init", "--server-url", fastapi_test_server.url,
+    subprocess.run(["agnes", "init", "--server-url", fastapi_test_server.url,
                     "--token", test_pat, "--workspace", str(workspace),
                     "--force"], check=True)
     assert "my private notes" in (workspace / ".claude" / "CLAUDE.local.md").read_text()
@@ -3276,10 +3276,10 @@ def test_init_force_preserves_local_md(fastapi_test_server, tmp_path, test_pat):
 
 def test_readers_in_pre_init_dir(tmp_path):
     """Reader commands in a folder that never had `agnes init`. Friendly hints, no tracebacks."""
-    for cmd in [["da", "query", "SELECT 1"],
-                ["da", "snapshot", "create", "x", "--as", "y", "--estimate"],
-                ["da", "explore", "x"],
-                ["da", "snapshot", "list"]]:
+    for cmd in [["agnes", "query", "SELECT 1"],
+                ["agnes", "snapshot", "create", "x", "--as", "y", "--estimate"],
+                ["agnes", "explore", "x"],
+                ["agnes", "snapshot", "list"]]:
         result = subprocess.run(cmd, cwd=tmp_path,
                                 capture_output=True, text=True, timeout=15)
         assert "Traceback" not in result.stderr
@@ -3359,7 +3359,8 @@ Open `CHANGELOG.md`, find the topmost `## [Unreleased]` section (it sits above t
 ## [Unreleased]
 
 ### Changed
-- **BREAKING** Analyst bootstrap rewritten end-to-end. `da analyst setup` is removed; replaced by `agnes init` (non-interactive, requires `--server-url` and `--token`). `da sync` is split into `agnes pull` (refresh) and `agnes push` (upload). `da fetch` is folded into `agnes snapshot create`. `da metrics list/show` is folded into `agnes catalog --metrics`; `da metrics import/export/validate` move to `agnes admin metrics {import,export,validate}`. The `da analyst` namespace is removed; the workspace status command is now `agnes status`. The previous `agnes status` (server-health overview) becomes `agnes diagnose system`.
+- **BREAKING** CLI binary renamed from `da` to `agnes`. No backward-compat alias is shipped. Update shell aliases, hook commands in any pre-existing `.claude/settings.json`, scripts, and cron jobs. Reinstall via `uv tool install <wheel>`; the wheel now ships an `agnes` entry point.
+- **BREAKING** Analyst bootstrap rewritten end-to-end. `da analyst setup` is removed; replaced by `agnes init` (non-interactive, requires `--server-url` and `--token`). `da sync` is split into `agnes pull` (refresh) and `agnes push` (upload). `da fetch` is folded into `agnes snapshot create`. `da metrics list/show` is folded into `agnes catalog --metrics`; `da metrics import/export/validate` move to `agnes admin metrics {import,export,validate}`. The `da analyst` namespace is removed; the workspace status command is now `agnes status`. The previous `da status` (server-health overview) becomes `agnes diagnose system`.
 - **BREAKING** Workspace layout simplified. Removed: `data/parquet/`, `data/duckdb/`, `data/metadata/`, `user/artifacts/`. Canonical paths: `server/parquet/` (synced parquets), `user/duckdb/analytics.duckdb` (DuckDB views), `user/snapshots/` (ad-hoc snapshots), `user/sessions/` (recorded sessions).
 - The `/setup` web page now branches on a `role` query parameter: `/setup?role=analyst` renders the analyst workspace bootstrap prompt; `/setup?role=admin` renders the admin CLI install prompt. `/install` continues to 302 to `/setup`.
 - `CLAUDE.md` server-side template + repo-root `CLAUDE.md` updated to reference the new CLI verbs and workspace paths. The admin UI for the `claude_md_template` DB override (`/admin/workspace-prompt`) renders a yellow banner when the saved override contains legacy strings (`data/parquet/`, `da sync`, `da fetch`, `da analyst setup`, `da metrics list/show`); admins re-author and save to clear it. Migration is manual.

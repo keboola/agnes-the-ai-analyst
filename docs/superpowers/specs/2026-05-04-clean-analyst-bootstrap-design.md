@@ -184,6 +184,7 @@ Reader commands explicitly listed (`agnes explore`, `agnes disk-info`, `agnes sn
 
 | Component | File | Change |
 |---|---|---|
+| CLI binary rename | `pyproject.toml` (`[project.scripts]`), `cli/main.py` (`Typer(name=...)`) | Replace `da = "cli.main:app"` with `agnes = "cli.main:app"` in `pyproject.toml`. Replace `name="da"` with `name="agnes"` in the `Typer(...)` call at `cli/main.py:52`. No backward-compat alias shipped. Reinstall via `uv pip install -e ".[dev]"`. |
 | `agnes init` (new) | `cli/commands/init.py` (new) | Required args: `--server-url`, `--token`. Optional: `--force`, `--workspace` (default `cwd`). Steps: (1) verify server reachability + PAT validity via `GET /api/catalog/tables` with `Authorization: Bearer <PAT>` — same endpoint `agnes auth import-token` already uses for this purpose (`cli/commands/auth.py:154`); exercises full PAT validation chain (revocation, expiry, hash) and 401s on bad PAT, unlike `/api/health` which is unauthenticated; (2) save server URL + PAT to `~/.config/da/{config.yaml,token.json}`; (3) `GET /api/welcome` and write its body to `<workspace>/CLAUDE.md`; (4) write `.claude/settings.json` (model, permissions, hooks pointing at `agnes pull` and `agnes push`) — delegate hook installation to `cli/lib/hooks.py:install_claude_hooks` (see new module row below); (5) write `.claude/CLAUDE.local.md` (stub, only if absent); (6) call `cli/lib/pull.py:run_pull(server_url, token, workspace)` programmatically (no Typer round-trip); (7) write `AGNES_WORKSPACE.md` from a static client-side template with `{created_at}`, `{server_url}`, `{workspace_path}` substituted. `agnes init` does NOT call `agnes auth login`; the PAT from the paste-prompt is the only auth path during bootstrap. Errors are rendered by `cli/error_render.py:render_error()` — `agnes init` synthesizes `{"detail": {"kind": "...", "hint": "..."}}` dicts client-side (pattern: `cli/commands/query.py:152, 165`); typed kinds: `auth_failed`, `server_unreachable`, `partial_state`, `disk_full`. |
 | `cli/lib/pull.py` (new module) | `cli/lib/pull.py` + `cli/lib/__init__.py` (new) — establish `cli/lib/` as the shared-library tree | Pure-function refactor of today's `cli/commands/sync.py:sync()` body, minus Typer decorators and stdout. Signature: `def run_pull(server_url: str, token: str, workspace: Path, *, dry_run: bool = False) -> PullResult`. Returns a structured `PullResult` (tables_updated, parquets_total, rules_count, duration_s, errors). Caller decides what to print (`agnes init` summarizes; `agnes pull` Typer wrapper prints per `--quiet`/`--json` flags). Tested directly without subprocess. **Packaging:** `cli/lib/__init__.py` (empty file) is required for Hatchling to include the dir in the wheel — `pyproject.toml:packages` already lists `cli`, sub-packages with `__init__.py` are picked up automatically. |
 | `cli/lib/hooks.py` (new module) | `cli/lib/hooks.py` (new) — replaces `cli/commands/analyst.py:_install_claude_hooks` | `def install_claude_hooks(workspace: Path) -> None`. Idempotent. Reads `<workspace>/.claude/settings.json`, drops any prior entry whose every command is a `agnes pull`/`da sync`/`agnes push` invocation (covers both today's hook commands and the new ones during a transition window if anyone runs the new init in a folder that had old hooks), appends fresh entries: `SessionStart → agnes pull --quiet 2>/dev/null \|\| true`, `SessionEnd → agnes push --quiet 2>/dev/null \|\| true`. Workspace-level scope (`<workspace>/.claude/settings.json`, not user-home), preserves third-party hooks. Lives next to `cli/lib/pull.py` under the new `cli/lib/__init__.py` package. |
@@ -269,7 +270,7 @@ Empty folder + Claude Code with paste prompt
 │   writes ~/.agnes/{ca.pem, ca-bundle.pem}, appends shell rc block
 │
 ├─ Step 1 — uv tool install <wheel>  # binary: agnes
-│   writes ~/.local/bin/da
+│   writes ~/.local/bin/agnes
 │
 ├─ Step 2 — agnes init --server-url URL --token PAT --workspace .
 │   ├─ verify: GET /api/catalog/tables with Bearer PAT → 200 (PAT-validating endpoint)
@@ -430,20 +431,20 @@ The autouse fixture `_reset_module_caches` in `tests/conftest.py:50-83` (added i
 
 ```python
 @pytest.mark.parametrize("cmd", [
-    ["da", "catalog"],
-    ["da", "catalog", "--metrics"],
-    ["da", "schema", "__nonexistent__"],
-    ["da", "describe", "__nonexistent__"],
-    ["da", "query", "SELECT 1"],
-    ["da", "explore", "__nonexistent__"],
-    ["da", "disk-info"],
-    ["da", "snapshot", "list"],
-    ["da", "snapshot", "create", "__nonexistent__", "--as", "x", "--estimate"],
-    ["da", "status"],
-    ["da", "diagnose"],
-    ["da", "auth", "whoami"],
-    ["da", "skills", "list"],
-    ["da", "skills", "show", "agnes-data-querying"],
+    ["agnes", "catalog"],
+    ["agnes", "catalog", "--metrics"],
+    ["agnes", "schema", "__nonexistent__"],
+    ["agnes", "describe", "__nonexistent__"],
+    ["agnes", "query", "SELECT 1"],
+    ["agnes", "explore", "__nonexistent__"],
+    ["agnes", "disk-info"],
+    ["agnes", "snapshot", "list"],
+    ["agnes", "snapshot", "create", "__nonexistent__", "--as", "x", "--estimate"],
+    ["agnes", "status"],
+    ["agnes", "diagnose"],
+    ["agnes", "auth", "whoami"],
+    ["agnes", "skills", "list"],
+    ["agnes", "skills", "show", "agnes-data-querying"],
 ])
 def test_reader_does_not_crash_on_zero_grants(zero_grants_workspace, cmd):
     """No reader should crash with a Python traceback on a fresh
@@ -463,7 +464,7 @@ This is the load-bearing test for "nothing crashes on missing dirs".
 def test_clean_install_minimal_grants(fastapi_test_server, tmp_path, test_pat):
     """User has 2 table grants + 2 mandatory rules → expected workspace shape."""
     subprocess.run(
-        ["da", "init", "--server-url", fastapi_test_server.url,
+        ["agnes", "init", "--server-url", fastapi_test_server.url,
          "--token", test_pat, "--workspace", str(tmp_path)],
         check=True,
     )
@@ -499,7 +500,7 @@ def test_clean_install_minimal_grants(fastapi_test_server, tmp_path, test_pat):
 
 def test_clean_install_zero_grants(fastapi_test_server, tmp_path, test_pat_no_grants):
     """User has 0 grants, 0 rules → minimal workspace, zero dead dirs."""
-    subprocess.run(["da", "init", ...], check=True)
+    subprocess.run(["agnes", "init", ...], check=True)
     must_exist = {"CLAUDE.md", "AGNES_WORKSPACE.md",
                   ".claude/settings.json", ".claude/CLAUDE.local.md",
                   "user/duckdb/analytics.duckdb"}
@@ -606,7 +607,8 @@ This protocol is documented in `docs/RELEASE_CHECKLIST.md` as a mandatory pre-me
 ## [Unreleased]
 
 ### Changed
-- **BREAKING** Analyst bootstrap rewritten end-to-end. `da analyst setup` is removed; replaced by `agnes init` (non-interactive, requires `--server-url` and `--token`). `da sync` is split into `agnes pull` (refresh) and `agnes push` (upload). `da fetch` is folded into `agnes snapshot create`. `da metrics list/show` is folded into `agnes catalog --metrics`; `da metrics import/export/validate` move to `agnes admin metrics {import,export,validate}`. The `da analyst` namespace is removed; the workspace status command is now `agnes status`.
+- **BREAKING** CLI binary renamed from `da` to `agnes`. No backward-compat alias is shipped. Update shell aliases, hook commands in any pre-existing `.claude/settings.json`, scripts, and cron jobs. Reinstall via `uv tool install <wheel>`; the wheel now ships an `agnes` entry point.
+- **BREAKING** Analyst bootstrap rewritten end-to-end. `da analyst setup` is removed; replaced by `agnes init` (non-interactive, requires `--server-url` and `--token`). `da sync` is split into `agnes pull` (refresh) and `agnes push` (upload). `da fetch` is folded into `agnes snapshot create`. `da metrics list/show` is folded into `agnes catalog --metrics`; `da metrics import/export/validate` move to `agnes admin metrics {import,export,validate}`. The `da analyst` namespace is removed; the workspace status command is now `agnes status`. The previous `da status` (server-health overview) becomes `agnes diagnose system`.
 - **BREAKING** Workspace layout simplified. Removed: `data/parquet/`, `data/duckdb/`, `data/metadata/`, `user/artifacts/`. Canonical paths: `server/parquet/` (synced parquets), `user/duckdb/analytics.duckdb` (DuckDB views), `user/snapshots/` (ad-hoc snapshots), `user/sessions/` (recorded sessions).
 - The `/setup` web page now branches on a `role` query parameter: `/setup?role=analyst` renders the analyst workspace bootstrap prompt; `/setup?role=admin` renders the admin CLI install prompt. `/install` continues to 302 to `/setup`.
 - `CLAUDE.md` server-side template + repo-root `CLAUDE.md` updated to reference the new CLI verbs and workspace paths. The admin UI for the `claude_md_template` DB override (`/admin/workspace-prompt`) renders a yellow banner when the saved override contains legacy strings (`data/parquet/`, `da sync`, `da fetch`, `da analyst setup`, `da metrics list/show`); admins re-author and save to clear it. Migration is manual.
