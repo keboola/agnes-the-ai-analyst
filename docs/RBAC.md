@@ -100,7 +100,7 @@ No DB migration, no startup hook, no second wiring step in `access-overview` —
 Members are added to groups by three sources, distinguished by the `source` column:
 
 - **`google_sync`** — written by the OAuth callback on every login. The previous Google-sync set is wholesale replaced (DELETE + INSERT) so a removed Workspace membership disappears immediately.
-- **`admin`** — written by admin actions in the UI (`/admin/access`), CLI (`da admin group add-member …`), or REST (`POST /api/admin/groups/{id}/members`). Survives Google sync. Admin can only delete admin-source rows.
+- **`admin`** — written by admin actions in the UI (`/admin/access`), CLI (`agnes admin group add-member …`), or REST (`POST /api/admin/groups/{id}/members`). Survives Google sync. Admin can only delete admin-source rows.
 - **`system_seed`** — written at deploy time. Used for the `SEED_ADMIN_EMAIL` → Admin-group binding and the auto-Everyone membership of every new user. Never modified at runtime.
 
 Removing a user from a group via the admin path (UI/CLI/REST) only deletes admin-source rows. To revoke a Google-synced membership, the operator must change the upstream Workspace group instead — Agnes will pick up the change on the user's next login.
@@ -121,18 +121,18 @@ Removing a user from a group via the admin path (UI/CLI/REST) only deletes admin
 ### CLI
 
 ```bash
-da admin group list
-da admin group create Engineering --description "Eng team"
-da admin group delete Engineering
-da admin group members Engineering
-da admin group add-member Engineering alice@example.com
-da admin group remove-member Engineering alice@example.com
+agnes admin group list
+agnes admin group create Engineering --description "Eng team"
+agnes admin group delete Engineering
+agnes admin group members Engineering
+agnes admin group add-member Engineering alice@example.com
+agnes admin group remove-member Engineering alice@example.com
 
-da admin grant resource-types
-da admin grant create Engineering marketplace_plugin foundry-ai/metrics-plugin
-da admin grant list --type marketplace_plugin
-da admin grant list --group Engineering
-da admin grant delete <grant-id>
+agnes admin grant resource-types
+agnes admin grant create Engineering marketplace_plugin foundry-ai/metrics-plugin
+agnes admin grant list --type marketplace_plugin
+agnes admin grant list --group Engineering
+agnes admin grant delete <grant-id>
 ```
 
 All subcommands authenticate via PAT and exit non-zero on API errors.
@@ -160,7 +160,7 @@ Every mutation writes an audit log entry (`user_group.created`, `resource_grant.
 1. Creates a `users` row for that email if missing (with `password_hash` from `SEED_ADMIN_PASSWORD` if provided).
 2. Adds an Admin-group membership with `source='system_seed'`.
 
-The hook is idempotent — re-running deploy does not duplicate or revoke. To add additional initial admins post-deploy, log in as the seed admin and use `/admin/access` or `da admin group add-member Admin <email>`.
+The hook is idempotent — re-running deploy does not duplicate or revoke. To add additional initial admins post-deploy, log in as the seed admin and use `/admin/access` or `agnes admin group add-member Admin <email>`.
 
 ---
 

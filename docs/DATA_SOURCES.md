@@ -40,7 +40,7 @@ KEBOOLA_PROJECT_ID=12345
 
 Or configure via the admin UI (`/admin/tables`) or CLI:
 ```bash
-da admin register-table --source-type keboola --bucket "in.c-crm" --table "company" --query-mode local
+agnes admin register-table --source-type keboola --bucket "in.c-crm" --table "company" --query-mode local
 ```
 
 ### How it works
@@ -113,18 +113,18 @@ optional sync schedule. Submit runs `/api/admin/register-table/precheck` first
 (round-trips `bigquery.Client.get_table` to confirm the table exists and the SA
 can see it), surfaces the row count + size + column count, then commits.
 
-**CLI** — `da admin register-table`:
+**CLI** — `agnes admin register-table`:
 
 ```bash
 # Dry-run: validate + check the source exists, no DB write.
-da admin register-table orders \
+agnes admin register-table orders \
     --source-type bigquery \
     --bucket analytics \
     --source-table orders \
     --dry-run
 
 # Commit
-da admin register-table orders \
+agnes admin register-table orders \
     --source-type bigquery \
     --bucket analytics \
     --source-table orders \
@@ -146,7 +146,7 @@ Not supported in M1. The register endpoint rejects any `source_table` containing
 For queries that JOIN local data with BigQuery results:
 
 ```bash
-da query --sql "SELECT o.*, t.views FROM orders o JOIN traffic t ON o.date = t.date" \
+agnes query --sql "SELECT o.*, t.views FROM orders o JOIN traffic t ON o.date = t.date" \
          --register-bq "traffic=SELECT date, SUM(views) as views FROM dataset.web GROUP BY 1"
 ```
 

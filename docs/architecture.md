@@ -13,7 +13,7 @@ ai-data-analyst/
 │   ├── auth/             Auth providers (JWT, Google OAuth, email magic link, password)
 │   └── web/              HTML dashboard routes
 ├── services/             Standalone background services (scheduler, telegram_bot, ws_gateway, …)
-├── cli/                  CLI tool (da sync, da query, da admin)
+├── cli/                  CLI tool (da sync, agnes query, agnes admin)
 ├── scripts/              Utility and migration scripts
 ├── config/               Instance configuration templates
 ├── tests/                Test suite

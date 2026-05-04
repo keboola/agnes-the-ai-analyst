@@ -45,7 +45,7 @@ If any are missing, `app/instance_config.py` catches the `ValueError`, logs `Cou
 | Login works but the user keeps getting re-prompted on the next request | Access-token cookie lost between requests. Common cause: `DOMAIN` unset → `Secure=False` but the browser hit the app over `https://` via a proxy and dropped the cookie for another reason; or `DOMAIN` set but the browser hit `http://`. | Set `DOMAIN=<hostname>` to match the terminator's hostname, and always serve over HTTPS to the browser. |
 | `/login?error=google_not_configured` | `GOOGLE_CLIENT_ID` or `GOOGLE_CLIENT_SECRET` empty in container env. | Inspect `docker compose exec app env \| grep GOOGLE`. |
 | `/login?error=domain_not_allowed` | User's email domain isn't in `auth.allowed_domain`. | Add the domain (CSV) and reload — note that allowed_domain only takes effect when `instance.yaml` validates (see above). |
-| Login succeeds but `/admin/*` returns 403 | New user is not in the `Admin` system group. | Set `SEED_ADMIN_EMAIL` BEFORE first login, or promote via `da admin break-glass grant-admin <email>` (requires shell access to the host — see below). |
+| Login succeeds but `/admin/*` returns 403 | New user is not in the `Admin` system group. | Set `SEED_ADMIN_EMAIL` BEFORE first login, or promote via `agnes admin break-glass grant-admin <email>` (requires shell access to the host — see below). |
 
 ## Admin promotion (when `SEED_ADMIN_EMAIL` was missed)
 
@@ -54,7 +54,7 @@ Use the break-glass CLI command. It writes directly to `system.duckdb` without H
 ```bash
 cd <install-dir>
 docker compose stop app scheduler
-da admin break-glass grant-admin me@example.com
+agnes admin break-glass grant-admin me@example.com
 docker compose start app scheduler
 ```
 

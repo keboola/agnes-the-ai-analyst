@@ -35,7 +35,7 @@
 5. Register your tables via the admin API or CLI:
    ```bash
    # Via CLI
-   da admin register-table --source-type keboola --bucket "in.c-crm" --table "company" --query-mode local
+   agnes admin register-table --source-type keboola --bucket "in.c-crm" --table "company" --query-mode local
 
    # Or start the server and use the web UI at /admin/tables
    ```
