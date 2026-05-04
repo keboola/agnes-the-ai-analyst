@@ -1,12 +1,15 @@
 """Tests for PAT scope + ttl_seconds fields (clean-analyst-bootstrap spec).
 
-Six behaviors covered:
+Behaviors covered:
 - bootstrap-analyst scope force-clamps TTL to <= 1h regardless of request
 - ttl_seconds wins over expires_in_days when both are set
+- ttl_seconds beats expires_in_days even when both passed in same request
 - expires_in_days remains the fallback when ttl_seconds is omitted
 - ttl_seconds upper bound (10y in seconds) rejects with 400
 - ttl_seconds <= 0 rejects with 400
-- scope defaults to "general" when omitted
+- scope defaults to "general" when omitted (strict: claim must be present)
+- audit log row for token.create records the scope param
+- create_access_token rejects reserved keys in extra_claims
 
 The spec calls for a `web_session` cookie-authenticated fixture sourced from
 `tests/fixtures/analyst_bootstrap.py` (Task 20). Until that lands, these
@@ -124,4 +127,85 @@ def test_scope_default_is_general(web_session):
     resp = web_session.post("/auth/tokens", json={"name": "test"})
     assert resp.status_code == 201, resp.text
     payload = _decode(resp.json()["token"])
-    assert payload.get("scope", "general") == "general"
+    # Strict assertion: the claim MUST be present. The previous
+    # `payload.get("scope", "general") == "general"` form would silently
+    # pass even if the route stopped passing extra_claims={"scope": ...}
+    # to create_access_token entirely — which is exactly the regression
+    # we want to catch.
+    assert payload["scope"] == "general"
+
+
+def test_ttl_seconds_wins_when_both_set(web_session):
+    """Spec: ttl_seconds wins over expires_in_days when both are present."""
+    resp = web_session.post(
+        "/auth/tokens",
+        json={
+            "name": "test",
+            "ttl_seconds": 7200,        # 2 hours
+            "expires_in_days": 30,      # 30 days — must be ignored
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    payload = _decode(resp.json()["token"])
+    delta = payload["exp"] - payload["iat"]
+    # ttl_seconds (~7200) wins, NOT expires_in_days (~2_592_000)
+    assert delta <= 7200 + 5
+    assert delta < 30 * 86400
+
+
+def test_audit_log_includes_scope(web_session, fresh_db):
+    """Audit log row for token creation must record the scope param."""
+    import json
+
+    from src.db import close_system_db, get_system_db
+
+    resp = web_session.post(
+        "/auth/tokens",
+        json={"name": "audit-test", "scope": "bootstrap-analyst"},
+    )
+    assert resp.status_code == 201, resp.text
+
+    # Read the most recent token-creation audit row directly — same pattern
+    # as tests/test_pat.py (token.first_use_new_ip audit assertions).
+    conn = get_system_db()
+    try:
+        rows = conn.execute(
+            "SELECT params FROM audit_log WHERE action = 'token.create' "
+            "ORDER BY timestamp DESC LIMIT 1"
+        ).fetchall()
+    finally:
+        conn.close()
+        close_system_db()
+
+    assert rows, "no audit row found for token.create"
+    raw_params = rows[0][0]
+    params = json.loads(raw_params) if isinstance(raw_params, str) else raw_params
+    assert params.get("scope") == "bootstrap-analyst"
+
+
+def test_create_access_token_rejects_reserved_extra_claims():
+    """extra_claims must not override reserved JWT identity claims."""
+    import os
+
+    import jwt as pyjwt
+
+    from app.auth.jwt import create_access_token
+
+    # create_access_token reads JWT_SECRET_KEY from env when TESTING=1.
+    # Set both so the call works outside the web_session fixture too.
+    os.environ.setdefault("TESTING", "1")
+    os.environ.setdefault("JWT_SECRET_KEY", "test-jwt-secret-key-minimum-32-chars!!")
+
+    token = create_access_token(
+        user_id="real-user",
+        email="real@example.com",
+        extra_claims={
+            "sub": "evil-user",          # reserved — must be ignored
+            "email": "evil@example.com", # reserved — must be ignored
+            "scope": "custom-scope",     # not reserved — must land
+        },
+    )
+    decoded = pyjwt.decode(token, options={"verify_signature": False})
+    assert decoded["sub"] == "real-user"
+    assert decoded["email"] == "real@example.com"
+    assert decoded["scope"] == "custom-scope"
