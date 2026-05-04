@@ -1,7 +1,6 @@
 """Tests for agnes status (workspace status)."""
 
 import json
-from pathlib import Path
 from typer.testing import CliRunner
 
 from cli.commands.status import status_app

@@ -32,7 +32,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Iterator
 
 import httpx
 import pytest
@@ -185,7 +185,6 @@ def _seed_db(data_dir: Path) -> dict:
         # Each parquet is a single-row DuckDB COPY — minimal but valid (PAR1
         # magic + metadata) so client-side `_is_valid_parquet` passes.
         from src.repositories.sync_state import SyncStateRepository
-        from datetime import datetime, timezone
         sync_repo = SyncStateRepository(conn)
         extracts_data = data_dir / "extracts" / "test" / "data"
         extracts_data.mkdir(parents=True, exist_ok=True)

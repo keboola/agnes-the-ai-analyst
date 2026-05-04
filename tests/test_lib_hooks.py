@@ -3,7 +3,6 @@
 import json
 from pathlib import Path
 
-import pytest
 
 from cli.lib.hooks import install_claude_hooks
 
