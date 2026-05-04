@@ -24,7 +24,7 @@ import os
 import re
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 import duckdb
@@ -130,6 +130,7 @@ def compute_default_agent_prompt(
     *,
     user: dict[str, Any] | None,
     server_url: str,
+    role: Literal["analyst", "admin"] = "admin",
 ) -> str:
     """Return the live default setup script from setup_instructions.resolve_lines().
 
@@ -140,6 +141,10 @@ def compute_default_agent_prompt(
     ``conn`` and ``user`` are forwarded to resolve the RBAC-filtered plugin
     install list (anonymous visitors / no conn get the no-marketplace layout).
     ``server_url`` is used to derive the server host for the marketplace block.
+
+    ``role`` selects the layout: ``"admin"`` (default) keeps the existing
+    full bootstrap, ``"analyst"`` short-circuits to the trimmed analyst
+    workspace flow (no marketplace, plugins forced empty).
     """
     try:
         from app.web.setup_instructions import resolve_lines
@@ -148,8 +153,12 @@ def compute_default_agent_prompt(
         _wheel = _find_wheel()
         _wheel_filename = _wheel.name if _wheel else "agnes.whl"
 
+        # Analyst flow has no marketplace concept — skip the RBAC plugin
+        # resolution entirely so the analyst tile renders the same lines for
+        # everyone (and so resolve_lines's analyst short-circuit fires
+        # regardless of whether the caller has plugin grants).
         plugin_install_names: list[str] = []
-        if user and conn is not None:
+        if role == "admin" and user and conn is not None:
             try:
                 from src import marketplace_filter
                 plugin_install_names = [
@@ -179,6 +188,7 @@ def compute_default_agent_prompt(
             self_signed_tls=self_signed_tls,
             server_host=server_host,
             ca_pem=ca_pem,
+            role=role,
         )
         return "\n".join(lines)
     except Exception:

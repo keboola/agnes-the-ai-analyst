@@ -10,6 +10,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- **`/setup?role=analyst|admin` query-param branching**: the setup page now
+  renders two role tiles (Analyst workspace / Admin CLI) at the top, with
+  the matching tile styled as active. `?role=analyst` short-circuits the
+  bash bootstrap to the trimmed analyst-workspace flow (no marketplace,
+  no plugins). Default is `admin` — unspecified or invalid values fall
+  back to the existing admin layout, so any caller that doesn't pass
+  `?role=` keeps the byte-identical pre-Task-4 page. `/install` still
+  302-redirects to `/setup`.
+
 ## [0.32.0] — 2026-05-04
 
 Closes #160. Headline fix: `da query --remote` now resolves

@@ -7,10 +7,10 @@ import logging
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Request, HTTPException
+from fastapi import APIRouter, Depends, Query, Request, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 import duckdb
@@ -717,10 +717,18 @@ async def activity_center(
 @router.get("/setup", response_class=HTMLResponse)
 async def setup_page(
     request: Request,
+    role: Literal["analyst", "admin"] = Query(default="admin"),
     user: Optional[dict] = Depends(get_optional_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Setup instructions for the local agent (CLI + Claude Code).
+
+    The `role` query param picks the layout:
+      - `admin` (default) → full marketplace + skills + diagnose flow,
+        byte-identical to the pre-Task-4 page for any caller that doesn't
+        pass `?role=`.
+      - `analyst` → trimmed workspace-bootstrap flow rendered by
+        `_resolve_analyst_lines` (no marketplace, no plugins).
 
     When an admin override is saved, the override replaces the auto-generated
     setup_instructions output everywhere (both the /setup page display and the
@@ -734,6 +742,9 @@ async def setup_page(
     base_url = str(request.base_url).rstrip("/")
 
     # Determine the script text: override (Jinja2-rendered) or live default.
+    # The override is role-agnostic by design — admins who set an override are
+    # opting into the exact text they wrote, regardless of which tile the
+    # caller picked. Only the live default branches on `role`.
     row = WelcomeTemplateRepository(conn).get()
     override_content = row.get("content")
     if override_content:
@@ -748,9 +759,13 @@ async def setup_page(
             setup_script_text = _sanitize_banner_html(template.render(**ctx_vars))
         except (TemplateError, Exception) as exc:
             logger.warning("setup_page: override render failed (%s); falling back to default", exc)
-            setup_script_text = compute_default_agent_prompt(conn, user=user, server_url=base_url)
+            setup_script_text = compute_default_agent_prompt(
+                conn, user=user, server_url=base_url, role=role,
+            )
     else:
-        setup_script_text = compute_default_agent_prompt(conn, user=user, server_url=base_url)
+        setup_script_text = compute_default_agent_prompt(
+            conn, user=user, server_url=base_url, role=role,
+        )
 
     # Split for the legacy setup_instructions_lines list variable that the
     # Jinja2 partial (_claude_setup_instructions.jinja) uses.
@@ -766,6 +781,7 @@ async def setup_page(
         # Override both variables so the partial and the JS array stay in sync.
         setup_instructions_lines=setup_instructions_lines,
         setup_script_text=setup_script_text,
+        role=role,
     )
     return templates.TemplateResponse(request, "install.html", ctx)
 
