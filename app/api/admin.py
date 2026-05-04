@@ -146,6 +146,38 @@ def _validate_urls_in_patch(sections: Dict[str, Dict[str, Any]]) -> None:
                 _validate_url_not_private(value, field_name=".".join(path))
 
 
+_LOCK_TTL_MIN = 60
+_LOCK_TTL_MAX = 7 * 24 * 3600  # 604800 — one week
+
+
+def _validate_materialize_section(sections: Dict[str, Dict[str, Any]]) -> None:
+    """Validate the materialize section patch when present.
+
+    Checks field-level constraints that the Pydantic envelope can't enforce
+    (it only validates the outer shape, not nested leaf values).
+    """
+    mat = sections.get("materialize")
+    if not isinstance(mat, dict):
+        return
+    ttl = mat.get("lock_ttl_seconds")
+    if ttl is None:
+        return
+    if not isinstance(ttl, int) or isinstance(ttl, bool):
+        raise HTTPException(
+            status_code=422,
+            detail="materialize.lock_ttl_seconds must be an integer",
+        )
+    if ttl < _LOCK_TTL_MIN or ttl > _LOCK_TTL_MAX:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"materialize.lock_ttl_seconds must be between "
+                f"{_LOCK_TTL_MIN} and {_LOCK_TTL_MAX} "
+                f"(got {ttl})"
+            ),
+        )
+
+
 # --- Server-config (instance.yaml) editor -----------------------------------
 #
 # The /admin/server-config UI POSTs a partial dict here keyed by section
@@ -175,6 +207,7 @@ _EDITABLE_SECTIONS: tuple[str, ...] = (
     "openmetadata",
     "desktop",
     "corporate_memory",
+    "materialize",
 )
 
 # "Danger-zone" sections — flipping these can lock operators out (auth.*) or
@@ -585,6 +618,23 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
             ),
         },
     },
+    # materialize — file-lock TTL for the concurrent-materialize safety net.
+    # A single field; more knobs may follow as the feature matures.
+    "materialize": {
+        "lock_ttl_seconds": {
+            "kind": "int",
+            "default": 86400,
+            "hint": (
+                "How long (seconds) before a stale materialize lock file is "
+                "reclaimed. The lock is a .parquet.lock sibling file; if the "
+                "holder process is hard-killed, the next attempt reclaims the "
+                "lock once the file's mtime is older than this TTL. "
+                "Default 86400 (24 h). Min 60, max 604800 (7 days). "
+                "Lower only if you know materializes never exceed the new value "
+                "and your host regularly hard-kills processes."
+            ),
+        },
+    },
 }
 
 # Keys whose values must be redacted from the audit diff. We match
@@ -912,6 +962,9 @@ async def update_server_config(
     # keboola_url, but here it covers any URL-bearing field reachable via
     # the per-section patch (e.g. data_source.keboola.stack_url).
     _validate_urls_in_patch(request.sections)
+
+    # Field-level constraints for sections whose values have documented ranges.
+    _validate_materialize_section(request.sections)
 
     # Defense-in-depth: scrub redaction sentinels (`***` / `<empty>`) out of
     # secret-keyed leaves in the patch before they reach the deep-merge.

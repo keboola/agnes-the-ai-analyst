@@ -403,3 +403,19 @@ catalog:
 #   schema_cache_ttl_seconds: 3600    # /api/v2/schema/{table_id} cache lifetime (default: 1 h)
 #   sample_cache_ttl_seconds: 3600    # /api/v2/sample/{table_id} cache lifetime (default: 1 h)
 #                                     # Admins can force-refresh via POST /api/v2/sample/{id}?refresh=true
+
+# --- Materialize concurrency safety (optional) ---
+# Concurrency safety net for the materialize path (BQ + Keboola). When
+# two materialize attempts race for the same table_id, the second one
+# raises MaterializeInFlightError and skips. The lock is held in a
+# .parquet.lock sibling file; if a holder process is hard-killed before
+# kernel-level flock release, the next attempt reclaims the lock once
+# the file's mtime is older than this TTL.
+#
+# Default 86400 (24h) is generous on purpose — anything shorter risks
+# a long-running COPY being interrupted by its own scheduler successor.
+# Lower it only if you know your materialize never exceeds the new
+# value AND your host has a habit of hard-killing processes.
+# Min 60 (1 minute), max 604800 (7 days). Configurable via /admin/server-config UI.
+# materialize:
+#   lock_ttl_seconds: 86400
