@@ -629,46 +629,6 @@
             .manual-body { padding: 16px 18px 18px; }
         }
 
-        /* ── Role tiles (Analyst vs Admin) ── */
-        .role-tiles {
-            display: flex;
-            gap: 12px;
-            margin-bottom: 20px;
-        }
-        .role-tile {
-            flex: 1;
-            padding: 16px 18px;
-            border: 2px solid var(--border, #e1e4e8);
-            border-radius: 10px;
-            background: var(--surface);
-            text-decoration: none;
-            color: inherit;
-            transition: border-color 0.15s ease, background 0.15s ease;
-            display: block;
-        }
-        .role-tile:hover {
-            border-color: var(--primary, #0073D1);
-        }
-        .role-tile.is-active {
-            border-color: var(--primary, #0073D1);
-            background: var(--primary-light, rgba(0, 115, 209, 0.08));
-        }
-        .role-tile h3 {
-            margin: 0 0 4px 0;
-            font-size: 14px;
-            font-weight: 600;
-            color: var(--text-primary);
-        }
-        .role-tile p {
-            margin: 0;
-            font-size: 12px;
-            color: var(--text-secondary);
-            line-height: 1.5;
-        }
-        @media (max-width: 720px) {
-            .role-tiles { flex-direction: column; }
-        }
-
         /* ── Admin-configured banner (above setup commands) ── */
         .setup-banner {
             background: var(--background, #f6f7f9);
@@ -702,26 +662,6 @@
     {% endwith %}
 
     <main class="main">
-
-        <!-- ═══════════════ ROLE TILES ═══════════════ -->
-        {# Admin tile is admin-only — non-admins see the analyst tile alone. #}
-        {% set _show_admin_tile = user and user.is_admin %}
-        <nav class="role-tiles" aria-label="Choose setup role">
-            <a href="/setup?role=analyst"
-               class="role-tile{% if role == 'analyst' %} is-active{% endif %}"
-               {% if role == 'analyst' %}aria-current="page"{% endif %}>
-                <h3>Analyst workspace</h3>
-                <p>Bootstrap a workspace folder with CLAUDE.md, hooks, and synced data.</p>
-            </a>
-            {% if _show_admin_tile %}
-            <a href="/setup?role=admin"
-               class="role-tile{% if role != 'analyst' %} is-active{% endif %}"
-               {% if role != 'analyst' %}aria-current="page"{% endif %}>
-                <h3>Admin CLI</h3>
-                <p>Install the CLI, register the marketplace, set up admin tooling.</p>
-            </a>
-            {% endif %}
-        </nav>
 
         <!-- ═══════════════ ADMIN BANNER (optional) ═══════════════ -->
         {% if banner_html %}<div class="setup-banner">{{ banner_html | safe }}</div>{% endif %}
@@ -997,16 +937,6 @@
 
     <script>
     (function() {
-        // Role from the Jinja ctx — drives the PAT mint shape below
-        // (analyst tile mints a 1h scope=bootstrap-analyst PAT, admin keeps
-        // the historical 90-day general-purpose PAT).
-        // `tojson` produces a JSON-quoted JS string literal, which doubles as
-        // defense-in-depth: even if `role` ever became attacker-influenced,
-        // tojson would JSON-escape any embedded quotes/backslashes/script
-        // sequences. (Today FastAPI's Literal validator already constrains
-        // `role` to {"analyst","admin"}, so this is belt-and-suspenders.)
-        const ROLE = {{ role | tojson }};
-
         function copyToClipboard(text) {
             if (navigator.clipboard && window.isSecureContext) {
                 return navigator.clipboard.writeText(text);
@@ -1105,12 +1035,11 @@
             btn.disabled = true;
             btn.textContent = 'Generating token…';
             try {
-                // Role-aware PAT mint: analyst tile gets a 1h
-                // scope=bootstrap-analyst PAT (server clamps ttl ≤ 3600);
-                // admin tile keeps the historical 90-day general PAT.
-                var tokenBody = ROLE === "analyst"
-                    ? { name: defaultTokenName(), scope: "bootstrap-analyst", ttl_seconds: 3600 }
-                    : { name: defaultTokenName(), expires_in_days: 90 };
+                // Uniform PAT mint for everyone: scope=general,
+                // expires_in_days=90. The same `/auth/tokens` endpoint
+                // a user can already hit from the /tokens UI — no
+                // role-locked endpoint, no per-role TTL clamp.
+                var tokenBody = { name: defaultTokenName(), expires_in_days: 90 };
                 var resp = await fetch('/auth/tokens', {
                     method: 'POST',
                     credentials: 'include',
