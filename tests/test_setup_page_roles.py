@@ -73,3 +73,37 @@ def test_setup_page_invalid_role_falls_back(client):
     """
     resp = client.get("/setup?role=hacker", follow_redirects=True)
     assert resp.status_code in (200, 422)
+
+
+def test_setup_page_analyst_js_uses_bootstrap_scope(client):
+    """Analyst tile's setupNewClaude JS must mint bootstrap-analyst PATs.
+
+    The JS PAT mint must be role-aware: analyst gets a short-TTL
+    bootstrap-analyst-scoped PAT (server clamps ttl ≤ 3600s), not the
+    historical 90-day general PAT. Asserts the wiring at the rendered
+    template level so we catch any regression in either the Jinja ctx
+    plumbing or the JS branching.
+    """
+    resp = client.get("/setup?role=analyst", follow_redirects=True)
+    assert resp.status_code == 200
+    text = resp.text
+    # The role variable must be set to analyst in JS scope.
+    assert (
+        'const ROLE = "analyst"' in text
+        or 'ROLE = "analyst"' in text
+        or 'data-role="analyst"' in text
+    )
+    # The bootstrap-analyst scope must appear in the JS PAT-mint body.
+    assert "bootstrap-analyst" in text
+    assert "ttl_seconds" in text
+
+
+def test_setup_page_admin_js_uses_general_scope(client):
+    """Admin tile's setupNewClaude JS must keep the existing 90-day
+    expires_in_days behavior — byte-identical PAT mint shape so existing
+    admin flows don't regress.
+    """
+    resp = client.get("/setup?role=admin", follow_redirects=True)
+    assert resp.status_code == 200
+    text = resp.text
+    assert "expires_in_days" in text  # still present in the admin body

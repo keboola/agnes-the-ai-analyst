@@ -993,6 +993,11 @@
 
     <script>
     (function() {
+        // Role from the Jinja ctx — drives the PAT mint shape below
+        // (analyst tile mints a 1h scope=bootstrap-analyst PAT, admin keeps
+        // the historical 90-day general-purpose PAT).
+        const ROLE = "{{ role }}";
+
         function copyToClipboard(text) {
             if (navigator.clipboard && window.isSecureContext) {
                 return navigator.clipboard.writeText(text);
@@ -1091,14 +1096,17 @@
             btn.disabled = true;
             btn.textContent = 'Generating token…';
             try {
+                // Role-aware PAT mint: analyst tile gets a 1h
+                // scope=bootstrap-analyst PAT (server clamps ttl ≤ 3600);
+                // admin tile keeps the historical 90-day general PAT.
+                var tokenBody = ROLE === "analyst"
+                    ? { name: defaultTokenName(), scope: "bootstrap-analyst", ttl_seconds: 3600 }
+                    : { name: defaultTokenName(), expires_in_days: 90 };
                 var resp = await fetch('/auth/tokens', {
                     method: 'POST',
                     credentials: 'include',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        name: defaultTokenName(),
-                        expires_in_days: 90,
-                    }),
+                    body: JSON.stringify(tokenBody),
                 });
                 if (resp.status === 401) {
                     window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname);
