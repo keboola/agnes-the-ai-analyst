@@ -107,3 +107,30 @@ def test_setup_page_admin_js_uses_general_scope(client):
     assert resp.status_code == 200
     text = resp.text
     assert "expires_in_days" in text  # still present in the admin body
+
+
+def test_setup_page_js_ternary_keys_bootstrap_to_analyst(client):
+    """Mutation-resistant assertion: the `bootstrap-analyst` scope must sit on
+    the truthy branch of `ROLE === "analyst"`, not on the falsy branch.
+
+    Without this, a silent inversion (`ROLE === "analyst"` ↔ `ROLE !== "analyst"`)
+    would let analyst tile mint a general PAT and admin tile mint a
+    bootstrap-scoped PAT — with both substrings still present in served HTML.
+    The test passes whether the content is queried via either role URL since
+    the JS ternary itself is identical across role responses.
+    """
+    import re
+    resp = client.get("/setup?role=admin", follow_redirects=True)  # JS body is role-independent
+    assert resp.status_code == 200
+    text = resp.text
+    # Match the ternary `ROLE === "analyst" ? <truthy_branch> : <falsy_branch>`.
+    # Allow whitespace/newlines, ensure `bootstrap-analyst` is in the truthy branch.
+    pattern = re.compile(
+        r'ROLE\s*===\s*"analyst"\s*\?\s*\{[^}]*bootstrap-analyst[^}]*\}\s*:\s*\{[^}]*expires_in_days[^}]*\}',
+        re.DOTALL,
+    )
+    assert pattern.search(text), (
+        "JS PAT-mint ternary must have `bootstrap-analyst` on the analyst (truthy) "
+        "branch and `expires_in_days` on the admin (falsy) branch. A silent inversion "
+        "would let the analyst tile mint a general PAT — exactly the regression we want to catch."
+    )
