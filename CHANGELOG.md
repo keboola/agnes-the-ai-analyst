@@ -10,6 +10,49 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.35.0] — 2026-05-05
+
+Five-defect fix for the silently-broken session pipeline on default Compose deploys (#176). Sessions uploaded by `agnes push` landed on `/data/user_sessions/<user>/*.jsonl`, but on a stock `docker compose up` deploy nothing ever processed them — `/corporate-memory` stayed empty even when sessions and `CLAUDE.local.md` were uploaded. The root cause was a stack of compounding defects: LLM SDKs were dev-only deps so the scheduler container boot-looped on `ModuleNotFoundError`, the side-car services were profile-gated and ran as tight `restart: unless-stopped` boot loops anyway, the `verification_detector` had no scheduler entry at all, the first-time setup never seeded an `ai:` block, and the `/corporate-memory` page silently filtered out the pending review queue. This release wires the LLM pipeline into the existing scheduler-v2 model (one HTTP-driven cron tick per service) and adds a health-check that warns when uploaded jsonls aren't being processed.
+
+### Changed
+
+- **BREAKING** `docker-compose.yml` and `docker-compose.prod.yml` no longer ship the `corporate-memory` and `session-collector` services. The scheduler container drives both jobs through admin HTTP endpoints (see Added below) on offset cadences (10 min / 17 min). Operators previously running `COMPOSE_PROFILES=full` or maintaining custom Compose overrides need to drop those service stanzas — leaving them in produces a double-driver footgun (the standalone container loop races the scheduler-v2 cron tick on `/data/user_sessions` and `knowledge_items` writes). The Python entry points (`services/{corporate_memory, session_collector, verification_detector}/__main__.py`) remain — they're still callable from the CLI for one-shot manual runs and from the new admin endpoints.
+
+### Added
+
+- New admin endpoints in `app/api/admin.py` that wrap the LLM pipeline jobs so the scheduler can drive them over HTTP (matching the existing `/api/marketplaces/sync-all` pattern):
+  - `POST /api/admin/run-session-collector` — copies Claude Code session jsonls from user homes to `/data/user_sessions/<user>/`.
+  - `POST /api/admin/run-verification-detector` — extracts verified knowledge from session transcripts via the LLM, writes pending items to `knowledge_items`.
+  - `POST /api/admin/run-corporate-memory` — refreshes the catalog from team `CLAUDE.local.md` files.
+  All three are admin-gated, sync-def (FastAPI thread pool), and emit one audit row per invocation.
+- Three new entries in `services/scheduler/__main__.py:JOBS` with deliberately offset cadences (10 m / 15 m / 17 m, all coprime modulo the 30 s tick) so the LLM-backed jobs don't fire on the same tick and stack their API + DB load:
+  - `session-collector` — every 10 min → `POST /api/admin/run-session-collector`.
+  - `verification-detector` — every 15 min → `POST /api/admin/run-verification-detector`.
+  - `corporate-memory` — every 17 min → `POST /api/admin/run-corporate-memory`.
+- `connectors.llm.factory.create_extractor_from_env_or_config(ai_config)` — falls back to `ANTHROPIC_API_KEY` / `LLM_API_KEY` env vars when the `ai:` block is empty, raises a clear `ValueError` when neither is available. `services/corporate_memory` and `services/verification_detector` switch to the new helper so a missing `ai:` section is no longer a silent skip.
+- `POST /api/admin/configure` now seeds a default `ai:` block into the writable `instance.yaml` overlay when the overlay has no `ai:` yet AND `ANTHROPIC_API_KEY` (or `LLM_API_KEY`) is present in the environment. The block stores the env-var reference (`${ANTHROPIC_API_KEY}`), never the raw secret. Existing operator config is preserved verbatim.
+- `/corporate-memory` page renders an admin-only banner (`N pending items awaiting review — review them at /corporate-memory/admin`) when the pending review queue is non-empty. Non-admins see no change — the route zeroes the count server-side before the template renders. Closes the silent-failure UX gap that hid the review queue from operators with `approval_mode='review_queue'` (the default).
+- `GET /api/health/detailed` now returns a `session_pipeline` service entry that warns when uploaded session jsonls aren't being processed. Heuristic: `max(mtime of /data/user_sessions/**/*.jsonl) <= max(processed_at in session_extraction_state) + grace_seconds`, where `grace_seconds = 2 ×` the verification-detector cadence (default 30 min, configurable via `SCHEDULER_VERIFICATION_DETECTOR_INTERVAL`). Surfaces as `status='warning'` (never `error`) with an actionable `detail` pointing at the verification-detector job. A warning bubbles up to the existing `overall='degraded'` aggregation so `agnes diagnose system` flags it.
+
+### Fixed
+
+- **Defect 4 — LLM provider SDKs in dev-only deps caused scheduler container boot loops.** `anthropic>=0.30.0` and `openai>=1.30.0` are now in `[project].dependencies`, not `[project.optional-dependencies].dev`. The Dockerfile's `uv pip install --system --no-cache .` picks them up automatically, no Dockerfile change required. `tests/test_packaging.py` locks the contract.
+- **Defect 5 — first-time setup never wrote an `ai:` block.** Two paths to a working LLM pipeline now: a default `ai:` block seeded by `POST /api/admin/configure` when env keys are present (Added above), or env-var fallback at service start time. No silent skip — both `corporate_memory.collect_all` and `verification_detector` surface the actionable `ValueError` when neither path is configured.
+- **Defect 3 — `verification_detector` had no scheduler entry.** Now in `JOBS` with a 15 min cadence, hitting the new `/api/admin/run-verification-detector` endpoint.
+- **Defect 2 — side-car services gated by `profiles: [full]` were silently skipped on default deploys.** Both stanzas dropped (Changed above); the scheduler-v2 cron is the sole driver.
+- **Defect 1 — `/corporate-memory` filtered `status IN ('approved','mandatory')` with no hint that pending items existed.** Admin banner added (Added above).
+
+### Internal
+
+- `tests/test_packaging.py` — guards against `anthropic`/`openai` slipping back into dev extras.
+- `tests/test_setup_ai_block.py` — overlay seeding contract for `POST /api/admin/configure`.
+- `tests/test_llm_provider_env_fallback.py` — env fallback + fail-fast for `create_extractor_from_env_or_config`.
+- `tests/test_admin_run_endpoints.py` — admin gating + scheduler registration + endpoint contract for the three new run-* endpoints.
+- `tests/test_docker_compose.py` — pins the compose contract: the two side-car services must not reappear under either Compose file.
+- `tests/test_corporate_memory_page.py` — pending-banner contract (admin sees, non-admin doesn't).
+- `tests/test_health_session_pipeline.py` — session-pipeline staleness check across cold-start + ok + warning + never-processed cases.
+- `docs/architecture.md` — Services table updated to reflect the scheduler-v2 cadence map.
+
 ## [0.34.0] — 2026-05-04
 
 End-to-end clean-analyst-bootstrap rewrite. The web `/setup` page now produces a single unified paste prompt that, dropped into Claude Code in an empty folder, fully bootstraps a workspace — installs the CLI, authenticates, fetches `CLAUDE.md`, installs SessionStart/End hooks, runs the first data refresh, and writes a human-readable workspace docs file (`AGNES_WORKSPACE.md`). The admin-vs-analyst layout split (introduced as `?role=` mid-cycle) was collapsed before merge: every caller sees the same flow, with the marketplace + plugins block emitted iff the caller has plugin grants. 26 implementation tasks across 6 phases plus a 10-task unification follow-up.
