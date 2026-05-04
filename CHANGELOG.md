@@ -10,6 +10,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.32.0] — 2026-05-04
+
+Closes #160. Headline fix: `da query --remote` now resolves
+`query_mode='remote'` BigQuery rows whose underlying entity is a `VIEW`
+or `MATERIALIZED_VIEW`. Plus four reinforcing fixes that surfaced during
+the work — server-side cost guardrail, registry-gating of direct `bq.*`
+paths, function-call backdoor closed, structured CLI error rendering —
+and one operator-side admin convenience (BQ test-connection endpoint +
+billing_project placeholder UI). 14 issues caught + fixed across 6
+iterations of Devin Review.
+
 ### Added
 - **`/admin/server-config` BQ test connection**: admin-only `POST
   /api/admin/bigquery/test-connection` runs a 10s-timeout `SELECT 1`
