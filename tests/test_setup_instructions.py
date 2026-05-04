@@ -47,16 +47,26 @@ def test_render_setup_instructions_wires_all_placeholders():
     assert "T-123" in out
 
 
-def test_resolve_lines_no_plugins_keeps_six_step_layout():
-    """Backwards-compat: empty plugin list → original 6-step layout, Confirm = 6."""
+def test_resolve_lines_no_plugins_unified_six_step_layout():
+    """Unified no-plugin layout: 1 install, 2 init, 3 catalog, 4 diagnose,
+    5 skills, 6 confirm. No marketplace, no preflight."""
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(resolve_lines("agnes.whl"))
+    # Mandatory unified-flow steps.
+    assert "1) Install the CLI" in joined
+    assert "2) Bootstrap your Agnes workspace" in joined
+    assert "3) Verify the data is queryable:" in joined
+    assert "4) Run diagnostics:" in joined
+    assert "5) Skills" in joined
     assert "6) Confirm:" in joined
+    # No stray Confirms at other positions.
     assert "7) Confirm:" not in joined
     assert "8) Confirm:" not in joined
     assert "claude plugin marketplace add" not in joined
     assert "claude plugin install" not in joined
+    # No preflight step when there's no marketplace block to gate.
+    assert "Make sure git is installed" not in joined
     # Legacy `git config sslVerify=false` downgrade must NOT be emitted.
     # Match the specific config line, not the bare substring (which appears
     # in the preamble as a "don't do this" example).
@@ -69,6 +79,9 @@ def test_resolve_lines_no_plugins_keeps_six_step_layout():
     assert "step 0(d)" not in joined
     assert "Which CA bundle source got picked" not in joined
     assert "Whether the marketplace add went via direct HTTPS" not in joined
+    # Legacy admin-only auth verbs are gone — `agnes init` subsumes them.
+    assert "agnes auth import-token" not in joined
+    assert "agnes auth whoami" not in joined
 
 
 def test_preamble_step_zero_d_reference_only_when_trust_block_emitted():
@@ -267,10 +280,10 @@ def test_trust_block_step_0c_does_not_reference_stale_step_number():
 
 
 def test_resolve_lines_with_plugins_uses_install_first_diagnose_last_layout():
-    """Marketplace layout puts install/login/git/marketplace BEFORE diagnose
-    and skills, so the human-loop skills question is the final blocking
-    step before Confirm. Step numbers: 4 git, 5 marketplace, 6 diagnose,
-    7 skills, 8 confirm."""
+    """Marketplace layout puts install/init/catalog/preflight/marketplace
+    BEFORE diagnose and skills, so the human-loop skills question is the
+    final blocking step before Confirm. Step numbers: 4 preflight,
+    5 marketplace, 6 diagnose, 7 skills, 8 confirm."""
     from app.web.setup_instructions import resolve_lines
 
     lines = resolve_lines(

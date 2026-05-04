@@ -635,6 +635,44 @@ def _preamble_lines(*, has_ca: bool) -> list[str]:
     return lines
 
 
+def _step_numbers(*, has_marketplace: bool, has_skills: bool = True) -> dict[str, str]:
+    """Compute the step numbers for the unified layout based on which optional
+    blocks are emitted.
+
+    Returns a dict keyed by logical step name; values are stringified
+    1-based step numbers (preserving the existing string-based helper API
+    so call sites stay diff-minimal).
+
+    Mandatory steps (always emitted): install (1), init (2), catalog (3),
+    diagnose, confirm. Optional: preflight + marketplace (gated on
+    has_marketplace), skills (gated on has_skills — default True; the
+    Resolved-Question section in the plan settled on always-on, so the
+    parameter is here purely to keep the helper general for future use,
+    not to expose a real toggle).
+
+    Step-0 (TLS trust block) sits outside this numbering — it is gated by
+    has_ca and has its own "0)" header rendered inside the trust block
+    helper.
+    """
+    n = 4
+    preflight = marketplace = ""
+    if has_marketplace:
+        preflight = str(n); n += 1
+        marketplace = str(n); n += 1
+    diagnose = str(n); n += 1
+    skills = str(n) if has_skills else ""
+    if has_skills:
+        n += 1
+    confirm = str(n)
+    return {
+        "preflight": preflight,
+        "marketplace": marketplace,
+        "diagnose": diagnose,
+        "skills": skills,
+        "confirm": confirm,
+    }
+
+
 def resolve_lines(
     wheel_filename: str,
     *,
@@ -683,15 +721,10 @@ def resolve_lines(
 
     # Step layout. Marketplace (when emitted) goes BEFORE diagnose/skills,
     # so the human-loop skills question is the last step before Confirm.
-    # Numbers shift between the no-marketplace layout (4 diagnose, 5 skills,
-    # 6 confirm) and the marketplace layout (4 preflight, 5 marketplace,
-    # 6 diagnose, 7 skills, 8 confirm).
-    if has_marketplace:
-        preflight_step, marketplace_step = "4", "5"
-        diagnose_step, skills_step, confirm_step = "6", "7", "8"
-    else:
-        preflight_step = marketplace_step = ""  # unused; here just for symmetry
-        diagnose_step, skills_step, confirm_step = "4", "5", "6"
+    # `_step_numbers` returns the renumbered step labels in one place — no
+    # branch on every helper — so the layout is unambiguous and trivially
+    # extendable when a future step is added.
+    steps = _step_numbers(has_marketplace=has_marketplace, has_skills=True)
 
     lines: list[str] = []
     if has_ca:
@@ -700,18 +733,18 @@ def resolve_lines(
     lines.extend(_install_cli_lines(has_ca=has_ca))   # 1
     lines.extend(_init_lines())                        # 2, 3
     if has_marketplace:
-        lines.extend(_git_check_block(preflight_step))  # 4
-        lines.extend(_marketplace_block(                # 5
-            names, effective_self_signed, has_ca=has_ca, step_num=marketplace_step,
+        lines.extend(_git_check_block(steps["preflight"]))    # 4
+        lines.extend(_marketplace_block(                       # 5
+            names, effective_self_signed, has_ca=has_ca, step_num=steps["marketplace"],
         ))
     # Diagnose + skills come AFTER the marketplace block (or right after
     # the catalog smoke verify if there's no marketplace step at all).
     lines.extend(_diagnose_skills_lines(
-        diagnose_num=diagnose_step, skills_num=skills_step,
+        diagnose_num=steps["diagnose"], skills_num=steps["skills"],
     ))
     lines.append("")
     lines.extend(_finale_lines(
-        confirm_step_num=confirm_step,
+        confirm_step_num=steps["confirm"],
         has_ca=has_ca,
         has_marketplace=has_marketplace,
     ))
