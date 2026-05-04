@@ -124,3 +124,36 @@ def test_v24_logs_warning_when_project_not_configured(monkeypatch, caplog):
             )
         finally:
             conn.close()
+
+
+def test_v24_keboola_materialized_row_not_rewritten(monkeypatch):
+    """Materialized rows with source_type != 'bigquery' must not be touched
+    by v24. Keboola materialized has no notion of bq."ds"."tbl" syntax;
+    the SELECT's source_type filter pins this contract.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        monkeypatch.setenv("DATA_DIR", tmp)
+        monkeypatch.setattr(
+            "app.instance_config.get_value",
+            lambda *args, **kw: "prj-data" if args == ("data_source", "bigquery", "project") else kw.get("default"),
+        )
+        Path(tmp, "state").mkdir(parents=True, exist_ok=True)
+        db_path = Path(tmp, "state", "system.duckdb")
+        conn = duckdb.connect(str(db_path))
+        try:
+            _seed_v23(conn)
+            # Keboola row that happens to contain `bq."..."` in its SQL
+            # (admin error or copy-paste from a BQ row). Migration must
+            # leave it alone — this is not the v24 contract.
+            conn.execute(
+                'INSERT INTO table_registry VALUES (?, ?, ?, ?, ?, ?, ?)',
+                ["kb1", "kb1", "keboola", "materialized", "ds", "tbl",
+                 'SELECT * FROM bq."ds"."tbl"'],
+            )
+            _ensure_schema(conn)
+            row = conn.execute(
+                "SELECT source_query FROM table_registry WHERE id='kb1'"
+            ).fetchone()
+            assert row[0] == 'SELECT * FROM bq."ds"."tbl"'
+        finally:
+            conn.close()

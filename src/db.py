@@ -1696,6 +1696,18 @@ _V22_TO_V23_MIGRATIONS = [
 # migration time, log a warning per affected row and leave them — the
 # operator must configure data_source.bigquery.project, restart, and
 # the migration will fire on next start (idempotent).
+def _replace_for_v24(project_id: str):
+    """Build a re.sub replacement function (not a string) so backslash
+    sequences in `project_id` aren't interpreted as group references.
+    GCP project IDs can't actually contain backslashes, but using a
+    function-form replacement is the defensive idiom — it makes the
+    intent explicit and removes the dependency on re.sub's replacement-
+    string escaping rules."""
+    def _repl(m):
+        return f"`{project_id}.{m.group(1)}.{m.group(2)}`"
+    return _repl
+
+
 def _v23_to_v24_finalize(conn: duckdb.DuckDBPyConnection) -> None:
     import re as _re
 
@@ -1714,26 +1726,35 @@ def _v23_to_v24_finalize(conn: duckdb.DuckDBPyConnection) -> None:
         "AND source_type = 'bigquery'"
     ).fetchall()
 
-    for row_id, sq in rows:
-        if sq is None:
-            continue
-        if not project_id:
-            logger.warning(
-                "v24 migration: skipping rewrite of source_query for row %r — "
-                "data_source.bigquery.project is not configured. Set it via "
-                "/admin/server-config and restart the app to retry the "
-                "migration.", row_id,
-            )
-            continue
-        new_sq = pattern.sub(rf'`{project_id}.\1.\2`', sq)
-        if new_sq != sq:
-            conn.execute(
-                "UPDATE table_registry SET source_query = ? WHERE id = ?",
-                [new_sq, row_id],
-            )
-            logger.info(
-                "v24 migration: rewrote source_query for row %r", row_id,
-            )
+    if not rows:
+        return  # Nothing to migrate; skip the transaction.
+
+    conn.execute("BEGIN TRANSACTION")
+    try:
+        for row_id, sq in rows:
+            if sq is None:
+                continue
+            if not project_id:
+                logger.warning(
+                    "v24 migration: skipping rewrite of source_query for row %r — "
+                    "data_source.bigquery.project is not configured. Set it via "
+                    "/admin/server-config and restart the app to retry the "
+                    "migration.", row_id,
+                )
+                continue
+            new_sq = pattern.sub(_replace_for_v24(project_id), sq)
+            if new_sq != sq:
+                conn.execute(
+                    "UPDATE table_registry SET source_query = ? WHERE id = ?",
+                    [new_sq, row_id],
+                )
+                logger.info(
+                    "v24 migration: rewrote source_query for row %r", row_id,
+                )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
 
 
 def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
