@@ -430,34 +430,48 @@ def _finale_lines(*, confirm_step_num: str, has_ca: bool, has_marketplace: bool)
     ]
 
 
-def _git_check_block(step_num: str) -> list[str]:
-    """Git pre-flight check — runs before the marketplace clone.
+def _preflight_block(step_num: str) -> list[str]:
+    """Pre-flight check — runs before the marketplace clone.
 
     `claude plugin marketplace add` (and our git-clone fallback) shells out
-    to `git`, so a missing git binary fails the marketplace step with a
-    confusing error. Cross-platform install commands cover the three
-    supported workstation OSes:
+    to `git`, AND the marketplace step calls `claude` itself, so a missing
+    binary on either side fails the step with a confusing error. We check
+    both here so the user gets a single clear "install X" message instead
+    of debugging a downstream error.
+
+    Cross-platform install commands cover the three supported workstation
+    OSes:
       - macOS: Homebrew (`brew install git`). The Xcode CLT bundle also
         ships git; we prefer brew because it's non-interactive.
       - Windows: winget (`winget install --id Git.Git -e ...`). Bundled
         with Windows 10 1809+ and Windows 11; non-interactive with --silent.
       - Linux: apt or dnf, depending on distro family.
 
+    For `claude` we point at the official platform installer docs rather
+    than vendoring an install one-liner — Anthropic ships per-platform
+    installers (npm on Linux, native binary on macOS/Windows) and the
+    canonical instructions live at https://docs.claude.com/claude-code.
+
     `step_num` is parameterized because step ordering shifted between
     layouts (the marketplace block now runs before diagnose/skills, so
-    git-check + marketplace are steps 4-5 instead of 6-7).
+    preflight + marketplace are steps 4-5 instead of 6-7).
     """
     return [
         "",
-        f"{step_num}) Make sure git is installed (required for the marketplace clone):",
+        f"{step_num}) Make sure git and claude are installed (required for the marketplace clone):",
         "     git --version",
+        "     claude --version",
         "",
-        "   If that fails (\"command not found\" or similar), install git:",
+        "   If `git --version` fails (\"command not found\" or similar), install git:",
         "     - macOS:   brew install git",
         "     - Windows: winget install --id Git.Git -e --source winget --silent",
         "     - Linux:   sudo apt-get install git    OR    sudo dnf install git",
         "",
-        "   Then re-run `git --version` to confirm before continuing.",
+        "   If `claude --version` fails, install Claude Code:",
+        "     - npm (Linux / WSL): npm i -g @anthropic-ai/claude-code",
+        "     - macOS / Windows native installer: see https://docs.claude.com/claude-code",
+        "",
+        "   Then re-run both `--version` checks to confirm before continuing.",
     ]
 
 
@@ -733,7 +747,7 @@ def resolve_lines(
     lines.extend(_install_cli_lines(has_ca=has_ca))   # 1
     lines.extend(_init_lines())                        # 2, 3
     if has_marketplace:
-        lines.extend(_git_check_block(steps["preflight"]))    # 4
+        lines.extend(_preflight_block(steps["preflight"]))    # 4
         lines.extend(_marketplace_block(                       # 5
             names, effective_self_signed, has_ca=has_ca, step_num=steps["marketplace"],
         ))

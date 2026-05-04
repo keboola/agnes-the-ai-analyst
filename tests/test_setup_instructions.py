@@ -66,7 +66,7 @@ def test_resolve_lines_no_plugins_unified_six_step_layout():
     assert "claude plugin marketplace add" not in joined
     assert "claude plugin install" not in joined
     # No preflight step when there's no marketplace block to gate.
-    assert "Make sure git is installed" not in joined
+    assert "Make sure git and claude are installed" not in joined
     # Legacy `git config sslVerify=false` downgrade must NOT be emitted.
     # Match the specific config line, not the bare substring (which appears
     # in the preamble as a "don't do this" example).
@@ -292,9 +292,10 @@ def test_resolve_lines_with_plugins_uses_install_first_diagnose_last_layout():
         server_host="agnes.example.com",
     )
     joined = "\n".join(lines)
-    # Step 4 — git pre-flight, with all three platforms' install commands.
-    assert "4) Make sure git is installed" in joined
+    # Step 4 — pre-flight, with all three platforms' install commands.
+    assert "4) Make sure git and claude are installed" in joined
     assert "git --version" in joined
+    assert "claude --version" in joined
     assert "brew install git" in joined
     assert "winget install --id Git.Git -e --source winget --silent" in joined
     assert "sudo apt-get install git" in joined or "sudo dnf install git" in joined
@@ -318,7 +319,7 @@ def test_resolve_lines_with_plugins_uses_install_first_diagnose_last_layout():
     install_idx = joined.index("1) Install the CLI")
     init_idx = joined.index("2) Bootstrap your Agnes workspace")
     catalog_idx = joined.index("3) Verify the data is queryable:")
-    git_idx = joined.index("4) Make sure git is installed")
+    git_idx = joined.index("4) Make sure git and claude are installed")
     market_idx = joined.index("5) Register the Agnes Claude Code marketplace")
     diag_idx = joined.index("6) Run diagnostics:")
     skills_idx = joined.index("7) Skills")
@@ -331,6 +332,41 @@ def test_resolve_lines_with_plugins_uses_install_first_diagnose_last_layout():
     # server_url + token are still placeholders for click-time JS substitution.
     assert "{server_url}" in joined
     assert "{token}" in joined
+
+
+def test_preflight_checks_both_git_and_claude():
+    """Pre-flight (step 4 when marketplace is gated on) checks BOTH binaries
+    before the marketplace clone — `git --version` is needed for the clone
+    itself, `claude --version` is needed for the `claude plugin
+    marketplace add` / `claude plugin install` calls. Either missing
+    breaks the marketplace step in a confusing way, so we surface the
+    failure before we get there.
+    """
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(
+        resolve_lines(
+            "agnes.whl",
+            plugin_install_names=["foo"],
+            server_host="agnes.example.com",
+        )
+    )
+    # Both version checks present.
+    assert "git --version" in joined
+    assert "claude --version" in joined
+    # Header mentions both tools.
+    assert "Make sure git and claude are installed" in joined
+    # Install hints for claude — npm one-liner for Linux/WSL plus a doc URL
+    # for native installers on macOS / Windows. We don't try to one-line a
+    # native installer; the canonical instructions live upstream.
+    assert "npm i -g @anthropic-ai/claude-code" in joined
+    assert "https://docs.claude.com/claude-code" in joined
+    # Both checks come BEFORE the marketplace add line.
+    git_check_idx = joined.index("git --version")
+    claude_check_idx = joined.index("claude --version")
+    market_idx = joined.index("claude plugin marketplace add")
+    assert git_check_idx < market_idx
+    assert claude_check_idx < market_idx
 
 
 def test_resolve_lines_self_signed_legacy_path_adds_git_config_line():
@@ -365,8 +401,8 @@ def test_resolve_lines_self_signed_no_op_without_plugins():
     # Legacy downgrade line not present.
     assert "git config --global" not in joined
     assert "claude plugin" not in joined
-    # No git pre-flight either when there's no marketplace step.
-    assert "Make sure git is installed" not in joined
+    # No pre-flight either when there's no marketplace step.
+    assert "Make sure git and claude are installed" not in joined
     assert "6) Confirm:" in joined  # original layout intact
 
 
