@@ -92,7 +92,7 @@ class SyncStateRepository:
         doesn't claim a sync happened. Existing rows keep their last
         successful `last_sync` / `rows` / `hash` fields — only `status` and
         `error` flip — so analysts who already pulled the prior good
-        parquet via `da sync` keep serving from it while the operator fixes
+        parquet via `agnes pull` keep serving from it while the operator fixes
         the source.
         """
         self.conn.execute(

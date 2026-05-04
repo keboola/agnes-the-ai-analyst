@@ -2,10 +2,10 @@
 
 Runs in the root typer callback before subcommand dispatch. Failure is
 silent — we never block a working `da` command on a best-effort version
-probe. Result is cached in `$DA_CONFIG_DIR/update_check.json` for 24h so
+probe. Result is cached in `$AGNES_CONFIG_DIR/update_check.json` for 24h so
 we don't hammer the server on every invocation.
 
-Disable with `DA_NO_UPDATE_CHECK=1`.
+Disable with `AGNES_NO_UPDATE_CHECK=1`.
 """
 
 from __future__ import annotations
@@ -67,7 +67,7 @@ def _version_lt(installed: str, latest: str) -> bool:
 
 
 def is_disabled() -> bool:
-    return os.environ.get("DA_NO_UPDATE_CHECK", "").lower() in ("1", "true", "yes")
+    return os.environ.get("AGNES_NO_UPDATE_CHECK", "").lower() in ("1", "true", "yes")
 
 
 def _installed_version() -> str:
@@ -88,7 +88,7 @@ def _read_cache() -> Optional[dict]:
     if not p.exists():
         return None
     try:
-        return json.loads(p.read_text())
+        return json.loads(p.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
 
@@ -97,7 +97,7 @@ def _write_cache(entry: dict) -> None:
     p = _cache_path()
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(entry))
+        p.write_text(json.dumps(entry), encoding="utf-8")
     except OSError:
         pass  # best-effort — cache failure must not break the flow
 

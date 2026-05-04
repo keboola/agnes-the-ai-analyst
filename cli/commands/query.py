@@ -1,4 +1,4 @@
-"""Query commands — da query."""
+"""Query commands — agnes query."""
 
 import json
 import os
@@ -65,10 +65,10 @@ def _query_local(sql: str, fmt: str, limit: int):
     """Run query against local DuckDB."""
     import duckdb
 
-    local_dir = Path(os.environ.get("DA_LOCAL_DIR", "."))
+    local_dir = Path(os.environ.get("AGNES_LOCAL_DIR", "."))
     db_path = local_dir / "user" / "duckdb" / "analytics.duckdb"
     if not db_path.exists():
-        typer.echo("Local DuckDB not found. Run: da sync", err=True)
+        typer.echo("Local DuckDB not found. Run: agnes pull", err=True)
         raise typer.Exit(1)
 
     conn = duckdb.connect(str(db_path), read_only=True)
@@ -112,10 +112,10 @@ def _query_hybrid(sql: str, fmt: str, limit: int, register_bq_specs: List[str]):
     import duckdb
     from src.remote_query import RemoteQueryEngine, RemoteQueryError, load_config
 
-    local_dir = Path(os.environ.get("DA_LOCAL_DIR", "."))
+    local_dir = Path(os.environ.get("AGNES_LOCAL_DIR", "."))
     db_path = local_dir / "user" / "duckdb" / "analytics.duckdb"
     if not db_path.exists():
-        typer.echo("Local DuckDB not found. Run: da sync", err=True)
+        typer.echo("Local DuckDB not found. Run: agnes pull", err=True)
         raise typer.Exit(1)
 
     conn = duckdb.connect(str(db_path), read_only=True)

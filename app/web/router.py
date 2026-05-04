@@ -722,9 +722,15 @@ async def setup_page(
 ):
     """Setup instructions for the local agent (CLI + Claude Code).
 
-    When an admin override is saved, the override replaces the auto-generated
-    setup_instructions output everywhere (both the /setup page display and the
-    dashboard clipboard CTA).  When no override is set, the live default from
+    Single unified flow for everyone — admin-vs-analyst is no longer a
+    layout branch. The marketplace + plugins block appears iff the
+    caller has plugin grants in `resource_grants` (resolved inside
+    `compute_default_agent_prompt`).
+
+    When an admin override is saved, the override replaces the
+    auto-generated setup_instructions output everywhere (both the
+    /setup page display and the dashboard clipboard CTA). When no
+    override is set, the live default from
     setup_instructions.resolve_lines() is used.
     """
     from src.repositories.welcome_template import WelcomeTemplateRepository
@@ -734,6 +740,8 @@ async def setup_page(
     base_url = str(request.base_url).rstrip("/")
 
     # Determine the script text: override (Jinja2-rendered) or live default.
+    # The override is per-instance, applies to every caller — admins who set
+    # an override are opting into the exact text they wrote.
     row = WelcomeTemplateRepository(conn).get()
     override_content = row.get("content")
     if override_content:
@@ -748,9 +756,13 @@ async def setup_page(
             setup_script_text = _sanitize_banner_html(template.render(**ctx_vars))
         except (TemplateError, Exception) as exc:
             logger.warning("setup_page: override render failed (%s); falling back to default", exc)
-            setup_script_text = compute_default_agent_prompt(conn, user=user, server_url=base_url)
+            setup_script_text = compute_default_agent_prompt(
+                conn, user=user, server_url=base_url,
+            )
     else:
-        setup_script_text = compute_default_agent_prompt(conn, user=user, server_url=base_url)
+        setup_script_text = compute_default_agent_prompt(
+            conn, user=user, server_url=base_url,
+        )
 
     # Split for the legacy setup_instructions_lines list variable that the
     # Jinja2 partial (_claude_setup_instructions.jinja) uses.
@@ -958,6 +970,7 @@ async def admin_workspace_prompt_page(
 ):
     from src.repositories.claude_md_template import ClaudeMdTemplateRepository
     from src.claude_md import compute_default_claude_md
+    from app.api.claude_md import _scan_legacy_strings
 
     row = ClaudeMdTemplateRepository(conn).get()
     server_url = str(request.base_url).rstrip("/")
@@ -970,6 +983,7 @@ async def admin_workspace_prompt_page(
         updated_at=row["updated_at"],
         updated_by=row["updated_by"],
         is_override=row["content"] is not None,
+        legacy_strings_detected=_scan_legacy_strings(row["content"] or ""),
     )
     return templates.TemplateResponse(request, "admin_workspace_prompt.html", ctx)
 

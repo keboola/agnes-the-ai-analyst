@@ -59,7 +59,7 @@ def test_renders_remote_scan_too_large(render_error):
         "limit_bytes": 5368709120,  # 5 GiB
         "tables": ["finance.unit_economics"],
         "suggestion": (
-            "Use `da fetch <id> --select <cols> --where <predicate> "
+            "Use `agnes snapshot create <id> --select <cols> --where <predicate> "
             "--estimate` to materialize a filtered subset, then query "
             "the snapshot locally."
         ),
@@ -68,7 +68,7 @@ def test_renders_remote_scan_too_large(render_error):
     assert "remote_scan_too_large" in out
     assert "10737418240" in out or "10 GiB" in out or "10737418240" in str(out)
     assert "finance.unit_economics" in out
-    assert "da fetch" in out
+    assert "agnes snapshot create" in out
 
 
 def test_renders_bq_path_not_registered(render_error):

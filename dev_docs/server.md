@@ -88,11 +88,8 @@ the database is unavailable.
 # Via API
 curl -X POST http://localhost:8000/api/sync/trigger
 
-# Via CLI inside the container
-docker compose exec app da sync
-
 # Sync a single table
-docker compose exec app da sync --table table_name
+curl -X POST "http://localhost:8000/api/sync/trigger?table=table_name"
 ```
 
 ### Check sync status
@@ -123,16 +120,16 @@ any destructive operation.
 
 ```bash
 # List registered tables
-docker compose exec app da admin tables list
+docker compose exec app agnes admin list-tables
 
 # Register a new table
-docker compose exec app da admin tables add
+docker compose exec app agnes admin register-table
 
 # User management
-docker compose exec app da admin users list
+docker compose exec app agnes admin list-users
 
 # Query data directly
-docker compose exec app da query "SELECT * FROM my_table LIMIT 10"
+docker compose exec app agnes query "SELECT * FROM my_table LIMIT 10"
 ```
 
 ## Application Deployment
@@ -143,7 +140,7 @@ Application is deployed via Docker image. The recommended workflow:
 2. CI builds and pushes a new image
 3. On the server, pull and restart:
    ```bash
-   cd /opt/data-analyst
+   cd <install-dir>
    docker compose pull
    docker compose up -d
    ```
@@ -154,7 +151,7 @@ To pin a specific image version, set the tag in `docker-compose.yml` before depl
 
 ```bash
 # Edit .env (never commit this file)
-nano /opt/data-analyst/.env
+nano <install-dir>/.env
 
 # Restart app to apply changes
 docker compose restart app
@@ -297,7 +294,7 @@ most lock issues.
 docker compose logs app | grep -i "sync\|error\|exception"
 
 # Verify data source credentials in .env
-docker compose exec app da admin tables list
+docker compose exec app agnes admin list-tables
 ```
 
 ### Out of disk space

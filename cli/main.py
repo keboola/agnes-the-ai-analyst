@@ -1,15 +1,33 @@
-"""da — CLI tool for AI Data Analyst.
+"""agnes — CLI tool for AI Data Analyst.
 
-Primary interface for AI agents. Install: uv tool install data-analyst
+Primary interface for AI agents. Install: uv tool install agnes-the-ai-analyst
 """
 
+import sys
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 
 import typer
 
+# Force UTF-8 on Windows stdout/stderr at import time. The default Windows
+# console codepage (cp1250 on cs-CZ, cp1252 on en-US, …) cannot encode the
+# Braille spinner glyphs Rich uses for `agnes pull` progress, nor the
+# em-dash / accented chars that show up in skill markdown via
+# `agnes skills list`. Both crash with UnicodeEncodeError /
+# UnicodeDecodeError before any command-level code runs. `reconfigure` is
+# a no-op on non-TextIOWrapper streams (pytest capture, pipes wrapped by
+# other tooling) — swallow the AttributeError there.
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError):
+        pass
+
 from cli.commands.auth import auth_app
-from cli.commands.sync import sync_app
+from cli.commands.init import init_app
+from cli.commands.pull import pull_app
+from cli.commands.push import push_app
 from cli.commands.query import query_command
 from cli.commands.status import status_app
 from cli.commands.admin import admin_app
@@ -18,12 +36,9 @@ from cli.commands.skills import skills_app
 from cli.commands.setup import setup_app
 from cli.commands.server import server_app
 from cli.commands.explore import explore_app
-from cli.commands.metrics import metrics_app
-from cli.commands.analyst import analyst_app
 from cli.commands.catalog import catalog_app
 from cli.commands.schema import schema_app
 from cli.commands.describe import describe_app
-from cli.commands.fetch import fetch_app
 from cli.commands.snapshot import snapshot_app
 from cli.commands.disk_info import disk_info_app
 
@@ -44,13 +59,13 @@ def _cli_version() -> str:
 
 def _version_callback(value: bool) -> None:
     if value:
-        typer.echo(f"da {_cli_version()}")
+        typer.echo(f"agnes {_cli_version()}")
         raise typer.Exit()
 
 
 app = typer.Typer(
-    name="da",
-    help="AI Data Analyst CLI — data sync, queries, and admin for AI agents",
+    name="agnes",
+    help="Agnes — AI Data Analyst CLI",
     no_args_is_help=True,
 )
 
@@ -70,8 +85,8 @@ def _root(
 
     Update check runs before subcommand dispatch but after the --version flag
     (which exits early). It's best-effort: any failure is swallowed so a bad
-    network never blocks a working `da` command. Disable with
-    `DA_NO_UPDATE_CHECK=1`.
+    network never blocks a working `agnes` command. Disable with
+    `AGNES_NO_UPDATE_CHECK=1`.
     """
     _maybe_warn_outdated()
 
@@ -90,7 +105,9 @@ def _maybe_warn_outdated() -> None:
 
 # Register subcommands
 app.add_typer(auth_app, name="auth")
-app.add_typer(sync_app, name="sync")
+app.add_typer(init_app, name="init")
+app.add_typer(pull_app, name="pull")
+app.add_typer(push_app, name="push")
 app.command("query")(query_command)
 app.add_typer(status_app, name="status")
 app.add_typer(admin_app, name="admin")
@@ -99,12 +116,9 @@ app.add_typer(skills_app, name="skills")
 app.add_typer(setup_app, name="setup")
 app.add_typer(server_app, name="server")
 app.add_typer(explore_app, name="explore")
-app.add_typer(metrics_app, name="metrics")
-app.add_typer(analyst_app, name="analyst")
 app.add_typer(catalog_app, name="catalog")
 app.add_typer(schema_app, name="schema")
 app.add_typer(describe_app, name="describe")
-app.add_typer(fetch_app, name="fetch")
 app.add_typer(snapshot_app, name="snapshot")
 app.add_typer(disk_info_app, name="disk-info")
 

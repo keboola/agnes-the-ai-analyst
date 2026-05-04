@@ -74,18 +74,22 @@ practice and the design here exists to dodge each one:
 
 The numbered steps are arranged so that:
   - All installation work (CLI, plugins) happens first, in one go.
+  - `agnes init` is mandatory — it bundles auth, workspace bootstrap,
+    CLAUDE.md fetch, and Claude Code SessionStart/End hooks into one
+    non-interactive call. Replaces the old `agnes auth import-token` +
+    `agnes auth whoami` pair.
   - The interactive question (skills copy vs on-demand) is the LAST step
     before Confirm — by that point everything else is done, the user only
     needs to decide one thing, and the assistant blocks on their answer.
-  - `da diagnose` runs late so it doubles as a final smoke test after
+  - `agnes diagnose` runs late so it doubles as a final smoke test after
     plugins are in place, instead of gating them.
 
 Layout (with marketplace plugins to install):
   0  TLS trust block (only when ca_pem is supplied)
   1  Install CLI
-  2  Login
-  3  Verify
-  4  Git check
+  2  agnes init (auth + workspace bootstrap)
+  3  agnes catalog (smoke verify)
+  4  Pre-flight: git + claude
   5  Marketplace + plugins
   6  Diagnose
   7  Skills (interactive — assistant waits for user)
@@ -262,7 +266,7 @@ def _tls_trust_block(ca_pem: str) -> list[str]:
 
 
 def _install_cli_lines(*, has_ca: bool, server_url_placeholder: str = "{server_url}") -> list[str]:
-    """Step 1 — install the `da` CLI.
+    """Step 1 — install the `agnes` CLI.
 
     When the trust block was emitted (`has_ca=True`), we MUST avoid
     `uv tool install <https-url>` against the Agnes wheel endpoint:
@@ -292,7 +296,7 @@ def _install_cli_lines(*, has_ca: bool, server_url_placeholder: str = "{server_u
             f"   curl -fsSL --cacert ~/.agnes/ca.pem -o \"$WHEEL\" {server_url_placeholder}/cli/wheel/{{wheel_filename}}",
             "   uv tool install --native-tls --force \"$WHEEL\"",
             "",
-            "   If `da --version` fails after install because ~/.local/bin is not on PATH:",
+            "   If `agnes --version` fails after install because ~/.local/bin is not on PATH:",
             "     export PATH=\"$HOME/.local/bin:$PATH\"",
             "     # persist: append the same line to your ~/.zshrc or ~/.bashrc",
             "     # (the trust block in step 0 already does this for you on first run).",
@@ -304,21 +308,44 @@ def _install_cli_lines(*, has_ca: bool, server_url_placeholder: str = "{server_u
         "   If uv is not installed yet:",
         "     curl -LsSf https://astral.sh/uv/install.sh | sh",
         "",
-        "   If `da --version` fails after install because ~/.local/bin is not on PATH:",
+        "   If `agnes --version` fails after install because ~/.local/bin is not on PATH:",
         "     export PATH=\"$HOME/.local/bin:$PATH\"",
         "     # persist: append the same line to your ~/.zshrc or ~/.bashrc",
     ]
 
 
-# Steps 2-3: login + verify. Static — these always come right after install.
-_LOGIN_VERIFY_LINES: list[str] = [
-    "",
-    "2) Log in (also saves the server URL):",
-    "   da auth import-token --token \"{token}\" --server \"{server_url}\"",
-    "",
-    "3) Verify the login:",
-    "   da auth whoami",
-]
+def _init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
+    """Steps 2-3 — `agnes init` (auth + workspace bootstrap) + smoke verify.
+
+    `agnes init` is the workspace-rails delivery mechanism for everyone:
+    it authenticates with the PAT, fetches CLAUDE.md (RBAC-filtered),
+    writes AGNES_WORKSPACE.md (human-facing docs), installs Claude Code
+    SessionStart/End hooks (auto-refresh), and runs an initial `agnes pull`
+    so DuckDB views are ready. Subsumes the legacy `agnes auth import-token`
+    + `agnes auth whoami` pair — `init` already verifies the PAT against
+    `/api/catalog/tables` internally, and `agnes catalog` then doubles as
+    a smoke verify of the data plane.
+
+    The PAT minted by `/setup` is `general` scope with a 90 d TTL, so the
+    init call will succeed for the operator's whole 90 d window without
+    re-clicking "Generate prompt".
+    """
+    return [
+        "",
+        "2) Bootstrap your Agnes workspace in this directory:",
+        f"   agnes init --server-url \"{server_url_placeholder}\" --token \"{{token}}\" --workspace .",
+        "",
+        "   This authenticates with the PAT, fetches your CLAUDE.md (RBAC-filtered),",
+        "   writes AGNES_WORKSPACE.md (human-facing docs), installs Claude Code",
+        "   SessionStart/End hooks (auto-refresh), and runs an initial `agnes pull`",
+        "   so your DuckDB views are ready.",
+        "",
+        "3) Verify the data is queryable:",
+        "   agnes catalog",
+        "",
+        "   This should list the tables your account has grants for. Empty list",
+        "   means your admin hasn't granted you access yet — contact them.",
+    ]
 
 
 def _diagnose_skills_lines(*, diagnose_num: str, skills_num: str) -> list[str]:
@@ -327,7 +354,7 @@ def _diagnose_skills_lines(*, diagnose_num: str, skills_num: str) -> list[str]:
     Putting these last (instead of right after `whoami`) means: by the time
     we ask the user the skills question, all installation work is finished —
     the only thing the prompt is still waiting on is one human-loop answer.
-    `da diagnose` then doubles as a server-health smoke test that runs after
+    `agnes diagnose` then doubles as a server-health smoke test that runs after
     plugins are in place, not as a gate before them. With the new ordering
     skills is the LAST step before Confirm, so the assistant must wait for
     the user's answer before finalizing — there's no "run other steps in
@@ -339,7 +366,7 @@ def _diagnose_skills_lines(*, diagnose_num: str, skills_num: str) -> list[str]:
     return [
         "",
         f"{diagnose_num}) Run diagnostics:",
-        "   da diagnose",
+        "   agnes diagnose",
         "",
         "   This should print \"Overall: healthy\". `db_schema: unknown` and",
         "   `data: 0 tables` are NORMAL in two cases:",
@@ -351,19 +378,19 @@ def _diagnose_skills_lines(*, diagnose_num: str, skills_num: str) -> list[str]:
         f"{skills_num}) Skills (ask the user — this is the last interactive step before Confirm):",
         "   The CLI ships with reusable markdown skills (setup, connectors,",
         "   corporate-memory, deploy, notifications, security, troubleshoot),",
-        "   listable via `da skills list` and readable via `da skills show <name>`.",
+        "   listable via `agnes skills list` and readable via `agnes skills show <name>`.",
         "",
         "   Ask the user verbatim: \"Do you want me to copy the Agnes skills into",
         "   ~/.claude/skills/agnes/ so they are always loaded in Claude Code,",
-        "   or should I pull them on-demand via `da skills show <name>` when",
+        "   or should I pull them on-demand via `agnes skills show <name>` when",
         "   needed?\"",
         "",
         "   Wait for the user's answer before moving to Confirm.",
         "",
         "   If they say copy:",
         "     mkdir -p ~/.claude/skills/agnes",
-        "     for s in $(da skills list | awk '{print $1}'); do",
-        "       da skills show \"$s\" > ~/.claude/skills/agnes/\"$s\".md",
+        "     for s in $(agnes skills list | awk '{print $1}'); do",
+        "       agnes skills show \"$s\" > ~/.claude/skills/agnes/\"$s\".md",
         "     done",
         "     echo \"Copied skills to ~/.claude/skills/agnes/\"",
     ]
@@ -376,13 +403,15 @@ def _finale_lines(*, confirm_step_num: str, has_ca: bool, has_marketplace: bool)
     non-existent step. The CA-bundle-source bullet only makes sense when
     the trust block ran (`has_ca`); the marketplace direct-vs-clone bullet
     only makes sense when the marketplace block ran (`has_marketplace`).
-    Skills + diagnose + version + whoami always render, so their bullets
-    are unconditional."""
+    Init + catalog + diagnose + skills + version always render, so their
+    bullets are unconditional."""
     bullets = [
-        "   - `da --version` output",
-        "   - `da auth whoami` output (email + role)",
+        "   - `agnes --version` output",
+        "   - First few lines of `agnes catalog` (tables you can see)",
+        "   - Confirmation that `./CLAUDE.md` and `./AGNES_WORKSPACE.md` exist",
+        "   - Confirmation that `./.claude/settings.json` contains SessionStart/End hooks",
+        "   - The `agnes diagnose` overall status",
         "   - Whether skills were copied or left on-demand",
-        "   - The `da diagnose` overall status",
     ]
     if has_ca:
         bullets.append(
@@ -396,39 +425,53 @@ def _finale_lines(*, confirm_step_num: str, has_ca: bool, has_marketplace: bool)
         )
     return [
         f"{confirm_step_num}) Confirm:",
-        "   Tell me \"Agnes CLI is ready\" and summarize:",
+        "   Tell me \"Agnes workspace is ready\" and summarize:",
         *bullets,
     ]
 
 
-def _git_check_block(step_num: str) -> list[str]:
-    """Git pre-flight check — runs before the marketplace clone.
+def _preflight_block(step_num: str) -> list[str]:
+    """Pre-flight check — runs before the marketplace clone.
 
     `claude plugin marketplace add` (and our git-clone fallback) shells out
-    to `git`, so a missing git binary fails the marketplace step with a
-    confusing error. Cross-platform install commands cover the three
-    supported workstation OSes:
+    to `git`, AND the marketplace step calls `claude` itself, so a missing
+    binary on either side fails the step with a confusing error. We check
+    both here so the user gets a single clear "install X" message instead
+    of debugging a downstream error.
+
+    Cross-platform install commands cover the three supported workstation
+    OSes:
       - macOS: Homebrew (`brew install git`). The Xcode CLT bundle also
         ships git; we prefer brew because it's non-interactive.
       - Windows: winget (`winget install --id Git.Git -e ...`). Bundled
         with Windows 10 1809+ and Windows 11; non-interactive with --silent.
       - Linux: apt or dnf, depending on distro family.
 
+    For `claude` we point at the official platform installer docs rather
+    than vendoring an install one-liner — Anthropic ships per-platform
+    installers (npm on Linux, native binary on macOS/Windows) and the
+    canonical instructions live at https://docs.claude.com/claude-code.
+
     `step_num` is parameterized because step ordering shifted between
     layouts (the marketplace block now runs before diagnose/skills, so
-    git-check + marketplace are steps 4-5 instead of 6-7).
+    preflight + marketplace are steps 4-5 instead of 6-7).
     """
     return [
         "",
-        f"{step_num}) Make sure git is installed (required for the marketplace clone):",
+        f"{step_num}) Make sure git and claude are installed (required for the marketplace clone):",
         "     git --version",
+        "     claude --version",
         "",
-        "   If that fails (\"command not found\" or similar), install git:",
+        "   If `git --version` fails (\"command not found\" or similar), install git:",
         "     - macOS:   brew install git",
         "     - Windows: winget install --id Git.Git -e --source winget --silent",
         "     - Linux:   sudo apt-get install git    OR    sudo dnf install git",
         "",
-        "   Then re-run `git --version` to confirm before continuing.",
+        "   If `claude --version` fails, install Claude Code:",
+        "     - npm (Linux / WSL): npm i -g @anthropic-ai/claude-code",
+        "     - macOS / Windows native installer: see https://docs.claude.com/claude-code",
+        "",
+        "   Then re-run both `--version` checks to confirm before continuing.",
     ]
 
 
@@ -606,6 +649,44 @@ def _preamble_lines(*, has_ca: bool) -> list[str]:
     return lines
 
 
+def _step_numbers(*, has_marketplace: bool, has_skills: bool = True) -> dict[str, str]:
+    """Compute the step numbers for the unified layout based on which optional
+    blocks are emitted.
+
+    Returns a dict keyed by logical step name; values are stringified
+    1-based step numbers (preserving the existing string-based helper API
+    so call sites stay diff-minimal).
+
+    Mandatory steps (always emitted): install (1), init (2), catalog (3),
+    diagnose, confirm. Optional: preflight + marketplace (gated on
+    has_marketplace), skills (gated on has_skills — default True; the
+    Resolved-Question section in the plan settled on always-on, so the
+    parameter is here purely to keep the helper general for future use,
+    not to expose a real toggle).
+
+    Step-0 (TLS trust block) sits outside this numbering — it is gated by
+    has_ca and has its own "0)" header rendered inside the trust block
+    helper.
+    """
+    n = 4
+    preflight = marketplace = ""
+    if has_marketplace:
+        preflight = str(n); n += 1
+        marketplace = str(n); n += 1
+    diagnose = str(n); n += 1
+    skills = str(n) if has_skills else ""
+    if has_skills:
+        n += 1
+    confirm = str(n)
+    return {
+        "preflight": preflight,
+        "marketplace": marketplace,
+        "diagnose": diagnose,
+        "skills": skills,
+        "confirm": confirm,
+    }
+
+
 def resolve_lines(
     wheel_filename: str,
     *,
@@ -621,13 +702,13 @@ def resolve_lines(
     substitution (or for `render_setup_instructions()` below).
 
     When `plugin_install_names` is empty/None, the output matches the
-    original 6-step layout (Confirm = step 6). When non-empty, a step-6
-    git-check + step-7 marketplace block are inserted and Confirm becomes
-    step 8.
+    six-step no-marketplace layout (Confirm = step 6). When non-empty, a
+    step-4 pre-flight + step-5 marketplace block are inserted and Confirm
+    becomes step 8.
 
     `ca_pem` (PEM-encoded fullchain of the Agnes server's TLS cert) gates
     the cross-platform step-0 trust-bootstrap block AND switches step 1 to
-    the curl-then-local-install pattern AND switches step 7 to the
+    the curl-then-local-install pattern AND switches step 5 to the
     platform-aware marketplace strategy. Caller decides whether the cert
     needs the bootstrap (typically: skip for publicly-trusted certs like
     Let's Encrypt, emit for self-signed or private corp CA).
@@ -652,37 +733,32 @@ def resolve_lines(
     # trusts the host without disabling verification.
     effective_self_signed = self_signed_tls and not has_ca
 
-    # Step layout. Marketplace goes BEFORE diagnose/skills, so the human-loop
-    # skills question is the last step before Confirm. Numbers shift between
-    # the no-marketplace layout (only 4 = diagnose, 5 = skills, 6 = confirm)
-    # and the marketplace layout (4 = git, 5 = marketplace, 6 = diagnose,
-    # 7 = skills, 8 = confirm).
-    if has_marketplace:
-        git_step, marketplace_step = "4", "5"
-        diagnose_step, skills_step, confirm_step = "6", "7", "8"
-    else:
-        git_step = marketplace_step = ""  # unused; here just for symmetry
-        diagnose_step, skills_step, confirm_step = "4", "5", "6"
+    # Step layout. Marketplace (when emitted) goes BEFORE diagnose/skills,
+    # so the human-loop skills question is the last step before Confirm.
+    # `_step_numbers` returns the renumbered step labels in one place — no
+    # branch on every helper — so the layout is unambiguous and trivially
+    # extendable when a future step is added.
+    steps = _step_numbers(has_marketplace=has_marketplace, has_skills=True)
 
     lines: list[str] = []
     if has_ca:
         lines.extend(_tls_trust_block(ca_pem))  # type: ignore[arg-type]
     lines.extend(_preamble_lines(has_ca=has_ca))
     lines.extend(_install_cli_lines(has_ca=has_ca))   # 1
-    lines.extend(_LOGIN_VERIFY_LINES)                  # 2, 3
+    lines.extend(_init_lines())                        # 2, 3
     if has_marketplace:
-        lines.extend(_git_check_block(git_step))       # 4
-        lines.extend(_marketplace_block(              # 5
-            names, effective_self_signed, has_ca=has_ca, step_num=marketplace_step,
+        lines.extend(_preflight_block(steps["preflight"]))    # 4
+        lines.extend(_marketplace_block(                       # 5
+            names, effective_self_signed, has_ca=has_ca, step_num=steps["marketplace"],
         ))
     # Diagnose + skills come AFTER the marketplace block (or right after
-    # whoami if there's no marketplace step at all).
+    # the catalog smoke verify if there's no marketplace step at all).
     lines.extend(_diagnose_skills_lines(
-        diagnose_num=diagnose_step, skills_num=skills_step,
+        diagnose_num=steps["diagnose"], skills_num=steps["skills"],
     ))
     lines.append("")
     lines.extend(_finale_lines(
-        confirm_step_num=confirm_step,
+        confirm_step_num=steps["confirm"],
         has_ca=has_ca,
         has_marketplace=has_marketplace,
     ))

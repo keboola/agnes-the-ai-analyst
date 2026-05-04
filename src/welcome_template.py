@@ -133,13 +133,19 @@ def compute_default_agent_prompt(
 ) -> str:
     """Return the live default setup script from setup_instructions.resolve_lines().
 
-    This is the full bash bootstrap prompt that /setup shows when no admin
-    override is set.  The returned string is bash (not HTML) — callers must
-    NOT pass it through _sanitize_banner_html.
+    This is the unified bash bootstrap prompt that /setup shows when no
+    admin override is set. The returned string is bash (not HTML) —
+    callers must NOT pass it through _sanitize_banner_html.
 
     ``conn`` and ``user`` are forwarded to resolve the RBAC-filtered plugin
-    install list (anonymous visitors / no conn get the no-marketplace layout).
-    ``server_url`` is used to derive the server host for the marketplace block.
+    install list. The same RBAC pass runs for everyone (admin and
+    non-admin alike): users with no plugin grants get the no-marketplace
+    layout (Confirm = step 6); users with grants get the marketplace + plugins
+    block inserted (Confirm = step 8). Anonymous visitors / no conn fall
+    through to the no-marketplace layout.
+
+    ``server_url`` is used to derive the server host for the marketplace
+    block.
     """
     try:
         from app.web.setup_instructions import resolve_lines
@@ -148,6 +154,11 @@ def compute_default_agent_prompt(
         _wheel = _find_wheel()
         _wheel_filename = _wheel.name if _wheel else "agnes.whl"
 
+        # RBAC plugin resolution is unconditional — same code path for
+        # admin and non-admin. Users with no `resource_grants` rows get an
+        # empty list and the no-marketplace layout; users with grants get
+        # the marketplace block. Admin-vs-analyst is no longer a layout
+        # branch.
         plugin_install_names: list[str] = []
         if user and conn is not None:
             try:
@@ -234,4 +245,10 @@ def render_agent_prompt_banner(
             # Fall through to default
 
     # No override (or broken override) — return live default bash script.
-    return compute_default_agent_prompt(conn, user=user, server_url=server_url)
+    # Same unified flow for everyone; admin-vs-analyst is no longer a
+    # layout branch. The marketplace block is gated by the caller's
+    # plugin grants in `resource_grants`, which `compute_default_agent_prompt`
+    # resolves unconditionally.
+    return compute_default_agent_prompt(
+        conn, user=user, server_url=server_url,
+    )

@@ -1,4 +1,4 @@
-"""Tests for da query command."""
+"""Tests for agnes query command."""
 
 import json
 import pytest
@@ -12,8 +12,8 @@ runner = CliRunner()
 
 @pytest.fixture(autouse=True)
 def tmp_config(tmp_path, monkeypatch):
-    monkeypatch.setenv("DA_CONFIG_DIR", str(tmp_path / "config"))
-    monkeypatch.setenv("DA_LOCAL_DIR", str(tmp_path / "local"))
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path / "local"))
     (tmp_path / "config").mkdir()
     (tmp_path / "local").mkdir()
     yield tmp_path

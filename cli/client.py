@@ -12,7 +12,7 @@ from cli.config import get_server_url, get_token
 # Retry policy for transient failures during stream downloads. Scoped to
 # network issues and 5xx — 4xx (auth, 404, 400) is NOT retried. Tunable via
 # env for tests; defaults sit in the "one flaky network blip" window.
-_RETRY_ATTEMPTS = int(os.environ.get("DA_STREAM_RETRIES", "3"))
+_RETRY_ATTEMPTS = int(os.environ.get("AGNES_STREAM_RETRIES", "3"))
 _RETRY_BACKOFFS_S = (0.3, 1.0, 3.0)  # seconds before attempt 2, 3, 4
 
 

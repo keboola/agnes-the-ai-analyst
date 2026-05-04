@@ -1,4 +1,4 @@
-"""`da auth token` — manage personal access tokens (#12)."""
+"""`agnes auth token` — manage personal access tokens (#12)."""
 
 import json as _json
 import re
@@ -45,8 +45,8 @@ def create(
     typer.echo(f"name:    {data['name']}")
     typer.echo(f"expires: {data.get('expires_at') or 'never'}")
     typer.echo("")
-    typer.echo("Export it so `da` can use it:")
-    typer.echo(f"    export DA_TOKEN={data['token']}")
+    typer.echo("Export it so `agnes` can use it:")
+    typer.echo(f"    export AGNES_TOKEN={data['token']}")
 
 
 @token_app.command("list")
@@ -61,7 +61,7 @@ def list_tokens(as_json: bool = typer.Option(False, "--json")):
         typer.echo(_json.dumps(rows, indent=2))
         return
     if not rows:
-        typer.echo("No tokens yet. Create one with: da auth token create --name <label>")
+        typer.echo("No tokens yet. Create one with: agnes auth token create --name <label>")
         return
     typer.echo(f"{'ID':36s} {'NAME':20s} {'PREFIX':10s} {'EXPIRES':20s} {'LAST USED':20s} STATUS")
     for r in rows:

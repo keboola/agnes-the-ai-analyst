@@ -146,6 +146,38 @@ def _validate_urls_in_patch(sections: Dict[str, Dict[str, Any]]) -> None:
                 _validate_url_not_private(value, field_name=".".join(path))
 
 
+_LOCK_TTL_MIN = 60
+_LOCK_TTL_MAX = 7 * 24 * 3600  # 604800 — one week
+
+
+def _validate_materialize_section(sections: Dict[str, Dict[str, Any]]) -> None:
+    """Validate the materialize section patch when present.
+
+    Checks field-level constraints that the Pydantic envelope can't enforce
+    (it only validates the outer shape, not nested leaf values).
+    """
+    mat = sections.get("materialize")
+    if not isinstance(mat, dict):
+        return
+    ttl = mat.get("lock_ttl_seconds")
+    if ttl is None:
+        return
+    if not isinstance(ttl, int) or isinstance(ttl, bool):
+        raise HTTPException(
+            status_code=422,
+            detail="materialize.lock_ttl_seconds must be an integer",
+        )
+    if ttl < _LOCK_TTL_MIN or ttl > _LOCK_TTL_MAX:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"materialize.lock_ttl_seconds must be between "
+                f"{_LOCK_TTL_MIN} and {_LOCK_TTL_MAX} "
+                f"(got {ttl})"
+            ),
+        )
+
+
 # --- Server-config (instance.yaml) editor -----------------------------------
 #
 # The /admin/server-config UI POSTs a partial dict here keyed by section
@@ -175,6 +207,7 @@ _EDITABLE_SECTIONS: tuple[str, ...] = (
     "openmetadata",
     "desktop",
     "corporate_memory",
+    "materialize",
 )
 
 # "Danger-zone" sections — flipping these can lock operators out (auth.*) or
@@ -209,7 +242,7 @@ _DANGER_SECTIONS: tuple[str, ...] = ("auth", "server")
 _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
     "instance": {
         # No commonly-missing instance-level fields. The example YAML's
-        # `name`/`subtitle` are always populated by `da setup` so they
+        # `name`/`subtitle` are always populated by `agnes setup` so they
         # render via the populated path; nothing to surface here.
     },
     "data_source": {
@@ -246,10 +279,10 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                     "kind": "int",
                     "default": 5368709120,
                     "hint": (
-                        "Cost guardrail for `da query --remote` against query_mode='remote' "
+                        "Cost guardrail for `agnes query --remote` against query_mode='remote' "
                         "BQ rows (dry-run check on the underlying SELECT before execute). "
                         "Bytes processed; exceeds → 400 remote_scan_too_large with a "
-                        "`da fetch` suggestion. 0 disables the gate. Default 5368709120 = 5 GiB."
+                        "`agnes snapshot create` suggestion. 0 disables the gate. Default 5368709120 = 5 GiB."
                     ),
                 },
             },
@@ -585,6 +618,23 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
             ),
         },
     },
+    # materialize — file-lock TTL for the concurrent-materialize safety net.
+    # A single field; more knobs may follow as the feature matures.
+    "materialize": {
+        "lock_ttl_seconds": {
+            "kind": "int",
+            "default": 86400,
+            "hint": (
+                "How long (seconds) before a stale materialize lock file is "
+                "reclaimed. The lock is a .parquet.lock sibling file; if the "
+                "holder process is hard-killed, the next attempt reclaims the "
+                "lock once the file's mtime is older than this TTL. "
+                "Default 86400 (24 h). Min 60, max 604800 (7 days). "
+                "Lower only if you know materializes never exceed the new value "
+                "and your host regularly hard-kills processes."
+            ),
+        },
+    },
 }
 
 # Keys whose values must be redacted from the audit diff. We match
@@ -913,6 +963,9 @@ async def update_server_config(
     # the per-section patch (e.g. data_source.keboola.stack_url).
     _validate_urls_in_patch(request.sections)
 
+    # Field-level constraints for sections whose values have documented ranges.
+    _validate_materialize_section(request.sections)
+
     # Defense-in-depth: scrub redaction sentinels (`***` / `<empty>`) out of
     # secret-keyed leaves in the patch before they reach the deep-merge.
     # The client form does the same scrub, but an API caller round-tripping
@@ -1169,27 +1222,28 @@ class RegisterTableRequest(BaseModel):
     @model_validator(mode="after")
     def _check_mode_query_coherence(self):
         """Enforce query_mode ↔ source_query invariants up front so an admin
-        can't persist a remote/local row carrying an orphan source_query, and
-        materialized rows can't be registered without a SQL body."""
+        can't persist a remote/local row carrying an orphan source_query.
+
+        For BigQuery materialized rows, an empty source_query is allowed here
+        because _validate_bigquery_register_payload generates it from
+        bucket+source_table after this validator runs. For all other source
+        types (e.g. Keboola), source_query is still required for materialized.
+        """
         sq = (self.source_query or "").strip() or None
-        if self.query_mode == "materialized" and not sq:
-            raise ValueError(
-                "query_mode='materialized' requires a non-empty source_query"
-            )
         if self.query_mode != "materialized" and sq:
             raise ValueError(
                 "source_query is only valid when query_mode='materialized'"
             )
-        # The materialize path runs the SQL through DuckDB's parser (BigQuery
-        # extension's COPY pushes it through DuckDB first, and the Keboola
-        # path COPYs the raw SQL through a DuckDB session too). DuckDB does
-        # NOT understand BigQuery-native backtick identifiers — those parse-
-        # error or silently match no rows, leaving no parquet at the
-        # canonical path and no operator-visible failure. Reject at register
-        # time with an actionable message so the bad SQL never lands in
-        # `table_registry.source_query`. See `_run_materialized_pass` for
-        # the runtime path that would otherwise eat the error.
-        if sq and "`" in sq:
+        # Non-BQ materialized rows must supply source_query explicitly — there
+        # is no server-generate fallback for Keboola materialized.
+        if self.query_mode == "materialized" and not sq and self.source_type != "bigquery":
+            raise ValueError(
+                "query_mode='materialized' requires a non-empty source_query"
+            )
+        # Backtick guard stays for non-materialized rows (DuckDB-flavor SQL
+        # contract); materialized SQL is BigQuery-native and MUST allow
+        # backticks for dashed identifiers (e.g. `prj-org.dataset.table`).
+        if self.query_mode != "materialized" and sq and "`" in sq:
             raise ValueError(_BACKTICK_REJECTION_MESSAGE)
         # Normalise: stash the trimmed-or-None form so the persisted column
         # never carries surrounding whitespace or empty-string sentinels.
@@ -1232,6 +1286,31 @@ class RegisterTableRequest(BaseModel):
         return v
 
 
+def _generate_materialized_source_query(
+    bucket: str, source_table: str, project_id: str,
+) -> str:
+    """Build the canonical full-table-dump source_query for a materialized
+    BQ row when admin only supplies dataset + table. The result is
+    BigQuery-native SQL — wrapped at materialize time into
+    bigquery_query(...) by connectors.bigquery.extractor.materialize_query."""
+    if not _is_safe_quoted_identifier(bucket):
+        raise HTTPException(
+            status_code=400,
+            detail=f"bigquery: dataset {bucket!r} is unsafe",
+        )
+    if not _is_safe_quoted_identifier(source_table):
+        raise HTTPException(
+            status_code=400,
+            detail=f"bigquery: source_table {source_table!r} is unsafe",
+        )
+    if not _is_safe_project_id(project_id):
+        raise HTTPException(
+            status_code=400,
+            detail=f"bigquery: data_source.bigquery.project {project_id!r} is malformed",
+        )
+    return f"SELECT * FROM `{project_id}.{bucket}.{source_table}`"
+
+
 def _validate_bigquery_register_payload(req: "RegisterTableRequest") -> None:
     """Enforce BQ-specific shape on a register/precheck request.
 
@@ -1253,13 +1332,8 @@ def _validate_bigquery_register_payload(req: "RegisterTableRequest") -> None:
     """
     if req.query_mode == "materialized":
         # Materialized BQ rows: the SQL body replaces dataset+table refs.
-        # Pydantic model_validator already verified source_query is non-empty;
-        # all we still need is a valid project_id and a safe view name.
-        if not req.source_query or not req.source_query.strip():
-            raise HTTPException(
-                status_code=422,
-                detail="bigquery materialized: 'source_query' is required",
-            )
+        # source_query may be empty if admin supplied bucket+source_table —
+        # in that case the server generates a full-table-dump SQL below.
         raw_name = req.name or ""
         if raw_name.strip() != raw_name or not _is_safe_identifier(raw_name):
             raise HTTPException(
@@ -1271,7 +1345,7 @@ def _validate_bigquery_register_payload(req: "RegisterTableRequest") -> None:
                 ),
             )
         from app.instance_config import get_value
-        project_id = get_value("data_source", "bigquery", "project", default="")
+        project_id = get_value("data_source", "bigquery", "project", default="") or ""
         if not project_id:
             raise HTTPException(
                 status_code=400,
@@ -1290,6 +1364,24 @@ def _validate_bigquery_register_payload(req: "RegisterTableRequest") -> None:
                     "^[a-z][a-z0-9-]{4,28}[a-z0-9]$"
                 ),
             )
+
+        if not (req.source_query and req.source_query.strip()):
+            # Server-generate from bucket+source_table. Trivial full-table
+            # dump path; admin only sets dataset+table and the server
+            # builds BQ-native SQL from instance.yaml's configured project.
+            if not (req.bucket and req.source_table):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "bigquery materialized requires either source_query "
+                        "(custom SQL) or bucket+source_table (server-generates "
+                        "the full-table-dump SQL)"
+                    ),
+                )
+            req.source_query = _generate_materialized_source_query(
+                req.bucket, req.source_table, project_id,
+            )
+
         # Phase C: profile_after_sync is now inert (Pydantic field marked
         # deprecated; not read by app/api/sync.py:410-438). The runtime
         # profiles every synced table unconditionally, so we no longer
@@ -1405,7 +1497,7 @@ def _validate_source_type_configured(source_type: Optional[str]) -> None:
     BQ-only instance — the row landed in the registry but the scheduler had
     no Keboola URL/token to ATTACH against, so it silently never synced.
     No upfront error, no operator-visible signal until they noticed the
-    table was missing from `da catalog`.
+    table was missing from `agnes catalog`.
 
     A source_type is considered configured when:
 
@@ -1980,7 +2072,7 @@ def register_table(
     # row landed in the registry but never synced because there was no
     # Keboola URL/token (or BQ project) to ATTACH against. Surfaces the
     # misconfig at registration time so the operator sees the gap before
-    # they wonder why `da catalog` is missing the table.
+    # they wonder why `agnes catalog` is missing the table.
     _validate_source_type_configured(request.source_type)
 
     # BQ rows go through the extra validation + post-insert materialization
@@ -2283,35 +2375,32 @@ async def update_table(
 
         # Cross-source coherence: query_mode='materialized' requires a
         # non-empty source_query for ALL source types, not just BigQuery.
-        # Pre-fix, only the BQ-specific synthetic-RegisterTableRequest below
-        # caught this — Keboola materialized rows could be PUT without
-        # source_query and persisted with source_query=None, then crash at
-        # the next sync tick when kb_materialize_query received `sql=None`
-        # and DuckDB rejected `COPY (None) TO ...`. Devin finding 2026-05-01:
-        # BUG_pr-review-job-58ae3148_0001.
+        # BQ rows without source_query can be server-generated from
+        # bucket+source_table (handled by _validate_bigquery_register_payload
+        # via the synthetic RegisterTableRequest below). Non-BQ rows (e.g.
+        # Keboola) still require an explicit source_query at PUT time.
         if merged.get("query_mode") == "materialized":
             sq = merged.get("source_query")
             if not sq or not str(sq).strip():
-                raise HTTPException(
-                    status_code=422,
-                    detail=(
-                        "query_mode='materialized' requires a non-empty "
-                        "source_query. To revert to a non-materialized mode, "
-                        "PATCH query_mode='local' (Keboola) or 'remote' "
-                        "(BigQuery) and the stale source_query is cleared "
-                        "automatically."
-                    ),
-                )
-            # Backtick rejection on the merged record — see
-            # `_BACKTICK_REJECTION_MESSAGE` for the rationale. Catches PATCHes
-            # that flip `source_query` to a backtick form on an already-
-            # materialized row, which the synthetic-RegisterTableRequest below
-            # only re-validates for BQ rows. Apply uniformly so Keboola
-            # materialized rows can't carry one either.
-            if "`" in str(sq):
-                raise HTTPException(
-                    status_code=422, detail=_BACKTICK_REJECTION_MESSAGE,
-                )
+                # BQ rows: let _validate_bigquery_register_payload generate
+                # source_query from bucket+source_table (falls through below).
+                # Non-BQ rows: no server-generate fallback; raise 422.
+                if merged.get("source_type") != "bigquery":
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            "query_mode='materialized' requires a non-empty "
+                            "source_query. To revert to a non-materialized mode, "
+                            "PATCH query_mode='local' (Keboola) or 'remote' "
+                            "(BigQuery) and the stale source_query is cleared "
+                            "automatically."
+                        ),
+                    )
+            # Backtick guard removed for materialized rows: the Task 2 wrapping
+            # path (connectors.bigquery.extractor.materialize_query) now runs
+            # admin SQL through the BQ jobs API using BQ-native syntax, which
+            # requires backticks for dashed project/dataset identifiers.
+            # Non-materialized rows still reject backticks in the model validator.
 
         if merged.get("source_type") == "bigquery":
             # Reuse the register-time validator. It mutates the request to
@@ -2374,7 +2463,7 @@ async def unregister_table(
     For materialized rows, also removes the canonical parquet at
     `${DATA_DIR}/extracts/<source_type>/data/<id>.parquet` and clears
     the matching `sync_state` row. Without these two cleanups, the
-    manifest endpoint kept advertising the dropped table to `da sync`
+    manifest endpoint kept advertising the dropped table to `agnes pull`
     (sync_state-driven) and the orchestrator's next rebuild could
     resurrect a master view from the leftover parquet (E2E sub-agent
     finding 2026-05-01).
@@ -2426,7 +2515,7 @@ async def unregister_table(
     # Clear sync_state for any source/mode (a row that was synced at any
     # point — local/materialized — has a sync_state entry that the manifest
     # serves regardless of registry state). Pre-fix, the manifest still
-    # advertised the dropped table to `da sync` because sync_state was
+    # advertised the dropped table to `agnes pull` because sync_state was
     # never cleaned up, and analysts kept getting it through the manifest.
     try:
         conn.execute("DELETE FROM sync_state WHERE table_id = ?", [name])
@@ -2434,7 +2523,7 @@ async def unregister_table(
     except Exception as e:
         logger.warning(
             "Failed to clear sync_state for unregistered table %s: %s — "
-            "manifest may still advertise the dropped row to da sync",
+            "manifest may still advertise the dropped row to agnes pull",
             table_id, e,
         )
 

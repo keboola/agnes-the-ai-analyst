@@ -10,6 +10,150 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.34.0] — 2026-05-04
+
+End-to-end clean-analyst-bootstrap rewrite. The web `/setup` page now produces a single unified paste prompt that, dropped into Claude Code in an empty folder, fully bootstraps a workspace — installs the CLI, authenticates, fetches `CLAUDE.md`, installs SessionStart/End hooks, runs the first data refresh, and writes a human-readable workspace docs file (`AGNES_WORKSPACE.md`). The admin-vs-analyst layout split (introduced as `?role=` mid-cycle) was collapsed before merge: every caller sees the same flow, with the marketplace + plugins block emitted iff the caller has plugin grants. 26 implementation tasks across 6 phases plus a 10-task unification follow-up.
+
+### Changed
+- **BREAKING** CLI binary renamed from `da` to `agnes`. No backward-compat alias is shipped. Update shell aliases, hook commands in any pre-existing `.claude/settings.json`, scripts, and cron jobs. Reinstall via `uv tool install <wheel>`; the wheel now ships an `agnes` entry point.
+- **BREAKING** Environment variables and config dir renamed: `DA_CONFIG_DIR/DA_SERVER/DA_NO_UPDATE_CHECK/DA_LOCAL_DIR/DA_TOKEN/DA_STREAM_RETRIES` → `AGNES_*`; `~/.config/da/` → `~/.config/agnes/`. Hard cutover, no fallback. Existing analysts re-authenticate via `agnes auth import-token`.
+- **BREAKING** Analyst bootstrap rewritten end-to-end. `da analyst setup` is removed; replaced by `agnes init` (non-interactive, requires `--server-url` and `--token`). `da sync` is split into `agnes pull` (refresh) and `agnes push` (upload). `da fetch` is folded into `agnes snapshot create`. `da metrics list/show` is folded into `agnes catalog --metrics`; `da metrics import/export/validate` move to `agnes admin metrics {import,export,validate}`. The `da analyst` namespace is removed; the workspace status command is now `agnes status`. The previous `da status` (server-health overview) becomes `agnes diagnose system`.
+- **BREAKING** Workspace layout simplified. Removed: `data/parquet/`, `data/duckdb/`, `data/metadata/`, `user/artifacts/`. Canonical paths: `server/parquet/` (synced parquets), `user/duckdb/analytics.duckdb` (DuckDB views), `user/snapshots/` (ad-hoc snapshots), `user/sessions/` (recorded sessions). Lazy-mkdir contract — no empty pre-allocated directories.
+- **BREAKING** `/setup` is now a single unified flow regardless of caller's role. The `?role=` query parameter (introduced earlier in this Unreleased cycle but never released) is removed before merge — no migration needed. The admin tile is gone. PAT scope is uniform: every install-page mint uses `scope=general` with `expires_in_days=90`, calling the existing `POST /auth/tokens` endpoint. The `bootstrap-analyst` 1 h-clamped scope is no longer used from `/setup` (still defined in code for future reuse, see open issue for redesign). The marketplace + plugins block is emitted iff the caller has plugin grants in `resource_grants`. `agnes init` is now part of every setup flow (admin and analyst alike) — it's the workspace-rails delivery mechanism. `/install` continues to 302 to `/setup`.
+- `CLAUDE.md` server-side template + repo-root `CLAUDE.md` updated to reference the new CLI verbs and workspace paths. The admin UI for the `claude_md_template` DB override (`/admin/workspace-prompt`) renders a yellow banner when the saved override contains legacy strings (`data/parquet/`, `da sync`, `da fetch`, `da analyst setup`, `da metrics list/show`); admins re-author and save to clear it. Migration is manual.
+
+### Added
+- `agnes init <opts>` — non-interactive workspace bootstrap orchestrator. 8 steps: detect existing workspace, verify PAT (`GET /api/catalog/tables`), save config + token globally, fetch `CLAUDE.md` from `/api/welcome`, install SessionStart/End hooks via `cli/lib/hooks.py:install_claude_hooks`, write `CLAUDE.local.md` stub (preserved on `--force`), run first `agnes pull`, write `AGNES_WORKSPACE.md`. Errors render via `cli/error_render.py:render_error()` with typed kinds (`auth_failed`, `server_unreachable`, `partial_state`, `manifest_unauthorized`).
+- `agnes pull` / `agnes push` — split from the old `da sync` / `da sync --upload-only`. `--quiet` / `--json` / `--dry-run` flags. SessionStart hook runs `agnes pull --quiet`; SessionEnd hook runs `agnes push --quiet`.
+- `agnes snapshot create <table>` — folded from `da fetch`. Adds `if not local_db.exists()` guard so `agnes snapshot create` no longer silently materializes an empty DuckDB file when run before any `agnes pull`.
+- `agnes catalog --metrics` (replaces `da metrics list`) and `agnes catalog --metrics --show <id>` (replaces `da metrics show`).
+- `agnes admin metrics {import,export,validate}` — write paths relocated from the deleted `da metrics` namespace.
+- `agnes diagnose system` — server-side health check (was the old `da status`).
+- `AGNES_WORKSPACE.md` — human-readable workspace docs file generated by `agnes init` in the workspace root. Documents global install, workspace layout, hooks, cheat sheet, uninstall recipe.
+- PAT request body now accepts `scope: str = "general"` and `ttl_seconds: int | None = None` fields. PATs minted with `scope="bootstrap-analyst"` are TTL-clamped to ≤ 1 h server-side. Existing `expires_in_days` field continues to work; `ttl_seconds` wins when both are set. `ttl_seconds` upper bound is 315_360_000 (matches `expires_in_days <= 3650` cap). JWT carries the `scope` claim via new `extra_claims` parameter on `create_access_token`; reserved keys (`sub`/`email`/`typ`/`iat`/`jti`/`exp`) cannot be overridden via `extra_claims`. Audit log includes the scope.
+- `cli/lib/` shared-library tree with `cli/lib/pull.py:run_pull` (data-refresh primitive callable from both the Typer wrapper and `agnes init`) and `cli/lib/hooks.py:install_claude_hooks` (workspace-scoped, idempotent Claude Code hook installer).
+- `_scan_legacy_strings` helper + `legacy_strings_detected` field on `GET /api/admin/workspace-prompt-template` — server scans saved CLAUDE.md overrides for stale CLI verbs / paths; the admin UI banner consumes the field.
+- `/setup` pre-flight check (step 4, gated on the marketplace block being present) now verifies `claude --version` in addition to `git --version`. Both binaries are needed by `claude plugin marketplace add` and the git-clone fallback — checking them together surfaces a clear "install X" message instead of a confusing downstream error. Install hints: `npm i -g @anthropic-ai/claude-code` for Linux/WSL plus a doc URL (`https://docs.claude.com/claude-code`) for macOS / Windows native installers.
+
+### Fixed
+- `agnes pull` (formerly `da sync`) no longer creates `.claude/rules/` when the corporate-memory bundle is empty.
+- `agnes pull` no longer creates `server/parquet/` when the manifest is empty (mkdir is lazy — only on first per-table write).
+- `agnes snapshot create` (formerly `da fetch`) no longer materializes an empty `user/duckdb/analytics.duckdb` when run before any `agnes pull`. Friendly hint redirects to `agnes pull`.
+- Workspace `agnes status` reads from the canonical `server/parquet/` and `user/duckdb/analytics.duckdb` paths (was reading legacy `data/parquet/`, `data/metadata/last_sync.json`).
+- `agnes init` and `agnes pull` errors now use the `cli/error_render.py` typed-error renderer (added in 0.32.0), so analyst-facing error UX matches the structured shape `agnes query --remote` already produces.
+- **Schema v24 migration retry path is no longer dead** (Devin Review on `db.py:1757`, escalated from advisory to critical on rescan). Pre-fix: when `_v23_to_v24_finalize` had materialized BQ rows to migrate but `data_source.bigquery.project` was not configured, it logged a warning per row and returned normally. The schema_version then bumped to 24 unconditionally, the `if current < 24:` gate in `_ensure_schema` skipped the function on every subsequent startup, and the affected rows kept their DuckDB-flavor `bq."ds"."tbl"` source_query forever — which the new `_wrap_admin_sql_for_jobs_api` wrapping path rejects as unparseable BQ SQL with no automatic recovery. The "set the project and restart to retry" log hint pointed at a code path that no longer ran. Fix: the migration now raises `RuntimeError` BEFORE the schema_version bump when it has rows to migrate but no project_id, blocking startup with a clear actionable error pointing at `data_source.bigquery.project`. Operator configures the project, restarts, and the migration completes (schema_version is still at 23, so the `if current < 24:` gate fires). Side effect: a BQ-using deployment that hasn't set the project blocks startup until they do — that's the right call for a config error that would otherwise silently break materialized tables. Two regression tests in `test_schema_v24_source_query_rewrite.py`: `test_v24_raises_when_project_not_configured_and_rows_need_migration` (raise + version-stays-at-23) and `test_v24_skips_clean_when_no_rows_match_even_without_project` (no-rows-no-block invariant).
+- **`agnes admin register-table` UX**: three real-world feedback items addressed.
+  - **`--query-mode materialized` now requires `--bucket`** (client-side validation; exits with a clear error before hitting the server). The previous help docstring claimed `--bucket` was *ignored* for materialized rows, but the value is actually load-bearing — `agnes schema <name>` builds the BQ identifier as `bq.<bucket>.<source_table>`, so an empty bucket registered the row but broke subsequent schema/describe with HTTP 400 "unsafe BQ identifier in registry". Docstring rewritten to reflect reality.
+  - **Post-success hints**: after a successful registration the CLI now points operators at the two follow-ups they routinely miss: (a) `agnes setup first-sync` to materialize the parquet (registration alone doesn't trigger a build; `agnes pull` reports "Updated 0 tables" until the scheduler tick), and (b) `agnes admin grant create <group> table <name>` to make the row visible in `agnes catalog` for non-admin users (catalog is RBAC-filtered).
+  - Test coverage: `tests/test_cli_admin_materialized.py::test_register_materialized_without_bucket_fails_with_clear_error` and `test_register_table_emits_first_sync_and_grant_hints`.
+- **`agnes query --remote` SQL rewriter no longer corrupts output when the GCP project ID contains a registered table name as a hyphen-delimited word** (Devin Review on `query.py:464`). The previous iterative rewrite (one `re.sub(\b<name>\b, ...)` per registered name) was vulnerable to cross-contamination: e.g. project `my-ue-project` + registered `orders` + registered `ue` → iter 1 rewrites `orders` to `\`my-ue-project.fin.orders\``, iter 2's `\bue\b` then matches the `ue` INSIDE `my-ue-project` and corrupts the iter-1 path. Fix: replaced the iteration with a SINGLE `re.sub` whose alternation regex (sorted longest-first) handles every name in one pass, so freshly-inserted backticked text isn't re-scanned. The fallback at `query.py:576` (per-table SELECT * on BQ parse error) caught the corrupted output as `bq_bad_request` so impact was over-estimation rather than fail-open, but the partition-pruning benefit of #171 is now preserved for projects whose IDs share a hyphen-segment with a registered table name. Regression test in `tests/test_api_query_guardrail.py::test_rewrite_helper_does_not_corrupt_when_project_id_contains_registered_name`.
+- **BigQuery materialize TTL reclaim is no longer dead code** (Devin Review on `extractor.py:166`). `_try_acquire_file_lock` used to call `open(lock_path, mode="w")` BEFORE checking the lock-file mtime, which truncated the file and refreshed mtime to *now* on every invocation. The subsequent `time.time() - lock_path.stat().st_mtime` always saw age ~0, so `age > TTL` never fired, and `materialize.lock_ttl_seconds` was a silently no-op config knob. Fix: stat the lock path BEFORE any `open()` to read the real pre-probe mtime; if older than TTL, unlink (forcing a fresh inode for the next `open + flock`); only then probe. Two regression tests added: `test_stale_held_lock_is_reclaimed_despite_live_holder` exercises the full reclaim path with a still-living fcntl holder, `test_failed_probe_does_not_self_refresh_lock_mtime` pins that a failed acquisition doesn't pathologically loop. Residual cross-process risk (a genuinely overrunning materialize past TTL races a fresh attempt) is documented in the helper docstring; in-process `threading.Lock` keyed on `table_id` blocks the single-process race.
+- **`agnes init --token X` now correctly uses the explicit token in the verify call**, even when `~/.config/agnes/token.json` already holds a stale token from a prior install. Pre-fix `cli.config.get_token()` read the on-disk file first and only fell back to env vars, so step 2 (PAT-verify) ran with the stale token and failed with a confusing 401 — even though the `--token` arg was valid (Devin Review on `init.py:99`). Fix: a `ContextVar`-based override in `cli.config` short-circuits `get_token()` before the file read; `_override_server_env` (used by both `agnes init` and `agnes pull`'s `run_pull`) sets it for the duration of the call. Async-safe (each task sees its own override) and leak-proof (resets on context exit).
+- **`agnes status` sessions counter now reads the same source as `agnes push`** — `~/.claude/projects/<encoded-cwd>/` (Claude Code's actual write path) with the legacy `<workspace>/user/sessions/` as a fallback, via `cli.lib.claude_sessions.list_session_files()`. Pre-fix the counter only checked the legacy dir and always reported 0 in workspaces bootstrapped with `agnes init` (since Claude Code never writes there).
+- **BigQuery materialize lock-reclaim docstring** at `connectors/bigquery/extractor.py:_try_acquire_file_lock` corrected: a still-running holder's `fcntl.flock` does NOT block the post-unlink reacquisition (new file = new inode = independent lock). The in-process `threading.Lock` keyed on `table_id` is the actual concurrency guard; cross-process protection (two schedulers on one workspace) relies on operators not running multiple concurrent schedulers AND on the TTL being well above the longest plausible COPY (24 h default). Documenting the residual risk so it isn't masked by a misleading "we're safe" comment (Devin Review on extractor.py:111).
+- **`agnes pull` now re-downloads parquets when the local file is missing, even if the recorded hash matches the server.** Pre-fix the download set was computed from `sync_state.json` hash equality alone — if the parquet had been deleted (manual `rm`, disk cleanup, a different workspace sharing the same global `~/.config/agnes/sync_state.json` writing one workspace's parquets while another reads sync_state and assumes "I already have these"), the hash-equal check would short-circuit the download and the next DuckDB view rebuild would fail on a missing file. Now the existence check on `<workspace>/server/parquet/<tid>.parquet` runs alongside the hash compare; missing file → forced re-download regardless of hash.
+- **`agnes query --remote` no longer over-rejects narrow queries on partitioned/clustered BigQuery tables.** Closes #171. Pre-fix the `/api/query` cost guardrail dry-ran a synthetic `SELECT * FROM <table>` per registered remote-BQ row referenced by the user SQL, which forced BQ to estimate "full table scan" — column projection, predicate pushdown, and partition pruning were all ignored, producing scan-byte estimates up to ~30,000× larger than the actual query would scan. Narrow queries on big partitioned tables (the documented happy-path use case) were rejected with 400 `remote_scan_too_large` even when BQ's own dry-run reported single-digit MB. Now the guardrail rewrites the user SQL from DuckDB-flavor (bare registered names + `bq."<ds>"."<tbl>"`) to BQ-native (`` `<project>.<ds>.<tbl>` ``) and runs ONE dry-run on the EXACT user SQL — partition pruning, column projection, and predicate pushdown all engage. Cap check uses the real estimate. Fallback: if BQ rejects the rewritten SQL with `bq_bad_request` (DuckDB-only syntax that doesn't translate, e.g. `::INT` casts), the guardrail falls back to the pre-fix per-table SELECT * estimate so a non-portable query still gets bounded; non-parse errors (forbidden / upstream) propagate as 502. Helpers exported as `_rewrite_user_sql_for_bq_dry_run` (test seam).
+- **Windows: `agnes` CLI no longer crashes on cs-CZ / non-UTF-8 consoles.** Two failure modes addressed (originally reported in #172 against the pre-rename `da` CLI; ported and broadened here): (1) `agnes pull` and any other Rich-progress-bar codepath crashed with `UnicodeEncodeError` because cp1250 / cp1252 cannot encode Rich's Braille spinner glyphs — `cli/main.py` now reconfigures `sys.stdout` / `sys.stderr` to UTF-8 with `errors="replace"` at import time when `sys.platform == "win32"`. (2) `agnes skills list` and `agnes skills show` crashed with `UnicodeDecodeError` reading skill markdown that contains em-dashes / accents — every `Path.read_text()` / `Path.write_text()` / `open()` call site in `cli/` (including ones not touched by #172, since several files were renamed in the bootstrap rewrite) now passes `encoding="utf-8"` explicitly. Defensive: also covers JSON / YAML config files that were ASCII-only in practice but were one non-ASCII value away from the same failure mode.
+- `agnes snapshot create … --estimate` in a pre-init directory no longer leaks an httpx `ConnectError` traceback to stderr. The estimate-guard fix (3d587681) let `--estimate` reach `api_post_json`, but the existing `except V2ClientError` clause didn't catch transport-layer errors when no server was configured (defaulted to `http://localhost:8000`). Now also catches `httpx.HTTPError` and renders the friendly hint `Run \`agnes init …\` first`.
+- `agnes push` now reads Claude Code session jsonls from `~/.claude/projects/<encoded-cwd>/` (where Claude Code actually writes them), instead of `<workspace>/user/sessions/` (which the SessionEnd hook never populated — the previous code uploaded an empty list every time). Encoding logic in `cli/lib/claude_sessions.py` probes both Claude Code variants — older `/`→`-` and newer all-non-alphanumeric→`-` — and unions the result, so users who have upgraded Claude Code mid-project see sessions from both encoded dirs. Falls back to `<workspace>/user/sessions/` for back-compat.
+
+### Removed
+- `da analyst setup`, `da analyst status`, `da sync`, `da fetch`, `da metrics`. See **Changed** for replacements.
+- `da metrics` namespace as a top-level group (subcommands moved to `agnes catalog --metrics` for read-only views and `agnes admin metrics …` for write operations).
+- Legacy workspace directories `data/parquet/`, `data/duckdb/`, `data/metadata/`, `user/artifacts/`. Existing analyst workspaces should be reinitialized with `agnes init --server-url ... --token ... --force` (a fresh empty folder is recommended).
+- `_resolve_analyst_lines`, `_analyst_init_lines`, `_analyst_finale_lines` helpers in `app/web/setup_instructions.py` — the analyst-vs-admin layout split is gone. `role` parameter on `compute_default_agent_prompt`, `resolve_lines`, and `render_setup_instructions`. `?role=` query parameter on `/setup`. Admin tile (`<nav class="role-tiles">`) and `ROLE` JS const + role-aware PAT-mint ternary in `install.html`.
+
+### Internal
+- `cli/lib/__init__.py` (empty) makes `cli/lib/` a proper package picked up by Hatchling for wheel inclusion. `.gitignore` allowlists `cli/lib/` from the generic `lib/` rule.
+- `tests/fixtures/analyst_bootstrap.py` — reusable test fixtures (`fastapi_test_server`, `web_session`, `test_pat`, `test_pat_no_grants`, `zero_grants_workspace`, `NONEXISTENT_TABLE`) for clean-install verification.
+- `tests/test_reader_smoke_matrix.py` — load-bearing parametrized test: every reader CLI command runs on a freshly-bootstrapped zero-grants workspace without a Python traceback.
+- `tests/test_clean_install_integration.py` — end-to-end happy-path tests (minimal grants, zero grants, force preserves CLAUDE.local.md, readers in pre-init dir).
+- `docs/RELEASE_CHECKLIST.md` — manual clean-install protocol mandated for any PR touching the bootstrap path.
+- Audited and replaced stale `da` verbs left over from prior merges in admin UI text, audit-log messages, code comments, operator runbooks, analyst-facing skill docs, and test docstrings (welcome template renderer/API tests now assert exact emitted markers — `agnes init` for analyst flow, `agnes auth` for admin flow — with explicit absence checks on legacy verbs). Vendor-specific `/opt/data-analyst/` install paths in jira backfill/consistency scripts and operator docs replaced with `<install-dir>/` and an `AGNES_ENV_FILE` env-var override. Intentional stale-marker tuples (`_LEGACY_STRINGS` in `app/api/claude_md.py`, `_OUR_COMMAND_MARKERS` in `cli/lib/hooks.py`) and tests that seed legacy hook content (`tests/test_lib_hooks.py`, `tests/test_legacy_strings_scan.py`) are preserved by design.
+
+## [0.33.0] — 2026-05-04
+
+Closes #162. Headline fix: `query_mode='materialized'` BigQuery rows now
+materialize correctly for views and materialized views, with per-table
+concurrency control preventing parquet corruption on overlapping scheduler
+ticks. Plus a source_query server-generation convenience, a
+`materialize.lock_ttl_seconds` config knob, and a schema v24 migration that
+converts existing DuckDB-flavor source_query values to BQ-native SQL.
+
+### Fixed
+
+- BigQuery materialize now works for views and materialized views. Pre-fix,
+  `materialize_query` ran admin's `source_query` as `COPY (sql) TO parquet`
+  through the DuckDB BigQuery extension session, which routed through the BQ
+  Storage Read API for `bq."<ds>"."<tbl>"` references. Storage Read API
+  rejects non-base entities (`Binder Error: Error while creating read session:
+  ... non-table entities cannot be read with the storage API`). Fixed by
+  always wrapping admin SQL into `bigquery_query('<billing-project>',
+  '<inner-sql>')` so COPY uses the BQ jobs API uniformly for tables, views,
+  and materialized views.
+- `materialize_query` no longer corrupts its parquet under concurrent
+  invocations for the same `table_id`. Pre-fix, two overlapping
+  `_run_materialized_pass` calls (e.g. a long-running COPY + the next
+  scheduler tick) both hit the unconditional `if tmp_path.exists():
+  tmp_path.unlink()` at function entry and started parallel COPYs against the
+  same path, interleaving bytes and producing a parquet file with no valid
+  footer. Now each call acquires a per-table_id `threading.Lock` plus an
+  advisory `fcntl.flock` on `<id>.parquet.lock`; the second caller raises
+  `MaterializeInFlightError` and the scheduler treats it as
+  `skipped, in_flight` — never as an error.
+- Cost guardrail dry-run now engages for materialized rows. Pre-fix, the
+  BigQuery Python client returned 400 (`Table-valued function not found:
+  bigquery_query`) on the wrapped SQL and the dry-run silently fail-opened.
+  The dry-run now operates on the inner BQ-native SQL (admin's `source_query`
+  directly), which the client parses cleanly.
+
+### Changed
+
+- **BREAKING** `query_mode='materialized'` rows MUST register `source_query`
+  as BigQuery-native SQL (backticks for dashed identifiers, native
+  joins/CTEs). DuckDB-flavor (`bq."<ds>"."<tbl>"`) is no longer accepted on
+  register/PUT. The schema v24 migration converts existing rows automatically;
+  operators with custom-written `source_query` should review the migrated form
+  on first deploy. The validator's prior backtick-rejection rule is now scoped
+  to `query_mode IN ('remote', 'local')` only.
+- `_run_materialized_pass` summary `skipped` field changes from `list[str]`
+  to `list[dict]` with shape
+  `{"table": str, "reason": Literal["due_check", "in_flight"]}`. Downstream
+  consumers that asserted the old string form must update.
+
+### Added
+
+- `POST /api/admin/register-table` for `query_mode='materialized'` rows with
+  `bucket`+`source_table` but no `source_query` now server-generates
+  `` SELECT * FROM `<project>.<bucket>.<source_table>` `` from the configured
+  BigQuery project. The same fallback fires on `PUT /api/admin/registry/{id}`
+  when flipping to materialized. Operators only need to know
+  `bigquery_query()` semantics for non-trivial queries.
+- New top-level `materialize` config section in `instance.yaml`. Single field
+  — `materialize.lock_ttl_seconds` (default `86400`, 24 h) — controls how
+  long a stale `<id>.parquet.lock` file lives before a sibling materialize
+  attempt reclaims it. Editable via `/admin/server-config` API and UI.
+
+### Internal
+
+- Schema v24 migration: rewrites `table_registry.source_query` for
+  materialized BigQuery rows from DuckDB-flavor (`bq."<ds>"."<tbl>"`) to
+  BQ-native (`` `<project>.<ds>.<tbl>` ``) using the configured BQ project.
+  Idempotent on already-converted rows; logs a warning and skips when the
+  project isn't configured (operator can configure + restart for retry).
+  Wrapped in `BEGIN TRANSACTION` / `COMMIT` to match the project's
+  transactional-finalizer pattern.
+- `connectors/bigquery/extractor.py` exports `MaterializeInFlightError` and
+  the `_get_table_lock` / `_get_lock_ttl_seconds` /
+  `_wrap_admin_sql_for_jobs_api` / `_escape_sql_string_literal` helpers as
+  test seams. Underscore-prefixed; not part of the public API.
+- `tests/conftest.py` lifts `bq_instance` and `stub_bq_extractor` fixtures
+  from `tests/test_api_admin_materialized.py` so subsequent test modules in
+  this PR can resolve them via pytest's auto-discovery.
+- `app/api/sync.py:is_table_due` hoisted to module-level import (was deferred
+  inside `_run_materialized_pass`) so monkeypatching `app.api.sync.is_table_due`
+  actually intercepts the call — the deferred form made test patches a no-op.
+
 ## [0.32.0] — 2026-05-04
 
 Closes #160. Headline fix: `da query --remote` now resolves

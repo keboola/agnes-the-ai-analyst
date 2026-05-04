@@ -6,7 +6,7 @@ import pytest
 
 @pytest.fixture
 def cli_env(tmp_path, monkeypatch):
-    monkeypatch.setenv("DA_LOCAL_DIR", str(tmp_path))
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
     snap = tmp_path / "user" / "snapshots"
     snap.mkdir(parents=True)
     yield tmp_path

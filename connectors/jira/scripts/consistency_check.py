@@ -72,12 +72,15 @@ class Config:
     @classmethod
     def from_env(cls) -> "Config":
         """Load configuration from environment variables."""
-        # Try to load .env file from common locations
+        # Try to load .env file from common locations.
+        # Customer-specific install paths (e.g. /opt/<deployment>/.env) can be
+        # injected via the AGNES_ENV_FILE env var without editing this list.
         env_paths = [
-            Path("/opt/data-analyst/.env"),
+            Path(os.environ["AGNES_ENV_FILE"]) if os.environ.get("AGNES_ENV_FILE") else None,
             Path.cwd() / ".env",
             Path(__file__).parent.parent / ".env",
         ]
+        env_paths = [p for p in env_paths if p is not None]
         for env_path in env_paths:
             if env_path.exists():
                 load_dotenv(env_path)
@@ -92,8 +95,11 @@ class Config:
 
         raw_dir = Path(os.environ.get("JIRA_DATA_DIR", "/data/src_data/raw/jira"))
         parquet_dir = Path(os.environ.get("JIRA_PARQUET_DIR", "/data/src_data/parquet/jira"))
-        repo_dir = Path(os.environ.get("REPO_DIR", "/opt/data-analyst/repo"))
-        venv_python = Path(os.environ.get("VENV_PYTHON", "/opt/data-analyst/.venv/bin/python"))
+        # REPO_DIR / VENV_PYTHON have no sensible OSS default — operators
+        # must export them when running this script outside an editable
+        # checkout.
+        repo_dir = Path(os.environ.get("REPO_DIR", str(Path(__file__).resolve().parents[3])))
+        venv_python = Path(os.environ.get("VENV_PYTHON", sys.executable))
 
         return cls(
             jira_domain=os.environ["JIRA_DOMAIN"],

@@ -9,18 +9,18 @@ For unattended clients (CI, cron, Claude Code), authenticate with a Personal Acc
 **Via CLI (requires an interactive session):**
 
 ```bash
-da auth token create --name "github-actions" --ttl 365d --raw
+agnes auth token create --name "github-actions" --ttl 365d --raw
 ```
 
 The `--raw` flag prints only the token, suitable for piping into a secret store.
 
 ## Use the PAT
 
-Set the `DA_TOKEN` env var:
+Set the `AGNES_TOKEN` env var:
 
 ```bash
-export DA_TOKEN=<your-token>
-da query "SELECT 1"
+export AGNES_TOKEN=<your-token>
+agnes query "SELECT 1"
 ```
 
 ### GitHub Actions example
@@ -28,18 +28,18 @@ da query "SELECT 1"
 ```yaml
 - name: Sync data
   env:
-    DA_TOKEN: ${{ secrets.AGNES_TOKEN }}
-    DA_SERVER: https://agnes.example.com
+    AGNES_TOKEN: ${{ secrets.AGNES_TOKEN }}
+    AGNES_SERVER: https://agnes.example.com
   run: |
-    pip install data-analyst
-    da sync --all
+    uv tool install "$AGNES_SERVER/cli/wheel/agnes.whl"
+    agnes pull
 ```
 
 ## Revoke
 
 ```bash
-da auth token list
-da auth token revoke <id|prefix|name>
+agnes auth token list
+agnes auth token revoke <id|prefix|name>
 ```
 
 Or from `/tokens` → Revoke.

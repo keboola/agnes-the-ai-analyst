@@ -18,8 +18,6 @@ Covers PR #145 (re-implementation against 0.24.0 base):
 Shares the seeded_app + bq_instance fixtures from conftest /
 test_admin_bq_register.py for parity with the existing BQ test surface.
 """
-from unittest.mock import MagicMock
-
 import pytest
 
 
@@ -27,59 +25,15 @@ def _auth(token):
     return {"Authorization": f"Bearer {token}"}
 
 
-@pytest.fixture
-def stub_bq_extractor(monkeypatch):
-    """Mirror tests/test_admin_bq_register.py — bypasses real-BQ traffic
-    in the post-register rebuild path so the test stays offline. Required
-    whenever the test seeds a remote-mode BQ row via the HTTP API."""
-    rebuild_mock = MagicMock(return_value={
-        "project_id": "my-test-project",
-        "tables_registered": 1, "errors": [], "skipped": False,
-    })
-    monkeypatch.setattr(
-        "connectors.bigquery.extractor.rebuild_from_registry",
-        rebuild_mock,
-    )
-    monkeypatch.setattr(
-        "src.orchestrator.SyncOrchestrator",
-        lambda *a, **kw: MagicMock(),
-    )
-    return rebuild_mock
-
-
-@pytest.fixture
-def bq_instance(monkeypatch):
-    """Force instance.yaml to look like a BigQuery deployment.
-
-    Mirrors tests/test_admin_bq_register.py::bq_instance so the
-    project_id read inside _validate_bigquery_register_payload succeeds.
-    """
-    fake_cfg = {
-        "data_source": {
-            "type": "bigquery",
-            "bigquery": {"project": "my-test-project", "location": "us"},
-        },
-    }
-    monkeypatch.setattr(
-        "app.instance_config.load_instance_config",
-        lambda: fake_cfg,
-        raising=False,
-    )
-    from app.instance_config import reset_cache
-    reset_cache()
-    yield fake_cfg
-    reset_cache()
-
-
 def _materialized_payload(**overrides):
     p = {
         "name": "orders_90d",
         "source_type": "bigquery",
         "query_mode": "materialized",
-        # DuckDB-flavor SQL (not BQ-native backticks) — the materialize path
-        # runs the SQL through the DuckDB BQ extension's COPY which uses
-        # double-quoted identifiers. Backticks are now rejected at register
-        # time. See `_BACKTICK_REJECTION_MESSAGE` in app/api/admin.py.
+        # BQ-native or DuckDB-flavor SQL — both accepted since Task 2 wraps
+        # materialized SQL in bigquery_query() (BQ jobs API path). Backtick
+        # identifiers are now allowed for materialized rows; remote/local rows
+        # still require DuckDB-flavor (double-quoted) identifiers.
         "source_query": 'SELECT date FROM bq."ds"."orders"',
         "sync_schedule": "every 6h",
     }
@@ -326,36 +280,44 @@ def test_register_materialized_persists_source_query_in_registry(seeded_app, bq_
     assert "WHERE x = 1" in row["source_query"]
 
 
-# --- Backtick (BigQuery-native) source_query rejection -----------------------
+# --- Backtick (BigQuery-native) source_query handling ------------------------
 #
-# DuckDB BQ extension's COPY path interprets the SQL through DuckDB's parser,
-# which does NOT understand backtick-quoted identifiers (it uses double quotes
-# for quoted identifiers). A registered backtick-style source_query like
-# `SELECT * FROM \`prj.ds.t\`` either parse-errors or returns 0 rows at next
-# materialize tick — silently — and no parquet ends up at the canonical path.
-# Reject at registration time with an actionable message.
+# Task 2 (materialize-sync-fix) changed the BQ materialization path to run
+# admin SQL through the BQ jobs API (bigquery_query() wrapper) rather than
+# through DuckDB's BQ extension COPY path. BQ-native SQL requires backticks
+# for dashed project/dataset/table identifiers. The backtick guard has been
+# relaxed for ALL materialized rows: the validator now only rejects backticks
+# for remote/local rows (DuckDB-flavor SQL contract). Materialized rows must
+# be allowed to carry backticks so operators can reference dashed identifiers.
+# See test_admin_validator_backtick_relaxed_for_materialized.py for the
+# model-layer unit tests.
 
 
-def test_register_materialized_rejects_backtick_source_query(seeded_app, bq_instance):
+def test_register_materialized_accepts_backtick_source_query(seeded_app, bq_instance, stub_bq_extractor):
+    """BQ materialized rows now accept BQ-native backtick syntax; the
+    materialize path (Task 2) wraps them in bigquery_query() which uses
+    the BQ jobs API — not DuckDB's COPY — so backticks are valid."""
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
     r = c.post(
         "/api/admin/register-table",
         json=_materialized_payload(
             name="bt_native",
-            source_query="SELECT * FROM `prj-grp.ds.product_inventory`",
+            source_query="SELECT * FROM `my-project.ds.product_inventory`",
         ),
         headers=_auth(token),
     )
-    assert r.status_code == 422, r.json()
-    detail = str(r.json().get("detail", "")).lower()
-    assert "backtick" in detail
-    assert 'bq."' in detail or "duckdb" in detail
+    assert r.status_code in (200, 201, 202), r.json()
+    reg = c.get("/api/admin/registry", headers=_auth(token)).json()
+    row = next(t for t in reg["tables"] if t["id"] == "bt_native")
+    assert row["source_query"] == "SELECT * FROM `my-project.ds.product_inventory`"
 
 
-def test_update_materialized_rejects_backtick_source_query(
+def test_update_materialized_accepts_backtick_source_query(
     seeded_app, bq_instance, stub_bq_extractor,
 ):
+    """PUT to a materialized BQ row may switch source_query to BQ-native
+    backtick form — accepted now that Task 2 wraps via jobs API."""
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
 
@@ -370,7 +332,7 @@ def test_update_materialized_rejects_backtick_source_query(
     assert r.status_code == 201, r.json()
     table_id = r.json()["id"]
 
-    # PATCH the source_query to a backtick form — must be rejected.
+    # PATCH the source_query to a BQ-native backtick form — now accepted.
     r2 = c.put(
         f"/api/admin/registry/{table_id}",
         json={
@@ -379,14 +341,17 @@ def test_update_materialized_rejects_backtick_source_query(
         },
         headers=_auth(token),
     )
-    assert r2.status_code == 422, r2.json()
-    detail = str(r2.json().get("detail", "")).lower()
-    assert "backtick" in detail
+    assert r2.status_code == 200, r2.json()
+    reg = c.get("/api/admin/registry", headers=_auth(token)).json()
+    row = next(t for t in reg["tables"] if t["id"] == table_id)
+    assert row["source_query"] == "SELECT * FROM `prj.ds.t`"
 
 
-def test_register_materialized_keboola_rejects_backtick_source_query(seeded_app):
-    """The check is generic, not BQ-only — Keboola materialized rows that
-    include backticks would also be silently skipped at materialize time."""
+def test_register_materialized_keboola_accepts_backtick_source_query(seeded_app):
+    """Keboola materialized rows also accept backtick source_query at register
+    time — the backtick guard now only applies to remote/local rows. If the
+    SQL is invalid at runtime (DuckDB parse error), that surfaces as a sync
+    error, not a registration error."""
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
     r = c.post(
@@ -399,9 +364,7 @@ def test_register_materialized_keboola_rejects_backtick_source_query(seeded_app)
         },
         headers=_auth(token),
     )
-    assert r.status_code == 422, r.json()
-    detail = str(r.json().get("detail", "")).lower()
-    assert "backtick" in detail
+    assert r.status_code == 201, r.json()
 
 
 # --- Surface materialize errors per-row ---------------------------------------
@@ -410,7 +373,7 @@ def test_register_materialized_keboola_rejects_backtick_source_query(seeded_app)
 # into scheduler stderr. Operators have no API surface to find out WHY a row
 # isn't materializing. The trigger pass now writes the failure into
 # `sync_state.error` (existing column) so `GET /api/admin/registry` can include
-# `last_sync_error` per row, exposed to `da admin status` / the admin UI.
+# `last_sync_error` per row, exposed to `agnes admin status` / the admin UI.
 
 
 def test_run_materialized_pass_surfaces_error_in_sync_state(seeded_app, bq_instance):

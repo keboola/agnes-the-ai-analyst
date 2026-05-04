@@ -1,5 +1,5 @@
 version: "2.0"
-description: "Business metrics starter pack. Import with: da metrics import docs/metrics/"
+description: "Business metrics starter pack. Import with: agnes admin metrics import docs/metrics/"
 categories:
   - name: revenue
     folder: revenue/

@@ -1,4 +1,4 @@
-"""Tests for da admin subcommands."""
+"""Tests for agnes admin subcommands."""
 
 import json
 import pytest
@@ -12,7 +12,7 @@ runner = CliRunner()
 
 @pytest.fixture(autouse=True)
 def tmp_config(tmp_path, monkeypatch):
-    monkeypatch.setenv("DA_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
     (tmp_path / "config").mkdir()
     (tmp_path / "data").mkdir()
@@ -157,7 +157,7 @@ class TestMetadataShow:
 
 
 def test_admin_set_role_returns_hardfail():
-    """v19: `da admin set-role` was removed. Calling it must hard-fail
+    """v19: `agnes admin set-role` was removed. Calling it must hard-fail
     with a non-zero exit code and a message pointing at the replacement
     (group memberships)."""
     from cli.commands.admin import admin_app

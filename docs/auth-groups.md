@@ -108,7 +108,7 @@ memberships, used by:
 - RBAC authorization (`app/auth/access.py`) — `require_resource_access`
   checks group grants
 - Admin UI (`/admin/access`) — member lists, grant counts
-- CLI (`da admin group members`) — group membership queries
+- CLI (`agnes admin group members`) — group membership queries
 - Marketplace filtering (`src/marketplace_filter.py`) — plugin access
   based on group grants
 

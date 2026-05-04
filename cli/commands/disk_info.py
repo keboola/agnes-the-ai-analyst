@@ -1,4 +1,4 @@
-"""`da disk-info` — show snapshot dir disk usage (spec §4.3)."""
+"""`agnes disk-info` — show snapshot dir disk usage (spec §4.3)."""
 
 import json as json_lib
 import os
@@ -10,7 +10,7 @@ disk_info_app = typer.Typer(help="Show snapshot disk usage")
 
 
 def _local_dir() -> Path:
-    return Path(os.environ.get("DA_LOCAL_DIR", ".")).resolve()
+    return Path(os.environ.get("AGNES_LOCAL_DIR", ".")).resolve()
 
 
 def _format_size(n: int) -> str:
@@ -34,7 +34,7 @@ def disk_info(
     used = sum(p.stat().st_size for p in snap_dir.rglob("*") if p.is_file()) if snap_dir.exists() else 0
     count = len(list(snap_dir.glob("*.parquet"))) if snap_dir.exists() else 0
     # Fall back to the user's local dir for free-space stats when the
-    # snapshot dir doesn't exist yet (first run, before any `da fetch`).
+    # snapshot dir doesn't exist yet (first run, before any `agnes snapshot create`).
     # `0` would misleadingly suggest the disk is full.
     free = shutil.disk_usage(snap_dir if snap_dir.exists() else _local_dir()).free
     quota_gb = int(os.environ.get("AGNES_SNAPSHOT_QUOTA_GB", "10"))

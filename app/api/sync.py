@@ -20,7 +20,7 @@ from src.repositories.sync_state import SyncStateRepository
 from src.repositories.sync_settings import SyncSettingsRepository
 from src.repositories.table_registry import TableRegistryRepository
 from src.rbac import can_access_table
-from src.scheduler import filter_due_tables
+from src.scheduler import filter_due_tables, is_table_due
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/sync", tags=["sync"])
@@ -59,7 +59,7 @@ def _run_materialized_pass(conn: duckdb.DuckDBPyConnection, bq) -> dict:
     that are due, dispatching by ``source_type`` to the correct connector's
     materialize_query. Honors per-table `sync_schedule` via `is_table_due()`,
     computes the file hash inline, and updates `sync_state` so the manifest
-    can serve the row to `da sync` without re-hashing on every request.
+    can serve the row to `agnes pull` without re-hashing on every request.
 
     BigQuery rows go through BqAccess + bigquery_query() (jobs API),
     optionally cost-guarded by ``max_bytes_per_materialize``.
@@ -74,9 +74,8 @@ def _run_materialized_pass(conn: duckdb.DuckDBPyConnection, bq) -> dict:
     its structured fields so operator alerting can pick out the cap-vs-actual
     bytes from the log line.
     """
-    from src.scheduler import is_table_due
     from app.instance_config import get_value
-    from connectors.bigquery.extractor import MaterializeBudgetError
+    from connectors.bigquery.extractor import MaterializeBudgetError, MaterializeInFlightError
 
     bq_output_dir = str(Path(_get_data_dir()) / "extracts" / "bigquery")
     kb_output_dir = Path(_get_data_dir()) / "extracts" / "keboola" / "data"
@@ -125,7 +124,7 @@ def _run_materialized_pass(conn: duckdb.DuckDBPyConnection, bq) -> dict:
         last_iso = last.isoformat() if last else None
         schedule = row.get("sync_schedule") or "every 1h"
         if not is_table_due(schedule, last_iso):
-            summary["skipped"].append(ref_name)
+            summary["skipped"].append({"table": ref_name, "reason": "due_check"})
             continue
 
         source_type = row.get("source_type") or "bigquery"  # legacy default
@@ -195,6 +194,13 @@ def _run_materialized_pass(conn: duckdb.DuckDBPyConnection, bq) -> dict:
                     ),
                 })
                 continue
+        except MaterializeInFlightError:
+            # In-flight on a sibling worker / scheduler tick — treat as
+            # 'skipped, in-flight'. Do NOT call state.set_error: that
+            # would flip status='error' on a healthy concurrent run and
+            # the registry UI would surface a false-positive failure.
+            summary["skipped"].append({"table": ref_name, "reason": "in_flight"})
+            continue
         except MaterializeBudgetError as e:
             logger.warning(
                 "Materialize cap exceeded for %s: %s bytes > %s bytes",
@@ -207,7 +213,7 @@ def _run_materialized_pass(conn: duckdb.DuckDBPyConnection, bq) -> dict:
                 "limit": e.limit,
             })
             # Persist the failure so `GET /api/admin/registry` can surface
-            # `last_sync_error` to the admin UI / `da admin status`.
+            # `last_sync_error` to the admin UI / `agnes admin status`.
             # Without this, scheduler stderr was the only place the cap
             # failure showed up and operators had no API path to it.
             state.set_error(ref_name, str(e))
@@ -466,9 +472,13 @@ sys.exit(compute_exit_code(result, len(configs)))
                 mat_summary = _run_materialized_pass(mat_conn, bq_access)
             finally:
                 mat_conn.close()
+            skipped_count = len(mat_summary["skipped"])
+            in_flight_count = sum(
+                1 for s in mat_summary["skipped"] if s.get("reason") == "in_flight"
+            )
             print(
                 f"[SYNC] Materialized SQL: {len(mat_summary['materialized'])} ok, "
-                f"{len(mat_summary['skipped'])} skipped, "
+                f"{skipped_count} skipped (in_flight={in_flight_count}), "
                 f"{len(mat_summary['errors'])} errors",
                 file=_sys.stderr, flush=True,
             )

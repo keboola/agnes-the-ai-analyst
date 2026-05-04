@@ -3,7 +3,7 @@
 returns a helpful, materialize-aware error instead of a raw "Table does
 not exist" string from DuckDB.
 
-E2E sub-agent finding 2026-05-01: `da query --remote "SELECT * FROM
+E2E sub-agent finding 2026-05-01: `agnes query --remote "SELECT * FROM
 e2e2_synced_table LIMIT 5"` on a synced materialized table failed with
 DuckDB's bare error message even though the table is in the registry.
 The fix improves the surfaced message so the operator sees the
@@ -23,7 +23,7 @@ def _auth(token: str) -> dict:
 def test_query_materialized_id_not_in_views_returns_helpful_message(seeded_app):
     """An admin querying a materialized id that isn't yet materialized in
     the local analytics.duckdb gets a 400 whose detail names the
-    query_mode and points at `da sync` / direct-BQ-query."""
+    query_mode and points at `agnes pull` / direct-BQ-query."""
     from src.db import get_system_db
     sys_conn = get_system_db()
     try:
@@ -51,9 +51,9 @@ def test_query_materialized_id_not_in_views_returns_helpful_message(seeded_app):
     # Message should name the table and surface the materialize-mode hint.
     assert "not_yet_materialized" in detail
     assert "materialized" in detail.lower()
-    # Either a `da sync` hint or a direct-BQ-query hint must appear so the
+    # Either a `agnes pull` hint or a direct-BQ-query hint must appear so the
     # operator has a concrete next step.
-    assert "da sync" in detail or "bq." in detail
+    assert "agnes pull" in detail or "bq." in detail
 
 
 def test_query_unknown_table_falls_back_to_default_error(seeded_app):

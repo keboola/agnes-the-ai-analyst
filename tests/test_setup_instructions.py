@@ -47,16 +47,26 @@ def test_render_setup_instructions_wires_all_placeholders():
     assert "T-123" in out
 
 
-def test_resolve_lines_no_plugins_keeps_six_step_layout():
-    """Backwards-compat: empty plugin list → original 6-step layout, Confirm = 6."""
+def test_resolve_lines_no_plugins_unified_six_step_layout():
+    """Unified no-plugin layout: 1 install, 2 init, 3 catalog, 4 diagnose,
+    5 skills, 6 confirm. No marketplace, no preflight."""
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(resolve_lines("agnes.whl"))
+    # Mandatory unified-flow steps.
+    assert "1) Install the CLI" in joined
+    assert "2) Bootstrap your Agnes workspace" in joined
+    assert "3) Verify the data is queryable:" in joined
+    assert "4) Run diagnostics:" in joined
+    assert "5) Skills" in joined
     assert "6) Confirm:" in joined
+    # No stray Confirms at other positions.
     assert "7) Confirm:" not in joined
     assert "8) Confirm:" not in joined
     assert "claude plugin marketplace add" not in joined
     assert "claude plugin install" not in joined
+    # No preflight step when there's no marketplace block to gate.
+    assert "Make sure git and claude are installed" not in joined
     # Legacy `git config sslVerify=false` downgrade must NOT be emitted.
     # Match the specific config line, not the bare substring (which appears
     # in the preamble as a "don't do this" example).
@@ -69,6 +79,9 @@ def test_resolve_lines_no_plugins_keeps_six_step_layout():
     assert "step 0(d)" not in joined
     assert "Which CA bundle source got picked" not in joined
     assert "Whether the marketplace add went via direct HTTPS" not in joined
+    # Legacy admin-only auth verbs are gone — `agnes init` subsumes them.
+    assert "agnes auth import-token" not in joined
+    assert "agnes auth whoami" not in joined
 
 
 def test_preamble_step_zero_d_reference_only_when_trust_block_emitted():
@@ -267,10 +280,10 @@ def test_trust_block_step_0c_does_not_reference_stale_step_number():
 
 
 def test_resolve_lines_with_plugins_uses_install_first_diagnose_last_layout():
-    """Marketplace layout puts install/login/git/marketplace BEFORE diagnose
-    and skills, so the human-loop skills question is the final blocking
-    step before Confirm. Step numbers: 4 git, 5 marketplace, 6 diagnose,
-    7 skills, 8 confirm."""
+    """Marketplace layout puts install/init/catalog/preflight/marketplace
+    BEFORE diagnose and skills, so the human-loop skills question is the
+    final blocking step before Confirm. Step numbers: 4 preflight,
+    5 marketplace, 6 diagnose, 7 skills, 8 confirm."""
     from app.web.setup_instructions import resolve_lines
 
     lines = resolve_lines(
@@ -279,9 +292,10 @@ def test_resolve_lines_with_plugins_uses_install_first_diagnose_last_layout():
         server_host="agnes.example.com",
     )
     joined = "\n".join(lines)
-    # Step 4 — git pre-flight, with all three platforms' install commands.
-    assert "4) Make sure git is installed" in joined
+    # Step 4 — pre-flight, with all three platforms' install commands.
+    assert "4) Make sure git and claude are installed" in joined
     assert "git --version" in joined
+    assert "claude --version" in joined
     assert "brew install git" in joined
     assert "winget install --id Git.Git -e --source winget --silent" in joined
     assert "sudo apt-get install git" in joined or "sudo dnf install git" in joined
@@ -303,14 +317,14 @@ def test_resolve_lines_with_plugins_uses_install_first_diagnose_last_layout():
         assert stray not in joined
     # Crucial ordering invariants for the new layout.
     install_idx = joined.index("1) Install the CLI")
-    login_idx = joined.index("2) Log in")
-    verify_idx = joined.index("3) Verify the login:")
-    git_idx = joined.index("4) Make sure git is installed")
+    init_idx = joined.index("2) Bootstrap your Agnes workspace")
+    catalog_idx = joined.index("3) Verify the data is queryable:")
+    git_idx = joined.index("4) Make sure git and claude are installed")
     market_idx = joined.index("5) Register the Agnes Claude Code marketplace")
     diag_idx = joined.index("6) Run diagnostics:")
     skills_idx = joined.index("7) Skills")
     confirm_idx = joined.index("8) Confirm:")
-    assert install_idx < login_idx < verify_idx < git_idx < market_idx < diag_idx < skills_idx < confirm_idx
+    assert install_idx < init_idx < catalog_idx < git_idx < market_idx < diag_idx < skills_idx < confirm_idx
     # No git-config sslVerify=false line unless self_signed_tls is set.
     assert "git config --global" not in joined
     # server_host is server-side substituted; the placeholder must be gone.
@@ -318,6 +332,41 @@ def test_resolve_lines_with_plugins_uses_install_first_diagnose_last_layout():
     # server_url + token are still placeholders for click-time JS substitution.
     assert "{server_url}" in joined
     assert "{token}" in joined
+
+
+def test_preflight_checks_both_git_and_claude():
+    """Pre-flight (step 4 when marketplace is gated on) checks BOTH binaries
+    before the marketplace clone — `git --version` is needed for the clone
+    itself, `claude --version` is needed for the `claude plugin
+    marketplace add` / `claude plugin install` calls. Either missing
+    breaks the marketplace step in a confusing way, so we surface the
+    failure before we get there.
+    """
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(
+        resolve_lines(
+            "agnes.whl",
+            plugin_install_names=["foo"],
+            server_host="agnes.example.com",
+        )
+    )
+    # Both version checks present.
+    assert "git --version" in joined
+    assert "claude --version" in joined
+    # Header mentions both tools.
+    assert "Make sure git and claude are installed" in joined
+    # Install hints for claude — npm one-liner for Linux/WSL plus a doc URL
+    # for native installers on macOS / Windows. We don't try to one-line a
+    # native installer; the canonical instructions live upstream.
+    assert "npm i -g @anthropic-ai/claude-code" in joined
+    assert "https://docs.claude.com/claude-code" in joined
+    # Both checks come BEFORE the marketplace add line.
+    git_check_idx = joined.index("git --version")
+    claude_check_idx = joined.index("claude --version")
+    market_idx = joined.index("claude plugin marketplace add")
+    assert git_check_idx < market_idx
+    assert claude_check_idx < market_idx
 
 
 def test_resolve_lines_self_signed_legacy_path_adds_git_config_line():
@@ -352,8 +401,8 @@ def test_resolve_lines_self_signed_no_op_without_plugins():
     # Legacy downgrade line not present.
     assert "git config --global" not in joined
     assert "claude plugin" not in joined
-    # No git pre-flight either when there's no marketplace step.
-    assert "Make sure git is installed" not in joined
+    # No pre-flight either when there's no marketplace step.
+    assert "Make sure git and claude are installed" not in joined
     assert "6) Confirm:" in joined  # original layout intact
 
 
@@ -764,9 +813,9 @@ def test_skills_step_is_last_blocking_step_before_confirm():
 
 
 def test_no_marketplace_layout_keeps_diagnose_before_skills():
-    """Without plugins, the layout collapses to: install → login → verify →
-    diagnose → skills → confirm. (No git or marketplace steps to interleave.)
-    Step numbers: 4 diagnose, 5 skills, 6 confirm."""
+    """Without plugins, the layout collapses to: install → init → catalog →
+    diagnose → skills → confirm. (No preflight or marketplace steps to
+    interleave.) Step numbers: 4 diagnose, 5 skills, 6 confirm."""
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(resolve_lines("agnes.whl"))
@@ -777,6 +826,55 @@ def test_no_marketplace_layout_keeps_diagnose_before_skills():
     skills_idx = joined.index("5) Skills")
     confirm_idx = joined.index("6) Confirm:")
     assert diag_idx < skills_idx < confirm_idx
+
+
+def test_unified_flow_uses_only_agnes_verbs():
+    """No-legacy-`da`-verbs invariant for the unified /setup prompt.
+
+    Pin: every line emitted by `resolve_lines()` must use the `agnes` CLI
+    verb. The legacy `da` namespace was removed in the broader
+    clean-analyst-bootstrap rewrite, but the setup prompt is generated
+    string-by-string and a stale `da sync` / `da analyst setup` reference
+    could survive a refactor unnoticed.
+
+    Match `"da "` (with the trailing space) so we don't false-positive on
+    `Darwin`, `adapter`, `database`, etc. — any actual `da <verb>` invocation
+    is followed by a space.
+
+    Also re-verifies that `agnes init` carries an explicit `--token` arg
+    (commit 8784f10a fixed a stale-on-disk-token override: `init --token X`
+    must use X for the verify call, not the on-disk token). Without
+    `--token` in the emitted line, that fix's contract isn't surfaced to
+    the user.
+    """
+    from app.web.setup_instructions import resolve_lines
+
+    fake_ca = (
+        "-----BEGIN CERTIFICATE-----\n"
+        "FAKE\n"
+        "-----END CERTIFICATE-----\n"
+    )
+
+    # Check both layouts (with and without marketplace) and both has_ca
+    # variants, since each path stitches together different helper output.
+    for kwargs in (
+        {},
+        {"plugin_install_names": ["foo"], "server_host": "h"},
+        {"ca_pem": fake_ca},
+        {"plugin_install_names": ["foo"], "server_host": "h", "ca_pem": fake_ca},
+    ):
+        joined = "\n".join(resolve_lines("agnes.whl", **kwargs))
+        # No legacy `da <verb>` invocation anywhere.
+        assert "da " not in joined, (
+            f"Legacy `da ` verb leaked into resolve_lines output (kwargs={kwargs!r}).\n"
+            f"Search the rendered prompt for the offending line."
+        )
+        # `agnes init --token` is the contract that commit 8784f10a's
+        # ContextVar override pivots on. Pin it so a future refactor that
+        # accidentally drops `--token` from the emitted command surfaces as
+        # a test failure, not as a confusing 401 in production.
+        assert "agnes init --server-url" in joined
+        assert "--token" in joined
 
 
 def test_install_page_uses_versioned_wheel_url(monkeypatch, tmp_path):

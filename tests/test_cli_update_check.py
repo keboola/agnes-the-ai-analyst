@@ -13,20 +13,20 @@ runner = CliRunner()
 
 @pytest.fixture(autouse=True)
 def tmp_config(tmp_path, monkeypatch):
-    monkeypatch.setenv("DA_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path))
     # Point CLI at a fake server so get_server_url() returns something stable.
-    monkeypatch.setenv("DA_SERVER", "http://server.test:8000")
+    monkeypatch.setenv("AGNES_SERVER", "http://server.test:8000")
     yield tmp_path
 
 
 def test_check_returns_none_when_disabled(tmp_config):
     import os
-    os.environ["DA_NO_UPDATE_CHECK"] = "1"
+    os.environ["AGNES_NO_UPDATE_CHECK"] = "1"
     try:
         from cli import update_check
         assert update_check.check("http://server.test:8000") is None
     finally:
-        del os.environ["DA_NO_UPDATE_CHECK"]
+        del os.environ["AGNES_NO_UPDATE_CHECK"]
 
 
 def test_check_returns_none_when_server_url_missing(tmp_config):

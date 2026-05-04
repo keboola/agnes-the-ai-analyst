@@ -13,8 +13,8 @@ runner = CliRunner()
 
 @pytest.fixture(autouse=True)
 def tmp_config(tmp_path, monkeypatch):
-    monkeypatch.setenv("DA_CONFIG_DIR", str(tmp_path / "config"))
-    monkeypatch.setenv("DA_LOCAL_DIR", str(tmp_path / "local"))
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path / "local"))
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-for-cli-tests")
     (tmp_path / "config").mkdir()
@@ -34,8 +34,16 @@ class TestCLIHelp:
         assert result.exit_code == 0
         assert "login" in result.output
 
-    def test_sync_help(self):
-        result = runner.invoke(app, ["sync", "--help"])
+    def test_pull_help(self):
+        result = runner.invoke(app, ["pull", "--help"])
+        assert result.exit_code == 0
+
+    def test_push_help(self):
+        result = runner.invoke(app, ["push", "--help"])
+        assert result.exit_code == 0
+
+    def test_init_help(self):
+        result = runner.invoke(app, ["init", "--help"])
         assert result.exit_code == 0
 
     def test_query_help(self):
@@ -63,20 +71,20 @@ class TestCLIVersion:
     def test_version_long_flag(self):
         result = runner.invoke(app, ["--version"])
         assert result.exit_code == 0
-        assert result.output.startswith("da ")
-        # Version string must be non-empty after the `da ` prefix.
-        assert result.output.strip() != "da"
+        assert result.output.startswith("agnes ")
+        # Version string must be non-empty after the `agnes ` prefix.
+        assert result.output.strip() != "agnes"
 
     def test_version_short_flag(self):
         result = runner.invoke(app, ["-V"])
         assert result.exit_code == 0
-        assert result.output.startswith("da ")
+        assert result.output.startswith("agnes ")
 
     def test_version_exits_before_subcommand_resolution(self):
         """Eager callback must run even when an unknown subcommand follows."""
         result = runner.invoke(app, ["--version", "bogus-subcommand"])
         assert result.exit_code == 0
-        assert "da " in result.output
+        assert "agnes " in result.output
 
 
 class TestSkills:
@@ -144,13 +152,17 @@ class TestAuth:
 
 
 class TestStatus:
+    """Legacy `--local` status content moved to `agnes diagnose system` per the
+    clean-bootstrap spec (Tasks 12 + 13). `agnes status` itself now reports
+    workspace state — see tests/test_cli_status.py."""
+
     def test_local_status_empty(self):
-        result = runner.invoke(app, ["status", "--local"])
+        result = runner.invoke(app, ["diagnose", "system", "--local"])
         assert result.exit_code == 0
         assert "Tables synced: 0" in result.output
 
     def test_local_status_json(self):
-        result = runner.invoke(app, ["status", "--local", "--json"])
+        result = runner.invoke(app, ["diagnose", "system", "--local", "--json"])
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["mode"] == "local"
@@ -180,7 +192,7 @@ class TestQuery:
 
 class TestAdminCommands:
     def test_register_table(self, tmp_config):
-        """Test da admin register-table calls the API and reports success."""
+        """Test agnes admin register-table calls the API and reports success."""
         mock_resp = MagicMock()
         mock_resp.status_code = 201
         mock_resp.json.return_value = {"id": "tbl-1", "name": "orders"}
@@ -200,7 +212,7 @@ class TestAdminCommands:
             assert call_args[1]["json"]["name"] == "orders"
 
     def test_register_table_conflict(self, tmp_config):
-        """Test da admin register-table when table already exists."""
+        """Test agnes admin register-table when table already exists."""
         mock_resp = MagicMock()
         mock_resp.status_code = 409
         mock_resp.json.return_value = {"detail": "Table already exists"}
@@ -211,7 +223,7 @@ class TestAdminCommands:
             assert "Already exists: orders" in result.output
 
     def test_list_tables(self, tmp_config):
-        """Test da admin list-tables returns table listing."""
+        """Test agnes admin list-tables returns table listing."""
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {
@@ -230,7 +242,7 @@ class TestAdminCommands:
             assert "customers" in result.output
 
     def test_list_tables_json(self, tmp_config):
-        """Test da admin list-tables --json outputs valid JSON."""
+        """Test agnes admin list-tables --json outputs valid JSON."""
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {
@@ -247,7 +259,7 @@ class TestAdminCommands:
             assert data["count"] == 1
 
     def test_list_tables_api_failure(self, tmp_config):
-        """Test da admin list-tables handles API errors."""
+        """Test agnes admin list-tables handles API errors."""
         mock_resp = MagicMock()
         mock_resp.status_code = 500
         mock_resp.text = "Internal Server Error"
@@ -269,20 +281,16 @@ class TestQueryHybrid:
         assert "BigQuery" in result.output
 
 
-class TestMetricsHelp:
-    def test_metrics_help(self):
-        result = runner.invoke(app, ["metrics", "--help"])
+class TestCatalogMetrics:
+    def test_catalog_metrics_help(self):
+        result = runner.invoke(app, ["catalog", "--help"])
         assert result.exit_code == 0
-        assert "list" in result.output
-        assert "show" in result.output
+        # `agnes catalog --metrics` lists business-metric definitions.
+        assert "metrics" in result.output.lower()
+
+    def test_admin_metrics_help(self):
+        result = runner.invoke(app, ["admin", "metrics", "--help"])
+        assert result.exit_code == 0
+        # admin-only metric authoring: import / export / validate.
         assert "import" in result.output
-
-    def test_analyst_help(self):
-        result = runner.invoke(app, ["analyst", "--help"])
-        assert result.exit_code == 0
-        assert "setup" in result.output
-
-    def test_analyst_status_help(self):
-        result = runner.invoke(app, ["analyst", "status", "--help"])
-        assert result.exit_code == 0
-        assert "freshness" in result.output.lower() or "workspace" in result.output.lower()
+        assert "validate" in result.output

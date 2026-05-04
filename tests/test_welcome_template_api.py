@@ -38,8 +38,13 @@ def test_admin_get_template_initially_null(seeded_app):
     # default field must be present and contain the live setup script
     assert "default" in body
     assert body["default"]  # non-empty
-    # Must contain setup-script markers
-    assert "da auth" in body["default"] or "uv tool install" in body["default"] or "curl" in body["default"]
+    # Unified layout markers — `agnes init` and `uv tool install` are
+    # mandatory; legacy `agnes auth import-token` is gone.
+    assert "agnes init" in body["default"]
+    assert "uv tool install" in body["default"]
+    assert "agnes auth import-token" not in body["default"]
+    # No legacy verb in the rendered default
+    assert "da analyst setup" not in body["default"]
 
 
 def test_admin_can_set_and_reset_template(seeded_app):
@@ -198,8 +203,12 @@ def test_setup_page_uses_override_when_set(seeded_app):
     r = c.get("/setup")
     assert r.status_code == 200
     assert "Custom setup script" not in r.text
-    # Default contains setup_instructions output
-    assert "da analyst setup" in r.text or "da auth" in r.text or "curl" in r.text
+    # Default `/setup` is the analyst layout, which uses `agnes init`
+    # (auth + workspace bootstrap rolled into one).
+    assert "agnes init" in r.text
+    # No legacy verb anywhere in the rendered default
+    assert "da analyst setup" not in r.text
+    assert "da sync" not in r.text
 
 
 def test_get_template_default_field_has_server_url_placeholder(seeded_app):

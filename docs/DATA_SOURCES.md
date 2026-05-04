@@ -40,7 +40,7 @@ KEBOOLA_PROJECT_ID=12345
 
 Or configure via the admin UI (`/admin/tables`) or CLI:
 ```bash
-da admin register-table --source-type keboola --bucket "in.c-crm" --table "company" --query-mode local
+agnes admin register-table --source-type keboola --bucket "in.c-crm" --table "company" --query-mode local
 ```
 
 ### How it works
@@ -74,7 +74,7 @@ bigquery:
 
 Registers BigQuery tables and views as remote DuckDB views (no data download). Queries
 issued through the master `analytics.duckdb` are forwarded to BigQuery via the DuckDB
-BigQuery extension. See also `da fetch` for the analytical workflow that materializes
+BigQuery extension. See also `agnes snapshot create` for the analytical workflow that materializes
 filtered subsets locally.
 
 ### Requirements
@@ -82,7 +82,7 @@ filtered subsets locally.
 - DuckDB BigQuery extension (auto-installed by the extractor on first run).
 - A GCP service account with `bigquery.metadata.get` on the dataset and
   `bigquery.data.viewer` (or finer) on the table; `bigquery.jobs.create` on the
-  billing project for views and `da fetch` queries.
+  billing project for views and `agnes snapshot create` queries.
 - Credentials resolution: GCE metadata server first, then Application Default
   Credentials (`gcloud auth application-default login` or
   `GOOGLE_APPLICATION_CREDENTIALS`). See `connectors/bigquery/auth.py`.
@@ -113,18 +113,18 @@ optional sync schedule. Submit runs `/api/admin/register-table/precheck` first
 (round-trips `bigquery.Client.get_table` to confirm the table exists and the SA
 can see it), surfaces the row count + size + column count, then commits.
 
-**CLI** — `da admin register-table`:
+**CLI** — `agnes admin register-table`:
 
 ```bash
 # Dry-run: validate + check the source exists, no DB write.
-da admin register-table orders \
+agnes admin register-table orders \
     --source-type bigquery \
     --bucket analytics \
     --source-table orders \
     --dry-run
 
 # Commit
-da admin register-table orders \
+agnes admin register-table orders \
     --source-type bigquery \
     --bucket analytics \
     --source-table orders \
@@ -146,7 +146,7 @@ Not supported in M1. The register endpoint rejects any `source_table` containing
 For queries that JOIN local data with BigQuery results:
 
 ```bash
-da query --sql "SELECT o.*, t.views FROM orders o JOIN traffic t ON o.date = t.date" \
+agnes query --sql "SELECT o.*, t.views FROM orders o JOIN traffic t ON o.date = t.date" \
          --register-bq "traffic=SELECT date, SUM(views) as views FROM dataset.web GROUP BY 1"
 ```
 

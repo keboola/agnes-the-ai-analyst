@@ -1,4 +1,4 @@
-"""Explore commands — da explore {table}."""
+"""Explore commands — agnes explore {table}."""
 
 import json
 import os
@@ -25,10 +25,10 @@ def explore(
 def _explore_local(table: str, as_json: bool):
     import duckdb
 
-    local_dir = Path(os.environ.get("DA_LOCAL_DIR", "."))
+    local_dir = Path(os.environ.get("AGNES_LOCAL_DIR", "."))
     db_path = local_dir / "user" / "duckdb" / "analytics.duckdb"
     if not db_path.exists():
-        typer.echo("Local DuckDB not found. Run: da sync", err=True)
+        typer.echo("Local DuckDB not found. Run: agnes pull", err=True)
         raise typer.Exit(1)
 
     conn = duckdb.connect(str(db_path), read_only=True)

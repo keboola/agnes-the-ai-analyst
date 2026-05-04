@@ -5,9 +5,9 @@ description: Use when adding tables to the Agnes catalog so analysts can query t
 
 # Registering tables in Agnes
 
-`da catalog` lists tables from `system.duckdb::table_registry`. A table you can `da fetch` exists in that registry. This skill is the protocol for getting tables into and out of it.
+`agnes catalog` lists tables from `system.duckdb::table_registry`. A table you can `agnes snapshot create` exists in that registry. This skill is the protocol for getting tables into and out of it.
 
-**Auth:** every command here requires admin role. The CLI sends the active PAT (`da auth import-token`); REST examples use `Authorization: Bearer $PAT` against the configured server.
+**Auth:** every command here requires admin role. The CLI sends the active PAT (`agnes auth import-token`); REST examples use `Authorization: Bearer $PAT` against the configured server.
 
 ## Decision flow — single vs. bulk vs. update
 
@@ -21,7 +21,7 @@ user wants to add tables
 
 ## Before you register — verify the source exists
 
-Registering a table that does NOT exist at the source is silent: the row lands in the registry, but every later `da fetch` / `da query` against it 404s or 500s with an opaque message. Always verify first.
+Registering a table that does NOT exist at the source is silent: the row lands in the registry, but every later `agnes snapshot create` / `agnes query` against it 404s or 500s with an opaque message. Always verify first.
 
 For BigQuery (`source-type=bigquery`):
 
@@ -34,7 +34,7 @@ For Keboola (`source-type=keboola`):
 
 ```bash
 # the discover-and-register dry-run is the lowest-friction probe
-da admin discover-and-register --source-type=keboola --dry-run
+agnes admin discover-and-register --source-type=keboola --dry-run
 ```
 
 If the source can't confirm the table exists, **stop and ask the user to verify** rather than registering speculatively.
@@ -42,7 +42,7 @@ If the source can't confirm the table exists, **stop and ask the user to verify*
 ## Single-table registration
 
 ```bash
-da admin register-table <name> \
+agnes admin register-table <name> \
     --source-type=<keboola|bigquery|jira> \
     --bucket=<dataset_or_bucket> \
     --source-table=<source_object_name> \
@@ -59,9 +59,9 @@ Field meanings:
 | `--bucket` | BQ dataset / Keboola bucket / Jira board | `product_analytics` |
 | `--source-table` | Object name at the source (case-sensitive for BQ) | `s1_session_landings` |
 | `--query-mode` | `local` = synced parquet / `remote` = on-demand BQ | `remote` for BQ views |
-| `--description` | One sentence shown in `da catalog` | `"Per-session landing-page rows."` |
+| `--description` | One sentence shown in `agnes catalog` | `"Per-session landing-page rows."` |
 
-**Idempotence:** the API returns `409 Conflict` if the slugged id already exists. Always run `da admin list-tables --json` first and only register when the id is missing.
+**Idempotence:** the API returns `409 Conflict` if the slugged id already exists. Always run `agnes admin list-tables --json` first and only register when the id is missing.
 
 ## Bulk discovery
 
@@ -69,10 +69,10 @@ When the user says "register everything from <source>", let the connector enumer
 
 ```bash
 # 1. preview without writing anything
-da admin discover-and-register --source-type=bigquery --dry-run --json
+agnes admin discover-and-register --source-type=bigquery --dry-run --json
 
 # 2. review output, then commit
-da admin discover-and-register --source-type=bigquery
+agnes admin discover-and-register --source-type=bigquery
 ```
 
 `discover-and-register` is **safe on re-run**: existing tables are skipped (not overwritten), new ones added. The `--dry-run` output lists what *would* change.
@@ -80,7 +80,7 @@ da admin discover-and-register --source-type=bigquery
 For Keboola, pass `--token` and `--url` if not already in `instance.yaml`:
 
 ```bash
-da admin discover-and-register --source-type=keboola \
+agnes admin discover-and-register --source-type=keboola \
     --token="$KEBOOLA_TOKEN" --url=https://connection.keboola.com --dry-run
 ```
 
@@ -107,29 +107,29 @@ curl -sS -X DELETE \
     "$AGNES_SERVER_URL/api/admin/registry/<table_id>"
 ```
 
-Returns `204 No Content` on success, `404` if the id doesn't exist. **The underlying source data is NOT touched** — only the catalog entry. Local snapshots created via `da fetch` also remain on the analyst's laptop until they `da snapshot drop` them.
+Returns `204 No Content` on success, `404` if the id doesn't exist. **The underlying source data is NOT touched** — only the catalog entry. Local snapshots created via `agnes snapshot create` also remain on the analyst's laptop until they `agnes snapshot drop` them.
 
 ## Heuristics
 
-- **Slug, not display name.** When a later command asks for `table_id`, use the lower-snake_case form, not the original `--name`. `da admin list-tables` shows both columns.
-- **One descriptive line.** `--description` shows up in `da catalog --json` and in agent rails reasoning. Make it count: "What's in this table?" not "Imported 2026-01-15."
+- **Slug, not display name.** When a later command asks for `table_id`, use the lower-snake_case form, not the original `--name`. `agnes admin list-tables` shows both columns.
+- **One descriptive line.** `--description` shows up in `agnes catalog --json` and in agent rails reasoning. Make it count: "What's in this table?" not "Imported 2026-01-15."
 - **`local` vs `remote` is permanent until you re-register.** Switching modes mid-life requires PUT-ing `query_mode`; that doesn't move data, just changes how it's served.
-- **Don't register joins or views you'd rather compute on-the-fly.** A registered table is a long-term contract — analysts will write to its name. For one-off computations prefer `da query --remote`.
+- **Don't register joins or views you'd rather compute on-the-fly.** A registered table is a long-term contract — analysts will write to its name. For one-off computations prefer `agnes query --remote`.
 
 ## When NOT to register
 
-- The user wants to inspect a table once, doesn't intend to share it: register the row once with `query_mode='remote'` (admin-only, ~30s) and query it via `da query --remote "SELECT … FROM <registered_id>"`. Direct `bq."<dataset>"."<table>"` syntax is now registry-gated — unregistered paths return 403 `bq_path_not_registered` (closes the pre-existing RBAC + cost-cap bypass).
+- The user wants to inspect a table once, doesn't intend to share it: register the row once with `query_mode='remote'` (admin-only, ~30s) and query it via `agnes query --remote "SELECT … FROM <registered_id>"`. Direct `bq."<dataset>"."<table>"` syntax is now registry-gated — unregistered paths return 403 `bq_path_not_registered` (closes the pre-existing RBAC + cost-cap bypass).
 - The data lives in a third source not yet supported by a connector: implement the connector first (see `connectors.md` skill), then register.
-- The dataset already has a registered "parent" view that exposes the rows you want: register-table is for distinct catalog entities, not for slicing existing ones — slice with `da fetch --where`.
+- The dataset already has a registered "parent" view that exposes the rows you want: register-table is for distinct catalog entities, not for slicing existing ones — slice with `agnes snapshot create --where`.
 
 ## Confirmation flow
 
 After registration, sanity-check:
 
 ```bash
-da admin list-tables --json | jq '.[] | select(.id == "<table_id>")'
-da catalog --json    | jq '.tables[] | select(.id == "<table_id>")'
-da schema <table_id>     # forces a real source-side schema fetch — fails fast if source is wrong
+agnes admin list-tables --json | jq '.[] | select(.id == "<table_id>")'
+agnes catalog --json    | jq '.tables[] | select(.id == "<table_id>")'
+agnes schema <table_id>     # forces a real source-side schema fetch — fails fast if source is wrong
 ```
 
-If `da schema` 500s on a freshly registered remote BQ table, the most common causes (in order): wrong `--source-table` (typo), wrong `--bucket` (dataset), missing `data_source.bigquery.billing_project` when reading cross-project, missing `serviceusage.services.use` IAM on the billing project.
+If `agnes schema` 500s on a freshly registered remote BQ table, the most common causes (in order): wrong `--source-table` (typo), wrong `--bucket` (dataset), missing `data_source.bigquery.billing_project` when reading cross-project, missing `serviceusage.services.use` IAM on the billing project.

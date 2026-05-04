@@ -1,9 +1,9 @@
 """Shared CLI renderer for HTTP error responses.
 
 Three CLI paths surface BigQuery / guardrail / RBAC typed errors today:
-- ``da query --remote`` (POST /api/query)
-- ``da query --register-bq`` (RemoteQueryEngine wrapping BqAccessError)
-- ``da fetch`` / ``da schema`` etc. (cli.v2_client wrappers around v2 endpoints)
+- ``agnes query --remote`` (POST /api/query)
+- ``agnes query --register-bq`` (RemoteQueryEngine wrapping BqAccessError)
+- ``agnes snapshot create`` / ``agnes schema`` etc. (cli.v2_client wrappers around v2 endpoints)
 
 All three previously flattened the structured ``detail`` JSON to a
 truncated single-line string, hiding the operator-facing hint that

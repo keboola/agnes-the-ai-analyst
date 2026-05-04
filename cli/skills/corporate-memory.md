@@ -6,7 +6,7 @@ and makes it available to everyone through a curated catalog.
 
 ## How It Works
 1. Analysts write insights in their CLAUDE.local.md
-2. `da sync --upload-only` pushes content to server
+2. `agnes push` uploads sessions and CLAUDE.local.md to the server
 3. Server processes with LLM (Haiku) to extract knowledge items
 4. Items go through governance (pending → approved/mandatory)
 5. Approved items are distributed as Claude rules
@@ -20,7 +20,7 @@ and makes it available to everyone through a curated catalog.
 ## Admin Commands
 ```bash
 # View pending items (via web UI or API)
-da query "SELECT id, title, status FROM system.knowledge_items WHERE status='pending'" --remote
+agnes query "SELECT id, title, status FROM system.knowledge_items WHERE status='pending'" --remote
 
 # Approve/reject via API
 curl -X PUT http://server:8000/api/memory/<id>/status?new_status=approved -H "Authorization: Bearer $TOKEN"

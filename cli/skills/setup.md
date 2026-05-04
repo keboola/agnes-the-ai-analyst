@@ -32,27 +32,27 @@
 
 5. Verify health:
    ```bash
-   da status --server http://your-server:8000
+   agnes status --server http://your-server:8000
    ```
 
 6. Create first admin user:
    ```bash
-   da login --email admin@company.com --server http://your-server:8000
-   da admin add-user admin@company.com --role admin
+   agnes login --email admin@company.com --server http://your-server:8000
+   agnes admin add-user admin@company.com --role admin
    ```
 
 7. Trigger initial data sync:
    ```bash
-   da admin trigger-sync
+   agnes admin trigger-sync
    ```
 
 8. Verify data:
    ```bash
-   da status
+   agnes status
    ```
 
 ## Troubleshooting
 
 - **Cannot connect:** Check `docker compose ps`, verify port 8000 is exposed
 - **Auth fails:** Verify JWT_SECRET_KEY is set in .env
-- **No data:** Check data source credentials, run `da diagnose`
+- **No data:** Check data source credentials, run `agnes diagnose`

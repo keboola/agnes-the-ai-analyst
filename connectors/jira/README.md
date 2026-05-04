@@ -257,7 +257,7 @@ T+Xsec   Analyst: Query with DuckDB - sees latest data
 
 ### Server Environment Variables
 
-In `/opt/data-analyst/.env`:
+In `<install-dir>/.env` (typically the directory you run `docker compose` from):
 
 ```bash
 # Jira webhook integration
@@ -364,7 +364,7 @@ Response:
 
 ```bash
 # Webapp logs (webhook processing)
-tail -f /opt/data-analyst/logs/webapp-error.log | grep -i jira
+docker compose logs app --tail 200 | grep -i jira
 
 # Recent webhook events
 ls -lt /data/src_data/raw/jira/webhook_events/ | head -20
@@ -535,67 +535,26 @@ WHERE first_response_elapsed_millis IS NOT NULL
 
 ## Analyst Sync Configuration
 
-Jira data is an **optional dataset** - not synced by default to save bandwidth.
-
-**Enable Jira sync:**
-```bash
-# Edit local config (created on first sync_data.sh run)
-nano ~/.config/data-analyst/sync.yaml
-
-# Change:
-datasets:
-  jira: true              # Enable parquet data (~50MB)
-  jira_attachments: false # Keep false unless you need actual files
-```
-
-**Then sync:**
-```bash
-bash server/scripts/sync_data.sh
-```
+Whether an analyst sees Jira tables locally is decided server-side: an admin
+must register the Jira tables and grant the analyst's group access via
+`resource_grants(resource_type='table')`. Once granted, the manifest
+advertises the tables and `agnes pull` downloads the parquets to the
+analyst's workspace on the next session.
 
 DuckDB views for Jira tables are created automatically if data exists:
-- `jira_issues` - main issues table
-- `jira_comments` - issue comments
-- `jira_attachments` - attachment metadata (filenames, sizes, URLs)
-- `jira_changelog` - field change history
-- `jira_issuelinks` - links between issues (blocks, duplicates, relates to)
-- `jira_remote_links` - external links (Confluence, Slack, etc.)
+- `jira_issues` — main issues table
+- `jira_comments` — issue comments
+- `jira_attachments` — attachment metadata (filenames, sizes, URLs)
+- `jira_changelog` — field change history
+- `jira_issuelinks` — links between issues (blocks, duplicates, relates to)
+- `jira_remote_links` — external links (Confluence, Slack, etc.)
 
 ## Attachment Access
 
-Attachments (images, logs, PDFs) are stored separately from parquet data.
-
-### Option 1: Download per-ticket (recommended)
-
-Download attachments for a specific ticket to local temp folder:
-
-```bash
-# Download all attachments for one ticket
-rsync -avz data-analyst:server/jira_attachments/SUPPORT-1234/ /tmp/SUPPORT-1234/
-
-# View locally
-ls /tmp/SUPPORT-1234/
-open /tmp/SUPPORT-1234/screenshot.png  # macOS
-```
-
-This is fast (only downloads files for one ticket) and keeps your local machine clean.
-
-### Option 2: Sync attachments locally (for heavy analysis)
-
-If you need frequent access to attachments, enable full sync:
-
-```yaml
-# ~/.config/data-analyst/sync.yaml
-datasets:
-  jira: true
-  jira_attachments: true   # Syncs ~500MB+ of files
-```
-
-Then `sync_data.sh` will rsync attachments to `./server/jira_attachments/`.
-
-### Finding attachment path from parquet
-
-The `jira_attachments` table has a `local_path` column with the server path:
+Attachments (images, logs, PDFs) are stored on the server alongside parquet
+data and are **not** distributed via `agnes pull` (the manifest only
+advertises parquet tables). The `jira_attachments` table has a `local_path`
+column with the server-side filesystem path:
 
 ```sql
 SELECT
@@ -613,7 +572,11 @@ issue_key     | filename        | local_path                                    
 SUPPORT-1234  | screenshot.png  | /data/src_data/raw/jira/attachments/SUPPORT-1234/... | 45678
 ```
 
-To access locally (if synced): replace `/data/src_data/raw/jira/attachments/` with `./server/jira_attachments/`.
+To pull the actual file to a workstation, operators with SSH access to the
+host can `scp` / `rsync` from the path above. Public OSS does not ship a
+client-side attachment-fetch primitive — wire one up per deployment if
+attachment access is required (e.g. a thin admin endpoint that streams the
+file with the same RBAC gate as the parquet table).
 
 ## Future Improvements
 

@@ -53,6 +53,7 @@ eggs/
 .eggs/
 lib/
 lib64/
+!cli/lib/
 parts/
 sdist/
 var/

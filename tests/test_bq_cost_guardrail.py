@@ -18,7 +18,13 @@ from connectors.bigquery.extractor import materialize_query, MaterializeBudgetEr
 
 def _bq_with_seed(tables: dict[str, str] | None = None) -> BqAccess:
     """Stub BqAccess seeded with in-memory tables (same recipe as
-    test_bq_materialize)."""
+    test_bq_materialize).
+
+    A `bigquery_query(project, sql_text)` table macro is registered so the
+    wrapping added by `_wrap_admin_sql_for_jobs_api` (Task 2 — routes COPY
+    through the BQ jobs API for views) resolves against the in-memory tables
+    without needing the real BQ extension.
+    """
     tables = tables or {}
 
     @contextmanager
@@ -30,6 +36,12 @@ def _bq_with_seed(tables: dict[str, str] | None = None) -> BqAccess:
                 conn.execute(f"CREATE SCHEMA IF NOT EXISTS {s}")
             for ref, body in tables.items():
                 conn.execute(f"CREATE OR REPLACE TABLE {ref} AS {body}")
+            # Stub bigquery_query() so materialize_query's wrapped COPY works
+            # against the in-memory bq catalog without the real BQ extension.
+            conn.execute(
+                "CREATE OR REPLACE MACRO bigquery_query(project, sql_text) "
+                "AS TABLE SELECT * FROM query(sql_text)"
+            )
             yield conn
         finally:
             conn.close()
@@ -116,22 +128,26 @@ def test_zero_max_bytes_skips_dry_run(tmp_path):
     assert stats["rows"] == 1
 
 
-def test_dry_run_failure_is_fail_open(tmp_path):
+def test_dry_run_failure_is_fail_open(tmp_path, caplog):
     """If the dry-run errors (DuckDB syntax, missing google lib, transient
     upstream failure) we don't block — log + proceed with COPY. Operators
     who need hard-fail watch logs for the warning."""
+    import logging
+
     out = tmp_path / "extracts" / "bigquery"
     out.mkdir(parents=True)
     bq = _bq_with_seed({"bq.test.tiny": "SELECT 1 AS n"})
 
-    with patch(
-        "app.api.v2_scan._bq_dry_run_bytes", side_effect=RuntimeError("boom")
-    ):
-        stats = materialize_query(
-            table_id="t1",
-            sql="SELECT * FROM bq.test.tiny",
-            bq=bq,
-            output_dir=str(out),
-            max_bytes=10 * 2**30,
-        )
+    with caplog.at_level(logging.WARNING, logger="connectors.bigquery.extractor"):
+        with patch(
+            "app.api.v2_scan._bq_dry_run_bytes", side_effect=RuntimeError("boom")
+        ):
+            stats = materialize_query(
+                table_id="t1",
+                sql="SELECT * FROM bq.test.tiny",
+                bq=bq,
+                output_dir=str(out),
+                max_bytes=10 * 2**30,
+            )
     assert stats["rows"] == 1
+    assert "fail-open" in caplog.text

@@ -7,7 +7,7 @@ import pytest
 
 
 def test_da_catalog_json_output(monkeypatch):
-    """`da catalog --json` emits the server's JSON verbatim."""
+    """`agnes catalog --json` emits the server's JSON verbatim."""
     payload = {
         "tables": [
             {"id": "orders", "name": "orders", "source_type": "keboola",
@@ -44,7 +44,7 @@ def test_da_catalog_table_output(monkeypatch):
 
 
 def test_da_schema_json_output():
-    """da schema <table> --json emits column metadata as JSON."""
+    """agnes schema <table> --json emits column metadata as JSON."""
     payload = {
         "table_id": "orders",
         "source_type": "keboola",
@@ -68,7 +68,7 @@ def test_da_schema_json_output():
 
 
 def test_da_schema_human_output():
-    """da schema <table> shows human-readable column listing."""
+    """agnes schema <table> shows human-readable column listing."""
     payload = {
         "table_id": "orders",
         "source_type": "keboola",
@@ -91,7 +91,7 @@ def test_da_schema_human_output():
 
 
 def test_da_schema_error_exits_nonzero():
-    """da schema propagates V2ClientError and exits with non-zero code."""
+    """agnes schema propagates V2ClientError and exits with non-zero code."""
     from cli.v2_client import V2ClientError
     with patch("cli.commands.schema.api_get_json", side_effect=V2ClientError(status_code=404, body="not found")):
         from cli.commands.schema import schema_app
@@ -101,7 +101,7 @@ def test_da_schema_error_exits_nonzero():
 
 
 def test_da_describe_json_output():
-    """da describe <table> --json emits schema + sample as JSON."""
+    """agnes describe <table> --json emits schema + sample as JSON."""
     schema_payload = {
         "table_id": "orders",
         "source_type": "keboola",
@@ -136,7 +136,7 @@ def test_da_describe_json_output():
 
 
 def test_da_describe_human_output():
-    """da describe <table> shows schema + sample in human-readable form."""
+    """agnes describe <table> shows schema + sample in human-readable form."""
     schema_payload = {
         "table_id": "orders",
         "source_type": "keboola",

@@ -39,7 +39,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 24
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -956,7 +956,7 @@ _V16_TO_V17_MIGRATIONS = [
 # v19 -> v20: source_query column backs query_mode='materialized' for BigQuery.
 # Admin-registered SQL stored verbatim; scheduler runs it through the DuckDB BQ
 # extension (via BqAccess) and writes the result to
-# /data/extracts/bigquery/data/<id>.parquet so the existing manifest + da sync
+# /data/extracts/bigquery/data/<id>.parquet so the existing manifest + agnes pull
 # flow distributes it to analysts. NULL on existing rows.
 _V19_TO_V20_MIGRATIONS = [
     "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS source_query TEXT",
@@ -1682,6 +1682,99 @@ _V22_TO_V23_MIGRATIONS = [
 ]
 
 
+# v24: rewrite materialized BQ source_query from DuckDB-flavor
+# (bq."<dataset>"."<table>") to BigQuery-native (`<project>.<dataset>.<table>`)
+# so the new connectors.bigquery.extractor.materialize_query wrapping
+# path (which routes through bigquery_query() / BQ jobs API) accepts
+# them. Pre-v24, materialize used Storage Read API for the bq.<ds>.<tbl>
+# form, which fails for views — see PR for full motivation.
+#
+# This migration is implemented in Python (not pure SQL) because the
+# rewrite is a regex-and-replace per row: the project_id comes from
+# instance_config (file/env), not the DB. SQL alone can't pull the
+# project_id and substitute it. If the project isn't configured at
+# migration time, log a warning per affected row and leave them — the
+# operator must configure data_source.bigquery.project, restart, and
+# the migration will fire on next start (idempotent).
+def _replace_for_v24(project_id: str):
+    """Build a re.sub replacement function (not a string) so backslash
+    sequences in `project_id` aren't interpreted as group references.
+    GCP project IDs can't actually contain backslashes, but using a
+    function-form replacement is the defensive idiom — it makes the
+    intent explicit and removes the dependency on re.sub's replacement-
+    string escaping rules."""
+    def _repl(m):
+        return f"`{project_id}.{m.group(1)}.{m.group(2)}`"
+    return _repl
+
+
+def _v23_to_v24_finalize(conn: duckdb.DuckDBPyConnection) -> None:
+    import re as _re
+
+    try:
+        from app.instance_config import get_value
+        project_id = get_value("data_source", "bigquery", "project", default="") or ""
+    except Exception:
+        project_id = ""
+
+    pattern = _re.compile(r'bq\."([^"]+)"\."([^"]+)"')
+
+    rows = conn.execute(
+        "SELECT id, source_query FROM table_registry "
+        "WHERE query_mode = 'materialized' "
+        "AND source_query LIKE '%bq.\"%' "
+        "AND source_type = 'bigquery'"
+    ).fetchall()
+
+    if not rows:
+        return  # Nothing to migrate; skip the transaction.
+
+    # If we have rows to migrate AND project_id isn't configured, we cannot
+    # rewrite their source_query. Raise BEFORE the schema_version bump so
+    # the migration re-runs on the NEXT startup (after the operator
+    # configures the project). Pre-fix the function logged a warning per
+    # row and returned normally — the schema_version then bumped to 24
+    # unconditionally, the `if current < 24:` gate skipped this function
+    # forever after, and rows stayed in DuckDB-flavor SQL. The new
+    # `_wrap_admin_sql_for_jobs_api` wrapping path then rejected those
+    # rows at materialize time as unparseable BQ SQL with no automatic
+    # recovery (Devin Review on db.py:1757). Side effect: a BQ-using
+    # deployment that hasn't set the project blocks startup until they
+    # do — that's the right call for a config error that would otherwise
+    # silently break materialized tables.
+    if not project_id:
+        raise RuntimeError(
+            f"v24 migration cannot complete: {len(rows)} materialized "
+            f"BigQuery row(s) need their source_query rewritten from "
+            f"DuckDB-flavor `bq.\"ds\".\"tbl\"` to BQ-native "
+            f"`<project>.ds.tbl`, but `data_source.bigquery.project` is "
+            f"not configured. Set it via /admin/server-config (or "
+            f"`instance.yaml: data_source.bigquery.project`) and restart "
+            f"the app to retry the migration. The schema version is NOT "
+            f"bumped to 24 until this completes; pre-migration DB "
+            f"snapshot is at `{{DATA_DIR}}/state/system.duckdb.pre-migrate`."
+        )
+
+    conn.execute("BEGIN TRANSACTION")
+    try:
+        for row_id, sq in rows:
+            if sq is None:
+                continue
+            new_sq = pattern.sub(_replace_for_v24(project_id), sq)
+            if new_sq != sq:
+                conn.execute(
+                    "UPDATE table_registry SET source_query = ? WHERE id = ?",
+                    [new_sq, row_id],
+                )
+                logger.info(
+                    "v24 migration: rewrote source_query for row %r", row_id,
+                )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
 def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
     """Create tables if they don't exist. Apply migrations if schema version changed.
 
@@ -1837,6 +1930,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             if current < 23:
                 for sql in _V22_TO_V23_MIGRATIONS:
                     conn.execute(sql)
+            if current < 24:
+                _v23_to_v24_finalize(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

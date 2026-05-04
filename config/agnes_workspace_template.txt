@@ -1,0 +1,111 @@
+# Agnes analyst workspace
+
+**Created:** {created_at}
+**Server:** {server_url}
+**Workspace:** {workspace_path}
+
+This file documents what `agnes init` installed on this machine and in this folder.
+Read this when you want to know "what is this thing", "how does it work", or
+"how do I uninstall it". For Claude Code's instructions, see `CLAUDE.md`.
+
+---
+
+## What's installed (global, per-user)
+
+| Path | What it is | How to remove |
+|------|------------|---------------|
+| `~/.local/bin/agnes` | The `agnes` CLI binary | `uv tool uninstall agnes-the-ai-analyst` |
+| `~/.config/agnes/config.yaml` | Default Agnes server URL | `rm -rf ~/.config/agnes/` |
+| `~/.config/agnes/token.json` | Personal access token (PAT) | `rm ~/.config/agnes/token.json` |
+| `~/.agnes/ca.pem` | Server's CA cert (private CA installs only) | `rm ~/.agnes/ca.pem` |
+| `~/.agnes/ca-bundle.pem` | Combined system + Agnes CA bundle | `rm ~/.agnes/ca-bundle.pem` |
+| `~/.zshrc` / `~/.bashrc` block (marker `AGNES_CA_PEM_TRUST`) | `PATH` + `SSL_CERT_FILE` env | Edit rc, remove block |
+
+---
+
+## What's in this folder
+
+| Path | What it is |
+|------|------------|
+| `./CLAUDE.md` | Rules + golden path for Claude Code (fetched from server's `/api/welcome`) |
+| `./AGNES_WORKSPACE.md` | This file |
+| `./.claude/settings.json` | Claude Code config: model, permissions, hooks |
+| `./.claude/CLAUDE.local.md` | Your private notes (uploaded on session end) |
+| `./.claude/rules/km_*.md` | Server-pushed corporate-knowledge rules (only when granted) |
+| `./server/parquet/*.parquet` | Synced data — RBAC-filtered subset (only when grants exist) |
+| `./user/duckdb/analytics.duckdb` | DuckDB views over the parquets — what `agnes query` reads |
+| `./user/snapshots/*.parquet` | Ad-hoc materialized snapshots from `agnes snapshot create` |
+| `./user/sessions/*.jsonl` | Captured Claude Code sessions (uploaded on session end) |
+
+Some folders only exist when they have content — `agnes pull` and `agnes push`
+only create them when there's something to write.
+
+---
+
+## How it stays fresh
+
+Two hooks in `./.claude/settings.json` keep this workspace in sync without
+you doing anything:
+
+- **SessionStart** → `agnes pull --quiet` — new parquets, schema changes, and
+  updated rules pull down before Claude Code answers. Failure is silent;
+  your session continues with the last-known data.
+- **SessionEnd** → `agnes push --quiet` — your session transcript and
+  `CLAUDE.local.md` ship to the server.
+
+Both are workspace-scoped — they only run when Claude Code opens this folder.
+
+---
+
+## Cheat sheet
+
+```bash
+# Tables you can read (server-side catalog, RBAC-filtered)
+agnes catalog
+agnes catalog --json | jq '.[] | select(.query_mode=="local")'
+
+# Schema and sample
+agnes schema opportunity
+agnes describe opportunity -n 10
+
+# Run a SQL query (DuckDB flavor against local parquets)
+agnes query "SELECT count(*) FROM opportunity WHERE stage='Closed Won'"
+
+# Remote BigQuery query (server-side, no local materialization)
+agnes query --remote "SELECT count(*) FROM web_sessions_example"
+
+# Materialize a remote subset locally
+agnes snapshot create web_sessions_example \
+  --select event_date,country_code \
+  --where "event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)" \
+  --as recent_sessions
+
+# Manual data refresh (the SessionStart hook does this automatically)
+agnes pull
+
+# Workspace status (what's synced, when)
+agnes status
+
+# Re-generate this workspace from scratch (preserves CLAUDE.local.md)
+agnes init --server-url https://agnes.example.com --token <PAT> --force
+```
+
+---
+
+## Uninstall
+
+```bash
+# 1. Remove the CLI
+uv tool uninstall agnes-the-ai-analyst
+
+# 2. Remove global config and trust artifacts
+rm -rf ~/.config/agnes
+rm -rf ~/.agnes
+
+# 3. Remove the env-var block from your shell rc
+# Open ~/.zshrc or ~/.bashrc, find the lines between
+# "# AGNES_CA_PEM_TRUST — added by Agnes setup" and the next blank line, delete.
+
+# 4. Remove this workspace
+rm -rf ./CLAUDE.md ./AGNES_WORKSPACE.md ./.claude ./server ./user
+```

@@ -1,4 +1,4 @@
-"""Tests for `da snapshot list/refresh/drop/prune` (spec §4.2).
+"""Tests for `agnes snapshot list/refresh/drop/prune` (spec §4.2).
 
 NOTE: Tests construct a local Typer app so cli/main.py is NOT imported.
 The snapshot_app is registered under the "snapshot" sub-app.
@@ -19,7 +19,7 @@ from cli.snapshot_meta import SnapshotMeta, write_meta
 
 @pytest.fixture
 def cli_env(tmp_path, monkeypatch):
-    monkeypatch.setenv("DA_LOCAL_DIR", str(tmp_path))
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
     snap_dir = tmp_path / "user" / "snapshots"
     snap_dir.mkdir(parents=True)
     yield tmp_path

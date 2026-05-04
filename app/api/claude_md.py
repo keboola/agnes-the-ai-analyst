@@ -10,7 +10,6 @@
 import datetime
 import logging
 from typing import Optional
-from urllib.parse import unquote
 
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -65,6 +64,25 @@ _VALIDATION_STUB_CONTEXT_ANON = {
 }
 
 
+# Substrings that, when found in an admin-saved CLAUDE.md override, signal
+# the override is stale relative to the post-clean-bootstrap CLI surface.
+# Surfaced via TemplateGetResponse.legacy_strings_detected so the admin UI
+# can render a yellow banner prompting re-authoring.
+_LEGACY_STRINGS = (
+    "data/parquet",
+    "da sync",
+    "da fetch",
+    "da analyst setup",
+    "da metrics list",
+    "da metrics show",
+)
+
+
+def _scan_legacy_strings(text: str) -> list[str]:
+    """Return sorted unique substrings from _LEGACY_STRINGS present in text."""
+    return sorted({s for s in _LEGACY_STRINGS if s in text})
+
+
 class ClaudeMdResponse(BaseModel):
     content: str
 
@@ -74,6 +92,10 @@ class TemplateGetResponse(BaseModel):
     default: str  # live default rendered with calling admin's context
     updated_at: Optional[str] = None
     updated_by: Optional[str] = None
+    # Substrings from _LEGACY_STRINGS detected in the saved override (if any).
+    # Empty when no override is set or when the override is clean. Surfaced
+    # so the admin UI can prompt re-authoring after a CLI surface rename.
+    legacy_strings_detected: list[str] = []
 
 
 class TemplatePutRequest(BaseModel):
@@ -97,7 +119,7 @@ async def get_welcome(
 ):
     """Return the rendered CLAUDE.md for the authenticated analyst.
 
-    The CLI calls this endpoint during ``da analyst setup`` to write
+    The CLI calls this endpoint during ``agnes init`` to write
     ``<workspace>/CLAUDE.md``. The content is RBAC-filtered per the
     calling user.
 
@@ -130,11 +152,13 @@ async def admin_get_workspace_template(
     row = ClaudeMdTemplateRepository(conn).get()
     server_url = str(request.base_url).rstrip("/")
     live_default = compute_default_claude_md(conn, user=user, server_url=server_url)
+    legacy_hits = _scan_legacy_strings(row["content"] or "")
     return TemplateGetResponse(
         content=row["content"],
         default=live_default,
         updated_at=row["updated_at"].isoformat() if row["updated_at"] else None,
         updated_by=row["updated_by"],
+        legacy_strings_detected=legacy_hits,
     )
 
 

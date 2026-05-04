@@ -27,7 +27,7 @@ da scripts deploy sales_alert --schedule "0 8 * * MON"  # every Monday 8 AM
 ```
 
 ## Delivery Channels
-- **Telegram**: Link via `da auth telegram-link`
+- **Telegram**: Link via `agnes auth telegram-link`
 - **Desktop app**: Via WebSocket gateway (automatic if connected)
 
 ## Managing Scripts

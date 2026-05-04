@@ -411,7 +411,7 @@ def test_pat_same_ip_does_not_audit(fresh_db):
 
 
 def test_pat_can_list_own_tokens(fresh_db):
-    """A PAT must be allowed to list its owner's tokens — `da auth token list`
+    """A PAT must be allowed to list its owner's tokens — `agnes auth token list`
     CLI flow. Previously this returned 403 because require_session_token
     blocked all PATs uniformly."""
     from fastapi.testclient import TestClient
@@ -454,7 +454,7 @@ def test_pat_can_list_own_tokens(fresh_db):
 
 def test_pat_can_revoke_own_token(fresh_db):
     """A PAT must be allowed to revoke its owner's own tokens —
-    `da auth token revoke` CLI flow."""
+    `agnes auth token revoke` CLI flow."""
     from fastapi.testclient import TestClient
     import hashlib, uuid
     from datetime import datetime, timezone, timedelta

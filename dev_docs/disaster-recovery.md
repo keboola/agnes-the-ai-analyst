@@ -87,8 +87,6 @@ docker compose up -d
 
 # Trigger a full sync from the data source
 curl -X POST http://localhost:8000/api/sync/trigger
-# Or via CLI:
-docker compose exec app da sync
 ```
 
 DuckDB extract files and parquet will be repopulated from Keboola / BigQuery.
@@ -123,8 +121,8 @@ not regenerated — user accounts and table definitions are not recreated by syn
 
 4. **Clone repo and create .env**:
    ```bash
-   git clone git@github.com:your-org/ai-data-analyst.git /opt/data-analyst
-   cd /opt/data-analyst
+   git clone git@github.com:keboola/agnes-the-ai-analyst.git <install-dir>
+   cd <install-dir>
    cp config/.env.template .env
    # Fill in secrets from GitHub Secrets / 1Password
    ```

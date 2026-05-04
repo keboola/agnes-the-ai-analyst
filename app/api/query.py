@@ -150,7 +150,7 @@ async def execute_query(
                     raise HTTPException(status_code=403, detail=f"Access denied to table '{table}'")
 
         # ---- #160 BQ remote-row guardrail + RBAC patch -------------------
-        dry_run_set, blocked_bq_path = _bq_guardrail_inputs(
+        dry_run_set, name_lookups, blocked_bq_path = _bq_guardrail_inputs(
             request.sql, sql_lower, conn, user, allowed,
         )
         if blocked_bq_path is not None:
@@ -172,7 +172,10 @@ async def execute_query(
         user_id = user.get("email") or user.get("id") or "anon"
         guard = (
             _bq_quota_and_cap_guard(
-                user_id=user_id, dry_run_set=dry_run_set, sql=request.sql,
+                user_id=user_id,
+                dry_run_set=dry_run_set,
+                name_lookups=name_lookups,
+                sql=request.sql,
             )
             if dry_run_set
             else contextlib.nullcontext()
@@ -246,7 +249,7 @@ def _materialized_hint_for_query_error(
     text; a hit means the operator picked a name that exists in the
     registry but isn't queryable in this instance. The hint is the same
     in both arms of the OR — it tells them what the table needs and what
-    they can do today (`da sync` or query `bq."dataset"."table"`
+    they can do today (`agnes pull` or query `bq."dataset"."table"`
     directly using the bucket/source_table from the registry row).
     """
     # Cheap fast-path — only inspect the registry when DuckDB's error
@@ -299,7 +302,7 @@ def _build_materialized_hint(row: dict) -> str:
     return (
         f"Table {tid!r} is registered as query_mode='materialized' but is "
         f"not yet materialized in this instance's analytics views. Run "
-        f"`da sync` (or wait for the scheduler tick / hit POST "
+        f"`agnes pull` (or wait for the scheduler tick / hit POST "
         f"/api/sync/trigger) to materialize the parquet"
         f"{direct_hint}."
     )
@@ -314,11 +317,19 @@ def _bq_guardrail_inputs(
 ):
     """Two-pass scan over user SQL for the upcoming BQ guardrail + RBAC patch.
 
-    Returns a tuple `(dry_run_set, blocked_bq_path)`:
+    Returns a tuple `(dry_run_set, name_lookups, blocked_bq_path)`:
 
     - `dry_run_set` is a list of `(bucket, source_table, est_bytes)` triples
       identifying every BigQuery row the request will scan. The caller dry-runs
-      each and bills the sum against the user's daily quota.
+      the rewritten user SQL once and distributes the total here for quota
+      bookkeeping.
+
+    - `name_lookups` is a list of `(registered_name, bucket, source_table)`
+      triples — only the bare-name matches from pass 1, NOT the direct
+      `bq."<ds>"."<tbl>"` matches. Issue #171 fix: the cap-guard rewrites
+      these name → ``\\`<project>.<bucket>.<source_table>\\``` when building
+      the BQ-native SQL for dry-run, so partition pruning + column projection
+      + predicate pushdown all engage.
 
     - `blocked_bq_path` is a structured-detail dict for the caller to raise
       HTTPException(403) with, when user SQL contains a direct
@@ -339,9 +350,10 @@ def _bq_guardrail_inputs(
     # `id != name` (e.g. id="bq.finance.ue", name="ue"), legitimate
     # accessible rows were skipped, under-counting dry-run bytes for the
     # cost cap. The user SQL still references the display `name` (that's
-    # what shows in `da catalog`), so the regex match below uses `name`,
+    # what shows in `agnes catalog`), so the regex match below uses `name`,
     # but the access gate uses `id`.
     dry_run: list = []
+    name_lookups: list = []
     seen_paths: set = set()
     accessible_set = set(allowed) if allowed is not None else None
     for r in repo.list_by_source("bigquery"):
@@ -363,6 +375,11 @@ def _bq_guardrail_inputs(
             if key not in seen_paths:
                 seen_paths.add(key)
                 dry_run.append((bucket, source_table, 0))  # bytes filled at dry-run
+            # Record the (name, bucket, source_table) mapping separately so the
+            # cap-guard's SQL rewriter can find every occurrence — even if the
+            # user references the same physical table under two registered
+            # names (rare but possible: aliased catalog rows).
+            name_lookups.append((str(name), bucket, source_table))
 
     # 2. Direct bq.<ds>.<tbl> pass: every match must point at a registered
     # row. Run BEFORE adding to dry_run so unregistered paths fail-fast.
@@ -372,13 +389,13 @@ def _bq_guardrail_inputs(
         source_table_raw = m.group(2).strip('"')
         row = repo.find_by_bq_path(bucket_raw, source_table_raw)
         if row is None:
-            return [], {
+            return [], [], {
                 "reason": "bq_path_not_registered",
                 "path": f'bq."{bucket_raw}"."{source_table_raw}"',
                 "hint": (
                     "Direct bq.* references must point to a registered table. "
-                    "Register via `da admin register-table` or use the "
-                    "registered name from `da catalog`."
+                    "Register via `agnes admin register-table` or use the "
+                    "registered name from `agnes catalog`."
                 ),
             }
         # Row exists. Per-id grant check (non-admin only).
@@ -387,7 +404,7 @@ def _bq_guardrail_inputs(
         # Devin Review iter #3.
         if not is_admin:
             if accessible_set is None or row["id"] not in accessible_set:
-                return [], {
+                return [], [], {
                     "reason": "bq_path_access_denied",
                     "path": f'bq."{bucket_raw}"."{source_table_raw}"',
                     "registered_as": row["name"],
@@ -401,11 +418,94 @@ def _bq_guardrail_inputs(
                 seen_paths.add(key)
                 dry_run.append((bucket, source_table, 0))
 
-    return dry_run, None
+    return dry_run, name_lookups, None
+
+
+def _rewrite_user_sql_for_bq_dry_run(
+    sql: str, name_lookups: list, project: str,
+) -> str:
+    """Rewrite user SQL from DuckDB-flavor to BQ-native so a single
+    `_bq_dry_run_bytes` call can estimate scan size for the EXACT query
+    the user submitted (issue #171).
+
+    Two transformations:
+
+    1. Each registered remote-BQ name (word-boundary, case-insensitive)
+       → ``\\`<project>.<bucket>.<source_table>\\````. A SINGLE re.sub call
+       with an alternation regex sorted longest-first replaces every
+       occurrence in one pass — important to avoid cross-contamination
+       (Devin Review on query.py:464). The previous iterative approach
+       (one re.sub per name, longest-first) corrupted output when the
+       project ID contained a registered table name as a hyphen-delimited
+       word: Pass 1 iter N's `\\bname\\b` regex would match INSIDE the
+       backticked replacement text from a prior iter. Concrete repro:
+       project = `my-ue-project`, registered names `orders` + `ue`, SQL
+       `FROM orders JOIN ue` → after iter 1 (orders): the backticked path
+       contains `my-ue-project`, then iter 2 (ue) matches the `ue` inside
+       it. Single-pass alternation processes each source position exactly
+       once, so the freshly-inserted backticked text isn't re-scanned.
+
+    2. ``bq."<ds>"."<tbl>"`` (and the unquoted variant) → ``\\`<project>.<ds>.<tbl>\\````.
+       Distinct pattern from Pass 1, no overlap, separate re.sub.
+
+    The rewrite is regex-only (no SQL parser): a registered name appearing
+    inside a string literal (e.g. an `IN (...)` value or a `LIKE` pattern)
+    will also be rewritten. This is acceptable because (a) it's vanishingly
+    rare to have a string literal exactly matching a registered table name,
+    and (b) when it does happen the dry-run errors out and the caller falls
+    back to the per-table SELECT * estimate (current behavior, no regression).
+
+    CTE shadowing: a `WITH unit_economics AS (...)` followed by `FROM
+    unit_economics` would also rewrite the `FROM` reference. BQ then treats
+    the CTE as unreferenced (legal) and the dry-run estimates the rewritten
+    physical table — likely an over-estimate. Same fallback path covers this.
+    """
+    out = sql
+
+    # Pass 1: bare-name rewrite. Build a single alternation regex sorted
+    # longest-first, with a function-replacement that looks the matched
+    # name up in a case-insensitive dict. Single-pass means freshly
+    # inserted backticked text isn't re-scanned, fixing the
+    # project-ID-contains-name corruption (Devin Review on query.py:464).
+    if name_lookups:
+        # Map name (lower-cased) → backticked target. Names are
+        # case-insensitive on the input side per the existing helper
+        # contract (see test_rewrite_helper_is_case_insensitive_on_bare_names).
+        name_to_target: dict[str, str] = {}
+        for name, bucket, source_table in name_lookups:
+            name_to_target[name.lower()] = f"`{project}.{bucket}.{source_table}`"
+
+        # Alternation pattern, longest-first. Longer match wins at any
+        # given position because Python's re tries alternatives
+        # left-to-right and stops at the first match — pinning longest
+        # entries to the front preserves the prefix-collision invariant
+        # exercised by test_rewrite_helper_longer_name_wins_over_prefix.
+        sorted_names = sorted(name_to_target.keys(), key=len, reverse=True)
+        pattern = r"\b(" + "|".join(re.escape(n) for n in sorted_names) + r")\b"
+
+        def _name_repl(m: re.Match) -> str:
+            return name_to_target[m.group(1).lower()]
+
+        out = re.sub(pattern, _name_repl, out, flags=re.IGNORECASE)
+
+    # Pass 2: bq."ds"."tbl" / bq.ds.tbl → `<project>.<ds>.<tbl>`.
+    def _bq_path_repl(m: re.Match) -> str:
+        ds = m.group(1).strip('"')
+        tbl = m.group(2).strip('"')
+        return f"`{project}.{ds}.{tbl}`"
+
+    out = BQ_PATH.sub(_bq_path_repl, out)
+    return out
 
 
 @contextlib.contextmanager
-def _bq_quota_and_cap_guard(*, user_id: str, dry_run_set: list, sql: str):
+def _bq_quota_and_cap_guard(
+    *,
+    user_id: str,
+    dry_run_set: list,
+    name_lookups: list,
+    sql: str,
+):
     """Pre-flight check + dry-run + cap enforcement for /api/query BQ paths.
 
     Context-manager shape (Devin Review #5 on PR #168). Earlier implementation
@@ -419,16 +519,36 @@ def _bq_quota_and_cap_guard(*, user_id: str, dry_run_set: list, sql: str):
     The caller's `with` block holds the slot through both dry-run AND the
     subsequent `analytics.execute(...)` until the body exits.
 
+    Issue #171 fix: dry-run runs ONCE on the user's actual SQL (translated
+    to BQ-native via `_rewrite_user_sql_for_bq_dry_run`). Pre-fix the
+    pre-check did N dry-runs of synthetic ``SELECT * FROM <table>`` per
+    referenced table — which ignored WHERE filters, column projection, and
+    partition pruning, over-estimating scan size up to ~30,000× on
+    partitioned/clustered tables and rejecting narrow queries that BQ
+    itself would dry-run as a few MB.
+
+    Fallback: if BQ rejects the rewritten SQL with a parse-level
+    ``client_error`` (e.g. DuckDB-only syntax like ``::INT`` casts that
+    don't translate to BQ), fall back to the pre-#171 per-table
+    SELECT * approach so the cap-guard still functions — over-estimate
+    is preferred over fail-open. Forbidden / upstream errors still
+    propagate as HTTP 502.
+
+    Flow:
     1. `check_daily_budget` — over-cap users get 429 BEFORE any BQ work.
     2. `quota.acquire(user_id)` opened — concurrent-slot held throughout.
-    3. Dry-run each `(bucket, source_table)` via `_bq_dry_run_bytes`.
-    4. If sum > cap → 400 `remote_scan_too_large`.
+    3. Single dry-run of rewritten user SQL → `total_bytes`.
+       On parse error, fall back to per-table SELECT * → sum.
+    4. If total > cap → 400 `remote_scan_too_large`.
     5. Yield. Caller runs `analytics.execute(...)` + `record_bytes(...)`.
     6. On exit, slot released.
 
     Mutates `dry_run_set` in place: the third tuple element (bytes) is
-    populated with the per-path dry-run result so the caller can sum and
-    record the bytes against the user's quota post-flight.
+    populated so the caller can sum and record bytes against the user's
+    quota post-flight. Single-dry-run path puts `total_bytes` on the first
+    entry and zero on the rest (BQ doesn't expose per-table bytes for a
+    composite query); the caller's `sum(b for _, _, b in dry_run_set)`
+    still equals `total_bytes`.
     """
     quota = _build_quota_tracker()
     try:
@@ -464,19 +584,66 @@ def _bq_quota_and_cap_guard(*, user_id: str, dry_run_set: list, sql: str):
     # Devin Review #2 on PR #168.
     try:
         with quota.acquire(user_id):
+            project = bq.projects.data
+            rewritten_sql = _rewrite_user_sql_for_bq_dry_run(
+                sql, name_lookups, project,
+            )
+
+            # Try the single-dry-run path first (issue #171). Falls back
+            # to the per-table SELECT * approach only on BQ parse errors
+            # (kind="bq_bad_request" — DuckDB-only syntax that BQ can't
+            # translate). All other BQ errors propagate as 502 below.
             total_bytes = 0
-            for i, (bucket, source_table, _) in enumerate(dry_run_set):
-                bq_sql = f"SELECT * FROM `{bq.projects.data}.{bucket}.{source_table}`"
-                try:
-                    est = _bq_dry_run_bytes(bq, bq_sql)
-                except BqAccessError as exc:
+            used_fallback = False
+            try:
+                total_bytes = _bq_dry_run_bytes(bq, rewritten_sql)
+            except BqAccessError as exc:
+                if exc.kind == "bq_bad_request":
+                    logger.warning(
+                        "BQ dry-run rejected the rewritten SQL "
+                        "(kind=%s, message=%s). Falling back to per-table "
+                        "SELECT * estimate; the cap check will over-estimate "
+                        "scan bytes for this query. Consider rewriting to "
+                        "BQ-native syntax for a tight pre-check.",
+                        exc.kind, exc.message,
+                    )
+                    used_fallback = True
+                else:
                     raise HTTPException(status_code=502, detail={
                         "kind": exc.kind,
                         "message": exc.message,
                         **(exc.details or {}),
                     })
-                dry_run_set[i] = (bucket, source_table, est)
-                total_bytes += est
+
+            if used_fallback:
+                # Pre-#171 path: estimate per registered table from a
+                # synthetic SELECT *. Over-estimates partitioned scans but
+                # never under-estimates, so the cap still bounds risk.
+                for i, (bucket, source_table, _) in enumerate(dry_run_set):
+                    fallback_sql = (
+                        f"SELECT * FROM `{project}.{bucket}.{source_table}`"
+                    )
+                    try:
+                        est = _bq_dry_run_bytes(bq, fallback_sql)
+                    except BqAccessError as exc:
+                        raise HTTPException(status_code=502, detail={
+                            "kind": exc.kind,
+                            "message": exc.message,
+                            **(exc.details or {}),
+                        })
+                    dry_run_set[i] = (bucket, source_table, est)
+                    total_bytes += est
+            else:
+                # Single-dry-run path. Distribute the total to dry_run_set
+                # so the caller's `record_bytes(sum(...))` stays correct.
+                # Per-table breakdown is unavailable from a composite
+                # dry-run; pin total to entry 0, zero the rest.
+                if dry_run_set:
+                    b0, t0, _ = dry_run_set[0]
+                    dry_run_set[0] = (b0, t0, total_bytes)
+                    for i in range(1, len(dry_run_set)):
+                        bi, ti, _ = dry_run_set[i]
+                        dry_run_set[i] = (bi, ti, 0)
 
             if cap_bytes > 0 and total_bytes > cap_bytes:
                 tables = [f"{b}.{t}" for b, t, _ in dry_run_set]
@@ -486,7 +653,7 @@ def _bq_quota_and_cap_guard(*, user_id: str, dry_run_set: list, sql: str):
                     "limit_bytes": cap_bytes,
                     "tables": tables,
                     "suggestion": (
-                        "Use `da fetch <id> --select <cols> --where <predicate> "
+                        "Use `agnes snapshot create <id> --select <cols> --where <predicate> "
                         "--estimate` to materialize a filtered subset, then query "
                         "the snapshot locally."
                     ),

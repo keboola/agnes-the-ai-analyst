@@ -140,7 +140,7 @@ else
 fi
 
 # 3. Seed the server URL in CLI config
-CFG_DIR="${{DA_CONFIG_DIR:-$HOME/.config/da}}"
+CFG_DIR="${{AGNES_CONFIG_DIR:-$HOME/.config/agnes}}"
 mkdir -p "$CFG_DIR"
 cat > "$CFG_DIR/config.yaml" <<EOF
 server: $SERVER
@@ -149,7 +149,7 @@ EOF
 echo "Installed."
 echo "Next steps:"
 echo "  1. Sign in to $SERVER and create a personal access token at $SERVER/tokens"
-echo "  2. Export it:   export DA_TOKEN=<your-token>"
-echo "  3. Verify:      da auth whoami"
+echo "  2. Export it:   export AGNES_TOKEN=<your-token>"
+echo "  3. Verify:      agnes auth whoami"
 """
     return script
