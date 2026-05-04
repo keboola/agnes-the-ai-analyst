@@ -9,7 +9,9 @@ from importlib.metadata import version as _pkg_version
 import typer
 
 from cli.commands.auth import auth_app
-from cli.commands.sync import sync_app
+from cli.commands.init import init_app
+from cli.commands.pull import pull_app
+from cli.commands.push import push_app
 from cli.commands.query import query_command
 from cli.commands.status import status_app
 from cli.commands.admin import admin_app
@@ -18,12 +20,9 @@ from cli.commands.skills import skills_app
 from cli.commands.setup import setup_app
 from cli.commands.server import server_app
 from cli.commands.explore import explore_app
-from cli.commands.metrics import metrics_app
-from cli.commands.analyst import analyst_app
 from cli.commands.catalog import catalog_app
 from cli.commands.schema import schema_app
 from cli.commands.describe import describe_app
-from cli.commands.fetch import fetch_app
 from cli.commands.snapshot import snapshot_app
 from cli.commands.disk_info import disk_info_app
 
@@ -90,7 +89,9 @@ def _maybe_warn_outdated() -> None:
 
 # Register subcommands
 app.add_typer(auth_app, name="auth")
-app.add_typer(sync_app, name="sync")
+app.add_typer(init_app, name="init")
+app.add_typer(pull_app, name="pull")
+app.add_typer(push_app, name="push")
 app.command("query")(query_command)
 app.add_typer(status_app, name="status")
 app.add_typer(admin_app, name="admin")
@@ -99,12 +100,9 @@ app.add_typer(skills_app, name="skills")
 app.add_typer(setup_app, name="setup")
 app.add_typer(server_app, name="server")
 app.add_typer(explore_app, name="explore")
-app.add_typer(metrics_app, name="metrics")
-app.add_typer(analyst_app, name="analyst")
 app.add_typer(catalog_app, name="catalog")
 app.add_typer(schema_app, name="schema")
 app.add_typer(describe_app, name="describe")
-app.add_typer(fetch_app, name="fetch")
 app.add_typer(snapshot_app, name="snapshot")
 app.add_typer(disk_info_app, name="disk-info")
 

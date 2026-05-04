@@ -34,8 +34,16 @@ class TestCLIHelp:
         assert result.exit_code == 0
         assert "login" in result.output
 
-    def test_sync_help(self):
-        result = runner.invoke(app, ["sync", "--help"])
+    def test_pull_help(self):
+        result = runner.invoke(app, ["pull", "--help"])
+        assert result.exit_code == 0
+
+    def test_push_help(self):
+        result = runner.invoke(app, ["push", "--help"])
+        assert result.exit_code == 0
+
+    def test_init_help(self):
+        result = runner.invoke(app, ["init", "--help"])
         assert result.exit_code == 0
 
     def test_query_help(self):
@@ -273,20 +281,16 @@ class TestQueryHybrid:
         assert "BigQuery" in result.output
 
 
-class TestMetricsHelp:
-    def test_metrics_help(self):
-        result = runner.invoke(app, ["metrics", "--help"])
+class TestCatalogMetrics:
+    def test_catalog_metrics_help(self):
+        result = runner.invoke(app, ["catalog", "--help"])
         assert result.exit_code == 0
-        assert "list" in result.output
-        assert "show" in result.output
+        # `agnes catalog --metrics` replaces the old `da metrics list/show`.
+        assert "metrics" in result.output.lower()
+
+    def test_admin_metrics_help(self):
+        result = runner.invoke(app, ["admin", "metrics", "--help"])
+        assert result.exit_code == 0
+        # admin-only metric authoring: import / export / validate.
         assert "import" in result.output
-
-    def test_analyst_help(self):
-        result = runner.invoke(app, ["analyst", "--help"])
-        assert result.exit_code == 0
-        assert "setup" in result.output
-
-    def test_analyst_status_help(self):
-        result = runner.invoke(app, ["analyst", "status", "--help"])
-        assert result.exit_code == 0
-        assert "freshness" in result.output.lower() or "workspace" in result.output.lower()
+        assert "validate" in result.output
