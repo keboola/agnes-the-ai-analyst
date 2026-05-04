@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.34.0] — 2026-05-04
+
 End-to-end clean-analyst-bootstrap rewrite. The web `/setup` page now produces a single unified paste prompt that, dropped into Claude Code in an empty folder, fully bootstraps a workspace — installs the CLI, authenticates, fetches `CLAUDE.md`, installs SessionStart/End hooks, runs the first data refresh, and writes a human-readable workspace docs file (`AGNES_WORKSPACE.md`). The admin-vs-analyst layout split (introduced as `?role=` mid-cycle) was collapsed before merge: every caller sees the same flow, with the marketplace + plugins block emitted iff the caller has plugin grants. 26 implementation tasks across 6 phases plus a 10-task unification follow-up.
 
 ### Changed
