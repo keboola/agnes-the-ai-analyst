@@ -347,3 +347,109 @@ If time is constrained, run these load-bearing slices first:
    docs render correctly with no PAT leak.
 
 Slices 3-6, 8-9 are breadth coverage — important but lower-priority.
+
+---
+
+## Coverage honesty — what this plan reveals (and what it doesn't)
+
+**This plan ≠ exhaustive.** It catches contract-level bugs — file inventory,
+no-traceback reader contract, JS ternary direction, lazy-mkdir compliance.
+It does NOT catch a meaningful slice of real-world failure modes.
+
+### What the plan reveals (✅)
+
+- **Workspace inventory bug** — missing/extra file after `agnes init`
+- **No-Python-traceback contract** for every reader command
+- **PAT leak** into `AGNES_WORKSPACE.md`
+- **JS ternary direction bug** — analyst tile mints admin PAT
+- **Lazy-mkdir violation** — pre-allocated empty directories
+- **Force vs no-force** — regenerates CLAUDE.md but preserves CLAUDE.local.md
+- **Snapshot lifecycle** — estimate → fetch → query → drop
+- **Auth flow** — token CRUD, 401 friendly errors
+- **Help text / flag surface** — every CLI command's `--help` lists expected flags
+- **Hook command shape** — SessionStart→`agnes pull`, SessionEnd→`agnes push`
+
+### What the plan does NOT reveal (❌)
+
+| Gap | Why this plan misses it |
+|---|---|
+| **Cross-platform** (Windows / Linux / macOS) | VM is one OS. `setup_instructions.py` has 200+ lines of platform-specific TLS logic that never runs |
+| **Private CA bootstrap** | If VM uses public TLS, the entire step-0 trust block (cert install, OS keychain, `~/.agnes/ca-bundle.pem`) stays unexercised |
+| **Migration from old `da` workspace** | Greenfield rewrite — but existing analysts have old data. Does `agnes init` behave well in a folder where `da analyst setup` previously ran? Unknown |
+| **Network failures** — slow / packet loss / mid-pull 5xx | Local tests don't mock flaky network |
+| **Concurrent users** — 2 analysts paste-prompt simultaneously | Single-user happy path only |
+| **Disk full during pull** | Not simulated |
+| **PAT expiry mid-session** | 1 h TTL → hooks 401 after expiry. What happens to the next session? Untested |
+| **Unicode / locale in workspace paths** | `--workspace /tmp/path with spaces and ěščřž/` |
+| **Read-only HOME** / non-standard permissions | `agnes init` writes to `~/.config/agnes/` — what if it can't? |
+| **Browser variance** — paste-prompt clipboard | Different copy semantics across Safari/Chrome/Firefox/clipboards |
+| **Claude Code version drift** | Spec assumes a specific `.claude/settings.json` hook schema |
+| **Admin CLAUDE.md override edge cases** | Custom template without `_INIT_MARKER` substring — how does init behave? |
+| **Long-soak** — 1+ day, hooks fire 50× | Only one-shot tests |
+| **Real BQ data scale** — TB-scale tables, partition cost decisions | Test PATs/tables will be small |
+
+### Recommended additional coverage layers
+
+**Tier 1 (before merge):**
+1. Run this E2E plan on the VM — ~15-20 min, catches ~70 % of typical bugs.
+2. **Manual smoke with the actual analyst use-case** — the person who'll
+   use this opens a fresh workspace, asks 5 real questions, watches what
+   breaks. Best source of surprises.
+
+**Tier 2 (before broad rollout):**
+3. **Soak test** — one analyst uses it for a week. Hooks fire ~10×/day.
+   Anything that accumulates (sessions, snapshots, log files) surfaces.
+4. **Migration test** — find an existing `da` user, walk them through
+   `uv tool uninstall agnes-the-ai-analyst` → reinstall → `agnes auth
+   import-token` → `agnes init --force` in their existing folder. Watch
+   for confusion / breakage.
+
+**Tier 3 (nice-to-have):**
+5. Cross-platform — if you have Windows/Linux users, repeat Phase 0+1 there.
+6. Private CA — if you deploy with a private CA, run a separate VM with
+   that configuration and exercise the full trust-bootstrap step.
+7. Network chaos — toxiproxy / `tc` to introduce latency/loss between
+   client and server, verify hooks don't hang sessions.
+
+### Realistic coverage estimate
+
+| Layer | Coverage of analyst-visible bugs |
+|---|---|
+| This plan alone | ~70 % |
+| Plan + Tier 1 manual smoke | ~80 % |
+| Plan + Tier 1 + Tier 2 soak/migration | ~95 % |
+| Plan + all Tiers | ~98 % |
+
+The remaining 2-5 % surfaces only in real production use across diverse
+analyst workflows. Rule of thumb: ship after Tier 1 if the surface area
+is small (< 10 analysts), wait for Tier 2 before scaling to a wider audience.
+
+### Prerequisites — what you need on the VM to run this plan
+
+| Item | Why | Falls back to |
+|---|---|---|
+| Server on the new build | All slices need the new `/setup?role=` endpoint + `/api/welcome` + PAT scope/TTL fields | Auto-upgrade cron picks up `:dev`/`:keboola-deploy-latest` within ~5 min of the merge tag landing |
+| Web access (browser) | Phase 0 step 3 — mint a PAT via `/setup?role=analyst` "Generate prompt" button | Or manual `curl -u admin:pw -X POST /auth/tokens` if you can't open a browser |
+| Account with grants | `test_pat` needs `resource_grants` for ≥ 1 `query_mode='local'` table + ≥ 1 `query_mode='remote'` BigQuery table (Slices 4 + 5). Admin role for Slice 9 | Slice 4/5/9 skip cleanly if grants missing — other slices still cover the bootstrap path |
+| BigQuery configured server-side | Slice 4 (`agnes query --remote`) and Slice 5 (snapshot create) hit BQ via the server | Slices skip with a 400/501 error if BQ isn't configured — won't false-fail the plan |
+| `agnes` on `$PATH` after Phase 0 step 4 | Sub-agent slices invoke `agnes` directly | If install fails, paste-prompt step itself catches it before any slices run |
+| Network from VM to server | Slices use `curl` and `agnes` (which uses `httpx`) | If network is broken, Phase 0 step 1 detects it and stops |
+
+### How to dispatch the slices in parallel
+
+If you're running this from Claude Code on the VM:
+
+1. Paste this entire document into the Claude Code conversation.
+2. Claude Code will execute Phase 0 sequentially (no choice — each step
+   gates the next).
+3. After Phase 0 completes, Claude Code dispatches **all 10 slices in a
+   single response message** (multiple `Agent` tool invocations in one
+   block). They run concurrently.
+4. Phase 2 (hook test) needs you in the loop — Claude Code will pause
+   and walk you through the manual `claude` session opens.
+5. Phase 3 — Claude Code aggregates and produces the final PASS/FAIL
+   table.
+
+If you're running it manually (no Claude Code agent dispatch), execute
+the slices serially in 10 terminal tabs / tmux panes. Same content per
+slice, just no automatic aggregation — you compile the table by hand.
