@@ -176,6 +176,39 @@ def _seed_db(data_dir: Path) -> dict:
             source_type="bigquery", bucket="test",
             source_table=REMOTE_TABLE_ID, query_mode="remote",
         )
+
+        # --- Parquet files + sync_state for non-remote tables -----------
+        # The manifest builder iterates `sync_state` (not table_registry) and
+        # `/api/data/{tid}/download` looks up parquet files under
+        # `data_dir/extracts/.../data/`. Seeding both lets `agnes init`
+        # exercise the full download path, not just the registry-only stub.
+        # Each parquet is a single-row DuckDB COPY — minimal but valid (PAR1
+        # magic + metadata) so client-side `_is_valid_parquet` passes.
+        from src.repositories.sync_state import SyncStateRepository
+        from datetime import datetime, timezone
+        sync_repo = SyncStateRepository(conn)
+        extracts_data = data_dir / "extracts" / "test" / "data"
+        extracts_data.mkdir(parents=True, exist_ok=True)
+        for tid in (LOCAL_TABLE_ID, MATERIALIZED_TABLE_ID):
+            parquet_path = extracts_data / f"{tid}.parquet"
+            # COPY ... TO creates a real parquet via DuckDB's writer.
+            conn.execute(
+                f"COPY (SELECT 1 AS id, 'sample' AS label) "
+                f"TO '{parquet_path}' (FORMAT PARQUET)"
+            )
+            # Compute MD5 the same way `app/api/sync.py:_file_hash` and
+            # `cli/lib/pull.py:_file_md5` do — chunked 8k reads.
+            import hashlib
+            h = hashlib.md5()
+            with open(parquet_path, "rb") as fh:
+                for chunk in iter(lambda: fh.read(8192), b""):
+                    h.update(chunk)
+            sync_repo.update_sync(
+                table_id=tid,
+                rows=1,
+                file_size_bytes=parquet_path.stat().st_size,
+                hash=h.hexdigest(),
+            )
     finally:
         conn.close()
 
