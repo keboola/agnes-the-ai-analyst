@@ -4,11 +4,13 @@
 
 **Goal:** Replace the interactive `da analyst setup` flow with a single web→paste→done bootstrap. New analyst pastes a clipboard prompt from `/setup?role=analyst` into Claude Code in an empty folder, and ends up with `CLAUDE.md`, `AGNES_WORKSPACE.md`, hooks, fresh data, and DuckDB views — fully ready to query. Drop dead workspace dirs (`data/parquet/`, `data/duckdb/`, `data/metadata/`, `user/artifacts/`). Establish a lazy-mkdir contract so nothing creates empty directories.
 
-**Architecture:** PAT-only auth. `da init` is a thin orchestrator that auths, fetches `CLAUDE.md` from `/api/welcome`, installs hooks, and calls `cli/lib/pull.py:run_pull` for first data refresh. CLI verbs renamed: `init/pull/push/status/snapshot create` (greenfield, no aliases). Server-side install prompt branches on `role` query param. `cli/lib/` shared library tree separates data primitives from Typer wrappers so `da init` can call them without subprocess. Reader contract: every reader handles missing dirs gracefully (exit 0 empty or exit 1 with friendly hint, never traceback).
+**Architecture:** PAT-only auth. `agnes init` is a thin orchestrator that auths, fetches `CLAUDE.md` from `/api/welcome`, installs hooks, and calls `cli/lib/pull.py:run_pull` for first data refresh. CLI verbs renamed: `init/pull/push/status/snapshot create` (greenfield, no aliases). Server-side install prompt branches on `role` query param. `cli/lib/` shared library tree separates data primitives from Typer wrappers so `agnes init` can call them without subprocess. Reader contract: every reader handles missing dirs gracefully (exit 0 empty or exit 1 with friendly hint, never traceback).
 
 **Tech Stack:** Python 3.11+, FastAPI, Typer, Pydantic, DuckDB, httpx, pytest, Hatchling.
 
-**Spec:** `docs/superpowers/specs/2026-05-04-clean-analyst-bootstrap-design.md` (revision 4, cleared for implementation).
+**Spec:** `docs/superpowers/specs/2026-05-04-clean-analyst-bootstrap-design.md` (revision 5, cleared for implementation).
+
+**CLI rename:** As part of this plan, the binary changes from `da` to `agnes`. References to legacy commands (`da sync`, `da fetch`, `da analyst setup`, `da metrics`) keep their `da` prefix throughout this document — they're historical artifacts being removed. New commands and hook strings use `agnes`.
 
 ---
 
@@ -21,13 +23,13 @@
 | `cli/lib/__init__.py` | Empty — makes `cli/lib/` a package so Hatchling includes it in the wheel. |
 | `cli/lib/pull.py` | `run_pull(server_url, token, workspace, *, dry_run) -> PullResult` — pure-function data refresh primitive (manifest, parquet download, DuckDB rebuild, memory bundle write). Lazy mkdir. |
 | `cli/lib/hooks.py` | `install_claude_hooks(workspace)` — idempotent SessionStart/End hook installer for `<workspace>/.claude/settings.json`. |
-| `cli/commands/init.py` | `da init` Typer command — auth check, save config, write CLAUDE.md, install hooks, call `run_pull`, write `AGNES_WORKSPACE.md`. |
-| `cli/commands/pull.py` | `da pull` Typer wrapper around `cli/lib/pull.py:run_pull`. Flags `--quiet`, `--json`, `--dry-run`. |
-| `cli/commands/push.py` | `da push` Typer command — uploads `user/sessions/*.jsonl` and `.claude/CLAUDE.local.md`. |
-| `cli/commands/admin_metrics.py` | `da admin metrics {import,export,validate}` sub-Typer (lifted from `cli/commands/metrics.py`). |
+| `cli/commands/init.py` | `agnes init` Typer command — auth check, save config, write CLAUDE.md, install hooks, call `run_pull`, write `AGNES_WORKSPACE.md`. |
+| `cli/commands/pull.py` | `agnes pull` Typer wrapper around `cli/lib/pull.py:run_pull`. Flags `--quiet`, `--json`, `--dry-run`. |
+| `cli/commands/push.py` | `agnes push` Typer command — uploads `user/sessions/*.jsonl` and `.claude/CLAUDE.local.md`. |
+| `cli/commands/admin_metrics.py` | `agnes admin metrics {import,export,validate}` sub-Typer (lifted from `cli/commands/metrics.py`). |
 | `config/agnes_workspace_template.txt` | Static client-side template for `AGNES_WORKSPACE.md`. Three placeholders: `{created_at}`, `{server_url}`, `{workspace_path}`. |
 | `tests/fixtures/analyst_bootstrap.py` | Test fixtures: `fastapi_test_server`, `test_pat`, `test_pat_no_grants`, `zero_grants_workspace`, `web_session`. |
-| `tests/test_lib_hooks.py` | Tests for `install_claude_hooks` (idempotent, preserves third-party hooks, replaces old `da pull`/`da sync` entries). |
+| `tests/test_lib_hooks.py` | Tests for `install_claude_hooks` (idempotent, preserves third-party hooks, replaces old `agnes pull`/`da sync` entries). |
 | `tests/test_lib_pull.py` | Tests for `run_pull` (lazy mkdir, partial failure handling, manifest empty case). |
 | `tests/test_setup_instructions_analyst.py` | Tests `render_setup_instructions(role="analyst")` produces correct steps. |
 | `tests/test_tokens_bootstrap_scope.py` | Tests `scope=bootstrap-analyst` PATs are TTL-clamped to ≤ 1 h; `ttl_seconds` upper bound; `ttl_seconds` wins over `expires_in_days`. |
@@ -41,18 +43,18 @@
 |---|---|
 | `app/api/tokens.py` | `CreateTokenRequest`: add `scope: str = "general"` and `ttl_seconds: Optional[int] = None`. Validate `ttl_seconds <= 315_360_000`. Resolution: `ttl_seconds` wins; fall back to `expires_in_days`. For `scope == "bootstrap-analyst"`, force-clamp resolved TTL ≤ 3600 s. Audit-log includes scope. |
 | `app/api/claude_md.py` | Add module-level `_LEGACY_STRINGS = ("data/parquet", "da sync", "da fetch", "da analyst setup", "da metrics list", "da metrics show")`. Add helper `_scan_legacy_strings(text) -> list[str]`. Add field `legacy_strings_detected: list[str] = []` to `TemplateGetResponse`. Populate in `admin_get_workspace_template`. |
-| `app/web/setup_instructions.py` | Add `role: Literal["analyst","admin"] = "admin"` to `resolve_lines()` and `render_setup_instructions()`. Analyst layout: TLS trust (when `ca_pem`) → install `da` → `da init --server-url X --token Y --workspace .` → `da catalog` smoke verify → confirm. Drop for analyst: marketplace, plugins, skills, diagnose, login, whoami. |
+| `app/web/setup_instructions.py` | Add `role: Literal["analyst","admin"] = "admin"` to `resolve_lines()` and `render_setup_instructions()`. Analyst layout: TLS trust (when `ca_pem`) → install `agnes` → `agnes init --server-url X --token Y --workspace .` → `agnes catalog` smoke verify → confirm. Drop for analyst: marketplace, plugins, skills, diagnose, login, whoami. |
 | `app/web/router.py` | `setup_page`: read `role` query param (default `"admin"`), pass to `render_setup_instructions(role=...)`. |
 | `app/web/templates/setup.html` (or wherever `setup_page` renders) | Two role tiles (Analyst / Admin), POST `/auth/tokens` with matching `scope`. |
 | `app/web/templates/admin_workspace_prompt.html` | Yellow banner above editor when `legacy_strings_detected` non-empty. |
-| `config/claude_md_template.txt` | Update verb names: `da sync` → `da pull`, `da fetch` → `da snapshot create`, `da metrics list/show` → `da catalog --metrics`, `da analyst setup` → `da init`. Path strings: `data/parquet/` → `server/parquet/`, `data/duckdb/...` → `user/duckdb/analytics.duckdb`. |
+| `config/claude_md_template.txt` | Update verb names: `da sync` → `agnes pull`, `da fetch` → `agnes snapshot create`, `da metrics list/show` → `agnes catalog --metrics`, `da analyst setup` → `agnes init`. Path strings: `data/parquet/` → `server/parquet/`, `data/duckdb/...` → `user/duckdb/analytics.duckdb`. |
 | `cli/commands/snapshot.py` | Add `create` subcommand — moves logic from `cli/commands/fetch.py` verbatim. Add `if not db_path.exists(): exit 1` guard before `duckdb.connect()`. |
 | `cli/commands/catalog.py` | Add `--metrics` flag (replaces `da metrics list`); `--metrics --show <id>` (replaces `da metrics show`). |
 | `cli/commands/admin.py` | Register the new `admin_metrics_app` sub-Typer. |
-| `cli/commands/query.py` | Update hint text "Run: da sync" → "Run: da pull" in two places. |
-| `cli/commands/explore.py` | Update hint text "Run: da sync" → "Run: da pull". |
+| `cli/commands/query.py` | Update hint text "Run: da sync" → "Run: agnes pull" in two places. |
+| `cli/commands/explore.py` | Update hint text "Run: da sync" → "Run: agnes pull". |
 | `cli/main.py` | Drop registrations for `sync`, `analyst`, `metrics`, `fetch`, `status` (existing). Add `init`, `pull`, `push`. Re-register `status` to point at new workspace-status command. |
-| `CLAUDE.md` (repo root) | Verb + path rewrites throughout. The "Local sync & Claude Code hooks" subsection rewrites verbatim with new commands. The "Querying Agnes data — agent rails" subsection keeps the 0.32.0 `query_mode='materialized'` and `query_mode='remote'` cost-guardrail prose verbatim, just verb-renaming `da fetch` → `da snapshot create`. |
+| `CLAUDE.md` (repo root) | Verb + path rewrites throughout. The "Local sync & Claude Code hooks" subsection rewrites verbatim with new commands. The "Querying Agnes data — agent rails" subsection keeps the 0.32.0 `query_mode='materialized'` and `query_mode='remote'` cost-guardrail prose verbatim, just verb-renaming `da fetch` → `agnes snapshot create`. |
 | `CHANGELOG.md` | Entry under `[Unreleased]` per spec preview (Changed/Added/Fixed/Removed/Kept). |
 | `pyproject.toml` | No change; `cli/lib/__init__.py` triggers Hatchling auto-discovery. |
 
@@ -63,14 +65,99 @@
 | `cli/commands/sync.py` | Replaced by `cli/commands/pull.py` + `cli/commands/push.py` + `cli/lib/pull.py`. |
 | `cli/commands/fetch.py` | Folded into `cli/commands/snapshot.py:create`. |
 | `cli/commands/analyst.py` | Replaced by `cli/commands/init.py` + new `cli/commands/status.py` (workspace status). `_install_claude_hooks` lifted to `cli/lib/hooks.py`. |
-| `cli/commands/metrics.py` | Read paths fold into `da catalog --metrics`; write paths move to `cli/commands/admin_metrics.py`. |
+| `cli/commands/metrics.py` | Read paths fold into `agnes catalog --metrics`; write paths move to `cli/commands/admin_metrics.py`. |
 
 ### Existing `cli/commands/status.py` rename
 
 | Action | Detail |
 |---|---|
-| Existing `da status` ("System status") | Renamed to `da diagnose system` (subcommand under `diagnose_app`) — its content is a subset of what `da diagnose` already does. |
-| New `da status` | Workspace status — fresh implementation, replaces `da analyst status`. Lives in `cli/commands/status.py` (overwrite). |
+| Existing `agnes status` ("System status") | Renamed to `agnes diagnose system` (subcommand under `diagnose_app`) — its content is a subset of what `agnes diagnose` already does. |
+| New `agnes status` | Workspace status — fresh implementation, replaces `da analyst status`. Lives in `cli/commands/status.py` (overwrite). |
+
+---
+
+## Phase 0 — CLI binary rename (`da` → `agnes`)
+
+### Task 0: Rename the CLI entry point
+
+**Files:**
+- Modify: `pyproject.toml` (`[project.scripts]`), `cli/main.py` (`Typer(name=...)`)
+- Test: `tests/test_cli_binary_rename.py` (new)
+
+**Why first:** Every later task that registers Typer apps, writes hook command strings, or asserts CLI output uses `agnes`. Rename the binary up front so tests in subsequent tasks reference the right name.
+
+- [ ] **Step 1: Read current entry points**
+
+```bash
+grep -n "scripts\|^name\|tool.hatch" pyproject.toml | head
+grep -n "Typer\|name=\"da\"\|name='da'" cli/main.py
+```
+
+- [ ] **Step 2: Update `pyproject.toml`**
+
+In `[project.scripts]`, replace `da = "cli.main:app"` with:
+
+```toml
+[project.scripts]
+agnes = "cli.main:app"
+```
+
+Single entry — no `da` alias kept. Greenfield.
+
+- [ ] **Step 3: Update `cli/main.py`**
+
+Change the Typer app construction from `name="da"` to `name="agnes"` and update the help string:
+
+```python
+app = typer.Typer(
+    name="agnes",
+    help="Agnes — AI Data Analyst CLI",
+    no_args_is_help=True,
+)
+```
+
+- [ ] **Step 4: Reinstall the editable package**
+
+```bash
+uv pip install -e ".[dev]"
+which agnes
+agnes --version
+```
+
+Expected: `agnes <version>` prints; `da --version` now fails with "command not found".
+
+- [ ] **Step 5: Write a binary-name regression test**
+
+```python
+# tests/test_cli_binary_rename.py
+"""Confirm the wheel installs the binary as `agnes`, not `da`."""
+import subprocess
+
+
+def test_agnes_command_exists():
+    result = subprocess.run(["agnes", "--version"], capture_output=True, text=True)
+    assert result.returncode == 0
+
+
+def test_da_command_no_longer_works():
+    """Greenfield: no backward-compat alias."""
+    result = subprocess.run(["bash", "-c", "command -v da"],
+                            capture_output=True, text=True)
+    assert result.returncode != 0, "da should NOT be on PATH after rename"
+```
+
+- [ ] **Step 6: Run the test**
+
+```bash
+pytest tests/test_cli_binary_rename.py -v
+```
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add pyproject.toml cli/main.py tests/test_cli_binary_rename.py
+git commit -m "feat(cli): rename binary from da to agnes (BREAKING)"
+```
 
 ---
 
@@ -341,7 +428,7 @@ def test_scan_finds_all_known_legacy_strings():
 
 
 def test_scan_returns_empty_for_clean_text():
-    text = "Use `da pull` to refresh, `da snapshot create` for ad-hoc, `server/parquet/`."
+    text = "Use `agnes pull` to refresh, `agnes snapshot create` for ad-hoc, `server/parquet/`."
     assert _scan_legacy_strings(text) == []
 
 
@@ -442,7 +529,7 @@ def test_admin_get_template_returns_legacy_strings_when_override_dirty(web_sessi
 
 def test_admin_get_template_returns_empty_when_clean(web_session):
     web_session.put("/api/admin/workspace-prompt-template",
-                    json={"content": "Use `da pull` and check `server/parquet/`."})
+                    json={"content": "Use `agnes pull` and check `server/parquet/`."})
     resp = web_session.get("/api/admin/workspace-prompt-template")
     assert resp.json()["legacy_strings_detected"] == []
 ```
@@ -490,15 +577,15 @@ def test_render_analyst_role_basic():
     )
     # Required content for analyst role:
     assert "uv tool install" in text
-    assert "da init" in text
+    assert "agnes init" in text
     assert "--token" in text and "agnes_pat_TEST" in text
     assert "--server-url" in text and "https://agnes.example.com" in text
-    assert "da catalog" in text  # smoke verify step
+    assert "agnes catalog" in text  # smoke verify step
     # Forbidden content (admin-only):
     assert "marketplace" not in text
     assert "claude plugin install" not in text
-    assert "da skills install" not in text  # analyst doesn't bulk-install skills
-    assert "da diagnose" not in text  # analyst smoke verify is `da catalog`, not diagnose
+    assert "agnes skills install" not in text  # analyst doesn't bulk-install skills
+    assert "agnes diagnose" not in text  # analyst smoke verify is `agnes catalog`, not diagnose
 
 
 def test_render_admin_role_unchanged():
@@ -509,8 +596,8 @@ def test_render_admin_role_unchanged():
         wheel_filename="agnes-0.32.0-py3-none-any.whl",
         # role omitted — defaults to "admin"
     )
-    assert "da auth import-token" in text  # admin uses import-token, not da init
-    assert "da diagnose" in text  # admin keeps diagnose
+    assert "agnes auth import-token" in text  # admin uses import-token, not agnes init
+    assert "agnes diagnose" in text  # admin keeps diagnose
 
 
 def test_render_analyst_with_ca_pem():
@@ -524,7 +611,7 @@ def test_render_analyst_with_ca_pem():
     )
     assert "AGNES_CA_PEM" in text  # heredoc marker from trust block
     assert "ca-bundle.pem" in text
-    assert "da init" in text  # analyst-specific step still present
+    assert "agnes init" in text  # analyst-specific step still present
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -541,10 +628,10 @@ Insert after `_install_cli_lines` (around line 311 in `setup_instructions.py`):
 
 ```python
 def _analyst_init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
-    """Steps 2-3 — `da init` (auth + workspace bootstrap) + smoke verify.
+    """Steps 2-3 — `agnes init` (auth + workspace bootstrap) + smoke verify.
 
-    Replaces the admin-flow login + verify steps (today: `da auth import-token`
-    + `da auth whoami`). `da init` is non-interactive: `--token` carries the PAT,
+    Replaces the admin-flow login + verify steps (today: `agnes auth import-token`
+    + `agnes auth whoami`). `agnes init` is non-interactive: `--token` carries the PAT,
     `--server-url` carries the origin. The bootstrap PAT has a 1 h TTL — if the
     user takes longer than that to paste this prompt, the init call returns 401
     and the user re-clicks "Generate prompt" on the install page.
@@ -552,14 +639,14 @@ def _analyst_init_lines(server_url_placeholder: str = "{server_url}") -> list[st
     return [
         "",
         "2) Bootstrap your analyst workspace in this directory:",
-        f"   da init --server-url \"{server_url_placeholder}\" --token \"{{token}}\" --workspace .",
+        f"   agnes init --server-url \"{server_url_placeholder}\" --token \"{{token}}\" --workspace .",
         "",
         "   This authenticates with the PAT, fetches your CLAUDE.md (RBAC-filtered),",
         "   installs Claude Code SessionStart/End hooks (auto-refresh), and runs an",
-        "   initial `da pull` so your DuckDB views are ready.",
+        "   initial `agnes pull` so your DuckDB views are ready.",
         "",
         "3) Verify the data is queryable:",
-        "   da catalog",
+        "   agnes catalog",
         "",
         "   This should list the tables your account has grants for. Empty list",
         "   means your admin hasn't granted you access yet — contact them.",
@@ -570,8 +657,8 @@ def _analyst_finale_lines(confirm_step_num: str, has_ca: bool) -> list[str]:
     """Final Confirm step for analyst role. Shorter than admin: no marketplace,
     no plugins, no skills."""
     bullets = [
-        "   - `da --version` output",
-        "   - First few lines of `da catalog` (tables you can see)",
+        "   - `agnes --version` output",
+        "   - First few lines of `agnes catalog` (tables you can see)",
         "   - Confirmation that `./CLAUDE.md` and `./AGNES_WORKSPACE.md` exist",
         "   - Confirmation that `./.claude/settings.json` contains SessionStart/End hooks",
     ]
@@ -851,7 +938,7 @@ def test_admin_prompt_template_renders_banner_when_legacy_present(web_session):
 
 def test_admin_prompt_template_no_banner_when_clean(web_session):
     web_session.put("/api/admin/workspace-prompt-template",
-                    json={"content": "Run `da pull` daily."})
+                    json={"content": "Run `agnes pull` daily."})
     resp = web_session.get("/admin/workspace-prompt")
     assert resp.status_code == 200
     # The banner div is absent or empty
@@ -935,11 +1022,11 @@ wc -l config/claude_md_template.txt
 - [ ] **Step 2: Apply systematic rewrites**
 
 Replace throughout the file:
-- `da sync` → `da pull` (everywhere)
-- `da analyst setup` → `da init` (everywhere)
-- `da fetch` → `da snapshot create`
-- `da metrics list` → `da catalog --metrics`
-- `da metrics show` → `da catalog --metrics --show`
+- `da sync` → `agnes pull` (everywhere)
+- `da analyst setup` → `agnes init` (everywhere)
+- `da fetch` → `agnes snapshot create`
+- `da metrics list` → `agnes catalog --metrics`
+- `da metrics show` → `agnes catalog --metrics --show`
 - `data/parquet/` → `server/parquet/`
 - `data/duckdb/` → `user/duckdb/`
 - `data/metadata/` → (delete references; the path no longer exists)
@@ -948,12 +1035,12 @@ Use `sed`:
 
 ```bash
 sed -i.bak \
-  -e 's|da sync --upload-only|da push|g' \
-  -e 's|da sync|da pull|g' \
-  -e 's|da analyst setup|da init|g' \
-  -e 's|da fetch|da snapshot create|g' \
-  -e 's|da metrics list|da catalog --metrics|g' \
-  -e 's|da metrics show|da catalog --metrics --show|g' \
+  -e 's|da sync --upload-only|agnes push|g' \
+  -e 's|da sync|agnes pull|g' \
+  -e 's|da analyst setup|agnes init|g' \
+  -e 's|da fetch|agnes snapshot create|g' \
+  -e 's|da metrics list|agnes catalog --metrics|g' \
+  -e 's|da metrics show|agnes catalog --metrics --show|g' \
   -e 's|data/parquet/|server/parquet/|g' \
   -e 's|data/duckdb/|user/duckdb/|g' \
   config/claude_md_template.txt
@@ -974,7 +1061,7 @@ Expected: no matches.
 Insert near the top of the rendered template (e.g., after the `# {instance_name}` heading):
 
 ```markdown
-> Looking for human-readable workspace docs? Open `AGNES_WORKSPACE.md` in this directory — that file documents what `da init` installed, where files live, and how to uninstall.
+> Looking for human-readable workspace docs? Open `AGNES_WORKSPACE.md` in this directory — that file documents what `agnes init` installed, where files live, and how to uninstall.
 ```
 
 - [ ] **Step 5: Render the template via `/api/welcome` (manual smoke)**
@@ -1020,9 +1107,9 @@ def test_install_creates_settings_file(tmp_path):
     install_claude_hooks(tmp_path)
     cfg = _read_settings(tmp_path)
     assert cfg["hooks"]["SessionStart"]
-    assert "da pull --quiet" in cfg["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+    assert "agnes pull --quiet" in cfg["hooks"]["SessionStart"][0]["hooks"][0]["command"]
     assert cfg["hooks"]["SessionEnd"]
-    assert "da push --quiet" in cfg["hooks"]["SessionEnd"][0]["hooks"][0]["command"]
+    assert "agnes push --quiet" in cfg["hooks"]["SessionEnd"][0]["hooks"][0]["command"]
 
 
 def test_install_idempotent(tmp_path):
@@ -1047,7 +1134,7 @@ def test_install_replaces_old_da_sync_entries(tmp_path):
     install_claude_hooks(tmp_path)
     cfg = _read_settings(tmp_path)
     assert len(cfg["hooks"]["SessionStart"]) == 1
-    assert "da pull" in cfg["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+    assert "agnes pull" in cfg["hooks"]["SessionStart"][0]["hooks"][0]["command"]
     assert "da sync" not in cfg["hooks"]["SessionStart"][0]["hooks"][0]["command"]
 
 
@@ -1062,10 +1149,10 @@ def test_install_preserves_third_party_hooks(tmp_path):
     }))
     install_claude_hooks(tmp_path)
     cfg = _read_settings(tmp_path)
-    # Third-party SessionStart entry survives; our da pull entry appended
+    # Third-party SessionStart entry survives; our agnes pull entry appended
     starts = cfg["hooks"]["SessionStart"]
     assert any("echo hi from another tool" in s["hooks"][0]["command"] for s in starts)
-    assert any("da pull" in s["hooks"][0]["command"] for s in starts)
+    assert any("agnes pull" in s["hooks"][0]["command"] for s in starts)
     # PreToolUse untouched
     assert cfg["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == "echo pre"
 
@@ -1109,14 +1196,14 @@ touch cli/lib/__init__.py
 
 Replaces the in-place `_install_claude_hooks` from `cli/commands/analyst.py`
 (deleted as part of the clean-analyst-bootstrap rewrite). Splits hook
-installation into a pure-function library so `da init` and any future caller
+installation into a pure-function library so `agnes init` and any future caller
 can use it without dragging in the deleted command module.
 
 Design notes:
 - Workspace-scoped (`<workspace>/.claude/settings.json`), NOT user-home.
   The hooks fire only when Claude Code opens this workspace.
-- Idempotent: second invocation drops a prior `da pull` / `da sync` /
-  `da push` entry (matched by command substring) and appends fresh entries.
+- Idempotent: second invocation drops a prior `agnes pull` / `da sync` /
+  `agnes push` entry (matched by command substring) and appends fresh entries.
   Third-party hooks (mixed entries, foreign commands) are left alone.
 - Uses `\\| true` so the hook never blocks a session on a transient sync error.
 """
@@ -1127,11 +1214,11 @@ import json
 import sys
 from pathlib import Path
 
-_OUR_COMMAND_MARKERS = ("da pull", "da push", "da sync")
+_OUR_COMMAND_MARKERS = ("agnes pull", "agnes push", "da sync")
 
 
 def install_claude_hooks(workspace: Path) -> None:
-    """Install SessionStart→`da pull` and SessionEnd→`da push` hooks.
+    """Install SessionStart→`agnes pull` and SessionEnd→`agnes push` hooks.
 
     Idempotent. Workspace-scoped (writes `<workspace>/.claude/settings.json`).
     Preserves third-party hooks and other event types.
@@ -1165,8 +1252,8 @@ def install_claude_hooks(workspace: Path) -> None:
                 existing.remove(entry)
         existing.append({"hooks": [{"type": "command", "command": command}]})
 
-    _replace_or_add("SessionStart", "da pull --quiet 2>/dev/null || true")
-    _replace_or_add("SessionEnd", "da push --quiet 2>/dev/null || true")
+    _replace_or_add("SessionStart", "agnes pull --quiet 2>/dev/null || true")
+    _replace_or_add("SessionEnd", "agnes push --quiet 2>/dev/null || true")
 
     settings_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
 ```
@@ -1313,7 +1400,7 @@ Lift the body of today's `cli/commands/sync.py:sync()` into a pure function. Spe
 
 ```python
 # cli/lib/pull.py
-"""Pure-function data-refresh primitive — used by `da pull` and `da init`.
+"""Pure-function data-refresh primitive — used by `agnes pull` and `agnes init`.
 
 Extracted from `cli/commands/sync.py` (deleted in the clean-bootstrap rewrite).
 This module has no Typer dependency, no stdout side effects, no exit calls.
@@ -1537,7 +1624,7 @@ git commit -m "feat(cli-lib): cli/lib/pull.py:run_pull primitive with lazy mkdir
 
 ## Phase 3 — New CLI commands
 
-### Task 9: `da pull` Typer wrapper
+### Task 9: `agnes pull` Typer wrapper
 
 **Files:**
 - Create: `cli/commands/pull.py`
@@ -1547,7 +1634,7 @@ git commit -m "feat(cli-lib): cli/lib/pull.py:run_pull primitive with lazy mkdir
 
 ```python
 # tests/test_cli_pull.py
-"""Tests for `da pull` Typer wrapper."""
+"""Tests for `agnes pull` Typer wrapper."""
 
 from typer.testing import CliRunner
 from cli.commands.pull import pull_app
@@ -1575,11 +1662,11 @@ Expected: ImportError.
 
 ```python
 # cli/commands/pull.py
-"""`da pull` — refresh registered data into the workspace.
+"""`agnes pull` — refresh registered data into the workspace.
 
 Thin Typer wrapper around `cli/lib/pull.py:run_pull`. Used by:
-- Manual invocation: analyst types `da pull` to force a refresh.
-- SessionStart hook: `da pull --quiet 2>/dev/null || true` runs at the start
+- Manual invocation: analyst types `agnes pull` to force a refresh.
+- SessionStart hook: `agnes pull --quiet 2>/dev/null || true` runs at the start
   of every Claude Code session in this workspace.
 """
 
@@ -1610,7 +1697,7 @@ def pull(
     if not server_url:
         typer.echo(render_error(0, {"detail": {
             "kind": "server_unreachable",
-            "hint": "No server configured. Run: da init --server-url <URL> --token <PAT>",
+            "hint": "No server configured. Run: agnes init --server-url <URL> --token <PAT>",
         }}), err=True)
         raise typer.Exit(1)
 
@@ -1618,7 +1705,7 @@ def pull(
     if not token:
         typer.echo(render_error(0, {"detail": {
             "kind": "auth_failed",
-            "hint": "No token. Run: da auth import-token --token <PAT>",
+            "hint": "No token. Run: agnes auth import-token --token <PAT>",
         }}), err=True)
         raise typer.Exit(1)
 
@@ -1669,12 +1756,12 @@ Expected: PASS.
 
 ```bash
 git add cli/commands/pull.py tests/test_cli_pull.py
-git commit -m "feat(cli): da pull command (Typer wrapper around lib.pull.run_pull)"
+git commit -m "feat(cli): agnes pull command (Typer wrapper around lib.pull.run_pull)"
 ```
 
 ---
 
-### Task 10: `da push` command (extract from `da sync --upload-only`)
+### Task 10: `agnes push` command (extract from `da sync --upload-only`)
 
 **Files:**
 - Create: `cli/commands/push.py`
@@ -1719,10 +1806,10 @@ pytest tests/test_cli_push.py -v
 
 ```python
 # cli/commands/push.py
-"""`da push` — upload local sessions and CLAUDE.local.md to the server.
+"""`agnes push` — upload local sessions and CLAUDE.local.md to the server.
 
 Extracted from today's `da sync --upload-only`. Hook command:
-`da push --quiet 2>/dev/null || true` (runs at SessionEnd).
+`agnes push --quiet 2>/dev/null || true` (runs at SessionEnd).
 """
 
 from __future__ import annotations
@@ -1752,7 +1839,7 @@ def push(
     if not server_url or not token:
         typer.echo(render_error(0, {"detail": {
             "kind": "auth_failed",
-            "hint": "No server/token configured. Run: da init",
+            "hint": "No server/token configured. Run: agnes init",
         }}), err=True)
         raise typer.Exit(1)
 
@@ -1809,12 +1896,12 @@ pytest tests/test_cli_push.py -v
 
 ```bash
 git add cli/commands/push.py tests/test_cli_push.py
-git commit -m "feat(cli): da push command (extracted from sync --upload-only)"
+git commit -m "feat(cli): agnes push command (extracted from sync --upload-only)"
 ```
 
 ---
 
-### Task 11: `da init` — workspace bootstrap orchestrator
+### Task 11: `agnes init` — workspace bootstrap orchestrator
 
 **Files:**
 - Create: `cli/commands/init.py`, `config/agnes_workspace_template.txt`
@@ -1831,7 +1918,7 @@ Create `config/agnes_workspace_template.txt`:
 **Server:** {server_url}
 **Workspace:** {workspace_path}
 
-This file documents what `da init` installed on this machine and in this folder.
+This file documents what `agnes init` installed on this machine and in this folder.
 Read this when you want to know "what is this thing", "how does it work", or
 "how do I uninstall it". For Claude Code's instructions, see `CLAUDE.md`.
 
@@ -1841,7 +1928,7 @@ Read this when you want to know "what is this thing", "how does it work", or
 
 | Path | What it is | How to remove |
 |------|------------|---------------|
-| `~/.local/bin/da` | The `da` CLI binary | `uv tool uninstall agnes-the-ai-analyst` |
+| `~/.local/bin/da` | The `agnes` CLI binary | `uv tool uninstall agnes-the-ai-analyst` |
 | `~/.config/da/config.yaml` | Default Agnes server URL | `rm -rf ~/.config/da/` |
 | `~/.config/da/token.json` | Personal access token (PAT) | `rm ~/.config/da/token.json` |
 | `~/.agnes/ca.pem` | Server's CA cert (private CA installs only) | `rm ~/.agnes/ca.pem` |
@@ -1860,11 +1947,11 @@ Read this when you want to know "what is this thing", "how does it work", or
 | `./.claude/CLAUDE.local.md` | Your private notes (uploaded on session end) |
 | `./.claude/rules/km_*.md` | Server-pushed corporate-knowledge rules (only when granted) |
 | `./server/parquet/*.parquet` | Synced data — RBAC-filtered subset (only when grants exist) |
-| `./user/duckdb/analytics.duckdb` | DuckDB views over the parquets — what `da query` reads |
-| `./user/snapshots/*.parquet` | Ad-hoc materialized snapshots from `da snapshot create` |
+| `./user/duckdb/analytics.duckdb` | DuckDB views over the parquets — what `agnes query` reads |
+| `./user/snapshots/*.parquet` | Ad-hoc materialized snapshots from `agnes snapshot create` |
 | `./user/sessions/*.jsonl` | Captured Claude Code sessions (uploaded on session end) |
 
-Some folders only exist when they have content — `da pull` and `da push`
+Some folders only exist when they have content — `agnes pull` and `agnes push`
 only create them when there's something to write.
 
 ---
@@ -1874,10 +1961,10 @@ only create them when there's something to write.
 Two hooks in `./.claude/settings.json` keep this workspace in sync without
 you doing anything:
 
-- **SessionStart** → `da pull --quiet` — new parquets, schema changes, and
+- **SessionStart** → `agnes pull --quiet` — new parquets, schema changes, and
   updated rules pull down before Claude Code answers. Failure is silent;
   your session continues with the last-known data.
-- **SessionEnd** → `da push --quiet` — your session transcript and
+- **SessionEnd** → `agnes push --quiet` — your session transcript and
   `CLAUDE.local.md` ship to the server.
 
 Both are workspace-scoped — they only run when Claude Code opens this folder.
@@ -1888,33 +1975,33 @@ Both are workspace-scoped — they only run when Claude Code opens this folder.
 
 ```bash
 # Tables you can read (server-side catalog, RBAC-filtered)
-da catalog
-da catalog --json | jq '.[] | select(.query_mode=="local")'
+agnes catalog
+agnes catalog --json | jq '.[] | select(.query_mode=="local")'
 
 # Schema and sample
-da schema opportunity
-da describe opportunity -n 10
+agnes schema opportunity
+agnes describe opportunity -n 10
 
 # Run a SQL query (DuckDB flavor against local parquets)
-da query "SELECT count(*) FROM opportunity WHERE stage='Closed Won'"
+agnes query "SELECT count(*) FROM opportunity WHERE stage='Closed Won'"
 
 # Remote BigQuery query (server-side, no local materialization)
-da query --remote "SELECT count(*) FROM web_sessions_example"
+agnes query --remote "SELECT count(*) FROM web_sessions_example"
 
 # Materialize a remote subset locally
-da snapshot create web_sessions_example \
+agnes snapshot create web_sessions_example \
   --select event_date,country_code \
   --where "event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)" \
   --as recent_sessions
 
 # Manual data refresh (the SessionStart hook does this automatically)
-da pull
+agnes pull
 
 # Workspace status (what's synced, when)
-da status
+agnes status
 
 # Re-generate this workspace from scratch (preserves CLAUDE.local.md)
-da init --server-url https://agnes.example.com --token <PAT> --force
+agnes init --server-url https://agnes.example.com --token <PAT> --force
 ```
 
 ---
@@ -1938,11 +2025,11 @@ rm -rf ./CLAUDE.md ./AGNES_WORKSPACE.md ./.claude ./server ./user
 ```
 ```
 
-- [ ] **Step 2: Write failing tests for `da init`**
+- [ ] **Step 2: Write failing tests for `agnes init`**
 
 ```python
 # tests/test_cli_init.py
-"""Tests for `da init` orchestrator command."""
+"""Tests for `agnes init` orchestrator command."""
 
 import json
 from pathlib import Path
@@ -1973,7 +2060,7 @@ def test_init_writes_expected_files(tmp_path, monkeypatch):
         if path == "/api/catalog/tables":
             resp.json.return_value = []
         elif path == "/api/welcome":
-            resp.json.return_value = {"content": "# Test CLAUDE.md\n\nUse `da pull`.\n"}
+            resp.json.return_value = {"content": "# Test CLAUDE.md\n\nUse `agnes pull`.\n"}
         elif path == "/api/sync/manifest":
             resp.json.return_value = {"tables": []}
         elif path == "/api/memory/bundle":
@@ -1989,7 +2076,7 @@ def test_init_writes_expected_files(tmp_path, monkeypatch):
     ])
     assert result.exit_code == 0, result.output
     assert (tmp_path / "CLAUDE.md").exists()
-    assert "da pull" in (tmp_path / "CLAUDE.md").read_text()
+    assert "agnes pull" in (tmp_path / "CLAUDE.md").read_text()
     assert (tmp_path / ".claude" / "settings.json").exists()
     assert (tmp_path / ".claude" / "CLAUDE.local.md").exists()
     assert (tmp_path / "AGNES_WORKSPACE.md").exists()
@@ -2057,10 +2144,10 @@ pytest tests/test_cli_init.py -v
 
 ```python
 # cli/commands/init.py
-"""`da init` — bootstrap an analyst workspace.
+"""`agnes init` — bootstrap an analyst workspace.
 
 Single-paste flow: web user clicks "Generate prompt" on /setup?role=analyst,
-pastes into Claude Code in an empty folder; Claude runs `da init` (among other
+pastes into Claude Code in an empty folder; Claude runs `agnes init` (among other
 steps). Non-interactive: --token + --server-url required.
 """
 
@@ -2152,7 +2239,7 @@ def init(
     local_md = workspace / ".claude" / "CLAUDE.local.md"
     if not local_md.exists():
         local_md.write_text(
-            "# My Notes\n\nPersonal notes for this workspace. Uploaded on `da push`.\n",
+            "# My Notes\n\nPersonal notes for this workspace. Uploaded on `agnes push`.\n",
             encoding="utf-8",
         )
 
@@ -2187,7 +2274,7 @@ def init(
     typer.echo(f"  Rules    : {result.rules_count}")
     typer.echo(f"  Workspace: {workspace}")
     typer.echo("")
-    typer.echo("Try: da catalog")
+    typer.echo("Try: agnes catalog")
 ```
 
 - [ ] **Step 5: Run tests to verify they pass**
@@ -2200,12 +2287,12 @@ pytest tests/test_cli_init.py -v
 
 ```bash
 git add cli/commands/init.py config/agnes_workspace_template.txt tests/test_cli_init.py
-git commit -m "feat(cli): da init orchestrator + AGNES_WORKSPACE.md template"
+git commit -m "feat(cli): agnes init orchestrator + AGNES_WORKSPACE.md template"
 ```
 
 ---
 
-### Task 12: New `da status` (workspace status, replaces `da analyst status`)
+### Task 12: New `agnes status` (workspace status, replaces `da analyst status`)
 
 **Files:**
 - Modify (overwrite): `cli/commands/status.py`
@@ -2217,7 +2304,7 @@ git commit -m "feat(cli): da init orchestrator + AGNES_WORKSPACE.md template"
 cat cli/commands/status.py
 ```
 
-The existing `da status` shows server health. Per spec, this content moves to `da diagnose system` (Task 13); the file is repurposed for workspace status.
+The existing `agnes status` shows server health. Per spec, this content moves to `agnes diagnose system` (Task 13); the file is repurposed for workspace status.
 
 - [ ] **Step 2: Write failing tests**
 
@@ -2272,7 +2359,7 @@ pytest tests/test_cli_status.py -v
 
 ```python
 # cli/commands/status.py
-"""`da status` — workspace status: initialized? data fresh? hooks active?"""
+"""`agnes status` — workspace status: initialized? data fresh? hooks active?"""
 
 from __future__ import annotations
 
@@ -2334,7 +2421,7 @@ def status(
 
     if not initialized:
         typer.echo("")
-        typer.echo("Run `da init --server-url <URL> --token <PAT>` to bootstrap.")
+        typer.echo("Run `agnes init --server-url <URL> --token <PAT>` to bootstrap.")
 ```
 
 - [ ] **Step 5: Run tests to verify they pass**
@@ -2347,18 +2434,18 @@ pytest tests/test_cli_status.py -v
 
 ```bash
 git add cli/commands/status.py tests/test_cli_status.py
-git commit -m "feat(cli): da status now shows workspace state (was system health)"
+git commit -m "feat(cli): agnes status now shows workspace state (was system health)"
 ```
 
 ---
 
-### Task 13: Move old `da status` content into `da diagnose system`
+### Task 13: Move old `agnes status` content into `agnes diagnose system`
 
 **Files:**
 - Modify: `cli/commands/diagnose.py` (add `system` subcommand with the old status logic)
 - Test: `tests/test_cli_diagnose_system.py` (new)
 
-- [ ] **Step 1: Recover old `da status` logic**
+- [ ] **Step 1: Recover old `agnes status` logic**
 
 ```bash
 git show HEAD~12:cli/commands/status.py
@@ -2394,12 +2481,12 @@ def test_diagnose_system_help():
 
 ```bash
 git add cli/commands/diagnose.py tests/test_cli_diagnose_system.py
-git commit -m "refactor(cli): move old `da status` health check to `da diagnose system`"
+git commit -m "refactor(cli): move old `agnes status` health check to `agnes diagnose system`"
 ```
 
 ---
 
-### Task 14: `da snapshot create` — fold `da fetch` into snapshot group
+### Task 14: `agnes snapshot create` — fold `da fetch` into snapshot group
 
 **Files:**
 - Modify: `cli/commands/snapshot.py` (add `create` subcommand)
@@ -2419,7 +2506,7 @@ Move the body of `fetch.py:fetch()` into a new `@snapshot_app.command("create")`
 ```python
 local_db = _local_dir() / "user" / "duckdb" / "analytics.duckdb"
 if not local_db.exists():
-    typer.echo("Local DuckDB not found. Run: da pull first.", err=True)
+    typer.echo("Local DuckDB not found. Run: agnes pull first.", err=True)
     raise typer.Exit(1)
 # (then proceed with duckdb.connect — no longer creates an empty DB)
 ```
@@ -2445,7 +2532,7 @@ def test_snapshot_create_no_duckdb_friendly_exit(tmp_path, monkeypatch):
     runner = CliRunner()
     result = runner.invoke(snapshot_app, ["create", "any_table", "--as", "x", "--estimate"])
     assert result.exit_code == 1
-    assert "Run: da pull" in result.output or "Run: da pull" in (result.stderr or "")
+    assert "Run: agnes pull" in result.output or "Run: agnes pull" in (result.stderr or "")
 ```
 
 - [ ] **Step 4: Run tests**
@@ -2458,12 +2545,12 @@ pytest tests/test_cli_snapshot_create.py -v
 
 ```bash
 git add cli/commands/snapshot.py tests/test_cli_snapshot_create.py
-git commit -m "feat(cli): da snapshot create (folded from da fetch); friendly exit if no DuckDB"
+git commit -m "feat(cli): agnes snapshot create (folded from da fetch); friendly exit if no DuckDB"
 ```
 
 ---
 
-### Task 15: `da catalog --metrics` — fold `da metrics list/show`
+### Task 15: `agnes catalog --metrics` — fold `da metrics list/show`
 
 **Files:**
 - Modify: `cli/commands/catalog.py`
@@ -2515,12 +2602,12 @@ def test_catalog_metrics_help():
 
 ```bash
 git add cli/commands/catalog.py tests/test_cli_catalog_metrics.py
-git commit -m "feat(cli): da catalog --metrics replaces da metrics list/show"
+git commit -m "feat(cli): agnes catalog --metrics replaces da metrics list/show"
 ```
 
 ---
 
-### Task 16: Move `da metrics import/export/validate` to `da admin metrics`
+### Task 16: Move `da metrics import/export/validate` to `agnes admin metrics`
 
 **Files:**
 - Create: `cli/commands/admin_metrics.py`
@@ -2532,7 +2619,7 @@ Lift `import_metrics`, `export_metrics`, `validate_metrics` from `cli/commands/m
 
 ```python
 # cli/commands/admin_metrics.py
-"""`da admin metrics {import,export,validate}` — lifted from metrics.py."""
+"""`agnes admin metrics {import,export,validate}` — lifted from metrics.py."""
 
 import typer
 
@@ -2589,7 +2676,7 @@ def test_admin_metrics_subcommands_present():
 
 ```bash
 git add cli/commands/admin_metrics.py cli/commands/admin.py tests/test_cli_admin_metrics.py
-git commit -m "feat(cli): da admin metrics {import,export,validate}"
+git commit -m "feat(cli): agnes admin metrics {import,export,validate}"
 ```
 
 ---
@@ -2607,10 +2694,10 @@ git commit -m "feat(cli): da admin metrics {import,export,validate}"
 grep -rn "Run: da sync" cli/
 ```
 
-- [ ] **Step 2: Replace with "Run: da pull"**
+- [ ] **Step 2: Replace with "Run: agnes pull"**
 
 ```bash
-sed -i.bak 's/Run: da sync/Run: da pull/g' cli/commands/query.py cli/commands/explore.py
+sed -i.bak 's/Run: da sync/Run: agnes pull/g' cli/commands/query.py cli/commands/explore.py
 rm cli/commands/query.py.bak cli/commands/explore.py.bak
 ```
 
@@ -2626,7 +2713,7 @@ Expected: no matches.
 
 ```bash
 git add cli/commands/query.py cli/commands/explore.py
-git commit -m "fix(cli): hint text 'Run: da sync' → 'Run: da pull'"
+git commit -m "fix(cli): hint text 'Run: da sync' → 'Run: agnes pull'"
 ```
 
 ---
@@ -2729,13 +2816,13 @@ git commit -m "refactor(cli): drop sync/fetch/analyst/metrics; register init/pul
 
 ```bash
 sed -i.bak \
-  -e 's|da sync --upload-only|da push|g' \
-  -e 's|da sync|da pull|g' \
-  -e 's|da analyst setup|da init|g' \
-  -e 's|da fetch|da snapshot create|g' \
-  -e 's|da metrics list|da catalog --metrics|g' \
-  -e 's|da metrics show|da catalog --metrics --show|g' \
-  -e 's|da metrics import|da admin metrics import|g' \
+  -e 's|da sync --upload-only|agnes push|g' \
+  -e 's|da sync|agnes pull|g' \
+  -e 's|da analyst setup|agnes init|g' \
+  -e 's|da fetch|agnes snapshot create|g' \
+  -e 's|da metrics list|agnes catalog --metrics|g' \
+  -e 's|da metrics show|agnes catalog --metrics --show|g' \
+  -e 's|da metrics import|agnes admin metrics import|g' \
   -e 's|data/parquet/|server/parquet/|g' \
   -e 's|data/duckdb/|user/duckdb/|g' \
   CLAUDE.md
@@ -2744,24 +2831,24 @@ rm CLAUDE.md.bak
 
 - [ ] **Step 2: Manually rewrite the "Local sync & Claude Code hooks" subsection**
 
-Find the section. Replace the surrounding prose so it describes `da pull` + `da push` hooks:
+Find the section. Replace the surrounding prose so it describes `agnes pull` + `agnes push` hooks:
 
 ```markdown
 ### Local sync & Claude Code hooks
 
-`da pull` is the canonical analyst-side distribution path: pulls the
+`agnes pull` is the canonical analyst-side distribution path: pulls the
 RBAC-filtered manifest from the server, downloads parquets whose MD5 changed
 (skipping `query_mode='remote'` rows), rebuilds local DuckDB views over them.
-`da push` mirrors it for the upload direction (sessions, CLAUDE.local.md).
+`agnes push` mirrors it for the upload direction (sessions, CLAUDE.local.md).
 
-`da init` writes two hooks into `<workspace>/.claude/settings.json`:
+`agnes init` writes two hooks into `<workspace>/.claude/settings.json`:
 
-- `SessionStart` → `da pull --quiet` — pulls fresh parquets at the start of every Claude Code session
-- `SessionEnd`   → `da push --quiet` — uploads session jsonl + `CLAUDE.local.md` to the server
+- `SessionStart` → `agnes pull --quiet` — pulls fresh parquets at the start of every Claude Code session
+- `SessionEnd`   → `agnes push --quiet` — uploads session jsonl + `CLAUDE.local.md` to the server
 
 Both pass `--quiet` so they don't pollute Claude Code stdout, and trail with `|| true` so a server outage never blocks a session. Workspace-level (not user-home) so the hooks fire only when Claude Code opens this analyst workspace, not in unrelated sessions on the same machine.
 
-Admin RBAC for auto-sync: `query_mode IN ('local', 'materialized')` plus a `resource_grants` row for one of the analyst's groups → table appears in their manifest → `da pull` downloads it. No per-user sync config; the admin layer is the single source of truth.
+Admin RBAC for auto-sync: `query_mode IN ('local', 'materialized')` plus a `resource_grants` row for one of the analyst's groups → table appears in their manifest → `agnes pull` downloads it. No per-user sync config; the admin layer is the single source of truth.
 ```
 
 - [ ] **Step 3: Verify no leftover legacy strings**
@@ -2960,7 +3047,7 @@ def test_pat_no_grants(web_session) -> str:
 
 @pytest.fixture
 def zero_grants_workspace(tmp_path, fastapi_test_server, test_pat_no_grants) -> Path:
-    """Run `da init` against a no-grants PAT; return the workspace path."""
+    """Run `agnes init` against a no-grants PAT; return the workspace path."""
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     result = subprocess.run([
@@ -3090,7 +3177,7 @@ git commit -m "test: reader smoke matrix on zero-grants workspace"
 
 ```python
 # tests/test_clean_install_integration.py
-"""End-to-end clean-install integration tests for `da init`."""
+"""End-to-end clean-install integration tests for `agnes init`."""
 
 import json
 import subprocess
@@ -3133,13 +3220,13 @@ def test_clean_install_minimal_grants(fastapi_test_server, tmp_path, test_pat):
     assert_no_dead_dirs(workspace)
 
     settings = json.loads((workspace / ".claude" / "settings.json").read_text())
-    assert any("da pull" in h["hooks"][0]["command"]
+    assert any("agnes pull" in h["hooks"][0]["command"]
                for h in settings["hooks"]["SessionStart"])
-    assert any("da push" in h["hooks"][0]["command"]
+    assert any("agnes push" in h["hooks"][0]["command"]
                for h in settings["hooks"]["SessionEnd"])
 
     claude_md = (workspace / "CLAUDE.md").read_text()
-    assert "da pull" in claude_md
+    assert "agnes pull" in claude_md
     assert "da sync" not in claude_md
 
     workspace_md = (workspace / "AGNES_WORKSPACE.md").read_text()
@@ -3148,7 +3235,7 @@ def test_clean_install_minimal_grants(fastapi_test_server, tmp_path, test_pat):
         assert placeholder not in workspace_md, f"placeholder leaked: {placeholder}"
     assert fastapi_test_server.url in workspace_md
     assert str(workspace) in workspace_md
-    assert "da pull" in workspace_md
+    assert "agnes pull" in workspace_md
 
 
 def test_clean_install_zero_grants(fastapi_test_server, tmp_path, test_pat_no_grants):
@@ -3188,7 +3275,7 @@ def test_init_force_preserves_local_md(fastapi_test_server, tmp_path, test_pat):
 
 
 def test_readers_in_pre_init_dir(tmp_path):
-    """Reader commands in a folder that never had `da init`. Friendly hints, no tracebacks."""
+    """Reader commands in a folder that never had `agnes init`. Friendly hints, no tracebacks."""
     for cmd in [["da", "query", "SELECT 1"],
                 ["da", "snapshot", "create", "x", "--as", "y", "--estimate"],
                 ["da", "explore", "x"],
@@ -3227,7 +3314,7 @@ If `docs/RELEASE_CHECKLIST.md` exists, append; otherwise create with header:
 
 ## Bootstrap path changes (mandatory pre-merge)
 
-For any PR touching the analyst-bootstrap path (`da init`, `cli/lib/pull.py`,
+For any PR touching the analyst-bootstrap path (`agnes init`, `cli/lib/pull.py`,
 `cli/lib/hooks.py`, `app/web/setup_instructions.py`, `/api/welcome`), run
 this protocol locally before requesting review:
 
@@ -3239,10 +3326,10 @@ this protocol locally before requesting review:
 5. `claude` in that folder. Three queries: "what tables can I see",
    "SELECT count(*) FROM <t>", "show me last 5 rows of <t>". All must work
    without further intervention.
-6. `/exit`. Verify SessionEnd hook ran (server-side audit log shows `da push`;
+6. `/exit`. Verify SessionEnd hook ran (server-side audit log shows `agnes push`;
    `du -sh /tmp/test-analyst-1/user/sessions/` non-empty).
 7. Second `claude` in same folder. Verify SessionStart hook fires
-   (`da pull` request in audit log).
+   (`agnes pull` request in audit log).
 8. Second workspace `/tmp/test-analyst-2` with the same PAT (within TTL).
    Repeat 3-5. Verify global `~/.config/da/` is not duplicated; the second
    workspace has its own DuckDB.
@@ -3272,27 +3359,27 @@ Open `CHANGELOG.md`, find the topmost `## [Unreleased]` section (it sits above t
 ## [Unreleased]
 
 ### Changed
-- **BREAKING** Analyst bootstrap rewritten end-to-end. `da analyst setup` is removed; replaced by `da init` (non-interactive, requires `--server-url` and `--token`). `da sync` is split into `da pull` (refresh) and `da push` (upload). `da fetch` is folded into `da snapshot create`. `da metrics list/show` is folded into `da catalog --metrics`; `da metrics import/export/validate` move to `da admin metrics {import,export,validate}`. The `da analyst` namespace is removed; the workspace status command is now `da status`. The previous `da status` (server-health overview) becomes `da diagnose system`.
+- **BREAKING** Analyst bootstrap rewritten end-to-end. `da analyst setup` is removed; replaced by `agnes init` (non-interactive, requires `--server-url` and `--token`). `da sync` is split into `agnes pull` (refresh) and `agnes push` (upload). `da fetch` is folded into `agnes snapshot create`. `da metrics list/show` is folded into `agnes catalog --metrics`; `da metrics import/export/validate` move to `agnes admin metrics {import,export,validate}`. The `da analyst` namespace is removed; the workspace status command is now `agnes status`. The previous `agnes status` (server-health overview) becomes `agnes diagnose system`.
 - **BREAKING** Workspace layout simplified. Removed: `data/parquet/`, `data/duckdb/`, `data/metadata/`, `user/artifacts/`. Canonical paths: `server/parquet/` (synced parquets), `user/duckdb/analytics.duckdb` (DuckDB views), `user/snapshots/` (ad-hoc snapshots), `user/sessions/` (recorded sessions).
 - The `/setup` web page now branches on a `role` query parameter: `/setup?role=analyst` renders the analyst workspace bootstrap prompt; `/setup?role=admin` renders the admin CLI install prompt. `/install` continues to 302 to `/setup`.
 - `CLAUDE.md` server-side template + repo-root `CLAUDE.md` updated to reference the new CLI verbs and workspace paths. The admin UI for the `claude_md_template` DB override (`/admin/workspace-prompt`) renders a yellow banner when the saved override contains legacy strings (`data/parquet/`, `da sync`, `da fetch`, `da analyst setup`, `da metrics list/show`); admins re-author and save to clear it. Migration is manual.
 
 ### Added
-- `AGNES_WORKSPACE.md` — human-readable workspace docs file generated by `da init` in the workspace root. Documents global install, workspace layout, hooks, cheat sheet, uninstall recipe.
+- `AGNES_WORKSPACE.md` — human-readable workspace docs file generated by `agnes init` in the workspace root. Documents global install, workspace layout, hooks, cheat sheet, uninstall recipe.
 - PAT request body now accepts `scope: str = "general"` and `ttl_seconds: int | None = None` fields. PATs minted with `scope="bootstrap-analyst"` are TTL-clamped to ≤ 1 h server-side. Existing `expires_in_days` field continues to work; `ttl_seconds` wins when both are set. `ttl_seconds` upper bound is 315_360_000 (matches `expires_in_days <= 3650` cap).
-- `cli/lib/` shared-library tree, with `cli/lib/pull.py:run_pull` (data-refresh primitive callable from both the Typer wrapper and `da init`) and `cli/lib/hooks.py:install_claude_hooks` (workspace-scoped Claude Code hook installer).
+- `cli/lib/` shared-library tree, with `cli/lib/pull.py:run_pull` (data-refresh primitive callable from both the Typer wrapper and `agnes init`) and `cli/lib/hooks.py:install_claude_hooks` (workspace-scoped Claude Code hook installer).
 
 ### Fixed
-- `da pull` (formerly `da sync`) no longer creates `.claude/rules/` when the corporate-memory bundle is empty.
-- `da pull` no longer creates `server/parquet/` when the manifest is empty.
-- `da snapshot create` (formerly `da fetch`) no longer materializes an empty `user/duckdb/analytics.duckdb` when run before any `da pull`.
-- Workspace `da status` reads from the canonical `server/parquet/` and `user/duckdb/analytics.duckdb` paths (was reading legacy `data/parquet/`, `data/metadata/last_sync.json`).
-- `da init` and `da pull` errors now use the `cli/error_render.py` typed-error renderer (added in 0.32.0), so analyst-facing error UX matches the structured shape `da query --remote` already produces.
+- `agnes pull` (formerly `da sync`) no longer creates `.claude/rules/` when the corporate-memory bundle is empty.
+- `agnes pull` no longer creates `server/parquet/` when the manifest is empty.
+- `agnes snapshot create` (formerly `da fetch`) no longer materializes an empty `user/duckdb/analytics.duckdb` when run before any `agnes pull`.
+- Workspace `agnes status` reads from the canonical `server/parquet/` and `user/duckdb/analytics.duckdb` paths (was reading legacy `data/parquet/`, `data/metadata/last_sync.json`).
+- `agnes init` and `agnes pull` errors now use the `cli/error_render.py` typed-error renderer (added in 0.32.0), so analyst-facing error UX matches the structured shape `agnes query --remote` already produces.
 
 ### Removed
 - `da analyst setup`, `da analyst status`, `da sync`, `da fetch`. See "Changed" above for replacements.
-- `da metrics` namespace as a top-level group (subcommands moved to `da catalog --metrics` for read-only views and `da admin metrics …` for write operations).
-- Legacy workspace directories `data/parquet/`, `data/duckdb/`, `data/metadata/`, `user/artifacts/`. Existing analyst workspaces should be reinitialized with `da init --server-url ... --token ... --force` (a fresh empty folder is recommended).
+- `da metrics` namespace as a top-level group (subcommands moved to `agnes catalog --metrics` for read-only views and `agnes admin metrics …` for write operations).
+- Legacy workspace directories `data/parquet/`, `data/duckdb/`, `data/metadata/`, `user/artifacts/`. Existing analyst workspaces should be reinitialized with `agnes init --server-url ... --token ... --force` (a fresh empty folder is recommended).
 
 ### Internal
 - `cli/lib/__init__.py` (empty) makes `cli/lib/` a proper package picked up by Hatchling for wheel inclusion.
