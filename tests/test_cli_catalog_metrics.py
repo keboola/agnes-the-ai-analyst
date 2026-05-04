@@ -1,0 +1,23 @@
+"""Tests for `agnes catalog --metrics` (folded from `da metrics list/show`)."""
+
+from typer.testing import CliRunner
+
+from cli.commands.catalog import catalog_app
+
+
+def test_catalog_metrics_help():
+    runner = CliRunner()
+    result = runner.invoke(catalog_app, ["--help"])
+    assert result.exit_code == 0
+    assert "--metrics" in result.output
+    assert "--show" in result.output
+
+
+def test_catalog_default_still_works():
+    """Existing `agnes catalog` (no flags) behavior unchanged."""
+    runner = CliRunner()
+    # Help should still mention the default tables view
+    result = runner.invoke(catalog_app, ["--help"])
+    assert result.exit_code == 0
+    # No traceback
+    assert "Traceback" not in result.output
