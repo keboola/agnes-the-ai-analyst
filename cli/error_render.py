@@ -63,11 +63,20 @@ def _detail_dict(body: Any) -> dict | None:
 
 
 def _format_dict(status_code: int, detail: dict) -> str:
-    """Multi-line render of a recognized typed-error dict."""
-    label = detail.get("kind") or detail.get("reason") or "error"
+    """Multi-line render of a recognized typed-error dict.
+
+    When both `kind` and `reason` are present (e.g. quota rejections at
+    `app/api/query.py` carry `{reason: "daily_byte_cap_exceeded",
+    kind: "daily_bytes", ...}`), the label line shows only one — the
+    other must still appear in the key/value section so its value isn't
+    silently dropped. Devin Review iter #4 caught this.
+    """
+    label_key = "kind" if detail.get("kind") else ("reason" if detail.get("reason") else None)
+    label = detail.get(label_key) if label_key else "error"
     lines: list[str] = [f"Error: {label} (HTTP {status_code})"]
 
-    seen: set[str] = {"kind", "reason"}  # already in the label line
+    # Only the key actually used in the label is hidden from the kv block.
+    seen: set[str] = {label_key} if label_key else set()
     # Priority keys first
     for key in _PRIORITY_KEYS:
         if key in seen:
