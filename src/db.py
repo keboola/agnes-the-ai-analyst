@@ -39,7 +39,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 24
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -1682,6 +1682,60 @@ _V22_TO_V23_MIGRATIONS = [
 ]
 
 
+# v24: rewrite materialized BQ source_query from DuckDB-flavor
+# (bq."<dataset>"."<table>") to BigQuery-native (`<project>.<dataset>.<table>`)
+# so the new connectors.bigquery.extractor.materialize_query wrapping
+# path (which routes through bigquery_query() / BQ jobs API) accepts
+# them. Pre-v24, materialize used Storage Read API for the bq.<ds>.<tbl>
+# form, which fails for views — see PR for full motivation.
+#
+# This migration is implemented in Python (not pure SQL) because the
+# rewrite is a regex-and-replace per row: the project_id comes from
+# instance_config (file/env), not the DB. SQL alone can't pull the
+# project_id and substitute it. If the project isn't configured at
+# migration time, log a warning per affected row and leave them — the
+# operator must configure data_source.bigquery.project, restart, and
+# the migration will fire on next start (idempotent).
+def _v23_to_v24_finalize(conn: duckdb.DuckDBPyConnection) -> None:
+    import re as _re
+
+    try:
+        from app.instance_config import get_value
+        project_id = get_value("data_source", "bigquery", "project", default="") or ""
+    except Exception:
+        project_id = ""
+
+    pattern = _re.compile(r'bq\."([^"]+)"\."([^"]+)"')
+
+    rows = conn.execute(
+        "SELECT id, source_query FROM table_registry "
+        "WHERE query_mode = 'materialized' "
+        "AND source_query LIKE '%bq.\"%' "
+        "AND source_type = 'bigquery'"
+    ).fetchall()
+
+    for row_id, sq in rows:
+        if sq is None:
+            continue
+        if not project_id:
+            logger.warning(
+                "v24 migration: skipping rewrite of source_query for row %r — "
+                "data_source.bigquery.project is not configured. Set it via "
+                "/admin/server-config and restart the app to retry the "
+                "migration.", row_id,
+            )
+            continue
+        new_sq = pattern.sub(rf'`{project_id}.\1.\2`', sq)
+        if new_sq != sq:
+            conn.execute(
+                "UPDATE table_registry SET source_query = ? WHERE id = ?",
+                [new_sq, row_id],
+            )
+            logger.info(
+                "v24 migration: rewrote source_query for row %r", row_id,
+            )
+
+
 def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
     """Create tables if they don't exist. Apply migrations if schema version changed.
 
@@ -1837,6 +1891,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             if current < 23:
                 for sql in _V22_TO_V23_MIGRATIONS:
                     conn.execute(sql)
+            if current < 24:
+                _v23_to_v24_finalize(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
