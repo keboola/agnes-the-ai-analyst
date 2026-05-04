@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.31.0] — 2026-05-04
+
 ### Added
 
 - **Agent Workspace Prompt** — admin-editable Jinja2 markdown template for the analyst's `CLAUDE.md`, surfaced in their workspace by `da analyst setup`. Default = rich briefing with RBAC-filtered tables/metrics/marketplaces context. Edit at `/admin/workspace-prompt`. Endpoints: `GET /api/welcome` (analyst-facing, auth required), `GET/PUT/DELETE /api/admin/workspace-prompt-template`, `POST /api/admin/workspace-prompt-template/preview`. CLI: `da analyst setup` writes `CLAUDE.md` by default; new `--no-claude-md` flag opts out. See `docs/agent-workspace-prompt.md`.
