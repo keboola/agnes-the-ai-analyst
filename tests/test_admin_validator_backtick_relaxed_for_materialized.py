@@ -13,9 +13,9 @@ def test_materialized_accepts_backticks():
         name="b1",
         source_type="bigquery",
         query_mode="materialized",
-        source_query="SELECT * FROM `prj-grp.ds.tbl`",
+        source_query="SELECT * FROM `my-project.ds.tbl`",
     )
-    assert req.source_query == "SELECT * FROM `prj-grp.ds.tbl`"
+    assert req.source_query == "SELECT * FROM `my-project.ds.tbl`"
 
 
 def test_remote_rejects_backticks():

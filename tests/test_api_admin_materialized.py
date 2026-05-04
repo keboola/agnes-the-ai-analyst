@@ -303,14 +303,14 @@ def test_register_materialized_accepts_backtick_source_query(seeded_app, bq_inst
         "/api/admin/register-table",
         json=_materialized_payload(
             name="bt_native",
-            source_query="SELECT * FROM `prj-grp.ds.product_inventory`",
+            source_query="SELECT * FROM `my-project.ds.product_inventory`",
         ),
         headers=_auth(token),
     )
     assert r.status_code in (200, 201, 202), r.json()
     reg = c.get("/api/admin/registry", headers=_auth(token)).json()
     row = next(t for t in reg["tables"] if t["id"] == "bt_native")
-    assert row["source_query"] == "SELECT * FROM `prj-grp.ds.product_inventory`"
+    assert row["source_query"] == "SELECT * FROM `my-project.ds.product_inventory`"
 
 
 def test_update_materialized_accepts_backtick_source_query(
