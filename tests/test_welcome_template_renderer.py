@@ -39,23 +39,37 @@ def _user(email="alice@example.com"):
 
 def test_returns_default_script_when_no_override(conn):
     """When no override is set, render_agent_prompt_banner returns the live
-    setup script (not an empty string)."""
+    setup script (not an empty string).
+
+    A non-admin user gets the analyst layout: `agnes init` subsumes auth and
+    the trimmed flow has no `agnes auth` line. An admin user gets the full
+    CLI bootstrap with `agnes auth import-token`.
+    """
     out = render_agent_prompt_banner(conn, user=_user(), server_url="https://example.com")
     # Must be non-empty — the default IS the setup script
     assert out != ""
-    # Must contain key markers from setup_instructions.resolve_lines()
-    assert "da analyst setup" in out or "agnes auth" in out or "curl" in out
+    # Analyst layout: `agnes init` is the bootstrap step.
+    assert "agnes init" in out
+    # No legacy verb anywhere in the rendered default
+    assert "da analyst setup" not in out
+    assert "da sync" not in out
 
 
 def test_compute_default_returns_setup_script(conn):
     """compute_default_agent_prompt returns a non-empty string with setup
-    script markers including {server_url} and da-related commands."""
+    script markers including {server_url} and agnes commands.
+
+    Default role is `admin`, which renders the full CLI install + login flow.
+    """
     out = compute_default_agent_prompt(conn, user=_user(), server_url="https://example.com")
     assert out != ""
     # {server_url} placeholder must survive (not replaced by Jinja2)
     assert "{server_url}" in out
-    # Should reference agnes auth or CLI install
-    assert "agnes auth" in out or "uv tool install" in out
+    # Admin layout references the agnes CLI install + login flow
+    assert "agnes auth" in out
+    assert "uv tool install" in out
+    # No legacy verb anywhere in the rendered default
+    assert "da analyst setup" not in out
 
 
 def test_compute_default_server_url_placeholder_survives(conn):
@@ -223,8 +237,9 @@ def test_render_failure_falls_back_to_default_not_exception(conn):
     out = render_agent_prompt_banner(conn, user=_user(), server_url="https://example.com")
     # Must not raise — falls back to the live default script (non-empty)
     assert out != ""
-    # Must contain default setup script markers
-    assert "agnes auth" in out or "uv tool install" in out or "curl" in out
+    # Non-admin → analyst layout: `agnes init` is the bootstrap step.
+    assert "agnes init" in out
+    assert "uv tool install" in out
 
 
 def test_sanitize_applied_after_render(conn):
