@@ -10,6 +10,89 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.33.0] — 2026-05-04
+
+Closes #162. Headline fix: `query_mode='materialized'` BigQuery rows now
+materialize correctly for views and materialized views, with per-table
+concurrency control preventing parquet corruption on overlapping scheduler
+ticks. Plus a source_query server-generation convenience, a
+`materialize.lock_ttl_seconds` config knob, and a schema v24 migration that
+converts existing DuckDB-flavor source_query values to BQ-native SQL.
+
+### Fixed
+
+- BigQuery materialize now works for views and materialized views. Pre-fix,
+  `materialize_query` ran admin's `source_query` as `COPY (sql) TO parquet`
+  through the DuckDB BigQuery extension session, which routed through the BQ
+  Storage Read API for `bq."<ds>"."<tbl>"` references. Storage Read API
+  rejects non-base entities (`Binder Error: Error while creating read session:
+  ... non-table entities cannot be read with the storage API`). Fixed by
+  always wrapping admin SQL into `bigquery_query('<billing-project>',
+  '<inner-sql>')` so COPY uses the BQ jobs API uniformly for tables, views,
+  and materialized views.
+- `materialize_query` no longer corrupts its parquet under concurrent
+  invocations for the same `table_id`. Pre-fix, two overlapping
+  `_run_materialized_pass` calls (e.g. a long-running COPY + the next
+  scheduler tick) both hit the unconditional `if tmp_path.exists():
+  tmp_path.unlink()` at function entry and started parallel COPYs against the
+  same path, interleaving bytes and producing a parquet file with no valid
+  footer. Now each call acquires a per-table_id `threading.Lock` plus an
+  advisory `fcntl.flock` on `<id>.parquet.lock`; the second caller raises
+  `MaterializeInFlightError` and the scheduler treats it as
+  `skipped, in_flight` — never as an error.
+- Cost guardrail dry-run now engages for materialized rows. Pre-fix, the
+  BigQuery Python client returned 400 (`Table-valued function not found:
+  bigquery_query`) on the wrapped SQL and the dry-run silently fail-opened.
+  The dry-run now operates on the inner BQ-native SQL (admin's `source_query`
+  directly), which the client parses cleanly.
+
+### Changed
+
+- **BREAKING** `query_mode='materialized'` rows MUST register `source_query`
+  as BigQuery-native SQL (backticks for dashed identifiers, native
+  joins/CTEs). DuckDB-flavor (`bq."<ds>"."<tbl>"`) is no longer accepted on
+  register/PUT. The schema v24 migration converts existing rows automatically;
+  operators with custom-written `source_query` should review the migrated form
+  on first deploy. The validator's prior backtick-rejection rule is now scoped
+  to `query_mode IN ('remote', 'local')` only.
+- `_run_materialized_pass` summary `skipped` field changes from `list[str]`
+  to `list[dict]` with shape
+  `{"table": str, "reason": Literal["due_check", "in_flight"]}`. Downstream
+  consumers that asserted the old string form must update.
+
+### Added
+
+- `POST /api/admin/register-table` for `query_mode='materialized'` rows with
+  `bucket`+`source_table` but no `source_query` now server-generates
+  `` SELECT * FROM `<project>.<bucket>.<source_table>` `` from the configured
+  BigQuery project. The same fallback fires on `PUT /api/admin/registry/{id}`
+  when flipping to materialized. Operators only need to know
+  `bigquery_query()` semantics for non-trivial queries.
+- New top-level `materialize` config section in `instance.yaml`. Single field
+  — `materialize.lock_ttl_seconds` (default `86400`, 24 h) — controls how
+  long a stale `<id>.parquet.lock` file lives before a sibling materialize
+  attempt reclaims it. Editable via `/admin/server-config` API and UI.
+
+### Internal
+
+- Schema v24 migration: rewrites `table_registry.source_query` for
+  materialized BigQuery rows from DuckDB-flavor (`bq."<ds>"."<tbl>"`) to
+  BQ-native (`` `<project>.<ds>.<tbl>` ``) using the configured BQ project.
+  Idempotent on already-converted rows; logs a warning and skips when the
+  project isn't configured (operator can configure + restart for retry).
+  Wrapped in `BEGIN TRANSACTION` / `COMMIT` to match the project's
+  transactional-finalizer pattern.
+- `connectors/bigquery/extractor.py` exports `MaterializeInFlightError` and
+  the `_get_table_lock` / `_get_lock_ttl_seconds` /
+  `_wrap_admin_sql_for_jobs_api` / `_escape_sql_string_literal` helpers as
+  test seams. Underscore-prefixed; not part of the public API.
+- `tests/conftest.py` lifts `bq_instance` and `stub_bq_extractor` fixtures
+  from `tests/test_api_admin_materialized.py` so subsequent test modules in
+  this PR can resolve them via pytest's auto-discovery.
+- `app/api/sync.py:is_table_due` hoisted to module-level import (was deferred
+  inside `_run_materialized_pass`) so monkeypatching `app.api.sync.is_table_due`
+  actually intercepts the call — the deferred form made test patches a no-op.
+
 ## [0.32.0] — 2026-05-04
 
 Closes #160. Headline fix: `da query --remote` now resolves
