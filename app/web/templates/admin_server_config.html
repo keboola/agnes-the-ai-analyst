@@ -322,9 +322,13 @@ function renderLeafInput(fieldId, section, pathSegments, kind, value, opts, isUn
   // surface the access.py:339-340 billing→data fallback in the UI.
   let placeholderAttr = "";
   if (isUnset && opts && opts.spec && Array.isArray(opts.spec.placeholder_from)) {
+    // `original` is the full GET /api/admin/server-config response shape:
+    // {sections: {data_source: ...}, editable_sections: [...], ...}.
+    // `placeholder_from` is a section-relative path (e.g. ["data_source",
+    // "bigquery", "project"]) so walk `original.sections` not `original`.
     const resolved = opts.spec.placeholder_from.reduce(
       (cur, k) => (cur && typeof cur === "object" ? cur[k] : undefined),
-      original,
+      original && original.sections ? original.sections : original,
     );
     if (resolved !== undefined && resolved !== null && resolved !== "") {
       placeholderAttr = ` placeholder="(defaults to ${escHtml(String(resolved))})"`;

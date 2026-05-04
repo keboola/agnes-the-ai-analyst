@@ -20,7 +20,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   to the data_source Save button; on failure the inline result uses the
   same structured shape as the CLI renderer so operators see the same
   hint format admins do.
-- **`api.query.bq_max_scan_bytes` server-config knob** (default 5 GiB):
+- **`data_source.bigquery.bq_max_scan_bytes` server-config knob** (default 5 GiB):
   caps the BigQuery scan that `da query --remote` will issue against
   `query_mode='remote'` BQ rows. Exceeded queries are rejected with a
   structured `400 remote_scan_too_large` detail naming the bytes,
