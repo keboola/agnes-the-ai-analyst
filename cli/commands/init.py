@@ -35,7 +35,6 @@ Task 18 will register `init_app` on the root Typer app.
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
