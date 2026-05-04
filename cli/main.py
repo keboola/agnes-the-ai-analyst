@@ -1,6 +1,6 @@
 """agnes — CLI tool for AI Data Analyst.
 
-Primary interface for AI agents. Install: uv tool install data-analyst
+Primary interface for AI agents. Install: uv tool install agnes-the-ai-analyst
 """
 
 from importlib.metadata import PackageNotFoundError

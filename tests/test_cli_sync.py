@@ -209,7 +209,6 @@ class TestStreamDownloadAtomicAndRetry:
     def test_atomic_write_via_tmp_then_rename(self, tmp_path, monkeypatch):
         """Target file must not exist before os.replace runs; writes go to .tmp first."""
         monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path))
-        monkeypatch.setenv("AGNES_SERVER_URL", "http://localhost:9999")
 
         target = tmp_path / "x.parquet"
         observed_paths: list[str] = []
@@ -242,7 +241,6 @@ class TestStreamDownloadAtomicAndRetry:
     def test_retries_on_transient_error(self, tmp_path, monkeypatch):
         """Transient network errors (ConnectError) trigger retry; eventual success is transparent."""
         monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path))
-        monkeypatch.setenv("AGNES_SERVER_URL", "http://localhost:9999")
         monkeypatch.setenv("AGNES_STREAM_RETRIES", "3")
 
         target = tmp_path / "x.parquet"
@@ -277,7 +275,6 @@ class TestStreamDownloadAtomicAndRetry:
     def test_no_retry_on_4xx(self, tmp_path, monkeypatch):
         """4xx (auth, 404) must surface immediately — retries are for transient issues only."""
         monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path))
-        monkeypatch.setenv("AGNES_SERVER_URL", "http://localhost:9999")
 
         import httpx
         calls = {"n": 0}

@@ -49,7 +49,7 @@ The orchestrator scans `/data/extracts/*/extract.duckdb`, attaches each into `an
 
 The first three modes are what `da sync` distributes to analysts. The fourth is server-side only — analysts query Jira data through the same `da sync`-distributed parquets.
 
-Admins manage per-source registrations through the `/admin/tables` UI (per-connector tabs for BigQuery / Keboola / Jira) or the `da admin register-table` CLI; per-row "Manage access" deep-links to `/admin/access` for granting tables to user groups via `resource_grants(group, ResourceType.TABLE, table_id)`.
+Admins manage per-source registrations through the `/admin/tables` UI (per-connector tabs for BigQuery / Keboola / Jira) or the `agnes admin register-table` CLI; per-row "Manage access" deep-links to `/admin/access` for granting tables to user groups via `resource_grants(group, ResourceType.TABLE, table_id)`.
 
 Analysts get a closed loop with Claude Code: `da analyst setup` writes `<workspace>/.claude/settings.json` with SessionStart (`da sync --quiet`) and SessionEnd (`da sync --upload-only --quiet`) hooks so every Claude Code session starts with fresh RBAC-filtered parquets and ends with the session log uploaded back.
 
@@ -113,7 +113,7 @@ To enroll a new table for auto-sync, register it (or update its `query_mode`) an
 For BigQuery, register a `query_mode='materialized'` table with a SQL body:
 
 ```bash
-da admin register-table orders_90d \
+agnes admin register-table orders_90d \
     --source-type bigquery \
     --query-mode materialized \
     --query @docs/queries/orders_90d.sql \
@@ -156,7 +156,7 @@ pytest tests/ -v
 │   ├── keboola/            # Keboola: extractor.py (DuckDB extension) + client.py (fallback)
 │   ├── bigquery/           # BigQuery: extractor.py (remote-only via DuckDB BQ extension)
 │   └── jira/               # Jira: webhook + incremental parquet → extract.duckdb
-├── cli/                    # CLI tool (`da sync`, `da query`, `da admin`)
+├── cli/                    # CLI tool (`da sync`, `agnes query`, `agnes admin`)
 ├── services/               # Standalone services (scheduler, telegram_bot, ws_gateway, etc.)
 ├── scripts/                # Utility + migration scripts
 ├── config/                 # Configuration templates (instance.yaml.example)

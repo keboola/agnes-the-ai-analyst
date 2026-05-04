@@ -116,14 +116,14 @@ Command-line tool `da` for sync, query, and admin operations.
 | Command | Role |
 |---------|------|
 | `da sync` | Trigger data sync |
-| `da query` | Run SQL against analytics.duckdb |
-| `da admin group *` | Manage user groups |
-| `da admin grant *` | Manage resource grants |
-| `da admin register-table` | Register tables in table_registry |
-| `da admin break-glass <user>` | Emergency admin access recovery |
+| `agnes query` | Run SQL against analytics.duckdb |
+| `agnes admin group *` | Manage user groups |
+| `agnes admin grant *` | Manage resource grants |
+| `agnes admin register-table` | Register tables in table_registry |
+| `agnes admin break-glass <user>` | Emergency admin access recovery |
 | `da tokens *` | Manage personal access tokens |
 | `da metrics *` | Business metric definitions |
-| `da skills *` | List/show bundled skills |
+| `agnes skills *` | List/show bundled skills |
 
 ### 5. Authentication (`app/auth/`)
 
