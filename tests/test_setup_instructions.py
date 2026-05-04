@@ -813,9 +813,9 @@ def test_skills_step_is_last_blocking_step_before_confirm():
 
 
 def test_no_marketplace_layout_keeps_diagnose_before_skills():
-    """Without plugins, the layout collapses to: install → login → verify →
-    diagnose → skills → confirm. (No git or marketplace steps to interleave.)
-    Step numbers: 4 diagnose, 5 skills, 6 confirm."""
+    """Without plugins, the layout collapses to: install → init → catalog →
+    diagnose → skills → confirm. (No preflight or marketplace steps to
+    interleave.) Step numbers: 4 diagnose, 5 skills, 6 confirm."""
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(resolve_lines("agnes.whl"))
@@ -826,6 +826,55 @@ def test_no_marketplace_layout_keeps_diagnose_before_skills():
     skills_idx = joined.index("5) Skills")
     confirm_idx = joined.index("6) Confirm:")
     assert diag_idx < skills_idx < confirm_idx
+
+
+def test_unified_flow_uses_only_agnes_verbs():
+    """No-legacy-`da`-verbs invariant for the unified /setup prompt.
+
+    Pin: every line emitted by `resolve_lines()` must use the `agnes` CLI
+    verb. The legacy `da` namespace was removed in the broader
+    clean-analyst-bootstrap rewrite, but the setup prompt is generated
+    string-by-string and a stale `da sync` / `da analyst setup` reference
+    could survive a refactor unnoticed.
+
+    Match `"da "` (with the trailing space) so we don't false-positive on
+    `Darwin`, `adapter`, `database`, etc. — any actual `da <verb>` invocation
+    is followed by a space.
+
+    Also re-verifies that `agnes init` carries an explicit `--token` arg
+    (commit 8784f10a fixed a stale-on-disk-token override: `init --token X`
+    must use X for the verify call, not the on-disk token). Without
+    `--token` in the emitted line, that fix's contract isn't surfaced to
+    the user.
+    """
+    from app.web.setup_instructions import resolve_lines
+
+    fake_ca = (
+        "-----BEGIN CERTIFICATE-----\n"
+        "FAKE\n"
+        "-----END CERTIFICATE-----\n"
+    )
+
+    # Check both layouts (with and without marketplace) and both has_ca
+    # variants, since each path stitches together different helper output.
+    for kwargs in (
+        {},
+        {"plugin_install_names": ["foo"], "server_host": "h"},
+        {"ca_pem": fake_ca},
+        {"plugin_install_names": ["foo"], "server_host": "h", "ca_pem": fake_ca},
+    ):
+        joined = "\n".join(resolve_lines("agnes.whl", **kwargs))
+        # No legacy `da <verb>` invocation anywhere.
+        assert "da " not in joined, (
+            f"Legacy `da ` verb leaked into resolve_lines output (kwargs={kwargs!r}).\n"
+            f"Search the rendered prompt for the offending line."
+        )
+        # `agnes init --token` is the contract that commit 8784f10a's
+        # ContextVar override pivots on. Pin it so a future refactor that
+        # accidentally drops `--token` from the emitted command surfaces as
+        # a test failure, not as a confusing 401 in production.
+        assert "agnes init --server-url" in joined
+        assert "--token" in joined
 
 
 def test_install_page_uses_versioned_wheel_url(monkeypatch, tmp_path):
