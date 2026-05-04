@@ -3,15 +3,28 @@
 No data is downloaded. All queries go directly to BigQuery via DuckDB extension ATTACH.
 """
 
+import fcntl
+import hashlib
 import logging
 import os
+import re
 import shutil
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 import duckdb
+
+from connectors.bigquery.auth import get_metadata_token, BQMetadataAuthError
+from src.sql_safe import (
+    validate_identifier as _validate_identifier,
+    validate_project_id as _validate_project_id,
+)
+from src.identifier_validation import validate_identifier, validate_quoted_identifier
+
+logger = logging.getLogger(__name__)
 
 # Serializes the body of `init_extract` across threads so two concurrent
 # materialize calls (e.g. the synchronous timeout-fallback BackgroundTask
@@ -21,15 +34,127 @@ import duckdb
 # not the per-source extract-file write, so we need a dedicated lock here.
 _INIT_EXTRACT_LOCK = threading.Lock()
 
-from connectors.bigquery.auth import get_metadata_token, BQMetadataAuthError
-from app.instance_config import get_value
-from src.sql_safe import (
-    validate_identifier as _validate_identifier,
-    validate_project_id as _validate_project_id,
-)
-from src.identifier_validation import validate_identifier, validate_quoted_identifier
+_LOCK_TTL_DEFAULT_SECONDS: int = 86400  # 24h — overridable via materialize.lock_ttl_seconds
 
-logger = logging.getLogger(__name__)
+
+class MaterializeInFlightError(Exception):
+    """Raised when a per-table_id materialize is already running.
+
+    Caller (`_run_materialized_pass`) should treat this as a 'skipped,
+    in-flight' outcome — the in-flight worker will finish and write
+    sync_state on its own. Critically, this is NOT an error condition;
+    `state.set_error` MUST NOT be called for this exception or the
+    registry would surface a false-positive failure to the operator
+    every overlap."""
+
+    def __init__(self, table_id: str, layer: str = "process"):
+        self.table_id = table_id
+        self.layer = layer
+        super().__init__(
+            f"materialize for {table_id!r} already in flight ({layer} lock held)"
+        )
+
+
+# Unbounded by design — each registered table_id gets one Lock for the
+# process lifetime. Per-Lock cost is ~56 bytes; a deployment with even
+# 10k registered tables holds <1 MB. No cleanup logic — clean would
+# need ref-counting and risks freeing a Lock currently held by a worker.
+_table_locks: dict[str, threading.Lock] = {}
+_table_locks_registry: threading.Lock = threading.Lock()
+
+
+def _get_table_lock(table_id: str) -> threading.Lock:
+    """Return the process-wide mutex for a given table_id, creating it
+    on first reference. The registry mutex serializes the dict mutation
+    only — once the per-id Lock is returned, contention between callers
+    happens on that lock alone."""
+    with _table_locks_registry:
+        lock = _table_locks.get(table_id)
+        if lock is None:
+            lock = threading.Lock()
+            _table_locks[table_id] = lock
+        return lock
+
+
+def _get_lock_ttl_seconds() -> int:
+    """Read the configured stale-lock TTL with fallback to the default.
+
+    Operator override lives at instance.yaml `materialize.lock_ttl_seconds`
+    (also editable via /admin/server-config). Default 86400 s = 24 h
+    matches the upper bound of any healthy BQ COPY in practice — anything
+    longer is a stuck process or a hung BQ session, both of which warrant
+    reclaim on next attempt."""
+    try:
+        # Deferred import: keeps the connectors module importable in
+        # contexts where the app layer isn't bootstrapped (e.g. unit tests
+        # that exercise extractor helpers without the FastAPI app).
+        from app.instance_config import get_value
+        v = get_value(
+            "materialize", "lock_ttl_seconds",
+            default=_LOCK_TTL_DEFAULT_SECONDS,
+        )
+        n = int(v) if v is not None else _LOCK_TTL_DEFAULT_SECONDS
+        return n if n > 0 else _LOCK_TTL_DEFAULT_SECONDS
+    except Exception:
+        return _LOCK_TTL_DEFAULT_SECONDS
+
+
+def _try_acquire_file_lock(lock_path: Path):
+    """Try to acquire an advisory exclusive flock on `lock_path`. Returns
+    the open file object on success (caller must close to release); None
+    on conflict.
+
+    Stale-lock reclaim: if the lock_path exists and its mtime is older
+    than the configured TTL, log a warning and unlink before retrying.
+    A live holder still wins the second flock attempt (kernel-level
+    flock isn't tied to mtime), so the reclaim doesn't break correctness
+    — it just unblocks the case where a holder process was hard-killed
+    before the kernel released the lock."""
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _try_open_and_flock():
+        # Open in 'w' mode so the file's mtime updates on every successful
+        # acquisition — the mtime is the TTL signal for the next caller.
+        # Content is intentionally empty; the fd exists only to anchor flock.
+        f = open(lock_path, "w")
+        try:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return f
+        except BlockingIOError:
+            # Another holder owns the lock — return None so the caller can
+            # decide between TTL-reclaim and propagating MaterializeInFlightError.
+            f.close()
+            return None
+        except OSError:
+            # Anything else (read-only fs, unsupported, fd exhaustion) is a
+            # platform / config error, not a contention signal. Close the fd
+            # and re-raise so the caller (and operator) sees the real failure
+            # instead of a silent leak.
+            f.close()
+            raise
+
+    holder = _try_open_and_flock()
+    if holder is not None:
+        return holder
+
+    # Conflict. If the file is older than TTL, reclaim and retry once.
+    try:
+        age = time.time() - lock_path.stat().st_mtime
+    except FileNotFoundError:
+        return _try_open_and_flock()
+
+    if age > _get_lock_ttl_seconds():
+        logger.warning(
+            "Reclaiming stale materialize lock at %s (age %.1fs > TTL)",
+            lock_path, age,
+        )
+        try:
+            lock_path.unlink()
+        except FileNotFoundError:
+            pass
+        return _try_open_and_flock()
+
+    return None
 
 
 def _detect_table_type(
@@ -57,6 +182,56 @@ def _detect_table_type(
     duck_sql = "SELECT * FROM bigquery_query(?, ?, ?)"
     row = conn.execute(duck_sql, [project, bq_sql, table]).fetchone()
     return row[0] if row else None
+
+
+_BILLING_PROJECT_RE = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
+
+
+def _escape_sql_string_literal(s: str) -> str:
+    """Double every single quote so the result is safe to embed inside a
+    single-quoted SQL string literal. DuckDB and BigQuery both honor the
+    SQL standard `''` escape inside `'...'`. Used to wrap admin
+    source_query into bigquery_query()'s second arg without breaking
+    the literal envelope."""
+    return s.replace("'", "''")
+
+
+def _wrap_admin_sql_for_jobs_api(billing_project: str, inner_sql: str) -> str:
+    """Build the COPY-source SQL that runs admin's `inner_sql` through
+    the BigQuery jobs API via the DuckDB BQ extension's
+    ``bigquery_query()`` table function.
+
+    Why: the default `bq."ds"."t"` reference path uses the BQ Storage
+    Read API which rejects non-base entities (views, materialized views).
+    Routing through `bigquery_query()` uses the jobs API which accepts
+    every entity type uniformly.
+
+    Args:
+        billing_project: GCP project ID that bills the BQ job. Must
+            match the GCP project_id grammar — anything else is rejected
+            as a defense-in-depth check (admin is trusted, but a typo
+            should fail closed not silently lose budget to the wrong
+            project).
+        inner_sql: BigQuery-flavor SQL the admin registered as
+            ``source_query``. Should be BigQuery-native; DuckDB-flavor
+            `bq."ds"."t"` references are not enforced here but will fail at
+            COPY time inside the BQ jobs API. Existing rows are converted by
+            the v24 schema migration; new rows are validated upstream at
+            register/PUT.
+
+    Returns:
+        A DuckDB-parseable SQL fragment suitable as the operand of
+        ``COPY (...) TO 'path' (FORMAT PARQUET)``.
+    """
+    if not _BILLING_PROJECT_RE.match(billing_project):
+        raise ValueError(
+            f"billing_project {billing_project!r} is not a valid GCP project_id "
+            "(grammar: ^[a-z][a-z0-9-]{4,28}[a-z0-9]$)"
+        )
+    return (
+        f"SELECT * FROM bigquery_query('{billing_project}', "
+        f"'{_escape_sql_string_literal(inner_sql)}')"
+    )
 
 
 def _create_meta_table(conn: duckdb.DuckDBPyConnection) -> None:
@@ -321,33 +496,42 @@ def materialize_query(
     to `<output_dir>/data/<table_id>.parquet` atomically.
 
     Designed for `query_mode='materialized'` table_registry rows. The SQL
-    is admin-registered (validated upstream) and may reference DuckDB
-    three-part identifiers (`bq."dataset"."table"`) resolved by the
-    in-session ATTACH, OR native BQ identifiers via the `bigquery_query()`
-    table function — both work because the session has the bigquery
-    extension loaded with a SECRET token.
+    is admin-registered BQ-native SQL (DuckDB-flavor `bq."ds"."t"` refs are
+    validated upstream). The SQL is wrapped in `bigquery_query('<billing>',
+    '<inner>')` before the COPY so the BQ extension routes through the BQ
+    jobs API — the default Storage Read API path rejects non-base entities
+    (views, materialized views) with "non-table entities cannot be read with
+    the storage API". Routing through `bigquery_query()` works uniformly for
+    base tables and views alike.
 
     Cost guardrail: when `max_bytes` is a positive int, run a BQ dry-run
     via `bq.client()` first; raise `MaterializeBudgetError` if the
     estimate exceeds the cap. `max_bytes=None` or `max_bytes <= 0`
     disables the guardrail (config sentinel, see
-    `data_source.bigquery.max_bytes_per_materialize`).
+    `data_source.bigquery.max_bytes_per_materialize`). The dry-run operates
+    on the inner `sql` (BQ-native), not the wrapped form.
 
-    Dry-run is best-effort and fail-open: if the SQL uses DuckDB syntax
-    that the native BQ client can't parse (e.g. `bq."ds"."t"`), the
-    dry-run raises and we log a warning; the COPY still runs. This
-    matches the BqAccess facade's "client is for native BQ SQL only"
-    contract — operators who need the cap to engage write the registered
-    SQL using native BQ identifiers (`\\`project.ds.t\\``).
+    Dry-run is best-effort and fail-open: if the dry-run errors (transient
+    upstream failure, missing google lib), we log a warning and proceed
+    with the wrapped COPY.
 
     Atomic write: result lands in `<id>.parquet.tmp` first, then
     `os.replace` swaps it in. A failed COPY leaves no partial file behind.
+
+    Concurrency: per-``table_id`` in-process mutex + advisory file lock
+    on ``<table_id>.parquet.lock``. Overlapping calls for the same id
+    raise ``MaterializeInFlightError`` immediately so the caller can
+    skip cleanly without consuming the COPY budget twice. Stale file
+    locks (mtime > ``materialize.lock_ttl_seconds``, default 24 h) are
+    reclaimed automatically.
 
     Args:
         table_id: Logical id from table_registry; becomes the parquet
             filename. Must pass `validate_identifier()` so it can't
             inject path traversal.
-        sql: SELECT statement, no trailing semicolon.
+        sql: BQ-native SELECT statement, no trailing semicolon. Wrapped
+            in `bigquery_query()` before the COPY — must not itself
+            contain a `bigquery_query()` call.
         bq: A `BqAccess` instance — provides `duckdb_session()` for the
             COPY and `client()` for the dry-run.
         output_dir: Connector root, e.g. `/data/extracts/bigquery`.
@@ -358,7 +542,10 @@ def materialize_query(
         {"rows": int, "size_bytes": int, "query_mode": "materialized"}
 
     Raises:
-        ValueError: if `table_id` is unsafe.
+        ValueError: if `table_id` is unsafe or `bq.projects.billing` fails
+            the GCP project_id grammar check.
+        MaterializeInFlightError: if a concurrent call for the same table_id
+            is already in progress (in-process or cross-process).
         MaterializeBudgetError: if `max_bytes > 0` and dry-run estimate exceeds it.
         BqAccessError: from `bq.duckdb_session()` (auth_failed / bq_lib_missing /
             not_configured) — caller catches and aggregates into the trigger
@@ -374,99 +561,114 @@ def materialize_query(
 
     parquet_path = data_dir / f"{table_id}.parquet"
     tmp_path = data_dir / f"{table_id}.parquet.tmp"
-    if tmp_path.exists():
-        tmp_path.unlink()
+    lock_path = data_dir / f"{table_id}.parquet.lock"
 
-    # Cost guardrail (best-effort — fail-open if dry-run can't parse the SQL).
-    if max_bytes is not None and max_bytes > 0:
+    proc_lock = _get_table_lock(table_id)
+    if not proc_lock.acquire(blocking=False):
+        raise MaterializeInFlightError(table_id, layer="process")
+    try:
+        file_lock = _try_acquire_file_lock(lock_path)
+        if file_lock is None:
+            raise MaterializeInFlightError(table_id, layer="file")
         try:
-            from app.api.v2_scan import _bq_dry_run_bytes  # reuse main's impl
-            estimated = _bq_dry_run_bytes(bq, sql)
-        except Exception as e:
-            logger.warning(
-                "BQ dry-run failed for materialize cost guardrail (fail-open): %s. "
-                "If the SQL uses DuckDB three-part names like bq.\"ds\".\"t\", "
-                "rewrite to native BQ identifiers (`project.ds.t`) for the "
-                "guardrail to engage. Proceeding with COPY.",
-                e,
-            )
-            estimated = 0
-        if estimated > max_bytes:
-            raise MaterializeBudgetError(
-                f"dry-run estimate {estimated:,} bytes exceeds cap "
-                f"{max_bytes:,} for table {table_id!r}",
-                table_id=table_id,
-                current=estimated,
-                limit=max_bytes,
-            )
-
-    # COPY through a BqAccess-managed session.
-    with bq.duckdb_session() as conn:
-        # ATTACH the data project — but only when no `bq` catalog is
-        # already attached. Production sessions (real BqAccess) come with
-        # only `:memory:` and need the ATTACH; test sessions pre-populate
-        # `bq` as a fixture catalog and would error on a redundant ATTACH
-        # (alias already in use) AND on the bigquery extension load when
-        # the test runner has no cached extension. Detecting via
-        # `duckdb_databases()` keeps the ATTACH path idempotent without
-        # swallowing real errors (auth, cross-project permission,
-        # malformed project_id) — those still propagate from the actual
-        # ATTACH call.
-        attached = {
-            r[0] for r in conn.execute(
-                "SELECT database_name FROM duckdb_databases()"
-            ).fetchall()
-        }
-        if "bq" not in attached:
-            conn.execute(
-                f"ATTACH 'project={bq.projects.data}' AS bq (TYPE bigquery, READ_ONLY)"
-            )
-
-        try:
-            safe_path = str(tmp_path).replace("'", "''")
-            conn.execute(f"COPY ({sql}) TO '{safe_path}' (FORMAT PARQUET)")
-            rows = conn.execute(
-                f"SELECT count(*) FROM read_parquet('{safe_path}')"
-            ).fetchone()[0]
-        except Exception:
             if tmp_path.exists():
                 tmp_path.unlink()
-            raise
 
-    # Compute the parquet hash inline before the atomic swap. The caller used
-    # to re-read the file in `_run_materialized_pass` to hash it via
-    # `_file_hash`, but that's a synchronous full-read on the FastAPI worker
-    # thread — a 10 GiB parquet means 50+ seconds of disk I/O blocking other
-    # requests. Hashing here keeps the open-file handle hot from the COPY
-    # round and removes the second read. Devil's-advocate review item.
-    import hashlib
-    h = hashlib.md5()
-    with open(tmp_path, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            h.update(chunk)
-    parquet_hash = h.hexdigest()
+            # Build the wrapped SQL once — both the cost guardrail dry-run and
+            # the COPY operate on `sql` (the inner BQ SQL); only the COPY needs
+            # the DuckDB-side bigquery_query() envelope.
+            billing_project = bq.projects.billing
+            wrapped_sql = _wrap_admin_sql_for_jobs_api(billing_project, sql)
 
-    size_bytes = tmp_path.stat().st_size
-    os.replace(tmp_path, parquet_path)
+            if max_bytes is not None and max_bytes > 0:
+                try:
+                    from app.api.v2_scan import _bq_dry_run_bytes  # reuse main's impl
+                    estimated = _bq_dry_run_bytes(bq, sql)  # NB: pass inner SQL (BQ-native)
+                except Exception as e:
+                    logger.warning(
+                        "BQ dry-run failed for materialize cost guardrail (fail-open): %s. "
+                        "Proceeding with COPY against `bigquery_query()` wrapping.",
+                        e,
+                    )
+                    estimated = 0
+                if estimated > max_bytes:
+                    raise MaterializeBudgetError(
+                        f"dry-run estimate {estimated:,} bytes exceeds cap "
+                        f"{max_bytes:,} for table {table_id!r}",
+                        table_id=table_id,
+                        current=estimated,
+                        limit=max_bytes,
+                    )
 
-    rows = int(rows)
-    if rows == 0:
-        # 0 rows is indistinguishable from "the SQL is wrong and nobody
-        # noticed" — surface it loudly so operators see it in the scheduler
-        # log line and the per-row error aggregation. Caller decides whether
-        # to alert.
-        logger.warning(
-            "Materialized %s produced 0 rows — verify the SQL filter is "
-            "intentional. Parquet written: %s",
-            table_id, parquet_path,
-        )
+            # COPY through a BqAccess-managed session. The session has the BQ
+            # extension loaded with a SECRET token; bigquery_query() reuses that
+            # auth path against the billing_project for the jobs API call.
+            with bq.duckdb_session() as conn:
+                attached = {
+                    r[0] for r in conn.execute(
+                        "SELECT database_name FROM duckdb_databases()"
+                    ).fetchall()
+                }
+                if "bq" not in attached:
+                    conn.execute(
+                        f"ATTACH 'project={bq.projects.data}' AS bq (TYPE bigquery, READ_ONLY)"
+                    )
 
-    return {
-        "rows": rows,
-        "size_bytes": size_bytes,
-        "query_mode": "materialized",
-        "hash": parquet_hash,
-    }
+                try:
+                    safe_path = _escape_sql_string_literal(str(tmp_path))
+                    conn.execute(
+                        f"COPY ({wrapped_sql}) TO '{safe_path}' (FORMAT PARQUET)"
+                    )
+                    rows = conn.execute(
+                        f"SELECT count(*) FROM read_parquet('{safe_path}')"
+                    ).fetchone()[0]
+                except Exception:
+                    if tmp_path.exists():
+                        tmp_path.unlink()
+                    raise
+
+            # Compute the parquet hash inline before the atomic swap. The caller used
+            # to re-read the file in `_run_materialized_pass` to hash it via
+            # `_file_hash`, but that's a synchronous full-read on the FastAPI worker
+            # thread — a 10 GiB parquet means 50+ seconds of disk I/O blocking other
+            # requests. Hashing here keeps the open-file handle hot from the COPY
+            # round and removes the second read. Devil's-advocate review item.
+            h = hashlib.md5()
+            with open(tmp_path, "rb") as f:
+                for chunk in iter(lambda: f.read(8192), b""):
+                    h.update(chunk)
+            parquet_hash = h.hexdigest()
+
+            size_bytes = tmp_path.stat().st_size
+            os.replace(tmp_path, parquet_path)
+
+            rows = int(rows)
+            if rows == 0:
+                # 0 rows is indistinguishable from "the SQL is wrong and nobody
+                # noticed" — surface it loudly so operators see it in the scheduler
+                # log line and the per-row error aggregation. Caller decides whether
+                # to alert.
+                logger.warning(
+                    "Materialized %s produced 0 rows — verify the SQL filter is "
+                    "intentional. Parquet written: %s",
+                    table_id, parquet_path,
+                )
+
+            return {
+                "rows": rows,
+                "size_bytes": size_bytes,
+                "query_mode": "materialized",
+                "hash": parquet_hash,
+            }
+        finally:
+            try:
+                file_lock.close()  # releases flock
+            except Exception:
+                pass
+            # Don't unlink lock_path — its mtime is the TTL signal for
+            # the next reclaim. Leaving it in place is intentional.
+    finally:
+        proc_lock.release()
 
 
 def _resolve_bq_project_id() -> str:

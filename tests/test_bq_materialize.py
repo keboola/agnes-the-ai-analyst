@@ -21,6 +21,11 @@ def _make_stub_bq(tables: dict[str, str] | None = None) -> BqAccess:
     with a pretend `bq` catalog containing test tables. `tables` maps
     DuckDB-three-part references like `'bq.test.orders'` to a SELECT
     expression to seed them with.
+
+    A `bigquery_query(project, sql_text)` table macro is registered so the
+    wrapping added by `_wrap_admin_sql_for_jobs_api` (Task 2 — routes COPY
+    through the BQ jobs API for views) resolves against the in-memory tables
+    without needing the real BQ extension.
     """
     tables = tables or {}
 
@@ -34,6 +39,12 @@ def _make_stub_bq(tables: dict[str, str] | None = None) -> BqAccess:
                 conn.execute(f"CREATE SCHEMA IF NOT EXISTS {s}")
             for ref, body in tables.items():
                 conn.execute(f"CREATE OR REPLACE TABLE {ref} AS {body}")
+            # Stub bigquery_query() so materialize_query's wrapped COPY works
+            # against the in-memory bq catalog without the real BQ extension.
+            conn.execute(
+                "CREATE OR REPLACE MACRO bigquery_query(project, sql_text) "
+                "AS TABLE SELECT * FROM query(sql_text)"
+            )
             yield conn
         finally:
             conn.close()

@@ -218,6 +218,10 @@ const SECTION_META = {
     title: "Corporate Memory",
     help: "Optional governance for AI-extracted knowledge. When the section is unset, the system runs in legacy democratic-wiki mode with no admin review.",
   },
+  materialize: {
+    title: "Materialize",
+    help: "Concurrency safety net for the materialize path. Controls the file-lock TTL used to detect and reclaim stale locks from hard-killed processes.",
+  },
 };
 const DANGER_SECTIONS = new Set(["auth", "server"]);
 
