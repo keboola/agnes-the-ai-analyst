@@ -17,6 +17,15 @@ from typing import List, Dict, Any, Optional
 
 import duckdb
 
+from connectors.bigquery.auth import get_metadata_token, BQMetadataAuthError
+from src.sql_safe import (
+    validate_identifier as _validate_identifier,
+    validate_project_id as _validate_project_id,
+)
+from src.identifier_validation import validate_identifier, validate_quoted_identifier
+
+logger = logging.getLogger(__name__)
+
 # Serializes the body of `init_extract` across threads so two concurrent
 # materialize calls (e.g. the synchronous timeout-fallback BackgroundTask
 # kicking in while the original daemon thread is still running) can't both
@@ -46,6 +55,10 @@ class MaterializeInFlightError(Exception):
         )
 
 
+# Unbounded by design — each registered table_id gets one Lock for the
+# process lifetime. Per-Lock cost is ~56 bytes; a deployment with even
+# 10k registered tables holds <1 MB. No cleanup logic — clean would
+# need ref-counting and risks freeing a Lock currently held by a worker.
 _table_locks: dict[str, threading.Lock] = {}
 _table_locks_registry: threading.Lock = threading.Lock()
 
@@ -72,6 +85,9 @@ def _get_lock_ttl_seconds() -> int:
     longer is a stuck process or a hung BQ session, both of which warrant
     reclaim on next attempt."""
     try:
+        # Deferred import: keeps the connectors module importable in
+        # contexts where the app layer isn't bootstrapped (e.g. unit tests
+        # that exercise extractor helpers without the FastAPI app).
         from app.instance_config import get_value
         v = get_value(
             "materialize", "lock_ttl_seconds",
@@ -97,13 +113,25 @@ def _try_acquire_file_lock(lock_path: Path):
     lock_path.parent.mkdir(parents=True, exist_ok=True)
 
     def _try_open_and_flock():
+        # Open in 'w' mode so the file's mtime updates on every successful
+        # acquisition — the mtime is the TTL signal for the next caller.
+        # Content is intentionally empty; the fd exists only to anchor flock.
         f = open(lock_path, "w")
         try:
             fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             return f
         except BlockingIOError:
+            # Another holder owns the lock — return None so the caller can
+            # decide between TTL-reclaim and propagating MaterializeInFlightError.
             f.close()
             return None
+        except OSError:
+            # Anything else (read-only fs, unsupported, fd exhaustion) is a
+            # platform / config error, not a contention signal. Close the fd
+            # and re-raise so the caller (and operator) sees the real failure
+            # instead of a silent leak.
+            f.close()
+            raise
 
     holder = _try_open_and_flock()
     if holder is not None:
@@ -127,16 +155,6 @@ def _try_acquire_file_lock(lock_path: Path):
         return _try_open_and_flock()
 
     return None
-
-from connectors.bigquery.auth import get_metadata_token, BQMetadataAuthError
-from app.instance_config import get_value
-from src.sql_safe import (
-    validate_identifier as _validate_identifier,
-    validate_project_id as _validate_project_id,
-)
-from src.identifier_validation import validate_identifier, validate_quoted_identifier
-
-logger = logging.getLogger(__name__)
 
 
 def _detect_table_type(

@@ -141,8 +141,11 @@ def test_different_ids_run_in_parallel(tmp_path):
 
 
 def test_stale_file_lock_is_reclaimed_after_ttl(tmp_path, monkeypatch):
-    """Force a stale .lock file (mtime older than TTL) and verify a new
-    call reclaims it instead of raising MaterializeInFlightError."""
+    """Verify a stale, unheld .lock file (old mtime, no live flock holder) does NOT
+    cause `MaterializeInFlightError`. The reclaim branch in `_try_acquire_file_lock`
+    is technically not reached here (the first `_try_open_and_flock` succeeds because
+    nobody holds the lock), but exercising the in-flight-by-mtime-only mistake is what
+    this test guards against."""
     bq = _slow_bq(stall_seconds=0.05)
     lock_path = Path(tmp_path) / "data" / "t1.parquet.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -187,6 +190,11 @@ def test_fresh_file_lock_blocks_with_in_flight_error(tmp_path, monkeypatch):
 def test_lock_ttl_reads_from_instance_config(tmp_path, monkeypatch):
     """When `materialize.lock_ttl_seconds` is set in instance.yaml, that
     value overrides the default."""
+    # Patches `app.instance_config.get_value` directly. This works because
+    # `_get_lock_ttl_seconds` re-imports `get_value` on every call (see
+    # extractor.py for the deferred-import rationale). If a future change
+    # hoists the import to module-level, this patch must change to target
+    # `connectors.bigquery.extractor.get_value` instead.
     monkeypatch.setattr(
         "app.instance_config.get_value",
         lambda *args, **kw: 60 if args == ("materialize", "lock_ttl_seconds") else kw.get("default"),
