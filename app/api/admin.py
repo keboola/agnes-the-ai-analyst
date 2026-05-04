@@ -1169,27 +1169,28 @@ class RegisterTableRequest(BaseModel):
     @model_validator(mode="after")
     def _check_mode_query_coherence(self):
         """Enforce query_mode ↔ source_query invariants up front so an admin
-        can't persist a remote/local row carrying an orphan source_query, and
-        materialized rows can't be registered without a SQL body."""
+        can't persist a remote/local row carrying an orphan source_query.
+
+        For BigQuery materialized rows, an empty source_query is allowed here
+        because _validate_bigquery_register_payload generates it from
+        bucket+source_table after this validator runs. For all other source
+        types (e.g. Keboola), source_query is still required for materialized.
+        """
         sq = (self.source_query or "").strip() or None
-        if self.query_mode == "materialized" and not sq:
-            raise ValueError(
-                "query_mode='materialized' requires a non-empty source_query"
-            )
         if self.query_mode != "materialized" and sq:
             raise ValueError(
                 "source_query is only valid when query_mode='materialized'"
             )
-        # The materialize path runs the SQL through DuckDB's parser (BigQuery
-        # extension's COPY pushes it through DuckDB first, and the Keboola
-        # path COPYs the raw SQL through a DuckDB session too). DuckDB does
-        # NOT understand BigQuery-native backtick identifiers — those parse-
-        # error or silently match no rows, leaving no parquet at the
-        # canonical path and no operator-visible failure. Reject at register
-        # time with an actionable message so the bad SQL never lands in
-        # `table_registry.source_query`. See `_run_materialized_pass` for
-        # the runtime path that would otherwise eat the error.
-        if sq and "`" in sq:
+        # Non-BQ materialized rows must supply source_query explicitly — there
+        # is no server-generate fallback for Keboola materialized.
+        if self.query_mode == "materialized" and not sq and self.source_type != "bigquery":
+            raise ValueError(
+                "query_mode='materialized' requires a non-empty source_query"
+            )
+        # Backtick guard stays for non-materialized rows (DuckDB-flavor SQL
+        # contract); materialized SQL is BigQuery-native and MUST allow
+        # backticks for dashed identifiers (e.g. `prj-org.dataset.table`).
+        if self.query_mode != "materialized" and sq and "`" in sq:
             raise ValueError(_BACKTICK_REJECTION_MESSAGE)
         # Normalise: stash the trimmed-or-None form so the persisted column
         # never carries surrounding whitespace or empty-string sentinels.
@@ -1232,6 +1233,31 @@ class RegisterTableRequest(BaseModel):
         return v
 
 
+def _generate_materialized_source_query(
+    bucket: str, source_table: str, project_id: str,
+) -> str:
+    """Build the canonical full-table-dump source_query for a materialized
+    BQ row when admin only supplies dataset + table. The result is
+    BigQuery-native SQL — wrapped at materialize time into
+    bigquery_query(...) by connectors.bigquery.extractor.materialize_query."""
+    if not _is_safe_quoted_identifier(bucket):
+        raise HTTPException(
+            status_code=400,
+            detail=f"bigquery: dataset {bucket!r} is unsafe",
+        )
+    if not _is_safe_quoted_identifier(source_table):
+        raise HTTPException(
+            status_code=400,
+            detail=f"bigquery: source_table {source_table!r} is unsafe",
+        )
+    if not _is_safe_project_id(project_id):
+        raise HTTPException(
+            status_code=400,
+            detail=f"bigquery: data_source.bigquery.project {project_id!r} is malformed",
+        )
+    return f"SELECT * FROM `{project_id}.{bucket}.{source_table}`"
+
+
 def _validate_bigquery_register_payload(req: "RegisterTableRequest") -> None:
     """Enforce BQ-specific shape on a register/precheck request.
 
@@ -1253,13 +1279,8 @@ def _validate_bigquery_register_payload(req: "RegisterTableRequest") -> None:
     """
     if req.query_mode == "materialized":
         # Materialized BQ rows: the SQL body replaces dataset+table refs.
-        # Pydantic model_validator already verified source_query is non-empty;
-        # all we still need is a valid project_id and a safe view name.
-        if not req.source_query or not req.source_query.strip():
-            raise HTTPException(
-                status_code=422,
-                detail="bigquery materialized: 'source_query' is required",
-            )
+        # source_query may be empty if admin supplied bucket+source_table —
+        # in that case the server generates a full-table-dump SQL below.
         raw_name = req.name or ""
         if raw_name.strip() != raw_name or not _is_safe_identifier(raw_name):
             raise HTTPException(
@@ -1271,7 +1292,7 @@ def _validate_bigquery_register_payload(req: "RegisterTableRequest") -> None:
                 ),
             )
         from app.instance_config import get_value
-        project_id = get_value("data_source", "bigquery", "project", default="")
+        project_id = get_value("data_source", "bigquery", "project", default="") or ""
         if not project_id:
             raise HTTPException(
                 status_code=400,
@@ -1290,6 +1311,24 @@ def _validate_bigquery_register_payload(req: "RegisterTableRequest") -> None:
                     "^[a-z][a-z0-9-]{4,28}[a-z0-9]$"
                 ),
             )
+
+        if not (req.source_query and req.source_query.strip()):
+            # Server-generate from bucket+source_table. Trivial full-table
+            # dump path; admin only sets dataset+table and the server
+            # builds BQ-native SQL from instance.yaml's configured project.
+            if not (req.bucket and req.source_table):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "bigquery materialized requires either source_query "
+                        "(custom SQL) or bucket+source_table (server-generates "
+                        "the full-table-dump SQL)"
+                    ),
+                )
+            req.source_query = _generate_materialized_source_query(
+                req.bucket, req.source_table, project_id,
+            )
+
         # Phase C: profile_after_sync is now inert (Pydantic field marked
         # deprecated; not read by app/api/sync.py:410-438). The runtime
         # profiles every synced table unconditionally, so we no longer
@@ -2283,35 +2322,32 @@ async def update_table(
 
         # Cross-source coherence: query_mode='materialized' requires a
         # non-empty source_query for ALL source types, not just BigQuery.
-        # Pre-fix, only the BQ-specific synthetic-RegisterTableRequest below
-        # caught this — Keboola materialized rows could be PUT without
-        # source_query and persisted with source_query=None, then crash at
-        # the next sync tick when kb_materialize_query received `sql=None`
-        # and DuckDB rejected `COPY (None) TO ...`. Devin finding 2026-05-01:
-        # BUG_pr-review-job-58ae3148_0001.
+        # BQ rows without source_query can be server-generated from
+        # bucket+source_table (handled by _validate_bigquery_register_payload
+        # via the synthetic RegisterTableRequest below). Non-BQ rows (e.g.
+        # Keboola) still require an explicit source_query at PUT time.
         if merged.get("query_mode") == "materialized":
             sq = merged.get("source_query")
             if not sq or not str(sq).strip():
-                raise HTTPException(
-                    status_code=422,
-                    detail=(
-                        "query_mode='materialized' requires a non-empty "
-                        "source_query. To revert to a non-materialized mode, "
-                        "PATCH query_mode='local' (Keboola) or 'remote' "
-                        "(BigQuery) and the stale source_query is cleared "
-                        "automatically."
-                    ),
-                )
-            # Backtick rejection on the merged record — see
-            # `_BACKTICK_REJECTION_MESSAGE` for the rationale. Catches PATCHes
-            # that flip `source_query` to a backtick form on an already-
-            # materialized row, which the synthetic-RegisterTableRequest below
-            # only re-validates for BQ rows. Apply uniformly so Keboola
-            # materialized rows can't carry one either.
-            if "`" in str(sq):
-                raise HTTPException(
-                    status_code=422, detail=_BACKTICK_REJECTION_MESSAGE,
-                )
+                # BQ rows: let _validate_bigquery_register_payload generate
+                # source_query from bucket+source_table (falls through below).
+                # Non-BQ rows: no server-generate fallback; raise 422.
+                if merged.get("source_type") != "bigquery":
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            "query_mode='materialized' requires a non-empty "
+                            "source_query. To revert to a non-materialized mode, "
+                            "PATCH query_mode='local' (Keboola) or 'remote' "
+                            "(BigQuery) and the stale source_query is cleared "
+                            "automatically."
+                        ),
+                    )
+            # Backtick guard removed for materialized rows: the Task 2 wrapping
+            # path (connectors.bigquery.extractor.materialize_query) now runs
+            # admin SQL through the BQ jobs API using BQ-native syntax, which
+            # requires backticks for dashed project/dataset identifiers.
+            # Non-materialized rows still reject backticks in the model validator.
 
         if merged.get("source_type") == "bigquery":
             # Reuse the register-time validator. It mutates the request to
