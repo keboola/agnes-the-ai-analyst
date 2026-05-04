@@ -10,7 +10,6 @@
 import datetime
 import logging
 from typing import Optional
-from urllib.parse import unquote
 
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response

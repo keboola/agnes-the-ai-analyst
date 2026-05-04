@@ -1,7 +1,6 @@
 """Personal access token endpoints (#12)."""
 
 import hashlib
-import secrets
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List
