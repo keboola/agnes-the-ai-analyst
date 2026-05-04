@@ -103,6 +103,8 @@ permitted that fallback chain — it's not improvising-around-a-TLS-error.
 
 from __future__ import annotations
 
+from typing import Literal
+
 # Marketplace name as published by app.marketplace_server.packager.
 # Hard-coded here (rather than imported) to keep this module dependency-free
 # and trivially testable. If the value ever drifts, the regression test
@@ -606,6 +608,50 @@ def _preamble_lines(*, has_ca: bool) -> list[str]:
     return lines
 
 
+def _analyst_init_lines(server_url_placeholder: str = "{server_url}") -> list[str]:
+    """Steps 2-3 — `agnes init` (auth + workspace bootstrap) + smoke verify.
+
+    Replaces the admin-flow login + verify steps. `agnes init` is non-interactive:
+    `--token` carries the PAT, `--server-url` carries the origin. The bootstrap
+    PAT has a 1 h TTL — if the user takes longer than that to paste this prompt,
+    the init call returns 401 and the user re-clicks "Generate prompt" on the
+    install page.
+    """
+    return [
+        "",
+        "2) Bootstrap your analyst workspace in this directory:",
+        f"   agnes init --server-url \"{server_url_placeholder}\" --token \"{{token}}\" --workspace .",
+        "",
+        "   This authenticates with the PAT, fetches your CLAUDE.md (RBAC-filtered),",
+        "   installs Claude Code SessionStart/End hooks (auto-refresh), and runs an",
+        "   initial `agnes pull` so your DuckDB views are ready.",
+        "",
+        "3) Verify the data is queryable:",
+        "   agnes catalog",
+        "",
+        "   This should list the tables your account has grants for. Empty list",
+        "   means your admin hasn't granted you access yet — contact them.",
+    ]
+
+
+def _analyst_finale_lines(confirm_step_num: str, has_ca: bool) -> list[str]:
+    """Final Confirm step for analyst role. Shorter than admin: no marketplace, no plugins, no skills."""
+    bullets = [
+        "   - `agnes --version` output",
+        "   - First few lines of `agnes catalog` (tables you can see)",
+        "   - Confirmation that `./CLAUDE.md` and `./AGNES_WORKSPACE.md` exist",
+        "   - Confirmation that `./.claude/settings.json` contains SessionStart/End hooks",
+    ]
+    if has_ca:
+        bullets.append("   - Which CA bundle source got picked in step 0(d)")
+    return [
+        "",
+        f"{confirm_step_num}) Confirm:",
+        "   Tell me \"Agnes analyst workspace is ready\" and summarize:",
+        *bullets,
+    ]
+
+
 def resolve_lines(
     wheel_filename: str,
     *,
@@ -613,6 +659,7 @@ def resolve_lines(
     self_signed_tls: bool = False,
     server_host: str = "",
     ca_pem: str | None = None,
+    role: Literal["analyst", "admin"] = "admin",
 ) -> list[str]:
     """Return the template lines with server-side placeholders substituted.
 
@@ -643,7 +690,14 @@ def resolve_lines(
     The resulting URL (`/cli/wheel/agnes.whl`) will 404 at download time, but
     the instruction text still renders so operators can see the snippet shape
     and diagnose the missing wheel on the server.
+
+    `role="analyst"` short-circuits to the analyst-workspace layout
+    (`_resolve_analyst_lines`) — see that function for the layout. Default
+    `role="admin"` keeps the admin layout below byte-identical to before.
     """
+    if role == "analyst":
+        return _resolve_analyst_lines(wheel_filename, ca_pem=ca_pem)
+
     names = list(plugin_install_names or [])
     has_marketplace = bool(names)
     has_ca = bool(ca_pem and ca_pem.strip())
@@ -693,6 +747,30 @@ def resolve_lines(
     ]
 
 
+def _resolve_analyst_lines(wheel_filename: str, *, ca_pem: str | None) -> list[str]:
+    """Analyst workspace-bootstrap layout. Self-contained — no admin-only steps.
+
+    Drops marketplace, plugins, skills, diagnose, login, and whoami (all of
+    those are admin-only or subsumed by `agnes init`). Reuses the trust
+    block, preamble, and install-CLI helpers from the admin path.
+    """
+    has_ca = bool(ca_pem and ca_pem.strip())
+    confirm_step = "4"  # numbering: 0 (TLS optional), 1, 2, 3, 4
+
+    lines: list[str] = []
+    if has_ca:
+        lines.extend(_tls_trust_block(ca_pem))  # type: ignore[arg-type]
+    lines.extend(_preamble_lines(has_ca=has_ca))
+    lines.extend(_install_cli_lines(has_ca=has_ca))   # step 1
+    lines.extend(_analyst_init_lines())                # steps 2-3
+    lines.extend(_analyst_finale_lines(confirm_step, has_ca=has_ca))  # step 4
+
+    return [
+        line.replace("{wheel_filename}", wheel_filename)
+        for line in lines
+    ]
+
+
 def render_setup_instructions(
     server_url: str,
     token: str,
@@ -702,13 +780,14 @@ def render_setup_instructions(
     self_signed_tls: bool = False,
     server_host: str = "",
     ca_pem: str | None = None,
+    role: Literal["analyst", "admin"] = "admin",
 ) -> str:
     """Render the setup instructions as a single string.
 
     Used server-side for tests and any non-JS rendering path. The browser
     clipboard flow uses the JS renderer embedded in the Jinja partial; both
     must produce byte-identical output for a given (server_url, token,
-    wheel, plugins, flag, host, ca_pem) tuple.
+    wheel, plugins, flag, host, ca_pem, role) tuple.
     """
     lines = resolve_lines(
         wheel_filename,
@@ -716,6 +795,7 @@ def render_setup_instructions(
         self_signed_tls=self_signed_tls,
         server_host=server_host,
         ca_pem=ca_pem,
+        role=role,
     )
     text = "\n".join(lines)
     return text.replace("{server_url}", server_url).replace("{token}", token)
