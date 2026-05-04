@@ -1,6 +1,6 @@
 # Clean analyst bootstrap — design
 
-**Date:** 2026-05-04 (revision 2 — incorporates first round of orphan/wiring review)
+**Date:** 2026-05-04 (revision 3 — round-2 review + rebase on `main` ≥ 0.32.0)
 **Branch:** `zs/clean-analyst-bootstrap-spec`
 **Status:** Draft (approved by user, pre-implementation)
 **Successor to:** today's `da analyst setup` flow (interactive email/password) and the empty-folder bug under `da sync`.
@@ -102,7 +102,7 @@ Config and PAT live globally per user at `~/.config/da/{config.yaml,token.json}`
 
 ## New CLI surface
 
-The CLI is rewritten with mnemonic, non-overlapping verbs. There are no backward-compat aliases. Today's `da analyst *`, `da sync`, `da sync --upload-only`, `da fetch`, `da metrics`, `da skills` are removed from the analyst CLI.
+The CLI is rewritten with mnemonic, non-overlapping verbs. There are no backward-compat aliases. Today's `da analyst *`, `da sync`, `da sync --upload-only`, `da fetch` are removed; `da metrics list/show` folds into `da catalog --metrics`; `da metrics import/export/validate` move under `da admin`. `da skills list/show` survive as analyst discovery commands; bulk-install variants (none today, but spec refuses to add them) stay out.
 
 ```
 WORKSPACE LIFECYCLE
@@ -119,9 +119,12 @@ DATA QUERY
 
 DISCOVERY
   da catalog                      tables I have access to (RBAC-filtered)
-  da catalog --metrics            list metric definitions
+  da catalog --metrics            list metric definitions (replaces da metrics list)
+  da catalog --metrics --show <id>   show one metric definition (replaces da metrics show)
   da schema <table>               columns + types
   da describe <table>             sample rows
+  da skills list                  list bundled CLI skill markdown documents
+  da skills show <name>           print one skill's content
 
 SNAPSHOTS (ad-hoc remote materialization)
   da snapshot create <table> --as <name> [--select ... --where ... --limit ... --order-by ... --estimate / --no-estimate --force]
@@ -135,13 +138,15 @@ AUTH + IDENTITY
   da auth import-token <PAT>      non-interactive
   da auth whoami
   da auth logout
-  da token create / list / revoke
+  da auth token create / list / revoke   (today's location; unchanged by this PR)
 
 HEALTH
   da diagnose                     health check (server + local)
 
 ADMIN-ADJACENT (kept; not part of analyst flow)
   da admin metrics import         starter-pack import of metric definitions
+  da admin metrics export         dump metric definitions to YAML
+  da admin metrics validate       validate metric definitions
   da admin <other>                existing admin verbs continue unchanged
 ```
 
@@ -149,10 +154,14 @@ Removed:
 - `da analyst setup`, `da analyst status` — `analyst` namespace had only one user role; replaced by top-level `da init` + `da status`.
 - `da sync` (and `--upload-only`) — split into `da pull` + `da push`. Hook commands rename accordingly.
 - `da fetch` — folded into `da snapshot create` with all flags carried over (`--select`, `--where`, `--limit`, `--order-by`, `--as`, `--estimate`, `--no-estimate`, `--force`).
-- `da metrics list/show` — folded into `da catalog --metrics` (low-traffic; doesn't deserve its own namespace). `da metrics import` moves to `da admin metrics import` (admin-only operation).
-- `da skills` — admin/dev tool; removed from the analyst CLI surface entirely.
+- `da metrics list/show` — folded into `da catalog --metrics`.
+- `da metrics import`, `da metrics export`, `da metrics validate` — relocated to `da admin metrics {import,export,validate}` (admin-only operations).
 
-Reader commands explicitly listed in the surface above (`da explore`, `da disk-info`, `da snapshot refresh`, `da snapshot prune`) survive unchanged — flagged here because the first review round found them missing from earlier drafts.
+Surface decisions vs. earlier draft:
+- `da skills list / show` retained for analyst-side discovery. Skills bundled under `cli/skills/*.md` (e.g., `agnes-data-querying.md`, `agnes-table-registration.md`) carry rails that the rebased main expanded as part of #160 (cost guardrail, registry-gating). Removing them would cost the analyst documentation that the project actively invests in. Bulk install/copy verbs are not added.
+- `da auth token …` keeps its current location under `auth_app` (today's `cli/commands/auth.py:200-201` registers the sub-Typer there). No move to top-level `da token`. Surface listing reflects that.
+
+Reader commands explicitly listed (`da explore`, `da disk-info`, `da snapshot refresh`, `da snapshot prune`, `da skills list/show`) survive unchanged.
 
 ## Components
 
@@ -165,22 +174,26 @@ Reader commands explicitly listed in the surface above (`da explore`, `da disk-i
 | `setup.html` UI | `app/web/templates/setup.html` (or wherever `setup_page` renders) | Two role tiles: "Analyst workspace" / "Admin CLI". PAT mint button per tile, posts to `/auth/tokens` with `scope` matching the tile. Renders the prompt for the selected role. |
 | PAT scope + TTL clamp | `app/api/tokens.py` (`CreateTokenRequest` Pydantic model + `create_token` route) | Add two fields: `scope: str = "general"` and `ttl_seconds: int \| None = None` (alongside the existing `expires_in_days`). Resolution: when `ttl_seconds` is set, it wins; otherwise fall back to `expires_in_days`. For `scope == "bootstrap-analyst"`, server force-clamps the resolved TTL to ≤ 3600 s regardless of request. Audit-log entry includes the scope. The audit log is the only consumer of `scope` in this PR — per-endpoint enforcement is an explicit follow-up. |
 | Server-side template rewrite | `config/claude_md_template.txt` (or wherever `render_claude_md` reads its default from) | Update path strings: `data/parquet/` → `server/parquet/`, `data/duckdb/...` → `user/duckdb/analytics.duckdb`. Replace `da sync` → `da pull`, `da fetch` → `da snapshot create`, `da metrics list` → `da catalog --metrics`. |
-| Admin override migration | `claude_md_template` DB table | Any admin-saved override may contain legacy strings. Add a one-shot migration step (admin UI banner + manual review) to flag overrides that contain `data/parquet`, `da sync`, `da fetch`, etc. Migration is **not** automatic — admins must re-author overrides. Document in CHANGELOG. |
+| Admin override migration | `claude_md_template` DB table (schema v23, exposed via `/admin/workspace-prompt` UI and `app/api/claude_md.py` admin CRUD) | Add a `legacy_strings_detected: list[str]` field to `GET /api/admin/workspace-prompt-template` response — server scans the saved override for `data/parquet`, `da sync`, `da fetch`, `da analyst setup`, `da metrics list/show`, returns the list of hits. UI in `app/web/templates/admin_workspace_prompt.html` (or whichever the editor template is) renders a yellow banner above the editor when the list is non-empty: "This override references CLI verbs / paths that were renamed in this release. Re-author and Save to clear the warning. See CHANGELOG for the rename list." Migration stays manual — admin re-authors and saves. |
 | `/api/welcome` content unchanged | `app/api/claude_md.py:91` (`get_welcome`) | No code change — endpoint already serves rendered CLAUDE.md. Spec calls it out so implementer knows `da init`'s producer is here, not in the client. |
+| Reuse `cli/error_render.py` (added in #160) | server: nothing — client-side only | Note: `cli/error_render.py:render_error()` already exists (added in 0.32.0 for typed BQ errors). `da init` and `da pull` adopt the same renderer for typed errors raised during bootstrap and refresh — `auth_failed`, `server_unreachable`, `manifest_unauthorized`, `disk_full`, etc. — so analyst-facing error UX is consistent across all CLI commands. No new server work; client-side only. |
 
 ### Client-side (CLI, Python)
 
 | Component | File | Change |
 |---|---|---|
-| `da init` (new) | `cli/commands/init.py` (new) | Required args: `--server-url`, `--token`. Optional: `--force`, `--workspace` (default `cwd`). Steps: (1) verify server reachability + PAT validity via `GET /api/health` with `Authorization: Bearer <PAT>`; (2) save server URL + PAT to `~/.config/da/{config.yaml,token.json}`; (3) `GET /api/welcome` and write its body to `<workspace>/CLAUDE.md`; (4) write `.claude/settings.json` (model, permissions, hooks pointing at `da pull` and `da push`); (5) write `.claude/CLAUDE.local.md` (stub, only if absent); (6) call `da pull` programmatically (refactor below); (7) write `AGNES_WORKSPACE.md` from a static client-side template with `{created_at}`, `{server_url}`, `{workspace_path}` substituted. `da init` does NOT call `da auth login`; the PAT from the paste-prompt is the only auth path during bootstrap. |
-| `da pull` (renamed from `da sync`) | `cli/commands/pull.py` (renamed from `cli/commands/sync.py`) | Behavior is today's `da sync` minus the `--upload-only` branch. Lazy-mkdir fixes (see below). Refactor: extract data-path logic into `cli/lib/pull.py:run_pull(server_url, token, workspace) -> PullResult` so `da init` can call it programmatically without a Typer wrapper. Flags: `--quiet` (suppress success stdout, used by hook), `--json` (machine output), `--dry-run` (compute deltas without writing). |
-| `da push` (extracted from `da sync --upload-only`) | `cli/commands/push.py` (new) | Uploads `user/sessions/*.jsonl` and `.claude/CLAUDE.local.md`. Lazy: skip when nothing to upload (no `user/sessions/` mkdir if no sessions). Same auth as `da pull`. Flags: `--quiet`, `--json`, `--dry-run`. |
+| `da init` (new) | `cli/commands/init.py` (new) | Required args: `--server-url`, `--token`. Optional: `--force`, `--workspace` (default `cwd`). Steps: (1) verify server reachability + PAT validity via `GET /api/catalog/tables` with `Authorization: Bearer <PAT>` — same endpoint `da auth import-token` already uses for this purpose (`cli/commands/auth.py:154`); exercises full PAT validation chain (revocation, expiry, hash) and 401s on bad PAT, unlike `/api/health` which is unauthenticated; (2) save server URL + PAT to `~/.config/da/{config.yaml,token.json}`; (3) `GET /api/welcome` and write its body to `<workspace>/CLAUDE.md`; (4) write `.claude/settings.json` (model, permissions, hooks pointing at `da pull` and `da push`) — delegate hook installation to `cli/lib/hooks.py:install_claude_hooks` (see new module row below); (5) write `.claude/CLAUDE.local.md` (stub, only if absent); (6) call `cli/lib/pull.py:run_pull(server_url, token, workspace)` programmatically (no Typer round-trip); (7) write `AGNES_WORKSPACE.md` from a static client-side template with `{created_at}`, `{server_url}`, `{workspace_path}` substituted. `da init` does NOT call `da auth login`; the PAT from the paste-prompt is the only auth path during bootstrap. Errors render via `cli/error_render.py:render_error()` (typed kinds: `auth_failed`, `server_unreachable`, `partial_state`, `disk_full`, etc.). |
+| `cli/lib/pull.py` (new module) | `cli/lib/pull.py` (new) — establish `cli/lib/` as the shared-library tree | Pure-function refactor of today's `cli/commands/sync.py:sync()` body, minus Typer decorators and stdout. Signature: `def run_pull(server_url: str, token: str, workspace: Path, *, dry_run: bool = False) -> PullResult`. Returns a structured `PullResult` (tables_updated, parquets_total, rules_count, duration_s, errors). Caller decides what to print (`da init` summarizes; `da pull` Typer wrapper prints per `--quiet`/`--json` flags). Tested directly without subprocess. |
+| `cli/lib/hooks.py` (new module) | `cli/lib/hooks.py` (new) — replaces `cli/commands/analyst.py:_install_claude_hooks` | `def install_claude_hooks(workspace: Path) -> None`. Idempotent. Reads `<workspace>/.claude/settings.json`, drops any prior entry whose every command is a `da pull`/`da sync`/`da push` invocation (covers both today's hook commands and the new ones during a transition window if anyone runs the new init in a folder that had old hooks), appends fresh entries: `SessionStart → da pull --quiet 2>/dev/null \|\| true`, `SessionEnd → da push --quiet 2>/dev/null \|\| true`. Workspace-level scope (`<workspace>/.claude/settings.json`, not user-home), preserves third-party hooks. |
+| `da pull` (renamed from `da sync`) | `cli/commands/pull.py` (renamed from `cli/commands/sync.py`) | Behavior is today's `da sync` minus the `--upload-only` branch. Lazy-mkdir fixes (see below). Calls `cli/lib/pull.py:run_pull` and prints the result. Flags: `--quiet` (suppress success stdout, used by hook), `--json` (machine output of `PullResult`), `--dry-run` (compute deltas without writing — uses `dry_run=True`). Errors render via `cli/error_render.py`. |
+| `da push` (extracted from `da sync --upload-only`) | `cli/commands/push.py` (new) | Uploads `user/sessions/*.jsonl` and `.claude/CLAUDE.local.md`. Lazy: skip when nothing to upload (no `user/sessions/` mkdir if no sessions). Same auth as `da pull`. Flags: `--quiet`, `--json`, `--dry-run`. Errors render via `cli/error_render.py`. |
 | `da snapshot create` (renamed from `da fetch`) | `cli/commands/snapshot.py` | Move logic from `cli/commands/fetch.py` into a `create` subcommand of the existing `snapshot` group. Remove `cli/commands/fetch.py`. Carry over all flags: `--select`, `--where`, `--limit`, `--order-by`, `--as`, `--estimate`, `--no-estimate`, `--force`. Add existence check before opening DuckDB to avoid creating an empty DB file when no `da pull` has run yet (guard: `if not db_path.exists(): typer.echo("Local DuckDB not found. Run: da pull"); raise typer.Exit(1)`). Existing `da snapshot {refresh, prune, list, drop}` are unchanged. |
 | `da status` (renamed from `da analyst status`) | `cli/commands/status.py` (renamed from analyst.py status fn) | Path refs updated to new layout: `server/parquet/`, `user/duckdb/analytics.duckdb`. Drop `data/metadata/last_sync.json`; use mtime on `user/duckdb/analytics.duckdb` as freshness proxy. |
-| Lazy-mkdir contract | `cli/commands/pull.py`, all writers | No `mkdir(parents=True, exist_ok=True)` before a conditional write loop. Mkdir only immediately before the first file write. Concretely: `_fetch_and_write_rules` mkdirs `.claude/rules/` only when `mandatory ∪ approved` is non-empty; `parquet_dir` mkdir is inlined into the per-table download loop. |
-| `da catalog --metrics` flag | `cli/commands/catalog.py` | Add `--metrics` flag that switches output to the metric definitions list (formerly `da metrics list`). `--metrics --show <id>` covers `da metrics show`. |
-| `da admin metrics import` (relocated) | `cli/commands/admin.py` | Move `da metrics import` here as `da admin metrics import`. Admin-only; not part of analyst flow. |
-| Removed | `cli/commands/{metrics.py, skills.py, fetch.py, analyst.py, sync.py}` | Deleted (greenfield). |
+| Lazy-mkdir contract | `cli/commands/pull.py`, `cli/lib/pull.py`, `cli/commands/push.py` | No `mkdir(parents=True, exist_ok=True)` before a conditional write loop. Mkdir only immediately before the first file write. Concretely: `_fetch_and_write_rules` mkdirs `.claude/rules/` only when `mandatory ∪ approved` is non-empty; `parquet_dir` mkdir is inlined into the per-table download loop. |
+| `da catalog --metrics` flag | `cli/commands/catalog.py` | Add `--metrics` flag (replaces `da metrics list`) and `--metrics --show <id>` (replaces `da metrics show`). Decided shape, not unresolved — implementation should not negotiate. |
+| `da admin metrics {import,export,validate}` (relocated) | `cli/commands/admin.py` | Add a `metrics` sub-Typer to the existing `admin_app` (which already nests sub-Typers `memory`, `group`, `grant`, `break-glass` per `cli/commands/admin.py:10`). Move `import`, `export`, `validate` from `cli/commands/metrics.py`. Admin-only; not part of analyst flow. |
+| Removed (full delete) | `cli/commands/{metrics.py, fetch.py, analyst.py, sync.py}` | Deleted entirely (greenfield). |
+| Retained | `cli/commands/skills.py` | Kept. `da skills list` and `da skills show` are analyst-side discovery commands. No code change in this PR. |
 
 ### Templates and docs
 
@@ -188,7 +201,7 @@ Reader commands explicitly listed in the surface above (`da explore`, `da disk-i
 |---|---|---|
 | Server-side `CLAUDE.md` template | `config/claude_md_template.txt` (and any DB override flagged in admin migration) | Path strings + verb names updated as listed in Server-side table. |
 | `AGNES_WORKSPACE.md` template (new) | `config/agnes_workspace_template.txt` (new, client-side static asset bundled with the wheel) | Three placeholders: `{created_at}`, `{server_url}`, `{workspace_path}`. Header line uses all three; remaining content is static. Content described in dedicated section below. |
-| Repo-root `CLAUDE.md` rewrite | `CLAUDE.md` (project root) | Update all references: `da sync` → `da pull`, `da analyst setup` → `da init`, `da metrics list` → `da catalog --metrics`, `da fetch` → `da snapshot create`, `data/parquet/` → `server/parquet/`. The "Local sync & Claude Code hooks" subsection and the "Querying Agnes data — agent rails" subsection both need walk-throughs. |
+| Repo-root `CLAUDE.md` rewrite | `CLAUDE.md` (project root) | Update all references: `da sync` → `da pull`, `da analyst setup` → `da init`, `da metrics list/show` → `da catalog --metrics`, `da fetch` → `da snapshot create`, `data/parquet/` → `server/parquet/`. The "Local sync & Claude Code hooks" subsection and the "Querying Agnes data — agent rails" subsection both need full walk-throughs. The latter was expanded by 0.32.0 (#160) with cost-guardrail / registry-gating prose — those sections stay verbatim, just verb-renamed. The "Business Metrics" subsection's `da metrics import` / `da metrics list` / `da metrics show` examples become `da admin metrics import` and `da catalog --metrics` respectively. |
 
 ## Web UI flow
 
@@ -257,7 +270,7 @@ Empty folder + Claude Code with paste prompt
 │   writes ~/.local/bin/da
 │
 ├─ Step 2 — da init --server-url URL --token PAT --workspace .
-│   ├─ verify: GET /api/health with Bearer PAT  → 200
+│   ├─ verify: GET /api/catalog/tables with Bearer PAT → 200 (PAT-validating endpoint)
 │   ├─ save: ~/.config/da/{config.yaml, token.json}
 │   ├─ fetch: GET /api/welcome  → write ./CLAUDE.md
 │   ├─ write: ./.claude/settings.json (with hooks SessionStart→`da pull`, SessionEnd→`da push`)
@@ -301,7 +314,7 @@ Concretely:
 |---|---|---|---|
 | `_fetch_and_write_rules` | `cli/commands/sync.py:222` | `rules_dir.mkdir(parents=True, exist_ok=True)` before iterating | Check `mandatory + approved` first; if empty, return without mkdir. |
 | Per-table download loop | `cli/commands/sync.py:120, 529` | `parquet_dir.mkdir(parents=True, exist_ok=True)` before loop | Mkdir inlined into the per-file write block; first table triggers mkdir. |
-| `_install_claude_hooks` | `cli/commands/analyst.py:254` | mkdir `.claude/` | unchanged — `.claude/` always has content (settings.json is load-bearing). |
+| `install_claude_hooks` | `cli/lib/hooks.py` (new; replaces `cli/commands/analyst.py:_install_claude_hooks`, today at line 254) | mkdir `.claude/` | unchanged — `.claude/` always has content (settings.json is load-bearing). Function lifted from the deleted `cli/commands/analyst.py` into a shared library so `da init` (and any future caller) can use it without importing the deleted module. |
 | `_rebuild_duckdb_views` | `cli/commands/sync.py:321` | mkdir `user/duckdb/` | unchanged — DuckDB file is opened unconditionally as part of view rebuild; the file is the load-bearing artifact, not just the directory. |
 | `da push` upload | (new) `cli/commands/push.py` | (n/a) | Mkdir `user/sessions/` only inside the per-session-write branch; `da push` with nothing to upload exits 0 without touching disk. |
 | `da snapshot create` parquet write | `cli/commands/snapshot.py` | mkdir `user/snapshots/` before write | unchanged (snapshot create is the canonical writer; mkdir on first write is correct). |
@@ -372,9 +385,9 @@ PAT value never appears in `AGNES_WORKSPACE.md` — only its location (`~/.confi
 
 | Failure | Detection | Behavior |
 |---|---|---|
-| Server unreachable during `da init` | `httpx.ConnectError` on `/api/health` | exit 1, hint: "Cannot reach `<URL>` — check network or server status". |
-| PAT expired | `/api/health` → 401 | exit 1, hint: "Token expired — get a fresh one at `<URL>/setup?role=analyst`". |
-| PAT invalid (mis-paste) | 401, JWT decode failure | exit 1, hint: "Token format invalid — re-copy from `/setup`". |
+| Server unreachable during `da init` | `httpx.ConnectError` on `/api/catalog/tables` | exit 1 via `cli/error_render.render_error()` with kind `server_unreachable`, hint: "Cannot reach `<URL>` — check network or server status". |
+| PAT expired | `/api/catalog/tables` → 401 | exit 1 via `render_error()` with kind `auth_failed`, hint: "Token expired — get a fresh one at `<URL>/setup?role=analyst`". |
+| PAT invalid (mis-paste) | 401, JWT decode failure | exit 1 via `render_error()` with kind `auth_failed`, hint: "Token format invalid — re-copy from `/setup`". |
 | TLS trust failure | curl/wheel install fails with `unknown CA` | exit 1, hint refers user back to paste-prompt step 0. |
 | Disk full during `da pull` | `OSError(ENOSPC)` on parquet write | atomic rename → partial file deleted; exit 1 with disk-info dump. |
 | Concurrent `da init` in same folder | sentinel `<cwd>/.claude/.init.lock` | second invocation: "Setup already running" exit 1. |
@@ -396,14 +409,16 @@ Verification has three layers: (a) automated reader-smoke matrix that proves no 
 
 | Fixture | Returns | What it pre-seeds |
 |---|---|---|
-| `fastapi_test_server` | object with `.url`, `.shutdown()` | Starts the FastAPI app in a background thread/subprocess against a `tmp_path`-rooted DATA_DIR. Clean schema, two seeded users (`admin@example.com`, `analyst@example.com`), two seeded user groups (`Admin`, `Everyone`), three seeded tables in `table_registry` with one `query_mode='local'`, one `query_mode='materialized'`, one `query_mode='remote'`. Manifest+memory endpoints serve real (test) data. |
+| `fastapi_test_server` | object with `.url`, `.shutdown()` | Starts the FastAPI app in a background thread/subprocess against a `tmp_path`-rooted DATA_DIR. Clean schema (latest version, currently v23), two seeded users (`admin@example.com`, `analyst@example.com`, both with a known test password seeded into the local password provider), two seeded user groups (`Admin`, `Everyone`), three seeded tables in `table_registry` with one `query_mode='local'`, one `query_mode='materialized'`, one `query_mode='remote'`. Manifest + memory + welcome endpoints serve real (test) data. |
 | `test_pat` | string PAT for `analyst@example.com` | Group membership: `Everyone` only. `resource_grants` for the local + materialized tables (so manifest returns 2 rows for them). Two `mandatory` corporate-memory items granted via group. PAT TTL: 1 h. |
 | `test_pat_no_grants` | string PAT for `analyst@example.com` | Same user, but `resource_grants` is empty and `corporate_memory` has zero items granted to `Everyone`. Manifest returns `{"tables": []}`; memory bundle returns `{"mandatory": [], "approved": []}`. |
-| `zero_grants_workspace` | `tmp_path` after running `da init --token <test_pat_no_grants> --server-url <fastapi_test_server.url>` | A fully-bootstrapped workspace where every conditional dir is absent. Used by the reader smoke matrix. |
-| `web_session` | authenticated `httpx.Client` with cookies | Logs in as `admin@example.com` via the test endpoint, returns the client. Used to mint PATs in PAT-scope tests. |
+| `zero_grants_workspace` | `tmp_path` after running `da init --token <test_pat_no_grants> --server-url <fastapi_test_server.url>` | A fully-bootstrapped workspace where every conditional dir is absent. Used by the reader smoke matrix. The fixture also exposes a sentinel constant `NONEXISTENT_TABLE = "__nonexistent__"` for tests that need a deliberately-unknown table id; readers must produce a friendly exit-1 (no traceback) when given this id. |
+| `web_session` | authenticated `httpx.Client` with cookies | Calls `POST /auth/token` with `{"email": "admin@example.com", "password": <test_password>}` (the test password is seeded into the same `users` row by `fastapi_test_server`). Returns a client with the resulting session cookie. Used to mint PATs in PAT-scope tests. Choice rationale: real-endpoint login over dependency-override keeps the auth path under test rather than bypassed. |
 | `client` | `TestClient(app)` | Plain FastAPI test client with no auth. Used for endpoint-shape tests. |
 
 Fixtures live in `tests/conftest.py` (existing) plus a new `tests/fixtures/analyst_bootstrap.py`.
+
+The autouse fixture `_reset_module_caches` in `tests/conftest.py:50-82` (added in 0.32.0 / #160 / commit `9ecbfd2a`) resets `app.instance_config._instance_config`, `connectors.bigquery.access.get_bq_access` lru cache, and `app.api.v2_quota._quota_singleton` between tests on the same xdist worker. The new bootstrap fixtures rely on this to keep `fastapi_test_server` invocations independent — no manual cache resets needed in test bodies.
 
 ### 5.1 Reader smoke matrix (automated)
 
@@ -411,16 +426,18 @@ Fixtures live in `tests/conftest.py` (existing) plus a new `tests/fixtures/analy
 @pytest.mark.parametrize("cmd", [
     ["da", "catalog"],
     ["da", "catalog", "--metrics"],
-    ["da", "schema", "any_table"],
-    ["da", "describe", "any_table"],
+    ["da", "schema", "__nonexistent__"],
+    ["da", "describe", "__nonexistent__"],
     ["da", "query", "SELECT 1"],
-    ["da", "explore", "any_view"],
+    ["da", "explore", "__nonexistent__"],
     ["da", "disk-info"],
     ["da", "snapshot", "list"],
-    ["da", "snapshot", "create", "any_table", "--as", "x", "--estimate"],
+    ["da", "snapshot", "create", "__nonexistent__", "--as", "x", "--estimate"],
     ["da", "status"],
     ["da", "diagnose"],
     ["da", "auth", "whoami"],
+    ["da", "skills", "list"],
+    ["da", "skills", "show", "agnes-data-querying"],
 ])
 def test_reader_does_not_crash_on_zero_grants(zero_grants_workspace, cmd):
     """No reader should crash with a Python traceback on a fresh
@@ -463,6 +480,15 @@ def test_clean_install_minimal_grants(fastapi_test_server, tmp_path, test_pat):
     # CLAUDE.md was fetched from /api/welcome (not local template):
     claude_md = (tmp_path / "CLAUDE.md").read_text()
     assert "da pull" in claude_md and "da sync" not in claude_md  # post-rewrite content
+    # AGNES_WORKSPACE.md content asserts (security + placeholder substitution):
+    workspace_md = (tmp_path / "AGNES_WORKSPACE.md").read_text()
+    assert test_pat not in workspace_md, "PAT must not leak into AGNES_WORKSPACE.md"
+    assert "{created_at}" not in workspace_md, "placeholder not substituted"
+    assert "{server_url}" not in workspace_md, "placeholder not substituted"
+    assert "{workspace_path}" not in workspace_md, "placeholder not substituted"
+    assert fastapi_test_server.url in workspace_md
+    assert str(tmp_path) in workspace_md
+    assert "da pull" in workspace_md  # cheat sheet uses new verb
 
 
 def test_clean_install_zero_grants(fastapi_test_server, tmp_path, test_pat_no_grants):
@@ -562,13 +588,11 @@ This protocol is documented in `docs/RELEASE_CHECKLIST.md` as a mandatory pre-me
 
 ## Open questions / follow-ups
 
-- **Per-endpoint PAT scope enforcement** — should `scope="bootstrap-analyst"` PATs be restricted to `/api/health`, `/api/sync/manifest`, `/api/data/*/download`, `/api/memory/bundle` only, and refused on (e.g.) `/api/admin/*`? Today not enforced. New issue.
+- **Per-endpoint PAT scope enforcement** — should `scope="bootstrap-analyst"` PATs be restricted to `/api/catalog/tables`, `/api/sync/manifest`, `/api/data/*/download`, `/api/memory/bundle`, `/api/welcome` only, and refused on (e.g.) `/api/admin/*`? Today not enforced. New issue.
 - **Layered per-workspace config** — supporting multi-instance use cases (one analyst, two Agnes servers) requires a defined producer for `<cwd>/.agnes/`. Options: `da init --per-workspace-config` flag, post-init manual `mkdir`, or `da config init`. Not chosen because no current user has asked for it. New issue if/when needed.
-- **`da catalog --metrics` UX** — does `--metrics` show definitions list (replaces `da metrics list`), and `--metrics --show <id>` show one definition (replaces `da metrics show`), or do we just have `da catalog --metrics` for both with a separate flag? To be resolved in implementation plan.
 - **`da snapshot create --where` SQL flavor** — keep BigQuery flavor (today's `da fetch`) for parity with `da query --remote`, since BQ is the only remote source. Confirmed in this PR; flagged in case a non-BQ remote source is added later.
 - **Hook performance budget** — `da pull` on a 1.1 GB workspace (real-world example: today's `tmp_oss/server/parquet/`) with all parquets unchanged should complete the manifest comparison in well under 1 s so SessionStart doesn't perceptibly delay the user. If incremental MD5 comparison is too slow at scale, consider a server-side ETag.
-- **Anti-coupling test** — add a test that imports every `cli/commands/*.py` module and asserts no module imports any other `cli.commands.*` module except via dispatch (Typer subcommand registration). Prevents the `init` command from accidentally re-importing `pull` internals in a way that creates hidden coupling.
-- **DB-stored CLAUDE.md override migration** — admins who saved an override via `PUT /api/admin/workspace-prompt-template` may have legacy strings (`data/parquet/`, `da sync`, etc.). Spec says "migration is not automatic — admins must re-author". Implementation plan needs to decide: surface a banner in the admin UI when an override contains flagged strings, or do nothing (rely on admin to notice).
+- **Anti-coupling test** — add a test that imports every `cli/commands/*.py` and `cli/lib/*.py` module and asserts no `cli/commands/*` module imports another `cli.commands.*` module except via dispatch (Typer subcommand registration). `cli/lib/*` modules may be imported by command modules; reverse direction (`cli.lib` importing `cli.commands`) is forbidden. Prevents `init` accidentally re-importing `pull`'s Typer wrapper instead of the library function.
 
 ## CHANGELOG entry (preview)
 
@@ -576,22 +600,29 @@ This protocol is documented in `docs/RELEASE_CHECKLIST.md` as a mandatory pre-me
 ## [Unreleased]
 
 ### Changed
-- **BREAKING** Analyst bootstrap rewritten end-to-end. `da analyst setup` is removed; replaced by `da init` (non-interactive, requires `--server-url` and `--token`). `da sync` is split into `da pull` (refresh) and `da push` (upload). `da fetch` is folded into `da snapshot create`. `da metrics list/show` is folded into `da catalog --metrics`; `da metrics import` moves to `da admin metrics import`. `da skills` is removed from the analyst CLI. The `da analyst` namespace is removed; the workspace status command is now `da status`.
+- **BREAKING** Analyst bootstrap rewritten end-to-end. `da analyst setup` is removed; replaced by `da init` (non-interactive, requires `--server-url` and `--token`). `da sync` is split into `da pull` (refresh) and `da push` (upload). `da fetch` is folded into `da snapshot create`. `da metrics list/show` is folded into `da catalog --metrics`; `da metrics import/export/validate` move to `da admin metrics {import,export,validate}`. The `da analyst` namespace is removed; the workspace status command is now `da status`.
 - **BREAKING** Workspace layout simplified. Removed: `data/parquet/`, `data/duckdb/`, `data/metadata/`, `user/artifacts/`. Canonical paths: `server/parquet/` (synced parquets), `user/duckdb/analytics.duckdb` (DuckDB views), `user/snapshots/` (ad-hoc snapshots), `user/sessions/` (recorded sessions).
 - The `/setup` web page now branches on a `role` query parameter: `/setup?role=analyst` renders the analyst workspace bootstrap prompt; `/setup?role=admin` renders the admin CLI install prompt. `/install` continues to 302 to `/setup`.
-- `CLAUDE.md` server-side template (and any admin DB override) updated to reference the new CLI verbs and workspace paths. Admins who maintain a custom `workspace-prompt-template` override should re-author it; the admin UI surfaces a warning when an override contains legacy strings.
+- `CLAUDE.md` server-side template + repo-root `CLAUDE.md` updated to reference the new CLI verbs and workspace paths. The admin UI for the `claude_md_template` DB override (`/admin/workspace-prompt`) renders a yellow banner when the saved override contains legacy strings (`data/parquet/`, `da sync`, `da fetch`, `da analyst setup`, `da metrics list/show`); admins re-author and save to clear it. Migration is manual.
 
 ### Added
 - `AGNES_WORKSPACE.md` — human-readable workspace docs file generated by `da init` in the workspace root. Documents global install, workspace layout, hooks, cheat sheet, uninstall recipe.
 - PAT request body now accepts `scope: str = "general"` and `ttl_seconds: int | None = None` fields. PATs minted with `scope="bootstrap-analyst"` are TTL-clamped to ≤ 1 h server-side. Existing `expires_in_days` field continues to work; `ttl_seconds` wins when both are set.
+- `cli/lib/` shared-library tree, with `cli/lib/pull.py:run_pull` (data-refresh primitive callable from both the Typer wrapper and `da init`) and `cli/lib/hooks.py:install_claude_hooks` (workspace-scoped Claude Code hook installer).
 
 ### Fixed
 - `da pull` (formerly `da sync`) no longer creates `.claude/rules/` when the corporate-memory bundle is empty.
 - `da pull` no longer creates `server/parquet/` when the manifest is empty.
 - `da snapshot create` (formerly `da fetch`) no longer materializes an empty `user/duckdb/analytics.duckdb` when run before any `da pull`.
 - Workspace `da status` reads from the canonical `server/parquet/` and `user/duckdb/analytics.duckdb` paths (was reading legacy `data/parquet/`, `data/metadata/last_sync.json`).
+- `da init` and `da pull` errors now use the `cli/error_render.py` typed-error renderer (added in 0.32.0), so analyst-facing error UX matches the structured shape `da query --remote` already produces.
 
 ### Removed
-- `da analyst setup`, `da analyst status`, `da sync`, `da fetch`, `da metrics list/show`, `da skills`. See "Changed" above for replacements.
+- `da analyst setup`, `da analyst status`, `da sync`, `da fetch`. See "Changed" above for replacements.
+- `da metrics` namespace as a top-level group (subcommands moved to `da catalog --metrics` for read-only views and `da admin metrics …` for write operations).
 - Legacy workspace directories `data/parquet/`, `data/duckdb/`, `data/metadata/`, `user/artifacts/`. Existing analyst workspaces should be reinitialized with `da init --server-url ... --token ... --force` (a fresh empty folder is recommended).
+
+### Kept (clarified)
+- `da skills list` and `da skills show` survive as analyst-side discovery commands. Earlier draft proposed removal; the rebased main strengthened the bundled skill content (#160 cost-guardrail and registry-gating rails) and removing the surface would cost analyst documentation that the project actively maintains.
+- `da auth token {create,list,revoke}` stays under `da auth` (where it lives today). No top-level `da token` group is added.
 ```
