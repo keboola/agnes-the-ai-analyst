@@ -1197,7 +1197,7 @@
                             <textarea class="form-textarea" id="kbSourceQuery" rows="8"></textarea>
                             <div class="form-hint">SELECT against <code>kbc."bucket"."table"</code>.
                                 Result is materialized to parquet and distributed via
-                                <code>da sync</code>.</div>
+                                <code>agnes pull</code>.</div>
                         </div>
 
                         <div class="form-group">
@@ -2404,7 +2404,7 @@
             if (_editOriginalQueryMode === 'materialized' && newMode === 'remote') {
                 msg = '⚠ Switching Synced locally → Live from BigQuery will drop the materialized parquet on the next sync. Analysts who already pulled this table will start getting live BQ queries instead of a local copy; the sync schedule becomes ignored.';
             } else {
-                msg = '⚠ Switching Live from BigQuery → Synced locally: the next scheduled sync runs a SELECT and writes a parquet. Analysts will start reading the local copy on their next `da sync`. Remember to set a sync schedule.';
+                msg = '⚠ Switching Live from BigQuery → Synced locally: the next scheduled sync runs a SELECT and writes a parquet. Analysts will start reading the local copy on their next `agnes pull`. Remember to set a sync schedule.';
             }
             warn.textContent = msg;
             warn.style.display = '';

@@ -59,7 +59,7 @@ def _run_materialized_pass(conn: duckdb.DuckDBPyConnection, bq) -> dict:
     that are due, dispatching by ``source_type`` to the correct connector's
     materialize_query. Honors per-table `sync_schedule` via `is_table_due()`,
     computes the file hash inline, and updates `sync_state` so the manifest
-    can serve the row to `da sync` without re-hashing on every request.
+    can serve the row to `agnes pull` without re-hashing on every request.
 
     BigQuery rows go through BqAccess + bigquery_query() (jobs API),
     optionally cost-guarded by ``max_bytes_per_materialize``.

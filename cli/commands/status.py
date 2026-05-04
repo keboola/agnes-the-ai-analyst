@@ -1,8 +1,7 @@
 """`agnes status` — workspace status: initialized? data fresh? hooks active?
 
-Replaces the old `da analyst status` command. The previous server-health
-content (which used to live here) has moved to `agnes diagnose system`
-under the existing `agnes diagnose` group (Task 13).
+Server-health checks live under `agnes diagnose system` (see the
+`agnes diagnose` group).
 """
 
 from __future__ import annotations

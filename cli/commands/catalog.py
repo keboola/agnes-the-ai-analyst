@@ -61,7 +61,7 @@ def catalog(
 
 
 def _list_metrics(as_json: bool, category: Optional[str] = None) -> None:
-    """List metric definitions from the server (lifted from `da metrics list`)."""
+    """List metric definitions from the server."""
     params = {}
     if category:
         params["category"] = category
@@ -99,7 +99,7 @@ def _list_metrics(as_json: bool, category: Optional[str] = None) -> None:
 
 
 def _show_one_metric(metric_id: str, as_json: bool) -> None:
-    """Show details for a single metric (lifted from `da metrics show`)."""
+    """Show details for a single metric."""
     resp = api_get(f"/api/metrics/{metric_id}")
     if resp.status_code == 404:
         typer.echo(f"Metric not found: {metric_id}", err=True)

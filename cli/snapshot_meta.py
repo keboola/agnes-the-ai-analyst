@@ -80,7 +80,7 @@ def delete_snapshot(snap_dir: Path, name: str) -> bool:
 def snapshot_lock(snap_dir: Path):
     """Exclusive flock on snap_dir/.lock — serializes snapshot installs.
 
-    Concurrent `da fetch` invocations queue here.
+    Concurrent `agnes snapshot create` invocations queue here.
     """
     if _fcntl is None:
         raise RuntimeError(

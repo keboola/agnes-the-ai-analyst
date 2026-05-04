@@ -18,9 +18,9 @@ agnes diagnose --json
 3. Re-generate token: `agnes login --email your@email.com`
 
 ### DuckDB errors locally
-1. Re-sync: `da sync` (rebuilds views)
+1. Re-sync: `agnes pull` (rebuilds views)
 2. Check disk space: `du -sh user/duckdb/`
-3. Delete and re-create: `rm user/duckdb/analytics.duckdb && da sync`
+3. Delete and re-create: `rm user/duckdb/analytics.duckdb && agnes pull`
 
 ### Server unresponsive
 1. `docker compose ps` — check container status

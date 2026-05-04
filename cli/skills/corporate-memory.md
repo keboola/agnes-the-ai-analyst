@@ -6,7 +6,7 @@ and makes it available to everyone through a curated catalog.
 
 ## How It Works
 1. Analysts write insights in their CLAUDE.local.md
-2. `da sync --upload-only` pushes content to server
+2. `agnes push` uploads sessions and CLAUDE.local.md to the server
 3. Server processes with LLM (Haiku) to extract knowledge items
 4. Items go through governance (pending → approved/mandatory)
 5. Approved items are distributed as Claude rules

@@ -119,7 +119,7 @@ async def get_welcome(
 ):
     """Return the rendered CLAUDE.md for the authenticated analyst.
 
-    The CLI calls this endpoint during ``da analyst setup`` to write
+    The CLI calls this endpoint during ``agnes init`` to write
     ``<workspace>/CLAUDE.md``. The content is RBAC-filtered per the
     calling user.
 

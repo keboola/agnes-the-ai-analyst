@@ -2463,7 +2463,7 @@ async def unregister_table(
     For materialized rows, also removes the canonical parquet at
     `${DATA_DIR}/extracts/<source_type>/data/<id>.parquet` and clears
     the matching `sync_state` row. Without these two cleanups, the
-    manifest endpoint kept advertising the dropped table to `da sync`
+    manifest endpoint kept advertising the dropped table to `agnes pull`
     (sync_state-driven) and the orchestrator's next rebuild could
     resurrect a master view from the leftover parquet (E2E sub-agent
     finding 2026-05-01).
@@ -2515,7 +2515,7 @@ async def unregister_table(
     # Clear sync_state for any source/mode (a row that was synced at any
     # point — local/materialized — has a sync_state entry that the manifest
     # serves regardless of registry state). Pre-fix, the manifest still
-    # advertised the dropped table to `da sync` because sync_state was
+    # advertised the dropped table to `agnes pull` because sync_state was
     # never cleaned up, and analysts kept getting it through the manifest.
     try:
         conn.execute("DELETE FROM sync_state WHERE table_id = ?", [name])
@@ -2523,7 +2523,7 @@ async def unregister_table(
     except Exception as e:
         logger.warning(
             "Failed to clear sync_state for unregistered table %s: %s — "
-            "manifest may still advertise the dropped row to da sync",
+            "manifest may still advertise the dropped row to agnes pull",
             table_id, e,
         )
 

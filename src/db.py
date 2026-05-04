@@ -956,7 +956,7 @@ _V16_TO_V17_MIGRATIONS = [
 # v19 -> v20: source_query column backs query_mode='materialized' for BigQuery.
 # Admin-registered SQL stored verbatim; scheduler runs it through the DuckDB BQ
 # extension (via BqAccess) and writes the result to
-# /data/extracts/bigquery/data/<id>.parquet so the existing manifest + da sync
+# /data/extracts/bigquery/data/<id>.parquet so the existing manifest + agnes pull
 # flow distributes it to analysts. NULL on existing rows.
 _V19_TO_V20_MIGRATIONS = [
     "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS source_query TEXT",

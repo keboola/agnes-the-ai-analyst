@@ -101,7 +101,7 @@ def pull(
         # Claude Code's stdout stays clean. Errors still flow to stderr so
         # the user sees them in their terminal even when the hook redirects
         # `2>/dev/null` (the hook explicitly forwards stderr too in the
-        # canonical `da analyst setup` template).
+        # canonical `agnes init` template).
         if result.errors:
             for e in result.errors:
                 typer.echo(f"warn: {e}", err=True)
