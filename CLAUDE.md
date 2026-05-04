@@ -52,7 +52,7 @@ See `docs/DEPLOYMENT.md` → **TLS** for cert provisioning + `scripts/ops/agnes-
 │   ├── keboola/            # Keboola: extractor.py (DuckDB extension) + client.py (fallback)
 │   ├── bigquery/           # BigQuery: extractor.py (remote-only via DuckDB BQ extension)
 │   └── jira/               # Jira: webhook + incremental parquet → extract.duckdb
-├── cli/                    # CLI tool (`agnes pull`, `da query`, `da admin`)
+├── cli/                    # CLI tool (`agnes pull`, `agnes query`, `agnes admin`)
 ├── app/auth/               # Authentication (FastAPI-based providers)
 ├── services/               # Standalone services (scheduler, telegram_bot, ws_gateway, etc.)
 ├── server/                 # Legacy deployment infrastructure
@@ -186,31 +186,31 @@ When asked about ANY data in Agnes, follow this protocol.
 
 Before writing ANY query against a table, run:
 
-    da catalog --json | jq <filter>     # know what's available
-    da schema <table>                   # learn columns + types
-    da describe <table> -n 5            # see real values for shape
+    agnes catalog --json | jq <filter>     # know what's available
+    agnes schema <table>                   # learn columns + types
+    agnes describe <table> -n 5            # see real values for shape
 
 NEVER write `SELECT * FROM <table>` blindly. For local-mode tables it's
 wasteful; for remote-mode tables it can blow up at 225M rows.
 
 ### Choose the right tool
 
-Tables in `da catalog` have a `query_mode`:
+Tables in `agnes catalog` have a `query_mode`:
 
 - **`local`**: data is on the laptop as parquet (synced via `agnes pull`).
-  Query directly with `da query "SELECT … FROM <table>"`.
+  Query directly with `agnes query "SELECT … FROM <table>"`.
 
 - **`remote`** (typically BigQuery): the parquet does NOT exist on the laptop.
   You MUST either:
   1. **`agnes snapshot create`** a filtered subset → query the local snapshot, OR
-  2. **`da query --remote`** for one-shot server-side execution. Works on
+  2. **`agnes query --remote`** for one-shot server-side execution. Works on
      all `query_mode='remote'` rows regardless of upstream BQ entity type
      (BASE TABLE → Storage Read API with predicate pushdown; VIEW /
      MATERIALIZED_VIEW → BQ jobs API, no pushdown). Cost-guarded by a
      5 GiB scan cap (configurable in /admin/server-config). Direct
      `bq."<dataset>"."<table>"` paths are registry-gated — unregistered
      paths return 403 `bq_path_not_registered`.
-  3. **`da query --register-bq`** for hybrid joins (rarely needed).
+  3. **`agnes query --register-bq`** for hybrid joins (rarely needed).
 
 ### `agnes snapshot create` workflow (preferred for remote tables)
 
@@ -226,7 +226,7 @@ Tables in `da catalog` have a `query_mode`:
     agnes snapshot create web_sessions_example ... --as cz_recent
 
     # 3. query the local snapshot
-    da query "SELECT event_date, COUNT(*) FROM cz_recent GROUP BY 1 ORDER BY 1"
+    agnes query "SELECT event_date, COUNT(*) FROM cz_recent GROUP BY 1 ORDER BY 1"
 
 ### Heuristics for `agnes snapshot create`
 
@@ -234,14 +234,14 @@ Tables in `da catalog` have a `query_mode`:
 - ALWAYS include a `--where` for remote tables; otherwise add `--limit`.
 - ALWAYS run `--estimate` first when:
   - You're not sure of the data shape
-  - The table has `partition_by` or `clustered_by` set (per `da schema`)
+  - The table has `partition_by` or `clustered_by` set (per `agnes schema`)
   - The fetch could plausibly exceed 1 GB local bytes
-- Reuse `da snapshot list` before fetching — if a snapshot covers your
+- Reuse `agnes snapshot list` before fetching — if a snapshot covers your
   query already, skip the fetch.
 
 ### BigQuery SQL flavor for `--where`
 
-For `source_type=bigquery` (per `da catalog`):
+For `source_type=bigquery` (per `agnes catalog`):
 
 - Date literal: `DATE '2026-01-01'` (NOT `'2026-01-01'::date`)
 - Timestamp literal: `TIMESTAMP '2026-01-01 00:00:00 UTC'`
@@ -252,30 +252,30 @@ For `source_type=bigquery` (per `da catalog`):
 - Cast: `CAST(x AS INT64)` (NOT `INT`)
 
 For `source_type=keboola` / `source_type=jira` (local), use DuckDB SQL flavor
-in your `da query` calls — there's no `--where` on local since fetch is implicit.
+in your `agnes query` calls — there's no `--where` on local since fetch is implicit.
 
 ### Snapshot hygiene
 
 - Reuse snapshots across questions in the same conversation.
 - Use descriptive names: `cz_recent`, `orders_q1_us`, `sessions_today`.
-- Drop with `da snapshot drop <name>` when done with a topic.
-- `da disk-info` to see total cache size.
+- Drop with `agnes snapshot drop <name>` when done with a topic.
+- `agnes disk-info` to see total cache size.
 
 ### When NOT to use `agnes snapshot create`
 
 - Single aggregate on remote BASE TABLE (`SELECT COUNT(*) FROM remote`):
-  use `da query --remote "SELECT COUNT(*) FROM web_sessions_example"`.
+  use `agnes query --remote "SELECT COUNT(*) FROM web_sessions_example"`.
   Storage Read API pushes the COUNT into BQ — cheap, no materialization.
 - Single aggregate on remote VIEW/MATERIALIZED_VIEW: same syntax works
   (#160), but the BQ jobs API can't push WHERE/COUNT into the view body.
   Cost guardrail (default 5 GiB) catches expensive scans → 400
   `remote_scan_too_large` with `agnes snapshot create` suggestion. Pivot to
   `agnes snapshot create <id> --where '<predicate>'` if the cap is hit.
-- Throwaway exploration: `da query --remote "SELECT … FROM <registered_id>"`.
+- Throwaway exploration: `agnes query --remote "SELECT … FROM <registered_id>"`.
   Direct `bq."<dataset>"."<table>"` paths are now registry-gated — register
   first or use the catalog id.
 - Cross-table JOIN with both tables remote: combine `agnes snapshot create` for one
-  side + `da query --remote` for the other; full cross-remote JOIN
+  side + `agnes query --remote` for the other; full cross-remote JOIN
   requires more thought (see #101 for design space).
 
 ## Marketplace Repositories
@@ -315,8 +315,8 @@ No DB migration, no second wiring step. Endpoints gate with either
 `require_admin` (app-level) or `require_resource_access(ResourceType.X,
 "{path}")` (entity-level), both from `app.auth.access`.
 
-Admin UI: `/admin/access`. CLI: `da admin group {list,create,delete,members,
-add-member,remove-member}` and `da admin grant {list,create,delete}`.
+Admin UI: `/admin/access`. CLI: `agnes admin group {list,create,delete,members,
+add-member,remove-member}` and `agnes admin grant {list,create,delete}`.
 
 ## Claude Code marketplace endpoint
 
@@ -372,7 +372,7 @@ curl -H "Authorization: Bearer $AGNES_PAT" https://agnes.example.com/marketplace
 For tables too large to sync locally, use hybrid queries that JOIN local data with on-demand BigQuery results:
 
 ```bash
-da query --sql "SELECT o.*, t.views FROM orders o JOIN traffic t ON o.date = t.date" \
+agnes query --sql "SELECT o.*, t.views FROM orders o JOIN traffic t ON o.date = t.date" \
          --register-bq "traffic=SELECT date, SUM(views) as views FROM dataset.web WHERE date > '2026-01-01' GROUP BY 1"
 ```
 
@@ -380,7 +380,7 @@ The `--register-bq` flag executes a BigQuery subquery, loads the result into mem
 
 For complex SQL, use stdin mode:
 ```bash
-echo '{"register_bq": {"traffic": "SELECT ..."}, "sql": "SELECT ..."}' | da query --stdin
+echo '{"register_bq": {"traffic": "SELECT ..."}, "sql": "SELECT ..."}' | agnes query --stdin
 ```
 
 ## Extensibility
