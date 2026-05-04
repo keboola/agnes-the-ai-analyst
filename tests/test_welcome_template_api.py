@@ -38,9 +38,11 @@ def test_admin_get_template_initially_null(seeded_app):
     # default field must be present and contain the live setup script
     assert "default" in body
     assert body["default"]  # non-empty
-    # Admin layout marker — `agnes auth import-token` is the login step.
-    assert "agnes auth" in body["default"]
+    # Unified layout markers — `agnes init` and `uv tool install` are
+    # mandatory; legacy `agnes auth import-token` is gone.
+    assert "agnes init" in body["default"]
     assert "uv tool install" in body["default"]
+    assert "agnes auth import-token" not in body["default"]
     # No legacy verb in the rendered default
     assert "da analyst setup" not in body["default"]
 

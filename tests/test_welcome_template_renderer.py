@@ -39,35 +39,39 @@ def _user(email="alice@example.com"):
 
 def test_returns_default_script_when_no_override(conn):
     """When no override is set, render_agent_prompt_banner returns the live
-    setup script (not an empty string).
-
-    A non-admin user gets the analyst layout: `agnes init` subsumes auth and
-    the trimmed flow has no `agnes auth` line. An admin user gets the full
-    CLI bootstrap with `agnes auth import-token`.
+    unified setup script (not an empty string). Every caller — admin or
+    non-admin — sees `agnes init` (the workspace-rails delivery
+    mechanism). Whether the marketplace block appears depends on the
+    caller's plugin grants in `resource_grants`, NOT on `is_admin`.
     """
     out = render_agent_prompt_banner(conn, user=_user(), server_url="https://example.com")
     # Must be non-empty — the default IS the setup script
     assert out != ""
-    # Analyst layout: `agnes init` is the bootstrap step.
+    # Unified layout: `agnes init` is mandatory.
     assert "agnes init" in out
+    # Legacy admin-only auth verbs are gone — `agnes init` subsumes them.
+    assert "agnes auth import-token" not in out
+    assert "agnes auth whoami" not in out
     # No legacy verb anywhere in the rendered default
     assert "da analyst setup" not in out
     assert "da sync" not in out
 
 
 def test_compute_default_returns_setup_script(conn):
-    """compute_default_agent_prompt returns a non-empty string with setup
-    script markers including {server_url} and agnes commands.
-
-    Default role is `admin`, which renders the full CLI install + login flow.
+    """compute_default_agent_prompt returns a non-empty string with the
+    unified setup-script markers, including the {server_url} placeholder
+    and the agnes init line.
     """
     out = compute_default_agent_prompt(conn, user=_user(), server_url="https://example.com")
     assert out != ""
     # {server_url} placeholder must survive (not replaced by Jinja2)
     assert "{server_url}" in out
-    # Admin layout references the agnes CLI install + login flow
-    assert "agnes auth" in out
+    # Unified layout: install + init are always present.
+    assert "agnes init" in out
     assert "uv tool install" in out
+    # Admin-only auth verbs replaced by `agnes init`.
+    assert "agnes auth import-token" not in out
+    assert "agnes auth whoami" not in out
     # No legacy verb anywhere in the rendered default
     assert "da analyst setup" not in out
 
@@ -237,7 +241,7 @@ def test_render_failure_falls_back_to_default_not_exception(conn):
     out = render_agent_prompt_banner(conn, user=_user(), server_url="https://example.com")
     # Must not raise — falls back to the live default script (non-empty)
     assert out != ""
-    # Non-admin → analyst layout: `agnes init` is the bootstrap step.
+    # Unified layout: `agnes init` is the bootstrap step regardless of role.
     assert "agnes init" in out
     assert "uv tool install" in out
 

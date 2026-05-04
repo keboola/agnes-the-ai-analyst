@@ -768,11 +768,11 @@ async def setup_page(
         except (TemplateError, Exception) as exc:
             logger.warning("setup_page: override render failed (%s); falling back to default", exc)
             setup_script_text = compute_default_agent_prompt(
-                conn, user=user, server_url=base_url, role=role,
+                conn, user=user, server_url=base_url,
             )
     else:
         setup_script_text = compute_default_agent_prompt(
-            conn, user=user, server_url=base_url, role=role,
+            conn, user=user, server_url=base_url,
         )
 
     # Split for the legacy setup_instructions_lines list variable that the

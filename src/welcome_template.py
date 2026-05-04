@@ -24,7 +24,7 @@ import os
 import re
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 from urllib.parse import urlparse
 
 import duckdb
@@ -130,21 +130,22 @@ def compute_default_agent_prompt(
     *,
     user: dict[str, Any] | None,
     server_url: str,
-    role: Literal["analyst", "admin"] = "admin",
 ) -> str:
     """Return the live default setup script from setup_instructions.resolve_lines().
 
-    This is the full bash bootstrap prompt that /setup shows when no admin
-    override is set.  The returned string is bash (not HTML) — callers must
-    NOT pass it through _sanitize_banner_html.
+    This is the unified bash bootstrap prompt that /setup shows when no
+    admin override is set. The returned string is bash (not HTML) —
+    callers must NOT pass it through _sanitize_banner_html.
 
     ``conn`` and ``user`` are forwarded to resolve the RBAC-filtered plugin
-    install list (anonymous visitors / no conn get the no-marketplace layout).
-    ``server_url`` is used to derive the server host for the marketplace block.
+    install list. The same RBAC pass runs for everyone (admin and
+    non-admin alike): users with no plugin grants get the no-marketplace
+    layout (Confirm = step 6); users with grants get the marketplace + plugins
+    block inserted (Confirm = step 8). Anonymous visitors / no conn fall
+    through to the no-marketplace layout.
 
-    ``role`` selects the layout: ``"admin"`` (default) keeps the existing
-    full bootstrap, ``"analyst"`` short-circuits to the trimmed analyst
-    workspace flow (no marketplace, plugins forced empty).
+    ``server_url`` is used to derive the server host for the marketplace
+    block.
     """
     try:
         from app.web.setup_instructions import resolve_lines
@@ -153,12 +154,13 @@ def compute_default_agent_prompt(
         _wheel = _find_wheel()
         _wheel_filename = _wheel.name if _wheel else "agnes.whl"
 
-        # Analyst flow has no marketplace concept — skip the RBAC plugin
-        # resolution entirely so the analyst tile renders the same lines for
-        # everyone (and so resolve_lines's analyst short-circuit fires
-        # regardless of whether the caller has plugin grants).
+        # RBAC plugin resolution is unconditional — same code path for
+        # admin and non-admin. Users with no `resource_grants` rows get an
+        # empty list and the no-marketplace layout; users with grants get
+        # the marketplace block. Admin-vs-analyst is no longer a layout
+        # branch.
         plugin_install_names: list[str] = []
-        if role == "admin" and user and conn is not None:
+        if user and conn is not None:
             try:
                 from src import marketplace_filter
                 plugin_install_names = [
@@ -243,11 +245,10 @@ def render_agent_prompt_banner(
             # Fall through to default
 
     # No override (or broken override) — return live default bash script.
-    # Pick role by user identity: admins get the full CLI install + marketplace
-    # flow (existing behavior). Everyone else gets the analyst workspace
-    # bootstrap. The dashboard CTA hits this path; without role-by-identity,
-    # analysts would get admin instructions they can't actually execute.
-    role = "admin" if (user and user.get("is_admin")) else "analyst"
+    # Same unified flow for everyone; admin-vs-analyst is no longer a
+    # layout branch. The marketplace block is gated by the caller's
+    # plugin grants in `resource_grants`, which `compute_default_agent_prompt`
+    # resolves unconditionally.
     return compute_default_agent_prompt(
-        conn, user=user, server_url=server_url, role=role,
+        conn, user=user, server_url=server_url,
     )
