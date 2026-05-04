@@ -1729,18 +1729,36 @@ def _v23_to_v24_finalize(conn: duckdb.DuckDBPyConnection) -> None:
     if not rows:
         return  # Nothing to migrate; skip the transaction.
 
+    # If we have rows to migrate AND project_id isn't configured, we cannot
+    # rewrite their source_query. Raise BEFORE the schema_version bump so
+    # the migration re-runs on the NEXT startup (after the operator
+    # configures the project). Pre-fix the function logged a warning per
+    # row and returned normally — the schema_version then bumped to 24
+    # unconditionally, the `if current < 24:` gate skipped this function
+    # forever after, and rows stayed in DuckDB-flavor SQL. The new
+    # `_wrap_admin_sql_for_jobs_api` wrapping path then rejected those
+    # rows at materialize time as unparseable BQ SQL with no automatic
+    # recovery (Devin Review on db.py:1757). Side effect: a BQ-using
+    # deployment that hasn't set the project blocks startup until they
+    # do — that's the right call for a config error that would otherwise
+    # silently break materialized tables.
+    if not project_id:
+        raise RuntimeError(
+            f"v24 migration cannot complete: {len(rows)} materialized "
+            f"BigQuery row(s) need their source_query rewritten from "
+            f"DuckDB-flavor `bq.\"ds\".\"tbl\"` to BQ-native "
+            f"`<project>.ds.tbl`, but `data_source.bigquery.project` is "
+            f"not configured. Set it via /admin/server-config (or "
+            f"`instance.yaml: data_source.bigquery.project`) and restart "
+            f"the app to retry the migration. The schema version is NOT "
+            f"bumped to 24 until this completes; pre-migration DB "
+            f"snapshot is at `{{DATA_DIR}}/state/system.duckdb.pre-migrate`."
+        )
+
     conn.execute("BEGIN TRANSACTION")
     try:
         for row_id, sq in rows:
             if sq is None:
-                continue
-            if not project_id:
-                logger.warning(
-                    "v24 migration: skipping rewrite of source_query for row %r — "
-                    "data_source.bigquery.project is not configured. Set it via "
-                    "/admin/server-config and restart the app to retry the "
-                    "migration.", row_id,
-                )
                 continue
             new_sq = pattern.sub(_replace_for_v24(project_id), sq)
             if new_sq != sq:
