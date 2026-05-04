@@ -36,16 +36,34 @@ from src.repositories.claude_md_template import ClaudeMdTemplateRepository
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_TEMPLATE_PATH = (
-    Path(__file__).resolve().parent.parent / "config" / "claude_md_template.txt"
-)
-
-
 def _load_default_template() -> str:
-    if _DEFAULT_TEMPLATE_PATH.exists():
-        return _DEFAULT_TEMPLATE_PATH.read_text(encoding="utf-8")
-    # Last-resort embedded fallback if the OSS template file is missing
-    # from the install (e.g., partial Docker COPY).
+    """Load the shipped CLAUDE.md default template.
+
+    Resolution order (first hit wins):
+      1. importlib.resources lookup in the installed `config` package — works
+         in both editable installs and wheel-installed deployments. This is
+         the canonical path on container deployments where `/app/config/`
+         may be bind-mounted to overlay instance-specific config (instance.yaml)
+         and shadow the image-baked template file.
+      2. Filesystem path relative to this module — for dev runs from a checkout.
+      3. Last-resort embedded fallback so the renderer never fails outright.
+    """
+    # 1. Package-resource path (preferred — works under wheel installs)
+    try:
+        from importlib import resources
+
+        ref = resources.files("config").joinpath("claude_md_template.txt")
+        if ref.is_file():
+            return ref.read_text(encoding="utf-8")
+    except (ModuleNotFoundError, FileNotFoundError, OSError):
+        pass
+
+    # 2. Filesystem path relative to this module (dev checkout)
+    fs_path = Path(__file__).resolve().parent.parent / "config" / "claude_md_template.txt"
+    if fs_path.exists():
+        return fs_path.read_text(encoding="utf-8")
+
+    # 3. Embedded fallback (image stripped down, partial Docker COPY, etc.)
     return (
         "# {{ instance.name }} — AI Data Analyst\n\n"
         "This workspace is connected to {{ server.url }}.\n"
