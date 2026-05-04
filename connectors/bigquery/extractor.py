@@ -106,10 +106,19 @@ def _try_acquire_file_lock(lock_path: Path):
 
     Stale-lock reclaim: if the lock_path exists and its mtime is older
     than the configured TTL, log a warning and unlink before retrying.
-    A live holder still wins the second flock attempt (kernel-level
-    flock isn't tied to mtime), so the reclaim doesn't break correctness
-    — it just unblocks the case where a holder process was hard-killed
-    before the kernel released the lock."""
+
+    Caveat: ``lock_path.unlink()`` + the subsequent ``open()`` creates a
+    NEW inode — fcntl.flock keys on inode, so a still-running holder's
+    lock on the (now-orphan) old inode does NOT block the new acquisition.
+    A genuine overrunning materialize past TTL therefore CAN race a
+    fresh attempt and both can write to ``<id>.parquet.tmp``. The
+    in-process ``threading.Lock`` keyed on ``table_id`` blocks that race
+    within one scheduler process; cross-process protection (two schedulers
+    on the same workspace) relies on operators not running multiple
+    concurrent schedulers AND on the TTL being well above the longest
+    plausible COPY (24 h default). If real corruption surfaces in
+    production, the next iteration should attach a pid to the lock file
+    and skip reclaim while the holder pid is alive."""
     lock_path.parent.mkdir(parents=True, exist_ok=True)
 
     def _try_open_and_flock():

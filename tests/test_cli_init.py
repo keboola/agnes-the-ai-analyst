@@ -224,3 +224,95 @@ def test_init_manifest_unauthorized_when_pull_records_manifest_error(tmp_path, m
     output = result.output + (result.stderr or "")
     assert "Traceback" not in output
     assert ("manifest_unauthorized" in output) or ("Manifest fetch failed" in output)
+
+
+def test_init_uses_explicit_token_arg_not_stale_disk_token(tmp_path, monkeypatch):
+    """Regression for Devin Review finding on init.py:99.
+
+    Repro: a prior `agnes init` left a stale token in
+    `~/.config/agnes/token.json`. The new run passes a fresh token via
+    `--token`. Pre-fix, step 2's PAT-verify call read the on-disk token
+    first and only fell back to the env var — so the explicit `--token`
+    arg was silently ignored, the verify ran with the stale token, and
+    init failed 401 with a confusing 'token expired' error even though
+    the supplied token was valid.
+
+    Fix: a ContextVar-based override (set by `_override_server_env`)
+    short-circuits `get_token()` BEFORE the on-disk read.
+    """
+    import json
+    from unittest.mock import MagicMock
+
+    cfg_dir = tmp_path / "_cfg"
+    cfg_dir.mkdir()
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(cfg_dir))
+
+    # Seed a stale token on disk — this is what the bug exposed: the verify
+    # call would prefer this over the --token arg.
+    token_file = cfg_dir / "token.json"
+    token_file.write_text(json.dumps({
+        "access_token": "STALE-DO-NOT-USE",
+        "email": "old@example.com",
+    }), encoding="utf-8")
+
+    captured = {"verify_token": None}
+
+    def _api_get(path, *args, **kwargs):
+        # Verify endpoint: snapshot whatever token cli.config.get_token()
+        # returns at the moment of the call. If the override is wired
+        # correctly, this will be the --token arg, not the stale disk
+        # value.
+        if path == "/api/catalog/tables":
+            from cli.config import get_token
+            captured["verify_token"] = get_token()
+        resp = MagicMock()
+        resp.status_code = 200
+        if path == "/api/welcome":
+            resp.json.return_value = {"content": "# Test\n"}
+        elif path == "/api/sync/manifest":
+            resp.json.return_value = {"tables": {}}
+        elif path == "/api/memory/bundle":
+            resp.json.return_value = {"mandatory": [], "approved": []}
+        else:
+            resp.json.return_value = []
+        return resp
+
+    monkeypatch.setattr("cli.commands.init.api_get", _api_get, raising=False)
+    monkeypatch.setattr("cli.lib.pull.api_get", _api_get, raising=False)
+
+    result = runner.invoke(init_app, [
+        "--server-url", "http://x",
+        "--token", "FRESH-PAT-FROM-USER",
+        "--workspace", str(tmp_path / "ws"),
+        "--force",
+    ])
+
+    assert captured["verify_token"] == "FRESH-PAT-FROM-USER", (
+        "Step 2 verify call must use the explicit --token arg, "
+        f"not the stale on-disk token. Got: {captured['verify_token']!r}"
+    )
+    output = result.output + (result.stderr or "")
+    assert "Traceback" not in output
+
+
+def test_token_override_contextvar_does_not_leak_outside_block():
+    """The override must be scoped to the `with` block — leaking it would
+    poison subsequent `get_token()` calls (e.g. a long-running daemon
+    that runs `agnes init` once and then `agnes pull` later in the same
+    process)."""
+    from cli.config import _with_token_override, get_token
+    import os
+
+    # Sandbox AGNES_CONFIG_DIR so the test's own config dir doesn't muddy
+    # the assertion (get_token would fall through to AGNES_TOKEN env or
+    # to None depending on host state).
+    prior_env = os.environ.pop("AGNES_TOKEN", None)
+    try:
+        with _with_token_override("INSIDE"):
+            assert get_token() == "INSIDE"
+        # Outside the block: override cleared, falls through to file/env.
+        # Without a config file or AGNES_TOKEN set, returns None.
+        assert get_token() != "INSIDE"
+    finally:
+        if prior_env is not None:
+            os.environ["AGNES_TOKEN"] = prior_env

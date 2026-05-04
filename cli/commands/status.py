@@ -39,8 +39,11 @@ def status(
     if db_path.exists():
         last_synced = datetime.fromtimestamp(db_path.stat().st_mtime, tz=timezone.utc).isoformat()
 
-    sessions_dir = workspace / "user" / "sessions"
-    session_count = len(list(sessions_dir.glob("*.jsonl"))) if sessions_dir.exists() else 0
+    # Sessions live in ~/.claude/projects/<encoded-cwd>/ (where Claude Code
+    # writes them), with `<workspace>/user/sessions/` as a legacy fallback.
+    # The helper unions both — same source of truth as `agnes push`.
+    from cli.lib.claude_sessions import list_session_files
+    session_count = len(list_session_files(workspace))
 
     info = {
         "workspace": str(workspace),
