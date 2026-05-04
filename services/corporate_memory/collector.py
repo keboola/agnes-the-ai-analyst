@@ -416,17 +416,20 @@ def collect_all(dry_run: bool = False) -> dict:
         stats["skipped"] = True
         return stats
 
-    # Step 2: Initialize AI extractor
+    # Step 2: Initialize AI extractor.
+    # Fail-fast (#176): no silent skip on missing ai: block. The factory
+    # falls back to ANTHROPIC_API_KEY / LLM_API_KEY env vars and raises a
+    # clear ValueError if neither config nor env is available.
     try:
         from config.loader import load_instance_config
+        from connectors.llm import create_extractor_from_env_or_config
 
-        instance_config = load_instance_config()
-        ai_config = instance_config.get("ai")
-        if not ai_config:
-            logger.warning("No ai: section in instance.yaml, skipping catalog refresh")
-            stats["skipped"] = True
-            return stats
-        extractor = create_extractor(ai_config)
+        try:
+            instance_config = load_instance_config()
+        except (ValueError, FileNotFoundError):
+            instance_config = {}
+        ai_config = instance_config.get("ai") if instance_config else None
+        extractor = create_extractor_from_env_or_config(ai_config)
     except (ValueError, FileNotFoundError) as e:
         stats["errors"].append(str(e))
         logger.error("Failed to initialize AI extractor: %s", e)

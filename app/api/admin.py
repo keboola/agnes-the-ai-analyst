@@ -2626,6 +2626,29 @@ async def configure_instance(
                 "location": request.bigquery_location or "us",
             }
 
+        # Seed an ai: block on first-time setup so LLM-driven services
+        # (corporate_memory, verification_detector) can boot without manual
+        # YAML editing. Only inserts when the overlay has no ai: yet AND an
+        # appropriate env var is present — never overwrites operator config,
+        # never writes a placeholder block (#176).
+        if "ai" not in overlay:
+            anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+            llm_key = os.environ.get("LLM_API_KEY", "").strip()
+            if anthropic_key:
+                overlay["ai"] = {
+                    "provider": "anthropic",
+                    "api_key": "${ANTHROPIC_API_KEY}",
+                    "model": "claude-haiku-4-5-20251001",
+                    "structured_output": "auto",
+                }
+            elif llm_key:
+                overlay["ai"] = {
+                    "provider": "anthropic",
+                    "api_key": "${LLM_API_KEY}",
+                    "model": "claude-haiku-4-5-20251001",
+                    "structured_output": "auto",
+                }
+
         # Atomic write to writable data volume — same tmp + os.replace pattern
         # as the server-config editor so a concurrent save can't tear the file.
         config_path.parent.mkdir(parents=True, exist_ok=True)
