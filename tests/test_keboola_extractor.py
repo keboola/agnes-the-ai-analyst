@@ -416,6 +416,98 @@ class TestKeboolaExtractorFailureModes:
         assert result["tables_failed"] == 2
         assert len(result["errors"]) == 2
 
+    def test_legacy_fallback_runs_in_parallel(self, output_dir, monkeypatch):
+        """When the extension fails per-table for several tables, the legacy
+        Storage-API fallback runs them concurrently via a thread pool — not
+        sequentially. Verified by recording overlap in active-thread count.
+
+        The Keboola Storage API export job is the dominant per-table cost
+        (sync wait on the Keboola backend); fanning out across N workers
+        is the only material speedup short of an upstream extension fix."""
+        import threading
+        import time
+        from connectors.keboola.extractor import run
+
+        configs = [
+            {"name": f"t{i}", "query_mode": "local", "description": "",
+             "bucket": "in.c-test", "source_table": f"t{i}"}
+            for i in range(6)
+        ]
+
+        active = 0
+        peak_active = 0
+        active_lock = threading.Lock()
+
+        def slow_legacy(tc, pq_path, url, token):
+            nonlocal active, peak_active
+            with active_lock:
+                active += 1
+                peak_active = max(peak_active, active)
+            time.sleep(0.2)  # simulate Storage API roundtrip
+            with active_lock:
+                active -= 1
+            _write_parquet(pq_path, "SELECT 1 AS x")
+
+        def extension_always_fails(conn, tc, pq_path):
+            raise RuntimeError("Schema not authorized")
+
+        monkeypatch.setenv("AGNES_KEBOOLA_PARALLELISM", "4")
+
+        with patch("connectors.keboola.extractor._try_attach_extension", side_effect=_mock_attach), \
+             patch("connectors.keboola.extractor._extract_via_extension", side_effect=extension_always_fails), \
+             patch("connectors.keboola.extractor._extract_via_legacy", side_effect=slow_legacy):
+            result = run(output_dir, configs, "https://example.com", "test-token")
+
+        assert result["tables_extracted"] == 6
+        assert result["tables_failed"] == 0
+        assert peak_active >= 2, (
+            f"Expected concurrent legacy extractions; peak_active={peak_active}. "
+            "Legacy fallback may have run sequentially."
+        )
+
+    def test_legacy_parallelism_env_caps_workers(self, output_dir, monkeypatch):
+        """AGNES_KEBOOLA_PARALLELISM=1 forces sequential legacy fallback —
+        useful as a safety valve when an operator wants to debug a single
+        table at a time or sees Keboola-side rate-limiting."""
+        import threading
+        import time
+        from connectors.keboola.extractor import run
+
+        configs = [
+            {"name": f"u{i}", "query_mode": "local", "description": "",
+             "bucket": "in.c-test", "source_table": f"u{i}"}
+            for i in range(3)
+        ]
+
+        active = 0
+        peak_active = 0
+        active_lock = threading.Lock()
+
+        def slow_legacy(tc, pq_path, url, token):
+            nonlocal active, peak_active
+            with active_lock:
+                active += 1
+                peak_active = max(peak_active, active)
+            time.sleep(0.05)
+            with active_lock:
+                active -= 1
+            _write_parquet(pq_path, "SELECT 1 AS x")
+
+        def extension_always_fails(conn, tc, pq_path):
+            raise RuntimeError("Schema not authorized")
+
+        monkeypatch.setenv("AGNES_KEBOOLA_PARALLELISM", "1")
+
+        with patch("connectors.keboola.extractor._try_attach_extension", side_effect=_mock_attach), \
+             patch("connectors.keboola.extractor._extract_via_extension", side_effect=extension_always_fails), \
+             patch("connectors.keboola.extractor._extract_via_legacy", side_effect=slow_legacy):
+            result = run(output_dir, configs, "https://example.com", "test-token")
+
+        assert result["tables_extracted"] == 3
+        assert peak_active == 1, (
+            f"Expected serial execution under PARALLELISM=1; peak_active={peak_active}"
+        )
+
     def test_unsafe_identifier_skipped_not_crashed(self, output_dir):
         """Tables with unsafe identifiers are skipped with an error in stats,
         not causing a crash."""
