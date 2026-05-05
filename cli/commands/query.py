@@ -85,10 +85,14 @@ def _query_local(sql: str, fmt: str, limit: int):
 
 def _query_remote(sql: str, fmt: str, limit: int):
     """Run query against server DuckDB via API."""
-    from cli.client import api_post
+    from cli.client import QUERY_TIMEOUT_S, api_post
     from cli.error_render import render_error
 
-    resp = api_post("/api/query", json={"sql": sql, "limit": limit})
+    resp = api_post(
+        "/api/query",
+        json={"sql": sql, "limit": limit},
+        timeout=QUERY_TIMEOUT_S,
+    )
     if resp.status_code != 200:
         # Parse JSON body if possible, fall back to text. The shared
         # renderer pretty-prints typed BQ errors (cross_project_forbidden,

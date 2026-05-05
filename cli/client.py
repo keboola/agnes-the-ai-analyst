@@ -15,6 +15,11 @@ from cli.config import get_server_url, get_token
 _RETRY_ATTEMPTS = int(os.environ.get("AGNES_STREAM_RETRIES", "3"))
 _RETRY_BACKOFFS_S = (0.3, 1.0, 3.0)  # seconds before attempt 2, 3, 4
 
+# Long-running query timeout. /api/query forwards to BigQuery for remote
+# tables, where SELECTs routinely run for minutes. The default 30s HTTP
+# timeout dies long before BQ finishes. Operators tune via AGNES_QUERY_TIMEOUT.
+QUERY_TIMEOUT_S = float(os.environ.get("AGNES_QUERY_TIMEOUT", "300"))
+
 
 def get_client(timeout: float = 30.0) -> httpx.Client:
     """Get an authenticated httpx client."""
@@ -29,23 +34,23 @@ def get_client(timeout: float = 30.0) -> httpx.Client:
     )
 
 
-def api_get(path: str, **kwargs) -> httpx.Response:
-    with get_client() as client:
+def api_get(path: str, *, timeout: float = 30.0, **kwargs) -> httpx.Response:
+    with get_client(timeout=timeout) as client:
         return client.get(path, **kwargs)
 
 
-def api_post(path: str, **kwargs) -> httpx.Response:
-    with get_client() as client:
+def api_post(path: str, *, timeout: float = 30.0, **kwargs) -> httpx.Response:
+    with get_client(timeout=timeout) as client:
         return client.post(path, **kwargs)
 
 
-def api_delete(path: str, **kwargs) -> httpx.Response:
-    with get_client() as client:
+def api_delete(path: str, *, timeout: float = 30.0, **kwargs) -> httpx.Response:
+    with get_client(timeout=timeout) as client:
         return client.delete(path, **kwargs)
 
 
-def api_patch(path: str, **kwargs) -> httpx.Response:
-    with get_client() as client:
+def api_patch(path: str, *, timeout: float = 30.0, **kwargs) -> httpx.Response:
+    with get_client(timeout=timeout) as client:
         return client.patch(path, **kwargs)
 
 
