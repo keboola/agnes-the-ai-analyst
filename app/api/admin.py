@@ -2887,7 +2887,13 @@ def run_corporate_memory(
     """
     from services.corporate_memory.collector import collect_all
 
-    stats = collect_all(dry_run=False)
+    # Fail-fast (#176): collect_all raises ValueError when no ai: block AND
+    # no env keys are present. Surface the actionable factory message in a
+    # 500 instead of letting it crash the request anonymously.
+    try:
+        stats = collect_all(dry_run=False)
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
     AuditRepository(conn).log(
         user_id=user.get("id"),

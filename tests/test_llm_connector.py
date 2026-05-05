@@ -871,7 +871,7 @@ class TestCorporateMemoryCollector:
                 return_value={"ai": {"provider": "anthropic", "api_key": "sk-test"}},
             ),
             patch(
-                "services.corporate_memory.collector.create_extractor",
+                "connectors.llm.create_extractor_from_env_or_config",
                 return_value=mock_extractor,
             ),
         ):
@@ -921,7 +921,7 @@ class TestCorporateMemoryCollector:
                 return_value={"ai": {"provider": "anthropic", "api_key": "sk-test"}},
             ),
             patch(
-                "services.corporate_memory.collector.create_extractor",
+                "connectors.llm.create_extractor_from_env_or_config",
                 return_value=mock_extractor,
             ),
         ):
@@ -991,7 +991,7 @@ class TestCorporateMemoryCollector:
                 return_value={"ai": {"provider": "anthropic", "api_key": "sk-test"}},
             ),
             patch(
-                "services.corporate_memory.collector.create_extractor",
+                "connectors.llm.create_extractor_from_env_or_config",
                 return_value=mock_extractor,
             ),
         ):
@@ -1023,7 +1023,7 @@ class TestCorporateMemoryCollector:
                 return_value={"ai": {"provider": "anthropic", "api_key": "sk-test"}},
             ),
             patch(
-                "services.corporate_memory.collector.create_extractor",
+                "connectors.llm.create_extractor_from_env_or_config",
                 return_value=mock_extractor,
             ),
         ):
@@ -1032,8 +1032,8 @@ class TestCorporateMemoryCollector:
         assert len(stats["errors"]) == 1
         assert "LLM error" in stats["errors"][0]
 
-    def test_collect_all_no_ai_config_skips(self, tmp_path):
-        """collect_all skips when instance.yaml has no ai: section."""
+    def test_collect_all_no_ai_config_or_env_raises(self, tmp_path, monkeypatch):
+        """collect_all fails fast when neither ai: config nor LLM env keys exist (#176)."""
         from services.corporate_memory.collector import collect_all
 
         home = tmp_path / "home"
@@ -1042,6 +1042,10 @@ class TestCorporateMemoryCollector:
         user_dir.mkdir()
         (user_dir / "CLAUDE.local.md").write_text("Some content")
 
+        # Make sure no env-var fallback is available so the factory raises.
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("LLM_API_KEY", raising=False)
+
         with (
             patch("services.corporate_memory.collector.HOME_BASE", home),
             patch("services.corporate_memory.collector._read_json", return_value={}),
@@ -1049,10 +1053,9 @@ class TestCorporateMemoryCollector:
                 "config.loader.load_instance_config",
                 return_value={"server": {"host": "example.com"}},
             ),
+            pytest.raises(ValueError, match="LLM not configured"),
         ):
-            stats = collect_all(dry_run=True)
-
-        assert stats["skipped"] is True
+            collect_all(dry_run=True)
 
 
 # ===================================================================
@@ -1323,8 +1326,8 @@ class TestCollectorExtractorIntegration:
         assert stats["items_extracted"] == 0
         assert stats["errors"] == []
 
-    def test_collector_handles_invalid_config(self, tmp_path):
-        """Collector returns error when config is invalid."""
+    def test_collector_raises_on_invalid_config(self, tmp_path):
+        """Collector fail-fasts (raises ValueError) when ai: config is invalid (#176)."""
         from services.corporate_memory.collector import collect_all
 
         home = tmp_path / "home"
@@ -1340,8 +1343,6 @@ class TestCollectorExtractorIntegration:
                 "config.loader.load_instance_config",
                 return_value={"ai": {"provider": "anthropic", "api_key": ""}},
             ),
+            pytest.raises(ValueError, match="must not be empty"),
         ):
-            stats = collect_all(dry_run=True)
-
-        assert len(stats["errors"]) == 1
-        assert "must not be empty" in stats["errors"][0]
+            collect_all(dry_run=True)
