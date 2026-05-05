@@ -24,7 +24,11 @@ class KeboolaAccess:
     def __init__(self, *, url: str, token: str) -> None:
         if not url or not token:
             raise ValueError("KeboolaAccess requires url and token")
-        self._url = url
+        # Strip trailing slash — the Keboola DuckDB extension's ATTACH
+        # fails with a network error when the URL ends in `/` (e.g. the
+        # canonical `https://connection.<region>.keboola.com/` form).
+        # Bare host works.
+        self._url = url.rstrip("/")
         self._token = token
 
     @contextmanager
