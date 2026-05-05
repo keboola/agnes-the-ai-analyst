@@ -72,10 +72,72 @@ fi
 BEFORE=$(docker images --no-trunc --format '{{.Digest}}' "$IMAGE" | head -1)
 docker compose "${COMPOSE_FILES[@]}" pull >/dev/null 2>&1
 AFTER=$(docker images --no-trunc --format '{{.Digest}}' "$IMAGE" | head -1)
-if [ "$BEFORE" != "$AFTER" ]; then
-    echo "$(date): new digest for $IMAGE — recreating containers"
+
+# Re-fetch the bind-mounted config files (compose overlays + Caddyfile)
+# from the OSS main branch on every tick. Without this, an image-only
+# change is fine, but a change to the Caddyfile or any compose overlay
+# (e.g. a new bind mount, a route, an env_file path) only lands on VMs
+# that get a fresh `startup.sh` boot — leaving long-uptime VMs running
+# the new image against stale config. Confirmed live on 2026-05-05
+# when a Caddyfile change adding a `data:/srv:ro` mount + a new
+# `forward_auth` + `file_server` route for parquet downloads landed
+# in main but stayed inert on running VMs because auto-upgrade only
+# watched image digests.
+#
+# Hash before/after to detect content drift; treat as "trigger recreate"
+# alongside an image digest change. Atomic move-after-fetch guards
+# against a partial download corrupting compose at the next docker
+# action — `curl --fail` plus the `.new` rename means a 404 / network
+# blip leaves the existing file untouched.
+RAW_BASE="https://raw.githubusercontent.com/keboola/agnes-the-ai-analyst/main"
+CONFIG_FILES=(
+  docker-compose.yml docker-compose.prod.yml docker-compose.host-mount.yml
+  docker-compose.tls.yml Caddyfile
+)
+hash_config_files() {
+  # Sort to keep hash stable across operator add/remove, missing files
+  # contribute the empty string (sha256 of "" is well-defined). Run
+  # from /opt/agnes to keep relative paths terse in the hash input.
+  ( cd /opt/agnes && for f in "${CONFIG_FILES[@]}"; do
+      sha256sum "$f" 2>/dev/null || printf 'missing %s\n' "$f"
+    done ) | sort | sha256sum | awk '{print $1}'
+}
+CONFIG_BEFORE=$(hash_config_files)
+for f in "${CONFIG_FILES[@]}"; do
+  if curl -fsSL "$RAW_BASE/$f" -o "/opt/agnes/$f.new" 2>/dev/null; then
+    mv -f "/opt/agnes/$f.new" "/opt/agnes/$f"
+  else
+    rm -f "/opt/agnes/$f.new"
+    logger -t agnes-auto-upgrade "WARN: failed to fetch $f from $RAW_BASE — keeping existing /opt/agnes/$f"
+  fi
+done
+CONFIG_AFTER=$(hash_config_files)
+
+if [ "$BEFORE" != "$AFTER" ] || [ "$CONFIG_BEFORE" != "$CONFIG_AFTER" ]; then
+    REASON=()
+    [ "$BEFORE" != "$AFTER" ] && REASON+=("image digest")
+    [ "$CONFIG_BEFORE" != "$CONFIG_AFTER" ] && REASON+=("config files")
+    echo "$(date): change detected (${REASON[*]}) — recreating containers"
     # ${arr[@]+"${arr[@]}"} pattern: expands to nothing when array is
     # empty (vs. plain "${arr[@]}" which trips `set -u` on bash <4.4).
     docker compose "${COMPOSE_FILES[@]}" ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} up -d
     docker image prune -f >/dev/null 2>&1
+fi
+
+# Self-update: re-fetch *this* script too. Without this, the very fix
+# that lets auto-upgrade watch config files would itself never land on
+# running VMs — a self-perpetuating "old script" problem. Atomic via
+# .new + mv; chmod preserved. The next tick (5 min later) runs the
+# new logic. Skipping if curl fails leaves the existing script in place.
+if curl -fsSL "$RAW_BASE/scripts/ops/agnes-auto-upgrade.sh" \
+   -o /usr/local/bin/agnes-auto-upgrade.sh.new 2>/dev/null; then
+  if ! cmp -s /usr/local/bin/agnes-auto-upgrade.sh.new \
+                /usr/local/bin/agnes-auto-upgrade.sh; then
+    chmod +x /usr/local/bin/agnes-auto-upgrade.sh.new
+    mv -f /usr/local/bin/agnes-auto-upgrade.sh.new \
+          /usr/local/bin/agnes-auto-upgrade.sh
+    logger -t agnes-auto-upgrade "self-update: replaced /usr/local/bin/agnes-auto-upgrade.sh"
+  else
+    rm -f /usr/local/bin/agnes-auto-upgrade.sh.new
+  fi
 fi
