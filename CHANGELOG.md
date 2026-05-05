@@ -10,8 +10,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+
+- `POST /api/sync/trigger` is now singleton per process. A second trigger that arrives while the previous sync is still running returns **HTTP 409** (`detail: sync_already_in_progress`) instead of scheduling a parallel `_run_sync`. The scheduler container's `data-refresh` job logs the 409 as a normal warning and waits for its next tick — no retry loop. Operator-visible: clients that hand-roll their own polling on `/api/sync/trigger` now need to handle 409. Why it matters: two concurrent extractor subprocesses both write `extract.duckdb`, fight for its file lock, starve uvicorn's worker pool, and Docker flips `agnes-app` to `unhealthy` long enough for `reverse_proxy`-fronted deploys to return 503 to external traffic until contention drains.
+
 ### Fixed
 
+- Latent `NameError: name '_sys' is not defined` in `app/api/sync.py:_run_sync` when the function fell into its outer `except Exception` before reaching the inner `import sys as _sys`. Hoisted the import to the top of the body so the error path stays loggable instead of trading the original failure for a misleading stack trace.
 - Keboola sync now falls back to the legacy Storage-API client when the DuckDB Keboola extension's per-table scan fails, not just when the initial `ATTACH` fails. Two changes:
   - `kbcstorage>=0.9.0` is promoted from optional to core dependency. The legacy fallback path in `connectors/keboola/extractor.py:_extract_via_legacy` has been there since the extension landed, but until now the bare `from kbcstorage.client import Client` would crash any default install with `ModuleNotFoundError`.
   - `connectors/keboola/extractor.py:run` now wraps `_extract_via_extension` in a per-table try/except — on any per-table scan failure it retries via the legacy client. Previously, when `ATTACH` succeeded but the table-level `COPY (SELECT * FROM kbc."<bucket>"."<table>")` failed, the table was just marked failed with no retry.
