@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- **Flea market (Blesí Trh)**: community skill marketplace at `/flea-market`. Any signed-in user can submit a `SKILL.md` via the web UI. Skills are available immediately (no nightly sync wait); files are pushed to a backing GitHub repo in the background via a GitHub App. An LLM review warns on potential duplicates or skills requiring credentials/MCP setup but never blocks submission. Configure under `flea_market:` in `instance.yaml` (disabled by default). See `config/instance.yaml.example` for the schema.
+
 ## [0.21.0] — 2026-04-30
 
 ### Internal

@@ -182,6 +182,22 @@ def _refresh_plugin_cache(slug: str) -> int:
         conn.close()
 
 
+def refresh_plugin_cache(slug: str) -> int:
+    """Public wrapper: reload plugins from disk and invalidate the ZIP etag cache.
+
+    Called by the flea-market feature after writing a new skill to disk so the
+    change is visible in the next marketplace.zip / git-channel response without
+    waiting for a nightly sync.
+    """
+    count = _refresh_plugin_cache(slug)
+    try:
+        from app.marketplace_server.packager import invalidate_etag_cache
+        invalidate_etag_cache()
+    except ImportError:
+        pass
+    return count
+
+
 def _get_conn():
     """Lazy import to avoid circular deps with src.db at module load."""
     from src.db import get_system_db

@@ -12,6 +12,9 @@
         {% set _path = request.url.path %}
         <a class="app-nav-link {% if _path == '/dashboard' or _path == '/' %}is-active{% endif %}" href="/dashboard">Dashboard</a>
         <a class="app-nav-link {% if _path.startswith('/install') %}is-active{% endif %}" href="/install">Install CLI</a>
+        {% if config.FLEA_MARKET_ENABLED %}
+        <a class="app-nav-link {% if _path.startswith('/flea-market') %}is-active{% endif %}" href="/flea-market">Community Skills</a>
+        {% endif %}
         {% if session.user.is_admin %}
         <a class="app-nav-link {% if _path.startswith('/admin/marketplaces') %}is-active{% endif %}" href="/admin/marketplaces">Marketplaces</a>
         {% set _admin_active = _path.startswith('/admin/tables') or _path.startswith('/admin/tokens') or _path.startswith('/admin/users') or _path.startswith('/admin/groups') or _path.startswith('/admin/access') or _path.startswith('/admin/server-config') %}

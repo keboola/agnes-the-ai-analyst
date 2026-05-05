@@ -390,3 +390,22 @@ catalog:
 #   schema_cache_ttl_seconds: 3600    # /api/v2/schema/{table_id} cache lifetime (default: 1 h)
 #   sample_cache_ttl_seconds: 3600    # /api/v2/sample/{table_id} cache lifetime (default: 1 h)
 #                                     # Admins can force-refresh via POST /api/v2/sample/{id}?refresh=true
+
+# --- Flea Market (community skill marketplace) ---
+# Optional. When configured, users can submit skills via the Agnes web UI.
+# Skills are served immediately and synced to the backing GitHub repo in the background.
+# flea_market:
+#   marketplace_slug: "flea-market"      # Slug of the registered Agnes marketplace
+#   plugin_name: "flea-market"           # Plugin name inside that marketplace repo
+#   github_repo: "your-org/flea-market"  # GitHub repo to push skills to
+#
+#   # Auth option A — Personal Access Token (simpler, good for private instances)
+#   github_pat: "${FLEA_MARKET_GITHUB_PAT}"
+#
+#   # Auth option B — GitHub App (recommended for shared/production instances)
+#   github_app_id: "${FLEA_MARKET_GITHUB_APP_ID}"
+#   github_app_private_key: "${FLEA_MARKET_GITHUB_APP_PRIVATE_KEY}"
+#   github_app_installation_id: "${FLEA_MARKET_GITHUB_APP_INSTALLATION_ID}"
+#
+#   # GitHub Enterprise Server (omit for public github.com)
+#   github_api_url: "https://<your-github-host>/api/v3"

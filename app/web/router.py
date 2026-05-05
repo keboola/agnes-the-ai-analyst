@@ -224,6 +224,12 @@ def _build_context(
         DEBUG_AUTH_ENABLED = os.environ.get("AGNES_DEBUG_AUTH", "").strip().lower() in (
             "1", "true", "yes",
         )
+        # Show the Community Skills nav link only when flea market is configured.
+        try:
+            from app.api.flea_market import _build_config as _fm_cfg
+            FLEA_MARKET_ENABLED = _fm_cfg() is not None
+        except Exception:
+            FLEA_MARKET_ENABLED = False
         # Google Workspace prefix-mapping config — surfaced into templates
         # so client-side JS can derive a friendly display name from the
         # full Workspace email stored as the group's `name` (admin UI
@@ -900,6 +906,16 @@ async def admin_marketplaces_page(
     """Admin page for marketplace git repositories (register / sync / delete)."""
     ctx = _build_context(request, user=user)
     return templates.TemplateResponse(request, "admin_marketplaces.html", ctx)
+
+
+@router.get("/flea-market", response_class=HTMLResponse)
+async def flea_market_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """Community skill marketplace — submit and browse shared skills."""
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "flea_market.html", ctx)
 
 
 @router.get("/tokens", response_class=HTMLResponse)

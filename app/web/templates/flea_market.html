@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+
+{% block title %}Community Skills — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block content %}
+<div class="container" style="max-width:760px;margin:2rem auto;padding:0 1rem">
+  <h1>Community Skills</h1>
+  <p>Share a skill with your team. Skills are available immediately after submission.
+     No pull request required — use responsibly.</p>
+
+  <form id="submit-form" style="background:#f8f9fa;padding:1.5rem;border-radius:8px;margin-bottom:2rem">
+    <div style="margin-bottom:1rem">
+      <label for="skill-name" style="display:block;font-weight:600;margin-bottom:.25rem">Skill name</label>
+      <input id="skill-name" type="text" placeholder="e.g. summarise-jira-ticket"
+             style="width:100%;padding:.5rem;border:1px solid #ccc;border-radius:4px;box-sizing:border-box" required>
+      <small style="color:#666">Lowercase letters, digits, and hyphens only.</small>
+    </div>
+    <div style="margin-bottom:1rem">
+      <label for="skill-desc" style="display:block;font-weight:600;margin-bottom:.25rem">One-line description</label>
+      <input id="skill-desc" type="text" placeholder="What does this skill do?"
+             style="width:100%;padding:.5rem;border:1px solid #ccc;border-radius:4px;box-sizing:border-box" required>
+    </div>
+    <div style="margin-bottom:1rem">
+      <label for="skill-body" style="display:block;font-weight:600;margin-bottom:.25rem">Skill body (Markdown)</label>
+      <textarea id="skill-body" rows="10" placeholder="# Title&#10;&#10;Describe what Claude should do..."
+                style="width:100%;padding:.5rem;border:1px solid #ccc;border-radius:4px;font-family:monospace;box-sizing:border-box" required></textarea>
+    </div>
+    <button type="submit" style="background:#0d6efd;color:#fff;padding:.5rem 1.5rem;border:none;border-radius:4px;cursor:pointer">
+      Submit skill
+    </button>
+    <div id="result" style="margin-top:1rem"></div>
+  </form>
+
+  <h2>Available community skills</h2>
+  <div id="skills-list"><em>Loading&#8230;</em></div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  function loadSkills() {
+    fetch("/api/flea-market/skills")
+      .then(function (r) { return r.json(); })
+      .then(function (data) { renderSkills(data.skills || []); })
+      .catch(function () { renderSkills([]); });
+  }
+
+  function renderSkills(skills) {
+    var container = document.getElementById("skills-list");
+    // Safe clear: no user data, static empty string only
+    while (container.firstChild) { container.removeChild(container.firstChild); }
+    if (!skills.length) {
+      container.textContent = "No community skills yet — be the first!";
+      return;
+    }
+    skills.forEach(function (s) {
+      var div = document.createElement("div");
+      div.style.cssText = "padding:.6rem 1rem;border:1px solid #dee2e6;border-radius:4px;margin-bottom:.5rem;display:flex;justify-content:space-between;align-items:center";
+
+      var code = document.createElement("code");
+      code.textContent = "/flea-market:" + s.name;
+
+      var sep = document.createTextNode(" — ");
+
+      var desc = document.createElement("span");
+      desc.style.color = "#666";
+      desc.textContent = s.description;
+
+      div.appendChild(code);
+      div.appendChild(sep);
+      div.appendChild(desc);
+      container.appendChild(div);
+    });
+  }
+
+  document.getElementById("submit-form").addEventListener("submit", function (e) {
+    e.preventDefault();
+    var resultDiv = document.getElementById("result");
+    // Safe clear: no user data, static empty string only
+    while (resultDiv.firstChild) { resultDiv.removeChild(resultDiv.firstChild); }
+
+    var payload = {
+      name: document.getElementById("skill-name").value,
+      description: document.getElementById("skill-desc").value,
+      body: document.getElementById("skill-body").value
+    };
+
+    fetch("/api/flea-market/submit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, status: r.status, data: d }; }); })
+      .then(function (result) {
+        if (!result.ok) {
+          showMessage(resultDiv, "error", result.data.detail || "Submission failed.");
+          return;
+        }
+        showSuccess(resultDiv, result.data);
+        document.getElementById("submit-form").reset();
+        loadSkills();
+      })
+      .catch(function () {
+        showMessage(resultDiv, "error", "Network error — please try again.");
+      });
+  });
+
+  function showMessage(container, type, text) {
+    var colors = { error: "#842029", warning: "#664d03", success: "#0f5132" };
+    var bgColors = { error: "#f8d7da", warning: "#fff3cd", success: "#d1e7dd" };
+    var div = document.createElement("div");
+    div.style.cssText = "padding:.75rem 1rem;border-radius:4px;margin-top:.5rem";
+    div.style.color = colors[type] || "#000";
+    div.style.backgroundColor = bgColors[type] || "#eee";
+    div.textContent = text;
+    container.appendChild(div);
+  }
+
+  function showSuccess(container, data) {
+    var successDiv = document.createElement("div");
+    successDiv.style.cssText = "padding:.75rem 1rem;border-radius:4px;margin-top:.5rem;background:#d1e7dd;color:#0f5132";
+
+    var bold = document.createElement("b");
+    bold.textContent = "Submitted: ";
+    var code = document.createElement("code");
+    code.textContent = "/flea-market:" + data.skill_name;
+    successDiv.appendChild(bold);
+    successDiv.appendChild(code);
+    successDiv.appendChild(document.createTextNode(" is now available."));
+    container.appendChild(successDiv);
+
+    if (data.warning) {
+      showMessage(container, "warning", "⚠️ " + data.warning);
+    }
+  }
+
+  loadSkills();
+}());
+</script>
+{% endblock %}

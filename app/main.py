@@ -117,6 +117,7 @@ from app.api.v2_schema import router as v2_schema_router
 from app.api.v2_sample import router as v2_sample_router
 from app.api.v2_scan import router as v2_scan_router
 from app.api.marketplaces import router as marketplaces_router
+from app.api.flea_market import router as flea_market_router
 from app.marketplace_server.router import router as marketplace_server_router
 from app.marketplace_server.git_router import make_git_wsgi_app
 from app.web.router import router as web_router
@@ -134,6 +135,12 @@ async def lifespan(app):
         log_effective_policy()
     except Exception:
         pass  # never block startup on a logging convenience
+    try:
+        from app.api.flea_market import _build_config, start_retry_loop
+        if _build_config() is not None:
+            start_retry_loop()
+    except Exception:
+        pass  # never block startup
     yield
     from src.db import close_system_db
     close_system_db()
@@ -517,6 +524,7 @@ def create_app() -> FastAPI:
     app.include_router(v2_sample_router)
     app.include_router(v2_scan_router)
     app.include_router(marketplaces_router)
+    app.include_router(flea_market_router)
     app.include_router(marketplace_server_router)
 
     # Git smart-HTTP endpoint for Claude Code: /marketplace.git/*
