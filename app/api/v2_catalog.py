@@ -127,8 +127,17 @@ def build_catalog(conn: duckdb.DuckDBPyConnection, user: dict) -> dict:
 
 
 @router.get("/catalog")
-async def catalog(
+def catalog(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
+    # Plain ``def`` so FastAPI auto-offloads to the anyio thread pool —
+    # build_catalog now calls `_materialized_size_hint` for every visible
+    # row, which does sync `Path.stat()` / `Path.exists()` on the data
+    # volume. On local FS that's microseconds, but on a network-mounted
+    # DATA_DIR (NFS / CIFS / GCS-FUSE) those calls can block. Plain ``def``
+    # means each request runs on its own thread; the event loop stays
+    # free for non-catalog traffic. Mirrors the Tier 1 conversion of
+    # /api/query, /api/v2/scan, /api/v2/sample, /api/v2/schema —
+    # Devin Review on PR #188.
     return build_catalog(conn, user)

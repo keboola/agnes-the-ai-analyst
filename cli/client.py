@@ -212,10 +212,19 @@ def stream_download(path: str, target_path: str, progress_callback=None) -> int:
                 break
             time.sleep(_RETRY_BACKOFFS_S[min(attempt, len(_RETRY_BACKOFFS_S) - 1)])
     # Clean up any leftover tmp, then surface the last exception. Translate
-    # transport errors to AgnesTransportError so the CLI prints a clean
-    # message instead of a Python traceback (Pavel's #185 Phase 3B).
+    # transport errors (timeouts, connection drops, protocol errors) to
+    # AgnesTransportError so the CLI prints a clean message instead of a
+    # Python traceback (Pavel's #185 Phase 3B). HTTPStatusError (4xx/5xx
+    # response from the server) is NOT a transport failure and must
+    # re-raise verbatim so the caller's status-code handling + the rich
+    # server error body (e.g. 401 with "token expired", 403 with
+    # cross_project_forbidden detail) reach the analyst — Devin Review on
+    # PR #188 caught: HTTPStatusError is a subclass of HTTPError, so the
+    # generic isinstance(HTTPError) translation was eating status codes.
     tmp_path.unlink(missing_ok=True)
     assert last_exc is not None
+    if isinstance(last_exc, httpx.HTTPStatusError):
+        raise last_exc
     if isinstance(last_exc, httpx.HTTPError):
         raise _translate_transport_error(
             last_exc, context=f"GET {path} (stream → {target_path})"
