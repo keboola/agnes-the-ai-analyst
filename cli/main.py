@@ -123,5 +123,41 @@ app.add_typer(snapshot_app, name="snapshot")
 app.add_typer(disk_info_app, name="disk-info")
 
 
+def _run_with_clean_errors() -> None:
+    """Wrap ``app()`` so AgnesTransportError (and other typed CLI errors)
+    surface as a one-line message + exit, never as a Python traceback. The
+    full traceback is already logged to ``~/.config/agnes/last-error.log``
+    by the api_* helpers — operators read it from there for support
+    forwarding. Anything that escapes this wrapper IS a CLI bug worth
+    fixing — log + print "internal error" so the analyst doesn't see a
+    Pythonist's traceback either.
+
+    Pavel's #185 Phase 3B: previously a `httpx.ReadTimeout` from an
+    `agnes query --remote` against a slow BQ view dumped a 30-frame
+    traceback to the analyst's terminal. Now: one clean line + a hint,
+    return code 1.
+    """
+    from cli.client import AgnesTransportError, _log_traceback, _LOG_FILE
+    try:
+        app()
+    except (AgnesTransportError) as exc:
+        typer.echo(f"Error: {exc.user_message}", err=True)
+        if exc.hint:
+            typer.echo(exc.hint, err=True)
+        sys.exit(1)
+    except typer.Exit:
+        raise
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception as exc:  # last-resort net — escaped exceptions are bugs
+        log = _log_traceback(exc, context="unhandled at CLI top-level")
+        typer.echo(
+            f"Error: internal CLI error ({type(exc).__name__}). "
+            f"Full traceback logged to {log}.",
+            err=True,
+        )
+        sys.exit(1)
+
+
 if __name__ == "__main__":
-    app()
+    _run_with_clean_errors()

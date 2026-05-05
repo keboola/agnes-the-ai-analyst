@@ -152,7 +152,7 @@ class TestBqAccessErrors:
             # Endpoint is async — drive it directly. dependency_overrides only
             # fires through TestClient/HTTP, so pass `bq=bq` explicitly.
             with pytest.raises(HTTPException) as exc_info:
-                asyncio.run(v2_sample.sample(
+                (v2_sample.sample(
                     table_id="bq_view", n=5, user=user, conn=conn, bq=bq,
                 ))
         finally:
@@ -182,7 +182,7 @@ class TestBqAccessErrors:
             user = {"id": "admin1", "email": "a@x.com"}
 
             with pytest.raises(HTTPException) as exc_info:
-                asyncio.run(v2_sample.sample(
+                (v2_sample.sample(
                     table_id="bq_view", n=5, user=user, conn=conn, bq=bq,
                 ))
         finally:
@@ -211,7 +211,7 @@ class TestBqAccessErrors:
             user = {"id": "admin1", "email": "a@x.com"}
 
             with pytest.raises(HTTPException) as exc_info:
-                asyncio.run(v2_sample.sample(
+                (v2_sample.sample(
                     table_id="bq_view", n=5, user=user, conn=conn, bq=bq,
                 ))
         finally:
@@ -248,7 +248,7 @@ class TestBqAccessErrors:
         try:
             _seed(conn)
             user = {"id": "admin1", "email": "a@x.com"}
-            asyncio.run(v2_sample.sample(
+            (v2_sample.sample(
                 table_id="bq_view", n=5, user=user, conn=conn, bq=bq,
             ))
         finally:

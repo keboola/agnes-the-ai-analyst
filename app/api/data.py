@@ -1,6 +1,6 @@
 """Data download endpoint — streaming parquet files."""
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 import duckdb
 
@@ -12,6 +12,36 @@ from src.rbac import can_access_table
 router = APIRouter(prefix="/api/data", tags=["data"])
 
 
+@router.get("/{table_id}/check-access")
+async def check_access(
+    table_id: str,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Lightweight RBAC probe used by Caddy's ``forward_auth`` directive
+    to gate file_server-served parquet downloads without involving the
+    app's request workers in the bulk byte transfer.
+
+    Returns HTTP 204 No Content when the caller has read access to
+    ``table_id``; HTTP 403 (via ``can_access_table`` returning False)
+    otherwise. Caddy treats 2xx as authorized and forwards the request
+    to its own ``file_server`` block; non-2xx is returned to the client
+    verbatim.
+
+    Why a separate endpoint and not just ``HEAD /download``: ``HEAD`` on
+    the FileResponse-based ``download`` handler still opens the file and
+    runs stat() to populate Content-Length / ETag. ``forward_auth`` calls
+    this endpoint on every request, so the per-call cost matters; a pure
+    RBAC check is ~1 ms while a HEAD path involves filesystem walks
+    (``rglob`` for the parquet across source subdirs).
+    """
+    if not _SAFE_QUOTED_IDENTIFIER.match(table_id):
+        raise HTTPException(status_code=404, detail="Table not found")
+    if not can_access_table(user, table_id, conn):
+        raise HTTPException(status_code=403, detail="Access denied to this table")
+    return Response(status_code=204)
+
+
 @router.get("/{table_id}/download")
 async def download_table(
     table_id: str,
@@ -19,7 +49,16 @@ async def download_table(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Stream a parquet file for download. Supports ETag for caching."""
+    """Stream a parquet file for download. Supports ETag for caching.
+
+    On Caddy-fronted deployments the matching Caddyfile rule intercepts
+    ``GET /api/data/{table_id}/download``, calls ``check-access`` via
+    ``forward_auth``, and serves the parquet directly via ``file_server``
+    — bypassing this handler entirely. This handler stays as the
+    canonical fallback for non-Caddy deployments (dev `docker compose
+    up`, alternative reverse proxies, direct :8000 access) where the
+    bulk transfer goes through uvicorn.
+    """
     # Reject unsafe table_id before any filesystem or DB operations.
     # Use the relaxed quoted-identifier check that allows dots and hyphens
     # (Keboola table IDs like "in.c-crm.orders") while still blocking
@@ -53,7 +92,6 @@ async def download_table(
     etag = f'"{stat.st_mtime_ns}"'
     if_none_match = request.headers.get("if-none-match")
     if if_none_match == etag:
-        from starlette.responses import Response
         return Response(status_code=304)
 
     return FileResponse(

@@ -161,7 +161,7 @@ class TestBqAccessErrors:
             # Endpoint is async — drive it directly. dependency_overrides only
             # fires through TestClient/HTTP, so pass `bq=bq` explicitly.
             with pytest.raises(HTTPException) as exc_info:
-                asyncio.run(v2_schema.schema(
+                (v2_schema.schema(
                     table_id="bq_view", user=user, conn=conn, bq=bq,
                 ))
         finally:
@@ -191,7 +191,7 @@ class TestBqAccessErrors:
             _seed_bq_table(conn)
             user = {"id": "admin1", "email": "a@x.com"}
             with pytest.raises(HTTPException) as exc_info:
-                asyncio.run(v2_schema.schema(
+                (v2_schema.schema(
                     table_id="bq_view", user=user, conn=conn, bq=bq,
                 ))
         finally:
@@ -217,7 +217,7 @@ class TestBqAccessErrors:
             _seed_bq_table(conn)
             user = {"id": "admin1", "email": "a@x.com"}
             with pytest.raises(HTTPException) as exc_info:
-                asyncio.run(v2_schema.schema(
+                (v2_schema.schema(
                     table_id="bq_view", user=user, conn=conn, bq=bq,
                 ))
         finally:
@@ -259,7 +259,7 @@ class TestBqAccessErrors:
         try:
             _seed_bq_table(conn)
             user = {"id": "admin1", "email": "a@x.com"}
-            data = asyncio.run(v2_schema.schema(
+            data = (v2_schema.schema(
                 table_id="bq_view", user=user, conn=conn, bq=_bq(),
             ))
         finally:
@@ -322,7 +322,7 @@ class TestBqAccessErrors:
         try:
             _seed_bq_table(conn)
             user = {"id": "admin1", "email": "a@x.com"}
-            asyncio.run(v2_schema.schema(
+            (v2_schema.schema(
                 table_id="bq_view", user=user, conn=conn, bq=bq,
             ))
         finally:

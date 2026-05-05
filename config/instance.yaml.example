@@ -127,6 +127,14 @@ data_source:
     #                                    # Dry-run check before running; exceeding -> registration / sync
     #                                    # rejected. Default 10 GiB (10737418240). Set 0 to disable.
     #                                    # null falls through to default. Configurable via /admin/server-config UI.
+    # query_timeout_ms: 600000
+    #                                    # DuckDB BigQuery extension query timeout (milliseconds).
+    #                                    # Applied via `SET bq_query_timeout_ms` after every LOAD bigquery
+    #                                    # on every BQ-touching DuckDB session. Extension default is
+    #                                    # 90 000 ms = 90 s, which is too tight for analyst queries against
+    #                                    # view-backed datasets -- bumped to 600 000 ms = 10 min by default.
+    #                                    # Set 0 to fall through to the extension default. Configurable via
+    #                                    # /admin/server-config UI.
 
 # --- OpenMetadata catalog (optional) ---
 # Enriches table and column metadata from OpenMetadata REST API.

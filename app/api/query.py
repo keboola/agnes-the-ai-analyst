@@ -71,12 +71,23 @@ class QueryResponse(BaseModel):
 
 
 @router.post("", response_model=QueryResponse)
-async def execute_query(
+def execute_query(
     request: QueryRequest,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Execute SQL against the server analytics DuckDB."""
+    """Execute SQL against the server analytics DuckDB.
+
+    Plain ``def`` (not ``async def``) so FastAPI auto-offloads the call
+    to the anyio thread pool. The body invokes ``analytics.execute(sql)``
+    synchronously, which blocks for the full BQ jobs.query wait when a
+    referenced view resolves through the BQ extension. Under ``async def``
+    that block holds the single uvicorn event loop, freezing every other
+    request (UI, /api/health, auth) until the query returns. Plain ``def``
+    runs each invocation on its own thread, so heavy queries no longer
+    starve unrelated endpoints. See PR #188's CHANGELOG entry for the
+    Tier 1 event-loop unblocking rollout.
+    """
     sql_lower = request.sql.strip().lower()
 
     # Block everything except SELECT

@@ -38,6 +38,15 @@ def pull(
     quiet: bool = typer.Option(False, "--quiet", help="Suppress success stdout (errors still surface on stderr)"),
     as_json: bool = typer.Option(False, "--json", help="Emit a single JSON object summarizing the pull"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Compute the delta without writing anything to disk"),
+    skip_materialize: bool = typer.Option(
+        False, "--skip-materialize",
+        help=(
+            "Skip materialized-mode tables (server-side scheduled BQ "
+            "scan results, often multi-GB). Their data is still discoverable "
+            "via `agnes catalog` and remote-mode tables still pull. Useful "
+            "for a fast first init when an analyst only needs --remote access."
+        ),
+    ),
 ):
     """Refresh data from the server into ./server/parquet + ./user/duckdb."""
     server_url = get_server_url()
@@ -68,8 +77,17 @@ def pull(
 
     workspace = Path(os.environ.get("AGNES_LOCAL_DIR", ".")).resolve()
 
+    # Show progress unless quiet (SessionStart hooks) or json (machine-
+    # readable output where Rich's terminal-control sequences would be
+    # garbage in the consumer's parser).
+    show_progress = not (quiet or as_json)
     try:
-        result: PullResult = run_pull(server_url, token, workspace, dry_run=dry_run)
+        result: PullResult = run_pull(
+            server_url, token, workspace,
+            dry_run=dry_run,
+            skip_materialize=skip_materialize,
+            show_progress=show_progress,
+        )
     except Exception as exc:
         # `run_pull` is documented to record per-table / per-stage failures
         # under `result.errors` rather than raising, so reaching this branch
