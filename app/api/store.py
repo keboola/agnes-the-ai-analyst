@@ -815,20 +815,26 @@ async def create_entity(
 
     video_url = _validate_video_url(video_url)
 
-    # Stream + extract ZIP into a scratch dir.
+    # Stream + extract ZIP into a scratch dir. Both the temp-file (`tmp`)
+    # AND the scratch dir need cleanup on every exit path, including
+    # validation HTTPExceptions raised inside _safe_zip_extract
+    # (zip_unsafe_path, zip_too_large_uncompressed) and the BadZipFile→422
+    # conversion. Pre-fix the scratch was created in one try/finally and
+    # cleaned up in a SEPARATE one — when extraction raised, control
+    # exited the first scope and the second never ran, leaking the dir.
+    # Single try/finally fixes both.
     tmp, size = await _stream_to_temp(file, MAX_ZIP_SIZE, suffix=".zip")
+    tmp.close()
+    scratch = Path(tempfile.mkdtemp(prefix="agnes_store_"))
     try:
-        tmp.close()
-        scratch = Path(tempfile.mkdtemp(prefix="agnes_store_"))
         try:
             with zipfile.ZipFile(tmp.name, "r") as zf:
                 _safe_zip_extract(zf, scratch)
         except zipfile.BadZipFile:
             raise HTTPException(status_code=422, detail="zip_invalid")
-    finally:
-        Path(tmp.name).unlink(missing_ok=True)
+        finally:
+            Path(tmp.name).unlink(missing_ok=True)
 
-    try:
         meta = _validate_and_extract_metadata(type, scratch)
         final_name = (name or meta.get("name") or "").strip()
         if not final_name:
@@ -925,19 +931,21 @@ async def update_entity(
     new_version: Optional[str] = None
     new_size: Optional[int] = None
     if file is not None:
+        # Same single-try/finally invariant as create_entity — see the comment
+        # there. ZIP-validation HTTPExceptions raised inside _safe_zip_extract
+        # were leaking the scratch dir before this restructure.
         tmp, size = await _stream_to_temp(file, MAX_ZIP_SIZE, suffix=".zip")
+        tmp.close()
+        scratch = Path(tempfile.mkdtemp(prefix="agnes_store_"))
         try:
-            tmp.close()
-            scratch = Path(tempfile.mkdtemp(prefix="agnes_store_"))
             try:
                 with zipfile.ZipFile(tmp.name, "r") as zf:
                     _safe_zip_extract(zf, scratch)
             except zipfile.BadZipFile:
                 raise HTTPException(status_code=422, detail="zip_invalid")
-        finally:
-            Path(tmp.name).unlink(missing_ok=True)
+            finally:
+                Path(tmp.name).unlink(missing_ok=True)
 
-        try:
             _validate_and_extract_metadata(entity["type"], scratch)
             suffixed = suffixed_name(entity["name"], entity["owner_username"])
             new_size = _bake_plugin_tree(

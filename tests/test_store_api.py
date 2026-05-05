@@ -588,6 +588,40 @@ class TestStoreSecurityFixes:
         assert r2.status_code == 409, r2.text
         assert r2.json()["detail"] == "conflict_global_suffix"
 
+    def test_scratch_dir_cleaned_up_after_failed_extraction(self, web_client, monkeypatch):
+        """Devin: ZIP-validation failure inside _safe_zip_extract was leaving
+        the ``agnes_store_*`` scratch dir on disk because scratch creation
+        and cleanup lived in different try/finally scopes. After the fix
+        both share one outer try/finally; assert the dir really is gone.
+        """
+        import tempfile as _tempfile
+        from pathlib import Path as _Path
+
+        # A ZIP whose only member traverses out of the destination —
+        # _safe_zip_extract raises 422 zip_unsafe_path before it touches
+        # extractall. That's the simplest trigger that exits via
+        # HTTPException without doing anything to scratch.
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("../escape.txt", "boom")
+        bad_zip = buf.getvalue()
+
+        tmp_root = _Path(_tempfile.gettempdir())
+        before = {p.name for p in tmp_root.glob("agnes_store_*")}
+
+        _, cookies = _create_user(web_client, "leak@x.com")
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("bad.zip", bad_zip, "application/zip")},
+            data={"type": "skill"}, cookies=cookies,
+        )
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"] == "zip_unsafe_path"
+
+        after = {p.name for p in tmp_root.glob("agnes_store_*")}
+        leaked = after - before
+        assert not leaked, f"scratch dir leaked: {leaked}"
+
     def test_distinct_suffixes_pass(self, web_client):
         """F5 — uploads that yield distinct suffixed names must pass. (Avoid
         regressing into rejecting all distinct uploads.)"""

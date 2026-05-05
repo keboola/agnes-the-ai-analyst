@@ -82,6 +82,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   gates the Edit/Delete buttons on `is_owner OR is_admin`. Pre-fix, an
   admin could delete via the API but saw no Edit/Delete affordance in the
   UI, and could not update non-owned entities at all.
+- **Scratch directory leak on ZIP validation failure** (`app/api/store.py`,
+  Devin Review) — `create_entity` and `update_entity` created the `scratch`
+  temp dir inside one `try/finally` block but cleaned it up in a separate
+  one. When `_safe_zip_extract` raised `HTTPException` (zip-slip,
+  uncompressed-too-large) or `BadZipFile` was caught and re-raised, the
+  exception exited the first scope and the cleanup `finally` was never
+  reached. Each failed upload leaked a temp dir. Fixed by collapsing
+  scratch creation + cleanup into a single outer `try/finally` covering
+  both extraction and the metadata/bake work.
 - **Cross-owner suffix collision** (`app/api/store.py:create_entity`) —
   `sanitize_username` is many-to-one (`alice.smith` and `alice_smith`
   both → `alice-smith`). Two such users uploading entities with the same
