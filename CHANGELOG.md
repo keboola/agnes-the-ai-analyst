@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.36.0] — 2026-05-05
+
+Combined performance + analyst-clarity bundle. Folds three previously-staged work streams into one PR (#188): the long-running `agnes query --remote` timeout (#181), the Caddy parquet-download bypass (#182), and Pavel's #185 Phase 1 trace findings (silent 44-min first-init, opaque CLI tracebacks, no analyst-Claude size signal). Also performs the Tier 1 event-loop unblocking — the five hottest BQ-touching endpoints were `async def` over synchronous DuckDB / BQ-extension calls, so a single heavy `agnes query --remote` froze every other request for the duration of the BQ wait. The image-side fixes ship in this release; for existing VMs, the new auto-upgrade.sh self-fetches the matching Caddyfile + compose overlays from `main` on its next 5-minute tick, so deployment requires no operator action beyond letting the cron run.
+
 ### Added
 - **`agnes init` / `agnes pull --skip-materialize`** — opts the first sync out of materialized-mode tables (server-side scheduled-query parquets, often multi-GB). Pavel's #185 Phase 1: a single 6.3 GB `order_economics` parquet kept first init silent for 44 minutes. Materialized rows stay discoverable via `agnes catalog`; rerun without the flag once the analyst actually needs them locally.
 - **`agnes pull` progress bar** — Rich-driven aggregate transfer display rendered to stderr when not `--quiet` and not `--json`. Per-file label + bytes / total / rate / ETA, aggregated across the parallel `ThreadPoolExecutor` workers introduced earlier in this PR. Replaces the prior 0-stdout silence on first init.
@@ -32,6 +36,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- **CLI ReadTimeout message reports the actual httpx timeout** (was hardcoded to `QUERY_TIMEOUT_S` = 300s). On a 30s-default call (`agnes catalog`, `agnes auth`, …) the analyst saw "didn't respond within the read timeout (300s)" while the call had actually given up after 30s — confusing and unactionable. The translator now takes the real timeout from the calling helper and renders it; the long-running-BQ advisory only appears for calls where the timeout was set ≥ 60s. Devin Review on PR #188.
 - Keboola sync now falls back to the legacy Storage-API client when the DuckDB Keboola extension's per-table scan fails, not just when the initial `ATTACH` fails. Two changes:
   - `kbcstorage>=0.9.0` is promoted from optional to core dependency. The legacy fallback path in `connectors/keboola/extractor.py:_extract_via_legacy` has been there since the extension landed, but until now the bare `from kbcstorage.client import Client` would crash any default install with `ModuleNotFoundError`.
   - `connectors/keboola/extractor.py:run` now wraps `_extract_via_extension` in a per-table try/except — on any per-table scan failure it retries via the legacy client. Previously, when `ATTACH` succeeded but the table-level `COPY (SELECT * FROM kbc."<bucket>"."<table>")` failed, the table was just marked failed with no retry.

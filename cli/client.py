@@ -68,23 +68,43 @@ def _log_traceback(exc: BaseException, *, context: str) -> Path:
     return _LOG_FILE
 
 
-def _translate_transport_error(exc: Exception, *, context: str) -> AgnesTransportError:
+def _translate_transport_error(
+    exc: Exception, *, context: str, timeout_s: float | None = None,
+) -> AgnesTransportError:
     """Map httpx transport exceptions to user-facing CLI messages. The
     mapping is intentionally pragmatic — analysts care about "what do I
-    do next", not the gRPC / TCP detail."""
+    do next", not the gRPC / TCP detail.
+
+    `timeout_s`, when supplied, is the actual httpx timeout used by the
+    failing call so the ReadTimeout message reports the real wait window
+    (a `agnes catalog` GET dies at 30s, not 300s — Devin Review on PR
+    #188 caught the original signature hardcoding `QUERY_TIMEOUT_S`,
+    which only matches `agnes query --remote`)."""
     log = _log_traceback(exc, context=context)
     if isinstance(exc, httpx.ReadTimeout):
-        return AgnesTransportError(
-            f"Server didn't respond within the read timeout ({QUERY_TIMEOUT_S:.0f}s) "
-            f"for {context}.",
-            hint=(
+        wait_s = timeout_s if timeout_s is not None else QUERY_TIMEOUT_S
+        # The "long-running BQ" advisory only makes sense when the call
+        # actually hit the query path (timeout ≥ ~60s). For short calls
+        # (the 30s default on `agnes catalog` etc.) it's just confusing.
+        if wait_s >= 60:
+            hint = (
                 "If this is `agnes query --remote` against a heavy BQ view, "
                 "the underlying BQ job took longer than the wait window. Try:\n"
                 "  • narrow the WHERE (especially the partition column from `agnes catalog --json`)\n"
                 "  • `agnes snapshot create <table> ... --estimate` to materialize once + query locally\n"
                 "  • set AGNES_QUERY_TIMEOUT=600 for a longer client-side wait\n"
                 f"Full traceback: {log}"
-            ),
+            )
+        else:
+            hint = (
+                "Server is slow or unreachable. Check `agnes status`; "
+                "re-run if transient.\n"
+                f"Full traceback: {log}"
+            )
+        return AgnesTransportError(
+            f"Server didn't respond within the read timeout ({wait_s:.0f}s) "
+            f"for {context}.",
+            hint=hint,
             logfile_path=log,
         )
     if isinstance(exc, httpx.ConnectError):
@@ -140,7 +160,7 @@ def api_get(path: str, *, timeout: float = 30.0, **kwargs) -> httpx.Response:
         with get_client(timeout=timeout) as client:
             return client.get(path, **kwargs)
     except httpx.HTTPError as exc:
-        raise _translate_transport_error(exc, context=f"GET {path}") from exc
+        raise _translate_transport_error(exc, context=f"GET {path}", timeout_s=timeout) from exc
 
 
 def api_post(path: str, *, timeout: float = 30.0, **kwargs) -> httpx.Response:
@@ -148,7 +168,7 @@ def api_post(path: str, *, timeout: float = 30.0, **kwargs) -> httpx.Response:
         with get_client(timeout=timeout) as client:
             return client.post(path, **kwargs)
     except httpx.HTTPError as exc:
-        raise _translate_transport_error(exc, context=f"POST {path}") from exc
+        raise _translate_transport_error(exc, context=f"POST {path}", timeout_s=timeout) from exc
 
 
 def api_delete(path: str, *, timeout: float = 30.0, **kwargs) -> httpx.Response:
@@ -156,7 +176,7 @@ def api_delete(path: str, *, timeout: float = 30.0, **kwargs) -> httpx.Response:
         with get_client(timeout=timeout) as client:
             return client.delete(path, **kwargs)
     except httpx.HTTPError as exc:
-        raise _translate_transport_error(exc, context=f"DELETE {path}") from exc
+        raise _translate_transport_error(exc, context=f"DELETE {path}", timeout_s=timeout) from exc
 
 
 def api_patch(path: str, *, timeout: float = 30.0, **kwargs) -> httpx.Response:
@@ -164,7 +184,7 @@ def api_patch(path: str, *, timeout: float = 30.0, **kwargs) -> httpx.Response:
         with get_client(timeout=timeout) as client:
             return client.patch(path, **kwargs)
     except httpx.HTTPError as exc:
-        raise _translate_transport_error(exc, context=f"PATCH {path}") from exc
+        raise _translate_transport_error(exc, context=f"PATCH {path}", timeout_s=timeout) from exc
 
 
 def _is_transient(exc: Exception) -> bool:
@@ -227,6 +247,7 @@ def stream_download(path: str, target_path: str, progress_callback=None) -> int:
         raise last_exc
     if isinstance(last_exc, httpx.HTTPError):
         raise _translate_transport_error(
-            last_exc, context=f"GET {path} (stream → {target_path})"
+            last_exc, context=f"GET {path} (stream → {target_path})",
+            timeout_s=300.0,
         ) from last_exc
     raise last_exc
