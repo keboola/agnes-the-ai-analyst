@@ -51,11 +51,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `cli/v2_client.py` (`api_post_multipart` / `api_put_multipart` /
   `api_get_stream`) so future multipart and binary-download endpoints
   don't have to roll their own httpx wiring.
-- **CLI: `agnes admin store push`** — admin-only Store bulk restore.
-  Wraps `POST /api/store/import-bundle` with mode=merge|replace|skip and
-  client-side zipping when the source is a directory (so a backup git
-  repo's working tree can go straight back into Agnes via a single
-  command).
+- **CLI: `agnes admin store {pull,push,info}`** — operator-flavored
+  bulk Store ops. ``pull`` and ``info`` share the open
+  `GET /api/store/bundle.zip` / `/entities` endpoints; ``push`` wraps
+  the admin-gated `POST /api/store/import-bundle`. ``push`` accepts
+  either a *.zip file or a directory containing `manifest.json` +
+  `entities/` (CLI zips a directory client-side, so a backup git
+  repo's working tree round-trips straight back into Agnes via a
+  single command).
+- **CLI: `agnes store mine`** — analyst-facing self-bundle. Same
+  endpoint as `admin store pull`, scoped via `?owner=me` (server
+  resolves the magic value to the caller's user_id) so authors can
+  archive their own uploads without admin role.
 - **REST: `GET /api/store/bundle.zip`** — deterministic ZIP of all
   (filtered) Store entities for whole-Store backup. Layout:
   `manifest.json` at the top with per-entity metadata + `owner_email`

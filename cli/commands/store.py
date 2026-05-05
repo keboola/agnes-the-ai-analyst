@@ -216,64 +216,43 @@ def update_entity(
 
 
 # ---------------------------------------------------------------------------
-# Bundle: pull + info (read paths, any authenticated user).
-# Bulk restore (push) lives under `agnes admin store push` because the
-# server-side endpoint is admin-only.
+# `agnes store mine` — bundle of the caller's OWN entities (creator scope).
+#
+# Whole-Store bulk reads (`pull` / `info`) live under `agnes admin store`
+# because operationally they're backup tooling for operators. This stays
+# in user namespace because every authenticated user is allowed to grab
+# a backup of their own creations (offline archive, leaving the org,
+# moving to another instance).
 # ---------------------------------------------------------------------------
 
 
-@store_app.command("pull")
-def pull_bundle(
-    type: Optional[str] = typer.Option(None, "--type", help="skill | agent | plugin"),
-    category: Optional[str] = typer.Option(None, "--category"),
-    owner: Optional[str] = typer.Option(None, "--owner", help="Filter by owner user_id"),
-    search: Optional[str] = typer.Option(None, "--search", "-q"),
+@store_app.command("mine")
+def pull_my_entities(
     out: Path = typer.Option(
-        Path("agnes-store-bundle.zip"), "-o", "--out",
-        help="Where to save the ZIP (default: ./agnes-store-bundle.zip)",
+        Path("my-store-entities.zip"), "-o", "--out",
+        help="Where to save the ZIP (default: ./my-store-entities.zip)",
     ),
     unpack: Optional[Path] = typer.Option(
         None, "--unpack",
-        help="Instead of saving the ZIP, unpack it into this directory. "
-             "Useful for committing a snapshot to a backup git repo: "
-             "`agnes store pull --unpack ./backup/ && cd backup && git add .`",
+        help="Instead of saving the ZIP, unpack it into this directory.",
     ),
 ):
-    """Download the whole Store as a deterministic ZIP.
+    """Download a bundle of every Store entity you own (created).
 
-    With ``--unpack DIR`` the ZIP is streamed and immediately extracted
-    into ``DIR`` (the directory is wiped first so re-runs leave a clean
-    diff). The bundle layout::
-
-        manifest.json
-        entities/<entity_id>/
-        ├── plugin/...
-        └── assets/...
-
-    Every entity matching the given filters is included; no filters =
-    everything in the Store.
+    Server-side this is the same ``GET /api/store/bundle.zip`` endpoint
+    that `agnes admin store pull` uses, scoped to the caller via
+    ``?owner=me`` (the server resolves the magic value to your user_id).
     """
     import shutil as _shutil
     import tempfile as _tempfile
     import zipfile as _zipfile
 
-    params: dict = {}
-    if type:
-        params["type"] = type
-    if category:
-        params["category"] = category
-    if owner:
-        params["owner"] = owner
-    if search:
-        params["search"] = search
-
     if unpack:
-        # Stream into a temp file, then unpack into `unpack` (wiped first).
-        scratch = Path(_tempfile.mkdtemp(prefix="agnes_store_pull_"))
+        scratch = Path(_tempfile.mkdtemp(prefix="agnes_store_mine_"))
         zip_path = scratch / "bundle.zip"
         try:
             try:
-                api_get_stream("/api/store/bundle.zip", str(zip_path), **params)
+                api_get_stream("/api/store/bundle.zip", str(zip_path), owner="me")
             except V2ClientError as e:
                 typer.echo(str(e), err=True)
                 raise typer.Exit(1)
@@ -284,59 +263,13 @@ def pull_bundle(
                 zf.extractall(unpack)
         finally:
             _shutil.rmtree(scratch, ignore_errors=True)
-        typer.echo(f"Unpacked Store bundle → {unpack}")
+        typer.echo(f"Unpacked your Store entities → {unpack}")
         return
 
     out.parent.mkdir(parents=True, exist_ok=True)
     try:
-        size = api_get_stream("/api/store/bundle.zip", str(out), **params)
+        size = api_get_stream("/api/store/bundle.zip", str(out), owner="me")
     except V2ClientError as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(1)
     typer.echo(f"Wrote {size:,} bytes → {out}")
-
-
-@store_app.command("info")
-def store_info(
-    json_out: bool = typer.Option(False, "--json"),
-):
-    """Summary of the Store: total entities, breakdown by type, total size.
-
-    No new endpoint — assembled client-side from a paginated /entities
-    sweep so it stays in sync with what `pull` would emit.
-    """
-    skip = 0
-    page = 100
-    by_type: dict = {}
-    total_entities = 0
-    total_size = 0
-    while True:
-        try:
-            body = api_get_json(
-                "/api/store/entities", limit=page, skip=skip,
-            )
-        except V2ClientError as e:
-            typer.echo(str(e), err=True)
-            raise typer.Exit(1)
-        items = body.get("items", [])
-        if not items:
-            break
-        for it in items:
-            total_entities += 1
-            total_size += int(it.get("file_size") or 0)
-            by_type[it["type"]] = by_type.get(it["type"], 0) + 1
-        if len(items) < page:
-            break
-        skip += page
-
-    summary = {
-        "total_entities": total_entities,
-        "total_file_size_bytes": total_size,
-        "by_type": by_type,
-    }
-    if json_out:
-        typer.echo(json.dumps(summary, indent=2))
-        return
-    typer.echo(f"Store: {total_entities} entit, {total_size:,} bytes total")
-    for t in sorted(by_type):
-        typer.echo(f"  {t:8s} {by_type[t]}")

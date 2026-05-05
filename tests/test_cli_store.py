@@ -30,8 +30,17 @@ def test_store_help_lists_subcommands():
     r = runner.invoke(store_app, ["--help"])
     assert r.exit_code == 0
     out = _clean(r.output)
-    for cmd in ("list", "show", "install", "uninstall", "upload", "delete"):
+    for cmd in ("list", "show", "install", "uninstall", "upload", "update", "delete", "mine"):
         assert cmd in out, f"missing subcommand {cmd!r} in help"
+
+
+def test_admin_store_help_lists_subcommands():
+    from cli.commands.admin_store import admin_store_app
+    r = runner.invoke(admin_store_app, ["--help"])
+    assert r.exit_code == 0
+    out = _clean(r.output)
+    for cmd in ("pull", "push", "info"):
+        assert cmd in out
 
 
 def test_my_stack_help_lists_subcommands():
@@ -233,57 +242,85 @@ def test_store_update_sends_put_multipart(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_store_pull_writes_zip(monkeypatch, tmp_path):
+def test_admin_store_pull_writes_zip(monkeypatch, tmp_path):
+    """Bulk pull of all Store entities lives under `agnes admin store pull`."""
+    from cli.commands.admin import admin_app
+    from cli.commands import admin_store as admin_store_mod
+
     captured: dict = {}
 
     def _stream(path, dest, **params):
         captured["path"] = path
         captured["params"] = params
-        captured["dest"] = dest
-        # Write a placeholder so the size message looks plausible.
         with open(dest, "wb") as f:
             f.write(b"PK\x03\x04fakezip")
         return 9
 
-    import cli.commands.store as store_mod
-    monkeypatch.setattr(store_mod, "api_get_stream", _stream)
+    monkeypatch.setattr(admin_store_mod, "api_get_stream", _stream)
 
     out = tmp_path / "store.zip"
-    r = runner.invoke(store_app, ["pull", "-o", str(out)])
+    r = runner.invoke(admin_app, ["store", "pull", "-o", str(out)])
     assert r.exit_code == 0, r.output
     assert captured["path"] == "/api/store/bundle.zip"
+    # `mine` uses owner=me; bulk pull does NOT.
+    assert "owner" not in captured["params"]
     assert "Wrote 9 bytes" in _clean(r.output)
     assert out.exists()
 
 
-def test_store_pull_unpack(monkeypatch, tmp_path):
-    """`--unpack DIR` streams to a temp ZIP and extracts into DIR."""
+def test_admin_store_pull_unpack(monkeypatch, tmp_path):
+    """`agnes admin store pull --unpack DIR` streams + extracts."""
     import zipfile
+    from cli.commands.admin import admin_app
+    from cli.commands import admin_store as admin_store_mod
 
-    # Build a fake bundle in-memory and write it as the streamed payload.
     fake_zip_path = tmp_path / "_fake.zip"
     with zipfile.ZipFile(fake_zip_path, "w") as zf:
         zf.writestr("manifest.json", '{"format":1,"entries":[]}')
         zf.writestr("entities/abc/plugin/.claude-plugin/plugin.json", '{}')
 
     def _stream(path, dest, **params):
-        # Copy fake zip bytes into the streamed dest.
         from pathlib import Path as _P
         with open(dest, "wb") as fh:
             fh.write(_P(fake_zip_path).read_bytes())
         return _P(dest).stat().st_size
 
-    import cli.commands.store as store_mod
-    monkeypatch.setattr(store_mod, "api_get_stream", _stream)
+    monkeypatch.setattr(admin_store_mod, "api_get_stream", _stream)
 
     target = tmp_path / "unpacked"
-    r = runner.invoke(store_app, ["pull", "--unpack", str(target)])
+    r = runner.invoke(admin_app, ["store", "pull", "--unpack", str(target)])
     assert r.exit_code == 0, r.output
     assert (target / "manifest.json").is_file()
     assert (target / "entities/abc/plugin/.claude-plugin/plugin.json").is_file()
 
 
-def test_store_info_summarizes(monkeypatch):
+def test_store_mine_uses_owner_me_param(monkeypatch, tmp_path):
+    """`agnes store mine` is the user-facing variant — same endpoint with
+    `?owner=me` so server can scope to caller's own entities."""
+    captured: dict = {}
+
+    def _stream(path, dest, **params):
+        captured["path"] = path
+        captured["params"] = params
+        with open(dest, "wb") as f:
+            f.write(b"PK\x03\x04mine")
+        return 7
+
+    import cli.commands.store as store_mod
+    monkeypatch.setattr(store_mod, "api_get_stream", _stream)
+
+    out = tmp_path / "mine.zip"
+    r = runner.invoke(store_app, ["mine", "-o", str(out)])
+    assert r.exit_code == 0, r.output
+    assert captured["path"] == "/api/store/bundle.zip"
+    assert captured["params"] == {"owner": "me"}
+    assert out.exists()
+
+
+def test_admin_store_info_summarizes(monkeypatch):
+    from cli.commands.admin import admin_app
+    from cli.commands import admin_store as admin_store_mod
+
     page1 = {
         "items": [
             {"type": "skill", "file_size": 1024},
@@ -295,13 +332,9 @@ def test_store_info_summarizes(monkeypatch):
     empty = {"items": [], "total": 3, "skip": 100, "limit": 100}
     pages = [page1, empty]
 
-    def _get(path, **params):
-        return pages.pop(0)
+    monkeypatch.setattr(admin_store_mod, "api_get_json", lambda *a, **kw: pages.pop(0))
 
-    import cli.commands.store as store_mod
-    monkeypatch.setattr(store_mod, "api_get_json", _get)
-
-    r = runner.invoke(store_app, ["info"])
+    r = runner.invoke(admin_app, ["store", "info"])
     assert r.exit_code == 0, r.output
     out = _clean(r.output)
     assert "3 entit" in out
@@ -309,16 +342,17 @@ def test_store_info_summarizes(monkeypatch):
     assert "agent" in out and "1" in out
 
 
-def test_store_info_json(monkeypatch):
+def test_admin_store_info_json(monkeypatch):
+    from cli.commands.admin import admin_app
+    from cli.commands import admin_store as admin_store_mod
     one = {
         "items": [{"type": "plugin", "file_size": 999}],
         "total": 1, "skip": 0, "limit": 100,
     }
     pages = [one, {"items": [], "total": 1, "skip": 100, "limit": 100}]
-    import cli.commands.store as store_mod
-    monkeypatch.setattr(store_mod, "api_get_json", lambda *a, **kw: pages.pop(0))
+    monkeypatch.setattr(admin_store_mod, "api_get_json", lambda *a, **kw: pages.pop(0))
 
-    r = runner.invoke(store_app, ["info", "--json"])
+    r = runner.invoke(admin_app, ["store", "info", "--json"])
     assert r.exit_code == 0, r.output
     import json as _json
     body = _json.loads(_clean(r.output))

@@ -1249,6 +1249,11 @@ async def export_bundle(
     """
     if type and type not in _VALID_TYPES:
         raise HTTPException(status_code=400, detail="invalid_type")
+    # `owner=me` magic value resolves to the caller's user id — used by
+    # `agnes store mine` so analysts can pull a bundle of just their own
+    # uploads without needing to look up their own user_id first.
+    if owner == "me":
+        owner = user["id"]
     repo = StoreEntitiesRepository(conn)
     # Page through everything. The 100/req limit on `list` is a UI
     # pagination affordance, not a backup constraint — for a bulk export

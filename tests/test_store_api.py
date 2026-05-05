@@ -670,6 +670,27 @@ class TestStoreBundle:
             assert entries_by_id[eid_a]["owner_email"] == "owner-bundle@x.com"
             assert entries_by_id[eid_a]["name"] == "bundle-a"
 
+    def test_bundle_zip_owner_me_resolves_to_caller(self, web_client):
+        """`?owner=me` magic value resolves server-side to the caller's
+        user_id, so `agnes store mine` can pull a self-bundle without
+        having to look up its own id first."""
+        _, alice_cookies = _create_user(web_client, "mine-a@x.com")
+        _, bob_cookies = _create_user(web_client, "mine-b@x.com")
+        self._upload_skill(web_client, alice_cookies, name="alice-1")
+        self._upload_skill(web_client, alice_cookies, name="alice-2")
+        self._upload_skill(web_client, bob_cookies, name="bob-1")
+
+        # Alice asks for owner=me → only her two entities.
+        r = web_client.get("/api/store/bundle.zip?owner=me", cookies=alice_cookies)
+        assert r.status_code == 200
+        assert r.headers["x-bundle-entry-count"] == "2"
+
+        with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
+            names = zf.namelist()
+        assert any("alice-1-by-mine-a" in n for n in names)
+        assert any("alice-2-by-mine-a" in n for n in names)
+        assert not any("bob-1-by-mine-b" in n for n in names)
+
     def test_bundle_zip_filters(self, web_client):
         _, cookies = _create_user(web_client, "filter@x.com")
         self._upload_skill(web_client, cookies, name="keep-this")
