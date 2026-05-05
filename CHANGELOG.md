@@ -10,6 +10,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- Keboola sync now falls back to the legacy Storage-API client when the DuckDB Keboola extension's per-table scan fails, not just when the initial `ATTACH` fails. Two changes:
+  - `kbcstorage>=0.9.0` is promoted from optional to core dependency. The legacy fallback path in `connectors/keboola/extractor.py:_extract_via_legacy` has been there since the extension landed, but until now the bare `from kbcstorage.client import Client` would crash any default install with `ModuleNotFoundError`.
+  - `connectors/keboola/extractor.py:run` now wraps `_extract_via_extension` in a per-table try/except — on any per-table scan failure it retries via the legacy client. Previously, when `ATTACH` succeeded but the table-level `COPY (SELECT * FROM kbc."<bucket>"."<table>")` failed, the table was just marked failed with no retry.
+  Together these unblock deployments where the extension's bucket-schema scans return `Schema '..."in.c-..."' does not exist or not authorized` (keboola/duckdb-extension#17) while the upstream extension fix is in flight.
+
 ## [0.35.0] — 2026-05-05
 
 Five-defect fix for the silently-broken session pipeline on default Compose deploys (#176). Sessions uploaded by `agnes push` landed on `/data/user_sessions/<user>/*.jsonl`, but on a stock `docker compose up` deploy nothing ever processed them — `/corporate-memory` stayed empty even when sessions and `CLAUDE.local.md` were uploaded. The root cause was a stack of compounding defects: LLM SDKs were dev-only deps so the scheduler container boot-looped on `ModuleNotFoundError`, the side-car services were profile-gated and ran as tight `restart: unless-stopped` boot loops anyway, the `verification_detector` had no scheduler entry at all, the first-time setup never seeded an `ai:` block, and the `/corporate-memory` page silently filtered out the pending review queue. This release wires the LLM pipeline into the existing scheduler-v2 model (one HTTP-driven cron tick per service) and adds a health-check that warns when uploaded jsonls aren't being processed.

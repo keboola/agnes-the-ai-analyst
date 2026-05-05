@@ -236,7 +236,20 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
                 pq_path = str(data_dir / f"{table_name}.parquet")
 
                 if use_extension:
-                    _extract_via_extension(conn, tc, pq_path)
+                    try:
+                        _extract_via_extension(conn, tc, pq_path)
+                    except Exception as ext_err:
+                        # ATTACH succeeded but the per-table COPY failed —
+                        # most commonly a Keboola QueryService permission error
+                        # (`Schema '..."in.c-..."' does not exist or not
+                        # authorized`, see keboola/duckdb-extension#17). The
+                        # legacy Storage-API client doesn't go through
+                        # QueryService at all, so retry there.
+                        logger.warning(
+                            "Keboola extension scan failed for %s (%s); retrying via legacy Storage-API client",
+                            table_name, ext_err,
+                        )
+                        _extract_via_legacy(tc, pq_path, keboola_url, keboola_token)
                 else:
                     _extract_via_legacy(tc, pq_path, keboola_url, keboola_token)
 
