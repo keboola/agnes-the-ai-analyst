@@ -178,11 +178,33 @@ def run_pull(
             result.duration_s = time.monotonic() - started
             return result
 
-        # 4. Download parquets. Lazy mkdir: only create server/parquet/
-        # when we have at least one table to write into it.
-        for tid in to_download:
-            if not parquet_dir.exists():
-                parquet_dir.mkdir(parents=True, exist_ok=True)
+        # 4. Download parquets in parallel. Lazy mkdir: only create
+        # server/parquet/ when we have at least one table to write into it.
+        # Concurrency capped by `AGNES_PULL_PARALLELISM` (default 4) so a
+        # registry of 50+ tables doesn't open 50+ TCP connections + saturate
+        # the analyst's NIC; 4 matches typical home-broadband saturation
+        # without over-subscribing the server's caddy file_server (each
+        # request is a separate goroutine + sendfile, but the analyst's
+        # downlink is the more frequent bottleneck). Set to 1 to restore
+        # the pre-PR serial behavior for debug repro. The server-side
+        # bypass-uvicorn fix (Caddy file_server) is the other half —
+        # without it, parallel downloads would still queue on the single
+        # uvicorn worker.
+        if to_download and not parquet_dir.exists():
+            parquet_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            workers = max(1, int(os.environ.get("AGNES_PULL_PARALLELISM", "4")))
+        except ValueError:
+            workers = 4
+        # Drop to serial when there's only one (or zero) tables — avoids
+        # the executor + thread overhead for the common single-update case.
+        workers = min(workers, len(to_download)) if to_download else 1
+
+        def _download_one(tid: str) -> tuple[str, dict | None, str | None]:
+            """Returns (tid, local_table_entry_or_None, error_or_None).
+            One bound thread per call; stream_download is sync I/O so a
+            ThreadPoolExecutor (not asyncio) is the right tool."""
             target = parquet_dir / f"{tid}.parquet"
             expected_hash = server_tables[tid].get("hash", "")
             try:
@@ -197,14 +219,28 @@ def run_pull(
                 elif not _is_valid_parquet(target):
                     target.unlink(missing_ok=True)
                     raise ValueError("not a valid parquet (missing PAR1 magic)")
-                local_tables[tid] = {
+                entry = {
                     "hash": expected_hash,
                     "rows": server_tables[tid].get("rows", 0),
                     "size_bytes": server_tables[tid].get("size_bytes", 0),
                 }
-                result.tables_updated += 1
+                return tid, entry, None
             except Exception as exc:
-                result.errors.append({"table": tid, "error": str(exc)})
+                return tid, None, str(exc)
+
+        if workers <= 1:
+            outcomes = [_download_one(tid) for tid in to_download]
+        else:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                outcomes = list(ex.map(_download_one, to_download))
+
+        for tid, entry, err in outcomes:
+            if err is not None:
+                result.errors.append({"table": tid, "error": err})
+            else:
+                local_tables[tid] = entry
+                result.tables_updated += 1
 
         # 5. Persist sync state (only on real runs).
         # TODO(workspace-scoped-sync-state): currently saved to
