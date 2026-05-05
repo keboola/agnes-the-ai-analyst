@@ -2860,23 +2860,39 @@ def run_verification_detector(
         raise HTTPException(status_code=500, detail=str(e))
 
     job_conn = get_system_db()
+    stats: dict = {}
+    job_error: Optional[Exception] = None
     try:
         stats = detector.run(job_conn, extractor, dry_run=False)
+    except Exception as e:
+        # Capture and re-raise after audit so an unhandled detector error
+        # (DuckDB lock, network blip, unexpected SDK type) still leaves a
+        # row in audit_log — the /admin/scheduler-runs page is the
+        # operator's only signal beyond docker logs.
+        job_error = e
     finally:
         try:
             job_conn.close()
         except Exception:
             pass
 
+    audit_params: dict = {
+        "items_created": stats.get("items_created", 0),
+        "errors": len(stats.get("errors", [])),
+    }
+    if job_error is not None:
+        audit_params["unhandled_error"] = f"{type(job_error).__name__}: {job_error}"
+
     AuditRepository(conn).log(
         user_id=user.get("id"),
         action="run_verification_detector",
         resource="job:verification-detector",
-        params={
-            "items_created": stats.get("items_created", 0),
-            "errors": len(stats.get("errors", [])),
-        },
+        params=audit_params,
     )
+
+    if job_error is not None:
+        raise HTTPException(status_code=500, detail=audit_params["unhandled_error"])
+
     return {"ok": not stats.get("errors"), "details": stats}
 
 

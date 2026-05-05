@@ -338,6 +338,20 @@ class TestAdminRoleGuards:
         assert b"run_session_collector" in r.content
         assert b"run_verification_detector" in r.content
         assert b"run_corporate_memory" in r.content
+        # Devin Review on e86dd5ed: list must use the actual logged action
+        # string, not a guess.
+        assert b"marketplace.sync_all" in r.content
+
+    def test_profile_sessions_page_no_admin_required(self, web_client, analyst_cookie, admin_cookie):
+        """The /profile/sessions page is gated by get_current_user, not require_admin —
+        every authenticated user views their own sessions."""
+        r = web_client.get("/profile/sessions", follow_redirects=False)
+        assert r.status_code in (302, 401, 403)
+        r = web_client.get("/profile/sessions", cookies=analyst_cookie, follow_redirects=False)
+        assert r.status_code == 200
+        assert b"My sessions" in r.content
+        r = web_client.get("/profile/sessions", cookies=admin_cookie, follow_redirects=False)
+        assert r.status_code == 200
 
 
 class TestUnauthenticatedHtmlRedirects:

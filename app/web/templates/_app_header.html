@@ -58,7 +58,8 @@
                     <div class="app-user-menu-role">Admin</div>
                     {% endif %}
                 </div>
-                <a class="app-user-menu-item {% if _path.startswith('/profile') %}is-active{% endif %}" role="menuitem" href="/profile">Profile</a>
+                <a class="app-user-menu-item {% if _path == '/profile' %}is-active{% endif %}" role="menuitem" href="/profile">Profile</a>
+                <a class="app-user-menu-item {% if _path == '/profile/sessions' %}is-active{% endif %}" role="menuitem" href="/profile/sessions">My sessions</a>
                 <a class="app-user-menu-item {% if _path == '/tokens' %}is-active{% endif %}" role="menuitem" href="/tokens">My tokens</a>
                 {% if config.DEBUG_AUTH_ENABLED %}
                 <a class="app-user-menu-item {% if _path.startswith('/me/debug') %}is-active{% endif %}" role="menuitem" href="/me/debug">Auth debug</a>

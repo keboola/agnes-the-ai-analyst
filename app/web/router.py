@@ -5,7 +5,7 @@ Replicates all Flask webapp routes with DuckDB-backed data.
 
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
@@ -949,13 +949,16 @@ async def admin_marketplaces_page(
 # Scheduler-driven admin actions audited by app/api/admin.py and
 # app/api/marketplaces.py. Keep in sync with the JOBS list in
 # services/scheduler/__main__.py.
+#
+# `data-refresh` (POST /api/sync/trigger) and `script-runner`
+# (POST /api/scripts/run-due) are scheduler jobs but they do NOT write
+# audit_log today, so they can't appear here. If you add audit calls to
+# those endpoints, add the matching action strings to this list.
 SCHEDULER_AUDIT_ACTIONS = [
     "run_session_collector",
     "run_verification_detector",
     "run_corporate_memory",
-    "marketplaces_sync_all",
-    "data_refresh",
-    "scripts_run_due",
+    "marketplace.sync_all",
 ]
 
 
@@ -1108,6 +1111,76 @@ async def profile_page(
         is_admin=is_user_admin(user["id"], conn),
     )
     return templates.TemplateResponse(request, "profile.html", ctx)
+
+
+@router.get("/profile/sessions", response_class=HTMLResponse)
+async def profile_sessions_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """User-self-view of own uploaded sessions and their extraction state.
+
+    Walks `${DATA_DIR}/user_sessions/<user_id>/*.jsonl` for the caller's
+    own user_id, joins each file against `session_extraction_state` to
+    surface processed_at + items_extracted, and renders a table.
+    Items_extracted = 0 means the verification_detector ran but the LLM
+    found no claims worth tracking — that's the documented "no items"
+    outcome; it does NOT mean the pipeline is broken.
+    """
+    import pathlib
+    user_id = user["id"]
+    data_dir = pathlib.Path(os.environ.get("DATA_DIR", "/data"))
+    user_sessions_dir = data_dir / "user_sessions" / user_id
+
+    files = []
+    if user_sessions_dir.is_dir():
+        for jsonl in sorted(user_sessions_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True):
+            try:
+                stat = jsonl.stat()
+            except OSError:
+                continue
+            files.append({
+                "name": jsonl.name,
+                "size_bytes": stat.st_size,
+                "mtime": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
+            })
+
+    state_map: dict = {}
+    if files:
+        keys = [f"{user_id}/{f['name']}" for f in files]
+        placeholders = ",".join("?" for _ in keys)
+        rows = conn.execute(
+            f"""SELECT session_file, processed_at, items_extracted, file_hash
+                FROM session_extraction_state
+                WHERE session_file IN ({placeholders})""",
+            keys,
+        ).fetchall()
+        cols = [d[0] for d in conn.description]
+        for row in rows:
+            d = dict(zip(cols, row))
+            state_map[d["session_file"]] = d
+
+    rows_view = []
+    for f in files:
+        key = f"{user_id}/{f['name']}"
+        state = state_map.get(key)
+        rows_view.append({
+            "name": f["name"],
+            "size_kb": round(f["size_bytes"] / 1024, 1),
+            "uploaded_at": f["mtime"],
+            "processed_at": state["processed_at"] if state else None,
+            "items_extracted": state["items_extracted"] if state else None,
+            "is_processed": state is not None,
+        })
+
+    ctx = _build_context(
+        request,
+        user=user,
+        sessions=rows_view,
+        user_id=user_id,
+    )
+    return templates.TemplateResponse(request, "profile_sessions.html", ctx)
 
 
 @router.get("/_debug/throw/http/{code:int}", response_class=HTMLResponse, include_in_schema=False)
