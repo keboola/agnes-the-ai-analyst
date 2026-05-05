@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.35.1] — 2026-05-05
+
 ### Fixed
 
 - `agnes query --remote` no longer dies after 30s on long-running BigQuery SELECTs. The CLI HTTP client now defaults to a 300s timeout for `/api/query` and exposes `AGNES_QUERY_TIMEOUT` (seconds, float) for operators who need to extend it further. Other CLI calls keep the 30s default. (`cli/client.py`, `cli/commands/query.py`)
