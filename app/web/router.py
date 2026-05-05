@@ -869,6 +869,7 @@ async def store_detail(
     from src.repositories.user_store_installs import UserStoreInstallsRepository
     from src.store_naming import suffixed_name
     from app.utils import get_store_dir
+    from app.auth.access import is_user_admin
 
     entity = StoreEntitiesRepository(conn).get(entity_id)
     if not entity:
@@ -897,6 +898,10 @@ async def store_detail(
         user["id"], entity_id
     )
     is_owner = entity["owner_user_id"] == user["id"]
+    # Admin can also Edit/Delete (parity with the API: store.py guards both
+    # mutations on owner OR admin). Without this the store_detail buttons
+    # would be hidden from admin even though they have authority.
+    is_admin = is_user_admin(user["id"], conn)
 
     ctx = _build_context(
         request,
@@ -907,6 +912,7 @@ async def store_detail(
         files=files,
         is_installed=is_installed,
         is_owner=is_owner,
+        is_admin=is_admin,
     )
     return templates.TemplateResponse(request, "store_detail.html", ctx)
 

@@ -157,7 +157,7 @@
   <div class="breadcrumb"><a href="/store">Store</a> / {{ entity.name }}</div>
 
   <div class="detail-hero">
-    {% if is_owner %}
+    {% if is_owner or is_admin %}
     <div class="owner-actions">
       <a href="#" id="edit-btn">Edit (coming soon)</a>
       <button class="delete" id="delete-btn">Delete</button>

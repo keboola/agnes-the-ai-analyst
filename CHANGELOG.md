@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.35.0] — 2026-05-05
+
 ### Added
 - **`/store` page** — community marketplace where every authenticated user
   can upload skills, agents, and plugins as ZIPs. Listing has type / category /
@@ -43,6 +45,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `GET /api/store/categories`, `GET /api/store/owners`,
   `GET /api/my-stack`,
   `PUT /api/my-stack/curated/{marketplace_id}/{plugin_name}`.
+- **CLI: `agnes store {list,show,install,uninstall,upload,delete}`** and
+  **`agnes my-stack {show,toggle}`** — full analyst-side coverage of the
+  new Store + composition REST surface. Multipart upload helper added to
+  `cli/v2_client.py` (`api_post_multipart` / `api_put_multipart`) so
+  future multipart endpoints don't have to roll their own httpx wiring.
 
 ### Changed
 - `/admin/marketplaces` admin nav entry moved from the top-level header into
@@ -57,6 +64,32 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `/marketplace/info` payload now splits its `plugins` array by `source`,
   exposing `plugins` (admin) and `store_plugins` (community).
 
+### Fixed
+- **Stored XSS via `video_url`** (`app/api/store.py`) — `video_url` accepted
+  on `POST/PUT /api/store/entities` is now scheme-validated to `http(s)://`
+  only. Previously a `javascript:` URI flowed through the form field into
+  `store_detail.html`'s `<a href>` and would execute in any viewer's
+  session on click. 400 `invalid_video_url` on bad input.
+- **ZIP decompression bomb** (`app/api/store.py:_safe_zip_extract`) — the
+  uncompressed-side total of an upload is now capped at 200 MB
+  (`MAX_ZIP_UNCOMPRESSED`); the compressed-side cap (50 MB) alone did not
+  bound the on-disk footprint. 413 `zip_too_large_uncompressed` on
+  oversize.
+- **Admin authz parity for Store mutations** (`app/api/store.py`,
+  `app/web/router.py`, `app/web/templates/store_detail.html`) —
+  `PUT /api/store/entities/{id}` now permits owner OR admin (matches
+  `DELETE`); the store-detail page passes `is_admin` to the template and
+  gates the Edit/Delete buttons on `is_owner OR is_admin`. Pre-fix, an
+  admin could delete via the API but saw no Edit/Delete affordance in the
+  UI, and could not update non-owned entities at all.
+- **Cross-owner suffix collision** (`app/api/store.py:create_entity`) —
+  `sanitize_username` is many-to-one (`alice.smith` and `alice_smith`
+  both → `alice-smith`). Two such users uploading entities with the same
+  display `name` produced identical `<name>-by-<username>` suffixes,
+  silently colliding in the served bundle's on-disk paths and the
+  manifest catalog (Claude Code dedupes by `plugin.json`'s `name`).
+  We now refuse the second upload with 409 `conflict_global_suffix`.
+
 ### Internal
 - Schema **v24 → v25**: adds `store_entities`, `user_store_installs`,
   `user_plugin_optouts`. Auto-migration via `_V24_TO_V25_MIGRATIONS` ladder
@@ -70,6 +103,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   returns, parameterized SQL, no ORM).
 - `app/utils.py:get_store_dir()` — `${DATA_DIR}/store/`.
 - `humanbytes` Jinja2 filter on Store detail page (binary KB/MB/GB).
+- New CLI command modules: `cli/commands/store.py`, `cli/commands/my_stack.py`.
+  Registered as Typer subapps `agnes store` and `agnes my-stack` in
+  `cli/main.py`. Tests at `tests/test_cli_store.py`.
+- `tests/test_store_api.py:TestStoreSecurityFixes` — regression suite for
+  F1 (video_url), F2 (zip-bomb), F4 (admin authz parity), F5 (cross-owner
+  suffix collision).
 
 ## [0.34.0] — 2026-05-04
 

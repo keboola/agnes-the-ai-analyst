@@ -377,6 +377,231 @@ class TestStoreUpload:
         assert r.json()["detail"] in {"zip_looks_like_plugin", "zip_looks_like_skill"}
 
 
+class TestStoreSecurityFixes:
+    """Regression tests for the three security blockers and one correctness
+    bug found in PR #180 review (F1, F2, F4, F5)."""
+
+    def test_video_url_javascript_scheme_rejected_on_create(self, web_client):
+        """F1 — `javascript:` URI must not be stored. Otherwise a malicious
+        uploader can pop XSS in any viewer's session via the
+        store_detail "Watch video" link."""
+        _, cookies = _create_user(web_client, "f1a@x.com")
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", _make_skill_zip("vid1"), "application/zip")},
+            data={"type": "skill", "video_url": "javascript:alert(1)"},
+            cookies=cookies,
+        )
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"] == "invalid_video_url"
+
+    def test_video_url_data_scheme_rejected(self, web_client):
+        _, cookies = _create_user(web_client, "f1b@x.com")
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", _make_skill_zip("vid2"), "application/zip")},
+            data={"type": "skill", "video_url": "data:text/html,<script>alert(1)</script>"},
+            cookies=cookies,
+        )
+        assert r.status_code == 400
+        assert r.json()["detail"] == "invalid_video_url"
+
+    def test_video_url_https_accepted(self, web_client):
+        _, cookies = _create_user(web_client, "f1c@x.com")
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", _make_skill_zip("vid3"), "application/zip")},
+            data={"type": "skill", "video_url": "https://www.youtube.com/watch?v=abc"},
+            cookies=cookies,
+        )
+        assert r.status_code == 201, r.text
+        assert r.json()["video_url"] == "https://www.youtube.com/watch?v=abc"
+
+    def test_video_url_javascript_scheme_rejected_on_update(self, web_client):
+        _, cookies = _create_user(web_client, "f1d@x.com")
+        c = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", _make_skill_zip("vid4"), "application/zip")},
+            data={"type": "skill"}, cookies=cookies,
+        )
+        eid = c.json()["id"]
+        u = web_client.put(
+            f"/api/store/entities/{eid}",
+            data={"video_url": "javascript:alert(1)"},
+            cookies=cookies,
+        )
+        assert u.status_code == 400
+        assert u.json()["detail"] == "invalid_video_url"
+
+    def test_zip_bomb_uncompressed_size_rejected(self, tmp_path):
+        """F2 — _safe_zip_extract must refuse when the sum of declared
+        file_size across infolist() exceeds MAX_ZIP_UNCOMPRESSED, BEFORE
+        extractall touches disk.
+
+        We test the helper directly because Python's ``ZipFile.writestr``
+        rewrites ``ZipInfo.file_size`` to the real payload length, making
+        an end-to-end ZIP-with-fake-size impossible without manual header
+        surgery. The bomb defense is in ``_safe_zip_extract``, so target
+        it directly with a stub ZipFile whose ``infolist()`` returns
+        entries with inflated declared sizes.
+        """
+        from fastapi import HTTPException
+
+        from app.api import store as store_module
+
+        class _FakeZipFile:
+            def __init__(self, infolist):
+                self._infolist = infolist
+                self.extracted = False
+
+            def infolist(self):
+                return self._infolist
+
+            def extractall(self, dest):
+                # Must not be reached — the guard is supposed to raise
+                # before extractall. Mark and let the caller assert.
+                self.extracted = True
+
+        zi = zipfile.ZipInfo("code-review/SKILL.md")
+        zi.file_size = store_module.MAX_ZIP_UNCOMPRESSED + 1
+        zf = _FakeZipFile([zi])
+
+        try:
+            store_module._safe_zip_extract(zf, tmp_path)
+        except HTTPException as exc:
+            assert exc.status_code == 413
+            assert "zip_too_large_uncompressed" in str(exc.detail)
+        else:
+            raise AssertionError("expected HTTPException 413, got none")
+        assert zf.extracted is False, "guard fired AFTER extractall — bug in fix"
+
+    def test_admin_can_update_non_owned_entity(self, web_client):
+        """F4 — UPDATE must permit owner OR admin (parity with DELETE)."""
+        from argon2 import PasswordHasher
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        from tests.helpers.auth import grant_admin
+
+        owner_id, owner_cookies = _create_user(web_client, "owner-f4@x.com")
+        c = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", _make_skill_zip("f4-skill"), "application/zip")},
+            data={"type": "skill"}, cookies=owner_cookies,
+        )
+        eid = c.json()["id"]
+
+        ph = PasswordHasher()
+        conn = get_system_db()
+        UserRepository(conn).create(
+            id="adm-f4", email="adm-f4@x.com", name="adm",
+            password_hash=ph.hash("AdminPass1!"),
+        )
+        grant_admin(conn, "adm-f4")
+        admin_token = web_client.post(
+            "/auth/token", json={"email": "adm-f4@x.com", "password": "AdminPass1!"}
+        ).json()["access_token"]
+        admin_cookies = {"access_token": admin_token}
+
+        u = web_client.put(
+            f"/api/store/entities/{eid}",
+            data={"description": "moderated by admin"},
+            cookies=admin_cookies,
+        )
+        assert u.status_code == 200, u.text
+        assert u.json()["description"] == "moderated by admin"
+
+    def test_non_owner_non_admin_cannot_update(self, web_client):
+        """F4 negative — random user still gets 403 on UPDATE."""
+        _, owner_cookies = _create_user(web_client, "owner-f4b@x.com")
+        c = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", _make_skill_zip("f4b-skill"), "application/zip")},
+            data={"type": "skill"}, cookies=owner_cookies,
+        )
+        eid = c.json()["id"]
+        _, intruder_cookies = _create_user(web_client, "intruder-f4@x.com")
+        u = web_client.put(
+            f"/api/store/entities/{eid}",
+            data={"description": "hijack"},
+            cookies=intruder_cookies,
+        )
+        assert u.status_code == 403
+        assert u.json()["detail"] == "not_owner"
+
+    def test_admin_sees_action_buttons_on_store_detail(self, web_client):
+        """F4 — admin must see Edit/Delete in store_detail UI even when
+        not the owner."""
+        from argon2 import PasswordHasher
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        from tests.helpers.auth import grant_admin
+
+        _, owner_cookies = _create_user(web_client, "owner-ui@x.com")
+        c = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", _make_skill_zip("ui-skill"), "application/zip")},
+            data={"type": "skill"}, cookies=owner_cookies,
+        )
+        eid = c.json()["id"]
+
+        ph = PasswordHasher()
+        conn = get_system_db()
+        UserRepository(conn).create(
+            id="adm-ui", email="adm-ui@x.com", name="adm",
+            password_hash=ph.hash("AdminPass1!"),
+        )
+        grant_admin(conn, "adm-ui")
+        admin_token = web_client.post(
+            "/auth/token", json={"email": "adm-ui@x.com", "password": "AdminPass1!"}
+        ).json()["access_token"]
+        admin_cookies = {"access_token": admin_token}
+
+        page = web_client.get(f"/store/{eid}", cookies=admin_cookies)
+        assert page.status_code == 200, page.text
+        # Admin-non-owner sees the owner-actions panel — pre-fix, the
+        # `is_owner` gate hid it. Same gate now reads `is_owner or
+        # is_admin`.
+        assert "owner-actions" in page.text
+        assert 'id="delete-btn"' in page.text
+
+    def test_cross_owner_suffix_collision_rejected(self, web_client):
+        """F5 — two emails can sanitize to the same username
+        (alice.smith / alice_smith → alice-smith). Both uploading a skill
+        called `code-review` would yield the same `code-review-by-alice-smith`
+        and silently collide in the served bundle + manifest. The upload
+        endpoint must refuse the second one."""
+        _, a_cookies = _create_user(web_client, "alice.smith@x.com")
+        r1 = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", _make_skill_zip("collide"), "application/zip")},
+            data={"type": "skill"}, cookies=a_cookies,
+        )
+        assert r1.status_code == 201, r1.text
+        assert r1.json()["invocation_name"] == "collide-by-alice-smith"
+
+        _, b_cookies = _create_user(web_client, "alice_smith@x.com")
+        r2 = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", _make_skill_zip("collide"), "application/zip")},
+            data={"type": "skill"}, cookies=b_cookies,
+        )
+        assert r2.status_code == 409, r2.text
+        assert r2.json()["detail"] == "conflict_global_suffix"
+
+    def test_distinct_suffixes_pass(self, web_client):
+        """F5 — uploads that yield distinct suffixed names must pass. (Avoid
+        regressing into rejecting all distinct uploads.)"""
+        _, a_cookies = _create_user(web_client, "alice@x.com")
+        _, b_cookies = _create_user(web_client, "bob@x.com")
+        for cookies, skill_name in [(a_cookies, "alpha"), (b_cookies, "beta")]:
+            r = web_client.post(
+                "/api/store/entities",
+                files={"file": ("s.zip", _make_skill_zip(skill_name), "application/zip")},
+                data={"type": "skill"}, cookies=cookies,
+            )
+            assert r.status_code == 201, r.text
+
+
 class TestInstallCycle:
     def test_install_uninstall_and_count(self, web_client):
         # Owner uploads, two other users install, install_count = 2.

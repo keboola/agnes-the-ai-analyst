@@ -36,6 +36,16 @@ def sanitize_username(email: str) -> str:
 
     Raises ``ValueError`` if the local-part sanitizes to an empty string —
     callers (the upload endpoint) translate that to a 400.
+
+    Note: this mapping is **many-to-one** — ``alice.smith@x`` and
+    ``alice_smith@x`` both yield ``alice-smith``. The Store namespace is
+    flat in Claude Code, so two such users uploading entities with the
+    same display name would produce identical ``<name>-by-<username>``
+    suffixes and collide in the served marketplace + bundle. The upload
+    endpoint enforces global uniqueness on the suffixed value via
+    ``app.api.store._suffixed_already_taken`` and rejects the second one
+    with 409 ``conflict_global_suffix``; the per-owner UNIQUE on
+    ``store_entities(owner_user_id, name)`` alone does not catch this.
     """
     local = email.split("@", 1)[0].lower()
     s = _SANITIZE_RE.sub("-", local)

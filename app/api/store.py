@@ -27,6 +27,7 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, List, Optional
+from urllib.parse import urlparse
 
 import duckdb
 from fastapi import (
@@ -66,6 +67,63 @@ _CHUNK_SIZE = 64 * 1024
 _VALID_TYPES = {"skill", "agent", "plugin"}
 _NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---", re.DOTALL)
+_ALLOWED_VIDEO_SCHEMES = {"http", "https"}
+
+# Cap on uncompressed total size of an uploaded ZIP. The compressed-side cap
+# is MAX_ZIP_SIZE; an attacker could craft a 50 MB ZIP that decompresses to
+# >>10 GB and DOS the host disk via _safe_zip_extract. We sum infolist()
+# file_size before extracting and refuse anything above this bound.
+MAX_ZIP_UNCOMPRESSED = 200 * 1024 * 1024  # 200 MB
+
+
+def _suffixed_already_taken(
+    conn: duckdb.DuckDBPyConnection,
+    suffixed: str,
+    *,
+    exclude_entity_id: Optional[str] = None,
+) -> bool:
+    """Whether any existing entity ships the same display+invocation name.
+
+    The Store namespace is **flat** in Claude Code — two plugins/skills/agents
+    that share a ``name`` collide in the served marketplace catalog (the
+    ``manifest_name`` is unique-key for ``/plugin`` lookup) and on-disk inside
+    the ``agnes-store-bundle`` (skills/<suffixed>/SKILL.md is the dir name).
+
+    ``sanitize_username`` is many-to-one (``alice.smith`` and ``alice_smith``
+    both → ``alice-smith``), so the per-owner UNIQUE on
+    ``(owner_user_id, name)`` does NOT prevent the cross-owner collision.
+    We enforce global uniqueness on ``name || '-by-' || owner_username``
+    here, at upload time, with a clear 409.
+    """
+    sql = (
+        "SELECT id FROM store_entities "
+        "WHERE name || '-by-' || owner_username = ?"
+    )
+    params: List[Any] = [suffixed]
+    if exclude_entity_id:
+        sql += " AND id != ?"
+        params.append(exclude_entity_id)
+    return bool(conn.execute(sql, params).fetchone())
+
+
+def _validate_video_url(value: Optional[str]) -> Optional[str]:
+    """Return the URL if it is a safe http(s) URL, raise 400 otherwise.
+
+    Empty / None passes through as None — video_url is optional. Defends
+    against ``javascript:``, ``data:``, ``vbscript:`` (etc.) URIs that
+    would execute in the viewer's session if rendered inside an ``href``.
+    Jinja2 autoescape only HTML-escapes characters; it does not block URI
+    schemes inside attribute values.
+    """
+    if value is None:
+        return None
+    s = value.strip()
+    if not s:
+        return None
+    parsed = urlparse(s)
+    if parsed.scheme.lower() not in _ALLOWED_VIDEO_SCHEMES or not parsed.netloc:
+        raise HTTPException(status_code=400, detail="invalid_video_url")
+    return s
 
 
 # ---------------------------------------------------------------------------
@@ -251,11 +309,24 @@ async def _stream_to_temp(
 
 
 def _safe_zip_extract(zf: zipfile.ZipFile, dest: Path) -> None:
-    """Extract ``zf`` into ``dest`` while rejecting any member whose normalized
-    path would escape ``dest`` (zip-slip guard)."""
+    """Extract ``zf`` into ``dest`` while rejecting unsafe members.
+
+    Three guards:
+
+    1. Path traversal (zip-slip) — refuse absolute paths or ``..`` segments.
+    2. Decompression bomb — reject if the sum of declared uncompressed sizes
+       exceeds ``MAX_ZIP_UNCOMPRESSED``. The compressed-side cap
+       (``MAX_ZIP_SIZE``) does not bound the decompressed footprint; a 50 MB
+       ZIP at ratio 1:1000 expands to 50 GB on disk.
+    3. (Note) Python's stdlib ``ZipFile.extractall`` does NOT honor symlink
+       mode bits — symlink entries are written as regular files containing
+       the link target text, not as actual symlinks. So no extra symlink
+       guard is needed for the stdlib path.
+    """
     dest_resolved = dest.resolve()
+    total_uncompressed = 0
     for member in zf.infolist():
-        # Reject absolute paths and any traversal segments.
+        # Path traversal.
         member_path = Path(member.filename)
         if member_path.is_absolute() or any(part == ".." for part in member_path.parts):
             raise HTTPException(status_code=422, detail="zip_unsafe_path")
@@ -264,6 +335,19 @@ def _safe_zip_extract(zf: zipfile.ZipFile, dest: Path) -> None:
             target.relative_to(dest_resolved)
         except ValueError:
             raise HTTPException(status_code=422, detail="zip_unsafe_path")
+
+        # Decompression bomb. We sum declared sizes — these are advisory
+        # (an attacker can lie) but mismatched values trip Python's own
+        # CRC/size check during read. The pre-extract sum catches the
+        # honest-malicious case (large declared sizes) and is the last
+        # cheap fence before extractall touches the disk.
+        total_uncompressed += int(member.file_size or 0)
+        if total_uncompressed > MAX_ZIP_UNCOMPRESSED:
+            raise HTTPException(
+                status_code=413,
+                detail=f"zip_too_large_uncompressed (max {MAX_ZIP_UNCOMPRESSED // 1024 // 1024}MB)",
+            )
+
     zf.extractall(dest)
 
 
@@ -729,6 +813,8 @@ async def create_entity(
     if category and not is_valid_category(category):
         raise HTTPException(status_code=400, detail="invalid_category")
 
+    video_url = _validate_video_url(video_url)
+
     # Stream + extract ZIP into a scratch dir.
     tmp, size = await _stream_to_temp(file, MAX_ZIP_SIZE, suffix=".zip")
     try:
@@ -757,6 +843,14 @@ async def create_entity(
 
         entity_id = uuid.uuid4().hex
         suffixed = suffixed_name(final_name, username)
+        # Global cross-owner check — sanitize_username is many-to-one, so
+        # two emails (alice.smith / alice_smith) can resolve to the same
+        # username and produce the same `<name>-by-<username>` suffix even
+        # when the per-owner UNIQUE passes. The suffixed value drives both
+        # the bundle on-disk dir and the served plugin.json `name`, so a
+        # collision silently last-write-wins. Refuse upfront.
+        if _suffixed_already_taken(conn, suffixed):
+            raise HTTPException(status_code=409, detail="conflict_global_suffix")
         plugin_dir = _plugin_dir(entity_id)
         file_size = _bake_plugin_tree(
             type_=type,
@@ -820,11 +914,13 @@ async def update_entity(
     entity = repo.get(entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="entity_not_found")
-    if entity["owner_user_id"] != user["id"]:
+    if entity["owner_user_id"] != user["id"] and not is_user_admin(user["id"], conn):
         raise HTTPException(status_code=403, detail="not_owner")
 
     if category and not is_valid_category(category):
         raise HTTPException(status_code=400, detail="invalid_category")
+
+    video_url = _validate_video_url(video_url)
 
     new_version: Optional[str] = None
     new_size: Optional[int] = None
