@@ -2911,20 +2911,37 @@ def run_corporate_memory(
     # Fail-fast (#176): collect_all raises ValueError when no ai: block AND
     # no env keys are present. Surface the actionable factory message in a
     # 500 instead of letting it crash the request anonymously.
+    stats: dict = {}
+    job_error: Optional[Exception] = None
     try:
         stats = collect_all(dry_run=False)
     except ValueError as e:
+        # Already-translated misconfiguration → 500 with actionable message
+        # but no audit row (the request never reached the LLM stage).
         raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        # Mirror run_verification_detector (#179 review): capture any other
+        # unhandled error so audit_log + /admin/scheduler-runs reflect the
+        # failure. Re-raised below after audit.
+        job_error = e
+
+    audit_params: dict = {
+        "items_new": stats.get("items_new", 0),
+        "items_filtered": stats.get("items_filtered", 0),
+        "errors": len(stats.get("errors", [])),
+        "skipped": stats.get("skipped", False),
+    }
+    if job_error is not None:
+        audit_params["unhandled_error"] = f"{type(job_error).__name__}: {job_error}"
 
     AuditRepository(conn).log(
         user_id=user.get("id"),
         action="run_corporate_memory",
         resource="job:corporate-memory",
-        params={
-            "items_new": stats.get("items_new", 0),
-            "items_filtered": stats.get("items_filtered", 0),
-            "errors": len(stats.get("errors", [])),
-            "skipped": stats.get("skipped", False),
-        },
+        params=audit_params,
     )
+
+    if job_error is not None:
+        raise HTTPException(status_code=500, detail=audit_params["unhandled_error"])
+
     return {"ok": not stats.get("errors"), "details": stats}

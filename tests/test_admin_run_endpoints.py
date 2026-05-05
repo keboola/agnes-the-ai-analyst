@@ -117,6 +117,36 @@ class TestRunCorporateMemory:
         resp = c.post("/api/admin/run-corporate-memory", headers=_auth(token))
         assert resp.status_code == 403
 
+    def test_unhandled_exception_still_audits(self, seeded_app):
+        """Devin Review on 4c4dfee8: run_corporate_memory must mirror
+        run_verification_detector — record the failure in audit_log even
+        when collect_all() raises something other than ValueError, so
+        the operator sees the failure on /admin/scheduler-runs instead
+        of only in docker logs."""
+        from src.db import get_system_db
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        with patch(
+            "services.corporate_memory.collector.collect_all",
+            side_effect=RuntimeError("simulated DuckDB lock"),
+        ):
+            resp = c.post("/api/admin/run-corporate-memory", headers=_auth(token))
+        assert resp.status_code == 500
+        assert "RuntimeError" in resp.json()["detail"]
+        # The audit row must exist regardless of the 500.
+        conn = get_system_db()
+        try:
+            rows = conn.execute(
+                "SELECT params FROM audit_log WHERE action = 'run_corporate_memory' ORDER BY timestamp DESC LIMIT 1"
+            ).fetchall()
+        finally:
+            conn.close()
+        assert rows, "audit row missing on unhandled exception"
+        params_json = rows[0][0]
+        assert "unhandled_error" in params_json
+        assert "RuntimeError" in params_json
+
 
 class TestSchedulerJobsWireUp:
     """The scheduler must drive all three new endpoints on a sensible cadence."""
