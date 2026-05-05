@@ -2626,6 +2626,29 @@ async def configure_instance(
                 "location": request.bigquery_location or "us",
             }
 
+        # Seed an ai: block on first-time setup so LLM-driven services
+        # (corporate_memory, verification_detector) can boot without manual
+        # YAML editing. Only inserts when the overlay has no ai: yet AND an
+        # appropriate env var is present — never overwrites operator config,
+        # never writes a placeholder block (#176).
+        if "ai" not in overlay:
+            anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+            llm_key = os.environ.get("LLM_API_KEY", "").strip()
+            if anthropic_key:
+                overlay["ai"] = {
+                    "provider": "anthropic",
+                    "api_key": "${ANTHROPIC_API_KEY}",
+                    "model": "claude-haiku-4-5-20251001",
+                    "structured_output": "auto",
+                }
+            elif llm_key:
+                overlay["ai"] = {
+                    "provider": "anthropic",
+                    "api_key": "${LLM_API_KEY}",
+                    "model": "claude-haiku-4-5-20251001",
+                    "structured_output": "auto",
+                }
+
         # Atomic write to writable data volume — same tmp + os.replace pattern
         # as the server-config editor so a concurrent save can't tear the file.
         config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2762,3 +2785,183 @@ async def discover_and_register(
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Discovery and registration failed: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Scheduler-driven LLM pipeline endpoints (#176)
+#
+# The scheduler container drives these via HTTP rather than running them
+# in-process — same reasoning as the existing /api/marketplaces/sync-all
+# job: DuckDB allows only one writer per file across processes, and the
+# app keeps a long-lived handle on system.duckdb. Routing through the app
+# inherits the existing connection without contention.
+#
+# Each endpoint is `def` (sync), so FastAPI runs it in a thread pool —
+# the underlying jobs do blocking I/O (LLM calls, DuckDB writes,
+# filesystem scans). Running on the asyncio thread would block health
+# checks for the duration of a job.
+# ---------------------------------------------------------------------------
+
+
+@router.post("/run-session-collector")
+def run_session_collector(
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Trigger the session-collector job from the scheduler.
+
+    Walks /home/*/user/sessions/*.jsonl and copies new files into
+    /data/user_sessions/<user>/. Idempotent — already-collected files
+    are skipped.
+    """
+    from services.session_collector import collector
+
+    # Call run() not main(): main() does argparse.parse_args() which would
+    # try to parse uvicorn's sys.argv and SystemExit(2) the worker.
+    rc: int = 1
+    stats: dict = {}
+    job_error: Optional[Exception] = None
+    try:
+        rc, stats = collector.run(dry_run=False, verbose=False)
+    except Exception as e:
+        # Mirror run_verification_detector / run_corporate_memory
+        # (#179 review): capture any unhandled error so audit_log +
+        # /admin/scheduler-runs reflect the failure. Re-raised below
+        # after audit. Filesystem permission, OSError on /home walking,
+        # etc. are realistic failure modes worth surfacing.
+        job_error = e
+
+    audit_params: dict = {"rc": rc, **stats}
+    if job_error is not None:
+        audit_params["unhandled_error"] = f"{type(job_error).__name__}: {job_error}"
+
+    AuditRepository(conn).log(
+        user_id=user.get("id"),
+        action="run_session_collector",
+        resource="job:session-collector",
+        params=audit_params,
+    )
+
+    if job_error is not None:
+        raise HTTPException(status_code=500, detail=audit_params["unhandled_error"])
+
+    return {"ok": rc == 0, "details": {"rc": rc, **stats}}
+
+
+@router.post("/run-verification-detector")
+def run_verification_detector(
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Trigger the verification-detector job from the scheduler.
+
+    Reads collected session transcripts, extracts verified knowledge
+    via the LLM, and writes pending items to knowledge_items. The
+    /corporate-memory/admin queue picks them up for triage.
+    """
+    from connectors.llm import create_extractor_from_env_or_config
+    from services.verification_detector import detector
+    from src.db import get_system_db
+
+    # Build the extractor lazily so the endpoint surfaces a 500 with the
+    # factory's actionable error when no ai: block + no env keys are set.
+    # Use the overlay-aware loader (#179 review fix) so an ai: block written
+    # by /api/admin/configure to DATA_DIR/state/instance.yaml actually flows
+    # through to the factory.
+    try:
+        from app.instance_config import load_instance_config
+        try:
+            instance_config = load_instance_config()
+        except (ValueError, FileNotFoundError):
+            instance_config = {}
+        ai_config = instance_config.get("ai") if instance_config else None
+        extractor = create_extractor_from_env_or_config(ai_config)
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    job_conn = get_system_db()
+    stats: dict = {}
+    job_error: Optional[Exception] = None
+    try:
+        stats = detector.run(job_conn, extractor, dry_run=False)
+    except Exception as e:
+        # Capture and re-raise after audit so an unhandled detector error
+        # (DuckDB lock, network blip, unexpected SDK type) still leaves a
+        # row in audit_log — the /admin/scheduler-runs page is the
+        # operator's only signal beyond docker logs.
+        job_error = e
+    finally:
+        try:
+            job_conn.close()
+        except Exception:
+            pass
+
+    audit_params: dict = {
+        "items_created": stats.get("items_created", 0),
+        "errors": len(stats.get("errors", [])),
+    }
+    if job_error is not None:
+        audit_params["unhandled_error"] = f"{type(job_error).__name__}: {job_error}"
+
+    AuditRepository(conn).log(
+        user_id=user.get("id"),
+        action="run_verification_detector",
+        resource="job:verification-detector",
+        params=audit_params,
+    )
+
+    if job_error is not None:
+        raise HTTPException(status_code=500, detail=audit_params["unhandled_error"])
+
+    return {"ok": not stats.get("errors"), "details": stats}
+
+
+@router.post("/run-corporate-memory")
+def run_corporate_memory(
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Trigger the corporate-memory catalog refresh from the scheduler.
+
+    Reads all CLAUDE.local.md files, sends them through the LLM with the
+    existing catalog, and writes an updated catalog to knowledge.json.
+    """
+    from services.corporate_memory.collector import collect_all
+
+    # Fail-fast (#176): collect_all raises ValueError when no ai: block AND
+    # no env keys are present. Surface the actionable factory message in a
+    # 500 instead of letting it crash the request anonymously.
+    stats: dict = {}
+    job_error: Optional[Exception] = None
+    try:
+        stats = collect_all(dry_run=False)
+    except ValueError as e:
+        # Already-translated misconfiguration → 500 with actionable message
+        # but no audit row (the request never reached the LLM stage).
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        # Mirror run_verification_detector (#179 review): capture any other
+        # unhandled error so audit_log + /admin/scheduler-runs reflect the
+        # failure. Re-raised below after audit.
+        job_error = e
+
+    audit_params: dict = {
+        "items_new": stats.get("items_new", 0),
+        "items_filtered": stats.get("items_filtered", 0),
+        "errors": len(stats.get("errors", [])),
+        "skipped": stats.get("skipped", False),
+    }
+    if job_error is not None:
+        audit_params["unhandled_error"] = f"{type(job_error).__name__}: {job_error}"
+
+    AuditRepository(conn).log(
+        user_id=user.get("id"),
+        action="run_corporate_memory",
+        resource="job:corporate-memory",
+        params=audit_params,
+    )
+
+    if job_error is not None:
+        raise HTTPException(status_code=500, detail=audit_params["unhandled_error"])
+
+    return {"ok": not stats.get("errors"), "details": stats}

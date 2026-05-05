@@ -52,3 +52,19 @@ class AuditRepository:
             return []
         columns = [desc[0] for desc in self.conn.description]
         return [dict(zip(columns, row)) for row in results]
+
+    def query_actions(
+        self,
+        actions: List[str],
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        """Return rows whose action is in the given list, newest first."""
+        if not actions:
+            return []
+        placeholders = ",".join("?" for _ in actions)
+        sql = f"SELECT * FROM audit_log WHERE action IN ({placeholders}) ORDER BY timestamp DESC LIMIT ?"
+        results = self.conn.execute(sql, list(actions) + [limit]).fetchall()
+        if not results:
+            return []
+        columns = [desc[0] for desc in self.conn.description]
+        return [dict(zip(columns, row)) for row in results]

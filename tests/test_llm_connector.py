@@ -166,6 +166,63 @@ class TestCreateExtractor:
 # ===================================================================
 
 
+class TestStrictJsonSchema:
+    """The Anthropic API rejects object schemas without additionalProperties=False."""
+
+    def test_adds_to_top_level_object(self):
+        from connectors.llm.anthropic_provider import _strict_json_schema
+
+        out = _strict_json_schema({"type": "object", "properties": {"a": {"type": "string"}}})
+        assert out["additionalProperties"] is False
+
+    def test_recurses_into_nested_objects(self):
+        from connectors.llm.anthropic_provider import _strict_json_schema
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "nested": {
+                    "type": "object",
+                    "properties": {"deep": {"type": "object", "properties": {}}},
+                },
+            },
+        }
+        out = _strict_json_schema(schema)
+        assert out["additionalProperties"] is False
+        assert out["properties"]["nested"]["additionalProperties"] is False
+        assert out["properties"]["nested"]["properties"]["deep"]["additionalProperties"] is False
+
+    def test_recurses_into_array_items(self):
+        from connectors.llm.anthropic_provider import _strict_json_schema
+
+        schema = {
+            "type": "object",
+            "properties": {"items": {"type": "array", "items": {"type": "object", "properties": {}}}},
+        }
+        out = _strict_json_schema(schema)
+        assert out["properties"]["items"]["items"]["additionalProperties"] is False
+
+    def test_preserves_explicit_additional_properties(self):
+        from connectors.llm.anthropic_provider import _strict_json_schema
+
+        schema = {"type": "object", "additionalProperties": True, "properties": {}}
+        out = _strict_json_schema(schema)
+        assert out["additionalProperties"] is True
+
+    def test_does_not_mutate_input(self):
+        from connectors.llm.anthropic_provider import _strict_json_schema
+
+        schema = {"type": "object", "properties": {}}
+        _strict_json_schema(schema)
+        assert "additionalProperties" not in schema
+
+    def test_non_object_schemas_untouched(self):
+        from connectors.llm.anthropic_provider import _strict_json_schema
+
+        out = _strict_json_schema({"type": "string"})
+        assert "additionalProperties" not in out
+
+
 class TestAnthropicExtractor:
     """Tests for connectors.llm.anthropic_provider.AnthropicExtractor."""
 
@@ -871,7 +928,7 @@ class TestCorporateMemoryCollector:
                 return_value={"ai": {"provider": "anthropic", "api_key": "sk-test"}},
             ),
             patch(
-                "services.corporate_memory.collector.create_extractor",
+                "connectors.llm.create_extractor_from_env_or_config",
                 return_value=mock_extractor,
             ),
         ):
@@ -921,7 +978,7 @@ class TestCorporateMemoryCollector:
                 return_value={"ai": {"provider": "anthropic", "api_key": "sk-test"}},
             ),
             patch(
-                "services.corporate_memory.collector.create_extractor",
+                "connectors.llm.create_extractor_from_env_or_config",
                 return_value=mock_extractor,
             ),
         ):
@@ -991,7 +1048,7 @@ class TestCorporateMemoryCollector:
                 return_value={"ai": {"provider": "anthropic", "api_key": "sk-test"}},
             ),
             patch(
-                "services.corporate_memory.collector.create_extractor",
+                "connectors.llm.create_extractor_from_env_or_config",
                 return_value=mock_extractor,
             ),
         ):
@@ -1023,7 +1080,7 @@ class TestCorporateMemoryCollector:
                 return_value={"ai": {"provider": "anthropic", "api_key": "sk-test"}},
             ),
             patch(
-                "services.corporate_memory.collector.create_extractor",
+                "connectors.llm.create_extractor_from_env_or_config",
                 return_value=mock_extractor,
             ),
         ):
@@ -1032,8 +1089,8 @@ class TestCorporateMemoryCollector:
         assert len(stats["errors"]) == 1
         assert "LLM error" in stats["errors"][0]
 
-    def test_collect_all_no_ai_config_skips(self, tmp_path):
-        """collect_all skips when instance.yaml has no ai: section."""
+    def test_collect_all_no_ai_config_or_env_raises(self, tmp_path, monkeypatch):
+        """collect_all fails fast when neither ai: config nor LLM env keys exist (#176)."""
         from services.corporate_memory.collector import collect_all
 
         home = tmp_path / "home"
@@ -1042,6 +1099,10 @@ class TestCorporateMemoryCollector:
         user_dir.mkdir()
         (user_dir / "CLAUDE.local.md").write_text("Some content")
 
+        # Make sure no env-var fallback is available so the factory raises.
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("LLM_API_KEY", raising=False)
+
         with (
             patch("services.corporate_memory.collector.HOME_BASE", home),
             patch("services.corporate_memory.collector._read_json", return_value={}),
@@ -1049,10 +1110,30 @@ class TestCorporateMemoryCollector:
                 "config.loader.load_instance_config",
                 return_value={"server": {"host": "example.com"}},
             ),
+            pytest.raises(ValueError, match="LLM not configured"),
         ):
-            stats = collect_all(dry_run=True)
+            collect_all(dry_run=True)
 
-        assert stats["skipped"] is True
+    def test_main_returns_1_on_no_ai_config_instead_of_traceback(self, tmp_path, monkeypatch, capsys):
+        """CLI main() must catch the new fail-fast ValueError from collect_all() and exit cleanly.
+
+        Regression for Devin Review on #179: previously the CLI crashed with an
+        unhandled traceback when env + ai: config were both missing.
+        """
+        from services.corporate_memory import collector as cm
+
+        monkeypatch.setattr("sys.argv", ["corporate_memory"])
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("LLM_API_KEY", raising=False)
+        monkeypatch.setattr(cm, "CORPORATE_MEMORY_DIR", tmp_path / "cm")
+        monkeypatch.setattr(cm, "COLLECTION_LOG", tmp_path / "cm" / "log")
+        monkeypatch.setattr(cm, "collect_all", lambda dry_run=False: (_ for _ in ()).throw(ValueError("LLM not configured")))
+
+        rc = cm.main()
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "Corporate Memory cannot run" in err
+        assert "LLM not configured" in err
 
 
 # ===================================================================
@@ -1323,8 +1404,8 @@ class TestCollectorExtractorIntegration:
         assert stats["items_extracted"] == 0
         assert stats["errors"] == []
 
-    def test_collector_handles_invalid_config(self, tmp_path):
-        """Collector returns error when config is invalid."""
+    def test_collector_raises_on_invalid_config(self, tmp_path):
+        """Collector fail-fasts (raises ValueError) when ai: config is invalid (#176)."""
         from services.corporate_memory.collector import collect_all
 
         home = tmp_path / "home"
@@ -1340,8 +1421,6 @@ class TestCollectorExtractorIntegration:
                 "config.loader.load_instance_config",
                 return_value={"ai": {"provider": "anthropic", "api_key": ""}},
             ),
+            pytest.raises(ValueError, match="must not be empty"),
         ):
-            stats = collect_all(dry_run=True)
-
-        assert len(stats["errors"]) == 1
-        assert "must not be empty" in stats["errors"][0]
+            collect_all(dry_run=True)

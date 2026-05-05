@@ -73,6 +73,15 @@ _DEFAULTS = {
     "SCHEDULER_HEALTH_CHECK_INTERVAL": 5 * 60,
     "SCHEDULER_SCRIPT_RUN_INTERVAL":   1 * 60,
     "SCHEDULER_TICK_SECONDS":          30,
+    # LLM pipeline cadences (#176, #179 review). Defaults preserve the
+    # 10m / 15m / 17m coprime offset so the three jobs don't fire on the
+    # same tick and stack their API + DB load. The verification-detector
+    # default (900s) is also the source of truth for the health-check
+    # staleness grace window in app/api/health.py — single env var drives
+    # both, so an operator changing the cadence moves both.
+    "SCHEDULER_SESSION_COLLECTOR_INTERVAL":     10 * 60,
+    "SCHEDULER_VERIFICATION_DETECTOR_INTERVAL": 15 * 60,
+    "SCHEDULER_CORPORATE_MEMORY_INTERVAL":      17 * 60,
 }
 
 
@@ -128,8 +137,11 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
     refresh = _read_positive_int("SCHEDULER_DATA_REFRESH_INTERVAL")
     health  = _read_positive_int("SCHEDULER_HEALTH_CHECK_INTERVAL")
     scripts = _read_positive_int("SCHEDULER_SCRIPT_RUN_INTERVAL")
+    sess    = _read_positive_int("SCHEDULER_SESSION_COLLECTOR_INTERVAL")
+    verify  = _read_positive_int("SCHEDULER_VERIFICATION_DETECTOR_INTERVAL")
+    corpmem = _read_positive_int("SCHEDULER_CORPORATE_MEMORY_INTERVAL")
     tick    = _read_positive_int("SCHEDULER_TICK_SECONDS")
-    smallest = min(refresh, health, scripts)
+    smallest = min(refresh, health, scripts, sess, verify, corpmem)
     if tick > smallest:
         raise ValueError(
             f"SCHEDULER_TICK_SECONDS={tick} must be <= the smallest job "
@@ -137,10 +149,20 @@ def build_jobs() -> list[tuple[str, str, str, str, int]]:
             f"cadence by up to one tick"
         )
     return [
-        ("data-refresh",  _seconds_to_schedule(refresh), "/api/sync/trigger",          "POST", 120),
-        ("health-check",  _seconds_to_schedule(health),  "/api/health",                "GET",   30),
-        ("script-runner", _seconds_to_schedule(scripts), "/api/scripts/run-due",       "POST", 600),
-        ("marketplaces",  "daily 03:00",                 "/api/marketplaces/sync-all", "POST", 900),
+        ("data-refresh",          _seconds_to_schedule(refresh), "/api/sync/trigger",                    "POST", 120),
+        ("health-check",          _seconds_to_schedule(health),  "/api/health",                          "GET",   30),
+        ("script-runner",         _seconds_to_schedule(scripts), "/api/scripts/run-due",                 "POST", 600),
+        ("marketplaces",          "daily 03:00",                 "/api/marketplaces/sync-all",           "POST", 900),
+        # LLM pipeline (#176, #179 review). Cadences are deliberately offset
+        # (10m / 15m / 17m by default — all coprime modulo the 30s tick) so
+        # the three LLM-driven jobs don't fire on the same tick and stack
+        # their API + DB load. Driven by env so an operator can throttle
+        # without a code change; the verification-detector cadence is the
+        # single source of truth for the health-check staleness grace
+        # window in app/api/health.py (which uses 2x the cadence).
+        ("session-collector",     _seconds_to_schedule(sess),    "/api/admin/run-session-collector",     "POST", 300),
+        ("verification-detector", _seconds_to_schedule(verify),  "/api/admin/run-verification-detector", "POST", 900),
+        ("corporate-memory",      _seconds_to_schedule(corpmem), "/api/admin/run-corporate-memory",      "POST", 900),
     ]
 
 _running = True

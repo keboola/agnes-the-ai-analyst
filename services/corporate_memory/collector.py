@@ -24,6 +24,7 @@ import hashlib
 import json
 import logging
 import os
+import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -416,21 +417,28 @@ def collect_all(dry_run: bool = False) -> dict:
         stats["skipped"] = True
         return stats
 
-    # Step 2: Initialize AI extractor
-    try:
-        from config.loader import load_instance_config
+    # Step 2: Initialize AI extractor.
+    # Fail-fast (#176): no silent skip on missing ai: block. The factory
+    # falls back to ANTHROPIC_API_KEY / LLM_API_KEY env vars and raises a
+    # clear ValueError if neither config nor env is available — propagate
+    # the ValueError so the scheduler / admin endpoint surface the
+    # actionable misconfiguration message instead of swallowing it into
+    # stats["errors"]. FileNotFoundError on the static config path is fine
+    # to swallow because the factory's env fallback can still satisfy.
+    #
+    # Use the overlay-aware loader (#179 review fix) so an ai: block written
+    # by /api/admin/configure to DATA_DIR/state/instance.yaml actually flows
+    # through to the factory; config.loader.load_instance_config reads the
+    # static config dir only and would silently miss the overlay.
+    from app.instance_config import load_instance_config
+    from connectors.llm import create_extractor_from_env_or_config
 
+    try:
         instance_config = load_instance_config()
-        ai_config = instance_config.get("ai")
-        if not ai_config:
-            logger.warning("No ai: section in instance.yaml, skipping catalog refresh")
-            stats["skipped"] = True
-            return stats
-        extractor = create_extractor(ai_config)
-    except (ValueError, FileNotFoundError) as e:
-        stats["errors"].append(str(e))
-        logger.error("Failed to initialize AI extractor: %s", e)
-        return stats
+    except (ValueError, FileNotFoundError):
+        instance_config = {}
+    ai_config = instance_config.get("ai") if instance_config else None
+    extractor = create_extractor_from_env_or_config(ai_config)
 
     # Determine initial status for new items based on approval mode
     governance_config = instance_config.get("corporate_memory", {})
@@ -617,7 +625,13 @@ def main() -> int:
         print("Data cleared. Running fresh collection...\n")
 
     logger.info("Starting knowledge collection...")
-    stats = collect_all(dry_run=args.dry_run)
+    try:
+        stats = collect_all(dry_run=args.dry_run)
+    except ValueError as e:
+        # collect_all() now fail-fasts on missing ai: config + env (#176).
+        # Print the actionable message instead of a raw traceback.
+        print(f"\nCorporate Memory cannot run: {e}", file=sys.stderr)
+        return 1
 
     print("\nCollection complete:")
     if stats["skipped"]:

@@ -566,6 +566,23 @@
     {% include '_app_header.html' %}
 
     <div class="container-memory">
+        {% if pending_review_count and pending_review_count > 0 %}
+        <!-- Admin-only review-queue banner (#176). Hidden when 0; non-admins
+             never see this because the route zeroes pending_review_count for
+             them server-side. -->
+        <div class="pending-review-banner" style="display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) var(--space-4); margin-bottom: var(--space-4); background: #fef9c3; border: 1px solid #facc15; border-radius: var(--radius-md); color: #854d0e; font-size: var(--text-sm);">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="12" y1="8" x2="12" y2="12"/>
+                <line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
+            <span>
+                <strong>{{ pending_review_count }} pending item{{ 's' if pending_review_count != 1 else '' }}</strong>
+                awaiting review —
+                <a href="/corporate-memory/admin" style="color: #854d0e; text-decoration: underline; font-weight: var(--font-medium);">review them at /corporate-memory/admin</a>
+            </span>
+        </div>
+        {% endif %}
         <!-- Stats Bar -->
         <div class="stats-bar">
             <div class="stat-item">

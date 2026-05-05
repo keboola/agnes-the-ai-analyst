@@ -49,22 +49,28 @@ def main() -> None:
 
     setup_logging(__name__, level="DEBUG" if args.verbose else "INFO")
 
-    # Load AI config lazily (same pattern as corporate memory collector)
+    # Load AI config; fail fast on missing config + env (#176).
+    # Use the overlay-aware loader (#179 review fix) so an ai: block written
+    # by /api/admin/configure to DATA_DIR/state/instance.yaml actually flows
+    # through to the factory.
+    from connectors.llm import create_extractor_from_env_or_config
     try:
-        from config.loader import load_instance_config
+        from app.instance_config import load_instance_config
 
-        config = load_instance_config()
-        ai_config = config.get("ai")
-        if not ai_config:
-            logger.error("No ai: section in instance.yaml, cannot run verification detector")
-            sys.exit(1)
+        try:
+            config = load_instance_config()
+        except (ValueError, FileNotFoundError):
+            config = {}
+        ai_config = config.get("ai") if config else None
+        extractor = create_extractor_from_env_or_config(ai_config)
     except (ValueError, FileNotFoundError) as e:
-        logger.error("Failed to load config: %s", e)
+        logger.error(
+            "Failed to initialize verification detector: %s. "
+            "Configure ai: in instance.yaml or set ANTHROPIC_API_KEY / LLM_API_KEY.",
+            e,
+        )
         sys.exit(1)
 
-    from connectors.llm import create_extractor
-
-    extractor = create_extractor(ai_config)
     conn = get_system_db()
 
     if args.reset:

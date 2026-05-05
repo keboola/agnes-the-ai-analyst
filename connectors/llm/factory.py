@@ -5,6 +5,7 @@ and creates the appropriate StructuredExtractor implementation.
 """
 
 import logging
+import os
 from urllib.parse import urlparse
 
 from .anthropic_provider import AnthropicExtractor
@@ -118,6 +119,48 @@ def create_extractor(ai_config: dict) -> StructuredExtractor:
             f"Supported: 'anthropic', 'openai_compat'. "
             f"Hint: use ${{ENV_VAR}} syntax for secrets."
         )
+
+
+def create_extractor_from_env_or_config(
+    ai_config: dict | None,
+) -> StructuredExtractor:
+    """Build an extractor from config, falling back to env vars.
+
+    Resolution order (#176):
+
+    1. ``ai_config`` is a non-empty dict → delegate to :func:`create_extractor`.
+    2. ``ANTHROPIC_API_KEY`` set → AnthropicExtractor with the default model.
+    3. ``LLM_API_KEY`` set without a base_url → AnthropicExtractor (the proxy
+       case typically also wires a base_url, in which case the operator should
+       use the explicit ai: block; this fallback is a best-effort convenience).
+    4. Otherwise raise ``ValueError`` with a clear actionable message — never
+       silently exit, never return ``None``. The previous "skip when ai: is
+       missing" behavior was the silent-failure root cause in #176.
+    """
+    if ai_config:
+        return create_extractor(ai_config)
+
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    llm_key = os.environ.get("LLM_API_KEY", "").strip()
+
+    if anthropic_key:
+        logger.info(
+            "No ai: block in instance.yaml; falling back to ANTHROPIC_API_KEY env var"
+        )
+        return AnthropicExtractor(api_key=anthropic_key, model=DEFAULT_MODEL)
+
+    if llm_key:
+        logger.info(
+            "No ai: block in instance.yaml; falling back to LLM_API_KEY env var"
+        )
+        return AnthropicExtractor(api_key=llm_key, model=DEFAULT_MODEL)
+
+    raise ValueError(
+        "LLM not configured. Add an ai: block to instance.yaml (see "
+        "config/instance.yaml.example) OR set ANTHROPIC_API_KEY / LLM_API_KEY "
+        "in the environment. The corporate-memory and verification-detector "
+        "services cannot run without one of these."
+    )
 
 
 def _validate_api_key(api_key: str) -> None:

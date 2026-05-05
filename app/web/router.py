@@ -5,13 +5,13 @@ Replicates all Flask webapp routes with DuckDB-backed data.
 
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Request, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 import duckdb
 
@@ -602,6 +602,11 @@ async def corporate_memory(
     categories = sorted(set(i.get("category", "") for i in all_items if i.get("category")))
     domains = sorted(set(i.get("domain", "") for i in all_items if i.get("domain")))
 
+    # #176: surface the pending review queue to admins. Without this the
+    # main page silently filtered status='pending' items and operators had
+    # no breadcrumb to /corporate-memory/admin.
+    pending_count = sum(1 for i in all_items if i.get("status") == "pending")
+
     # "My contributions" — items the caller authored. Personal items are
     # always visible to their author regardless of audience filtering;
     # this is the surface the user uses to mark/unmark `is_personal`.
@@ -612,6 +617,7 @@ async def corporate_memory(
         item["upvotes"] = votes["upvotes"]
         item["downvotes"] = votes["downvotes"]
 
+    is_admin_view = is_user_admin(user["id"], conn)
     ctx = _build_context(
         request, user=user,
         knowledge_items=items,
@@ -621,7 +627,7 @@ async def corporate_memory(
         domains=domains,
         stats={"total": len(all_items), "approved": len([i for i in all_items if i.get("status") == "approved"])},
         user_votes={},
-        is_km_admin=is_user_admin(user["id"], conn),
+        is_km_admin=is_admin_view,
         user_contributions=user_contributions,
         user_stats={"authored": len(user_contributions), "votes_given": 0},
         # Template expects knowledge as object with .items and .total_pages
@@ -630,6 +636,8 @@ async def corporate_memory(
         current_page=1,
         page=1,
         per_page=100,
+        # #176: pending banner is admin-only.
+        pending_review_count=pending_count if is_admin_view else 0,
     )
     return templates.TemplateResponse(request, "corporate_memory.html", ctx)
 
@@ -938,6 +946,41 @@ async def admin_marketplaces_page(
     return templates.TemplateResponse(request, "admin_marketplaces.html", ctx)
 
 
+# Scheduler-driven admin actions audited by app/api/admin.py and
+# app/api/marketplaces.py. Keep in sync with the JOBS list in
+# services/scheduler/__main__.py.
+#
+# `data-refresh` (POST /api/sync/trigger) and `script-runner`
+# (POST /api/scripts/run-due) are scheduler jobs but they do NOT write
+# audit_log today, so they can't appear here. If you add audit calls to
+# those endpoints, add the matching action strings to this list.
+SCHEDULER_AUDIT_ACTIONS = [
+    "run_session_collector",
+    "run_verification_detector",
+    "run_corporate_memory",
+    "marketplace.sync_all",
+]
+
+
+@router.get("/admin/scheduler-runs", response_class=HTMLResponse)
+async def admin_scheduler_runs_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Read-only view of the audit_log filtered to scheduler-driven actions.
+
+    Failed scheduler ticks (HTTP 401, network errors) don't reach this view —
+    they live only in the scheduler container's stdout. The audit_log shows
+    only what reached the admin endpoint and was processed.
+    """
+    from src.repositories.audit import AuditRepository
+
+    rows = AuditRepository(conn).query_actions(SCHEDULER_AUDIT_ACTIONS, limit=200)
+    ctx = _build_context(request, user=user, rows=rows, actions=SCHEDULER_AUDIT_ACTIONS)
+    return templates.TemplateResponse(request, "admin_scheduler_runs.html", ctx)
+
+
 @router.get("/admin/agent-prompt", response_class=HTMLResponse)
 async def admin_agent_prompt_page(
     request: Request,
@@ -1068,6 +1111,124 @@ async def profile_page(
         is_admin=is_user_admin(user["id"], conn),
     )
     return templates.TemplateResponse(request, "profile.html", ctx)
+
+
+@router.get("/profile/sessions", response_class=HTMLResponse)
+async def profile_sessions_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """User-self-view of own uploaded sessions and their extraction state.
+
+    Walks `${DATA_DIR}/user_sessions/<user_id>/*.jsonl` for the caller's
+    own user_id, joins each file against `session_extraction_state` to
+    surface processed_at + items_extracted, and renders a table.
+    Items_extracted = 0 means the verification_detector ran but the LLM
+    found no claims worth tracking — that's the documented "no items"
+    outcome; it does NOT mean the pipeline is broken.
+    """
+    import pathlib
+    user_id = user["id"]
+    data_dir = pathlib.Path(os.environ.get("DATA_DIR", "/data"))
+    user_sessions_dir = data_dir / "user_sessions" / user_id
+
+    files = []
+    if user_sessions_dir.is_dir():
+        # Stat once per file with OSError tolerance, THEN sort. The previous
+        # `sorted(..., key=lambda p: p.stat().st_mtime)` raised on any
+        # transient stat failure (race with delete, permission flicker) and
+        # 500-ed the whole page (Devin Review on #179).
+        statted = []
+        for jsonl in user_sessions_dir.glob("*.jsonl"):
+            try:
+                stat = jsonl.stat()
+            except OSError:
+                continue
+            statted.append((jsonl, stat))
+        statted.sort(key=lambda pair: pair[1].st_mtime, reverse=True)
+        for jsonl, stat in statted:
+            files.append({
+                "name": jsonl.name,
+                "size_bytes": stat.st_size,
+                "mtime": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
+            })
+
+    state_map: dict = {}
+    if files:
+        keys = [f"{user_id}/{f['name']}" for f in files]
+        placeholders = ",".join("?" for _ in keys)
+        rows = conn.execute(
+            f"""SELECT session_file, processed_at, items_extracted, file_hash
+                FROM session_extraction_state
+                WHERE session_file IN ({placeholders})""",
+            keys,
+        ).fetchall()
+        cols = [d[0] for d in conn.description]
+        for row in rows:
+            d = dict(zip(cols, row))
+            state_map[d["session_file"]] = d
+
+    rows_view = []
+    for f in files:
+        key = f"{user_id}/{f['name']}"
+        state = state_map.get(key)
+        rows_view.append({
+            "name": f["name"],
+            "size_kb": round(f["size_bytes"] / 1024, 1),
+            "uploaded_at": f["mtime"],
+            "processed_at": state["processed_at"] if state else None,
+            "items_extracted": state["items_extracted"] if state else None,
+            "is_processed": state is not None,
+        })
+
+    ctx = _build_context(
+        request,
+        user=user,
+        sessions=rows_view,
+        user_id=user_id,
+    )
+    return templates.TemplateResponse(request, "profile_sessions.html", ctx)
+
+
+@router.get("/profile/sessions/{filename}")
+async def profile_session_download(
+    filename: str,
+    user: dict = Depends(get_current_user),
+):
+    """Download a single jsonl session file owned by the caller.
+
+    Path safety: filename is single-component (no separators, no `..`,
+    must end in `.jsonl`); the served path is built under
+    `${DATA_DIR}/user_sessions/<current_user.id>/` and must resolve into
+    that directory. Any deviation yields 404 — never 403, so we don't
+    leak the existence of files belonging to other users.
+    """
+    import pathlib
+
+    if "/" in filename or "\\" in filename or filename.startswith(".") or ".." in filename:
+        raise HTTPException(status_code=404, detail="Not found")
+    if not filename.endswith(".jsonl"):
+        raise HTTPException(status_code=404, detail="Not found")
+
+    user_id = user["id"]
+    data_dir = pathlib.Path(os.environ.get("DATA_DIR", "/data")).resolve()
+    user_dir = (data_dir / "user_sessions" / user_id).resolve()
+    target = (user_dir / filename).resolve()
+
+    try:
+        target.relative_to(user_dir)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Not found")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Not found")
+
+    return FileResponse(
+        path=str(target),
+        filename=filename,
+        media_type="application/x-ndjson",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/_debug/throw/http/{code:int}", response_class=HTMLResponse, include_in_schema=False)
