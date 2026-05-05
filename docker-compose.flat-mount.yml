@@ -82,7 +82,22 @@ services:
       - /data-state:/data-state
 
   caddy:
+    # `!override` replaces the entire base volumes list, so every mount
+    # the base service depends on must be re-stated here. Two of those
+    # are easy to miss and silently regress functionality:
+    #   - `data:/srv:ro` — Caddy's read-only view of the agnes data dir
+    #     used by the `@download` `file_server` handler in Caddyfile.
+    #     Without it, `try_files /bigquery/data/<id>.parquet …` finds no
+    #     file and every parquet download falls through to the app's
+    #     uvicorn worker — defeating the perf bypass landed in v0.36.0.
+    #   - `caddy_config:/config` — Caddy's autosave/ACME state. Missing
+    #     it doesn't break HTTPS (we feed certs in via `/certs`) but
+    #     loses the autosaved adapter config across recreates.
+    # Same caveat applies to any future `volumes: !override` block —
+    # diff against the base service before merging.
     volumes: !override
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - /data-state/certs:/certs:ro
       - caddy_data:/data
+      - caddy_config:/config
+      - /data:/srv:ro
