@@ -2818,13 +2818,33 @@ def run_session_collector(
 
     # Call run() not main(): main() does argparse.parse_args() which would
     # try to parse uvicorn's sys.argv and SystemExit(2) the worker.
-    rc, stats = collector.run(dry_run=False, verbose=False)
+    rc: int = 1
+    stats: dict = {}
+    job_error: Optional[Exception] = None
+    try:
+        rc, stats = collector.run(dry_run=False, verbose=False)
+    except Exception as e:
+        # Mirror run_verification_detector / run_corporate_memory
+        # (#179 review): capture any unhandled error so audit_log +
+        # /admin/scheduler-runs reflect the failure. Re-raised below
+        # after audit. Filesystem permission, OSError on /home walking,
+        # etc. are realistic failure modes worth surfacing.
+        job_error = e
+
+    audit_params: dict = {"rc": rc, **stats}
+    if job_error is not None:
+        audit_params["unhandled_error"] = f"{type(job_error).__name__}: {job_error}"
+
     AuditRepository(conn).log(
         user_id=user.get("id"),
         action="run_session_collector",
         resource="job:session-collector",
-        params={"rc": rc, **stats},
+        params=audit_params,
     )
+
+    if job_error is not None:
+        raise HTTPException(status_code=500, detail=audit_params["unhandled_error"])
+
     return {"ok": rc == 0, "details": {"rc": rc, **stats}}
 
 

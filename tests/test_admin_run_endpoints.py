@@ -49,6 +49,35 @@ class TestRunSessionCollector:
         resp = c.post("/api/admin/run-session-collector")
         assert resp.status_code == 401
 
+    def test_unhandled_exception_still_audits(self, seeded_app):
+        """Devin Review on 9ebe991b: run_session_collector must mirror
+        run_verification_detector / run_corporate_memory — record the
+        failure in audit_log even when collector.run() raises (e.g.
+        permission error walking /home/), so /admin/scheduler-runs sees
+        the failure instead of only docker logs."""
+        from src.db import get_system_db
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        with patch(
+            "services.session_collector.collector.run",
+            side_effect=PermissionError("simulated /home permission denied"),
+        ):
+            resp = c.post("/api/admin/run-session-collector", headers=_auth(token))
+        assert resp.status_code == 500
+        assert "PermissionError" in resp.json()["detail"]
+        conn = get_system_db()
+        try:
+            rows = conn.execute(
+                "SELECT params FROM audit_log WHERE action = 'run_session_collector' ORDER BY timestamp DESC LIMIT 1"
+            ).fetchall()
+        finally:
+            conn.close()
+        assert rows, "audit row missing on unhandled exception"
+        params_json = rows[0][0]
+        assert "unhandled_error" in params_json
+        assert "PermissionError" in params_json
+
 
 class TestRunVerificationDetector:
     def test_admin_can_trigger_verification_detector(self, seeded_app, monkeypatch):
