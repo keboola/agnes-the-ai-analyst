@@ -2,12 +2,14 @@
 
 import os
 import time
+import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 import httpx
 
-from cli.config import get_server_url, get_token
+from cli.config import _config_dir, get_server_url, get_token
 
 # Retry policy for transient failures during stream downloads. Scoped to
 # network issues and 5xx — 4xx (auth, 404, 400) is NOT retried. Tunable via
@@ -19,6 +21,105 @@ _RETRY_BACKOFFS_S = (0.3, 1.0, 3.0)  # seconds before attempt 2, 3, 4
 # tables, where SELECTs routinely run for minutes. The default 30s HTTP
 # timeout dies long before BQ finishes. Operators tune via AGNES_QUERY_TIMEOUT.
 QUERY_TIMEOUT_S = float(os.environ.get("AGNES_QUERY_TIMEOUT", "300"))
+
+
+# ── Transport-error translation ─────────────────────────────────────────
+# Pavel's Issue #185 Phase 3B caught the failure mode: when httpx raises
+# `ReadTimeout` / `ConnectError` / `RemoteProtocolError` and the CLI
+# command doesn't catch it, Typer dumps a five-frame Python traceback to
+# the analyst's terminal. That looks like a CLI bug to a non-Python user
+# and obscures the actionable signal ("server slow, try snapshot create").
+# Translate transport exceptions to `AgnesTransportError` with a typed
+# user-facing message, log the full traceback to `~/.config/agnes/last-
+# error.log` for debug, and let the top-level CLI handler render the
+# clean message + exit non-zero.
+
+_LOG_FILE = _config_dir() / "last-error.log"
+
+
+class AgnesTransportError(Exception):
+    """Network / transport failure with a user-actionable message.
+
+    Raised by the api_* / stream_download helpers when httpx surfaces a
+    connection / timeout / protocol error. The CLI's top-level Typer
+    handler catches this, prints `.user_message` (NOT the traceback),
+    and exits non-zero. Full traceback goes to ``~/.config/agnes/last-
+    error.log`` so an operator can recover it for support.
+    """
+
+    def __init__(self, user_message: str, *, hint: str = "", logfile_path: Path | None = None):
+        super().__init__(user_message)
+        self.user_message = user_message
+        self.hint = hint
+        self.logfile_path = logfile_path
+
+
+def _log_traceback(exc: BaseException, *, context: str) -> Path:
+    """Append a timestamped traceback to ``~/.config/agnes/last-error.log``
+    and return the path. Best-effort — never raises (a logging failure
+    must not mask the original error)."""
+    try:
+        with open(_LOG_FILE, "a", encoding="utf-8") as f:
+            ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            f.write(f"\n=== {ts} {context} ===\n")
+            traceback.print_exception(type(exc), exc, exc.__traceback__, file=f)
+    except Exception:
+        pass
+    return _LOG_FILE
+
+
+def _translate_transport_error(exc: Exception, *, context: str) -> AgnesTransportError:
+    """Map httpx transport exceptions to user-facing CLI messages. The
+    mapping is intentionally pragmatic — analysts care about "what do I
+    do next", not the gRPC / TCP detail."""
+    log = _log_traceback(exc, context=context)
+    if isinstance(exc, httpx.ReadTimeout):
+        return AgnesTransportError(
+            f"Server didn't respond within the read timeout ({QUERY_TIMEOUT_S:.0f}s) "
+            f"for {context}.",
+            hint=(
+                "If this is `agnes query --remote` against a heavy BQ view, "
+                "the underlying BQ job took longer than the wait window. Try:\n"
+                "  • narrow the WHERE (especially the partition column from `agnes catalog --json`)\n"
+                "  • `agnes snapshot create <table> ... --estimate` to materialize once + query locally\n"
+                "  • set AGNES_QUERY_TIMEOUT=600 for a longer client-side wait\n"
+                f"Full traceback: {log}"
+            ),
+            logfile_path=log,
+        )
+    if isinstance(exc, httpx.ConnectError):
+        return AgnesTransportError(
+            f"Can't reach the agnes server for {context}.",
+            hint=(
+                "Check the server URL with `agnes status`, network reachability "
+                "(VPN / DNS / firewall), and the TLS-trust setup if this is a "
+                f"corporate-CA deployment.\nFull traceback: {log}"
+            ),
+            logfile_path=log,
+        )
+    if isinstance(exc, (httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError)):
+        return AgnesTransportError(
+            f"Connection broke mid-flight on {context}.",
+            hint=(
+                "Usually a transient network blip. Re-run the command. If it "
+                f"keeps happening, check `agnes status`.\nFull traceback: {log}"
+            ),
+            logfile_path=log,
+        )
+    if isinstance(exc, httpx.TimeoutException):
+        return AgnesTransportError(
+            f"Network timeout on {context}.",
+            hint=f"Re-run; if persistent, check the server.\nFull traceback: {log}",
+            logfile_path=log,
+        )
+    # Anything else: re-wrap with a generic message so the CLI doesn't
+    # dump the traceback. We'd prefer a typed translation; if you hit
+    # this branch, add a clause above.
+    return AgnesTransportError(
+        f"Unexpected error on {context}: {type(exc).__name__}.",
+        hint=f"Full traceback: {log}",
+        logfile_path=log,
+    )
 
 
 def get_client(timeout: float = 30.0) -> httpx.Client:
@@ -35,23 +136,35 @@ def get_client(timeout: float = 30.0) -> httpx.Client:
 
 
 def api_get(path: str, *, timeout: float = 30.0, **kwargs) -> httpx.Response:
-    with get_client(timeout=timeout) as client:
-        return client.get(path, **kwargs)
+    try:
+        with get_client(timeout=timeout) as client:
+            return client.get(path, **kwargs)
+    except httpx.HTTPError as exc:
+        raise _translate_transport_error(exc, context=f"GET {path}") from exc
 
 
 def api_post(path: str, *, timeout: float = 30.0, **kwargs) -> httpx.Response:
-    with get_client(timeout=timeout) as client:
-        return client.post(path, **kwargs)
+    try:
+        with get_client(timeout=timeout) as client:
+            return client.post(path, **kwargs)
+    except httpx.HTTPError as exc:
+        raise _translate_transport_error(exc, context=f"POST {path}") from exc
 
 
 def api_delete(path: str, *, timeout: float = 30.0, **kwargs) -> httpx.Response:
-    with get_client(timeout=timeout) as client:
-        return client.delete(path, **kwargs)
+    try:
+        with get_client(timeout=timeout) as client:
+            return client.delete(path, **kwargs)
+    except httpx.HTTPError as exc:
+        raise _translate_transport_error(exc, context=f"DELETE {path}") from exc
 
 
 def api_patch(path: str, *, timeout: float = 30.0, **kwargs) -> httpx.Response:
-    with get_client(timeout=timeout) as client:
-        return client.patch(path, **kwargs)
+    try:
+        with get_client(timeout=timeout) as client:
+            return client.patch(path, **kwargs)
+    except httpx.HTTPError as exc:
+        raise _translate_transport_error(exc, context=f"PATCH {path}") from exc
 
 
 def _is_transient(exc: Exception) -> bool:
@@ -98,7 +211,13 @@ def stream_download(path: str, target_path: str, progress_callback=None) -> int:
             if attempt == _RETRY_ATTEMPTS or not _is_transient(exc):
                 break
             time.sleep(_RETRY_BACKOFFS_S[min(attempt, len(_RETRY_BACKOFFS_S) - 1)])
-    # Clean up any leftover tmp, then surface the last exception.
+    # Clean up any leftover tmp, then surface the last exception. Translate
+    # transport errors to AgnesTransportError so the CLI prints a clean
+    # message instead of a Python traceback (Pavel's #185 Phase 3B).
     tmp_path.unlink(missing_ok=True)
     assert last_exc is not None
+    if isinstance(last_exc, httpx.HTTPError):
+        raise _translate_transport_error(
+            last_exc, context=f"GET {path} (stream → {target_path})"
+        ) from last_exc
     raise last_exc

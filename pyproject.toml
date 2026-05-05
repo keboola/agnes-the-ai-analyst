@@ -95,7 +95,7 @@ dev = [
 ]
 
 [project.scripts]
-agnes = "cli.main:app"
+agnes = "cli.main:_run_with_clean_errors"
 
 [build-system]
 requires = ["hatchling"]

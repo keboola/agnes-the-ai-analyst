@@ -39,15 +39,25 @@ This workspace is connected to {{ server.url }}.
 
 ## Discovering tables — never enumerate from memory
 
-Tables, columns, sizes, and `query_mode` change as admins register / migrate /
-drop entries. Always re-discover from the live server, never from this file:
+Tables, columns, sizes, descriptions, and `query_mode` change as admins
+register / migrate / drop entries. Always re-discover from the live server,
+never from this file or your training data:
 
 ```
-agnes catalog --json    # canonical list with query_mode, sql_flavor,
-                        # where_examples, fetch_via, rough_size_hint per table
-agnes schema <table>    # columns + types in the right SQL dialect
-agnes describe <table> -n 5   # sample rows (local + materialized only)
+agnes catalog --json                                     # all tables: id, query_mode, sql_flavor,
+                                                          # where_examples, fetch_via, rough_size_hint, description
+agnes catalog --json | jq '.tables[] | select(.id=="<id>")'   # single table — read its description in full BEFORE writing any SQL
+agnes schema <table>                                     # columns + types in the right SQL dialect
+agnes describe <table> -n 5                              # sample rows (local + materialized only)
 ```
+
+The `description` field on each catalog row is the **authoritative
+business-rules text** for that table — it carries grain, partition
+column, join contracts, and column-level gotchas. Re-read it from the
+live `agnes catalog` for every cross-table decision; do **not** copy
+it into this workspace `CLAUDE.md` (it's a snapshot that goes stale,
+and `agnes init` will overwrite local edits — put personal notes into
+`.claude/CLAUDE.local.md` instead). The CLI is the source of truth.
 
 `rough_size_hint` is server-populated for `local` and `materialized` tables
 (`small` ≤100 MiB, `medium` ≤1 GiB, `large` ≤10 GiB, `very_large` >10 GiB) and
