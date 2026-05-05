@@ -1057,6 +1057,27 @@ class TestCorporateMemoryCollector:
         ):
             collect_all(dry_run=True)
 
+    def test_main_returns_1_on_no_ai_config_instead_of_traceback(self, tmp_path, monkeypatch, capsys):
+        """CLI main() must catch the new fail-fast ValueError from collect_all() and exit cleanly.
+
+        Regression for Devin Review on #179: previously the CLI crashed with an
+        unhandled traceback when env + ai: config were both missing.
+        """
+        from services.corporate_memory import collector as cm
+
+        monkeypatch.setattr("sys.argv", ["corporate_memory"])
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("LLM_API_KEY", raising=False)
+        monkeypatch.setattr(cm, "CORPORATE_MEMORY_DIR", tmp_path / "cm")
+        monkeypatch.setattr(cm, "COLLECTION_LOG", tmp_path / "cm" / "log")
+        monkeypatch.setattr(cm, "collect_all", lambda dry_run=False: (_ for _ in ()).throw(ValueError("LLM not configured")))
+
+        rc = cm.main()
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "Corporate Memory cannot run" in err
+        assert "LLM not configured" in err
+
 
 # ===================================================================
 # Corporate Memory collector - helper function tests

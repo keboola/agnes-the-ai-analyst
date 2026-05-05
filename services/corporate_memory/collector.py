@@ -24,6 +24,7 @@ import hashlib
 import json
 import logging
 import os
+import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -624,7 +625,13 @@ def main() -> int:
         print("Data cleared. Running fresh collection...\n")
 
     logger.info("Starting knowledge collection...")
-    stats = collect_all(dry_run=args.dry_run)
+    try:
+        stats = collect_all(dry_run=args.dry_run)
+    except ValueError as e:
+        # collect_all() now fail-fasts on missing ai: config + env (#176).
+        # Print the actionable message instead of a raw traceback.
+        print(f"\nCorporate Memory cannot run: {e}", file=sys.stderr)
+        return 1
 
     print("\nCollection complete:")
     if stats["skipped"]:
