@@ -184,7 +184,7 @@ def format_outdated_notice(info: UpdateInfo) -> str:
     literal string "None" into a copy-pasteable command — drop the upgrade
     snippet in that case.
     """
-    msg = f"[update] da {info.installed} is out of date — latest on this server is {info.latest}."
+    msg = f"[update] agnes {info.installed} is out of date — latest on this server is {info.latest}."
     if info.download_url:
         msg += f" Upgrade: uv tool install --force {info.download_url}"
     return msg
