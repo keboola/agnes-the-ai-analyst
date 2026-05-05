@@ -323,7 +323,8 @@ def create_app() -> FastAPI:
     app.add_middleware(RequestIdMiddleware)
 
     # Load .env_overlay (persisted by /api/admin/configure)
-    _overlay = Path(os.environ.get("DATA_DIR", "./data")) / "state" / ".env_overlay"
+    from app.secrets import _state_dir
+    _overlay = _state_dir() / ".env_overlay"
     if _overlay.exists():
         for line in _overlay.read_text().splitlines():
             if "=" in line and not line.startswith("#"):

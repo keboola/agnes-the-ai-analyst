@@ -453,6 +453,23 @@ def _get_data_dir() -> Path:
     return Path(os.environ.get("DATA_DIR", "./data"))
 
 
+def _get_state_dir() -> Path:
+    """Return path to writable state directory.
+
+    Resolution order:
+      1. STATE_DIR env var (explicit override).
+      2. ${DATA_DIR}/state (default — current behavior).
+
+    Use the explicit override when the deployer wants state on a
+    separate disk mounted in parallel with /data rather than nested
+    inside it. See docs/state-dir.md.
+    """
+    state = os.environ.get("STATE_DIR", "")
+    if state:
+        return Path(state)
+    return _get_data_dir() / "state"
+
+
 def get_system_db() -> duckdb.DuckDBPyConnection:
     """Get a connection to the system state database.
 
@@ -461,7 +478,7 @@ def get_system_db() -> duckdb.DuckDBPyConnection:
     so callers can safely close() it without closing the underlying connection.
     """
     global _system_db_conn, _system_db_path
-    db_path = str(_get_data_dir() / "state" / "system.duckdb")
+    db_path = str(_get_state_dir() / "system.duckdb")
 
     with _system_db_lock:
         if _system_db_conn is None or _system_db_path != db_path:
@@ -1810,7 +1827,7 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
         # Snapshot before migration for rollback support
         if current > 0:
             try:
-                db_path = Path(os.environ.get("DATA_DIR", "./data")) / "state" / "system.duckdb"
+                db_path = _get_state_dir() / "system.duckdb"
                 if db_path.exists():
                     # Flush WAL to main DB file before copying
                     try:
