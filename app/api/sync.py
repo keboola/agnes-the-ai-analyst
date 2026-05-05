@@ -4,6 +4,7 @@ import hashlib
 import logging
 import os
 import subprocess
+import threading
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +25,17 @@ from src.scheduler import filter_due_tables, is_table_due
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/sync", tags=["sync"])
+
+# Process-wide guard against overlapping `_run_sync` invocations. Two
+# concurrent extractor subprocesses both write `extract.duckdb` and fight
+# for its file lock — the first sync stalls, the second crashes, and the
+# `/api/health` check times out long enough that Docker flips the
+# container to `unhealthy`, which (behind a `reverse_proxy` upstream)
+# bricks external traffic until contention drains. The singleton-ness is
+# enforced both in the trigger handler (return 409 fast, before the work
+# is scheduled) and in `_run_sync` itself (defense in depth, in case
+# something bypasses the handler).
+_sync_lock = threading.Lock()
 
 
 def _file_hash(path: Path) -> str:
@@ -258,9 +270,20 @@ def _run_sync(tables: Optional[List[str]] = None):
     Reads table configs from DuckDB (in main process which has the shared
     connection), passes them as JSON via stdin to the extractor subprocess.
     This avoids DuckDB lock conflicts — subprocess never opens system.duckdb.
+
+    Singleton: only one invocation runs at a time per process (see
+    `_sync_lock` module-level). The trigger handler also fast-fails with
+    409 when the lock is held, so this branch is defense in depth.
     """
     import json as _json
-    import sys
+    import sys as _sys
+
+    if not _sync_lock.acquire(blocking=False):
+        print(
+            "[SYNC] another sync is already in flight — skipping",
+            file=_sys.stderr, flush=True,
+        )
+        return
 
     try:
         from app.instance_config import get_data_source_type, get_value
@@ -342,7 +365,6 @@ def _run_sync(tables: Optional[List[str]] = None):
             )
 
         env = {**os.environ}
-        import sys as _sys
 
         if run_extractor_subprocess:
             # Serialize configs — strip non-serializable fields
@@ -353,7 +375,7 @@ def _run_sync(tables: Optional[List[str]] = None):
 
             # Run extractor subprocess with table configs via stdin
             # Subprocess does NOT open system.duckdb — no lock conflict
-            cmd = [sys.executable, "-c", """
+            cmd = [_sys.executable, "-c", """
 import json, sys, os, logging
 from pathlib import Path
 
@@ -441,7 +463,7 @@ sys.exit(compute_exit_code(result, len(configs)))
                     logger.info("Running custom connector: %s", connector_dir.name)
                     try:
                         custom_result = subprocess.run(
-                            [sys.executable, str(extractor)],
+                            [_sys.executable, str(extractor)],
                             env=env, capture_output=True, text=True, timeout=600,
                             cwd=str(Path(__file__).parent.parent.parent),
                         )
@@ -535,6 +557,8 @@ sys.exit(compute_exit_code(result, len(configs)))
     except Exception as e:
         print(f"[SYNC] FAILED: {e}", file=_sys.stderr, flush=True)
         traceback.print_exc()
+    finally:
+        _sync_lock.release()
 
 
 # ---- Manifest ----
@@ -625,7 +649,20 @@ async def trigger_sync(
     tables: Optional[List[str]] = None,
     user: dict = Depends(require_admin),
 ):
-    """Trigger data sync from configured source. Admin only. Runs in background."""
+    """Trigger data sync from configured source. Admin only. Runs in background.
+
+    Returns 409 if a previously-triggered sync is still running. Two
+    concurrent extractor subprocesses fight for the same `extract.duckdb`
+    file lock — that contention starves uvicorn, makes `/api/health` time
+    out, flips the container to `unhealthy`, and (behind a `reverse_proxy`
+    upstream like the bundled Caddy overlay) bricks external traffic
+    until contention drains. Fast-fail here keeps that from happening.
+    """
+    if _sync_lock.locked():
+        raise HTTPException(
+            status_code=409,
+            detail="sync_already_in_progress",
+        )
     background_tasks.add_task(_run_sync, tables)
     return {
         "status": "triggered",
