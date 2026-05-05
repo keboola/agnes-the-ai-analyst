@@ -502,6 +502,8 @@ class SyncOrchestrator:
                         f"CREATE OR REPLACE SECRET {secret_name} "
                         f"(TYPE bigquery, ACCESS_TOKEN '{escaped}')"
                     )
+                    from connectors.bigquery.access import apply_bq_session_settings
+                    apply_bq_session_settings(conn)
                     conn.execute(
                         f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)"
                     )
