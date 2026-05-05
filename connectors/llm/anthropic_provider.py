@@ -26,6 +26,23 @@ INITIAL_BACKOFF_SECONDS = 2
 BACKOFF_MULTIPLIER = 2
 
 
+def _strict_json_schema(schema):
+    """Return a copy of the schema with additionalProperties=False on every object type.
+
+    The Anthropic structured-output API rejects schemas where a `{"type": "object"}` node
+    omits `additionalProperties` (HTTP 400 invalid_request_error). We walk the schema
+    recursively and force the field where missing.
+    """
+    if isinstance(schema, dict):
+        out = {k: _strict_json_schema(v) for k, v in schema.items()}
+        if out.get("type") == "object" and "additionalProperties" not in out:
+            out["additionalProperties"] = False
+        return out
+    if isinstance(schema, list):
+        return [_strict_json_schema(item) for item in schema]
+    return schema
+
+
 class AnthropicExtractor:
     """Structured JSON extractor using the Anthropic API.
 
@@ -116,7 +133,7 @@ class AnthropicExtractor:
                 output_config={
                     "format": {
                         "type": "json_schema",
-                        "schema": json_schema,
+                        "schema": _strict_json_schema(json_schema),
                     },
                 },
             )

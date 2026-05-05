@@ -327,6 +327,18 @@ class TestAdminRoleGuards:
         r = web_client.get("/admin/agent-prompt", cookies=admin_cookie, follow_redirects=False)
         assert r.status_code == 200
 
+    def test_admin_scheduler_runs_page_admin_only(self, web_client, admin_cookie, analyst_cookie):
+        """The /admin/scheduler-runs read-only audit-log view is gated by require_admin."""
+        r = web_client.get("/admin/scheduler-runs", follow_redirects=False)
+        assert r.status_code in (302, 401, 403)
+        r = web_client.get("/admin/scheduler-runs", cookies=analyst_cookie, follow_redirects=False)
+        assert r.status_code == 403
+        r = web_client.get("/admin/scheduler-runs", cookies=admin_cookie, follow_redirects=False)
+        assert r.status_code == 200
+        assert b"run_session_collector" in r.content
+        assert b"run_verification_detector" in r.content
+        assert b"run_corporate_memory" in r.content
+
 
 class TestUnauthenticatedHtmlRedirects:
     def test_dashboard_unauthenticated_redirects_to_login(self, web_client):

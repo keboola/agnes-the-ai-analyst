@@ -166,6 +166,63 @@ class TestCreateExtractor:
 # ===================================================================
 
 
+class TestStrictJsonSchema:
+    """The Anthropic API rejects object schemas without additionalProperties=False."""
+
+    def test_adds_to_top_level_object(self):
+        from connectors.llm.anthropic_provider import _strict_json_schema
+
+        out = _strict_json_schema({"type": "object", "properties": {"a": {"type": "string"}}})
+        assert out["additionalProperties"] is False
+
+    def test_recurses_into_nested_objects(self):
+        from connectors.llm.anthropic_provider import _strict_json_schema
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "nested": {
+                    "type": "object",
+                    "properties": {"deep": {"type": "object", "properties": {}}},
+                },
+            },
+        }
+        out = _strict_json_schema(schema)
+        assert out["additionalProperties"] is False
+        assert out["properties"]["nested"]["additionalProperties"] is False
+        assert out["properties"]["nested"]["properties"]["deep"]["additionalProperties"] is False
+
+    def test_recurses_into_array_items(self):
+        from connectors.llm.anthropic_provider import _strict_json_schema
+
+        schema = {
+            "type": "object",
+            "properties": {"items": {"type": "array", "items": {"type": "object", "properties": {}}}},
+        }
+        out = _strict_json_schema(schema)
+        assert out["properties"]["items"]["items"]["additionalProperties"] is False
+
+    def test_preserves_explicit_additional_properties(self):
+        from connectors.llm.anthropic_provider import _strict_json_schema
+
+        schema = {"type": "object", "additionalProperties": True, "properties": {}}
+        out = _strict_json_schema(schema)
+        assert out["additionalProperties"] is True
+
+    def test_does_not_mutate_input(self):
+        from connectors.llm.anthropic_provider import _strict_json_schema
+
+        schema = {"type": "object", "properties": {}}
+        _strict_json_schema(schema)
+        assert "additionalProperties" not in schema
+
+    def test_non_object_schemas_untouched(self):
+        from connectors.llm.anthropic_provider import _strict_json_schema
+
+        out = _strict_json_schema({"type": "string"})
+        assert "additionalProperties" not in out
+
+
 class TestAnthropicExtractor:
     """Tests for connectors.llm.anthropic_provider.AnthropicExtractor."""
 

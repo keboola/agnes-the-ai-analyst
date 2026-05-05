@@ -946,6 +946,38 @@ async def admin_marketplaces_page(
     return templates.TemplateResponse(request, "admin_marketplaces.html", ctx)
 
 
+# Scheduler-driven admin actions audited by app/api/admin.py and
+# app/api/marketplaces.py. Keep in sync with the JOBS list in
+# services/scheduler/__main__.py.
+SCHEDULER_AUDIT_ACTIONS = [
+    "run_session_collector",
+    "run_verification_detector",
+    "run_corporate_memory",
+    "marketplaces_sync_all",
+    "data_refresh",
+    "scripts_run_due",
+]
+
+
+@router.get("/admin/scheduler-runs", response_class=HTMLResponse)
+async def admin_scheduler_runs_page(
+    request: Request,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Read-only view of the audit_log filtered to scheduler-driven actions.
+
+    Failed scheduler ticks (HTTP 401, network errors) don't reach this view —
+    they live only in the scheduler container's stdout. The audit_log shows
+    only what reached the admin endpoint and was processed.
+    """
+    from src.repositories.audit import AuditRepository
+
+    rows = AuditRepository(conn).query_actions(SCHEDULER_AUDIT_ACTIONS, limit=200)
+    ctx = _build_context(request, user=user, rows=rows, actions=SCHEDULER_AUDIT_ACTIONS)
+    return templates.TemplateResponse(request, "admin_scheduler_runs.html", ctx)
+
+
 @router.get("/admin/agent-prompt", response_class=HTMLResponse)
 async def admin_agent_prompt_page(
     request: Request,
