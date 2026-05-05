@@ -449,9 +449,15 @@ CREATE TABLE IF NOT EXISTS claude_md_template (
 --     (admin_granted ∖ opt_outs) ∪ store_installs
 --
 -- See src/marketplace_filter.py:resolve_user_marketplace.
+-- FK refs to users(id) intentionally omitted (matches the
+-- personal_access_tokens / marketplace_registry pattern). DuckDB blocks
+-- ALTER on a referenced parent — past finalize steps RENAME / DROP COLUMN
+-- on `users`, which would fail if these store tables held FK refs at the
+-- time the ladder reaches them. App-level deletes already cascade
+-- explicitly (see app/api/store.py + the resource_grant-deletion hook).
 CREATE TABLE IF NOT EXISTS store_entities (
     id              VARCHAR PRIMARY KEY,
-    owner_user_id   VARCHAR NOT NULL REFERENCES users(id),
+    owner_user_id   VARCHAR NOT NULL,
     owner_username  VARCHAR NOT NULL,
     type            VARCHAR NOT NULL CHECK (type IN ('skill','agent','plugin')),
     name            VARCHAR NOT NULL,
@@ -469,14 +475,14 @@ CREATE TABLE IF NOT EXISTS store_entities (
 );
 
 CREATE TABLE IF NOT EXISTS user_store_installs (
-    user_id      VARCHAR NOT NULL REFERENCES users(id),
-    entity_id    VARCHAR NOT NULL REFERENCES store_entities(id),
+    user_id      VARCHAR NOT NULL,
+    entity_id    VARCHAR NOT NULL,
     installed_at TIMESTAMP DEFAULT current_timestamp,
     PRIMARY KEY (user_id, entity_id)
 );
 
 CREATE TABLE IF NOT EXISTS user_plugin_optouts (
-    user_id        VARCHAR NOT NULL REFERENCES users(id),
+    user_id        VARCHAR NOT NULL,
     marketplace_id VARCHAR NOT NULL,
     plugin_name    VARCHAR NOT NULL,
     opted_out_at   TIMESTAMP DEFAULT current_timestamp,
@@ -1726,10 +1732,11 @@ _V22_TO_V23_MIGRATIONS = [
 
 # v25: store + opt-out tables backing the /store and /my-ai-stack pages.
 _V24_TO_V25_MIGRATIONS = [
+    # FK refs deliberately omitted — see the matching note in _SYSTEM_SCHEMA.
     """
     CREATE TABLE IF NOT EXISTS store_entities (
         id              VARCHAR PRIMARY KEY,
-        owner_user_id   VARCHAR NOT NULL REFERENCES users(id),
+        owner_user_id   VARCHAR NOT NULL,
         owner_username  VARCHAR NOT NULL,
         type            VARCHAR NOT NULL CHECK (type IN ('skill','agent','plugin')),
         name            VARCHAR NOT NULL,
@@ -1748,15 +1755,15 @@ _V24_TO_V25_MIGRATIONS = [
     """,
     """
     CREATE TABLE IF NOT EXISTS user_store_installs (
-        user_id      VARCHAR NOT NULL REFERENCES users(id),
-        entity_id    VARCHAR NOT NULL REFERENCES store_entities(id),
+        user_id      VARCHAR NOT NULL,
+        entity_id    VARCHAR NOT NULL,
         installed_at TIMESTAMP DEFAULT current_timestamp,
         PRIMARY KEY (user_id, entity_id)
     )
     """,
     """
     CREATE TABLE IF NOT EXISTS user_plugin_optouts (
-        user_id        VARCHAR NOT NULL REFERENCES users(id),
+        user_id        VARCHAR NOT NULL,
         marketplace_id VARCHAR NOT NULL,
         plugin_name    VARCHAR NOT NULL,
         opted_out_at   TIMESTAMP DEFAULT current_timestamp,
