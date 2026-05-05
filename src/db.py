@@ -1771,7 +1771,7 @@ def _v23_to_v24_finalize(conn: duckdb.DuckDBPyConnection) -> None:
             f"`instance.yaml: data_source.bigquery.project`) and restart "
             f"the app to retry the migration. The schema version is NOT "
             f"bumped to 24 until this completes; pre-migration DB "
-            f"snapshot is at `{{DATA_DIR}}/state/system.duckdb.pre-migrate`."
+            f"snapshot is at `{_get_state_dir()}/system.duckdb.pre-migrate`."
         )
 
     conn.execute("BEGIN TRANSACTION")
