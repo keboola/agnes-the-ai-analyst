@@ -16,6 +16,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- `agnes pull` no longer fails with `hash mismatch: expected … got …` for every Keboola local-mode table. `src/orchestrator.py:_update_sync_state` stored `md5(f"{mtime_ns}:{size}")[:12]` — a 12-char fingerprint of file metadata — while the CLI's post-download integrity check compares against the full 32-char content MD5 it computes via `cli/commands/sync.py:_md5_file`. Those could never match, so every `agnes pull` reported `Updated 0 tables` even when the server had data. Now the orchestrator stores the same content MD5 the materialized SQL path already used (`app/api/sync.py:_file_hash`).
 - Latent `NameError: name '_sys' is not defined` in `app/api/sync.py:_run_sync` when the function fell into its outer `except Exception` before reaching the inner `import sys as _sys`. Hoisted the import to the top of the body so the error path stays loggable instead of trading the original failure for a misleading stack trace.
 - Keboola sync now falls back to the legacy Storage-API client when the DuckDB Keboola extension's per-table scan fails, not just when the initial `ATTACH` fails. Two changes:
   - `kbcstorage>=0.9.0` is promoted from optional to core dependency. The legacy fallback path in `connectors/keboola/extractor.py:_extract_via_legacy` has been there since the extension landed, but until now the bare `from kbcstorage.client import Client` would crash any default install with `ModuleNotFoundError`.
