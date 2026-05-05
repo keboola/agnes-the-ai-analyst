@@ -55,6 +55,23 @@ class TestRemoteQuery:
         assert result.exit_code == 0
         assert "truncated" in result.output
 
+    def test_remote_query_uses_long_timeout(self):
+        """--remote passes the long-running QUERY_TIMEOUT_S to api_post.
+
+        BigQuery SELECTs routinely take minutes; the default 30s httpx
+        timeout dies long before the query finishes. Regression guard for
+        the fix that introduced AGNES_QUERY_TIMEOUT (default 300s).
+        """
+        from cli.client import QUERY_TIMEOUT_S
+
+        payload = {"columns": [], "rows": [], "truncated": False}
+        mock_post = MagicMock(return_value=_resp(200, payload))
+        with patch("cli.client.api_post", mock_post):
+            result = runner.invoke(app, ["query", "SELECT 1", "--remote"])
+        assert result.exit_code == 0
+        assert mock_post.call_args.kwargs["timeout"] == QUERY_TIMEOUT_S
+        assert QUERY_TIMEOUT_S >= 300.0
+
 
 class TestLocalQuery:
     def test_local_query_no_db(self, tmp_config):

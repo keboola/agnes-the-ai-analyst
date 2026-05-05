@@ -147,6 +147,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   F1 (video_url), F2 (zip-bomb), F4 (admin authz parity), F5 (cross-owner
   suffix collision).
 
+## [0.35.1] — 2026-05-05
+
+### Fixed
+
+- `agnes query --remote` no longer dies after 30s on long-running BigQuery SELECTs. The CLI HTTP client now defaults to a 300s timeout for `/api/query` and exposes `AGNES_QUERY_TIMEOUT` (seconds, float) for operators who need to extend it further. Other CLI calls keep the 30s default. (`cli/client.py`, `cli/commands/query.py`)
+
 ## [0.35.0] — 2026-05-05
 
 Five-defect fix for the silently-broken session pipeline on default Compose deploys (#176). Sessions uploaded by `agnes push` landed on `/data/user_sessions/<user>/*.jsonl`, but on a stock `docker compose up` deploy nothing ever processed them — `/corporate-memory` stayed empty even when sessions and `CLAUDE.local.md` were uploaded. The root cause was a stack of compounding defects: LLM SDKs were dev-only deps so the scheduler container boot-looped on `ModuleNotFoundError`, the side-car services were profile-gated and ran as tight `restart: unless-stopped` boot loops anyway, the `verification_detector` had no scheduler entry at all, the first-time setup never seeded an `ai:` block, and the `/corporate-memory` page silently filtered out the pending review queue. This release wires the LLM pipeline into the existing scheduler-v2 model (one HTTP-driven cron tick per service) and adds a health-check that warns when uploaded jsonls aren't being processed.
