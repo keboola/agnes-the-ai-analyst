@@ -710,12 +710,34 @@ async def delete_grant(
     if not existing:
         raise HTTPException(status_code=404, detail="Grant not found")
     grants.delete(grant_id)
+
+    # v24: re-grant of the same plugin must reset every user to the default
+    # (enabled). Drop matching opt-outs the same time we drop the grant so
+    # state stays consistent — see src/repositories/user_plugin_optouts.py.
+    optouts_dropped = 0
+    if existing["resource_type"] == "marketplace_plugin":
+        rid = existing["resource_id"] or ""
+        if "/" in rid:
+            mp_id, plugin_name = rid.split("/", 1)
+            from src.repositories.user_plugin_optouts import (
+                UserPluginOptoutsRepository,
+            )
+            optouts_dropped = UserPluginOptoutsRepository(conn).delete_for_plugin(
+                mp_id, plugin_name,
+            )
+        try:
+            from app.marketplace_server import packager
+            packager.invalidate_etag_cache()
+        except Exception:
+            pass
+
     _audit(
         conn, user["id"], "resource_grant.deleted", f"grant:{grant_id}",
         {
             "group_id": existing["group_id"],
             "resource_type": existing["resource_type"],
             "resource_id": existing["resource_id"],
+            "optouts_dropped": optouts_dropped,
         },
     )
 

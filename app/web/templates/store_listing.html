@@ -1,0 +1,401 @@
+{% extends "base.html" %}
+{% block title %}Store — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block content %}
+<style>
+  .container:has(.store-page) { max-width: 1280px; margin: 0 auto; padding: 16px 32px 48px; }
+  .container:has(.store-page) > main { margin: 0; padding: 0; }
+
+  /* ── Hero (mirrors /setup) ─────────────────────────────────────── */
+  .store-hero {
+    background: linear-gradient(135deg, #0073D1 0%, #0056A3 100%);
+    border-radius: 12px;
+    padding: 28px 32px;
+    margin-bottom: 24px;
+    box-shadow: 0 4px 16px rgba(0, 115, 209, 0.2);
+    color: #fff;
+    display: flex; gap: 24px; align-items: center; justify-content: space-between;
+    flex-wrap: wrap;
+  }
+  .store-hero .titles { min-width: 0; }
+  .store-hero .eyebrow {
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.8px; color: rgba(255,255,255,0.75); margin-bottom: 8px;
+  }
+  .store-hero h1 { margin: 0; font-size: 28px; font-weight: 700; letter-spacing: -0.4px; }
+  .store-hero .sub {
+    margin: 6px 0 0; font-size: 14px;
+    color: rgba(255,255,255,0.85); line-height: 1.6;
+  }
+  .store-hero .upload-btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: #fff; color: var(--primary);
+    border: none; border-radius: 8px;
+    padding: 11px 20px; font-size: 14px; font-weight: 600;
+    text-decoration: none; cursor: pointer;
+    transition: all 0.15s ease;
+    font-family: var(--font-primary); flex-shrink: 0;
+  }
+  .store-hero .upload-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 14px rgba(0,0,0,0.15);
+  }
+
+  /* ── Filters card ──────────────────────────────────────────────── */
+  .filters-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    padding: 16px 18px;
+    margin-bottom: 20px;
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  }
+  .filters-card .pill {
+    appearance: none; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text-primary);
+    padding: 7px 14px; border-radius: 999px;
+    font-size: 13px; font-weight: 500; cursor: pointer;
+    font-family: var(--font-primary);
+    transition: all 0.15s ease;
+  }
+  .filters-card .pill:hover { border-color: var(--primary); color: var(--primary); }
+  .filters-card .pill.is-active {
+    background: var(--primary-light); color: var(--primary);
+    border-color: var(--primary);
+  }
+  .filters-card select, .filters-card input {
+    padding: 8px 12px; border: 1px solid var(--border);
+    border-radius: 8px; font-size: 13px; font-family: var(--font-primary);
+    background: var(--surface); color: var(--text-primary);
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+  .filters-card select:focus, .filters-card input:focus {
+    outline: none; border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(0, 115, 209, 0.12);
+  }
+  .filters-card input { flex: 1; min-width: 220px; max-width: 360px; }
+
+  /* ── Card grid ─────────────────────────────────────────────────── */
+  .store-grid {
+    display: grid; gap: 16px;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  }
+  .store-card {
+    display: flex; flex-direction: column;
+    background: var(--surface);
+    border: 1px solid var(--border); border-radius: 12px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    overflow: hidden; transition: all 0.15s ease;
+    cursor: pointer;
+  }
+  .store-card:hover {
+    border-color: var(--primary);
+    box-shadow: 0 6px 20px rgba(0, 115, 209, 0.12);
+    transform: translateY(-2px);
+  }
+  .store-card .photo {
+    width: 100%; height: 140px; object-fit: cover;
+    background: linear-gradient(135deg, var(--primary-light) 0%, #fce7f3 100%);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--primary);
+    font-size: 28px; font-weight: var(--font-bold);
+    letter-spacing: 0.5px;
+  }
+  .store-card .body {
+    padding: 14px 16px; flex: 1;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .store-card .type-badge {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    background: var(--primary-light); color: var(--primary);
+    font-size: 10px; font-weight: var(--font-semibold);
+    text-transform: uppercase; letter-spacing: 0.5px;
+    align-self: flex-start;
+  }
+  .store-card .name {
+    font-weight: var(--font-semibold); color: var(--text-primary);
+    font-size: var(--text-base);
+  }
+  .store-card .by {
+    font-size: 11px; color: var(--text-secondary);
+    margin-top: -2px;
+  }
+  .store-card .desc {
+    font-size: 12px; color: var(--text-secondary);
+    line-height: 1.5;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .store-card .footer {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 16px; border-top: 1px solid var(--border-light);
+    font-size: 11px; color: var(--text-secondary);
+  }
+  .store-card .footer button {
+    appearance: none; border: 1px solid var(--border);
+    background: var(--surface); color: var(--primary);
+    padding: 6px 12px; border-radius: 6px;
+    font-size: 12px; font-weight: var(--font-medium); cursor: pointer;
+    font-family: var(--font-primary);
+    transition: all 0.15s ease;
+  }
+  .store-card .footer button:hover {
+    background: var(--primary-light); border-color: var(--primary);
+  }
+  .store-card .footer button.installed {
+    color: var(--success); background: rgba(16, 183, 127, 0.1);
+    border-color: rgba(16, 183, 127, 0.3);
+  }
+
+  .empty-state {
+    text-align: center; padding: 60px 20px;
+    color: var(--text-secondary); font-size: 14px;
+    background: var(--surface);
+    border: 1px dashed var(--border); border-radius: 12px;
+  }
+
+  /* ── Pager ─────────────────────────────────────────────────────── */
+  .pager { display: flex; gap: 6px; justify-content: center; margin: 28px 0 0; }
+  .pager button {
+    padding: 7px 14px; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text-primary);
+    border-radius: 8px; cursor: pointer; font-size: 13px;
+    font-family: var(--font-primary);
+    transition: all 0.15s ease;
+  }
+  .pager button:hover { border-color: var(--primary); color: var(--primary); }
+  .pager button.is-active {
+    background: var(--primary); color: #fff; border-color: var(--primary);
+  }
+</style>
+
+<div class="store-page">
+  <div class="store-hero">
+    <div class="titles">
+      <div class="eyebrow">Store</div>
+      <h1>Community AI marketplace</h1>
+      <p class="sub">Skills, agents, and plugins shared by everyone on this instance.
+        Install what you need into your <a href="/my-ai-stack" style="color:#fff;text-decoration:underline;">AI stack</a>.</p>
+    </div>
+    <a class="upload-btn" href="/store/new">+ Upload</a>
+  </div>
+
+  <div class="filters-card">
+    <button class="pill is-active" data-type="">All</button>
+    <button class="pill" data-type="skill">Skills</button>
+    <button class="pill" data-type="agent">Agents</button>
+    <button class="pill" data-type="plugin">Plugins</button>
+    <select id="cat-filter">
+      <option value="">All categories</option>
+    </select>
+    <select id="owner-filter">
+      <option value="">All owners</option>
+    </select>
+    <input id="search-input" placeholder="Search by name or description...">
+  </div>
+
+  <div id="store-grid" class="store-grid"></div>
+  <div id="store-empty" class="empty-state" hidden>Nothing matches.</div>
+  <div id="pager" class="pager"></div>
+</div>
+
+<script>
+const state = {
+  page: 1,
+  pageSize: 24,
+  type: '',
+  category: '',
+  owner: '',
+  search: '',
+  total: 0,
+};
+
+function syncURL() {
+  const u = new URL(window.location.href);
+  u.searchParams.set('page', state.page);
+  if (state.type) u.searchParams.set('type', state.type); else u.searchParams.delete('type');
+  if (state.category) u.searchParams.set('category', state.category); else u.searchParams.delete('category');
+  if (state.owner) u.searchParams.set('owner', state.owner); else u.searchParams.delete('owner');
+  if (state.search) u.searchParams.set('q', state.search); else u.searchParams.delete('q');
+  window.history.replaceState({}, '', u);
+}
+
+function loadFromURL() {
+  const p = new URLSearchParams(window.location.search);
+  state.page = parseInt(p.get('page') || '1', 10);
+  state.type = p.get('type') || '';
+  state.category = p.get('category') || '';
+  state.owner = p.get('owner') || '';
+  state.search = p.get('q') || '';
+  document.getElementById('search-input').value = state.search;
+  document.querySelectorAll('.filters-card .pill').forEach(b => {
+    b.classList.toggle('is-active', (b.dataset.type || '') === state.type);
+  });
+}
+
+async function loadCategories() {
+  const res = await fetch('/api/store/categories');
+  if (!res.ok) return;
+  const cats = await res.json();
+  const sel = document.getElementById('cat-filter');
+  for (const c of cats) {
+    const opt = document.createElement('option');
+    opt.value = c; opt.textContent = c;
+    if (c === state.category) opt.selected = true;
+    sel.appendChild(opt);
+  }
+}
+
+async function loadOwners() {
+  const res = await fetch('/api/store/owners');
+  if (!res.ok) return;
+  const owners = await res.json();
+  const sel = document.getElementById('owner-filter');
+  for (const o of owners) {
+    const opt = document.createElement('option');
+    opt.value = o.user_id;
+    opt.textContent = `${o.display_name} (${o.entity_count})`;
+    if (o.user_id === state.owner) opt.selected = true;
+    sel.appendChild(opt);
+  }
+}
+
+async function loadEntities() {
+  const params = new URLSearchParams({
+    skip: String((state.page - 1) * state.pageSize),
+    limit: String(state.pageSize),
+  });
+  if (state.type) params.set('type', state.type);
+  if (state.category) params.set('category', state.category);
+  if (state.owner) params.set('owner', state.owner);
+  if (state.search) params.set('search', state.search);
+  const res = await fetch('/api/store/entities?' + params);
+  if (!res.ok) { alert('Failed: ' + res.status); return; }
+  const data = await res.json();
+  state.total = data.total;
+  // also fetch caller's installs for button state
+  const myStackRes = await fetch('/api/my-stack');
+  const myStack = myStackRes.ok ? await myStackRes.json() : {store: []};
+  const installed = new Set(myStack.store.map(e => e.entity_id));
+  renderGrid(data.items, installed);
+  renderPager();
+}
+
+function renderGrid(items, installed) {
+  const grid = document.getElementById('store-grid');
+  const empty = document.getElementById('store-empty');
+  grid.innerHTML = '';
+  if (!items.length) { empty.hidden = false; return; }
+  empty.hidden = true;
+  for (const e of items) {
+    const card = document.createElement('div');
+    card.className = 'store-card';
+    card.dataset.href = `/store/${encodeURIComponent(e.id)}`;
+    const photoMarkup = e.photo_url
+      ? `<img class="photo" src="${escapeAttr(e.photo_url)}" alt="">`
+      : `<div class="photo">${escapeHtml(typeIcon(e.type))}</div>`;
+    const isInstalled = installed.has(e.id);
+    const btn = isInstalled
+      ? `<button class="installed" data-id="${escapeAttr(e.id)}" data-action="uninstall">Installed ✓</button>`
+      : `<button data-id="${escapeAttr(e.id)}" data-action="install">Install</button>`;
+    const ownerLabel = e.owner_display_name || e.owner_username;
+    card.innerHTML = `
+      ${photoMarkup}
+      <div class="body">
+        <span class="type-badge">${escapeHtml(e.type)}</span>
+        <div class="name">${escapeHtml(e.name)}</div>
+        <div class="by">by ${escapeHtml(ownerLabel)}</div>
+        <div class="desc">${escapeHtml(e.description || '')}</div>
+      </div>
+      <div class="footer">
+        <span>${e.install_count} installed${e.category ? ' · ' + escapeHtml(e.category) : ''}</span>
+        ${btn}
+      </div>`;
+    card.addEventListener('click', () => {
+      window.location = card.dataset.href;
+    });
+    grid.appendChild(card);
+  }
+  grid.querySelectorAll('button[data-action]').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const id = btn.dataset.id;
+      const action = btn.dataset.action;
+      if (action === 'install') {
+        const r = await fetch(`/api/store/entities/${encodeURIComponent(id)}/install`, {method: 'POST'});
+        if (!r.ok) { alert('Install failed'); return; }
+      } else if (action === 'uninstall') {
+        const r = await fetch(`/api/store/entities/${encodeURIComponent(id)}/install`, {method: 'DELETE'});
+        if (!r.ok) { alert('Uninstall failed'); return; }
+      }
+      loadEntities();
+    });
+  });
+}
+
+function renderPager() {
+  const pager = document.getElementById('pager');
+  pager.innerHTML = '';
+  const totalPages = Math.max(1, Math.ceil(state.total / state.pageSize));
+  if (totalPages <= 1) return;
+  const mk = (label, page, active) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    if (active) b.classList.add('is-active');
+    b.addEventListener('click', () => {
+      state.page = page; syncURL(); loadEntities();
+    });
+    return b;
+  };
+  if (state.page > 1) pager.appendChild(mk('‹', state.page - 1, false));
+  const start = Math.max(1, state.page - 3);
+  const end = Math.min(totalPages, start + 6);
+  for (let i = start; i <= end; i++) pager.appendChild(mk(String(i), i, i === state.page));
+  if (state.page < totalPages) pager.appendChild(mk('›', state.page + 1, false));
+}
+
+function typeIcon(t) {
+  if (t === 'skill') return 'SK';
+  if (t === 'agent') return 'AG';
+  if (t === 'plugin') return 'PL';
+  return '?';
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+}
+function escapeAttr(s) { return escapeHtml(s); }
+
+document.querySelectorAll('.filters-card .pill').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.filters-card .pill').forEach(b => b.classList.remove('is-active'));
+    btn.classList.add('is-active');
+    state.type = btn.dataset.type || '';
+    state.page = 1; syncURL(); loadEntities();
+  });
+});
+document.getElementById('cat-filter').addEventListener('change', (e) => {
+  state.category = e.target.value;
+  state.page = 1; syncURL(); loadEntities();
+});
+document.getElementById('owner-filter').addEventListener('change', (e) => {
+  state.owner = e.target.value;
+  state.page = 1; syncURL(); loadEntities();
+});
+let _searchTimer;
+document.getElementById('search-input').addEventListener('input', (e) => {
+  clearTimeout(_searchTimer);
+  _searchTimer = setTimeout(() => {
+    state.search = e.target.value.trim();
+    state.page = 1; syncURL(); loadEntities();
+  }, 250);
+});
+
+(async function init() {
+  loadFromURL();
+  await Promise.all([loadCategories(), loadOwners()]);
+  await loadEntities();
+})();
+</script>
+{% endblock %}

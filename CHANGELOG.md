@@ -10,6 +10,67 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- **`/store` page** — community marketplace where every authenticated user
+  can upload skills, agents, and plugins as ZIPs. Listing has type / category /
+  search filters; detail page shows metadata, file list, photo, video link,
+  and an `[Install]` button. Same owner can't have two entities with the same
+  `name` (any type). Plugin/skill/agent name is suffixed `-by-<owner-username>`
+  (sanitized email-local-part) at upload time to avoid collisions in Claude
+  Code's flat namespace.
+- **`/my-ai-stack` page** — every user's per-user composition view: the
+  admin-granted plugins (with an opt-out toggle each, default enabled) plus
+  the entities they've installed from the Store. Toggling a curated plugin
+  off writes a `user_plugin_optouts` row; admin removing the underlying
+  grant drops everyone's opt-out (re-grant restarts at enabled).
+- **Composed served marketplace**: the `/marketplace.zip` and
+  `/marketplace.git/` endpoints now serve `(admin_granted ∖ opt_outs) ∪
+  store_installs` — driven by the new
+  `src/marketplace_filter.py:resolve_user_marketplace`. Same content-addressed
+  ETag / git-commit-SHA contract as before; any change on either layer
+  propagates to Claude Code on the next refresh.
+- **Store skill+agent bundle**: skill/agent installs are merged into a single
+  synthetic `agnes-store-bundle` plugin in the served marketplace (one plugin
+  with N skills/agents inside), while `type='plugin'` Store entities stay
+  standalone. Cuts plugin-entry count in Claude Code from O(installs) down
+  to O(1) for the skill+agent path. Bundle's `version` field hashes its
+  combined contents so install/uninstall flips it for auto-update detection.
+- REST: `POST/PUT/DELETE/GET /api/store/entities[/{id}]`,
+  `POST/DELETE /api/store/entities/{id}/install`,
+  `GET /api/store/entities/{id}/photo`,
+  `GET /api/store/entities/{id}/docs/{filename}`,
+  `POST /api/store/entities/preview` (wizard step-1 validation),
+  `GET /api/store/categories`, `GET /api/store/owners`,
+  `GET /api/my-stack`,
+  `PUT /api/my-stack/curated/{marketplace_id}/{plugin_name}`.
+
+### Changed
+- `/admin/marketplaces` admin nav entry moved from the top-level header into
+  the Admin dropdown and renamed to **Curated Marketplaces** to disambiguate
+  from the new community Store.
+- `app/api/access.py` `DELETE /api/admin/grants/{grant_id}` now drops every
+  user's `user_plugin_optouts` row matching the deleted plugin and flushes
+  the marketplace ETag cache. Audit log entry for `resource_grant.deleted`
+  carries `optouts_dropped` so operators can correlate.
+- `app/marketplace_server/{packager,git_backend}.py` consume
+  `resolve_user_marketplace` instead of `resolve_allowed_plugins`. The
+  `/marketplace/info` payload now splits its `plugins` array by `source`,
+  exposing `plugins` (admin) and `store_plugins` (community).
+
+### Internal
+- Schema **v24 → v25**: adds `store_entities`, `user_store_installs`,
+  `user_plugin_optouts`. Auto-migration via `_V24_TO_V25_MIGRATIONS` ladder
+  branch in `src/db.py` (existing self-heal path also creates the tables on
+  same-version starts).
+- New helpers in `src/store_naming.py`: `sanitize_username`, `suffixed_name`,
+  `compute_entity_version` (sha256 of sorted `(relpath, content)` tuples,
+  16-char hex prefix). Predefined category taxonomy in `src/store_categories.py`.
+- New repositories: `src/repositories/{store_entities,user_store_installs,
+  user_plugin_optouts}.py` (mirror existing `marketplace_plugins` style — dict
+  returns, parameterized SQL, no ORM).
+- `app/utils.py:get_store_dir()` — `${DATA_DIR}/store/`.
+- `humanbytes` Jinja2 filter on Store detail page (binary KB/MB/GB).
+
 ## [0.34.0] — 2026-05-04
 
 End-to-end clean-analyst-bootstrap rewrite. The web `/setup` page now produces a single unified paste prompt that, dropped into Claude Code in an empty folder, fully bootstraps a workspace — installs the CLI, authenticates, fetches `CLAUDE.md`, installs SessionStart/End hooks, runs the first data refresh, and writes a human-readable workspace docs file (`AGNES_WORKSPACE.md`). The admin-vs-analyst layout split (introduced as `?role=` mid-cycle) was collapsed before merge: every caller sees the same flow, with the marketplace + plugins block emitted iff the caller has plugin grants. 26 implementation tasks across 6 phases plus a 10-task unification follow-up.

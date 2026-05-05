@@ -43,7 +43,10 @@ import duckdb
 
 from app.auth.access import _user_group_ids
 from app.resource_types import ResourceType
-from app.utils import get_marketplaces_dir
+from app.utils import get_marketplaces_dir, get_store_dir
+from src.repositories.user_plugin_optouts import UserPluginOptoutsRepository
+from src.repositories.user_store_installs import UserStoreInstallsRepository
+from src.store_naming import suffixed_name
 
 
 def _resolve_raw(raw: Any) -> dict:
@@ -170,6 +173,165 @@ def resolve_allowed_plugins(
     return result
 
 
+STORE_MARKETPLACE_ID = "store"
+"""Sentinel slug used for Store-derived plugin entries in the served
+marketplace. ``is_valid_slug`` in ``src/marketplace.py`` rejects any admin
+marketplace registering ``store`` as its slug, so collisions with admin
+content are impossible."""
+
+BUNDLE_PLUGIN_NAME = "agnes-store-bundle"
+"""Synth plugin that wraps every Store-installed skill and agent for a user
+into a single Claude Code plugin. Skill / agent uploads share this single
+plugin in the served marketplace; only ``type='plugin'`` Store entities
+materialize as their own plugin entry. See ``resolve_user_marketplace``."""
+
+BUNDLE_PREFIXED_NAME = "store-bundle"
+"""On-disk directory name in the served ZIP / git tree for the bundle plugin.
+Lives under ``plugins/store-bundle/...``."""
+
+BUNDLE_DESCRIPTION = "Skills and agents you've installed from the Agnes Store"
+
+# Files we strip from the per-entity tree when we merge it into the bundle —
+# each entity's plugin.json is replaced by a single bundle plugin.json that
+# the bundle synth-emits.
+_BUNDLE_EXCLUDE_DIR = ".claude-plugin"
+
+
+def _bundle_files(bundle_dirs: list[Path]) -> list[tuple[str, Path]]:
+    """Return [(relpath_in_bundle, abs_path)] for every file across the bundle
+    sources, dropping each per-entity ``.claude-plugin/`` content (the bundle
+    has its own synth plugin.json)."""
+    out: list[tuple[str, Path]] = []
+    for src in bundle_dirs:
+        if not src.is_dir():
+            continue
+        for f in sorted(p for p in src.rglob("*") if p.is_file()):
+            rel_parts = f.relative_to(src).parts
+            if rel_parts and rel_parts[0] == _BUNDLE_EXCLUDE_DIR:
+                continue
+            out.append((Path(*rel_parts).as_posix(), f))
+    return out
+
+
+def _compute_bundle_version(bundle_dirs: list[Path]) -> str:
+    """sha256[:16] of the bundle's bytes — bumps every install / uninstall
+    /upload-update so Claude Code's plugin auto-update toggle picks up the
+    change. Independent of the marketplace ETag."""
+    h = hashlib.sha256()
+    for rel, abs_path in _bundle_files(bundle_dirs):
+        h.update(rel.encode("utf-8"))
+        h.update(b"\x00")
+        h.update(abs_path.read_bytes())
+        h.update(b"\x00")
+    return h.hexdigest()[:16]
+
+
+def resolve_user_marketplace(
+    conn: duckdb.DuckDBPyConnection, user: dict
+) -> List[dict]:
+    """Final, served plugin set for a user.
+
+    Composition::
+
+        (admin_granted ∖ opt_outs) ∪ store_installs
+
+    Output entries match ``resolve_allowed_plugins`` shape so that the
+    existing ``packager`` / ``git_backend`` machinery iterates them
+    transparently. Entries carry an extra ``source`` key (``"marketplace"``
+    or ``"store"``) used by ``build_info`` for diagnostics — packager /
+    git_backend ignore it.
+
+    Ordering is deterministic: admin entries first (by registration time +
+    name), then Store entries (by entity id) — so two requests with the same
+    inputs produce byte-identical ZIPs and git commits.
+    """
+    user_id = user.get("id")
+    if not user_id:
+        return []
+
+    admin = resolve_allowed_plugins(conn, user)
+
+    optouts = UserPluginOptoutsRepository(conn).opted_out_set(user_id)
+    if optouts:
+        admin = [
+            p for p in admin
+            if (p["marketplace_id"], p["original_name"]) not in optouts
+        ]
+    for p in admin:
+        p["source"] = "marketplace"
+
+    store_root = get_store_dir()
+    installs = UserStoreInstallsRepository(conn).list_for_user(user_id)
+    store_plugin_entries: List[dict] = []
+    bundle_rows: List[dict] = []
+    for row in installs:
+        if row.get("type") in ("skill", "agent"):
+            bundle_rows.append(row)
+            continue
+
+        # type == 'plugin' (or any other future type that ships its own
+        # plugin tree) gets its own entry — Claude Code shows them as
+        # standalone plugins. all-or-nothing per spec.
+        entity_id = row["id"]
+        owner_username = row["owner_username"]
+        original_name = row["name"]
+        manifest_name = suffixed_name(original_name, owner_username)
+        plugin_dir = store_root / entity_id / "plugin"
+        store_plugin_entries.append(
+            {
+                "marketplace_id": STORE_MARKETPLACE_ID,
+                "marketplace_slug": STORE_MARKETPLACE_ID,
+                "original_name": original_name,
+                # Use entity_id (UUID-ish) for the on-disk dir prefix so two
+                # owners uploading "code-review" never collide. The ZIP /
+                # git tree groups them under plugins/store-<entity_id>/.
+                "prefixed_name": f"store-{entity_id}",
+                "manifest_name": manifest_name,
+                "version": row.get("version"),
+                "raw": {
+                    "name": manifest_name,
+                    "version": row.get("version"),
+                    "description": row.get("description") or "",
+                },
+                "plugin_dir": plugin_dir,
+                "source": "store",
+                "entity_id": entity_id,
+                "type": row.get("type"),
+                "owner_username": owner_username,
+            }
+        )
+
+    bundle_entry: List[dict] = []
+    if bundle_rows:
+        bundle_dirs = [store_root / r["id"] / "plugin" for r in bundle_rows]
+        version = _compute_bundle_version(bundle_dirs)
+        bundle_entry.append(
+            {
+                "marketplace_id": STORE_MARKETPLACE_ID,
+                "marketplace_slug": STORE_MARKETPLACE_ID,
+                "original_name": BUNDLE_PREFIXED_NAME,
+                "prefixed_name": BUNDLE_PREFIXED_NAME,
+                "manifest_name": BUNDLE_PLUGIN_NAME,
+                "version": version,
+                "raw": {
+                    "name": BUNDLE_PLUGIN_NAME,
+                    "version": version,
+                    "description": BUNDLE_DESCRIPTION,
+                },
+                # No real on-disk root for the bundle — its content is
+                # composed at serve time from `bundle_dirs`. packager /
+                # git_backend / compute_etag check for `bundle_dirs` and
+                # skip the usual `plugin_dir.is_dir()` path.
+                "plugin_dir": None,
+                "bundle_dirs": bundle_dirs,
+                "source": "store-bundle",
+                "bundle_entity_ids": [r["id"] for r in bundle_rows],
+            }
+        )
+
+    return list(admin) + store_plugin_entries + bundle_entry
+
+
 def resolve_user_groups(
     conn: duckdb.DuckDBPyConnection, user: dict
 ) -> List[str]:
@@ -218,15 +380,24 @@ def compute_etag(plugins: Iterable[dict]) -> str:
     Two users with the same allowed set share the same ETag — so they also
     share the same bare-repo cache entry. When the source files change, the
     hash changes, so a stale 304 can never leak.
+
+    For bundle entries (``bundle_dirs`` set, ``plugin_dir`` is None) we hash
+    every file under each source dir except the per-entity ``.claude-plugin/``
+    content; the bundle ships one synth plugin.json so the per-entity ones
+    don't enter the served tree.
     """
     tokens: List[List[Any]] = []
     for plugin in plugins:
-        plugin_dir: Path = plugin["plugin_dir"]
         files: List[List[str]] = []
-        if plugin_dir.is_dir():
-            for f in _iter_files(plugin_dir):
-                rel = f.relative_to(plugin_dir).as_posix()
-                files.append([rel, _sha256_file(f)])
+        if plugin.get("bundle_dirs"):
+            for rel, abs_path in _bundle_files(plugin["bundle_dirs"]):
+                files.append([rel, _sha256_file(abs_path)])
+        else:
+            plugin_dir: Path = plugin["plugin_dir"]
+            if plugin_dir is not None and plugin_dir.is_dir():
+                for f in _iter_files(plugin_dir):
+                    rel = f.relative_to(plugin_dir).as_posix()
+                    files.append([rel, _sha256_file(f)])
         tokens.append(
             [plugin["prefixed_name"], plugin.get("version") or "", files]
         )

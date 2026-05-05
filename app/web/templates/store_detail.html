@@ -1,0 +1,265 @@
+{% extends "base.html" %}
+{% block title %}{{ entity.name }} — Store{% endblock %}
+
+{% block content %}
+<style>
+  .container:has(.store-detail) { max-width: 980px; margin: 0 auto; padding: 16px 32px 48px; }
+  .container:has(.store-detail) > main { margin: 0; padding: 0; }
+
+  .breadcrumb {
+    font-size: 12px; color: var(--text-secondary); margin-bottom: 12px;
+  }
+  .breadcrumb a { color: var(--primary); text-decoration: none; }
+  .breadcrumb a:hover { text-decoration: underline; }
+
+  /* ── Hero ──────────────────────────────────────────────────────── */
+  .detail-hero {
+    position: relative;
+    display: grid; grid-template-columns: 240px 1fr; gap: 28px;
+    margin-bottom: 24px; padding: 28px 32px;
+    background: var(--surface);
+    border: 1px solid var(--border); border-radius: 12px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+  }
+  .owner-actions {
+    position: absolute; top: 16px; right: 16px;
+    display: flex; gap: 8px;
+  }
+  .owner-actions a, .owner-actions button {
+    appearance: none; padding: 7px 14px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--surface);
+    color: var(--text-secondary); font-size: 12px;
+    font-weight: var(--font-medium); cursor: pointer; text-decoration: none;
+    font-family: var(--font-primary);
+    transition: all 0.15s ease;
+  }
+  .owner-actions a:hover { border-color: var(--primary); color: var(--primary); background: var(--primary-light); }
+  .owner-actions .delete { color: var(--error); border-color: rgba(234, 88, 12, 0.3); }
+  .owner-actions .delete:hover { background: rgba(234, 88, 12, 0.08); border-color: var(--error); color: var(--error); }
+
+  .detail-hero .photo {
+    width: 100%; aspect-ratio: 1; border-radius: 10px;
+    background: linear-gradient(135deg, var(--primary-light) 0%, #fce7f3 100%);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--primary); font-size: 56px; font-weight: var(--font-bold);
+    object-fit: cover;
+    box-shadow: 0 4px 14px rgba(0, 115, 209, 0.12);
+  }
+
+  .detail-hero h1 {
+    margin: 8px 0 6px; font-size: 26px; font-weight: var(--font-bold);
+    color: var(--text-primary); letter-spacing: -0.3px;
+  }
+  .detail-hero .type-row {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    font-size: 12px; color: var(--text-secondary);
+  }
+  .detail-hero .type-badge {
+    padding: 3px 10px; border-radius: 4px;
+    background: var(--primary-light); color: var(--primary);
+    font-size: 11px; font-weight: var(--font-semibold);
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .detail-hero .meta-row {
+    display: flex; gap: 14px; flex-wrap: wrap;
+    font-size: 13px; color: var(--text-secondary);
+    margin: 12px 0 14px;
+  }
+  .detail-hero .meta-row .dot { color: var(--border); }
+  .detail-hero .invocation {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 10px 14px;
+    background: linear-gradient(180deg, var(--primary-light), rgba(0,115,209,0.04));
+    border: 1px solid rgba(0, 115, 209, 0.2); border-radius: 8px;
+    font-family: var(--font-mono); font-size: 13px; color: var(--primary);
+    margin-bottom: 18px;
+  }
+  .detail-hero .invocation::before { content: '/'; opacity: 0.6; }
+
+  .detail-hero .actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .actions .btn-primary {
+    display: inline-flex; align-items: center; gap: 6px;
+    appearance: none; border: none; background: var(--primary);
+    color: #fff; padding: 11px 22px; border-radius: 8px;
+    font-size: 14px; font-weight: var(--font-semibold);
+    cursor: pointer; font-family: var(--font-primary);
+    transition: all 0.15s ease;
+  }
+  .actions .btn-primary:hover {
+    background: var(--primary-dark);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 14px rgba(0, 115, 209, 0.25);
+  }
+  .actions .btn-installed {
+    appearance: none; border: 1px solid rgba(16, 183, 127, 0.3);
+    background: rgba(16, 183, 127, 0.1); color: var(--success);
+    padding: 10px 20px; border-radius: 8px;
+    font-size: 14px; font-weight: var(--font-semibold);
+    cursor: pointer; font-family: var(--font-primary);
+    transition: all 0.15s ease;
+  }
+  .actions .btn-installed:hover { background: rgba(16, 183, 127, 0.18); }
+  .actions .btn-link {
+    color: var(--text-secondary); text-decoration: none;
+    font-size: 13px; padding: 10px 12px;
+    border: 1px solid var(--border); border-radius: 8px;
+    font-family: var(--font-primary);
+  }
+  .actions .btn-link:hover { color: var(--primary); border-color: var(--primary); }
+
+  /* ── Section card ──────────────────────────────────────────────── */
+  .section {
+    background: var(--surface);
+    border: 1px solid var(--border); border-radius: 12px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    margin-bottom: 18px; overflow: hidden;
+  }
+  .section-header {
+    padding: 18px 24px 0;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .section-header h2 {
+    margin: 0; font-size: var(--text-md); font-weight: var(--font-semibold);
+    color: var(--text-primary);
+  }
+  .section-header .count {
+    font-size: 12px; color: var(--text-secondary);
+    background: var(--border-light);
+    padding: 2px 8px; border-radius: 999px;
+  }
+  .section-body { padding: 12px 24px 22px; }
+  .section-body .description {
+    font-size: 14px; line-height: 1.7;
+    color: var(--text-primary);
+    white-space: pre-wrap;
+  }
+
+  .file-list { font-family: var(--font-mono); font-size: 12px; }
+  .file-list .file {
+    display: flex; justify-content: space-between; gap: 16px;
+    padding: 7px 0; border-bottom: 1px dashed var(--border-light);
+    color: var(--text-primary);
+  }
+  .file-list .file:last-child { border-bottom: none; }
+  .file-list .file .size { color: var(--text-secondary); flex-shrink: 0; }
+  .file-list .file a { color: var(--primary); text-decoration: none; }
+  .file-list .file a:hover { text-decoration: underline; }
+
+  .empty { color: var(--text-secondary); font-size: 13px; padding: 4px 0; }
+
+  @media (max-width: 720px) {
+    .detail-hero { grid-template-columns: 1fr; padding: 24px; }
+    .owner-actions { position: static; margin-bottom: 8px; }
+  }
+</style>
+
+<div class="store-detail">
+  <div class="breadcrumb"><a href="/store">Store</a> / {{ entity.name }}</div>
+
+  <div class="detail-hero">
+    {% if is_owner %}
+    <div class="owner-actions">
+      <a href="#" id="edit-btn">Edit (coming soon)</a>
+      <button class="delete" id="delete-btn">Delete</button>
+    </div>
+    {% endif %}
+    {% if entity.photo_path %}
+    <img class="photo" src="/api/store/entities/{{ entity.id }}/photo" alt="">
+    {% else %}
+    <div class="photo">{{ entity.type[:2] | upper }}</div>
+    {% endif %}
+    <div>
+      <div class="type-row">
+        <span class="type-badge">{{ entity.type }}</span>
+        <span>v{{ entity.version }}</span>
+        {% if entity.category %}<span>· {{ entity.category }}</span>{% endif %}
+      </div>
+      <h1>{{ entity.name }}</h1>
+      <div class="meta-row">
+        <span>by <strong style="color:var(--text-primary);">{{ owner_display }}</strong></span>
+        <span class="dot">·</span>
+        <span>{{ entity.install_count }} installed</span>
+        <span class="dot">·</span>
+        <span>{{ entity.file_size | humanbytes }}</span>
+      </div>
+      <div class="invocation" title="Invoke in Claude Code">{{ invocation_name }}</div>
+      <div class="actions">
+        {% if is_installed %}
+          <button class="btn-installed" id="action-btn" data-action="uninstall">Installed ✓ — Uninstall</button>
+        {% else %}
+          <button class="btn-primary" id="action-btn" data-action="install">+ Install</button>
+        {% endif %}
+        {% if entity.video_url %}
+          <a class="btn-link" href="{{ entity.video_url }}" target="_blank" rel="noopener">▶ Watch video</a>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  {% if entity.description %}
+  <div class="section">
+    <div class="section-header"><h2>Description</h2></div>
+    <div class="section-body">
+      <div class="description">{{ entity.description }}</div>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if entity.doc_paths %}
+  <div class="section">
+    <div class="section-header">
+      <h2>Documentation</h2>
+      <span class="count">{{ entity.doc_paths | length }}</span>
+    </div>
+    <div class="section-body">
+      <div class="file-list">
+        {% for d in entity.doc_paths %}
+        {% set fname = d.split('/')[-1] %}
+        <div class="file">
+          <a href="/api/store/entities/{{ entity.id }}/docs/{{ fname }}" target="_blank" rel="noopener">{{ fname }}</a>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="section">
+    <div class="section-header">
+      <h2>Files</h2>
+      <span class="count">{{ files | length }}</span>
+    </div>
+    <div class="section-body">
+      <div class="file-list">
+        {% for f in files %}
+        <div class="file"><span>{{ f.path }}</span><span class="size">{{ f.size | humanbytes }}</span></div>
+        {% else %}
+        <div class="empty">No files on disk.</div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const actionBtn = document.getElementById('action-btn');
+if (actionBtn) {
+  actionBtn.addEventListener('click', async () => {
+    const action = actionBtn.dataset.action;
+    const method = action === 'install' ? 'POST' : 'DELETE';
+    const res = await fetch(`/api/store/entities/{{ entity.id }}/install`, {method});
+    if (!res.ok) { alert('Failed: ' + res.status); return; }
+    window.location.reload();
+  });
+}
+const delBtn = document.getElementById('delete-btn');
+if (delBtn) {
+  delBtn.addEventListener('click', async () => {
+    if (!confirm('Permanently delete this entity? Anyone who has it installed will lose it.')) return;
+    const res = await fetch(`/api/store/entities/{{ entity.id }}`, {method: 'DELETE'});
+    if (!res.ok) { alert('Failed: ' + res.status); return; }
+    window.location = '/store';
+  });
+}
+</script>
+{% endblock %}
