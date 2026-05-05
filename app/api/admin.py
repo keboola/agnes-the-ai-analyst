@@ -2843,8 +2843,11 @@ def run_verification_detector(
 
     # Build the extractor lazily so the endpoint surfaces a 500 with the
     # factory's actionable error when no ai: block + no env keys are set.
+    # Use the overlay-aware loader (#179 review fix) so an ai: block written
+    # by /api/admin/configure to DATA_DIR/state/instance.yaml actually flows
+    # through to the factory.
     try:
-        from config.loader import load_instance_config
+        from app.instance_config import load_instance_config
         try:
             instance_config = load_instance_config()
         except (ValueError, FileNotFoundError):

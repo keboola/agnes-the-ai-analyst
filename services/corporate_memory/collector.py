@@ -424,7 +424,12 @@ def collect_all(dry_run: bool = False) -> dict:
     # actionable misconfiguration message instead of swallowing it into
     # stats["errors"]. FileNotFoundError on the static config path is fine
     # to swallow because the factory's env fallback can still satisfy.
-    from config.loader import load_instance_config
+    #
+    # Use the overlay-aware loader (#179 review fix) so an ai: block written
+    # by /api/admin/configure to DATA_DIR/state/instance.yaml actually flows
+    # through to the factory; config.loader.load_instance_config reads the
+    # static config dir only and would silently miss the overlay.
+    from app.instance_config import load_instance_config
     from connectors.llm import create_extractor_from_env_or_config
 
     try:

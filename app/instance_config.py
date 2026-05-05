@@ -93,11 +93,22 @@ def load_instance_config() -> dict:
     # write-side endpoints (POST /api/admin/server-config and /configure)
     # refuse to overwrite a corrupt overlay with HTTP 500, so an admin
     # noticing the saves break is the second line of defence.
+    #
+    # ${ENV_VAR} interpolation: ``config.loader.load_instance_config`` runs
+    # the static base through ``_resolve_env_refs`` already, but raw
+    # ``yaml.safe_load`` here would leave overlay strings like
+    # ``${ANTHROPIC_API_KEY}`` as literal placeholders. /api/admin/configure
+    # writes exactly that string into the seeded ai: block (#176), so we
+    # mirror the resolver here before the deep-merge — without it, the
+    # LLM factory receives the literal placeholder and rejects it as an
+    # invalid api key (#179 review fix).
     data_dir = Path(os.environ.get("DATA_DIR", "./data"))
     overlay_path = data_dir / "state" / "instance.yaml"
     if overlay_path.exists():
         try:
             overlay = yaml.safe_load(overlay_path.read_text()) or {}
+            from config.loader import _resolve_env_refs
+            overlay = _resolve_env_refs(overlay)
             base = _deep_merge(base, overlay)
             logger.info("Merged overlay from %s", overlay_path)
         except Exception:

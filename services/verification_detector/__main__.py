@@ -50,9 +50,12 @@ def main() -> None:
     setup_logging(__name__, level="DEBUG" if args.verbose else "INFO")
 
     # Load AI config; fail fast on missing config + env (#176).
+    # Use the overlay-aware loader (#179 review fix) so an ai: block written
+    # by /api/admin/configure to DATA_DIR/state/instance.yaml actually flows
+    # through to the factory.
     from connectors.llm import create_extractor_from_env_or_config
     try:
-        from config.loader import load_instance_config
+        from app.instance_config import load_instance_config
 
         try:
             config = load_instance_config()
