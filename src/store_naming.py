@@ -30,7 +30,7 @@ def sanitize_username(email: str) -> str:
     replaces every run of non-``[a-z0-9-]`` characters with a single ``-``,
     collapses repeats, and trims leading/trailing dashes.
 
-        sanitize_username("c_marustamyan@groupon.com")    -> "c-marustamyan"
+        sanitize_username("alice_smith@example.com")      -> "alice-smith"
         sanitize_username("john.doe+claude@acme.com")     -> "john-doe-claude"
         sanitize_username("USER@example.com")             -> "user"
 

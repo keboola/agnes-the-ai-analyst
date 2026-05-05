@@ -15,7 +15,7 @@ from src.store_naming import (
 
 class TestSanitizeUsername:
     @pytest.mark.parametrize("email,expected", [
-        ("c_marustamyan@groupon.com", "c-marustamyan"),
+        ("alice_smith@example.com", "alice-smith"),
         ("john.doe+claude@acme.com", "john-doe-claude"),
         ("USER@example.com", "user"),
         ("a.b.c@x.y", "a-b-c"),
