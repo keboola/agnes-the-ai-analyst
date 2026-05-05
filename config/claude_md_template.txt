@@ -58,15 +58,43 @@ Not every table is synced. Tables registered with `query_mode: "remote"` live in
 BigQuery, accessed server-side via DuckDB's BQ extension — no parquet on disk.
 Tables you don't see in `server/parquet/` may still be queryable.
 
-### Discovery first
+### Discovery first — read `agnes catalog --json` BEFORE every cross-table decision
+
+`agnes catalog --json` returns one row per table with these fields. Use them; don't guess:
+
+| Field | What it tells you | How to use it |
+|---|---|---|
+| `query_mode` | `local` (parquet on laptop) / `remote` (BQ on demand) / `materialized` (synced parquet of a BQ result) | Picks the tool — see decision tree below |
+| `source_type` | `keboola` / `bigquery` / `jira` | Determines SQL dialect |
+| `sql_flavor` | `duckdb` for local sources, `bigquery` for `--remote` queries on BQ rows | What syntax `--where` expects |
+| `where_examples` | 1–3 example WHERE predicates that are valid for this table's dialect | Copy as starting point for `--where` |
+| `fetch_via` | Pre-formatted `agnes snapshot create …` template for this table | The canonical "how do I get a slice of this table" command |
+| `rough_size_hint` | Coarse size hint (`small` / `medium` / `large` or null when unknown) | Bigger than `medium` → never `agnes query --remote` without a tight `--where`; use `agnes snapshot create` |
 
 ```
-agnes catalog --json | jq '.[] | {name, source_type, query_mode}'   # see all tables + their modes
-agnes schema <table>                                                # columns + types
-agnes describe <table> -n 5                                         # sample rows
+agnes catalog --json                              # full structured view (use this in scripts)
+agnes catalog                                     # human-readable summary
+agnes schema <table>                              # columns + types (BIGQUERY/DUCKDB dialect printed in header)
+agnes describe <table> -n 5                       # sample rows (works on local & materialized only)
 ```
 
-For local-mode tables, query directly with `agnes query "SELECT … FROM <table>"`.
+### Decision tree — pick the right tool BEFORE writing SQL
+
+```
+                       ┌─ local        → agnes query "SELECT ..."
+agnes catalog →   ─────┤
+query_mode of <table>  ├─ materialized → agnes query (parquet was synced by agnes pull)
+                       │                 (if missing locally, run `agnes pull` first)
+                       │
+                       └─ remote       → choose by table size + query shape:
+                                          - one cheap probe (COUNT, schema-confirm, single agg ≤200s)
+                                              → agnes query --remote "..."
+                                          - repeated questions on same slice / large scan
+                                              → agnes snapshot create <table> --select ... --where ... --as <name>
+                                                then agnes query "SELECT ... FROM <name>"
+                                          - join with a local table
+                                              → agnes query --register-bq "alias=BQ_SQL" --sql "..."
+```
 
 ### Three patterns for `query_mode: "remote"` tables
 
@@ -76,13 +104,30 @@ For local-mode tables, query directly with `agnes query "SELECT … FROM <table>
 | **`agnes query --remote`** | one-shot, server-side execution against BigQuery (works for BASE TABLE rows directly + VIEW/MATERIALIZED_VIEW rows via the BQ jobs API; cost-guarded by a 5 GiB scan cap configurable in /admin/server-config) | single aggregate / cheap probe |
 | **`agnes query --register-bq`** | hybrid joins between local snapshots and ad-hoc BQ subqueries | crossing local + remote |
 
-### Permission model + cost — important
+### Common mistakes — avoid on first try
 
-- BQ access goes through the **agnes server's GCE service account**, not your personal Google credentials. If a query fails with a permission error, the table is in a project the server SA cannot read — escalate to admin, do NOT try to authenticate yourself.
-- Every BQ query bills the SA's GCP project for **bytes scanned**. A naive `SELECT * FROM <large_table>` can cost real money. ALWAYS:
-  - filter via `--where` on the partition column (typically a date)
-  - list specific columns in `--select` — column-store BQ skips the rest, cheaper
-  - run `--estimate` first when unsure of the table size or partitioning
+- **`--estimate` is on `agnes snapshot create` ONLY.** Do NOT pass it to `agnes query` — fails with `No such option: --estimate`. The estimate flow is a snapshot-creation cost gate, not a query primitive.
+- **Old `agnes fetch` / `da fetch` / `da query` references in stale docs** — the CLI is `agnes`; `agnes fetch` was renamed to `agnes snapshot create`. If you see those names, translate before running.
+- **Don't attempt personal GCP auth** if a BQ query fails with permission errors. BQ access uses the **server's service account**, not your Google identity — escalate to admin instead.
+- **Don't `agnes query --remote "SELECT * FROM <large_table>"`** without a `--where`. Even if the scan-byte gate refuses, you've wasted the round-trip; gate yourself first by reading `rough_size_hint` and `where_examples` from `agnes catalog --json`.
+
+### Failure-mode dictionary — what each error means + the right response
+
+| Error wording (substring) | Cause | Response |
+|---|---|---|
+| `Binder Error: Query execution exceeded the timeout. Job ID: ...` | BQ-side query took >~200 s wall-clock; the DuckDB BQ extension's `bq_query_timeout_ms` (default 90 s, server may bump to 600 s) elapsed | Narrow `--where` (especially partition column), drop unused columns from `--select`, or switch to `agnes snapshot create` to materialise once + query locally |
+| `HTTP 400: remote_scan_too_large` | Server's `bq_max_scan_bytes` cost gate refused the query (default 5 GiB) | Tighten `--where`; consider `agnes snapshot create` so the cost is paid once, then local queries are free |
+| `HTTP 401: ... unauthorized` | PAT expired or wrong | `agnes init --server-url ... --token <new-PAT>`; re-mint via the dashboard's "Personal Access Tokens" page |
+| `HTTP 403: cross_project_forbidden` (with `serviceusage` mention) | Server SA lacks `serviceusage.services.use` on the BQ data project | Escalate to admin to set `data_source.bigquery.billing_project`; do NOT try personal auth |
+| `ReadTimeout` (client-side) on `agnes query --remote` | CLI is older than 0.35.1 (had 30 s default) | `agnes --version`; if <0.35.1, upgrade with `uv tool install --force <wheel-from-server>` (the URL is in the `[update]` banner that prints on every command). Then retry. |
+| `unknown columns: [...]` from `agnes snapshot create` | `--select` lists columns that don't exist | Run `agnes schema <table>` and copy column names verbatim |
+
+### Cost discipline — every BQ query bills bytes scanned
+
+A naive `SELECT * FROM <large_table>` can cost real money. ALWAYS:
+- filter via `--where` on the partition column (typically a date) — read `where_examples` in `agnes catalog --json`
+- list specific columns in `--select` — column-store BQ skips the rest
+- run `--estimate` first (only valid on `agnes snapshot create`) when the table is partitioned/clustered or when `rough_size_hint` is unknown
 
 ### `agnes snapshot create` discipline
 

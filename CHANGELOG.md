@@ -10,6 +10,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- **Workspace prompt: decision tree, common-mistakes callout, failure-mode dictionary** in `config/claude_md_template.txt` (the template `agnes init` writes to `<workspace>/CLAUDE.md`). Surfaces every catalog-row field analyst Claude should read before deciding which command to use (`query_mode`, `sql_flavor`, `where_examples`, `fetch_via`, `rough_size_hint`); explicitly binds `--estimate` to `agnes snapshot create` ONLY (was the most-failed first-try misuse — fails with `No such option: --estimate` on `agnes query`); calls out the `agnes fetch` → `agnes snapshot create` rename so stale-doc analysts don't run a non-command; documents the BQ permission model (server SA, not personal Google identity) and a 6-row failure-mode table mapping each common error wording to its cause + the right next step.
+- **`rough_size_hint` populated for `local` + `materialized` catalog rows** in `GET /api/v2/catalog` (was hardcoded `null` with a "Task 8" TODO). Reads the parquet file size at `${DATA_DIR}/extracts/<source_type>/data/<table_id>.parquet` and buckets into `small` (≤100 MiB), `medium` (≤1 GiB), `large` (≤10 GiB), `very_large` (>10 GiB). `remote` rows stay `null` for now (size requires a BQ INFORMATION_SCHEMA call; tracked separately). Lets analyst Claude pick `agnes snapshot create` over `agnes query --remote` by inspecting `agnes catalog --json` rather than discovering size empirically via a failed `--remote` round-trip.
+
+### Changed
+- **CLI update-banner now says `agnes` instead of `da`** (`cli/update_check.py:format_outdated_notice`). The string `[update] da X is out of date` had survived the `da` → `agnes` CLI rename and was the most-visible stale identifier in the analyst-facing surface — every CLI command printed it on stderr when a newer wheel was available.
+
 ### Fixed
 
 - Keboola sync now falls back to the legacy Storage-API client when the DuckDB Keboola extension's per-table scan fails, not just when the initial `ATTACH` fails. Two changes:

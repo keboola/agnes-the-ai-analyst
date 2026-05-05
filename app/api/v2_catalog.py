@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 from datetime import datetime, timezone
+from pathlib import Path
 from fastapi import APIRouter, Depends
 import duckdb
 
 from app.auth.dependencies import get_current_user, _get_db
+from app.utils import get_data_dir as _get_data_dir
 from src.rbac import can_access_table
 from src.repositories.table_registry import TableRegistryRepository
 from app.api.v2_cache import TTLCache
@@ -43,6 +45,52 @@ def _fetch_hint(table_id: str, source_type: str) -> str:
     return "already local — query directly via `agnes query`"
 
 
+# Coarse size buckets for `rough_size_hint`. Boundaries chosen so an analyst
+# Claude can decide tool by inspection: anything `large` or worse implies
+# `agnes snapshot create` over `agnes query --remote`. Numbers reflect the
+# default `bq_max_scan_bytes` 5 GiB ceiling — at "large" you're already at
+# half the per-query gate and a naive `--remote` is likely to refuse.
+_SIZE_BUCKETS = (
+    (10 * 2**20, "small"),     # ≤10 MiB
+    (100 * 2**20, "small"),    # ≤100 MiB still small (analyst-laptop scale)
+    (1 * 2**30, "medium"),     # ≤1 GiB
+    (10 * 2**30, "large"),     # ≤10 GiB
+)
+
+
+def _bucket_size(byte_count: int) -> str:
+    for cap, label in _SIZE_BUCKETS:
+        if byte_count <= cap:
+            return label
+    return "very_large"
+
+
+def _materialized_size_hint(table_id: str, source_type: str, query_mode: str) -> str | None:
+    """Return a rough size bucket for a row whose data is on the server's
+    local filesystem (any `query_mode` that produces a parquet — `local` and
+    `materialized`). Returns ``None`` for `remote` (size requires a BQ
+    INFORMATION_SCHEMA round-trip; tracked separately) and for tables whose
+    parquet hasn't been materialised yet so the AI gets ``null`` not a
+    misleading "small".
+
+    Layout matches the v2 extract.duckdb contract:
+      ${DATA_DIR}/extracts/<source_type>/data/<table_id>.parquet
+    """
+    if query_mode == "remote":
+        return None
+    if not source_type:
+        return None
+    try:
+        path = Path(_get_data_dir()) / "extracts" / source_type / "data" / f"{table_id}.parquet"
+        if not path.exists():
+            return None
+        return _bucket_size(path.stat().st_size)
+    except Exception:
+        # Filesystem stat() race / permissions / weird DATA_DIR — fall back
+        # to null rather than crash the whole catalog response.
+        return None
+
+
 def build_catalog(conn: duckdb.DuckDBPyConnection, user: dict) -> dict:
     rows = _table_rows_cache.get(_TABLE_ROWS_KEY)
     if rows is None:
@@ -66,7 +114,10 @@ def build_catalog(conn: duckdb.DuckDBPyConnection, user: dict) -> dict:
             "sql_flavor": _flavor_for(r.get("source_type") or ""),
             "where_examples": _examples_for(r.get("source_type") or ""),
             "fetch_via": _fetch_hint(r["id"], r.get("source_type") or ""),
-            "rough_size_hint": None,  # populated by Task 8 schema endpoint when called
+            "rough_size_hint": _materialized_size_hint(
+                r["id"], r.get("source_type") or "",
+                r.get("query_mode") or "local",
+            ),
         })
 
     return {
