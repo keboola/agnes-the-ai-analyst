@@ -636,6 +636,216 @@ class TestStoreSecurityFixes:
             assert r.status_code == 201, r.text
 
 
+class TestStoreBundle:
+    """GET /api/store/bundle.zip + POST /api/store/import-bundle."""
+
+    def _upload_skill(self, web_client, cookies, name="bundled-skill"):
+        return web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", _make_skill_zip(name), "application/zip")},
+            data={"type": "skill"}, cookies=cookies,
+        )
+
+    def test_bundle_zip_contains_manifest_and_entity_tree(self, web_client):
+        _, cookies = _create_user(web_client, "owner-bundle@x.com")
+        r1 = self._upload_skill(web_client, cookies, name="bundle-a")
+        r2 = self._upload_skill(web_client, cookies, name="bundle-b")
+        eid_a, eid_b = r1.json()["id"], r2.json()["id"]
+
+        bundle = web_client.get("/api/store/bundle.zip", cookies=cookies)
+        assert bundle.status_code == 200
+        assert bundle.headers["content-type"] == "application/zip"
+        assert bundle.headers["x-bundle-entry-count"] == "2"
+
+        with zipfile.ZipFile(io.BytesIO(bundle.content)) as zf:
+            names = set(zf.namelist())
+            assert "manifest.json" in names
+            assert f"entities/{eid_a}/plugin/skills/bundle-a-by-owner-bundle/SKILL.md" in names
+            assert f"entities/{eid_b}/plugin/skills/bundle-b-by-owner-bundle/SKILL.md" in names
+
+            manifest = json.loads(zf.read("manifest.json"))
+            assert manifest["format"] == 1
+            assert manifest["entry_count"] == 2
+            entries_by_id = {e["entity_id"]: e for e in manifest["entries"]}
+            assert entries_by_id[eid_a]["owner_email"] == "owner-bundle@x.com"
+            assert entries_by_id[eid_a]["name"] == "bundle-a"
+
+    def test_bundle_zip_filters(self, web_client):
+        _, cookies = _create_user(web_client, "filter@x.com")
+        self._upload_skill(web_client, cookies, name="keep-this")
+        web_client.post(
+            "/api/store/entities",
+            files={"file": ("p.zip", _make_plugin_zip("filter-out"), "application/zip")},
+            data={"type": "plugin"}, cookies=cookies,
+        )
+
+        only_skill = web_client.get(
+            "/api/store/bundle.zip?type=skill", cookies=cookies,
+        )
+        assert only_skill.headers["x-bundle-entry-count"] == "1"
+
+    def test_import_bundle_round_trip_preserves_entity(self, web_client, tmp_path):
+        from argon2 import PasswordHasher
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        from tests.helpers.auth import grant_admin
+
+        # Source instance: create entity, pull bundle.
+        _, owner_cookies = _create_user(web_client, "src-owner@x.com")
+        r = self._upload_skill(web_client, owner_cookies, name="rt-skill")
+        eid = r.json()["id"]
+        bundle_bytes = web_client.get(
+            "/api/store/bundle.zip", cookies=owner_cookies,
+        ).content
+
+        # Wipe Store DB rows + on-disk dir to simulate empty target.
+        conn = get_system_db()
+        conn.execute("DELETE FROM store_entities WHERE id = ?", [eid])
+        import shutil as _shutil
+        _shutil.rmtree(tmp_path / "store" / eid, ignore_errors=True)
+
+        # Promote a different user to admin and import.
+        ph = PasswordHasher()
+        UserRepository(conn).create(
+            id="adm-bundle", email="adm-bundle@x.com", name="adm",
+            password_hash=ph.hash("AdminPass1!"),
+        )
+        grant_admin(conn, "adm-bundle")
+        admin_token = web_client.post(
+            "/auth/token", json={"email": "adm-bundle@x.com", "password": "AdminPass1!"}
+        ).json()["access_token"]
+        admin_cookies = {"access_token": admin_token}
+
+        imp = web_client.post(
+            "/api/store/import-bundle",
+            files={"file": ("b.zip", bundle_bytes, "application/zip")},
+            data={"mode": "merge"},
+            cookies=admin_cookies,
+        )
+        assert imp.status_code == 200, imp.text
+        body = imp.json()
+        assert body["imported"] == 1
+        assert body["replaced"] == 0
+        # Owner email matched existing user (src-owner@x.com), no stub needed.
+        assert body["stub_users_created"] == 0
+
+        # Entity should be present again.
+        r2 = web_client.get(f"/api/store/entities/{eid}", cookies=admin_cookies)
+        assert r2.status_code == 200
+        assert r2.json()["name"] == "rt-skill"
+        assert (tmp_path / "store" / eid / "plugin" / "skills" / "rt-skill-by-src-owner" / "SKILL.md").is_file()
+
+    def test_import_bundle_creates_stub_for_unknown_owner(self, web_client, tmp_path):
+        """When the bundle's owner_email is not in users table, server
+        creates a disabled stub so the entity row has a valid owner_user_id.
+        """
+        from argon2 import PasswordHasher
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        from tests.helpers.auth import grant_admin
+
+        _, owner_cookies = _create_user(web_client, "vanishing@x.com")
+        r = self._upload_skill(web_client, owner_cookies, name="orphan-skill")
+        eid = r.json()["id"]
+        bundle_bytes = web_client.get(
+            "/api/store/bundle.zip", cookies=owner_cookies,
+        ).content
+
+        # Delete the owner + the entity (simulate fresh target instance).
+        conn = get_system_db()
+        conn.execute("DELETE FROM store_entities WHERE id = ?", [eid])
+        # We can't easily delete users via repo (no method), so just rename
+        # so email lookup misses. Brute SQL.
+        conn.execute("UPDATE users SET email = 'gone@x.com' WHERE email = 'vanishing@x.com'")
+        import shutil as _shutil
+        _shutil.rmtree(tmp_path / "store" / eid, ignore_errors=True)
+
+        ph = PasswordHasher()
+        UserRepository(conn).create(
+            id="adm-stub", email="adm-stub@x.com", name="adm",
+            password_hash=ph.hash("AdminPass1!"),
+        )
+        grant_admin(conn, "adm-stub")
+        admin_token = web_client.post(
+            "/auth/token", json={"email": "adm-stub@x.com", "password": "AdminPass1!"}
+        ).json()["access_token"]
+        admin_cookies = {"access_token": admin_token}
+
+        imp = web_client.post(
+            "/api/store/import-bundle",
+            files={"file": ("b.zip", bundle_bytes, "application/zip")},
+            data={"mode": "merge"},
+            cookies=admin_cookies,
+        )
+        assert imp.status_code == 200, imp.text
+        body = imp.json()
+        assert body["imported"] == 1
+        assert body["stub_users_created"] == 1
+
+        stub = conn.execute(
+            "SELECT id, active FROM users WHERE email = 'vanishing@x.com'"
+        ).fetchone()
+        assert stub is not None
+        assert stub[0].startswith("imported-")
+        assert stub[1] is False  # disabled
+
+    def test_import_bundle_skip_mode_keeps_existing(self, web_client):
+        from argon2 import PasswordHasher
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        from tests.helpers.auth import grant_admin
+
+        _, owner_cookies = _create_user(web_client, "skip@x.com")
+        r = self._upload_skill(web_client, owner_cookies, name="skip-existing")
+        eid = r.json()["id"]
+        bundle_bytes = web_client.get(
+            "/api/store/bundle.zip", cookies=owner_cookies,
+        ).content
+
+        conn = get_system_db()
+        ph = PasswordHasher()
+        UserRepository(conn).create(
+            id="adm-skip", email="adm-skip@x.com", name="adm",
+            password_hash=ph.hash("AdminPass1!"),
+        )
+        grant_admin(conn, "adm-skip")
+        admin_token = web_client.post(
+            "/auth/token", json={"email": "adm-skip@x.com", "password": "AdminPass1!"}
+        ).json()["access_token"]
+        admin_cookies = {"access_token": admin_token}
+
+        # Import without wiping → entity already present → mode=skip
+        # should report 1 skipped, 0 imported, 0 replaced.
+        imp = web_client.post(
+            "/api/store/import-bundle",
+            files={"file": ("b.zip", bundle_bytes, "application/zip")},
+            data={"mode": "skip"},
+            cookies=admin_cookies,
+        )
+        assert imp.status_code == 200
+        assert imp.json() == {
+            "imported": 0, "replaced": 0, "skipped": 1,
+            "stub_users_created": 0, "errors": [],
+        }
+
+    def test_import_bundle_admin_only(self, web_client):
+        _, cookies = _create_user(web_client, "non-admin@x.com")
+        # Build the smallest valid bundle: just manifest.json + no entries.
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("manifest.json", json.dumps({
+                "format": 1, "generated_at": "2026-01-01T00:00:00Z",
+                "entry_count": 0, "entries": [],
+            }))
+        r = web_client.post(
+            "/api/store/import-bundle",
+            files={"file": ("b.zip", buf.getvalue(), "application/zip")},
+            data={"mode": "merge"}, cookies=cookies,
+        )
+        # require_admin denies non-admin with 403.
+        assert r.status_code == 403, r.text
+
+
 class TestInstallCycle:
     def test_install_uninstall_and_count(self, web_client):
         # Owner uploads, two other users install, install_count = 2.

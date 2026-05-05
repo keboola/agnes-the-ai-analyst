@@ -45,11 +45,32 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `GET /api/store/categories`, `GET /api/store/owners`,
   `GET /api/my-stack`,
   `PUT /api/my-stack/curated/{marketplace_id}/{plugin_name}`.
-- **CLI: `agnes store {list,show,install,uninstall,upload,delete}`** and
+- **CLI: `agnes store {list,show,install,uninstall,upload,update,delete,pull,info}`** and
   **`agnes my-stack {show,toggle}`** — full analyst-side coverage of the
   new Store + composition REST surface. Multipart upload helper added to
-  `cli/v2_client.py` (`api_post_multipart` / `api_put_multipart`) so
-  future multipart endpoints don't have to roll their own httpx wiring.
+  `cli/v2_client.py` (`api_post_multipart` / `api_put_multipart` /
+  `api_get_stream`) so future multipart and binary-download endpoints
+  don't have to roll their own httpx wiring.
+- **CLI: `agnes admin store push`** — admin-only Store bulk restore.
+  Wraps `POST /api/store/import-bundle` with mode=merge|replace|skip and
+  client-side zipping when the source is a directory (so a backup git
+  repo's working tree can go straight back into Agnes via a single
+  command).
+- **REST: `GET /api/store/bundle.zip`** — deterministic ZIP of all
+  (filtered) Store entities for whole-Store backup. Layout:
+  `manifest.json` at the top with per-entity metadata + `owner_email`
+  for cross-instance restore, then `entities/<entity_id>/{plugin,assets}/`.
+  Auth: any authenticated user (Store is community-open, the same set
+  is already visible via `GET /api/store/entities`). Filters mirror the
+  listing endpoint (type / category / owner / search).
+- **REST: `POST /api/store/import-bundle`** — admin-only restore of a
+  bundle ZIP. Modes: `merge` (default — upsert by `entity_id`, replace
+  when version differs), `replace` (overwrite all matching), `skip`
+  (only insert new). Owner resolution by `owner_email` against
+  `users.email`; missing emails get a stub disabled user
+  (`active=False`, no password, id `imported-<sha256[:12]>`) so the
+  historical owner stays attached and an admin can later activate or
+  reassign in `/admin/users`. Audit-logged with the full counts.
 
 ### Changed
 - `/admin/marketplaces` admin nav entry moved from the top-level header into

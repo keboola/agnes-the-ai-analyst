@@ -19,8 +19,10 @@ from cli.v2_client import (
     V2ClientError,
     api_delete,
     api_get_json,
+    api_get_stream,
     api_post_json,
     api_post_multipart,
+    api_put_multipart,
 )
 
 store_app = typer.Typer(help="Community Store — browse, install, upload skills/agents/plugins")
@@ -159,3 +161,182 @@ def delete_entity(
         typer.echo(str(e), err=True)
         raise typer.Exit(1)
     typer.echo(f"Deleted: {entity_id}")
+
+
+@store_app.command("update")
+def update_entity(
+    entity_id: str = typer.Argument(...),
+    description: Optional[str] = typer.Option(None, "--description"),
+    category: Optional[str] = typer.Option(None, "--category"),
+    video_url: Optional[str] = typer.Option(None, "--video-url"),
+    photo: Optional[Path] = typer.Option(
+        None, "--photo", exists=True, dir_okay=False, readable=True,
+        help="Replace the entity's photo with this image file",
+    ),
+    zip_path: Optional[Path] = typer.Option(
+        None, "--zip", exists=True, dir_okay=False, readable=True,
+        help="Replace the plugin tree with this new ZIP",
+    ),
+):
+    """In-place edit a Store entity. Owner or admin only.
+
+    Server-side authorization (PUT /api/store/entities/{id}) admits the
+    owner OR any member of the Admin group; CLI doesn't enforce, the
+    server does. Pass any combination of --description / --category /
+    --video-url / --photo / --zip; omitted fields are left untouched
+    (note: an empty string clears nothing — there's no API affordance to
+    clear a field back to NULL via PUT today).
+    """
+    files: dict = {}
+    data: dict = {}
+    if zip_path:
+        files["file"] = (zip_path.name, zip_path.read_bytes(), "application/zip")
+    if photo:
+        files["photo"] = (photo.name, photo.read_bytes(), f"image/{photo.suffix.lstrip('.')}")
+    if description is not None:
+        data["description"] = description
+    if category is not None:
+        data["category"] = category
+    if video_url is not None:
+        data["video_url"] = video_url
+    if not files and not data:
+        typer.echo("Nothing to update — pass at least one of --description / --category / --video-url / --photo / --zip.", err=True)
+        raise typer.Exit(2)
+    try:
+        body = api_put_multipart(
+            f"/api/store/entities/{entity_id}",
+            files=files or None, data=data,
+        )
+    except V2ClientError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1)
+    typer.echo(
+        f"Updated: id={body['id']} version={body['version']}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Bundle: pull + info (read paths, any authenticated user).
+# Bulk restore (push) lives under `agnes admin store push` because the
+# server-side endpoint is admin-only.
+# ---------------------------------------------------------------------------
+
+
+@store_app.command("pull")
+def pull_bundle(
+    type: Optional[str] = typer.Option(None, "--type", help="skill | agent | plugin"),
+    category: Optional[str] = typer.Option(None, "--category"),
+    owner: Optional[str] = typer.Option(None, "--owner", help="Filter by owner user_id"),
+    search: Optional[str] = typer.Option(None, "--search", "-q"),
+    out: Path = typer.Option(
+        Path("agnes-store-bundle.zip"), "-o", "--out",
+        help="Where to save the ZIP (default: ./agnes-store-bundle.zip)",
+    ),
+    unpack: Optional[Path] = typer.Option(
+        None, "--unpack",
+        help="Instead of saving the ZIP, unpack it into this directory. "
+             "Useful for committing a snapshot to a backup git repo: "
+             "`agnes store pull --unpack ./backup/ && cd backup && git add .`",
+    ),
+):
+    """Download the whole Store as a deterministic ZIP.
+
+    With ``--unpack DIR`` the ZIP is streamed and immediately extracted
+    into ``DIR`` (the directory is wiped first so re-runs leave a clean
+    diff). The bundle layout::
+
+        manifest.json
+        entities/<entity_id>/
+        ├── plugin/...
+        └── assets/...
+
+    Every entity matching the given filters is included; no filters =
+    everything in the Store.
+    """
+    import shutil as _shutil
+    import tempfile as _tempfile
+    import zipfile as _zipfile
+
+    params: dict = {}
+    if type:
+        params["type"] = type
+    if category:
+        params["category"] = category
+    if owner:
+        params["owner"] = owner
+    if search:
+        params["search"] = search
+
+    if unpack:
+        # Stream into a temp file, then unpack into `unpack` (wiped first).
+        scratch = Path(_tempfile.mkdtemp(prefix="agnes_store_pull_"))
+        zip_path = scratch / "bundle.zip"
+        try:
+            try:
+                api_get_stream("/api/store/bundle.zip", str(zip_path), **params)
+            except V2ClientError as e:
+                typer.echo(str(e), err=True)
+                raise typer.Exit(1)
+            if unpack.exists():
+                _shutil.rmtree(unpack)
+            unpack.mkdir(parents=True, exist_ok=True)
+            with _zipfile.ZipFile(zip_path, "r") as zf:
+                zf.extractall(unpack)
+        finally:
+            _shutil.rmtree(scratch, ignore_errors=True)
+        typer.echo(f"Unpacked Store bundle → {unpack}")
+        return
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        size = api_get_stream("/api/store/bundle.zip", str(out), **params)
+    except V2ClientError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1)
+    typer.echo(f"Wrote {size:,} bytes → {out}")
+
+
+@store_app.command("info")
+def store_info(
+    json_out: bool = typer.Option(False, "--json"),
+):
+    """Summary of the Store: total entities, breakdown by type, total size.
+
+    No new endpoint — assembled client-side from a paginated /entities
+    sweep so it stays in sync with what `pull` would emit.
+    """
+    skip = 0
+    page = 100
+    by_type: dict = {}
+    total_entities = 0
+    total_size = 0
+    while True:
+        try:
+            body = api_get_json(
+                "/api/store/entities", limit=page, skip=skip,
+            )
+        except V2ClientError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(1)
+        items = body.get("items", [])
+        if not items:
+            break
+        for it in items:
+            total_entities += 1
+            total_size += int(it.get("file_size") or 0)
+            by_type[it["type"]] = by_type.get(it["type"], 0) + 1
+        if len(items) < page:
+            break
+        skip += page
+
+    summary = {
+        "total_entities": total_entities,
+        "total_file_size_bytes": total_size,
+        "by_type": by_type,
+    }
+    if json_out:
+        typer.echo(json.dumps(summary, indent=2))
+        return
+    typer.echo(f"Store: {total_entities} entit, {total_size:,} bytes total")
+    for t in sorted(by_type):
+        typer.echo(f"  {t:8s} {by_type[t]}")

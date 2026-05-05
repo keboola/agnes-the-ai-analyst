@@ -16,6 +16,7 @@ display name don't collide in Claude Code's flat namespace.
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 import os
@@ -39,15 +40,16 @@ from fastapi import (
     Query,
     UploadFile,
 )
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
-from app.auth.access import is_user_admin
+from app.auth.access import is_user_admin, require_admin
 from app.auth.dependencies import _get_db, get_current_user
 from app.utils import get_store_dir
 from src.repositories.audit import AuditRepository
 from src.repositories.store_entities import StoreEntitiesRepository
 from src.repositories.user_store_installs import UserStoreInstallsRepository
+from src.repositories.users import UserRepository
 from src.store_categories import STORE_CATEGORIES, is_valid_category
 from src.store_naming import (
     compute_entity_version,
@@ -1059,6 +1061,421 @@ async def uninstall_entity(
         _audit(conn, user["id"], "store.entity.uninstall", entity_id)
         _invalidate_etag()
     return InstallResponse(entity_id=entity_id, installed=False)
+
+
+# ---------------------------------------------------------------------------
+# Bundle: GET /api/store/bundle.zip + POST /api/store/import-bundle
+# ---------------------------------------------------------------------------
+#
+# Whole-Store backup/restore primitive. Operationally consumed by the
+# `agnes admin store {pull,push}` CLI commands which back up the Store to a
+# git repo (or restore from one). Bundle format:
+#
+#     agnes-store-bundle.zip
+#     ├── manifest.json                 ← {"format":1,"generated_at":..., "entries":[...]}
+#     └── entities/<entity_id>/
+#         ├── plugin/...                ← canonical Claude Code plugin tree
+#         └── assets/...                ← photo + docs
+#
+# Each manifest entry carries `owner_email` (resolved at export time from the
+# users table) — when `import-bundle` lands on a different Agnes instance,
+# the importer matches by email rather than by `owner_user_id` (the latter
+# is per-instance and won't match). If the email is unknown on the target,
+# we create a stub user (active=False, password_hash=NULL) so the historical
+# owner is preserved; an admin can later activate or reassign.
+#
+# Bundle ordering is deterministic (entries sorted by entity_id, files within
+# each entity sorted by relpath, fixed mtime) so that diffs of two
+# successive snapshots stay clean when committed to git.
+
+BUNDLE_FORMAT_VERSION = 1
+BUNDLE_DETERMINISTIC_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
+
+
+class BundleEntry(BaseModel):
+    entity_id: str
+    type: str
+    name: str
+    description: Optional[str] = None
+    category: Optional[str] = None
+    version: str
+    owner_user_id: str
+    owner_email: Optional[str] = None
+    owner_username: str
+    install_count: int = 0
+    file_size: int = 0
+    photo_path: Optional[str] = None
+    video_url: Optional[str] = None
+    doc_paths: List[str] = []
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class BundleManifest(BaseModel):
+    format: int = BUNDLE_FORMAT_VERSION
+    generated_at: str
+    entry_count: int
+    entries: List[BundleEntry]
+
+
+class ImportBundleResponse(BaseModel):
+    imported: int
+    replaced: int
+    skipped: int
+    stub_users_created: int
+    errors: List[dict] = []
+
+
+def _resolve_owner_emails(
+    conn: duckdb.DuckDBPyConnection, owner_ids: List[str]
+) -> dict:
+    """Bulk-fetch user_id → email map for the given owners.
+
+    Empty list short-circuits to {} so the caller doesn't need a guard.
+    Missing rows are simply absent from the returned dict — the caller
+    falls back to the row's stored ``owner_username`` for diagnostics.
+    """
+    if not owner_ids:
+        return {}
+    placeholders = ",".join(["?"] * len(owner_ids))
+    rows = conn.execute(
+        f"SELECT id, email FROM users WHERE id IN ({placeholders})",
+        list(owner_ids),
+    ).fetchall()
+    return {r[0]: r[1] for r in rows}
+
+
+def _walk_entity_files(entity_id: str) -> List[tuple[str, Path]]:
+    """Return [(arcname, abs_path)] for every file under
+    ``${DATA_DIR}/store/<entity_id>/`` that should land in the bundle.
+
+    Both ``plugin/`` and ``assets/`` subtrees are included. Output is
+    sorted by arcname so the resulting ZIP is byte-deterministic.
+    """
+    out: list[tuple[str, Path]] = []
+    root = _entity_dir(entity_id)
+    if not root.is_dir():
+        return out
+    for f in sorted(p for p in root.rglob("*") if p.is_file()):
+        rel = f.relative_to(root).as_posix()
+        # Only ship plugin/ and assets/ subtrees — anything else under the
+        # entity dir is internal scratch and shouldn't enter the bundle.
+        first = rel.split("/", 1)[0] if "/" in rel else rel
+        if first not in ("plugin", "assets"):
+            continue
+        arc = f"entities/{entity_id}/{rel}"
+        out.append((arc, f))
+    return sorted(out, key=lambda t: t[0])
+
+
+def _build_bundle_zip(
+    conn: duckdb.DuckDBPyConnection,
+    entries: List[dict],
+) -> bytes:
+    """Build the deterministic ZIP from a list of store_entities rows.
+
+    Entries arrive already filtered (per the caller's query). We resolve
+    owner_email in one bulk roundtrip to keep the export path off the
+    O(N) per-row query path.
+    """
+    owner_emails = _resolve_owner_emails(
+        conn, list({e["owner_user_id"] for e in entries})
+    )
+    bundle_entries: List[dict] = []
+    for e in sorted(entries, key=lambda r: r["id"]):
+        bundle_entries.append(
+            {
+                "entity_id": e["id"],
+                "type": e["type"],
+                "name": e["name"],
+                "description": e.get("description"),
+                "category": e.get("category"),
+                "version": e["version"],
+                "owner_user_id": e["owner_user_id"],
+                "owner_email": owner_emails.get(e["owner_user_id"]),
+                "owner_username": e["owner_username"],
+                "install_count": int(e.get("install_count") or 0),
+                "file_size": int(e.get("file_size") or 0),
+                "photo_path": e.get("photo_path"),
+                "video_url": e.get("video_url"),
+                "doc_paths": e.get("doc_paths") or [],
+                "created_at": _to_iso(e.get("created_at")),
+                "updated_at": _to_iso(e.get("updated_at")),
+            }
+        )
+
+    manifest = {
+        "format": BUNDLE_FORMAT_VERSION,
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "entry_count": len(bundle_entries),
+        "entries": bundle_entries,
+    }
+
+    members: list[tuple[str, bytes]] = [
+        ("manifest.json", json.dumps(manifest, indent=2, sort_keys=False).encode("utf-8"))
+    ]
+    for entry in bundle_entries:
+        for arc, abs_path in _walk_entity_files(entry["entity_id"]):
+            members.append((arc, abs_path.read_bytes()))
+    members.sort(key=lambda m: m[0])
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for arc, data in members:
+            info = zipfile.ZipInfo(filename=arc, date_time=BUNDLE_DETERMINISTIC_TIMESTAMP)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = 0o644 << 16
+            zf.writestr(info, data)
+    return buf.getvalue()
+
+
+@router.get("/bundle.zip")
+async def export_bundle(
+    type: Optional[str] = Query(None, description="skill | agent | plugin"),
+    category: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    owner: Optional[str] = Query(None, description="Filter by owner user_id"),
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Stream a ZIP of all (filtered) Store entities.
+
+    Auth: any authenticated user — the Store is community-open, the same
+    set is already visible via ``GET /api/store/entities``. The bundle is
+    deterministic so two consecutive pulls without state changes produce
+    byte-identical ZIPs (modulo the manifest's ``generated_at`` timestamp).
+    Filters mirror the listing endpoint so a backup workflow can scope by
+    type/owner if needed.
+    """
+    if type and type not in _VALID_TYPES:
+        raise HTTPException(status_code=400, detail="invalid_type")
+    repo = StoreEntitiesRepository(conn)
+    # Page through everything. The 100/req limit on `list` is a UI
+    # pagination affordance, not a backup constraint — for a bulk export
+    # we want all matches.
+    items: list[dict] = []
+    skip = 0
+    page = 200
+    while True:
+        page_items, _total = repo.list(
+            skip=skip, limit=page, type=type, category=category,
+            search=search, owner_user_id=owner,
+        )
+        if not page_items:
+            break
+        items.extend(page_items)
+        if len(page_items) < page:
+            break
+        skip += page
+
+    payload = _build_bundle_zip(conn, items)
+    return Response(
+        content=payload,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": 'attachment; filename="agnes-store-bundle.zip"',
+            "X-Bundle-Entry-Count": str(len(items)),
+        },
+    )
+
+
+def _import_one_entry(
+    conn: duckdb.DuckDBPyConnection,
+    entry: dict,
+    extract_root: Path,
+    *,
+    mode: str,
+    actor_user_id: str,
+) -> tuple[str, int]:
+    """Apply a single manifest entry. Returns ``(outcome, stub_users_created)``
+    where outcome is one of ``imported``, ``replaced``, ``skipped``.
+
+    Owner resolution: we match the bundle's ``owner_email`` against
+    ``users.email``. Missing → create a stub (active=False, no password)
+    so the historical owner stays attached; an admin can activate or
+    reassign in /admin/users. The stub gets ``id = "imported-" +
+    sha256(email)[:12]`` to make it idempotent across repeated imports.
+    """
+    entity_id = entry["entity_id"]
+    repo = StoreEntitiesRepository(conn)
+    existing = repo.get(entity_id)
+
+    if existing:
+        if mode == "skip":
+            return ("skipped", 0)
+        if mode == "merge":
+            # Keep newer version (content-hash). If equal, skip.
+            if (existing.get("version") or "") == (entry.get("version") or ""):
+                return ("skipped", 0)
+        # mode='replace' OR mode='merge' with newer version → fall through.
+
+    # Resolve owner.
+    user_repo = UserRepository(conn)
+    owner_email = (entry.get("owner_email") or "").strip().lower()
+    stub_created = 0
+    owner_user_id: Optional[str] = None
+    if owner_email:
+        existing_user = user_repo.get_by_email(owner_email)
+        if existing_user:
+            owner_user_id = existing_user["id"]
+        else:
+            import hashlib as _hl
+            stub_id = "imported-" + _hl.sha256(owner_email.encode("utf-8")).hexdigest()[:12]
+            if not user_repo.get_by_id(stub_id):
+                user_repo.create(
+                    id=stub_id, email=owner_email, name=owner_email,
+                    password_hash=None,
+                )
+                user_repo.update(stub_id, active=False)
+                stub_created = 1
+            owner_user_id = stub_id
+    if owner_user_id is None:
+        # Fallback: use the importer (admin) so the row has a valid owner.
+        owner_user_id = actor_user_id
+
+    # Materialize files.
+    src_dir = extract_root / "entities" / entity_id
+    if not src_dir.is_dir():
+        raise HTTPException(
+            status_code=422,
+            detail=f"manifest entry {entity_id!r} has no entities/<id>/ directory in the bundle",
+        )
+    target_dir = _entity_dir(entity_id)
+    if existing and target_dir.exists():
+        shutil.rmtree(target_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for f in src_dir.rglob("*"):
+        if not f.is_file():
+            continue
+        rel = f.relative_to(src_dir)
+        dest = target_dir / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(f, dest)
+
+    # Upsert DB row.
+    if existing:
+        repo.update(
+            entity_id,
+            description=entry.get("description"),
+            category=entry.get("category"),
+            version=entry["version"],
+            photo_path=entry.get("photo_path"),
+            video_url=entry.get("video_url"),
+            doc_paths=entry.get("doc_paths") or [],
+            file_size=int(entry.get("file_size") or 0),
+        )
+        return ("replaced", stub_created)
+
+    repo.create(
+        id=entity_id,
+        owner_user_id=owner_user_id,
+        owner_username=entry.get("owner_username") or owner_email.split("@")[0],
+        type=entry["type"],
+        name=entry["name"],
+        description=entry.get("description"),
+        category=entry.get("category"),
+        version=entry["version"],
+        photo_path=entry.get("photo_path"),
+        video_url=entry.get("video_url"),
+        doc_paths=entry.get("doc_paths") or [],
+        file_size=int(entry.get("file_size") or 0),
+    )
+    return ("imported", stub_created)
+
+
+@router.post("/import-bundle", response_model=ImportBundleResponse)
+async def import_bundle(
+    file: UploadFile = File(...),
+    mode: str = Form("merge"),
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Restore a Store bundle ZIP — admin only.
+
+    Modes:
+      * ``merge`` (default) — upsert by ``entity_id``; existing entities
+        are replaced when the bundle's ``version`` differs, otherwise
+        skipped. Safe default for nightly cron round-trips.
+      * ``replace`` — every entity in the bundle overwrites the existing
+        row + on-disk tree. Bundle-not-in-target rows are NOT deleted.
+      * ``skip`` — only entities NOT already present are imported.
+
+    Owner resolution by ``owner_email``; missing emails get a stub
+    disabled user so the row references an existing ``users.id`` (no
+    foreign key, but app code joins).
+    """
+    if mode not in {"merge", "replace", "skip"}:
+        raise HTTPException(status_code=400, detail="invalid_mode")
+
+    tmp, _ = await _stream_to_temp(file, MAX_ZIP_SIZE * 4, suffix=".zip")
+    tmp.close()
+    extract_root = Path(tempfile.mkdtemp(prefix="agnes_store_import_"))
+    try:
+        try:
+            with zipfile.ZipFile(tmp.name, "r") as zf:
+                _safe_zip_extract(zf, extract_root)
+        except zipfile.BadZipFile:
+            raise HTTPException(status_code=422, detail="zip_invalid")
+        finally:
+            Path(tmp.name).unlink(missing_ok=True)
+
+        manifest_path = extract_root / "manifest.json"
+        if not manifest_path.is_file():
+            raise HTTPException(status_code=422, detail="manifest_missing")
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            raise HTTPException(status_code=422, detail="manifest_invalid")
+        if not isinstance(manifest, dict) or manifest.get("format") != BUNDLE_FORMAT_VERSION:
+            raise HTTPException(
+                status_code=422,
+                detail=f"manifest_unsupported_format (expected {BUNDLE_FORMAT_VERSION})",
+            )
+        entries = manifest.get("entries") or []
+        if not isinstance(entries, list):
+            raise HTTPException(status_code=422, detail="manifest_entries_invalid")
+
+        imported = replaced = skipped = stubs = 0
+        errors: list[dict] = []
+        for entry in entries:
+            if not isinstance(entry, dict) or not entry.get("entity_id"):
+                errors.append({"entry": entry, "error": "entry_missing_id"})
+                continue
+            try:
+                outcome, sc = _import_one_entry(
+                    conn, entry, extract_root, mode=mode, actor_user_id=user["id"],
+                )
+            except HTTPException:
+                raise
+            except Exception as exc:
+                errors.append({"entity_id": entry.get("entity_id"), "error": str(exc)})
+                continue
+            stubs += sc
+            if outcome == "imported":
+                imported += 1
+            elif outcome == "replaced":
+                replaced += 1
+            elif outcome == "skipped":
+                skipped += 1
+
+        _audit(
+            conn, user["id"], "store.bundle.import", "bundle",
+            {
+                "mode": mode,
+                "imported": imported,
+                "replaced": replaced,
+                "skipped": skipped,
+                "stub_users_created": stubs,
+                "errors": len(errors),
+            },
+        )
+        _invalidate_etag()
+        return ImportBundleResponse(
+            imported=imported, replaced=replaced, skipped=skipped,
+            stub_users_created=stubs, errors=errors,
+        )
+    finally:
+        shutil.rmtree(extract_root, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
