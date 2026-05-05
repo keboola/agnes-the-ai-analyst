@@ -34,6 +34,47 @@
 		-Server
 	}
 
+	# Direct file_server for parquet downloads — bypasses uvicorn so a
+	# multi-GB pull from one analyst can't starve the app workers and
+	# block UI / health / API for everyone else. forward_auth calls the
+	# app's lightweight ``/api/data/{id}/check-access`` (RBAC only,
+	# ~1 ms) on every request; on 2xx Caddy serves the file directly
+	# via sendfile/zero-copy from the data volume mounted read-only.
+	#
+	# Path layout matches `app/api/data.py`'s extract.duckdb v2 search:
+	#   /data/extracts/<source_type>/data/<table_id>.parquet
+	# try_files probes known source subdirs in order; first hit wins.
+	# If a deployment adds a new connector and lands parquets at a fresh
+	# subdir, extend the try_files list. Anything that misses falls
+	# through to the app reverse_proxy below — so an unmapped source
+	# degrades to "downloads work, just through uvicorn" — never 404.
+	@download path_regexp tid ^/api/data/([^/]+)/download$
+	handle @download {
+		forward_auth app:8000 {
+			uri /api/data/{re.tid.1}/check-access
+			# Bearer PAT or session cookie travels in Authorization
+			# / Cookie; copy_headers ensures the upstream sees them.
+			copy_headers Authorization Cookie
+		}
+		# Caddy's own /data is occupied by the caddy_data volume, so the
+		# agnes data dir is mounted at /srv (read-only) instead — see the
+		# `data:/srv:ro` line in docker-compose.yml's caddy service. The
+		# root + try_files combo therefore probes /srv/extracts/...
+		root * /srv/extracts
+		try_files /bigquery/data/{re.tid.1}.parquet /keboola/data/{re.tid.1}.parquet /jira/data/{re.tid.1}.parquet
+		@found file
+		handle @found {
+			header Content-Disposition "attachment; filename=\"{re.tid.1}.parquet\""
+			file_server
+		}
+		# Fallback: parquet not at any known static path → defer to app
+		# (handles legacy src_data/parquet layout + future connectors).
+		reverse_proxy app:8000 {
+			header_up X-Forwarded-Proto https
+			header_up X-Forwarded-Host {host}
+		}
+	}
+
 	reverse_proxy app:8000 {
 		# App's uvicorn runs with --proxy-headers, so stamping these
 		# ourselves makes OAuth callback URLs and Set-Cookie Secure
