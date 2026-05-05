@@ -74,6 +74,27 @@ docker compose "${COMPOSE_FILES[@]}" pull >/dev/null 2>&1
 AFTER=$(docker images --no-trunc --format '{{.Digest}}' "$IMAGE" | head -1)
 if [ "$BEFORE" != "$AFTER" ]; then
     echo "$(date): new digest for $IMAGE — recreating containers"
+    # Re-align ownership of mounted state to the image's runtime user
+    # before bringing containers up. Catches root → non-root UID
+    # transitions across upgrades — old root-owned files would otherwise
+    # cause PermissionError on .session_secret / DuckDB on the new
+    # image's first start. Idempotent (no-op when ownership already
+    # matches). The Dockerfile pins runtime to uid:gid 999:999 today
+    # (`useradd --system --uid 999 ... agnes`); read it back from the
+    # image config to stay honest if that ever changes.
+    IMAGE_USER=$(docker image inspect -f '{{.Config.User}}' "$IMAGE" 2>/dev/null || true)
+    if [ -n "$IMAGE_USER" ] && [ "$IMAGE_USER" != "root" ] && [ "$IMAGE_USER" != "0" ]; then
+        # IMAGE_USER may be "agnes" (name) or "999" or "999:999".
+        # Resolve via /etc/passwd inside the image — works without
+        # requiring a shell in the runtime layer.
+        IMAGE_UIDGID=$(docker run --rm --entrypoint cat "$IMAGE" /etc/passwd 2>/dev/null \
+            | awk -F: -v u="${IMAGE_USER%%:*}" '$1==u || $3==u {print $3":"$4; exit}')
+        if [ -n "$IMAGE_UIDGID" ]; then
+            for d in /data/state /data/extracts /data/analytics; do
+                [ -d "$d" ] && chown -R "$IMAGE_UIDGID" "$d" 2>/dev/null || true
+            done
+        fi
+    fi
     # ${arr[@]+"${arr[@]}"} pattern: expands to nothing when array is
     # empty (vs. plain "${arr[@]}" which trips `set -u` on bash <4.4).
     docker compose "${COMPOSE_FILES[@]}" ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} up -d

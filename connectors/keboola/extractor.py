@@ -128,7 +128,12 @@ def _try_attach_extension(conn: duckdb.DuckDBPyConnection, keboola_url: str, keb
     try:
         conn.execute("INSTALL keboola FROM community; LOAD keboola;")
         escaped_token = keboola_token.replace("'", "''")
-        conn.execute(f"ATTACH '{keboola_url}' AS kbc (TYPE keboola, TOKEN '{escaped_token}')")
+        # Strip trailing slash — the Keboola DuckDB extension's ATTACH fails
+        # with a network error when the URL ends in `/` (e.g. the canonical
+        # `https://connection.us-east4.gcp.keboola.com/` form). Bare host
+        # works.
+        attach_url = keboola_url.rstrip("/")
+        conn.execute(f"ATTACH '{attach_url}' AS kbc (TYPE keboola, TOKEN '{escaped_token}')")
         logger.info("Using DuckDB Keboola extension")
         return True
     except Exception as e:
