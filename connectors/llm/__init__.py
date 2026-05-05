@@ -6,6 +6,10 @@ providers with automatic fallback strategies for structured output.
 """
 
 from .base import StructuredExtractor
-from .factory import create_extractor
+from .factory import create_extractor, create_extractor_from_env_or_config
 
-__all__ = ["StructuredExtractor", "create_extractor"]
+__all__ = [
+    "StructuredExtractor",
+    "create_extractor",
+    "create_extractor_from_env_or_config",
+]

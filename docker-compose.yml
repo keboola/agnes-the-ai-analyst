@@ -88,33 +88,15 @@ services:
       - full
     restart: unless-stopped
 
-  corporate-memory:
-    build: .
-    command: python -m services.corporate_memory
-    volumes:
-      - data:/data
-    env_file: .env
-    environment:
-      - DATA_DIR=/data
-    depends_on:
-      - app
-    profiles:
-      - full
-    restart: unless-stopped
-
-  session-collector:
-    build: .
-    command: python -m services.session_collector
-    volumes:
-      - data:/data
-    env_file: .env
-    environment:
-      - DATA_DIR=/data
-    depends_on:
-      - app
-    profiles:
-      - full
-    restart: unless-stopped
+  # NOTE: corporate-memory + session-collector previously ran here as
+  # tight `restart: unless-stopped` boot loops behind `profiles: [full]`.
+  # As of #176 the scheduler container drives both through admin HTTP
+  # endpoints (/api/admin/run-corporate-memory,
+  # /api/admin/run-session-collector). The verification-detector job
+  # was never in compose; it now ships the same way. The app remains
+  # the sole writer to system.duckdb. Operators previously running
+  # COMPOSE_PROFILES=full need to drop those service stanzas from any
+  # custom Compose overrides.
 
   # TLS reverse proxy. Corporate-CA certs mounted from /data/state/certs
   # (managed by scripts/ops/agnes-tls-rotate.sh on the VM). For local

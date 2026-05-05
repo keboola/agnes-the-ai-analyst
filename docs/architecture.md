@@ -55,8 +55,8 @@ system.duckdb       analytics.duckdb
 ```
 
 **Deployment:** Docker Compose. The `app` service runs Uvicorn. The `scheduler` sidecar triggers
-sync jobs via the app's REST API. Optional `full` profile adds telegram-bot, ws-gateway,
-corporate-memory, session-collector.
+sync jobs and the LLM pipeline (corporate-memory, verification-detector, session-collector) via
+the app's REST API on offset cadences. Optional `full` profile adds telegram-bot and ws-gateway.
 
 ```bash
 docker compose up               # app + scheduler
@@ -330,12 +330,12 @@ Docker Compose service.
 
 | Service | Profile | Schedule / Mode | Description |
 |---------|---------|-----------------|-------------|
-| `scheduler` | default | Always-on; polls every N seconds | Lightweight sidecar that triggers jobs via the app's REST API (`POST /api/sync/trigger` every 15 min, `GET /api/health` every 5 min). Auth via `SCHEDULER_API_TOKEN` or auto-fetch from `/auth/token`. |
+| `scheduler` | default | Always-on; polls every N seconds | Lightweight sidecar that triggers jobs via the app's REST API: `POST /api/sync/trigger` every 15 min, `GET /api/health` every 5 min, `POST /api/admin/run-session-collector` every 10 min, `POST /api/admin/run-verification-detector` every 15 min, `POST /api/admin/run-corporate-memory` every 17 min, `POST /api/marketplaces/sync-all` daily 03:00. Auth via `SCHEDULER_API_TOKEN` or auto-fetch from `/auth/token`. |
 | `telegram_bot` | `full` | Always-on (long-poll) | Telegram bot: polling + HTTP dispatch, `/status` command, notification script execution. |
 | `ws_gateway` | `full` | Always-on | WebSocket gateway (TCP 8765) + HTTP dispatch socket. JWT auth. Per-user connection limit (5). Heartbeat ping/pong. |
-| `corporate_memory` | `full` | Periodic (every 30 min) | Scans `CLAUDE.local.md` files, extracts knowledge via LLM (Claude Haiku), writes to `knowledge_items` in system.duckdb. Inline contradiction detection runs after each new item: one batched Haiku structured-output call returns judgments + structured resolution suggestions for every same-domain candidate (no SQL keyword pre-filter — see [ADR Decision 4](ADR-corporate-memory-v1.md)). |
-| `verification_detector` | `full` (run via `corporate_memory`) | On each `corporate_memory` tick | Scans unprocessed analyst session JSONLs, extracts corrections / confirmations / unprompted definitions via Haiku structured outputs. Confidence is computed in code from `(source_type, detection_type)` — never trusted from the LLM. Each verification persists a `verification_evidence` row carrying `user_quote` + `detection_type` ([ADR Decision 3](ADR-corporate-memory-v1.md)). |
-| `session_collector` | `full` | Periodic (every 6 h) | Copies Claude Code `.jsonl` session transcripts to central storage. |
+| `corporate_memory` | (driven by scheduler) | Every 17 min | Scans `CLAUDE.local.md` files, extracts knowledge via LLM (Claude Haiku), writes to `knowledge_items` in system.duckdb. Inline contradiction detection runs after each new item: one batched Haiku structured-output call returns judgments + structured resolution suggestions for every same-domain candidate (no SQL keyword pre-filter — see [ADR Decision 4](ADR-corporate-memory-v1.md)). Driven by scheduler-v2 since #176. |
+| `verification_detector` | (driven by scheduler) | Every 15 min | Scans unprocessed analyst session JSONLs, extracts corrections / confirmations / unprompted definitions via Haiku structured outputs. Confidence is computed in code from `(source_type, detection_type)` — never trusted from the LLM. Each verification persists a `verification_evidence` row carrying `user_quote` + `detection_type` ([ADR Decision 3](ADR-corporate-memory-v1.md)). Driven by scheduler-v2 since #176. |
+| `session_collector` | (driven by scheduler) | Every 10 min | Copies Claude Code `.jsonl` session transcripts to central storage. Driven by scheduler-v2 since #176. |
 
 Files NOT to modify: `services/ws_gateway/` (stable WebSocket infrastructure).
 

@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Scheduler runs — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block content %}
+<style>
+  .container:has(.sched-page) { max-width: none; padding: 24px 16px; }
+  .sched-page { max-width: 1400px; margin: 0 auto; padding: 0; }
+  .sched-title { margin: 0 0 8px 0; font-size: 22px; font-weight: 600; }
+  .sched-help { color: var(--text-secondary, #6b7280); font-size: 13px; margin-bottom: 20px; }
+  .sched-help code { background: var(--border-light, #f3f4f6); padding: 1px 6px; border-radius: 4px; font-size: 12px; }
+  .sched-table-wrap {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+    overflow-x: auto;
+  }
+  .sched-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .sched-table thead th {
+    text-align: left; padding: 12px 16px;
+    background: var(--border-light, #f9fafb);
+    border-bottom: 1px solid var(--border, #e5e7eb);
+    font-weight: 600; color: var(--text-secondary, #6b7280);
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
+    white-space: nowrap;
+  }
+  .sched-table tbody td {
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border-light, #f3f4f6);
+    vertical-align: top;
+  }
+  .sched-table tbody tr:last-child td { border-bottom: none; }
+  .sched-table tbody tr:hover { background: var(--border-light, #fafafa); }
+  .sched-table .ts { white-space: nowrap; color: var(--text-secondary, #6b7280); font-variant-numeric: tabular-nums; }
+  .sched-table .action { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  .sched-table .duration { text-align: right; font-variant-numeric: tabular-nums; color: var(--text-secondary, #6b7280); }
+  .sched-table .params {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
+    color: var(--text-secondary, #6b7280); max-width: 600px;
+    word-break: break-word; white-space: pre-wrap;
+  }
+  .empty {
+    padding: 40px 16px; text-align: center;
+    color: var(--text-secondary, #6b7280); font-size: 13px;
+  }
+</style>
+
+<div class="sched-page">
+  <h1 class="sched-title">Scheduler runs</h1>
+  <p class="sched-help">
+    Last 200 audited scheduler-driven admin actions, newest first.
+    Tracked actions: {% for a in actions %}<code>{{ a }}</code>{% if not loop.last %} {% endif %}{% endfor %}.
+    Failed ticks (HTTP 401, network errors) live only in the scheduler container's
+    stdout — <code>docker logs agnes-scheduler-1</code>. Set <code>SCHEDULER_API_TOKEN</code>
+    in <code>.env</code> if you see no rows here.
+  </p>
+
+  <div class="sched-table-wrap">
+    {% if rows %}
+    <table class="sched-table">
+      <thead>
+        <tr>
+          <th>When</th>
+          <th>Action</th>
+          <th>Resource</th>
+          <th>Duration</th>
+          <th>Result / params</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td class="ts">{{ r.timestamp.strftime("%Y-%m-%d %H:%M:%S") if r.timestamp else "" }}</td>
+          <td class="action">{{ r.action }}</td>
+          <td>{{ r.resource or "" }}</td>
+          <td class="duration">{% if r.duration_ms is not none %}{{ r.duration_ms }} ms{% endif %}</td>
+          <td class="params">{{ r.params or r.result or "" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty">No scheduler runs in audit_log yet. The scheduler may not be authenticated — check <code>SCHEDULER_API_TOKEN</code>.</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

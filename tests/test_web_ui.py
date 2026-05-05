@@ -327,6 +327,89 @@ class TestAdminRoleGuards:
         r = web_client.get("/admin/agent-prompt", cookies=admin_cookie, follow_redirects=False)
         assert r.status_code == 200
 
+    def test_admin_scheduler_runs_page_admin_only(self, web_client, admin_cookie, analyst_cookie):
+        """The /admin/scheduler-runs read-only audit-log view is gated by require_admin."""
+        r = web_client.get("/admin/scheduler-runs", follow_redirects=False)
+        assert r.status_code in (302, 401, 403)
+        r = web_client.get("/admin/scheduler-runs", cookies=analyst_cookie, follow_redirects=False)
+        assert r.status_code == 403
+        r = web_client.get("/admin/scheduler-runs", cookies=admin_cookie, follow_redirects=False)
+        assert r.status_code == 200
+        assert b"run_session_collector" in r.content
+        assert b"run_verification_detector" in r.content
+        assert b"run_corporate_memory" in r.content
+        # Devin Review on e86dd5ed: list must use the actual logged action
+        # string, not a guess.
+        assert b"marketplace.sync_all" in r.content
+
+    def test_profile_sessions_page_no_admin_required(self, web_client, analyst_cookie, admin_cookie):
+        """The /profile/sessions page is gated by get_current_user, not require_admin —
+        every authenticated user views their own sessions."""
+        r = web_client.get("/profile/sessions", follow_redirects=False)
+        assert r.status_code in (302, 401, 403)
+        r = web_client.get("/profile/sessions", cookies=analyst_cookie, follow_redirects=False)
+        assert r.status_code == 200
+        assert b"My sessions" in r.content
+        r = web_client.get("/profile/sessions", cookies=admin_cookie, follow_redirects=False)
+        assert r.status_code == 200
+
+    def test_profile_session_download_path_safety(self, web_client, analyst_cookie):
+        """Per-session download endpoint must reject any filename that could
+        escape the user's own session directory."""
+        # NB: bare ".." is excluded — httpx normalises the URL to
+        # /profile/sessions before sending, so it never reaches the
+        # download handler. The %2F-encoded variant exercises the real
+        # path-component value that does reach the handler.
+        for bad in ["../etc/passwd", "subdir/file.jsonl", ".env",
+                    "session.jsonl.bak", "..%2Fetc%2Fpasswd"]:
+            r = web_client.get(f"/profile/sessions/{bad}", cookies=analyst_cookie, follow_redirects=False)
+            assert r.status_code == 404, f"Expected 404 for {bad!r}, got {r.status_code}"
+        # Unauthenticated → never the file
+        r = web_client.get("/profile/sessions/anything.jsonl", follow_redirects=False)
+        assert r.status_code in (302, 401, 403)
+
+    def test_profile_sessions_page_tolerates_stat_failures(self, web_client, analyst_cookie, tmp_path, monkeypatch):
+        """Devin Review on d878764a: a transient stat() failure on one file
+        must not 500 the whole page. Skip the bad row, render the rest."""
+        import pathlib
+        user_sessions = tmp_path / "user_sessions" / "analyst1"
+        user_sessions.mkdir(parents=True)
+        good = user_sessions / "good.jsonl"
+        good.write_text('{"event": "ok"}\n')
+        bad = user_sessions / "bad.jsonl"
+        bad.write_text('{"event": "stat-explodes"}\n')
+
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+        # Make `bad.jsonl`.stat() raise; `good.jsonl`.stat() works.
+        real_stat = pathlib.Path.stat
+
+        def selective_stat(self, *args, **kwargs):
+            if self.name == "bad.jsonl":
+                raise PermissionError("simulated stat failure")
+            return real_stat(self, *args, **kwargs)
+
+        monkeypatch.setattr(pathlib.Path, "stat", selective_stat)
+
+        r = web_client.get("/profile/sessions", cookies=analyst_cookie, follow_redirects=False)
+        assert r.status_code == 200
+        assert b"good.jsonl" in r.content
+        assert b"bad.jsonl" not in r.content
+
+    def test_profile_session_download_returns_file_for_owner(self, web_client, analyst_cookie, tmp_path, monkeypatch):
+        """Authenticated owner can fetch their own jsonl with proper Content-Disposition."""
+        # The seeded analyst is "analyst1" (per conftest.seeded_app).
+        user_sessions = tmp_path / "user_sessions" / "analyst1"
+        user_sessions.mkdir(parents=True)
+        sample = user_sessions / "abc-123.jsonl"
+        sample.write_text('{"event": "test"}\n')
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+        r = web_client.get("/profile/sessions/abc-123.jsonl", cookies=analyst_cookie, follow_redirects=False)
+        assert r.status_code == 200
+        assert r.headers.get("content-disposition", "").endswith('filename="abc-123.jsonl"')
+        assert b'"event": "test"' in r.content
+
 
 class TestUnauthenticatedHtmlRedirects:
     def test_dashboard_unauthenticated_redirects_to_login(self, web_client):

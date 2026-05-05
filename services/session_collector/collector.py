@@ -113,29 +113,26 @@ def collect_user_sessions(username: str, user_home: Path, dry_run: bool = False)
     return copied, skipped
 
 
-def main() -> int:
-    """Main entry point. Returns exit code (0=success, 1=error)."""
-    import argparse
+def run(dry_run: bool = False, verbose: bool = False) -> tuple[int, dict]:
+    """Run the session-collector pass. Returns (exit_code, stats).
+
+    Argv-free so callers (FastAPI admin endpoint, scheduler) can invoke
+    without inheriting uvicorn's sys.argv — argparse here would
+    SystemExit(2) when uvicorn's flags hit it.
+
+    stats keys: users_processed, files_copied, files_skipped.
+    """
     import grp
 
-    parser = argparse.ArgumentParser(description="Collect Claude Code session transcripts from all users")
-    parser.add_argument("--dry-run", action="store_true", help="Preview what would be copied without actually copying")
-    parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
-
-    args = parser.parse_args()
-
-    if args.verbose:
+    if verbose:
         logger.setLevel(logging.DEBUG)
 
     logger.info("Starting session transcript collection")
 
-    # Ensure target base directory exists
     try:
         TARGET_BASE.mkdir(parents=True, exist_ok=True)
-        # Set permissions: root:data-ops, 2770 (admins only, sessions are sensitive)
         os.chmod(TARGET_BASE, 0o2770)
 
-        # Try to set group ownership to data-ops if it exists
         try:
             dataops_gid = grp.getgrnam("data-ops").gr_gid
             os.chown(TARGET_BASE, -1, dataops_gid)
@@ -146,7 +143,7 @@ def main() -> int:
 
     except Exception as e:
         logger.error(f"Failed to create target directory {TARGET_BASE}: {e}")
-        return 1
+        return 1, {"users_processed": 0, "files_copied": 0, "files_skipped": 0}
 
     total_copied = 0
     total_skipped = 0
@@ -155,7 +152,6 @@ def main() -> int:
     for user_home in find_user_home_dirs():
         username = user_home.name
 
-        # Skip system users (numeric UIDs typically < 1000)
         try:
             uid = user_home.stat().st_uid
             if uid < 1000:
@@ -163,7 +159,7 @@ def main() -> int:
         except Exception:
             continue
 
-        copied, skipped = collect_user_sessions(username, user_home, dry_run=args.dry_run)
+        copied, skipped = collect_user_sessions(username, user_home, dry_run=dry_run)
 
         if copied > 0 or skipped > 0:
             users_processed += 1
@@ -175,7 +171,24 @@ def main() -> int:
         f"Collection complete: {users_processed} users, {total_copied} files copied, {total_skipped} files skipped"
     )
 
-    return 0
+    return 0, {
+        "users_processed": users_processed,
+        "files_copied": total_copied,
+        "files_skipped": total_skipped,
+    }
+
+
+def main() -> int:
+    """CLI entry point. Parses argv, delegates to run()."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Collect Claude Code session transcripts from all users")
+    parser.add_argument("--dry-run", action="store_true", help="Preview what would be copied without actually copying")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
+
+    args = parser.parse_args()
+    rc, _ = run(dry_run=args.dry_run, verbose=args.verbose)
+    return rc
 
 
 if __name__ == "__main__":
