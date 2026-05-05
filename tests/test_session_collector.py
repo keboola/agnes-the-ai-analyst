@@ -96,3 +96,49 @@ class TestFindSessionFiles:
 
         found = list(find_session_files(user_home))
         assert found == []
+
+
+class TestRunHelper:
+    """Argv-free run() entry point — regression for #179 review (SystemExit bug)."""
+
+    def test_run_does_not_call_argparse(self, monkeypatch, tmp_path):
+        """run() must not parse sys.argv — uvicorn's argv would SystemExit(2) the worker.
+
+        Regression: app/api/admin.py:run_session_collector previously called
+        collector.main() which did argparse.parse_args() on uvicorn's argv.
+        """
+        from services.session_collector import collector
+
+        monkeypatch.setattr(
+            "sys.argv",
+            ["app.main:app", "--host", "0.0.0.0", "--port", "8000",
+             "--proxy-headers", "--forwarded-allow-ips=*"],
+        )
+        monkeypatch.setattr(collector, "TARGET_BASE", tmp_path / "user_sessions")
+        monkeypatch.setattr(collector, "find_user_home_dirs", lambda: iter([]))
+
+        rc, stats = collector.run(dry_run=True, verbose=False)
+        assert rc == 0
+        assert stats == {"users_processed": 0, "files_copied": 0, "files_skipped": 0}
+
+    def test_run_returns_stats_tuple(self, monkeypatch, tmp_path):
+        """run() returns (exit_code, stats_dict) so the admin endpoint can audit."""
+        from services.session_collector import collector
+
+        monkeypatch.setattr(collector, "TARGET_BASE", tmp_path / "user_sessions")
+        monkeypatch.setattr(collector, "find_user_home_dirs", lambda: iter([]))
+
+        rc, stats = collector.run()
+        assert rc == 0
+        assert set(stats.keys()) == {"users_processed", "files_copied", "files_skipped"}
+
+    def test_main_still_delegates_to_run(self, monkeypatch, tmp_path):
+        """The CLI main() must continue to work — argparse + delegate."""
+        from services.session_collector import collector
+
+        monkeypatch.setattr("sys.argv", ["session_collector", "--dry-run"])
+        monkeypatch.setattr(collector, "TARGET_BASE", tmp_path / "user_sessions")
+        monkeypatch.setattr(collector, "find_user_home_dirs", lambda: iter([]))
+
+        rc = collector.main()
+        assert rc == 0

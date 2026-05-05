@@ -2816,14 +2816,16 @@ def run_session_collector(
     """
     from services.session_collector import collector
 
-    rc = collector.main()
+    # Call run() not main(): main() does argparse.parse_args() which would
+    # try to parse uvicorn's sys.argv and SystemExit(2) the worker.
+    rc, stats = collector.run(dry_run=False, verbose=False)
     AuditRepository(conn).log(
         user_id=user.get("id"),
         action="run_session_collector",
         resource="job:session-collector",
-        params={"rc": rc},
+        params={"rc": rc, **stats},
     )
-    return {"ok": rc == 0, "details": {"rc": rc}}
+    return {"ok": rc == 0, "details": {"rc": rc, **stats}}
 
 
 @router.post("/run-verification-detector")

@@ -42,6 +42,7 @@ Five-defect fix for the silently-broken session pipeline on default Compose depl
 - **Defect 3 — `verification_detector` had no scheduler entry.** Now in `JOBS` with a 15 min cadence, hitting the new `/api/admin/run-verification-detector` endpoint.
 - **Defect 2 — side-car services gated by `profiles: [full]` were silently skipped on default deploys.** Both stanzas dropped (Changed above); the scheduler-v2 cron is the sole driver.
 - **Defect 1 — `/corporate-memory` filtered `status IN ('approved','mandatory')` with no hint that pending items existed.** Admin banner added (Added above).
+- **#179 review — `/api/admin/run-session-collector` would SystemExit the worker.** The endpoint called `collector.main()`, whose `argparse.parse_args()` parsed uvicorn's `sys.argv` (`['app.main:app', '--host', …]`) and called `sys.exit(2)` on the unrecognised flags. `SystemExit` inherits from `BaseException`, escapes FastAPI's exception machinery, and propagates through the thread pool — every scheduler tick that fired the endpoint either 500-ed or risked killing the uvicorn worker. Fix: `services/session_collector/collector.py` now exposes an argv-free `run(dry_run, verbose) -> (rc, stats)` helper; `main()` is a thin CLI shim around it and the admin endpoint calls `run()` directly. Audit log now carries the per-run stats (`users_processed`, `files_copied`, `files_skipped`) instead of just the rc. Regression tests in `tests/test_session_collector.py::TestRunHelper`.
 
 ### Internal
 

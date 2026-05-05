@@ -29,12 +29,14 @@ class TestRunSessionCollector:
     def test_admin_can_trigger_session_collector(self, seeded_app):
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
-        with patch("services.session_collector.collector.main", return_value=0) as m:
+        fake_stats = {"users_processed": 1, "files_copied": 2, "files_skipped": 0}
+        with patch("services.session_collector.collector.run", return_value=(0, fake_stats)) as m:
             resp = c.post("/api/admin/run-session-collector", headers=_auth(token))
         assert resp.status_code == 200
         body = resp.json()
         assert body["ok"] is True
-        m.assert_called_once()
+        assert body["details"]["files_copied"] == 2
+        m.assert_called_once_with(dry_run=False, verbose=False)
 
     def test_non_admin_blocked(self, seeded_app):
         c = seeded_app["client"]
