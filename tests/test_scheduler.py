@@ -378,3 +378,109 @@ class TestParseTimestamp:
 
     def test_none_like_string_returns_none(self) -> None:
         assert _parse_timestamp("None") is None
+
+
+# ---------------------------------------------------------------------------
+# LLM pipeline cadence env vars (#179 review)
+#
+# Three jobs (session-collector, verification-detector, corporate-memory) and
+# the health-check staleness grace must all derive from a single SCHEDULER_*
+# env var per job, so an operator changing the cadence in one place moves
+# both the schedule string and the grace window. The env var name was already
+# read in app/api/health.py before this change but didn't actually drive the
+# scheduler — this test pins the wired-up behavior.
+# ---------------------------------------------------------------------------
+
+
+_LLM_PIPELINE_ENV = (
+    "SCHEDULER_DATA_REFRESH_INTERVAL",
+    "SCHEDULER_HEALTH_CHECK_INTERVAL",
+    "SCHEDULER_TICK_SECONDS",
+    "SCHEDULER_SCRIPT_RUN_INTERVAL",
+    "SCHEDULER_SESSION_COLLECTOR_INTERVAL",
+    "SCHEDULER_VERIFICATION_DETECTOR_INTERVAL",
+    "SCHEDULER_CORPORATE_MEMORY_INTERVAL",
+)
+
+
+def _clear_scheduler_env(monkeypatch) -> None:
+    for v in _LLM_PIPELINE_ENV:
+        monkeypatch.delenv(v, raising=False)
+
+
+class TestLLMPipelineCadenceEnvVars:
+    """Three new env vars drive both the scheduler and the health grace window."""
+
+    def test_default_cadences_preserve_coprime_offset(self, monkeypatch) -> None:
+        """Defaults are 10m / 15m / 17m so the three jobs don't fire on the same tick."""
+        _clear_scheduler_env(monkeypatch)
+        from services.scheduler.__main__ import build_jobs
+        jobs = {name: schedule for name, schedule, *_ in build_jobs()}
+        assert jobs["session-collector"]     == "every 10m"
+        assert jobs["verification-detector"] == "every 15m"
+        assert jobs["corporate-memory"]      == "every 17m"
+
+    def test_session_collector_env_override_changes_cadence(self, monkeypatch) -> None:
+        _clear_scheduler_env(monkeypatch)
+        monkeypatch.setenv("SCHEDULER_SESSION_COLLECTOR_INTERVAL", "300")  # 5m
+        from services.scheduler.__main__ import build_jobs
+        jobs = {name: schedule for name, schedule, *_ in build_jobs()}
+        assert jobs["session-collector"] == "every 5m"
+        # Other LLM jobs must be unaffected.
+        assert jobs["verification-detector"] == "every 15m"
+        assert jobs["corporate-memory"]      == "every 17m"
+
+    def test_verification_detector_env_override_changes_cadence(self, monkeypatch) -> None:
+        _clear_scheduler_env(monkeypatch)
+        monkeypatch.setenv("SCHEDULER_VERIFICATION_DETECTOR_INTERVAL", "600")  # 10m
+        from services.scheduler.__main__ import build_jobs
+        jobs = {name: schedule for name, schedule, *_ in build_jobs()}
+        assert jobs["verification-detector"] == "every 10m"
+        assert jobs["session-collector"] == "every 10m"
+        assert jobs["corporate-memory"]  == "every 17m"
+
+    def test_corporate_memory_env_override_changes_cadence(self, monkeypatch) -> None:
+        _clear_scheduler_env(monkeypatch)
+        monkeypatch.setenv("SCHEDULER_CORPORATE_MEMORY_INTERVAL", "1800")  # 30m
+        from services.scheduler.__main__ import build_jobs
+        jobs = {name: schedule for name, schedule, *_ in build_jobs()}
+        assert jobs["corporate-memory"]      == "every 30m"
+        assert jobs["session-collector"]     == "every 10m"
+        assert jobs["verification-detector"] == "every 15m"
+
+    @pytest.mark.parametrize("var", [
+        "SCHEDULER_SESSION_COLLECTOR_INTERVAL",
+        "SCHEDULER_VERIFICATION_DETECTOR_INTERVAL",
+        "SCHEDULER_CORPORATE_MEMORY_INTERVAL",
+    ])
+    @pytest.mark.parametrize("bad", ["0", "-5", "abc", ""])
+    def test_invalid_llm_env_rejected(self, monkeypatch, var, bad) -> None:
+        _clear_scheduler_env(monkeypatch)
+        monkeypatch.setenv(var, bad)
+        from services.scheduler.__main__ import build_jobs
+        with pytest.raises(ValueError):
+            build_jobs()
+
+
+class TestVerificationDetectorGraceFollowsCadence:
+    """The health-check grace window is 2x the cadence — same env var drives both."""
+
+    def test_grace_doubles_when_env_overrides_cadence(self, monkeypatch) -> None:
+        _clear_scheduler_env(monkeypatch)
+        monkeypatch.setenv("SCHEDULER_VERIFICATION_DETECTOR_INTERVAL", "600")  # 10m
+        from app.api.health import _verification_detector_grace_seconds
+        from services.scheduler.__main__ import build_jobs
+
+        jobs = {name: schedule for name, schedule, *_ in build_jobs()}
+        # Cadence and grace MUST be derived from the same env var, so an
+        # operator who throttles the detector for any reason (rate-limit,
+        # cost, debugging) gets a proportionally wider staleness window
+        # automatically — no second knob to forget.
+        assert jobs["verification-detector"] == "every 10m"
+        assert _verification_detector_grace_seconds() == 2 * 600
+
+    def test_grace_uses_default_cadence_when_env_unset(self, monkeypatch) -> None:
+        _clear_scheduler_env(monkeypatch)
+        from app.api.health import _verification_detector_grace_seconds
+        # Default cadence 900s -> grace 1800s.
+        assert _verification_detector_grace_seconds() == 2 * 900
