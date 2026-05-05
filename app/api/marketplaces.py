@@ -147,9 +147,17 @@ def _token_env_name(slug: str) -> str:
 
 
 def _persist_token(env_name: str, value: str) -> None:
-    """Write (or update) a single key in data/state/.env_overlay and os.environ."""
-    data_dir = Path(os.environ.get("DATA_DIR", "./data"))
-    overlay_path = data_dir / "state" / ".env_overlay"
+    """Write (or update) a single key in ``${STATE_DIR}/.env_overlay`` and ``os.environ``.
+
+    Path resolution matches ``app/main.py``'s startup-time read; without
+    this alignment, marketplace PATs persisted under the flat-mount
+    layout (``STATE_DIR=/data-state``) would land at
+    ``/data/state/.env_overlay`` while the app reads from
+    ``/data-state/.env_overlay``, silently dropping the token on the
+    next restart.
+    """
+    from app.secrets import _state_dir
+    overlay_path = _state_dir() / ".env_overlay"
     overlay_path.parent.mkdir(parents=True, exist_ok=True)
 
     existing: dict[str, str] = {}

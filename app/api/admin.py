@@ -2683,8 +2683,13 @@ async def configure_instance(
         secrets_to_persist["KEBOOLA_STACK_URL"] = request.keboola_url
 
     if secrets_to_persist:
-        data_dir = Path(os.environ.get("DATA_DIR", "./data"))
-        overlay_path = data_dir / "state" / ".env_overlay"
+        # Resolve via _state_dir() so the path matches app/main.py's
+        # startup-time read of the same overlay. Without this, an operator
+        # on the flat-mount layout (STATE_DIR=/data-state) would write
+        # secrets to /data/state/.env_overlay here while the app reads
+        # from /data-state/.env_overlay — silent loss on next restart.
+        from app.secrets import _state_dir
+        overlay_path = _state_dir() / ".env_overlay"
         overlay_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Merge with existing overlay

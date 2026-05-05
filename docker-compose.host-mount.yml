@@ -75,3 +75,22 @@ services:
   ws-gateway:
     volumes: !override
       - /data:/data
+
+  caddy:
+    # Caddy was originally inheriting `data:/srv:ro` from the base
+    # service. Once the other services switch to direct binds and
+    # nothing populates the `data:` named volume, that inherited
+    # mount points at an empty Docker-managed volume — and the
+    # @download `try_files /bigquery/data/<id>.parquet …` block
+    # in Caddyfile finds nothing, so every parquet download falls
+    # through to the app's uvicorn worker, defeating the v0.36.0
+    # file_server bypass.
+    #
+    # Restate every mount the base caddy service depends on; mirror
+    # the same caveat that lives in flat-mount.yml.
+    volumes: !override
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - /data/state/certs:/certs:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      - /data:/srv:ro
