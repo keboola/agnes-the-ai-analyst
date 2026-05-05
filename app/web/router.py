@@ -11,7 +11,7 @@ from typing import Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Request, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 import duckdb
 
@@ -1181,6 +1181,46 @@ async def profile_sessions_page(
         user_id=user_id,
     )
     return templates.TemplateResponse(request, "profile_sessions.html", ctx)
+
+
+@router.get("/profile/sessions/{filename}")
+async def profile_session_download(
+    filename: str,
+    user: dict = Depends(get_current_user),
+):
+    """Download a single jsonl session file owned by the caller.
+
+    Path safety: filename is single-component (no separators, no `..`,
+    must end in `.jsonl`); the served path is built under
+    `${DATA_DIR}/user_sessions/<current_user.id>/` and must resolve into
+    that directory. Any deviation yields 404 — never 403, so we don't
+    leak the existence of files belonging to other users.
+    """
+    import pathlib
+
+    if "/" in filename or "\\" in filename or filename.startswith(".") or ".." in filename:
+        raise HTTPException(status_code=404, detail="Not found")
+    if not filename.endswith(".jsonl"):
+        raise HTTPException(status_code=404, detail="Not found")
+
+    user_id = user["id"]
+    data_dir = pathlib.Path(os.environ.get("DATA_DIR", "/data")).resolve()
+    user_dir = (data_dir / "user_sessions" / user_id).resolve()
+    target = (user_dir / filename).resolve()
+
+    try:
+        target.relative_to(user_dir)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Not found")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Not found")
+
+    return FileResponse(
+        path=str(target),
+        filename=filename,
+        media_type="application/x-ndjson",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/_debug/throw/http/{code:int}", response_class=HTMLResponse, include_in_schema=False)

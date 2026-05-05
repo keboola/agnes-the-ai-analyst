@@ -353,6 +353,35 @@ class TestAdminRoleGuards:
         r = web_client.get("/profile/sessions", cookies=admin_cookie, follow_redirects=False)
         assert r.status_code == 200
 
+    def test_profile_session_download_path_safety(self, web_client, analyst_cookie):
+        """Per-session download endpoint must reject any filename that could
+        escape the user's own session directory."""
+        # NB: bare ".." is excluded — httpx normalises the URL to
+        # /profile/sessions before sending, so it never reaches the
+        # download handler. The %2F-encoded variant exercises the real
+        # path-component value that does reach the handler.
+        for bad in ["../etc/passwd", "subdir/file.jsonl", ".env",
+                    "session.jsonl.bak", "..%2Fetc%2Fpasswd"]:
+            r = web_client.get(f"/profile/sessions/{bad}", cookies=analyst_cookie, follow_redirects=False)
+            assert r.status_code == 404, f"Expected 404 for {bad!r}, got {r.status_code}"
+        # Unauthenticated → never the file
+        r = web_client.get("/profile/sessions/anything.jsonl", follow_redirects=False)
+        assert r.status_code in (302, 401, 403)
+
+    def test_profile_session_download_returns_file_for_owner(self, web_client, analyst_cookie, tmp_path, monkeypatch):
+        """Authenticated owner can fetch their own jsonl with proper Content-Disposition."""
+        # The seeded analyst is "analyst1" (per conftest.seeded_app).
+        user_sessions = tmp_path / "user_sessions" / "analyst1"
+        user_sessions.mkdir(parents=True)
+        sample = user_sessions / "abc-123.jsonl"
+        sample.write_text('{"event": "test"}\n')
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+        r = web_client.get("/profile/sessions/abc-123.jsonl", cookies=analyst_cookie, follow_redirects=False)
+        assert r.status_code == 200
+        assert r.headers.get("content-disposition", "").endswith('filename="abc-123.jsonl"')
+        assert b'"event": "test"' in r.content
+
 
 class TestUnauthenticatedHtmlRedirects:
     def test_dashboard_unauthenticated_redirects_to_login(self, web_client):
