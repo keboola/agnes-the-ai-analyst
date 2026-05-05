@@ -1135,11 +1135,19 @@ async def profile_sessions_page(
 
     files = []
     if user_sessions_dir.is_dir():
-        for jsonl in sorted(user_sessions_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True):
+        # Stat once per file with OSError tolerance, THEN sort. The previous
+        # `sorted(..., key=lambda p: p.stat().st_mtime)` raised on any
+        # transient stat failure (race with delete, permission flicker) and
+        # 500-ed the whole page (Devin Review on #179).
+        statted = []
+        for jsonl in user_sessions_dir.glob("*.jsonl"):
             try:
                 stat = jsonl.stat()
             except OSError:
                 continue
+            statted.append((jsonl, stat))
+        statted.sort(key=lambda pair: pair[1].st_mtime, reverse=True)
+        for jsonl, stat in statted:
             files.append({
                 "name": jsonl.name,
                 "size_bytes": stat.st_size,

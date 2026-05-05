@@ -368,6 +368,34 @@ class TestAdminRoleGuards:
         r = web_client.get("/profile/sessions/anything.jsonl", follow_redirects=False)
         assert r.status_code in (302, 401, 403)
 
+    def test_profile_sessions_page_tolerates_stat_failures(self, web_client, analyst_cookie, tmp_path, monkeypatch):
+        """Devin Review on d878764a: a transient stat() failure on one file
+        must not 500 the whole page. Skip the bad row, render the rest."""
+        import pathlib
+        user_sessions = tmp_path / "user_sessions" / "analyst1"
+        user_sessions.mkdir(parents=True)
+        good = user_sessions / "good.jsonl"
+        good.write_text('{"event": "ok"}\n')
+        bad = user_sessions / "bad.jsonl"
+        bad.write_text('{"event": "stat-explodes"}\n')
+
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+        # Make `bad.jsonl`.stat() raise; `good.jsonl`.stat() works.
+        real_stat = pathlib.Path.stat
+
+        def selective_stat(self, *args, **kwargs):
+            if self.name == "bad.jsonl":
+                raise PermissionError("simulated stat failure")
+            return real_stat(self, *args, **kwargs)
+
+        monkeypatch.setattr(pathlib.Path, "stat", selective_stat)
+
+        r = web_client.get("/profile/sessions", cookies=analyst_cookie, follow_redirects=False)
+        assert r.status_code == 200
+        assert b"good.jsonl" in r.content
+        assert b"bad.jsonl" not in r.content
+
     def test_profile_session_download_returns_file_for_owner(self, web_client, analyst_cookie, tmp_path, monkeypatch):
         """Authenticated owner can fetch their own jsonl with proper Content-Disposition."""
         # The seeded analyst is "analyst1" (per conftest.seeded_app).
