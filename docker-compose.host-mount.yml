@@ -11,7 +11,7 @@
 # new options to existing volumes — they keep whatever options were
 # in effect at create time.
 #
-# This bit a deployer (Groupon FoundryAI) on 2026-05-05: the volume
+# This bit a deployer in production: the volume
 # was created before this overlay had `bind,rbind`, kept the old
 # `bind` (non-recursive) propagation, and containers wrote to a
 # shadowed subdirectory of the parent disk instead of the nested

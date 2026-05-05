@@ -25,7 +25,7 @@ sdc at /data/state    (nested inside the data mount)
 - Two writers (host's `tls-rotate.timer` running as root; container app running as uid 999) share `/data/state` with different mount-namespace views → ownership conflicts.
 - Resizing sdb requires unmounting sdc first.
 
-The 2026-05-05 incident in the Groupon FoundryAI deployment was a manifestation of the propagation gotcha. See PRs in this repo and the deployer's infra repo for full root-cause notes.
+A production deployment hit this propagation gotcha: a volume was created with non-recursive `bind`, the file was later edited to `bind,rbind`, but Docker named-volume options are immutable after creation, so containers kept writing to a shadowed subdirectory of the parent disk. DuckDB went FATAL on a root-owned WAL during a routine container recreate; sign-in broke. Recovery required `docker volume rm` + per-VM data migration on every affected host.
 
 ## Layout B — flat
 
@@ -52,7 +52,7 @@ sdc at /data-state   (state, irreplaceable — parallel to /data, not nested)
 |---|---|
 | Existing deployment, no plans to expand | stay on layout A |
 | New deployment | layout B (cleaner, no shadow class) |
-| Existing deployment hit by 2026-05-05 shadow class | migrate to layout B |
+| Existing deployment hit by the shadow-mount class above | migrate to layout B |
 | CI / local dev | neither (use ephemeral compose volumes) |
 
 ## Migration A → B
@@ -99,6 +99,9 @@ App code:
 - `src/db.py::_get_state_dir()` — the canonical helper. Used by `get_system_db()` and the schema migration snapshot.
 - `app/secrets.py::_state_dir()` — for `.session_secret`, `.jwt_secret`. Mirrors the helper since `app/` shouldn't import from `src/`.
 - `app/main.py` — for the `.env_overlay` startup file (loaded at process start).
+- `app/instance_config.py` — for the writable `instance.yaml` overlay (read at every config-load).
+- `app/api/admin.py` — for the writable `instance.yaml` overlay (write site of `POST /api/admin/server-config` and `POST /api/admin/configure`) and for `.env_overlay` (write site of `POST /api/admin/configure`).
+- `app/api/marketplaces.py` — for `.env_overlay` (write site of marketplace PAT persistence).
 
 Host scripts:
 - `scripts/ops/agnes-auto-upgrade.sh` — mount-sanity check + cert detection.

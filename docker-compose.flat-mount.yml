@@ -7,8 +7,8 @@
 # the data disk). That layout works but has known fragility:
 #
 #   - Bind-mount propagation matters. A non-recursive bind hides the
-#     nested mount, leading to silent shadow writes (the failure mode
-#     that caused 2026-05-05 in the Groupon FoundryAI deployment).
+#     nested mount, leading to silent shadow writes — the production
+#     failure mode that motivated this overlay.
 #
 #   - Two writers, one tree. Host-side timers (tls-rotate.timer)
 #     write to /data/state/certs as root, while the container app
