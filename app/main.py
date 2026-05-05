@@ -141,6 +141,23 @@ async def lifespan(app):
         log_effective_policy()
     except Exception:
         pass  # never block startup on a logging convenience
+
+    # Bump anyio's default thread pool size from 40 → AGNES_THREADPOOL_SIZE
+    # (default 200). FastAPI auto-runs every plain `def` route handler in
+    # this pool — the Tier 1 endpoints converted in PR #188 (`/api/query`,
+    # `/api/v2/scan`, `/api/v2/sample`, `/api/v2/schema`) all block on
+    # synchronous DuckDB / BQ-extension calls inside the handler body and
+    # would otherwise serialise once 40 are in flight. 200 keeps the per-
+    # process working set well under the BQ extension's connection cap
+    # while leaving headroom for concurrent UI / health probes.
+    try:
+        import anyio.to_thread
+        size = int(os.environ.get("AGNES_THREADPOOL_SIZE", "200"))
+        anyio.to_thread.current_default_thread_limiter().total_tokens = size
+        logger.info("anyio thread pool capacity set to %d", size)
+    except Exception as e:
+        logger.warning("failed to bump anyio thread pool capacity: %s", e)
+
     yield
     from src.db import close_system_db
     close_system_db()

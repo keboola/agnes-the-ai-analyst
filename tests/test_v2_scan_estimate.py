@@ -117,7 +117,7 @@ class TestBqAccessErrors:
                 lambda *a, **kw: {"event_date": "DATE", "country_code": "STRING"},
             ):
                 with pytest.raises(HTTPException) as exc_info:
-                    asyncio.run(
+                    (
                         v2_scan.scan_estimate_endpoint(raw=req, user=user, conn=conn, bq=bq)
                     )
         finally:
@@ -156,7 +156,7 @@ class TestBqAccessErrors:
                 lambda *a, **kw: {"event_date": "DATE", "country_code": "STRING"},
             ):
                 with pytest.raises(HTTPException) as exc_info:
-                    asyncio.run(
+                    (
                         v2_scan.scan_estimate_endpoint(raw=req, user=user, conn=conn, bq=bq)
                     )
         finally:
@@ -191,7 +191,7 @@ class TestBqAccessErrors:
                 lambda *a, **kw: {"event_date": "DATE", "country_code": "STRING"},
             ):
                 with pytest.raises(HTTPException) as exc_info:
-                    asyncio.run(
+                    (
                         v2_scan.scan_estimate_endpoint(raw=req, user=user, conn=conn, bq=bq)
                     )
         finally:

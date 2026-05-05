@@ -104,13 +104,15 @@ def build_sample(
 
 
 @router.get("/sample/{table_id}")
-async def sample(
+def sample(
     table_id: str,
     n: int = Query(default=5, ge=1, le=_MAX_N),
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
     bq: BqAccess = Depends(get_bq_access),
 ):
+    # Plain ``def`` — opens a `bq.duckdb_session()` and runs sync queries
+    # through the BQ extension. See PR #188 Tier 1 entry.
     try:
         return build_sample(conn, user, table_id, n=n, bq=bq)
     except FileNotFoundError:

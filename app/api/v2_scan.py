@@ -218,12 +218,17 @@ def _avg_bytes_for_type(t: str) -> int:
 
 
 @router.post("/scan/estimate")
-async def scan_estimate_endpoint(
+def scan_estimate_endpoint(
     raw: dict,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
     bq: BqAccess = Depends(get_bq_access),
 ):
+    # Plain ``def`` so FastAPI auto-offloads to the anyio thread pool — the
+    # estimate path calls into google-cloud-bigquery's `client.query(...,
+    # dry_run=True)` which blocks until BQ returns the dry-run cost. Under
+    # ``async def`` that wait holds the event loop. See PR #188's Tier 1
+    # entry for the wider rollout.
     try:
         return estimate(conn, user, raw, bq=bq)
     except WhereValidationError as e:
@@ -374,7 +379,7 @@ def run_scan(
 
 
 @router.post("/scan")
-async def scan_endpoint(
+def scan_endpoint(
     raw: dict,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
