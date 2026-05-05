@@ -41,6 +41,8 @@ from cli.commands.schema import schema_app
 from cli.commands.describe import describe_app
 from cli.commands.snapshot import snapshot_app
 from cli.commands.disk_info import disk_info_app
+from cli.commands.store import store_app
+from cli.commands.my_stack import my_stack_app
 
 
 def _cli_version() -> str:
@@ -121,6 +123,8 @@ app.add_typer(schema_app, name="schema")
 app.add_typer(describe_app, name="describe")
 app.add_typer(snapshot_app, name="snapshot")
 app.add_typer(disk_info_app, name="disk-info")
+app.add_typer(store_app, name="store")
+app.add_typer(my_stack_app, name="my-stack")
 
 
 if __name__ == "__main__":

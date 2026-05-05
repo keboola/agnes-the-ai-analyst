@@ -59,6 +59,66 @@ def api_post_json(path: str, payload: dict) -> dict:
     return r.json()
 
 
+def api_delete(path: str) -> dict:
+    url = f"{get_server_url().rstrip('/')}{path}"
+    r = httpx.delete(url, headers=_headers(), timeout=30)
+    if r.status_code >= 400:
+        raise V2ClientError(status_code=r.status_code, body=_parse_error_body(r))
+    if not r.content:
+        return {}
+    if "json" in r.headers.get("content-type", ""):
+        return r.json()
+    return {}
+
+
+def api_put_json(path: str, payload: dict) -> dict:
+    url = f"{get_server_url().rstrip('/')}{path}"
+    r = httpx.put(url, json=payload, headers=_headers(), timeout=30)
+    if r.status_code >= 400:
+        raise V2ClientError(status_code=r.status_code, body=_parse_error_body(r))
+    if not r.content:
+        return {}
+    return r.json()
+
+
+def api_post_multipart(
+    path: str,
+    *,
+    files: dict | None = None,
+    data: dict | None = None,
+) -> dict:
+    """POST a multipart/form-data request — used for Store ZIP/photo uploads.
+
+    `files` mirrors httpx.post(..., files=...): each value is an
+    (filename, bytes, content_type) tuple or an open file-like object.
+    `data` is the form fields. Returns parsed JSON.
+    """
+    url = f"{get_server_url().rstrip('/')}{path}"
+    r = httpx.post(
+        url, files=files or None, data=data or None,
+        headers=_headers(), timeout=600,
+    )
+    if r.status_code >= 400:
+        raise V2ClientError(status_code=r.status_code, body=_parse_error_body(r))
+    return r.json()
+
+
+def api_put_multipart(
+    path: str,
+    *,
+    files: dict | None = None,
+    data: dict | None = None,
+) -> dict:
+    url = f"{get_server_url().rstrip('/')}{path}"
+    r = httpx.put(
+        url, files=files or None, data=data or None,
+        headers=_headers(), timeout=600,
+    )
+    if r.status_code >= 400:
+        raise V2ClientError(status_code=r.status_code, body=_parse_error_body(r))
+    return r.json()
+
+
 def api_post_arrow(path: str, payload: dict) -> pa.Table:
     """Post JSON, expect Arrow IPC stream response."""
     url = f"{get_server_url().rstrip('/')}{path}"
