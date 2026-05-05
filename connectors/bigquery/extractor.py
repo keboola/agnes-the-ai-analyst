@@ -359,6 +359,8 @@ def _init_extract_locked(
             conn.execute(
                 f"CREATE SECRET bq_session (TYPE bigquery, ACCESS_TOKEN '{escaped_token}')"
             )
+            from connectors.bigquery.access import apply_bq_session_settings
+            apply_bq_session_settings(conn)
             conn.execute(
                 f"ATTACH 'project={project_id}' AS bq (TYPE bigquery, READ_ONLY)"
             )

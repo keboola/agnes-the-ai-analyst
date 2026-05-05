@@ -285,6 +285,24 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                         "`agnes snapshot create` suggestion. 0 disables the gate. Default 5368709120 = 5 GiB."
                     ),
                 },
+                "query_timeout_ms": {
+                    "kind": "int",
+                    "default": 600000,
+                    "hint": (
+                        "DuckDB BigQuery extension query timeout (milliseconds). Applied "
+                        "via `SET bq_query_timeout_ms` after every `LOAD bigquery` on "
+                        "every BQ-touching DuckDB session (orchestrator remote-view "
+                        "ATTACH, BqAccess factory, standalone extractor). Extension "
+                        "default is 90 000 ms = 90 s, which is too tight for analyst "
+                        "queries against view-backed datasets — bumped to 600 000 ms = "
+                        "10 min by default. Set 0 to fall through to the extension "
+                        "default. Note: the underlying BQ jobs.query RPC caps the wait "
+                        "at ~200 s per call; the extension polls on top, so the "
+                        "effective ceiling is this value but each poll round-trip is "
+                        "~200 s. DuckDB itself emits a warning when this is set above "
+                        "~200 s — that warning is informational, not an error."
+                    ),
+                },
             },
         },
         "keboola": {
