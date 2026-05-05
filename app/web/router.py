@@ -163,12 +163,20 @@ def _read_agnes_ca_pem() -> Optional[str]:
     """Read the Agnes server's TLS fullchain for inlining into the setup prompt.
 
     Returns the PEM string when the cert needs trust-bootstrapping —
-    self-signed (subject == issuer of the leaf), private CA chain, or any
-    case where we can't cheaply prove the OS would trust it. Returns None
-    only for chains where the leaf's issuer matches a CA already in the
-    server's `certifi`-backed default trust store (publicly-trusted CA
-    like Let's Encrypt or a real corp PKI root that's distributed widely
-    enough to be in `certifi`).
+    self-signed (leaf issuer == subject), private-CA chain that doesn't
+    terminate in a `certifi`-known root, or any case where we can't
+    cheaply prove the OS would trust it. Returns None when the chain in
+    the served fullchain.pem terminates in a publicly-trusted root that
+    `certifi` already ships (Let's Encrypt's ISRG Root X1, DigiCert,
+    etc.) — clients (Bun-compiled `claude.exe`, system git, Python with
+    certifi) all accept the chain without help.
+
+    Chain validation walks every cert in the served fullchain and
+    succeeds the first time any cert's issuer matches a `certifi` root
+    subject. That captures the standard fullchain shape (leaf +
+    intermediate(s)) where `intermediate.issuer == publicly_trusted_root`,
+    even though the leaf's *immediate* issuer is the intermediate (which
+    is rarely shipped in trust stores — only roots are).
 
     Inlining a publicly-trusted cert is harmless (clients already trust
     it via OS roots), but it bloats the prompt and steers users into
@@ -193,18 +201,20 @@ def _read_agnes_ca_pem() -> Optional[str]:
 
     try:
         from cryptography import x509
-        # Parse just the first cert in the chain — that's the leaf, and
-        # leaf issuer/subject is what determines self-signed vs CA-signed.
-        first_block = pem.split("-----END CERTIFICATE-----", 1)[0] + "-----END CERTIFICATE-----\n"
-        leaf = x509.load_pem_x509_certificate(first_block.encode("utf-8"))
+        chain = x509.load_pem_x509_certificates(pem.encode("utf-8"))
+        if not chain:
+            return None
+        leaf = chain[0]
 
         if leaf.issuer == leaf.subject:
             # Self-signed — definitely needs bootstrap on the client.
             return pem
 
-        # CA-signed leaf: check whether `certifi`'s trust store already
-        # contains the issuer. If yes, the user's `da`/uv (which both
-        # use `certifi` by default) will validate without our help.
+        # CA-signed leaf: walk every cert in the served fullchain (leaf +
+        # intermediates) and check whether ANY of their issuers is in
+        # `certifi`'s trust store. The first match means the chain
+        # terminates in a publicly-trusted root, so the client OS / Bun
+        # bundle / certifi already accept it.
         try:
             import certifi
             with open(certifi.where(), "rb") as fh:
@@ -212,9 +222,12 @@ def _read_agnes_ca_pem() -> Optional[str]:
         except Exception:
             return pem  # can't enumerate trust → assume bootstrap needed
 
-        issuer_dn = leaf.issuer.rfc4514_string()
-        for ca in x509.load_pem_x509_certificates(trust_pem):
-            if ca.subject.rfc4514_string() == issuer_dn:
+        trusted_subjects = {
+            ca.subject.rfc4514_string()
+            for ca in x509.load_pem_x509_certificates(trust_pem)
+        }
+        for cert in chain:
+            if cert.issuer.rfc4514_string() in trusted_subjects:
                 return None  # publicly trusted; client OS already accepts
         return pem
     except Exception:  # pragma: no cover — defensive: bad PEM / x509 error
