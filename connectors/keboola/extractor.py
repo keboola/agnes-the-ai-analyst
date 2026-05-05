@@ -287,34 +287,37 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
                 pass
 
         # Phase 2: legacy fallback in parallel. Keboola Storage API export
-        # jobs are independent per table — a thread pool of N workers fans
+        # jobs are independent per table — a worker pool of N workers fans
         # out the per-table HTTP roundtrips (export job submit + poll +
         # CSV download) instead of stacking them sequentially. Project-level
         # concurrency is bounded by the storage.jobsParallelism limit
         # (typically 10); default to 4 to leave headroom for other clients.
         # Override via AGNES_KEBOOLA_PARALLELISM env var.
+        #
+        # Workers are PROCESSES, not threads — `connectors/keboola/client.py:
+        # export_table` does `os.chdir(temp_dir)` to redirect kbcstorage's
+        # slice-file downloads into a per-call temp directory, and `os.chdir`
+        # is process-global. With threads, two parallel exports race on CWD
+        # and slice files end up in the wrong directory; the merge step then
+        # fails with `[Errno 2] No such file or directory:
+        # '<job_id>.csv_X_Y_Z.csv'`. ProcessPoolExecutor gives each worker
+        # its own process and therefore its own CWD.
         if legacy_queue:
             parallelism = max(1, int(os.environ.get("AGNES_KEBOOLA_PARALLELISM", "4")))
             workers = min(parallelism, len(legacy_queue))
             logger.info(
-                "Running legacy Storage-API fallback for %d tables across %d workers",
+                "Running legacy Storage-API fallback for %d tables across %d worker processes",
                 len(legacy_queue), workers,
             )
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-
-            def _run_legacy(tc_pq):
-                tc_, pq_ = tc_pq
-                try:
-                    _extract_via_legacy(tc_, pq_, keboola_url, keboola_token)
-                    return (tc_, pq_, None)
-                except Exception as exc:
-                    return (tc_, pq_, str(exc))
 
             if workers == 1:
-                legacy_results = [_run_legacy(item) for item in legacy_queue]
+                legacy_results = [_legacy_worker(item, keboola_url, keboola_token) for item in legacy_queue]
             else:
-                with ThreadPoolExecutor(max_workers=workers) as ex:
-                    legacy_results = list(ex.map(_run_legacy, legacy_queue))
+                from concurrent.futures import ProcessPoolExecutor
+
+                with ProcessPoolExecutor(max_workers=workers) as ex:
+                    futures = [ex.submit(_legacy_worker, item, keboola_url, keboola_token) for item in legacy_queue]
+                    legacy_results = [f.result() for f in futures]
 
             # Phase 3: serial _meta insert for legacy results. DuckDB conn
             # isn't thread-safe, so we collect parallel work and only touch
@@ -393,6 +396,20 @@ def _extract_via_extension(conn: duckdb.DuckDBPyConnection, tc: Dict[str, Any], 
         raise ValueError(f"unsafe bucket/source_table: {bucket!r}/{source_table!r}")
     safe_pq_lit = pq_path.replace("'", "''")
     conn.execute(f'COPY (SELECT * FROM kbc."{bucket}"."{source_table}") TO \'{safe_pq_lit}\' (FORMAT PARQUET)')
+
+
+def _legacy_worker(tc_pq, keboola_url: str, keboola_token: str):
+    """Module-level wrapper for ProcessPoolExecutor — must be picklable.
+
+    Returns `(tc, pq_path, error_str_or_None)` so the main process can
+    aggregate results and update _meta serially on its DuckDB connection.
+    """
+    tc_, pq_ = tc_pq
+    try:
+        _extract_via_legacy(tc_, pq_, keboola_url, keboola_token)
+        return (tc_, pq_, None)
+    except Exception as exc:
+        return (tc_, pq_, str(exc))
 
 
 def _extract_via_legacy(tc: Dict[str, Any], pq_path: str, keboola_url: str, keboola_token: str) -> None:

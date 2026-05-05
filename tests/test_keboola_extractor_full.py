@@ -185,7 +185,7 @@ class TestKeboolaExtractorFull:
         conn.close()
         assert row[0] == "remote"
 
-    def test_partial_failure_continues(self, output_dir, sample_local_configs):
+    def test_partial_failure_continues(self, output_dir, sample_local_configs, monkeypatch):
         """A single table failure should not abort remaining tables."""
         from connectors.keboola.extractor import run
 
@@ -201,7 +201,11 @@ class TestKeboolaExtractorFull:
         # _extract_via_legacy. Mock it to re-raise so we observe the final
         # error surface; the contract under test is "single table failure
         # doesn't abort remaining tables", not which path produced the
-        # message.
+        # message. Force inline mode (AGNES_KEBOOLA_PARALLELISM=1) so the
+        # mock survives — the parallel path uses ProcessPoolExecutor which
+        # spawns subprocesses that don't see the mock.
+        monkeypatch.setenv("AGNES_KEBOOLA_PARALLELISM", "1")
+
         def legacy_reraise(tc, pq_path, url, token):
             raise RuntimeError("Connection reset")
 
