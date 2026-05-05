@@ -53,25 +53,16 @@ IMAGE="ghcr.io/keboola/agnes-the-ai-analyst:${AGNES_TAG:-stable}"
 # Array form (vs. word-split string) — quoted expansion survives paths
 # with spaces and is the modern bash idiom. Functionally identical here
 # since /opt/agnes paths are tame, but it's a cheap habit to keep.
+#
+# The TLS-overlay decision deliberately runs BELOW the config re-fetch
+# (Devin Review caught: this used to live here, evaluating Caddyfile
+# existence against the PRE-fetch state. If the fetch added a
+# previously-missing Caddyfile, this tick's docker compose would still
+# omit `--profile tls` until the next 5-minute tick — a window where
+# the recreate uses the wrong overlay set). Base file list is fine to
+# initialise here because the tls overlay is the only conditional one.
 COMPOSE_FILES=( -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.host-mount.yml )
 PROFILE_ARGS=()
-# `-s` (size > 0) instead of `-f` — guards against the corner case where
-# rotate.sh wrote a 0-byte cert and exited (or got SIGKILLed mid-write).
-# Bringing up the tls profile against an empty cert would just crash
-# Caddy on start; better to fall back to plain :8000 until rotate
-# regenerates real bytes. Same `-s` rule for Caddyfile: without it (or
-# with an empty one) the caddy service crash-loops while the tls overlay
-# has already closed :8000 — net effect is "app unreachable". Skipping
-# the overlay keeps the app on plain :8000 until config lands.
-if [ -s /data/state/certs/fullchain.pem ] && [ -s /data/state/certs/privkey.pem ] && [ -s Caddyfile ]; then
-    COMPOSE_FILES+=( -f docker-compose.tls.yml )
-    PROFILE_ARGS=( --profile tls )
-elif [ -s /data/state/certs/fullchain.pem ] && [ -s /data/state/certs/privkey.pem ]; then
-    logger -t agnes-auto-upgrade "WARN: certs present but Caddyfile missing/empty — skipping tls overlay"
-fi
-BEFORE=$(docker images --no-trunc --format '{{.Digest}}' "$IMAGE" | head -1)
-docker compose "${COMPOSE_FILES[@]}" pull >/dev/null 2>&1
-AFTER=$(docker images --no-trunc --format '{{.Digest}}' "$IMAGE" | head -1)
 
 # Re-fetch the bind-mounted config files (compose overlays + Caddyfile)
 # from the OSS main branch on every tick. Without this, an image-only
@@ -112,6 +103,29 @@ for f in "${CONFIG_FILES[@]}"; do
   fi
 done
 CONFIG_AFTER=$(hash_config_files)
+
+# `-s` (size > 0) instead of `-f` — guards against the corner case where
+# rotate.sh wrote a 0-byte cert and exited (or got SIGKILLed mid-write).
+# Bringing up the tls profile against an empty cert would just crash
+# Caddy on start; better to fall back to plain :8000 until rotate
+# regenerates real bytes. Same `-s` rule for Caddyfile: without it (or
+# with an empty one) the caddy service crash-loops while the tls overlay
+# has already closed :8000 — net effect is "app unreachable". Skipping
+# the overlay keeps the app on plain :8000 until config lands.
+#
+# Evaluated AFTER the config re-fetch above so a freshly-added or
+# freshly-removed Caddyfile is reflected in this tick's compose set,
+# not the next one.
+if [ -s /data/state/certs/fullchain.pem ] && [ -s /data/state/certs/privkey.pem ] && [ -s Caddyfile ]; then
+    COMPOSE_FILES+=( -f docker-compose.tls.yml )
+    PROFILE_ARGS=( --profile tls )
+elif [ -s /data/state/certs/fullchain.pem ] && [ -s /data/state/certs/privkey.pem ]; then
+    logger -t agnes-auto-upgrade "WARN: certs present but Caddyfile missing/empty — skipping tls overlay"
+fi
+
+BEFORE=$(docker images --no-trunc --format '{{.Digest}}' "$IMAGE" | head -1)
+docker compose "${COMPOSE_FILES[@]}" pull >/dev/null 2>&1
+AFTER=$(docker images --no-trunc --format '{{.Digest}}' "$IMAGE" | head -1)
 
 if [ "$BEFORE" != "$AFTER" ] || [ "$CONFIG_BEFORE" != "$CONFIG_AFTER" ]; then
     REASON=()

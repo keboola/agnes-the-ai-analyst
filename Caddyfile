@@ -60,8 +60,21 @@
 		# agnes data dir is mounted at /srv (read-only) instead — see the
 		# `data:/srv:ro` line in docker-compose.yml's caddy service. The
 		# root + try_files combo therefore probes /srv/extracts/...
+		#
+		# Devin Review caught: `try_files A B C` rewrites the URI to its
+		# LAST entry when no file matches (per Caddy docs). Without an
+		# explicit "rewrite back to original URI" fallback, a parquet
+		# missing from all three known paths would get rewritten to the
+		# last static candidate (`/jira/data/<id>.parquet`), and the
+		# reverse_proxy below would forward THAT rewritten URI to
+		# app:8000 → app has no such route → 404. To make the documented
+		# "missed → falls through to app handler" promise hold, append
+		# the original `/api/data/<id>/download` path as the final
+		# try_files entry: when no file matches, the URI is rewritten
+		# back to the analyst-facing path and the app's `download_table`
+		# handler picks it up via the reverse_proxy fallback below.
 		root * /srv/extracts
-		try_files /bigquery/data/{re.tid.1}.parquet /keboola/data/{re.tid.1}.parquet /jira/data/{re.tid.1}.parquet
+		try_files /bigquery/data/{re.tid.1}.parquet /keboola/data/{re.tid.1}.parquet /jira/data/{re.tid.1}.parquet /api/data/{re.tid.1}/download
 		@found file
 		handle @found {
 			header Content-Disposition "attachment; filename=\"{re.tid.1}.parquet\""
