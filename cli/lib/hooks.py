@@ -7,8 +7,9 @@ without dragging in the deleted command module.
 Design notes:
 - Workspace-scoped (`<workspace>/.claude/settings.json`), NOT user-home.
   The hooks fire only when Claude Code opens this workspace.
-- Idempotent: second invocation drops a prior `agnes pull` / `da sync` /
-  `agnes push` entry (matched by command substring) and appends fresh entries.
+- Idempotent: second invocation drops a prior `agnes self-upgrade` /
+  `agnes pull` / `da sync` / `agnes push` entry (matched by command substring)
+  and appends fresh entries.
   Third-party hooks (mixed entries, foreign commands) are left alone.
 - Uses `|| true` in the hook command so the hook never blocks a session on
   a transient sync error.
@@ -28,7 +29,7 @@ _OUR_COMMAND_MARKERS = ("agnes self-upgrade", "agnes pull", "agnes push", "da sy
 
 
 def install_claude_hooks(workspace: Path) -> None:
-    """Install SessionStart->`agnes pull` and SessionEnd->`agnes push` hooks.
+    """Install SessionStart->`agnes self-upgrade; agnes pull` and SessionEnd->`agnes push` hooks.
 
     Idempotent. Workspace-scoped (writes `<workspace>/.claude/settings.json`).
     Preserves third-party hooks and other event types.
