@@ -541,6 +541,101 @@ def test_quiet_no_change_does_not_append_to_refresh_log(
         assert log_path.read_text(encoding="utf-8") == ""
 
 
+def test_quiet_emits_hook_json_when_bundle_silently_auto_updated_by_claude(
+    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
+):
+    """Regression: when a /store skill change bumps the agnes-store-bundle
+    content hash, `claude plugin marketplace update agnes` silently
+    auto-applies the new version on local-path marketplaces (Claude
+    re-reads the manifest off disk and updates the installed cache).
+
+    If we captured the installed snapshot AFTER `claude plugin marketplace
+    update`, the diff against the new manifest would be zero (Claude
+    already updated installed → matches manifest), `events["updated"]`
+    would stay empty, and the hook JSON wouldn't fire — leaving the user
+    with no notification despite the plugin actually changing.
+
+    Pin this by scripting `claude plugin list --json` to return DIFFERENT
+    versions before vs after the marketplace-update call. The first
+    invocation (pre-snapshot) returns the old version; subsequent calls
+    return the new version (Claude's auto-update). Reconcile must use
+    the FIRST call's snapshot, detect the diff, and fire the
+    notification."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    _set_marketplace_manifest(with_clone, [
+        {"name": "agnes-store-bundle", "version": "newhash"},
+    ])
+
+    # Track how many times `claude plugin list --json` was called so we
+    # can return DIFFERENT data on each invocation. The recorder's
+    # script() helper only does prefix-match with one fixed response
+    # per prefix, so we wrap its run() instead.
+    list_call_count = {"n": 0}
+    real_run = recorder.run
+
+    def staged_run(cmd, *args, **kwargs):
+        if cmd[:4] == ["claude", "plugin", "list", "--json"]:
+            # Record the call ourselves — we're bypassing recorder.run
+            # below, so we have to keep `recorder.calls` in sync.
+            recorder.calls.append(
+                _RecordedCall(cmd=list(cmd), env=dict(kwargs.get("env") or {}))
+            )
+            list_call_count["n"] += 1
+            payload = (
+                # Pre-snapshot (call 1): old version still observable.
+                _plugin_list_json([
+                    {"id": "agnes-store-bundle@agnes",
+                     "version": "oldhash",
+                     "projectPath": str(workspace)},
+                ])
+                if list_call_count["n"] == 1
+                else
+                # Post-marketplace-update (call 2+): Claude auto-applied
+                # the new version, version now matches manifest.
+                _plugin_list_json([
+                    {"id": "agnes-store-bundle@agnes",
+                     "version": "newhash",
+                     "projectPath": str(workspace)},
+                ])
+            )
+            return subprocess.CompletedProcess(args=list(cmd), returncode=0,
+                                                stdout=payload, stderr="")
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(rm_module.subprocess, "run", staged_run)
+
+    result = runner.invoke(refresh_marketplace_app, ["--quiet"])
+    assert result.exit_code == 0
+
+    # Hook JSON must fire — even though by the time reconcile sees `claude
+    # plugin list --json` the second time, versions match.
+    out = _clean(result.output).strip()
+    assert out, "hook JSON missing — pre-snapshot ordering regression"
+    payload = json.loads(out)
+    assert "agnes-store-bundle" in payload["systemMessage"]
+    assert "updated" in payload["systemMessage"]
+
+    # Sanity: pre-snapshot was captured before `claude plugin marketplace update`.
+    # We expect at least 2 list calls (pre-snapshot + reconcile re-read) but
+    # the FIRST one must have come before the marketplace update call.
+    list_indices = [
+        i for i, c in enumerate(recorder.calls)
+        if c.cmd[:4] == ["claude", "plugin", "list", "--json"]
+    ]
+    market_update_indices = [
+        i for i, c in enumerate(recorder.calls)
+        if c.cmd[:4] == ["claude", "plugin", "marketplace", "update"]
+    ]
+    assert list_indices, "no claude plugin list calls recorded"
+    assert market_update_indices, "no claude plugin marketplace update call recorded"
+    assert list_indices[0] < market_update_indices[0], (
+        f"pre-snapshot must come before marketplace update; "
+        f"list at {list_indices[0]}, marketplace update at {market_update_indices[0]}"
+    )
+
+
 def test_quiet_emits_hook_json_when_plugin_updated(
     with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
 ):
