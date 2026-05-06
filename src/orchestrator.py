@@ -534,7 +534,23 @@ class SyncOrchestrator:
                 logger.error("Failed to attach remote source %s: %s", alias, e)
 
     def _update_sync_state(self, meta_rows: list, source_name: str) -> None:
-        """Update sync_state table in system.duckdb from _meta entries."""
+        """Update sync_state table in system.duckdb from _meta entries.
+
+        The hash stored here MUST match what `agnes pull` computes
+        client-side via `cli/commands/sync.py:_md5_file` and what the
+        materialized SQL path stores via `app/api/sync.py:_file_hash` —
+        otherwise the CLI's post-download integrity check fails for every
+        local-mode table with `hash mismatch: expected … got …`. That's
+        a full content MD5 (`hashlib.md5(bytes).hexdigest()`), no
+        truncation.
+
+        Pre-fix this method computed `md5(f"{mtime_ns}:{size}")[:12]` —
+        a fingerprint, not a content hash, and 12-char truncated to boot
+        — which the CLI's full-32-char content MD5 could never match.
+        Symptom: `agnes pull` failed with hash mismatch on every Keboola
+        local-mode table because their sync_state hashes came from this
+        path while their on-disk content was unrelated.
+        """
         try:
             from src.db import get_system_db
             from src.repositories.sync_state import SyncStateRepository
@@ -544,15 +560,14 @@ class SyncOrchestrator:
             try:
                 repo = SyncStateRepository(sys_conn)
                 for table_name, rows, size_bytes, query_mode in meta_rows:
-                    # Compute hash from parquet file stats (fast, no file read)
                     pq_path = extracts_dir / source_name / "data" / f"{table_name}.parquet"
+                    file_hash = ""
                     if pq_path.exists():
-                        stat = pq_path.stat()
-                        file_hash = hashlib.md5(
-                            f"{stat.st_mtime_ns}:{stat.st_size}".encode()
-                        ).hexdigest()[:12]
-                    else:
-                        file_hash = ""
+                        h = hashlib.md5()
+                        with open(pq_path, "rb") as f:
+                            for chunk in iter(lambda: f.read(8192), b""):
+                                h.update(chunk)
+                        file_hash = h.hexdigest()
 
                     repo.update_sync(
                         table_id=table_name,

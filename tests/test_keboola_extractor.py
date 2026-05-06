@@ -131,7 +131,7 @@ class TestKeboolaExtractor:
         # No parquet file should exist
         assert not (Path(output_dir) / "data" / "big_table.parquet").exists()
 
-    def test_handles_extraction_failure(self, output_dir, sample_configs):
+    def test_handles_extraction_failure(self, output_dir, sample_configs, monkeypatch):
         """Test that a failed table doesn't stop other tables from extracting."""
         from connectors.keboola.extractor import run
 
@@ -144,8 +144,18 @@ class TestKeboolaExtractor:
             # Second call succeeds
             _write_parquet(pq_path, "SELECT 1 AS id")
 
+        # Mock the legacy fallback too — without it the real client
+        # attempts an HTTPS round-trip to the test URL and hangs ~minute.
+        # Force inline (PARALLELISM=1) so the mock survives — the parallel
+        # path would spawn a subprocess that doesn't see the patch.
+        monkeypatch.setenv("AGNES_KEBOOLA_PARALLELISM", "1")
+
+        def legacy_reraise(tc, pq_path, url, token):
+            raise Exception("Network error")
+
         with patch("connectors.keboola.extractor._try_attach_extension", side_effect=_mock_attach), \
-             patch("connectors.keboola.extractor._extract_via_extension", side_effect=side_effect):
+             patch("connectors.keboola.extractor._extract_via_extension", side_effect=side_effect), \
+             patch("connectors.keboola.extractor._extract_via_legacy", side_effect=legacy_reraise):
             result = run(output_dir, sample_configs, "https://example.com", "test-token")
 
         assert result["tables_extracted"] == 1
@@ -299,7 +309,7 @@ class TestKeboolaExtractorFailureModes:
         # The bad table's parquet file should NOT exist (failed before write)
         assert not (Path(output_dir) / "data" / "bad_table.parquet").exists()
 
-    def test_network_timeout_during_extraction(self, output_dir):
+    def test_network_timeout_during_extraction(self, output_dir, monkeypatch):
         """Network timeout during extraction should return a meaningful error
         in the stats, not crash the whole process."""
         from connectors.keboola.extractor import run
@@ -323,6 +333,11 @@ class TestKeboolaExtractorFailureModes:
         # so we observe the final error surface; the contract under test is
         # "extension failure doesn't crash, error makes it into stats, other
         # tables continue", not which path produced the message.
+        # Force PARALLELISM=1 so the mock survives — the parallel path uses
+        # ProcessPoolExecutor which spawns subprocesses that don't see the
+        # mock.
+        monkeypatch.setenv("AGNES_KEBOOLA_PARALLELISM", "1")
+
         def legacy_reraise(tc, pq_path, url, token):
             raise socket.timeout("Connection timed out")
 
@@ -389,7 +404,7 @@ class TestKeboolaExtractorFailureModes:
         assert val[0] == 7
         conn.close()
 
-    def test_all_tables_fail_returns_full_failure_stats(self, output_dir):
+    def test_all_tables_fail_returns_full_failure_stats(self, output_dir, monkeypatch):
         """When every table fails, the extractor returns all failures in stats
         without crashing."""
         from connectors.keboola.extractor import run
@@ -403,7 +418,12 @@ class TestKeboolaExtractorFailureModes:
             raise RuntimeError("Extraction failed")
 
         # Mock legacy too — otherwise it would attempt a real HTTP call to
-        # the fake URL on each per-table fallback retry.
+        # the fake URL on each per-table fallback retry. Force inline mode
+        # (AGNES_KEBOOLA_PARALLELISM=1) so the mock survives — the parallel
+        # path uses ProcessPoolExecutor which spawns subprocesses that
+        # don't see the mock.
+        monkeypatch.setenv("AGNES_KEBOOLA_PARALLELISM", "1")
+
         def legacy_also_fails(tc, pq_path, url, token):
             raise RuntimeError("Extraction failed")
 
@@ -415,6 +435,108 @@ class TestKeboolaExtractorFailureModes:
         assert result["tables_extracted"] == 0
         assert result["tables_failed"] == 2
         assert len(result["errors"]) == 2
+
+    def test_legacy_parallelism_one_runs_inline(self, output_dir, monkeypatch):
+        """AGNES_KEBOOLA_PARALLELISM=1 keeps the legacy fallback inline —
+        no ProcessPoolExecutor, so unittest.mock patches survive. Useful
+        as a debugging escape hatch and the path used by tests below.
+
+        Why processes (not threads) for the parallel path: the legacy
+        client's `export_table` does `os.chdir(temp_dir)` to direct
+        kbcstorage's slice-file downloads into a per-call temp directory.
+        `os.chdir` is process-global, so two threads racing on it land
+        slice files in the wrong directory and the merge step fails with
+        `[Errno 2] No such file or directory`. Process workers each have
+        their own CWD and don't interfere."""
+        from connectors.keboola.extractor import run
+
+        configs = [
+            {"name": f"u{i}", "query_mode": "local", "description": "",
+             "bucket": "in.c-test", "source_table": f"u{i}"}
+            for i in range(3)
+        ]
+
+        call_count = 0
+
+        def mock_legacy(tc, pq_path, url, token):
+            nonlocal call_count
+            call_count += 1
+            _write_parquet(pq_path, "SELECT 1 AS x")
+
+        def extension_always_fails(conn, tc, pq_path):
+            raise RuntimeError("Schema not authorized")
+
+        monkeypatch.setenv("AGNES_KEBOOLA_PARALLELISM", "1")
+
+        with patch("connectors.keboola.extractor._try_attach_extension", side_effect=_mock_attach), \
+             patch("connectors.keboola.extractor._extract_via_extension", side_effect=extension_always_fails), \
+             patch("connectors.keboola.extractor._extract_via_legacy", side_effect=mock_legacy):
+            result = run(output_dir, configs, "https://example.com", "test-token")
+
+        assert result["tables_extracted"] == 3
+        assert result["tables_failed"] == 0
+        assert call_count == 3, "all 3 tables should have called the patched legacy fn"
+
+    def test_legacy_uses_process_pool_when_parallel(self, output_dir, monkeypatch):
+        """Structural check: when len(legacy_queue) > 1 and
+        AGNES_KEBOOLA_PARALLELISM > 1, the parallel path imports
+        `concurrent.futures.ProcessPoolExecutor` to drain the queue.
+
+        The mock can't ride into subprocesses (mocks aren't picklable),
+        so we patch ProcessPoolExecutor itself and verify it's invoked
+        with the expected worker count."""
+        from connectors.keboola.extractor import run
+
+        configs = [
+            {"name": f"t{i}", "query_mode": "local", "description": "",
+             "bucket": "in.c-test", "source_table": f"t{i}"}
+            for i in range(5)
+        ]
+
+        def extension_always_fails(conn, tc, pq_path):
+            raise RuntimeError("Schema not authorized")
+
+        # Stand in for ProcessPoolExecutor — runs everything in-process
+        # so we can verify the call shape without dealing with pickling.
+        seen_max_workers = []
+
+        class _FakePool:
+            def __init__(self, max_workers):
+                seen_max_workers.append(max_workers)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def submit(self, fn, *args, **kwargs):
+                from concurrent.futures import Future
+                f: Future = Future()
+                try:
+                    # Inline the legacy call so the parquet ends up on disk
+                    # for the orchestrator's downstream stat + _meta logic.
+                    f.set_result(fn(*args, **kwargs))
+                except Exception as e:
+                    f.set_exception(e)
+                return f
+
+        def mock_legacy(tc, pq_path, url, token):
+            _write_parquet(pq_path, "SELECT 1 AS x")
+
+        monkeypatch.setenv("AGNES_KEBOOLA_PARALLELISM", "4")
+
+        with patch("connectors.keboola.extractor._try_attach_extension", side_effect=_mock_attach), \
+             patch("connectors.keboola.extractor._extract_via_extension", side_effect=extension_always_fails), \
+             patch("connectors.keboola.extractor._extract_via_legacy", side_effect=mock_legacy), \
+             patch("concurrent.futures.ProcessPoolExecutor", _FakePool):
+            result = run(output_dir, configs, "https://example.com", "test-token")
+
+        assert result["tables_extracted"] == 5
+        assert result["tables_failed"] == 0
+        assert seen_max_workers == [4], (
+            f"Expected ProcessPoolExecutor(max_workers=4); got {seen_max_workers}"
+        )
 
     def test_unsafe_identifier_skipped_not_crashed(self, output_dir):
         """Tables with unsafe identifiers are skipped with an error in stats,
