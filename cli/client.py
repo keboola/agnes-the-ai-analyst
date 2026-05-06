@@ -1,8 +1,11 @@
 """HTTP client wrapper for CLI — handles auth, retries, streaming."""
 
+import atexit
 import os
+import threading
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -21,6 +24,18 @@ _RETRY_BACKOFFS_S = (0.3, 1.0, 3.0)  # seconds before attempt 2, 3, 4
 # tables, where SELECTs routinely run for minutes. The default 30s HTTP
 # timeout dies long before BQ finishes. Operators tune via AGNES_QUERY_TIMEOUT.
 QUERY_TIMEOUT_S = float(os.environ.get("AGNES_QUERY_TIMEOUT", "300"))
+
+# Range-chunked parallel download — see `stream_download` docstring. Defaults
+# tuned for the corp-VPN per-flow rate-limiting case (single-stream throttled
+# but N parallel range requests scale linearly). Disabled implicitly for
+# files below the threshold or when the server doesn't advertise byte-range
+# support. Operators can hard-disable by setting parallelism to 1.
+_CHUNK_PARALLELISM = max(1, min(16, int(
+    os.environ.get("AGNES_PULL_CHUNK_PARALLELISM", "4"),
+)))
+_CHUNK_THRESHOLD_BYTES = int(
+    os.environ.get("AGNES_PULL_CHUNK_THRESHOLD_BYTES", str(50 * 1024 * 1024)),
+)
 
 
 # ── Transport-error translation ─────────────────────────────────────────
@@ -143,7 +158,13 @@ def _translate_transport_error(
 
 
 def get_client(timeout: float = 30.0) -> httpx.Client:
-    """Get an authenticated httpx client."""
+    """Get an authenticated httpx client.
+
+    This factory creates a fresh client per call — used by the small
+    `api_*` helpers (one request, then close). The big-stream path
+    (`stream_download`) routes through `_get_shared_client()` to amortize
+    TLS handshakes and HTTP/2 multiplexing across N parquet downloads.
+    """
     token = get_token()
     headers = {}
     if token:
@@ -153,6 +174,80 @@ def get_client(timeout: float = 30.0) -> httpx.Client:
         headers=headers,
         timeout=timeout,
     )
+
+
+# ── Shared persistent client ────────────────────────────────────────────
+# `agnes pull` issues N stream_download calls — one per parquet — plus
+# (with chunked downloads) M Range requests per file. Without pooling,
+# each call performs a fresh TLS handshake; with HTTP/2 enabled, all
+# those requests multiplex over a single TCP connection. The shared
+# client is created lazily on first stream-download request, kept alive
+# for the duration of the process, and closed at exit.
+#
+# HTTP/2 requires the optional `h2` package. If it's unavailable (slim
+# install), we fall back to HTTP/1.1 — pooling alone still saves the
+# handshake cost — and never raise. The CLI must not crash on `agnes
+# pull` because of an h2 import error.
+
+_SHARED_CLIENT: Optional[httpx.Client] = None
+_SHARED_CLIENT_LOCK = threading.Lock()
+
+
+def _get_shared_client() -> httpx.Client:
+    """Lazily create + return a process-wide httpx.Client.
+
+    Pool defaults: keep up to 32 keepalive connections (covers the
+    chunk-parallelism cap of 16 × 2 simultaneous files comfortably) and
+    cap the total at 64 so a runaway loop can't open thousands of
+    sockets. HTTP/2 is opt-in via httpx's `http2=True` and gracefully
+    degrades when the `h2` extra is missing.
+    """
+    global _SHARED_CLIENT
+    with _SHARED_CLIENT_LOCK:
+        if _SHARED_CLIENT is not None:
+            return _SHARED_CLIENT
+        token = get_token()
+        headers = {}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        limits = httpx.Limits(
+            max_keepalive_connections=32,
+            max_connections=64,
+        )
+        try:
+            client = httpx.Client(
+                base_url=get_server_url(),
+                headers=headers,
+                timeout=300.0,
+                http2=True,
+                limits=limits,
+            )
+        except (ImportError, RuntimeError):
+            # `h2` not installed → httpx raises; fall back to HTTP/1.1.
+            # Pooling alone still amortizes the TLS handshake.
+            client = httpx.Client(
+                base_url=get_server_url(),
+                headers=headers,
+                timeout=300.0,
+                limits=limits,
+            )
+        _SHARED_CLIENT = client
+        return client
+
+
+def _close_shared_client() -> None:
+    """Close the shared client and clear the slot. Safe to call twice."""
+    global _SHARED_CLIENT
+    with _SHARED_CLIENT_LOCK:
+        if _SHARED_CLIENT is not None:
+            try:
+                _SHARED_CLIENT.close()
+            except Exception:
+                pass
+            _SHARED_CLIENT = None
+
+
+atexit.register(_close_shared_client)
 
 
 def api_get(path: str, *, timeout: float = 30.0, **kwargs) -> httpx.Response:
@@ -197,33 +292,197 @@ def _is_transient(exc: Exception) -> bool:
     return False
 
 
-def stream_download(path: str, target_path: str, progress_callback=None) -> int:
-    """Stream a file to `target_path` atomically and with retries.
+def _read_chunk_threshold_bytes() -> int:
+    """Re-read threshold each call so tests / operators can flip it via
+    env var without restarting the process."""
+    try:
+        return int(os.environ.get(
+            "AGNES_PULL_CHUNK_THRESHOLD_BYTES", str(_CHUNK_THRESHOLD_BYTES),
+        ))
+    except ValueError:
+        return _CHUNK_THRESHOLD_BYTES
 
-    Durability properties:
-    - Writes to `target_path + ".tmp"`, then `os.replace` on success. The
-      real target file never exists in a half-written state.
-    - Retries up to `_RETRY_ATTEMPTS` times on transient errors (network
-      blip, 5xx); 4xx (auth/404) is raised immediately.
-    - No hash check here — that's done in the sync command against the
-      manifest hash, because only the caller knows the expected value.
+
+def _read_chunk_parallelism() -> int:
+    """Re-read parallelism each call (same rationale as threshold). Floor 1,
+    ceiling 16."""
+    try:
+        n = int(os.environ.get(
+            "AGNES_PULL_CHUNK_PARALLELISM", str(_CHUNK_PARALLELISM),
+        ))
+    except ValueError:
+        n = _CHUNK_PARALLELISM
+    return max(1, min(16, n))
+
+
+def _probe_range_support(client: httpx.Client, path: str) -> tuple[int, bool]:
+    """Send HEAD; return (content-length, accepts-byte-ranges).
+
+    `(0, False)` means "we couldn't tell — fall back to single-stream".
+    Never raises; transport errors during the probe are treated as
+    "no chunking, try the GET instead and let it surface the failure
+    in the normal retry loop".
     """
+    try:
+        resp = client.head(path)
+        if getattr(resp, "status_code", 200) >= 400:
+            return (0, False)
+        size = int(resp.headers.get("content-length", "0") or 0)
+        accepts = (resp.headers.get("accept-ranges", "").lower() == "bytes")
+        return (size, accepts)
+    except Exception:
+        return (0, False)
+
+
+class _RangeNotHonored(Exception):
+    """Internal sentinel — server returned 200 instead of 206 to a Range
+    request. Caller catches and falls back to the single-stream path."""
+
+
+def _download_chunk(
+    client: httpx.Client,
+    path: str,
+    start: int,
+    end: int,
+    part_path: Path,
+    progress_callback,
+) -> None:
+    """Stream `bytes=start-end` to `part_path`. Caller deals with retry +
+    cleanup. Raises on any failure (HTTPStatusError on non-206 response,
+    httpx.* on transport blip, `_RangeNotHonored` if server returned 200
+    instead of 206 — chunked path can't trust that result)."""
+    headers = {"Range": f"bytes={start}-{end}"}
+    with client.stream("GET", path, headers=headers) as response:
+        # Server didn't honor the Range — RFC says it MAY return 200 with
+        # the full body. We can't safely splice that into one part of N,
+        # so we abort the whole chunked path and let the caller fall back.
+        if response.status_code == 200:
+            raise _RangeNotHonored()
+        response.raise_for_status()
+        with open(part_path, "wb") as f:
+            for piece in response.iter_bytes(chunk_size=65536):
+                f.write(piece)
+                if progress_callback and piece:
+                    progress_callback(len(piece))
+
+
+def _download_chunked(
+    client: httpx.Client,
+    path: str,
+    target_path: str,
+    total_size: int,
+    parallelism: int,
+    progress_callback,
+) -> int:
+    """Range-based parallel download. Returns total bytes written.
+
+    Raises `_RangeNotHonored` on the first 200-instead-of-206 response so
+    the caller can fall back. All other exceptions propagate.
+
+    Cleanup discipline: every part file we create gets removed before
+    return (success or failure). The destination is written via the
+    caller's `<target>.tmp` and renamed atomically.
+    """
+    target = Path(target_path)
+    tmp_path = Path(f"{target_path}.tmp")
+    parallelism = max(1, parallelism)
+    # Build chunks — last chunk takes the remainder.
+    chunk_size = total_size // parallelism
+    if chunk_size <= 0:
+        chunk_size = total_size  # tiny file, single chunk
+        parallelism = 1
+    ranges = []
+    for i in range(parallelism):
+        start = i * chunk_size
+        end = (start + chunk_size - 1) if i < parallelism - 1 else (total_size - 1)
+        ranges.append((i, start, end))
+
+    part_paths = [Path(f"{target_path}.part{i}") for i, _, _ in ranges]
+    # Pre-clean any leftovers from a prior run.
+    for p in part_paths:
+        p.unlink(missing_ok=True)
+
+    def _attempt_chunk(i: int, start: int, end: int) -> None:
+        last_exc: Optional[Exception] = None
+        for attempt in range(_RETRY_ATTEMPTS + 1):
+            try:
+                _download_chunk(
+                    client, path, start, end, part_paths[i],
+                    progress_callback,
+                )
+                return
+            except _RangeNotHonored:
+                # Don't retry — server policy, not a transport blip.
+                raise
+            except Exception as exc:
+                last_exc = exc
+                if attempt == _RETRY_ATTEMPTS or not _is_transient(exc):
+                    break
+                time.sleep(_RETRY_BACKOFFS_S[
+                    min(attempt, len(_RETRY_BACKOFFS_S) - 1)
+                ])
+        assert last_exc is not None
+        raise last_exc
+
+    try:
+        if parallelism == 1:
+            _attempt_chunk(*ranges[0])
+        else:
+            # Use a thread pool so each chunk gets its own concurrent
+            # request slot on the (HTTP/2-multiplexed when available)
+            # shared client. httpx.Client is thread-safe for stream().
+            with ThreadPoolExecutor(max_workers=parallelism) as ex:
+                futs = [ex.submit(_attempt_chunk, *r) for r in ranges]
+                for fut in as_completed(futs):
+                    fut.result()  # propagate first error
+
+        # Concatenate parts → tmp_path → atomic rename.
+        tmp_path.unlink(missing_ok=True)
+        total_written = 0
+        with open(tmp_path, "wb") as out:
+            for p in part_paths:
+                with open(p, "rb") as inp:
+                    while True:
+                        block = inp.read(65536)
+                        if not block:
+                            break
+                        out.write(block)
+                        total_written += len(block)
+        os.replace(tmp_path, target)
+        return total_written
+    finally:
+        # Always clean up part files + any stray tmp.
+        for p in part_paths:
+            p.unlink(missing_ok=True)
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+
+def _download_single_stream(
+    client: httpx.Client,
+    path: str,
+    target_path: str,
+    progress_callback,
+) -> int:
+    """Original single-stream path with retry. Used when chunking is
+    disabled (small file, no range support, or fallback after 200-on-Range)."""
     tmp_path = Path(f"{target_path}.tmp")
     last_exc: Optional[Exception] = None
     for attempt in range(_RETRY_ATTEMPTS + 1):
         try:
             tmp_path.unlink(missing_ok=True)
-            with get_client(timeout=300.0) as client:
-                with client.stream("GET", path) as response:
-                    response.raise_for_status()
-                    total = 0
-                    with open(tmp_path, "wb") as f:
-                        for chunk in response.iter_bytes(chunk_size=65536):
-                            f.write(chunk)
-                            total += len(chunk)
-                            if progress_callback:
-                                progress_callback(len(chunk))
-            # os.replace is atomic on POSIX and Windows for same-filesystem moves.
+            with client.stream("GET", path) as response:
+                response.raise_for_status()
+                total = 0
+                with open(tmp_path, "wb") as f:
+                    for chunk in response.iter_bytes(chunk_size=65536):
+                        f.write(chunk)
+                        total += len(chunk)
+                        if progress_callback:
+                            progress_callback(len(chunk))
             os.replace(tmp_path, target_path)
             return total
         except Exception as exc:
@@ -231,23 +490,94 @@ def stream_download(path: str, target_path: str, progress_callback=None) -> int:
             if attempt == _RETRY_ATTEMPTS or not _is_transient(exc):
                 break
             time.sleep(_RETRY_BACKOFFS_S[min(attempt, len(_RETRY_BACKOFFS_S) - 1)])
-    # Clean up any leftover tmp, then surface the last exception. Translate
-    # transport errors (timeouts, connection drops, protocol errors) to
-    # AgnesTransportError so the CLI prints a clean message instead of a
-    # Python traceback (Pavel's #185 Phase 3B). HTTPStatusError (4xx/5xx
-    # response from the server) is NOT a transport failure and must
-    # re-raise verbatim so the caller's status-code handling + the rich
-    # server error body (e.g. 401 with "token expired", 403 with
-    # cross_project_forbidden detail) reach the analyst — Devin Review on
-    # PR #188 caught: HTTPStatusError is a subclass of HTTPError, so the
-    # generic isinstance(HTTPError) translation was eating status codes.
     tmp_path.unlink(missing_ok=True)
     assert last_exc is not None
-    if isinstance(last_exc, httpx.HTTPStatusError):
-        raise last_exc
-    if isinstance(last_exc, httpx.HTTPError):
-        raise _translate_transport_error(
-            last_exc, context=f"GET {path} (stream → {target_path})",
-            timeout_s=300.0,
-        ) from last_exc
     raise last_exc
+
+
+def stream_download(path: str, target_path: str, progress_callback=None) -> int:
+    """Stream a file to `target_path` atomically and with retries.
+
+    Two paths:
+    1. **Chunked parallel** — when the server advertises `accept-ranges:
+       bytes` and `content-length` exceeds `AGNES_PULL_CHUNK_THRESHOLD_BYTES`
+       (default 50 MB), split into N range requests
+       (`AGNES_PULL_CHUNK_PARALLELISM`, default 4, capped 1..16) and
+       download in parallel. Concatenate the part files into `<target>.tmp`,
+       then `os.replace`. Falls back to single-stream if the server
+       responds 200 instead of 206 to a Range probe.
+    2. **Single-stream** — for small files, no range support, or fallback
+       from the chunked path. Same atomic-rename + retry semantics as
+       before.
+
+    Durability properties (unchanged):
+    - Writes to `<target>.tmp`, then `os.replace` on success. The real
+      target file never exists in a half-written state.
+    - Retries up to `_RETRY_ATTEMPTS` on transient errors (network blip,
+      5xx); 4xx (auth/404) is raised immediately.
+    - No hash check here — that's the caller's job (manifest hash).
+
+    Threading: the chunked path uses a ThreadPoolExecutor sized to the
+    parallelism. httpx.Client.stream() is safe to call concurrently from
+    multiple threads on a single client (the connection pool serializes
+    the underlying socket access; HTTP/2 multiplexes streams when the
+    `h2` extra is installed).
+    """
+    # Use the shared persistent client when available — one TLS
+    # handshake amortized across N stream_download calls within the same
+    # process, and HTTP/2 stream multiplexing across the chunk Range
+    # requests within a single download. Falls back to a fresh per-call
+    # client if shared-client construction fails for any reason.
+    try:
+        client = _get_shared_client()
+        return _stream_download_via(client, path, target_path, progress_callback)
+    except Exception:
+        with get_client(timeout=300.0) as client:
+            return _stream_download_via(client, path, target_path, progress_callback)
+
+
+def _stream_download_via(
+    client: httpx.Client,
+    path: str,
+    target_path: str,
+    progress_callback,
+) -> int:
+    """The shared body of `stream_download` parameterized on the client.
+    Split out so tests can inject a fake client."""
+    threshold = _read_chunk_threshold_bytes()
+    parallelism = _read_chunk_parallelism()
+
+    total_size = 0
+    accepts_ranges = False
+    if parallelism > 1:
+        total_size, accepts_ranges = _probe_range_support(client, path)
+
+    use_chunked = (
+        parallelism > 1
+        and accepts_ranges
+        and total_size > threshold
+    )
+
+    try:
+        if use_chunked:
+            try:
+                return _download_chunked(
+                    client, path, target_path, total_size, parallelism,
+                    progress_callback,
+                )
+            except _RangeNotHonored:
+                # Server lied / proxy stripped the Range — fall through.
+                pass
+        return _download_single_stream(
+            client, path, target_path, progress_callback,
+        )
+    except httpx.HTTPStatusError:
+        # 4xx / 5xx response from the server — re-raise verbatim so the
+        # caller's status-code handling + the rich server error body
+        # reach the analyst (Devin Review on PR #188).
+        raise
+    except httpx.HTTPError as exc:
+        raise _translate_transport_error(
+            exc, context=f"GET {path} (stream → {target_path})",
+            timeout_s=300.0,
+        ) from exc
