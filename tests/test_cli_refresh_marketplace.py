@@ -389,3 +389,89 @@ def test_refresh_marketplace_auto_upgrade_warns_when_list_unparseable(
     assert result.exit_code == 0
     update_calls = [c for c in recorder.calls if c.cmd[:3] == ["claude", "plugin", "update"]]
     assert update_calls == []
+
+
+def test_quiet_emits_hook_json_when_plugin_installed(
+    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
+):
+    """When --quiet is set (= SessionStart hook context) and at least one
+    plugin was newly installed, stdout MUST contain a Claude Code hook
+    JSON object with `systemMessage` (user-visible notification) and
+    `hookSpecificOutput.additionalContext` (model-visible system reminder).
+
+    The exact shape comes from the Claude Code hook protocol — a
+    SessionStart hook printing this JSON on stdout (with exit 0) tells
+    Claude Code to surface the systemMessage as a warning-style
+    notification AND inject the additionalContext into the session.
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    _set_marketplace_manifest(with_clone, ["grpn-fin"])
+    # Nothing installed yet → grpn-fin is missing → auto-installed.
+    recorder.script(("claude", "plugin", "list", "--json"),
+                    stdout=_plugin_list_json([]))
+
+    result = runner.invoke(refresh_marketplace_app, ["--quiet"])
+    assert result.exit_code == 0
+
+    # Stdout must be parseable JSON with the documented hook shape.
+    out = _clean(result.output).strip()
+    assert out, "expected hook JSON on stdout when a plugin was installed"
+    payload = json.loads(out)
+    assert "systemMessage" in payload
+    assert "grpn-fin" in payload["systemMessage"]
+    assert "Agnes marketplace" in payload["systemMessage"]
+
+    hook_specific = payload.get("hookSpecificOutput", {})
+    assert hook_specific.get("hookEventName") == "SessionStart"
+    assert "grpn-fin" in hook_specific.get("additionalContext", "")
+
+
+def test_quiet_emits_no_hook_json_when_nothing_changed(
+    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
+):
+    """When --quiet is set and nothing changed (all marketplace plugins
+    already installed, no auto-upgrade), stdout MUST be empty so quiet
+    sessions stay quiet — no spurious notification on every session
+    start."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    _set_marketplace_manifest(with_clone, ["grpn-eng"])
+    recorder.script(
+        ("claude", "plugin", "list", "--json"),
+        stdout=_plugin_list_json([
+            {"id": "grpn-eng@agnes", "projectPath": str(workspace)},
+        ]),
+    )
+    result = runner.invoke(refresh_marketplace_app, ["--quiet"])
+    assert result.exit_code == 0
+    assert _clean(result.output).strip() == "", (
+        f"expected silent stdout when nothing changed, got: {result.output!r}"
+    )
+
+
+def test_manual_mode_does_not_emit_hook_json(
+    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
+):
+    """Without --quiet (manual invocation), stdout is human-readable text;
+    no JSON envelope. The hook JSON is meaningless when a user is reading
+    the output directly — they want plain text, not a serialized object."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    _set_marketplace_manifest(with_clone, ["grpn-fin"])
+    recorder.script(("claude", "plugin", "list", "--json"),
+                    stdout=_plugin_list_json([]))
+
+    result = runner.invoke(refresh_marketplace_app, [])
+    assert result.exit_code == 0
+    out = _clean(result.output)
+    # Must contain a human-readable mention; must NOT be wrapped in a JSON
+    # object that starts at the first non-whitespace char.
+    assert "grpn-fin" in out
+    stripped = out.strip()
+    assert not stripped.startswith("{"), (
+        f"manual mode should not emit JSON envelope; got: {stripped[:200]!r}"
+    )

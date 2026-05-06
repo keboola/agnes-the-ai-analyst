@@ -30,6 +30,23 @@ only when this command runs:
      plugins and run ``claude plugin update <name>@agnes`` for each,
      picking up version bumps without manual prompting.
 
+When invoked with ``--quiet`` (the SessionStart hook context) and at
+least one plugin was installed or upgraded, this command emits a Claude
+Code hook JSON object on stdout:
+
+    {
+      "systemMessage": "Agnes marketplace: installed grpn-fin",
+      "hookSpecificOutput": {
+        "hookEventName": "SessionStart",
+        "additionalContext": "Agnes refresh installed: grpn-fin. Available plugins: ..."
+      }
+    }
+
+Claude Code surfaces ``systemMessage`` to the user as a transient
+notification and ``additionalContext`` is wrapped in a system reminder
+so the model sees what changed at session start. Empty / no-op runs
+produce empty stdout, so quiet sessions stay quiet.
+
 Used by:
 - Manual invocation: ``agnes refresh-marketplace`` after a known
   marketplace change, or just to verify the clone is healthy.
@@ -127,6 +144,10 @@ def refresh_marketplace(
         )
         raise typer.Exit(1)
 
+    # Collected during the run so the hook-output JSON can summarize what
+    # changed. Empty lists → quiet stdout (no JSON emitted).
+    events: dict[str, list[str]] = {"installed": [], "upgraded": []}
+
     fetch_ok = _git_fetch_and_reset(token, quiet=quiet)
     if not fetch_ok:
         # Fetch/reset failure already surfaced via stderr; exit non-zero so
@@ -138,10 +159,17 @@ def refresh_marketplace(
 
     # Auto-install runs after marketplace update so claude knows about any
     # newly-listed plugins before we ask it to install them.
-    _auto_install_missing(quiet=quiet)
+    _auto_install_missing(quiet=quiet, events=events)
 
     if auto_upgrade:
-        _claude_auto_upgrade(quiet=quiet)
+        _claude_auto_upgrade(quiet=quiet, events=events)
+
+    # In hook context (--quiet), emit a Claude Code hook JSON object on
+    # stdout summarizing the run so the user gets a notification + the
+    # session model sees what changed. Skip when nothing changed so quiet
+    # sessions stay quiet.
+    if quiet and (events["installed"] or events["upgraded"]):
+        _emit_hook_message(events)
 
 
 def _git_fetch_and_reset(token: str, *, quiet: bool) -> bool:
@@ -221,7 +249,7 @@ def _claude_marketplace_update(*, quiet: bool) -> None:
         typer.echo(result.stdout.rstrip())
 
 
-def _auto_install_missing(*, quiet: bool) -> None:
+def _auto_install_missing(*, quiet: bool, events: dict[str, list[str]]) -> None:
     """Install plugins listed in the agnes marketplace that aren't yet in
     this workspace.
 
@@ -234,6 +262,9 @@ def _auto_install_missing(*, quiet: bool) -> None:
     (Claude Code reports "already installed"), so we don't gate on a
     delta calculation — but we DO compute the delta to keep the log
     output minimal in the common case (nothing new to install).
+
+    Successful installs are appended to ``events["installed"]`` so the
+    caller can summarize the run via the hook JSON output.
     """
     if shutil.which("claude") is None:
         # _claude_marketplace_update already warned; don't double-print.
@@ -285,17 +316,21 @@ def _auto_install_missing(*, quiet: bool) -> None:
             if result.stderr:
                 typer.echo(result.stderr.rstrip(), err=True)
             continue
+        events["installed"].append(name)
         if not quiet and result.stdout:
             typer.echo(result.stdout.rstrip())
 
 
-def _claude_auto_upgrade(*, quiet: bool) -> None:
+def _claude_auto_upgrade(*, quiet: bool, events: dict[str, list[str]]) -> None:
     """`claude plugin update <name>@agnes` for each installed agnes plugin
     in this workspace.
 
     Best-effort. If the plugin list query fails, warn and bail rather
     than fail the command — the manifest update + auto-install already
     happened, so the user just doesn't get auto-version-bump this run.
+
+    Successful updates are appended to ``events["upgraded"]`` for the
+    hook JSON summary.
     """
     if shutil.which("claude") is None:
         return
@@ -324,8 +359,48 @@ def _claude_auto_upgrade(*, quiet: bool) -> None:
             if result.stderr:
                 typer.echo(result.stderr.rstrip(), err=True)
             continue
+        events["upgraded"].append(name)
         if not quiet and result.stdout:
             typer.echo(result.stdout.rstrip())
+
+
+def _emit_hook_message(events: dict[str, list[str]]) -> None:
+    """Emit a Claude Code hook JSON object summarizing what changed.
+
+    Output shape (per Claude Code hook protocol):
+      - ``systemMessage`` is shown to the user as a transient warning-style
+        notification — keeps it short.
+      - ``hookSpecificOutput.additionalContext`` is wrapped in a system
+        reminder so the model can reference the change at session start
+        (e.g. "Agnes installed grpn-fin — let me know if you want me to
+        explore what it adds").
+
+    Caller has already verified that at least one of `installed` /
+    `upgraded` is non-empty, so we always emit something useful.
+    """
+    parts: list[str] = []
+    if events["installed"]:
+        parts.append(
+            f"installed {len(events['installed'])} plugin(s): "
+            + ", ".join(events["installed"])
+        )
+    if events["upgraded"]:
+        parts.append(
+            f"upgraded {len(events['upgraded'])} plugin(s): "
+            + ", ".join(events["upgraded"])
+        )
+    summary = "Agnes marketplace: " + "; ".join(parts) + "."
+    payload = {
+        "systemMessage": summary,
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": (
+                f"{summary} The agnes marketplace is admin-curated per RBAC; "
+                "these came from server-side grant changes."
+            ),
+        },
+    }
+    typer.echo(json.dumps(payload))
 
 
 def _read_marketplace_plugin_names() -> Optional[set[str]]:
