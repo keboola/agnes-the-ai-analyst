@@ -1,14 +1,41 @@
-# Bind-mount overlay — replaces the `data` named volume with a bind mount
-# to /data on the host.
+# Bind-mount overlay — replaces the `data` named volume with a direct
+# host bind mount per service.
 #
-# Use this when /data is a persistent disk mounted by the VM startup script,
-# so Agnes data lives on the PD (not on the boot disk's Docker volume).
+# Why direct service-level bind, not driver_opts on the named volume
+# ------------------------------------------------------------------
+# The previous version of this file modified the `data` named volume's
+# `driver_opts` to point at /data with `o: bind,rbind`. Docker named
+# volumes have an immutability footgun: once a volume is created, its
+# driver options are fixed for the life of the volume. Editing this
+# file and re-running `docker compose up -d` does NOT propagate the
+# new options to existing volumes — they keep whatever options were
+# in effect at create time.
 #
-# `bind,rbind` (recursive bind) is required when the host nests a second
-# disk under /data — e.g. the dual-disk layout where sdb is mounted on /data
-# and sdc on /data/state. A plain `bind` captures only the top-level mount
-# and silently shadows the sub-mount with an empty subdirectory inside the
-# container, causing the app to write to the wrong disk.
+# This bit a deployer in production: the volume
+# was created before this overlay had `bind,rbind`, kept the old
+# `bind` (non-recursive) propagation, and containers wrote to a
+# shadowed subdirectory of the parent disk instead of the nested
+# child mount. DuckDB went FATAL on a root-owned WAL during a
+# routine container recreate; sign-in broke.
+#
+# Direct service-level bind mounts (`/host/path:/container/path`)
+# don't go through Docker's volume layer at all. They re-evaluate
+# the mount options every container start, and modern Docker Engine
+# (20.10+) defaults to recursive bind for these. No options to
+# forget, no immutable state to migrate, no shadow-mount class.
+#
+# What this overlay does
+# ----------------------
+# `volumes: !override` on each service replaces the base
+# `data:/data` named-volume mount with a direct `/data:/data` host
+# bind. The named volume `data:` declared at the bottom of
+# docker-compose.yml is left intact (still useful for local-dev
+# `compose up` without this overlay) but is no longer referenced
+# by any service when the overlay is active.
+#
+# When the operator's host has a nested mount under /data (e.g. a
+# separate state disk mounted at /data/state), the recursive bind
+# carries that nested mount into every container automatically.
 #
 # Usage (combined with docker-compose.prod.yml):
 #   docker compose \
@@ -17,11 +44,53 @@
 #     -f docker-compose.host-mount.yml \
 #     up -d
 #
-# Do NOT use this overlay in CI — /data does not exist on GitHub runners.
-volumes:
-  data:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind,rbind
-      device: /data
+# Do NOT use this overlay in CI — /data does not exist on GitHub
+# runners.
+#
+# Compose-spec version requirement: !override merge tag is part of
+# the Compose Specification supported by Docker Compose v2.20+ and
+# the compose-go library used by Compose v5+. If you need to support
+# older clients, fork this overlay into per-service files.
+
+services:
+  app:
+    volumes: !override
+      - /data:/data
+      - ./config:/app/config:ro
+
+  extract:
+    volumes: !override
+      - /data:/data
+      - ./config:/app/config:ro
+
+  scheduler:
+    volumes: !override
+      - /data:/data
+      - ./config:/app/config:ro
+
+  telegram-bot:
+    volumes: !override
+      - /data:/data
+
+  ws-gateway:
+    volumes: !override
+      - /data:/data
+
+  caddy:
+    # Caddy was originally inheriting `data:/srv:ro` from the base
+    # service. Once the other services switch to direct binds and
+    # nothing populates the `data:` named volume, that inherited
+    # mount points at an empty Docker-managed volume — and the
+    # @download `try_files /bigquery/data/<id>.parquet …` block
+    # in Caddyfile finds nothing, so every parquet download falls
+    # through to the app's uvicorn worker, defeating the v0.36.0
+    # file_server bypass.
+    #
+    # Restate every mount the base caddy service depends on; mirror
+    # the same caveat that lives in flat-mount.yml.
+    volumes: !override
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - /data/state/certs:/certs:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      - /data:/srv:ro

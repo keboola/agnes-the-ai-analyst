@@ -197,8 +197,17 @@ class TestKeboolaExtractorFull:
                 raise RuntimeError("Connection reset")
             _write_parquet(pq_path, "SELECT 1 AS id")
 
+        # When extension scan fails, the per-table flow now retries via
+        # _extract_via_legacy. Mock it to re-raise so we observe the final
+        # error surface; the contract under test is "single table failure
+        # doesn't abort remaining tables", not which path produced the
+        # message.
+        def legacy_reraise(tc, pq_path, url, token):
+            raise RuntimeError("Connection reset")
+
         with patch("connectors.keboola.extractor._try_attach_extension", side_effect=_mock_attach), \
-             patch("connectors.keboola.extractor._extract_via_extension", side_effect=failing_first):
+             patch("connectors.keboola.extractor._extract_via_extension", side_effect=failing_first), \
+             patch("connectors.keboola.extractor._extract_via_legacy", side_effect=legacy_reraise):
             result = run(output_dir, sample_local_configs, "https://kbc.example.com", "token-abc")
 
         assert result["tables_extracted"] == 1

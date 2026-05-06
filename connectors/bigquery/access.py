@@ -232,9 +232,46 @@ def _default_duckdb_session_factory(projects: BqProjects):
                 f"failed to install/load BigQuery DuckDB extension: {e}",
                 details={"original": str(e)},
             )
+        apply_bq_session_settings(conn)
         yield conn
     finally:
         conn.close()
+
+
+def apply_bq_session_settings(conn) -> None:
+    """Apply per-session DuckDB BigQuery-extension settings from instance config.
+
+    Currently sets ``bq_query_timeout_ms`` from
+    ``data_source.bigquery.query_timeout_ms``. The extension default is 90 s,
+    which is too tight for analyst-scale queries against view-backed BQ
+    datasets — bumping the default to 600 s here. Sentinel ``0`` (or a
+    non-numeric / unparseable value) leaves the extension default in place.
+
+    Call AFTER ``LOAD bigquery`` on every DuckDB session that touches BQ:
+    BqAccess's session factory, the standalone extractor in
+    ``connectors/bigquery/extractor.py``, and the orchestrator's
+    ``_remote_attach`` path in ``src/orchestrator.py``.
+    """
+    try:
+        from app.instance_config import get_value
+    except Exception:
+        return
+    raw = get_value(
+        "data_source", "bigquery", "query_timeout_ms", default=600_000,
+    )
+    try:
+        ms = int(raw) if raw is not None else 0
+    except (TypeError, ValueError):
+        return
+    if ms <= 0:
+        return
+    try:
+        conn.execute(f"SET bq_query_timeout_ms = {int(ms)}")
+    except Exception:
+        # Fail-soft: extension version may not support the setting, or the
+        # session may already have been frozen — leave the default rather
+        # than poisoning the whole session.
+        pass
 
 
 class BqAccess:

@@ -209,12 +209,14 @@ def build_schema(
 
 
 @router.get("/schema/{table_id}")
-async def schema(
+def schema(
     table_id: str,
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
     bq: BqAccess = Depends(get_bq_access),
 ):
+    # Plain ``def`` — opens a `bq.duckdb_session()` and runs sync metadata
+    # queries through the BQ extension. See PR #188 Tier 1 entry.
     try:
         return build_schema(conn, user, table_id, bq=bq)
     except NotFound:

@@ -112,6 +112,11 @@ services:
       - /data/state/certs:/certs:ro
       - caddy_data:/data
       - caddy_config:/config
+      # Read-only mount of the agnes data dir so Caddy's file_server can
+      # serve parquets directly (sendfile/zero-copy) and bypass the app's
+      # uvicorn workers — see Caddyfile's @download handler. Mounted at
+      # /srv (not /data) because /data is already the caddy_data volume.
+      - data:/srv:ro
     environment:
       - DOMAIN=${DOMAIN:-localhost}
       # Passes through whatever the operator set in .env. Caddyfile uses

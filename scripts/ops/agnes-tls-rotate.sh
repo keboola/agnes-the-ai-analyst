@@ -34,7 +34,12 @@ set -a; . /opt/agnes/.env; set +a
 
 [ -n "${TLS_FULLCHAIN_URL:-}" ] || { echo "TLS_FULLCHAIN_URL empty — nothing to rotate"; exit 0; }
 
-CERT_DIR=/data/state/certs
+# STATE_DIR is the host path that backs the writable state disk. Defaults
+# to /data/state for backward compatibility with the legacy nested-mount
+# layout; set STATE_DIR=/data-state in /opt/agnes/.env for the flat layout.
+# See docs/state-dir.md.
+STATE_DIR="${STATE_DIR:-/data/state}"
+CERT_DIR="$STATE_DIR/certs"
 mkdir -p "$CERT_DIR"
 # Match the agnes UID baked into the app image (Dockerfile: useradd --uid 999).
 # Without this, whoever happens to win the create race (this script as root

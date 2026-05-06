@@ -64,6 +64,16 @@ def init(
     token: str = typer.Option(..., "--token", help="Personal access token"),
     force: bool = typer.Option(False, "--force", help="Re-initialize an existing workspace"),
     workspace_str: Optional[str] = typer.Option(None, "--workspace", help="Target dir (default: cwd)"),
+    skip_materialize: bool = typer.Option(
+        False, "--skip-materialize",
+        help=(
+            "Skip materialized-mode tables on the first pull. The first "
+            "init can otherwise spend tens of minutes silently downloading "
+            "a single multi-GB scheduled-query parquet. Materialized rows "
+            "are still discoverable via `agnes catalog`; rerun `agnes pull` "
+            "without this flag once you actually need them locally."
+        ),
+    ),
 ):
     """Bootstrap workspace: auth, CLAUDE.md, hooks, first pull, AGNES_WORKSPACE.md."""
     workspace = Path(workspace_str).resolve() if workspace_str else Path.cwd()
@@ -176,7 +186,15 @@ def init(
     # exception escaping here is a programming error worth surfacing.
     # ------------------------------------------------------------------
     try:
-        result: PullResult = run_pull(server_url, token, workspace)
+        # `agnes init` always runs interactively (analyst typing the
+        # command), so progress is on by default — Pavel's #185 Phase 1
+        # was a 44-minute silent download on the very first install.
+        # Pass it through to run_pull.
+        result: PullResult = run_pull(
+            server_url, token, workspace,
+            skip_materialize=skip_materialize,
+            show_progress=True,
+        )
     except Exception as exc:
         typer.echo(render_error(0, {"detail": {
             "kind": "manifest_unauthorized",

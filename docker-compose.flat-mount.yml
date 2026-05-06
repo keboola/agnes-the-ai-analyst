@@ -1,0 +1,103 @@
+# Flat-mount overlay — parallel host binds for /data and /data-state.
+#
+# Why this overlay
+# ----------------
+# The default deployment topology nests state under data: sdb at /data,
+# sdc at /data/state (i.e. /data/state is a separate disk mounted INSIDE
+# the data disk). That layout works but has known fragility:
+#
+#   - Bind-mount propagation matters. A non-recursive bind hides the
+#     nested mount, leading to silent shadow writes — the production
+#     failure mode that motivated this overlay.
+#
+#   - Two writers, one tree. Host-side timers (tls-rotate.timer)
+#     write to /data/state/certs as root, while the container app
+#     writes to /data/state/system.duckdb as uid 999. Same prefix,
+#     different mount-namespace views = ownership conflicts.
+#
+#   - sdb resize requires umounting sdc first. Mount-order coupling.
+#
+# This overlay removes the nesting by mounting the state disk in
+# PARALLEL to the data disk:
+#
+#   sdb at /data       (analytics, regenerable)
+#   sdc at /data-state (DuckDB, secrets, certs — irreplaceable)
+#
+# Both are direct service-level binds, recursive by default in modern
+# Docker Engine. No volume options to forget. No nested propagation.
+# No two-writer collision (app uses /data-state, host scripts also use
+# /data-state — same path, single namespace).
+#
+# Usage
+# -----
+# 1. On the operator's host: mount the config disk at /data-state
+#    (instead of /data/state). Update fstab. Move existing state
+#    contents from /data/state to /data-state.
+#
+# 2. In /opt/agnes/.env, set STATE_DIR=/data-state. The app's secrets
+#    module + DuckDB code, plus the host-side rotate.sh and
+#    auto-upgrade.sh scripts, all read this var.
+#
+# 3. Compose invocation:
+#
+#    docker compose \
+#      -f docker-compose.yml \
+#      -f docker-compose.prod.yml \
+#      -f docker-compose.flat-mount.yml \
+#      up -d
+#
+# Note: this overlay is mutually exclusive with docker-compose.host-mount.yml.
+# Pick one based on your disk topology.
+#
+# Do NOT use this overlay in CI — /data and /data-state do not exist
+# on GitHub runners.
+
+services:
+  app:
+    volumes: !override
+      - /data:/data
+      - /data-state:/data-state
+      - ./config:/app/config:ro
+
+  extract:
+    volumes: !override
+      - /data:/data
+      - /data-state:/data-state
+      - ./config:/app/config:ro
+
+  scheduler:
+    volumes: !override
+      - /data:/data
+      - /data-state:/data-state
+      - ./config:/app/config:ro
+
+  telegram-bot:
+    volumes: !override
+      - /data:/data
+      - /data-state:/data-state
+
+  ws-gateway:
+    volumes: !override
+      - /data:/data
+      - /data-state:/data-state
+
+  caddy:
+    # `!override` replaces the entire base volumes list, so every mount
+    # the base service depends on must be re-stated here. Two of those
+    # are easy to miss and silently regress functionality:
+    #   - `data:/srv:ro` — Caddy's read-only view of the agnes data dir
+    #     used by the `@download` `file_server` handler in Caddyfile.
+    #     Without it, `try_files /bigquery/data/<id>.parquet …` finds no
+    #     file and every parquet download falls through to the app's
+    #     uvicorn worker — defeating the perf bypass landed in v0.36.0.
+    #   - `caddy_config:/config` — Caddy's autosave/ACME state. Missing
+    #     it doesn't break HTTPS (we feed certs in via `/certs`) but
+    #     loses the autosaved adapter config across recreates.
+    # Same caveat applies to any future `volumes: !override` block —
+    # diff against the base service before merging.
+    volumes: !override
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - /data-state/certs:/certs:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      - /data:/srv:ro

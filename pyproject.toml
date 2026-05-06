@@ -1,6 +1,6 @@
 [project]
 name = "agnes-the-ai-analyst"
-version = "0.36.0"
+version = "0.38.0"
 description = "Agnes — AI Data Analyst platform for AI analytical systems"
 requires-python = ">=3.11,<3.14"
 license = "MIT"
@@ -62,11 +62,23 @@ dependencies = [
     # ModuleNotFoundError boot loops on default Compose deploys.
     "anthropic>=0.30.0",
     "openai>=1.30.0",
+    # Legacy Keboola Storage API client. The primary Keboola path is the
+    # DuckDB community extension (`connectors/keboola/access.py`,
+    # `connectors/keboola/extractor.py`), but it routes scans through
+    # Keboola QueryService — and on projects whose Snowflake backend
+    # doesn't expose bucket schemas to the storage-token-derived role
+    # the extension fails with `Schema '..."in.c-..."' does not exist
+    # or not authorized` while the same token reads fine via the
+    # `/v2/storage/tables/{id}/data-preview` REST endpoint
+    # (keboola/duckdb-extension#17). The extractor has had a `kbcstorage`
+    # fallback path since the extension landed
+    # (`connectors/keboola/extractor.py:_extract_via_legacy`); making
+    # the dep core means that fallback is actually importable in the
+    # default install instead of crashing with `ModuleNotFoundError`.
+    "kbcstorage>=0.9.0",
 ]
 
 [project.optional-dependencies]
-# keboola-legacy: install kbcstorage>=0.9.0 manually if you need the legacy
-# Keboola client fallback (primary path uses DuckDB Keboola extension)
 dev = [
     "pytest>=9.0.0",
     "pytest-timeout>=2.0.0",
@@ -83,7 +95,7 @@ dev = [
 ]
 
 [project.scripts]
-agnes = "cli.main:app"
+agnes = "cli.main:_run_with_clean_errors"
 
 [build-system]
 requires = ["hatchling"]

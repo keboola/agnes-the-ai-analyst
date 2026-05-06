@@ -318,7 +318,17 @@ class TestKeboolaExtractorFailureModes:
                 raise socket.timeout("Connection timed out")
             _write_parquet(pq_path, "SELECT 1 AS id")
 
-        with patch("connectors.keboola.extractor._try_attach_extension", side_effect=_mock_attach),              patch("connectors.keboola.extractor._extract_via_extension", side_effect=side_effect):
+        # When extension scan fails, the per-table flow now retries via
+        # _extract_via_legacy. Mock it to re-raise the same socket.timeout
+        # so we observe the final error surface; the contract under test is
+        # "extension failure doesn't crash, error makes it into stats, other
+        # tables continue", not which path produced the message.
+        def legacy_reraise(tc, pq_path, url, token):
+            raise socket.timeout("Connection timed out")
+
+        with patch("connectors.keboola.extractor._try_attach_extension", side_effect=_mock_attach), \
+             patch("connectors.keboola.extractor._extract_via_extension", side_effect=side_effect), \
+             patch("connectors.keboola.extractor._extract_via_legacy", side_effect=legacy_reraise):
             result = run(output_dir, configs, "https://example.com", "test-token")
 
         assert result["tables_extracted"] == 1
@@ -348,6 +358,37 @@ class TestKeboolaExtractorFailureModes:
         assert val[0] == 42
         conn.close()
 
+    def test_extension_per_table_failure_falls_back_to_legacy(self, output_dir):
+        """When ATTACH succeeds but the per-table extension scan fails (e.g.
+        Keboola QueryService schema/role mismatch — keboola/duckdb-extension#17),
+        the extractor retries that table via the legacy Storage-API client."""
+        from connectors.keboola.extractor import run
+
+        configs = [{"name": "t", "id": "in.c-test.t", "query_mode": "local",
+                    "bucket": "in.c-test", "source_table": "t", "description": ""}]
+
+        def extension_scan_fails(conn, tc, pq_path):
+            raise RuntimeError(
+                "Keboola scan failed: Schema 'KBC_USE4_NNNN.\"in.c-test\"' "
+                "does not exist or not authorized."
+            )
+
+        def legacy_succeeds(tc, pq_path, url, token):
+            _write_parquet(pq_path, "SELECT 7 AS value")
+
+        with patch("connectors.keboola.extractor._try_attach_extension", side_effect=_mock_attach), \
+             patch("connectors.keboola.extractor._extract_via_extension", side_effect=extension_scan_fails), \
+             patch("connectors.keboola.extractor._extract_via_legacy", side_effect=legacy_succeeds):
+            result = run(output_dir, configs, "https://example.com", "test-token")
+
+        assert result["tables_extracted"] == 1
+        assert result["tables_failed"] == 0
+        # Verify the legacy-produced data is queryable
+        conn = duckdb.connect(str(Path(output_dir) / "extract.duckdb"))
+        val = conn.execute("SELECT value FROM t").fetchone()
+        assert val[0] == 7
+        conn.close()
+
     def test_all_tables_fail_returns_full_failure_stats(self, output_dir):
         """When every table fails, the extractor returns all failures in stats
         without crashing."""
@@ -361,7 +402,14 @@ class TestKeboolaExtractorFailureModes:
         def always_fail(conn, tc, pq_path):
             raise RuntimeError("Extraction failed")
 
-        with patch("connectors.keboola.extractor._try_attach_extension", side_effect=_mock_attach),              patch("connectors.keboola.extractor._extract_via_extension", side_effect=always_fail):
+        # Mock legacy too — otherwise it would attempt a real HTTP call to
+        # the fake URL on each per-table fallback retry.
+        def legacy_also_fails(tc, pq_path, url, token):
+            raise RuntimeError("Extraction failed")
+
+        with patch("connectors.keboola.extractor._try_attach_extension", side_effect=_mock_attach), \
+             patch("connectors.keboola.extractor._extract_via_extension", side_effect=always_fail), \
+             patch("connectors.keboola.extractor._extract_via_legacy", side_effect=legacy_also_fails):
             result = run(output_dir, configs, "https://example.com", "test-token")
 
         assert result["tables_extracted"] == 0
@@ -381,7 +429,8 @@ class TestKeboolaExtractorFailureModes:
         def write_pq(conn, tc, pq_path):
             _write_parquet(pq_path, "SELECT 1 AS id")
 
-        with patch("connectors.keboola.extractor._try_attach_extension", side_effect=_mock_attach),              patch("connectors.keboola.extractor._extract_via_extension", side_effect=write_pq):
+        with patch("connectors.keboola.extractor._try_attach_extension", side_effect=_mock_attach), \
+             patch("connectors.keboola.extractor._extract_via_extension", side_effect=write_pq):
             result = run(output_dir, configs, "https://example.com", "test-token")
 
         assert result["tables_extracted"] == 1
