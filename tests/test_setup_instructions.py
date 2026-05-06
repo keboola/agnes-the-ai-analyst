@@ -78,7 +78,7 @@ def test_resolve_lines_no_plugins_unified_six_step_layout():
     # report on phantom steps.
     assert "step 0(d)" not in joined
     assert "Which CA bundle source got picked" not in joined
-    assert "Whether the marketplace add went via direct HTTPS" not in joined
+    assert "~/.agnes/marketplace/.git/" not in joined
     # Legacy admin-only auth verbs are gone — `agnes init` subsumes them.
     assert "agnes auth import-token" not in joined
     assert "agnes auth whoami" not in joined
@@ -109,7 +109,7 @@ def test_preamble_step_zero_d_reference_only_when_trust_block_emitted():
 def test_finale_bullets_match_emitted_steps():
     """The Confirm step's bullets must reference only steps that were
     actually emitted. CA bundle bullet only when has_ca=True; marketplace
-    direct-vs-clone bullet only when plugins are configured."""
+    clone bullet only when plugins are configured."""
     from app.web.setup_instructions import resolve_lines
 
     fake_ca = (
@@ -121,19 +121,19 @@ def test_finale_bullets_match_emitted_steps():
     # No ca, no plugins: neither bullet present.
     plain = "\n".join(resolve_lines("agnes.whl"))
     assert "Which CA bundle source got picked" not in plain
-    assert "Whether the marketplace add went via direct HTTPS" not in plain
+    assert "~/.agnes/marketplace/.git/" not in plain
 
     # ca only: CA bullet yes, marketplace bullet no.
     ca_only = "\n".join(resolve_lines("agnes.whl", ca_pem=fake_ca))
     assert "Which CA bundle source got picked" in ca_only
-    assert "Whether the marketplace add went via direct HTTPS" not in ca_only
+    assert "~/.agnes/marketplace/.git/" not in ca_only
 
     # plugins only: marketplace bullet yes, CA bullet no.
     pl_only = "\n".join(
         resolve_lines("agnes.whl", plugin_install_names=["foo"], server_host="h")
     )
     assert "Which CA bundle source got picked" not in pl_only
-    assert "Whether the marketplace add went via direct HTTPS" in pl_only
+    assert "~/.agnes/marketplace/.git/" in pl_only
 
     # Both: both bullets present.
     both = "\n".join(
@@ -145,46 +145,7 @@ def test_finale_bullets_match_emitted_steps():
         )
     )
     assert "Which CA bundle source got picked" in both
-    assert "Whether the marketplace add went via direct HTTPS" in both
-
-
-def test_marketplace_block_redetects_platform_for_self_containment():
-    """Marketplace `case "$PLATFORM" in` would silently fall through to the
-    `*)` catch-all on every platform if `$PLATFORM` from step 0 isn't in
-    the current shell — which the prompt itself warns about
-    ("env vars do NOT persist between separate Bash invocations"). Linux
-    would then never get the direct-HTTPS attempt the comment promises.
-    The marketplace block must therefore re-detect $PLATFORM via uname
-    before its case statement, mirroring step 0(a)."""
-    from app.web.setup_instructions import resolve_lines
-
-    fake_ca = (
-        "-----BEGIN CERTIFICATE-----\n"
-        "FAKE\n"
-        "-----END CERTIFICATE-----\n"
-    )
-    joined = "\n".join(
-        resolve_lines(
-            "agnes.whl",
-            plugin_install_names=["foo"],
-            server_host="agnes.example.com",
-            ca_pem=fake_ca,
-        )
-    )
-    # Locate the marketplace section.
-    section_idx = joined.index("Register the Agnes Claude Code marketplace")
-    section = joined[section_idx:]
-
-    # Re-detection block must appear BEFORE the `case "$PLATFORM" in`
-    # check so the variable is set when the case runs.
-    redetect_idx = section.index('case "$(uname -s)" in')
-    platform_case_idx = section.index('case "$PLATFORM" in')
-    assert redetect_idx < platform_case_idx
-    # All three platform branches must be covered (same shape as step 0(a)).
-    redetect_block = section[redetect_idx:platform_case_idx]
-    assert "Darwin" in redetect_block and "PLATFORM=macos" in redetect_block
-    assert "Linux" in redetect_block and "PLATFORM=linux" in redetect_block
-    assert "MINGW*|MSYS*|CYGWIN*" in redetect_block and "PLATFORM=windows" in redetect_block
+    assert "~/.agnes/marketplace/.git/" in both
 
 
 def test_trust_block_rc_heredoc_writes_exactly_8_lines():
@@ -299,14 +260,25 @@ def test_resolve_lines_with_plugins_uses_install_first_diagnose_last_layout():
     assert "brew install git" in joined
     assert "winget install --id Git.Git -e --source winget --silent" in joined
     assert "sudo apt-get install git" in joined or "sudo dnf install git" in joined
-    # Step 5 — marketplace + plugins.
+    # Step 5 — marketplace + plugins. Collapsed to a single CLI call:
+    # `agnes refresh-marketplace --bootstrap` does clone + PAT-strip +
+    # chmod + register-with-Claude + auto-install-from-manifest internally.
+    # Pulling that out of the inline shell script avoided Claude Code's
+    # agent-driven `rm -rf` permission gate that the old multi-line
+    # sequence tripped on.
     assert "5) Register the Agnes Claude Code marketplace and install plugins" in joined
-    assert (
-        'claude plugin marketplace add "https://x:{token}@agnes.example.com/marketplace.git/"'
-        in joined
-    )
-    assert "claude plugin install foo@agnes --scope project" in joined
-    assert "claude plugin install bar@agnes --scope project" in joined
+    assert "agnes refresh-marketplace --bootstrap" in joined
+    # The destructive prep + per-plugin install commands are now inside
+    # the CLI; the prompt must not emit the inline shell forms in
+    # operator-runnable lines (comment lines documenting what the CLI
+    # does internally are fine — they're prose, not commands).
+    executable = _executable_lines(joined)
+    assert "rm -rf ~/.agnes/marketplace" not in executable
+    assert "git clone " not in executable
+    assert "git remote set-url origin" not in executable
+    assert "claude plugin marketplace add" not in executable
+    assert "claude plugin install foo@agnes" not in executable
+    assert "claude plugin install bar@agnes" not in executable
     # Step 6 — diagnose now AFTER marketplace (used to be step 4 right after whoami).
     assert "6) Run diagnostics:" in joined
     # Step 7 — skills, the last interactive step before Confirm.
@@ -422,12 +394,17 @@ def test_render_setup_instructions_with_plugins_substitutes_all_placeholders():
     assert "{token}" not in out
     assert "{wheel_filename}" not in out
     assert "{server_host}" not in out
-    # Token leaks into both the auth-import-token line and the marketplace URL.
+    # Token still appears for `agnes init` (step 2). The marketplace
+    # step uses `agnes refresh-marketplace --bootstrap` which reads the
+    # token from the agnes config that step 2 just wrote, so no token
+    # in any URL inside step 5.
     assert "T-XYZ" in out
-    assert "https://x:T-XYZ@agnes.example.com/marketplace.git/" in out
+    # Self-signed TLS line is host-scoped to server_url.
     assert 'git config --global http."https://agnes.example.com/".sslVerify false' in out
-    assert "claude plugin install foo@agnes --scope project" in out
-    assert "claude plugin install bar@agnes --scope project" in out
+    # Marketplace step is the one-liner; no per-plugin install lines.
+    assert "agnes refresh-marketplace --bootstrap" in out
+    assert "claude plugin install foo@agnes" not in out
+    assert "claude plugin install bar@agnes" not in out
 
 
 _FAKE_CA_PEM = (
@@ -541,101 +518,35 @@ def test_resolve_lines_with_ca_pem_switches_step_one_to_curl_then_local_install(
     assert "uv tool install --native-tls" not in joined_plain
 
 
-def test_resolve_lines_with_ca_pem_marketplace_is_platform_aware():
-    """When ca_pem is set + plugins requested, step 5 emits a platform branch:
-    Linux → try direct HTTPS first, fall back to git clone on failure
-    (node-based claude honors NODE_EXTRA_CA_CERTS);
-    Windows + macOS → straight to git-clone fallback (Bun-compiled claude
-    binary ignores OS trust store and CA env vars on both platforms)."""
-    from app.web.setup_instructions import resolve_lines
-
-    joined = "\n".join(
-        resolve_lines(
-            "agnes.whl",
-            plugin_install_names=["foo"],
-            server_host="agnes.example.com",
-            ca_pem=_FAKE_CA_PEM,
-        )
-    )
-    # The platform branch + MARKETPLACE_VIA selector.
-    assert "MARKETPLACE_VIA=clone" in joined
-    assert "MARKETPLACE_VIA=direct" in joined
-    # Locate the marketplace step's case block specifically — there is
-    # ALSO a `case "$PLATFORM" in` block in step 0(c) (OS trust store
-    # registration), so we anchor on the marketplace section header to
-    # narrow the slice.
-    section_idx = joined.index("Register the Agnes Claude Code marketplace")
-    market_case_idx = joined.index('case "$PLATFORM" in', section_idx)
-    market_esac_idx = joined.index("esac", market_case_idx)
-    branch_block = joined[market_case_idx:market_esac_idx]
-    assert "linux)" in branch_block
-    # Direct attempt only in the linux branch.
-    assert (
-        'claude plugin marketplace add "https://x:{token}@agnes.example.com/marketplace.git/" 2>/dev/null'
-        in branch_block
-    )
-    # The default `*)` branch must hard-set clone (no direct attempt).
-    star_idx = branch_block.index("*)")
-    star_branch = branch_block[star_idx:]
-    assert "MARKETPLACE_VIA=clone" in star_branch
-    assert "claude plugin marketplace add" not in star_branch
-    # Git-clone fallback writes to ~/.agnes/marketplace and adds it as a local path.
-    assert 'git clone "https://x:{token}@agnes.example.com/marketplace.git/" ~/.agnes/marketplace' in joined
-    assert "claude plugin marketplace add ~/.agnes/marketplace" in joined
-    # Harmless credential-manager-core warning is called out.
-    assert "credential-manager-core" in joined
-    # Plugin install line stays unchanged (errors checked in a sibling test).
-    assert "claude plugin install foo@agnes --scope project" in joined
+def _executable_lines(section: str) -> str:
+    """Strip shell comment lines so 'not in' assertions match against
+    operator-runnable code, not the prose documentation we put in
+    comments. A line is a comment when its first non-whitespace character
+    is `#`."""
+    out: list[str] = []
+    for line in section.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        out.append(line)
+    return "\n".join(out)
 
 
-def test_resolve_lines_with_ca_pem_marketplace_strips_pat_after_clone():
-    """After `git clone https://x:<PAT>@host/...`, the cloned repo's
-    `.git/config` holds the PAT in plaintext at `[remote "origin"] url`.
-    On default home setups that file syncs to iCloud/OneDrive and gets
-    read by antivirus / sync agents. The marketplace step must run
-    `git remote set-url origin <url-without-token>` after clone, plus a
-    best-effort chmod tighten. claude registers the *local path* (not the
-    remote URL), so stripping the token doesn't break marketplace
-    registration — refreshes go via re-running setup with a fresh PAT."""
-    from app.web.setup_instructions import resolve_lines
+def test_resolve_lines_with_ca_pem_marketplace_is_one_liner():
+    """Step 5 collapses to a single CLI invocation: `agnes refresh-marketplace
+    --bootstrap`. The CLI does clone + PAT-strip + chmod + register-with-Claude
+    + auto-install internally so the prompt itself emits no `rm -rf`, no
+    `git clone`, no per-plugin install lines.
 
-    joined = "\n".join(
-        resolve_lines(
-            "agnes.whl",
-            plugin_install_names=["foo"],
-            server_host="agnes.example.com",
-            ca_pem=_FAKE_CA_PEM,
-        )
-    )
-    # Token-bearing clone line still exists (we need the token to authenticate
-    # the initial clone) but a token-less remote set-url line follows.
-    clone_idx = joined.index(
-        'git clone "https://x:{token}@agnes.example.com/marketplace.git/"'
-    )
-    set_url_idx = joined.index(
-        'git -C ~/.agnes/marketplace remote set-url origin "https://agnes.example.com/marketplace.git/"'
-    )
-    add_idx = joined.index("claude plugin marketplace add ~/.agnes/marketplace")
-    assert clone_idx < set_url_idx < add_idx
-    # Token-less URL must NOT contain the placeholder or `x:` prefix.
-    set_url_line_end = joined.index("\n", set_url_idx)
-    set_url_line = joined[set_url_idx:set_url_line_end]
-    assert "{token}" not in set_url_line
-    assert "x:" not in set_url_line
+    The motivation is the Claude Code agent permission gate: when a user
+    pastes the install prompt into a Claude Code session, the agent that
+    executes it is denied `rm -rf` by default. Pulling the destructive
+    prep into the agnes binary (which uses Python `shutil.rmtree`, not
+    the `rm -rf` shell pattern) lets the CLI's own permission grant cover
+    the cleanup — the prompt stays Claude-Code-friendly.
 
-    # Best-effort chmod tighten — wrapped in `|| true` so MSYS / Git Bash
-    # on Windows (where chmod is a no-op against NTFS ACLs) doesn't fail
-    # the step.
-    assert "chmod 700 ~/.agnes/marketplace ~/.agnes/marketplace/.git" in joined
-    assert "chmod 600 ~/.agnes/marketplace/.git/config" in joined
-    assert "|| true" in joined
-
-
-def test_resolve_lines_with_ca_pem_marketplace_has_explicit_error_handling():
-    """Each shell-out in the marketplace block must fail loudly with `exit 1`
-    on a non-zero exit, not silently fall through to the next step. Without
-    this, a failed `git clone` causes a confusing 'marketplace 'agnes' not
-    found' error from the subsequent `claude plugin install`."""
+    Direct HTTPS via `claude plugin marketplace add <https-url>` is broken
+    end-to-end on every Claude Code distribution (see _marketplace_block
+    docstring), so we never emit it as an alternative."""
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(
@@ -646,19 +557,45 @@ def test_resolve_lines_with_ca_pem_marketplace_has_explicit_error_handling():
             ca_pem=_FAKE_CA_PEM,
         )
     )
-    # git clone has an `|| { ... exit 1 }` guard.
-    assert (
-        'git clone "https://x:{token}@agnes.example.com/marketplace.git/" '
-        '~/.agnes/marketplace || {'
-    ) in joined
-    # `claude plugin marketplace add ~/.agnes/marketplace` (the local path
-    # one — not the chmod best-effort lines) has its own guard.
-    assert "claude plugin marketplace add ~/.agnes/marketplace || {" in joined
-    # Each `claude plugin install <name>@agnes` has its own guard so we know
-    # which plugin failed.
-    assert "claude plugin install foo@agnes --scope project || {" in joined
-    assert "claude plugin install bar@agnes --scope project || {" in joined
-    # Error messages are written to stderr, not stdout.
+    # The marketplace step contains the one-liner.
+    assert "agnes refresh-marketplace --bootstrap" in joined
+    # And nothing else relating to the marketplace install — the inline
+    # shell sequence has been pulled into the CLI. We strip comment lines
+    # before asserting because the prompt does include a comment block
+    # describing what the CLI does internally; that prose is documentation,
+    # not operator-runnable code.
+    section_idx = joined.index("Register the Agnes Claude Code marketplace")
+    section = _executable_lines(joined[section_idx:])
+    assert "rm -rf ~/.agnes/marketplace" not in section
+    assert "git clone " not in section
+    assert "git -C ~/.agnes/marketplace remote set-url" not in section
+    assert "chmod 700 ~/.agnes/marketplace" not in section
+    assert "claude plugin marketplace add" not in section
+    assert "claude plugin install foo@agnes" not in section
+    assert "claude plugin install bar@agnes" not in section
+    # And no platform-aware switch in the marketplace section (there's
+    # still one in step 0(c) for OS trust-store registration; we anchored
+    # on the marketplace header above to narrow the slice).
+    assert 'case "$PLATFORM"' not in section
+    assert "MARKETPLACE_VIA=" not in section
+
+
+def test_resolve_lines_with_ca_pem_marketplace_has_explicit_error_handling():
+    """The marketplace one-liner must still fail loudly with `exit 1` on
+    a non-zero exit (so a CLI bootstrap failure blocks downstream steps
+    instead of letting them silently misbehave)."""
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(
+        resolve_lines(
+            "agnes.whl",
+            plugin_install_names=["foo", "bar"],
+            server_host="agnes.example.com",
+            ca_pem=_FAKE_CA_PEM,
+        )
+    )
+    assert "agnes refresh-marketplace --bootstrap || {" in joined
+    # Error message goes to stderr.
     assert ">&2" in joined
 
 
@@ -695,8 +632,8 @@ def test_resolve_lines_with_ca_pem_suppresses_legacy_sslverify_line():
     )
     # Legacy git-config sslVerify=false downgrade is suppressed when ca_pem is set.
     assert "git config --global" not in joined
-    # But the marketplace step itself still renders.
-    assert "claude plugin install foo@agnes --scope project" in joined
+    # But the marketplace step itself still renders (as the one-liner).
+    assert "agnes refresh-marketplace --bootstrap" in joined
     # And the trust block is present.
     assert "0) Trust the Agnes TLS certificate" in joined
 
