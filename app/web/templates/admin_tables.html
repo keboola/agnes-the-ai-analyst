@@ -1564,14 +1564,16 @@
     // time so already-stored corrupt rows still display readably.
     function unescapeShellQuoting(s) {
         if (!s) return s;
+        // Order matters: protect real backslashes via NUL sentinel first,
+        // unescape the well-known sequences, then restore real backslashes.
         return s
-            .replace(/\\\\/g, ' ')
+            .replace(/\\\\/g, ' ')
             .replace(/\\n/g, '\n')
             .replace(/\\r/g, '\r')
             .replace(/\\t/g, '\t')
             .replace(/\\'/g, "'")
             .replace(/\\"/g, '"')
-            .replace(/ /g, '\\');
+            .replace(/ /g, '\\');
     }
 
     // C3: removed dead Discovery panel JS. The global Discovery card +
