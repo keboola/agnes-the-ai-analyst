@@ -102,8 +102,13 @@ def load_instance_config() -> dict:
     # mirror the resolver here before the deep-merge — without it, the
     # LLM factory receives the literal placeholder and rejects it as an
     # invalid api key (#179 review fix).
-    data_dir = Path(os.environ.get("DATA_DIR", "./data"))
-    overlay_path = data_dir / "state" / "instance.yaml"
+    # Resolve via _state_dir() so the path matches the writer in
+    # app/api/admin.py — under the flat-mount layout (STATE_DIR=/data-state)
+    # both the configure-endpoint and the server-config-endpoint write
+    # ``/data-state/instance.yaml``; reading from ``/data/state/...`` here
+    # would silently load stale config from the regenerable data disk.
+    from app.secrets import _state_dir
+    overlay_path = _state_dir() / "instance.yaml"
     if overlay_path.exists():
         try:
             overlay = yaml.safe_load(overlay_path.read_text()) or {}

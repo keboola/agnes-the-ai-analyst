@@ -1001,8 +1001,8 @@ async def update_server_config(
     # atomic-write sequence; the audit log sits outside since it operates on
     # local snapshots.
     from app.instance_config import reset_cache
-    data_dir = Path(os.environ.get("DATA_DIR", "./data"))
-    config_path = data_dir / "state" / "instance.yaml"
+    from app.secrets import _state_dir
+    config_path = _state_dir() / "instance.yaml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
 
     with _overlay_write_lock:
@@ -2606,8 +2606,8 @@ async def configure_instance(
     #    — they don't belong in the overlay at all.
     # 2. Patch only the sections this endpoint touches.
     # 3. Write the narrow overlay back atomically (tmp + os.replace).
-    data_dir = Path(os.environ.get("DATA_DIR", "./data"))
-    config_path = data_dir / "state" / "instance.yaml"
+    from app.secrets import _state_dir
+    config_path = _state_dir() / "instance.yaml"
 
     # Same serialization + corrupt-overlay handling as POST /server-config.
     with _overlay_write_lock:
@@ -2683,8 +2683,13 @@ async def configure_instance(
         secrets_to_persist["KEBOOLA_STACK_URL"] = request.keboola_url
 
     if secrets_to_persist:
-        data_dir = Path(os.environ.get("DATA_DIR", "./data"))
-        overlay_path = data_dir / "state" / ".env_overlay"
+        # Resolve via _state_dir() so the path matches app/main.py's
+        # startup-time read of the same overlay. Without this, an operator
+        # on the flat-mount layout (STATE_DIR=/data-state) would write
+        # secrets to /data/state/.env_overlay here while the app reads
+        # from /data-state/.env_overlay — silent loss on next restart.
+        from app.secrets import _state_dir
+        overlay_path = _state_dir() / ".env_overlay"
         overlay_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Merge with existing overlay
