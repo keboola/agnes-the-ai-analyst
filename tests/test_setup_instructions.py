@@ -260,12 +260,19 @@ def test_resolve_lines_with_plugins_uses_install_first_diagnose_last_layout():
     assert "brew install git" in joined
     assert "winget install --id Git.Git -e --source winget --silent" in joined
     assert "sudo apt-get install git" in joined or "sudo dnf install git" in joined
-    # Step 5 — marketplace + plugins.
+    # Step 5 — marketplace + plugins. Legacy path (no ca_pem) now also
+    # always-clones; direct HTTPS via `claude plugin marketplace add <url>`
+    # is broken end-to-end on every Claude Code distribution (see
+    # _marketplace_block docstring), so the URL goes into a `git clone`
+    # and the marketplace gets registered as a local path.
     assert "5) Register the Agnes Claude Code marketplace and install plugins" in joined
     assert (
-        'claude plugin marketplace add "https://x:{token}@agnes.example.com/marketplace.git/"'
+        'git clone "https://x:{token}@agnes.example.com/marketplace.git/" ~/.agnes/marketplace'
         in joined
     )
+    assert "claude plugin marketplace add ~/.agnes/marketplace" in joined
+    # Direct-HTTPS marketplace add must NOT appear (the bug we're avoiding).
+    assert 'claude plugin marketplace add "https://' not in joined
     assert "claude plugin install foo@agnes --scope project" in joined
     assert "claude plugin install bar@agnes --scope project" in joined
     # Step 6 — diagnose now AFTER marketplace (used to be step 4 right after whoami).
