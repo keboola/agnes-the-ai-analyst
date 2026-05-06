@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.43.0] — 2026-05-06
+
 ### Added
 
 - CLI auto-upgrade: `agnes self-upgrade` reinstalls the CLI from the server's currently-shipped wheel via `uv tool install --force`, falling back to `pip install --force-reinstall --no-deps` via `sys.executable` when uv is not on PATH. After install, the new binary is smoke-tested at the install-resolved path (`uv tool dir --bin` for uv, `<sys.executable parent>/agnes` for pip) — never via PATH lookup, to avoid stale-shadow false positives. Smoke failure triggers automatic rollback to the previously verified-good wheel (recorded in `~/.config/agnes/last_known_good.json`); rollback's exit code is captured and surfaced on stderr if it also fails. First-ever upgrade or unrecoverable rollback prints the canonical bootstrap recovery: `curl -fsSL <your-agnes-server>/cli/install.sh | bash`. The new command is wired into the SessionStart hook installed by `agnes init` as a chained shell entry (`agnes self-upgrade … || true; agnes pull … || true`) so an upgrade failure does not block the pull.
