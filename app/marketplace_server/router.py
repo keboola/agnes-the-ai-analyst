@@ -1,10 +1,14 @@
 """FastAPI router for the aggregated marketplace endpoint.
 
-Two GET routes:
-  - /marketplace/info   → JSON summary (diagnostic / admin)
-  - /marketplace.zip    → ZIP download with ETag / If-None-Match
+Three GET routes:
+  - /marketplace/info                              → JSON summary (diagnostic / admin)
+  - /marketplace.zip                               → ZIP download with ETag / If-None-Match
+  - /marketplace.git/.claude-plugin/marketplace.json → JSON manifest for
+    `claude plugin marketplace add <https-url>`. Registered before the
+    `/marketplace.git` mount in main.py so FastAPI matches the explicit
+    route before falling through to the git smart-HTTP WSGI app.
 
-Both gated by the existing `get_current_user` dependency (Bearer PAT or cookie).
+All gated by the existing `get_current_user` dependency (Bearer PAT or cookie).
 The git smart-HTTP channel lives in git_router.py and is mounted separately
 because it needs raw WSGI I/O that FastAPI doesn't model natively.
 """
@@ -32,6 +36,14 @@ async def marketplace_info(
 ) -> JSONResponse:
     info = packager.build_info(conn, user)
     return JSONResponse(info)
+
+
+@router.get("/marketplace.git/.claude-plugin/marketplace.json")
+async def marketplace_json(
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+) -> JSONResponse:
+    return JSONResponse(packager.build_marketplace_json(conn, user))
 
 
 @router.get("/marketplace.zip")

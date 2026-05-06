@@ -238,6 +238,24 @@ def invalidate_etag_cache() -> None:
         _ETAG_CACHE.clear()
 
 
+def build_marketplace_json(
+    conn: duckdb.DuckDBPyConnection,
+    user: dict,
+    *,
+    plugins: Optional[List[dict]] = None,
+    etag: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Return the merged ``.claude-plugin/marketplace.json`` payload for this user.
+
+    Same content the ZIP and git channels embed, exposed standalone so
+    Claude Code's ``plugin marketplace add <https-url>`` path can fetch it
+    directly without spinning up the smart-HTTP git protocol.
+    """
+    if plugins is None or etag is None:
+        etag, plugins = compute_etag_for_user(conn, user)
+    return _merged_manifest(plugins, etag)
+
+
 def build_zip(
     conn: duckdb.DuckDBPyConnection,
     user: dict,
