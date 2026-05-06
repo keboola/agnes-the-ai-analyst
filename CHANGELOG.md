@@ -10,7 +10,31 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-## [0.39.0] — 2026-05-06
+## [0.40.0] — 2026-05-06
+
+### Fixed
+- **Materialized BigQuery parquets now register themselves in
+  `extract.duckdb` so the master view actually appears**
+  (`connectors/bigquery/extractor.py:materialize_query`). Pre-fix the
+  function wrote the `<id>.parquet` to disk and returned the row count,
+  but **never** wrote a `_meta` row or an inner view in the connector's
+  `extract.duckdb`. The orchestrator's `rebuild()` scans `_meta` to
+  decide which master views to create, so materialized tables remained
+  invisible: `agnes query "SELECT … FROM <id>"` returned HTTP 400
+  *"registered as query_mode='materialized' but is not yet materialized
+  in this instance's analytics views"* even though the parquet was
+  sitting there. Symptom appeared after every container recreate (image
+  upgrade) and after every `_create_meta_table` cycle in the extractor
+  subprocess (which `DROP TABLE IF EXISTS _meta` + `CREATE TABLE`
+  cleanly each pass — wiping any prior materialized rows). Fix: after
+  the atomic `os.replace(tmp_path, parquet_path)`, open
+  `extract.duckdb` and `DELETE FROM _meta WHERE table_name = ? + INSERT
+  + CREATE OR REPLACE VIEW <id> AS SELECT * FROM read_parquet('<path>')`
+  inside a single transaction. Idempotent, fail-soft (parquet remains
+  canonical, the next sync pass recovers any registration drift).
+  When `extract.duckdb` doesn't exist yet (fresh BQ-only deployment),
+  the fix logs and continues — the next extractor pass creates the
+  file and the master view appears on the rebuild after that.
 
 ### Performance
 - **`/api/query` (and `agnes query --remote`) now rewrites user SQL referencing

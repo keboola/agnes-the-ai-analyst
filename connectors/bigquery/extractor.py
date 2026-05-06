@@ -269,6 +269,103 @@ def _create_meta_table(conn: duckdb.DuckDBPyConnection) -> None:
     )""")
 
 
+def _ensure_meta_table(conn: duckdb.DuckDBPyConnection) -> None:
+    """Idempotent variant of `_create_meta_table` — creates the table if
+    missing, leaves existing rows untouched. Used by `materialize_query`
+    to register the materialized parquet without wiping the
+    extractor-subprocess-written remote rows that share the same
+    extract.duckdb."""
+    conn.execute("""CREATE TABLE IF NOT EXISTS _meta (
+        table_name VARCHAR NOT NULL,
+        description VARCHAR,
+        rows BIGINT,
+        size_bytes BIGINT,
+        extracted_at TIMESTAMP,
+        query_mode VARCHAR DEFAULT 'remote'
+    )""")
+
+
+def _persist_materialized_inner_view(
+    extract_db_path: Path,
+    table_id: str,
+    parquet_path: Path,
+    rows: int,
+    size_bytes: int,
+) -> None:
+    """Write the materialized parquet's inner view + ``_meta`` row into
+    ``extract.duckdb`` so the orchestrator's master-view rebuild picks it
+    up uniformly with remote-mode rows. Without this, ``materialize_query``
+    leaves the parquet on disk but no record of it in ``_meta``, and the
+    orchestrator's ``rebuild()`` scan never creates the master view —
+    ``agnes query`` then 400s with "registered as query_mode='materialized'
+    but is not yet materialized" even though the parquet exists.
+
+    Idempotent: existing ``_meta`` row for the same ``table_name`` is
+    replaced, existing inner view is recreated. Fail-soft — the parquet
+    is the canonical artifact; if extract.duckdb registration fails (lock
+    contention, missing file, schema drift), log and continue. The
+    caller's ``rebuild_from_registry`` rebuild will get a chance to fix
+    it next pass.
+    """
+    if not extract_db_path.exists():
+        # Fresh BQ-only deployment hasn't run the extractor subprocess
+        # yet, so extract.duckdb doesn't exist. Nothing to update — the
+        # next extractor pass + materialize cycle will populate it.
+        logger.info(
+            "materialize: extract.duckdb at %s does not exist yet; "
+            "skipping inner-view registration. Next extractor pass will "
+            "create it and the master view will appear on the rebuild "
+            "after that.",
+            extract_db_path,
+        )
+        return
+
+    safe_table = _escape_sql_string_literal(table_id)
+    safe_path = _escape_sql_string_literal(str(parquet_path))
+    try:
+        with duckdb.connect(str(extract_db_path), read_only=False) as ext_conn:
+            _ensure_meta_table(ext_conn)
+            # `_meta` has no UNIQUE on table_name (legacy schema), so we
+            # do a manual delete-then-insert. Wrap in a transaction so
+            # concurrent reads of `_meta` either see the old row or the
+            # new one, never both / neither.
+            ext_conn.execute("BEGIN")
+            try:
+                ext_conn.execute(
+                    "DELETE FROM _meta WHERE table_name = ?", [table_id]
+                )
+                ext_conn.execute(
+                    "INSERT INTO _meta VALUES (?, '', ?, ?, CURRENT_TIMESTAMP, 'materialized')",
+                    [table_id, rows, size_bytes],
+                )
+                # Inner view backing the master view. Orchestrator scans
+                # information_schema.tables for the attached extract.duckdb
+                # and only creates a master view when an inner object
+                # exists by the same name. read_parquet() is hot per-call,
+                # so the master view path goes through the same disk.
+                ext_conn.execute(
+                    f"CREATE OR REPLACE VIEW \"{table_id}\" AS "
+                    f"SELECT * FROM read_parquet('{safe_path}')"
+                )
+                ext_conn.execute("COMMIT")
+            except Exception:
+                try:
+                    ext_conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise
+    except Exception as e:
+        # Fail-soft: parquet is on disk, registry stays consistent, the
+        # next extractor + orchestrator pass will recover. Loud log so
+        # operators can spot persistent breakage.
+        logger.warning(
+            "materialize: failed to register %s in extract.duckdb (%s) — "
+            "parquet at %s is fine, master view will appear after the "
+            "next sync cycle. Error: %s",
+            table_id, extract_db_path, parquet_path, e,
+        )
+
+
 def _create_remote_attach_table(
     conn: duckdb.DuckDBPyConnection, project_id: str
 ) -> None:
@@ -667,6 +764,23 @@ def materialize_query(
             os.replace(tmp_path, parquet_path)
 
             rows = int(rows)
+
+            # Register the parquet in extract.duckdb so the orchestrator's
+            # master-view rebuild can pick it up uniformly with remote-mode
+            # rows. Without this, the parquet sits on disk but the master
+            # view is never created — `agnes query "SELECT … FROM <id>"`
+            # 400s with "not yet materialized in this instance's analytics
+            # views". Fail-soft — the parquet is canonical, the next
+            # extractor + orchestrator pass will recover any registration
+            # drift.
+            _persist_materialized_inner_view(
+                extract_db_path=out_path / "extract.duckdb",
+                table_id=table_id,
+                parquet_path=parquet_path,
+                rows=rows,
+                size_bytes=size_bytes,
+            )
+
             if rows == 0:
                 # 0 rows is indistinguishable from "the SQL is wrong and nobody
                 # noticed" — surface it loudly so operators see it in the scheduler

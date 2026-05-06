@@ -148,3 +148,143 @@ def test_materialize_overwrites_existing_parquet(tmp_path):
         f"SELECT n FROM read_parquet('{out}/data/t1.parquet')"
     ).fetchall()
     assert rows == [(2,)]
+
+
+def test_materialize_persists_meta_and_inner_view_in_extract_db(tmp_path):
+    """0.40.0 fix: after materialize_query writes the parquet, it must also
+    register the table in extract.duckdb (`_meta` row + inner view) so the
+    orchestrator's master-view rebuild picks it up uniformly with remote-mode
+    rows. Without this, the parquet sits on disk but the master view never
+    materializes — `agnes query` 400s with "not yet materialized".
+    """
+    out = tmp_path / "extracts" / "bigquery"
+    out.mkdir(parents=True)
+
+    # Pre-create extract.duckdb (as the extractor subprocess would have done
+    # on this connector's first pass) with the canonical _meta table + a
+    # remote-mode row. We must verify the materialize call adds its row
+    # without wiping the existing remote rows.
+    extract_db = out / "extract.duckdb"
+    with duckdb.connect(str(extract_db)) as ext:
+        ext.execute("""CREATE TABLE _meta (
+            table_name VARCHAR NOT NULL,
+            description VARCHAR,
+            rows BIGINT,
+            size_bytes BIGINT,
+            extracted_at TIMESTAMP,
+            query_mode VARCHAR DEFAULT 'remote'
+        )""")
+        ext.execute(
+            "INSERT INTO _meta VALUES ('s1_session_landings', '', 0, 0, "
+            "CURRENT_TIMESTAMP, 'remote')"
+        )
+
+    bq = _make_stub_bq({
+        "bq.test.orders": (
+            "SELECT 'EU' AS region, 100 AS revenue UNION ALL "
+            "SELECT 'US' AS region, 250 AS revenue"
+        )
+    })
+
+    materialize_query(
+        table_id="orders_summary",
+        sql="SELECT region, SUM(revenue) AS revenue FROM bq.test.orders GROUP BY 1",
+        bq=bq,
+        output_dir=str(out),
+    )
+
+    # Parquet exists.
+    parquet_path = out / "data" / "orders_summary.parquet"
+    assert parquet_path.exists()
+
+    # _meta has BOTH the legacy remote row AND the new materialized row.
+    with duckdb.connect(str(extract_db), read_only=True) as ext:
+        rows = ext.execute(
+            "SELECT table_name, query_mode, rows FROM _meta ORDER BY table_name"
+        ).fetchall()
+        assert ("orders_summary", "materialized", 2) in [
+            (r[0], r[1], r[2]) for r in rows
+        ]
+        assert ("s1_session_landings", "remote", 0) in [
+            (r[0], r[1], r[2]) for r in rows
+        ]
+        # Inner view backing the master view exists, points at the parquet.
+        view_rows = ext.execute(
+            "SELECT * FROM \"orders_summary\" ORDER BY region"
+        ).fetchall()
+        assert view_rows == [("EU", 100), ("US", 250)]
+
+
+def test_materialize_replaces_meta_row_on_re_run(tmp_path):
+    """A second materialize for the same table_id must REPLACE the existing
+    `_meta` row, not duplicate it. Otherwise the orchestrator scan sees two
+    rows for the same name and creates the master view twice (or worse,
+    against stale row stats)."""
+    out = tmp_path / "extracts" / "bigquery"
+    out.mkdir(parents=True)
+    # Pre-create extract.duckdb (the extractor subprocess would do this on
+    # the first sync pass; we shortcut so the test exercises the
+    # delete-then-insert branch on re-run, not the "no extract.duckdb yet"
+    # skip branch.
+    extract_db = out / "extract.duckdb"
+    with duckdb.connect(str(extract_db)) as ext:
+        ext.execute("""CREATE TABLE _meta (
+            table_name VARCHAR NOT NULL,
+            description VARCHAR,
+            rows BIGINT,
+            size_bytes BIGINT,
+            extracted_at TIMESTAMP,
+            query_mode VARCHAR DEFAULT 'remote'
+        )""")
+
+    bq = _make_stub_bq({
+        "bq.test.t1": "SELECT 'EU' AS region, 100 AS revenue",
+        "bq.test.t2": (
+            "SELECT 'EU' AS region, 100 AS revenue UNION ALL "
+            "SELECT 'US' AS region, 250 AS revenue"
+        ),
+    })
+
+    # First pass — 1 row.
+    materialize_query(
+        table_id="orders_summary",
+        sql="SELECT region, revenue FROM bq.test.t1",
+        bq=bq, output_dir=str(out),
+    )
+    # Second pass — different SQL, 2 rows. Must overwrite, not duplicate.
+    materialize_query(
+        table_id="orders_summary",
+        sql="SELECT region, revenue FROM bq.test.t2",
+        bq=bq, output_dir=str(out),
+    )
+
+    extract_db = out / "extract.duckdb"
+    with duckdb.connect(str(extract_db), read_only=True) as ext:
+        rows = ext.execute(
+            "SELECT COUNT(*), MAX(rows) FROM _meta WHERE table_name = 'orders_summary'"
+        ).fetchone()
+        assert rows[0] == 1, "must be exactly one _meta row, not duplicated"
+        assert rows[1] == 2, "row count reflects the latest run, not the first"
+
+
+def test_materialize_skips_inner_view_when_extract_db_missing(tmp_path):
+    """Fresh BQ-only deployment may not have run the extractor subprocess
+    yet, so extract.duckdb doesn't exist. materialize_query must not crash
+    on that path — it logs and continues, the next extractor pass +
+    rebuild will pick up the parquet via the registered registry row."""
+    out = tmp_path / "extracts" / "bigquery"
+    out.mkdir(parents=True)
+    # Deliberately do NOT create extract.duckdb.
+
+    bq = _make_stub_bq({"bq.test.t": "SELECT 1 AS n"})
+
+    # Should NOT raise — fail-soft.
+    stats = materialize_query(
+        table_id="solo_table",
+        sql="SELECT n FROM bq.test.t",
+        bq=bq, output_dir=str(out),
+    )
+    assert stats["rows"] == 1
+    # Parquet is on disk, extract.duckdb still doesn't exist (no force-create).
+    assert (out / "data" / "solo_table.parquet").exists()
+    assert not (out / "extract.duckdb").exists()
