@@ -10,6 +10,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- CLI auto-upgrade: `agnes self-upgrade` reinstalls the CLI from the server's currently-shipped wheel via `uv tool install --force`, falling back to `pip install --force-reinstall --no-deps` via `sys.executable` when uv is not on PATH. After install, the new binary is smoke-tested at the install-resolved path (`uv tool dir --bin` for uv, `<sys.executable parent>/agnes` for pip) — never via PATH lookup, to avoid stale-shadow false positives. Smoke failure triggers automatic rollback to the previously verified-good wheel (recorded in `~/.config/agnes/last_known_good.json`); rollback's exit code is captured and surfaced on stderr if it also fails. First-ever upgrade or unrecoverable rollback prints the canonical bootstrap recovery: `curl -fsSL <your-agnes-server>/cli/install.sh | bash`. The new command is wired into the SessionStart hook installed by `agnes init` as a chained shell entry (`agnes self-upgrade … || true; agnes pull … || true`) so an upgrade failure does not block the pull.
+- Server: `/api/*` responses now carry `X-Agnes-Latest-Version` and `X-Agnes-Min-Version` headers. CLIs older than `X-Agnes-Min-Version` exit with **code 2** and a remediation message instead of failing on a wire-protocol mismatch. Day-one floor is `0.0.0` (no enforcement) — bump `MIN_COMPAT_CLI_VERSION` in `app/version.py` in the same PR that ships a deliberate wire break.
+- CLI: `cli/update_check.py:check()` accepts a keyword-only `bypass_disabled=True` so explicit `agnes self-upgrade` invocations probe `/cli/latest` even when `AGNES_NO_UPDATE_CHECK=1` is set (which silences the implicit warning loop only).
+
 ## [0.41.0] — 2026-05-06
 
 ### Fixed
@@ -64,6 +70,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   When `extract.duckdb` doesn't exist yet (fresh BQ-only deployment),
   the fix logs and continues — the next extractor pass creates the
   file and the master view appears on the rebuild after that.
+
+## [0.39.0] — 2026-05-06
 
 ### Performance
 - **`/api/query` (and `agnes query --remote`) now rewrites user SQL referencing

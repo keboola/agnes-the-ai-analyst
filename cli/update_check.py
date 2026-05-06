@@ -1,7 +1,7 @@
 """Auto-check for a newer CLI version on the configured server.
 
 Runs in the root typer callback before subcommand dispatch. Failure is
-silent — we never block a working `da` command on a best-effort version
+silent — we never block a working `agnes` command on a best-effort version
 probe. Result is cached in `$AGNES_CONFIG_DIR/update_check.json` for 24h so
 we don't hammer the server on every invocation.
 
@@ -23,7 +23,7 @@ _CACHE_FILENAME = "update_check.json"
 _CACHE_TTL_SECONDS = 24 * 60 * 60  # 24h on a successful probe
 _NEGATIVE_CACHE_TTL_SECONDS = 5 * 60  # 5min on a failed probe, to avoid
 # re-probing 3s of silence (drop-packet networks: corporate firewall, VPN)
-# on every `da` invocation.
+# on every `agnes` invocation.
 _REQUEST_TIMEOUT_SECONDS = 3.0  # keep startup snappy
 
 
