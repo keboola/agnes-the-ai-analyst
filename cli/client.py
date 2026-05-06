@@ -3,7 +3,9 @@
 import atexit
 import glob
 import os
+import platform
 import re
+import sys
 import threading
 import time
 import traceback
@@ -15,6 +17,7 @@ from typing import Optional
 import httpx
 
 from cli.config import _config_dir, get_server_url, get_token
+from cli.update_check import _installed_version, _version_lt
 
 
 # PID-suffixed tmp / part files — see `_download_chunked` and
@@ -213,6 +216,35 @@ def _translate_transport_error(
     )
 
 
+def _check_version_headers(response: "httpx.Response") -> None:
+    """Hard-stop the CLI when the server reports we're below min_version.
+
+    Drift warnings (`local < latest`) are already printed by the
+    update_check root callback in cli/main.py — no need to nag again on
+    every API call. This hook only enforces the hard floor.
+    """
+    # Recursion barrier: `agnes self-upgrade` sets this for the duration
+    # of the upgrade. Without it, a /api/* call inside the install flow
+    # could exit 2 with "Run: agnes self-upgrade" — inside agnes
+    # self-upgrade. The sentinel is process-local and propagates to
+    # subprocesses via the explicit env= passed to the smoke test.
+    if os.environ.get("AGNES_SELF_UPGRADE_IN_PROGRESS") == "1":
+        return
+    latest = response.headers.get("X-Agnes-Latest-Version")
+    minv = response.headers.get("X-Agnes-Min-Version")
+    if not latest or not minv:
+        return
+    local = _installed_version()
+    if local == "unknown":
+        return
+    if _version_lt(local, minv):
+        sys.stderr.write(
+            f"error: agnes {local} is incompatible with server {latest} "
+            f"(min required: {minv}). Run: agnes self-upgrade\n"
+        )
+        sys.exit(2)
+
+
 def get_client(timeout: float = 30.0) -> httpx.Client:
     """Get an authenticated httpx client.
 
@@ -220,6 +252,13 @@ def get_client(timeout: float = 30.0) -> httpx.Client:
     `api_*` helpers (one request, then close). The big-stream path
     (`stream_download`) routes through `_get_shared_client()` to amortize
     TLS handshakes and HTTP/2 multiplexing across N parquet downloads.
+
+    Wires `_check_version_headers` as a response event hook: every
+    metadata call sees the server's `X-Agnes-{Latest,Min}-Version`
+    headers and hard-stops if our local version is below the floor.
+    Hook is intentionally NOT wired on `_get_shared_client()` — that
+    client backs streaming parquet downloads where a `sys.exit(2)`
+    mid-stream would leak per-thread part files.
     """
     token = get_token()
     headers = {}
@@ -227,8 +266,9 @@ def get_client(timeout: float = 30.0) -> httpx.Client:
         headers["Authorization"] = f"Bearer {token}"
     return httpx.Client(
         base_url=get_server_url(),
-        headers=headers,
+        headers={**headers, "User-Agent": f"agnes/{_installed_version()} ({platform.system().lower()})"},
         timeout=timeout,
+        event_hooks={"response": [_check_version_headers]},
     )
 
 
