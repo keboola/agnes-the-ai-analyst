@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import functools
 import logging
+import threading
+from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Callable, Iterator, Literal
@@ -42,6 +44,12 @@ class BqAccessError(Exception):
         "bq_forbidden":            502,  # other Forbidden from BQ
         "bq_bad_request":          400,  # 400 from BQ when caller flagged it as client-derived
         "bq_upstream_error":       502,  # all other upstream BQ failures
+        # `responseTooLarge` is a BQ refusal whose root cause is query shape
+        # (the user asked for too many rows back inline), not auth or syntax.
+        # 400 with a specific actionable hint instead of the generic
+        # bq_bad_request / bq_upstream_error mappings, which surfaced the
+        # raw BQ message and gave operators no path forward.
+        "bq_response_too_large":   400,
     }
 
     def __init__(self, kind: str, message: str, details: dict | None = None):
@@ -49,6 +57,43 @@ class BqAccessError(Exception):
         self.message = message
         self.details = details or {}
         super().__init__(message)
+
+
+_RESPONSE_TOO_LARGE_HINT = (
+    "BigQuery refused to return the result inline; the query exceeded BQ's "
+    "response size limit. Narrow the WHERE clause, aggregate further, "
+    "select fewer columns, or query a materialized table that's already "
+    "been bounded server-side."
+)
+
+
+def _classify_response_too_large(msg: str, projects: BqProjects) -> BqAccessError:
+    """Build the `bq_response_too_large` BqAccessError with the canonical
+    actionable hint and the original BQ message preserved in details for
+    operator debugging."""
+    return BqAccessError(
+        "bq_response_too_large",
+        _RESPONSE_TOO_LARGE_HINT,
+        details={
+            "original": msg,
+            "billing_project": projects.billing,
+            "data_project": projects.data,
+        },
+    )
+
+
+def _is_response_too_large(msg: str) -> bool:
+    """Detect BQ's `responseTooLarge` failure mode by message substring.
+
+    The reason code is stable across HTTP transports (gax.BadRequest from
+    google-cloud-bigquery, duckdb.IOException from the BQ extension's own
+    HTTP layer); both surface 'Response too large to return' verbatim in
+    the message body. Match case-insensitively + tolerate the slight
+    variant 'response too large' that some surfaces emit without the
+    'to return' suffix.
+    """
+    ml = msg.lower()
+    return "response too large" in ml
 
 
 def translate_bq_error(
@@ -67,12 +112,24 @@ def translate_bq_error(
       2. Forbidden + 'serviceusage' in str(e).lower()
                                           -> cross_project_forbidden (with hint)
       3. Forbidden                        -> bq_forbidden
-      4. BadRequest, bad_request_status='client_error'
+      4. 'response too large' in str(e).lower()
+                                          -> bq_response_too_large (HTTP 400, with
+                                             actionable hint pointing at WHERE /
+                                             aggregate / materialized remediations)
+      5. BadRequest, bad_request_status='client_error'
                                           -> bq_bad_request (HTTP 400)
-      5. BadRequest, bad_request_status='upstream_error'
+      6. BadRequest, bad_request_status='upstream_error'
                                           -> bq_upstream_error (HTTP 502)
-      6. GoogleAPICallError (other)       -> bq_upstream_error
-      7. Anything else                    -> RE-RAISED unchanged (don't swallow programmer errors)
+      7. GoogleAPICallError (other)       -> bq_upstream_error
+      8. Anything else                    -> RE-RAISED unchanged (don't swallow programmer errors)
+
+    The `responseTooLarge` mapping (4) sits ahead of the generic BadRequest
+    cases on purpose: BQ surfaces this failure mode as a 400 with a
+    specific reason, but the actionable remediation is "shape your query
+    differently" — not "your SQL has a syntax error" (the typical
+    bq_bad_request user-facing meaning) and not "BQ is broken"
+    (bq_upstream_error). Routing it via its own kind keeps the user-facing
+    message tight + correct.
     """
     if isinstance(e, BqAccessError):
         return e
@@ -105,6 +162,13 @@ def translate_bq_error(
             msg,
             details={"billing_project": projects.billing, "data_project": projects.data},
         )
+
+    # Special-case: `responseTooLarge` arrives as gax.BadRequest (HTTP 400)
+    # but has a unique reason code with a specific, actionable remediation.
+    # Catch it BEFORE the generic BadRequest mapping below so it doesn't
+    # surface as a confusing "bad request" (which implies bad SQL).
+    if _is_response_too_large(msg):
+        return _classify_response_too_large(msg, projects)
 
     if isinstance(e, gax.BadRequest):
         if bad_request_status == "client_error":
@@ -196,15 +260,40 @@ def _default_client_factory(projects: BqProjects):
         )
 
 
-@contextmanager
-def _default_duckdb_session_factory(projects: BqProjects):
-    """Yield an in-memory DuckDB conn with bigquery extension loaded + SECRET set
-    from get_metadata_token(). Auto-cleanup. Translates auth/install failures
-    to BqAccessError(kind='auth_failed' or 'bq_lib_missing').
+def _default_pool_size() -> int:
+    """Resolve the BQ DuckDB-extension session pool size from instance.yaml.
 
-    Note: `projects.billing` is not used by this factory directly — bigquery_query()
-    callers pass it themselves as the first positional arg to identify the billing
-    project. The factory keeps the parameter for symmetry with _default_client_factory.
+    Reads ``data_source.bigquery.session_pool_size`` (default 4). Sentinel
+    ``0`` disables pooling (every acquire builds + closes a fresh session;
+    matches pre-pool behavior). Negative / non-numeric values fall back to
+    the default — the pool is a perf optimization, not a correctness
+    boundary, so an unparseable config shouldn't fail-stop the app.
+    """
+    try:
+        from app.instance_config import get_value
+    except Exception:
+        return 4
+    raw = get_value("data_source", "bigquery", "session_pool_size", default=4)
+    try:
+        n = int(raw) if raw is not None else 4
+    except (TypeError, ValueError):
+        logger.warning(
+            "BQ session_pool_size=%r is not an int; falling back to default 4",
+            raw,
+        )
+        return 4
+    if n < 0:
+        return 4
+    return n
+
+
+def _build_fresh_bq_session():
+    """Build a single fresh in-memory DuckDB conn with the bigquery extension
+    INSTALL/LOAD'd, the auth SECRET created from get_metadata_token(), and
+    per-session settings applied. Translates auth / install failures to
+    BqAccessError. Caller owns the close.
+
+    Used internally by the pool; also used directly when pooling is disabled.
     """
     import duckdb  # type: ignore
     from connectors.bigquery.auth import get_metadata_token, BQMetadataAuthError
@@ -220,22 +309,160 @@ def _default_duckdb_session_factory(projects: BqProjects):
 
     conn = duckdb.connect(":memory:")
     try:
+        conn.execute("INSTALL bigquery FROM community; LOAD bigquery;")
+        escaped = token.replace("'", "''")
+        conn.execute(
+            f"CREATE OR REPLACE SECRET bq_s (TYPE bigquery, ACCESS_TOKEN '{escaped}')"
+        )
+    except Exception as e:
+        # Build failed — must close the half-initialised conn, otherwise it
+        # leaks across the pool's lifetime.
         try:
-            conn.execute("INSTALL bigquery FROM community; LOAD bigquery;")
-            escaped = token.replace("'", "''")
-            conn.execute(
-                f"CREATE OR REPLACE SECRET bq_s (TYPE bigquery, ACCESS_TOKEN '{escaped}')"
-            )
-        except Exception as e:
-            raise BqAccessError(
-                "bq_lib_missing",
-                f"failed to install/load BigQuery DuckDB extension: {e}",
-                details={"original": str(e)},
-            )
-        apply_bq_session_settings(conn)
+            conn.close()
+        except Exception:
+            pass
+        raise BqAccessError(
+            "bq_lib_missing",
+            f"failed to install/load BigQuery DuckDB extension: {e}",
+            details={"original": str(e)},
+        )
+    apply_bq_session_settings(conn)
+    return conn
+
+
+def _refresh_bq_secret(conn) -> None:
+    """Refresh the auth SECRET on a pooled connection so token rotation
+    (default GCE metadata token TTL ~1 hr) doesn't break long-lived
+    pooled entries.
+
+    Cheap when the token cache is warm (a few µs). Failures are
+    non-fatal here — the pool's liveness probe + per-acquire build
+    fallback will catch genuinely-broken entries.
+    """
+    from connectors.bigquery.auth import get_metadata_token
+    try:
+        token = get_metadata_token()
+        escaped = token.replace("'", "''")
+        conn.execute(
+            f"CREATE OR REPLACE SECRET bq_s (TYPE bigquery, ACCESS_TOKEN '{escaped}')"
+        )
+    except Exception as e:
+        # Bubble up so the pool drops this entry and rebuilds.
+        raise BqAccessError(
+            "auth_failed",
+            f"could not refresh BQ secret on pooled session: {e}",
+            details={"original": str(e)},
+        )
+
+
+def _is_pool_entry_alive(conn) -> bool:
+    """Cheap liveness probe — `SELECT 1`. Returns False on any error so
+    the pool reaper drops the entry and builds a fresh one."""
+    try:
+        result = conn.execute("SELECT 1").fetchone()
+        return result is not None and result[0] == 1
+    except Exception:
+        return False
+
+
+# Module-level pool state. Process-cached (mirrors get_bq_access's lifetime).
+# Not fork-safe — single uvicorn worker process is the supported deployment
+# shape per CLAUDE.md.
+_pool: deque = deque()
+_pool_lock = threading.Lock()
+
+
+def _reset_session_pool_for_tests() -> None:
+    """Drop and close every pooled entry. Test helper — production code
+    should not call this. Exposed so test fixtures + the existing
+    test_bq_access tests can pin pre-test pool state to empty."""
+    with _pool_lock:
+        while _pool:
+            entry = _pool.popleft()
+            try:
+                entry.close()
+            except Exception:
+                pass
+
+
+@contextmanager
+def _default_duckdb_session_factory(projects: BqProjects):
+    """Yield a pooled in-memory DuckDB conn with bigquery extension loaded
+    + SECRET set from get_metadata_token(). Translates auth / install
+    failures to BqAccessError(kind='auth_failed' or 'bq_lib_missing').
+
+    Pooling: amortizes the ~0.5 s INSTALL/LOAD/ATTACH cost across requests
+    by keeping pre-warmed connections in a bounded deque. Acquire reuses
+    an existing entry when available (refreshing its auth SECRET so
+    token rotation doesn't break long-lived entries) and probes liveness
+    cheaply via ``SELECT 1`` before handing it to the caller. On normal
+    exit the connection returns to the pool; on exception it's closed
+    instead (the underlying session may carry dirty state).
+
+    Pool size is ``data_source.bigquery.session_pool_size`` (default 4;
+    sentinel ``0`` disables pooling entirely, matching pre-pool
+    behavior). Process-cached, not fork-safe.
+
+    Note: `projects.billing` is not used by this factory directly — bigquery_query()
+    callers pass it themselves as the first positional arg to identify the billing
+    project. The factory keeps the parameter for symmetry with _default_client_factory.
+    """
+    pool_size = _default_pool_size()
+
+    # Acquire: prefer a warm entry, fall back to fresh build.
+    conn = None
+    if pool_size > 0:
+        while True:
+            with _pool_lock:
+                entry = _pool.popleft() if _pool else None
+            if entry is None:
+                break
+            if not _is_pool_entry_alive(entry):
+                # Reaper: drop broken entries.
+                try:
+                    entry.close()
+                except Exception:
+                    pass
+                continue
+            try:
+                # Refresh the auth SECRET so a long-lived pool entry
+                # doesn't keep a stale token past its TTL. Cheap when
+                # the token cache is warm.
+                _refresh_bq_secret(entry)
+            except BqAccessError:
+                try:
+                    entry.close()
+                except Exception:
+                    pass
+                continue
+            conn = entry
+            break
+
+    if conn is None:
+        conn = _build_fresh_bq_session()
+
+    try:
         yield conn
-    finally:
-        conn.close()
+    except Exception:
+        # Caller saw an exception — the conn may be in a dirty state.
+        # Don't return to pool; close to release native resources.
+        try:
+            conn.close()
+        except Exception:
+            pass
+        raise
+    else:
+        # Normal exit — return to pool if there's room.
+        if pool_size > 0:
+            with _pool_lock:
+                if len(_pool) < pool_size:
+                    _pool.append(conn)
+                    return
+        # Pool disabled or full — close.
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def apply_bq_session_settings(conn) -> None:

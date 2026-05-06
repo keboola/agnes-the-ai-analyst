@@ -10,6 +10,48 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Performance
+- **DuckDB BigQuery-extension session pool**
+  (`connectors/bigquery/access.py`). `BqAccess.duckdb_session()` now acquires
+  pre-warmed connections from a bounded process-local pool instead of running
+  `INSTALL bigquery; LOAD bigquery; CREATE SECRET; ATTACH …` on every request.
+  Each acquire saves the ~0.5 s extension-load + secret-creation cost when
+  the pool has a warm entry; auth SECRET is refreshed on acquire so a
+  long-lived pooled entry doesn't keep a stale GCE metadata token past its
+  TTL. Pool size is configurable via `data_source.bigquery.session_pool_size`
+  (default 4; sentinel `0` disables pooling). Affects every BQ-touching path
+  — `/api/query`, `/api/v2/scan`, `/api/v2/sample`, `/api/v2/schema`,
+  materialize, and the orchestrator's remote-attach.
+
+### Fixed
+- **BigQuery `responseTooLarge` no longer surfaces as a generic 400 / 502 with
+  the raw upstream message** (`connectors/bigquery/access.py`). The
+  `translate_bq_error` helper now classifies "Response too large to return"
+  errors via a dedicated `bq_response_too_large` kind (HTTP 400) with an
+  actionable hint pointing at the WHERE / aggregation / materialized-table
+  remediations. Pre-fix this failure mode fell through to the generic
+  `bq_bad_request` mapping, which implied the user's SQL had a syntax error
+  — wrong root cause. Affects every BQ-touching path (`/api/query`,
+  `/api/v2/scan`, `/api/v2/sample`, `/api/v2/schema`, materialize) since
+  they all share `translate_bq_error`.
+
+- **`/api/query` (and `agnes query --remote`) now rewrites user SQL referencing
+  `query_mode='remote'` BigQuery rows into a single `bigquery_query()` call
+  before execute** (`app/api/query.py`). Pre-fix the master view
+  (`CREATE VIEW <name> AS SELECT * FROM bigquery.<bucket>.<source_table>`) did
+  not push WHERE / SELECT / LIMIT into BQ — the DuckDB BQ extension opened a
+  Storage Read API session over the entire upstream table, scanning the full
+  partitioned dataset before the local DuckDB filter ran. On 100M+ row
+  remote-mode tables this was 50-100× slower than the equivalent direct
+  `bigquery_query()` call (70-150 s vs 1.5 s) and frequently failed with
+  `Response too large to return`. The rewriter (shared core with the existing
+  dry-run helper) wraps the user's whole SQL in `bigquery_query('<project>',
+  '<inner-sql>')` so the BQ planner receives the full query and applies
+  partition pruning + projection pushdown server-side. Conservative
+  fall-through: cross-source JOINs (BQ ↔ Keboola/Jira local), queries already
+  containing `bigquery_query(`, and unconfigured BQ project all keep the
+  original ATTACH-catalog path so behavior degrades gracefully.
+
 ## [0.38.3] — 2026-05-06
 
 ### Changed
