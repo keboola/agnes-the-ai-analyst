@@ -153,19 +153,25 @@ def _isolate_config_dir(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _reset_shared_client(monkeypatch):
-    """Make sure no shared persistent client leaks between tests.
-
-    The shared persistent client is introduced in Change 2 (separate
-    commit). When this fixture runs against the post-Change-2 tree, it
-    reaches the module attribute; under Change 1 alone the attribute
-    doesn't exist yet, so we tolerate that.
-    """
+    """Reset the persistent shared httpx.Client between tests so each
+    test starts from a known state. Tests that need to inject a fake
+    client also stub `_get_shared_client` directly via the
+    `_inject_fake_client` helper below."""
     import cli.client as cc
     if hasattr(cc, "_SHARED_CLIENT"):
         monkeypatch.setattr(cc, "_SHARED_CLIENT", None, raising=False)
     yield
     if hasattr(cc, "_SHARED_CLIENT"):
         monkeypatch.setattr(cc, "_SHARED_CLIENT", None, raising=False)
+
+
+def _inject_fake_client(monkeypatch, fake):
+    """Patch both client factories to return the same fake. Tests target
+    `_get_shared_client` (the path stream_download actually takes) and
+    also `get_client` so the fallback path also lands on the fake."""
+    monkeypatch.setattr("cli.client.get_client", lambda timeout=300.0: fake)
+    monkeypatch.setattr("cli.client._get_shared_client",
+                        lambda: fake, raising=False)
 
 
 # ── Tests ───────────────────────────────────────────────────────────────
@@ -179,7 +185,7 @@ def test_chunked_download_success(tmp_path, monkeypatch):
     monkeypatch.setenv("AGNES_PULL_CHUNK_PARALLELISM", "4")
 
     fake = _FakeClient(body=body, accept_ranges=True)
-    monkeypatch.setattr("cli.client.get_client", lambda timeout=300.0: fake)
+    _inject_fake_client(monkeypatch, fake)
 
     from cli.client import stream_download
     target = tmp_path / "out.parquet"
@@ -213,7 +219,7 @@ def test_chunked_download_fallback_when_server_ignores_range(
     # with the full body — that's the "server ignored Range" path.
     fake = _FakeClient(body=body, accept_ranges=True,
                        reject_range_with_200=True)
-    monkeypatch.setattr("cli.client.get_client", lambda timeout=300.0: fake)
+    _inject_fake_client(monkeypatch, fake)
 
     from cli.client import stream_download
     target = tmp_path / "out.bin"
@@ -233,7 +239,7 @@ def test_small_file_uses_single_stream_path(tmp_path, monkeypatch):
     monkeypatch.setenv("AGNES_PULL_CHUNK_PARALLELISM", "4")
 
     fake = _FakeClient(body=body, accept_ranges=True)
-    monkeypatch.setattr("cli.client.get_client", lambda timeout=300.0: fake)
+    _inject_fake_client(monkeypatch, fake)
 
     from cli.client import stream_download
     target = tmp_path / "out.bin"
@@ -253,7 +259,7 @@ def test_chunked_download_no_accept_ranges_falls_back(tmp_path, monkeypatch):
     monkeypatch.setenv("AGNES_PULL_CHUNK_PARALLELISM", "4")
 
     fake = _FakeClient(body=body, accept_ranges=False)
-    monkeypatch.setattr("cli.client.get_client", lambda timeout=300.0: fake)
+    _inject_fake_client(monkeypatch, fake)
 
     from cli.client import stream_download
     target = tmp_path / "out.bin"
@@ -276,7 +282,7 @@ def test_chunked_download_one_chunk_retries_then_succeeds(
 
     fake = _FakeClient(body=body, accept_ranges=True,
                        fail_chunk_indices=(1,))  # second chunk blips once
-    monkeypatch.setattr("cli.client.get_client", lambda timeout=300.0: fake)
+    _inject_fake_client(monkeypatch, fake)
 
     from cli.client import stream_download
     target = tmp_path / "out.bin"
@@ -312,7 +318,7 @@ def test_chunked_download_failure_cleans_up_part_files(tmp_path, monkeypatch):
             return super().stream(method, path, headers=headers, **kwargs)
 
     fake = _ChronicFail(body=body, accept_ranges=True)
-    monkeypatch.setattr("cli.client.get_client", lambda timeout=300.0: fake)
+    _inject_fake_client(monkeypatch, fake)
 
     from cli.client import stream_download
     target = tmp_path / "out.bin"
@@ -333,7 +339,7 @@ def test_progress_callback_aggregates_across_chunks(tmp_path, monkeypatch):
     monkeypatch.setenv("AGNES_PULL_CHUNK_PARALLELISM", "4")
 
     fake = _FakeClient(body=body, accept_ranges=True)
-    monkeypatch.setattr("cli.client.get_client", lambda timeout=300.0: fake)
+    _inject_fake_client(monkeypatch, fake)
 
     from cli.client import stream_download
     target = tmp_path / "out.bin"

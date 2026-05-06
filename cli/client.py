@@ -1,6 +1,8 @@
 """HTTP client wrapper for CLI — handles auth, retries, streaming."""
 
+import atexit
 import os
+import threading
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -156,7 +158,13 @@ def _translate_transport_error(
 
 
 def get_client(timeout: float = 30.0) -> httpx.Client:
-    """Get an authenticated httpx client."""
+    """Get an authenticated httpx client.
+
+    This factory creates a fresh client per call — used by the small
+    `api_*` helpers (one request, then close). The big-stream path
+    (`stream_download`) routes through `_get_shared_client()` to amortize
+    TLS handshakes and HTTP/2 multiplexing across N parquet downloads.
+    """
     token = get_token()
     headers = {}
     if token:
@@ -166,6 +174,80 @@ def get_client(timeout: float = 30.0) -> httpx.Client:
         headers=headers,
         timeout=timeout,
     )
+
+
+# ── Shared persistent client ────────────────────────────────────────────
+# `agnes pull` issues N stream_download calls — one per parquet — plus
+# (with chunked downloads) M Range requests per file. Without pooling,
+# each call performs a fresh TLS handshake; with HTTP/2 enabled, all
+# those requests multiplex over a single TCP connection. The shared
+# client is created lazily on first stream-download request, kept alive
+# for the duration of the process, and closed at exit.
+#
+# HTTP/2 requires the optional `h2` package. If it's unavailable (slim
+# install), we fall back to HTTP/1.1 — pooling alone still saves the
+# handshake cost — and never raise. The CLI must not crash on `agnes
+# pull` because of an h2 import error.
+
+_SHARED_CLIENT: Optional[httpx.Client] = None
+_SHARED_CLIENT_LOCK = threading.Lock()
+
+
+def _get_shared_client() -> httpx.Client:
+    """Lazily create + return a process-wide httpx.Client.
+
+    Pool defaults: keep up to 32 keepalive connections (covers the
+    chunk-parallelism cap of 16 × 2 simultaneous files comfortably) and
+    cap the total at 64 so a runaway loop can't open thousands of
+    sockets. HTTP/2 is opt-in via httpx's `http2=True` and gracefully
+    degrades when the `h2` extra is missing.
+    """
+    global _SHARED_CLIENT
+    with _SHARED_CLIENT_LOCK:
+        if _SHARED_CLIENT is not None:
+            return _SHARED_CLIENT
+        token = get_token()
+        headers = {}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        limits = httpx.Limits(
+            max_keepalive_connections=32,
+            max_connections=64,
+        )
+        try:
+            client = httpx.Client(
+                base_url=get_server_url(),
+                headers=headers,
+                timeout=300.0,
+                http2=True,
+                limits=limits,
+            )
+        except (ImportError, RuntimeError):
+            # `h2` not installed → httpx raises; fall back to HTTP/1.1.
+            # Pooling alone still amortizes the TLS handshake.
+            client = httpx.Client(
+                base_url=get_server_url(),
+                headers=headers,
+                timeout=300.0,
+                limits=limits,
+            )
+        _SHARED_CLIENT = client
+        return client
+
+
+def _close_shared_client() -> None:
+    """Close the shared client and clear the slot. Safe to call twice."""
+    global _SHARED_CLIENT
+    with _SHARED_CLIENT_LOCK:
+        if _SHARED_CLIENT is not None:
+            try:
+                _SHARED_CLIENT.close()
+            except Exception:
+                pass
+            _SHARED_CLIENT = None
+
+
+atexit.register(_close_shared_client)
 
 
 def api_get(path: str, *, timeout: float = 30.0, **kwargs) -> httpx.Response:
@@ -438,10 +520,20 @@ def stream_download(path: str, target_path: str, progress_callback=None) -> int:
     Threading: the chunked path uses a ThreadPoolExecutor sized to the
     parallelism. httpx.Client.stream() is safe to call concurrently from
     multiple threads on a single client (the connection pool serializes
-    the underlying socket access).
+    the underlying socket access; HTTP/2 multiplexes streams when the
+    `h2` extra is installed).
     """
-    with get_client(timeout=300.0) as client:
+    # Use the shared persistent client when available — one TLS
+    # handshake amortized across N stream_download calls within the same
+    # process, and HTTP/2 stream multiplexing across the chunk Range
+    # requests within a single download. Falls back to a fresh per-call
+    # client if shared-client construction fails for any reason.
+    try:
+        client = _get_shared_client()
         return _stream_download_via(client, path, target_path, progress_callback)
+    except Exception:
+        with get_client(timeout=300.0) as client:
+            return _stream_download_via(client, path, target_path, progress_callback)
 
 
 def _stream_download_via(

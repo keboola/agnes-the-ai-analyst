@@ -24,6 +24,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `accept-ranges: bytes` is advertised, or when content is below the
   threshold — no behavior change in the small-file / non-cooperating-
   server cases.
+- **Persistent HTTP/2 client across `agnes pull`**: `stream_download` now
+  routes through a process-wide pooled `httpx.Client` so N parquet
+  downloads share a single TLS handshake; HTTP/2 multiplexing
+  (when the optional `h2` package is installed) lets all chunk Range
+  requests share one TCP connection. Gracefully falls back to HTTP/1.1
+  pooling when `h2` is missing — no crash, just slightly less benefit.
+
+### Added
+- New optional dependency `h2>=4.1.0` (HTTP/2 transport for httpx). Pure
+  performance — `agnes pull` works on HTTP/1.1 if the install skips it.
 
 ## [0.38.0] — 2026-05-06
 
