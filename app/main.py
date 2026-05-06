@@ -23,8 +23,6 @@ except ImportError:
 
 import logging
 from contextlib import asynccontextmanager
-from importlib.metadata import PackageNotFoundError
-from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from urllib.parse import quote
 
@@ -36,18 +34,7 @@ from app.logging_config import setup_logging
 
 setup_logging("app")
 
-
-def _app_version() -> str:
-    """Product version for FastAPI title / OpenAPI schema.
-
-    Single source of truth is `pyproject.toml` `[project].version`; we read
-    it back via `importlib.metadata` at runtime so `/docs`, `/openapi.json`,
-    `/api/version`, `/cli/latest`, and `da --version` can never drift.
-    """
-    try:
-        return _pkg_version("agnes-the-ai-analyst")
-    except PackageNotFoundError:
-        return "dev"
+from app.version import APP_VERSION, MIN_COMPAT_CLI_VERSION
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -183,7 +170,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="AI Data Analyst",
         description="Data distribution platform for AI analytical systems",
-        version=_app_version(),
+        version=APP_VERSION,
         lifespan=lifespan,
         # Intentionally NOT debug=DEBUG: FastAPI's debug=True installs
         # Starlette's ServerErrorMiddleware which intercepts unhandled
@@ -194,6 +181,14 @@ def create_app() -> FastAPI:
         # request.app.debug).
         debug=False,
     )
+
+    @app.middleware("http")
+    async def _add_version_headers(request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith("/api/"):
+            response.headers["X-Agnes-Latest-Version"] = APP_VERSION
+            response.headers["X-Agnes-Min-Version"] = MIN_COMPAT_CLI_VERSION
+        return response
 
     # FastAPI debug toolbar — only when DEBUG=1 in env. Injects per-request
     # HTML overlay (headers, routes, timer, profiling, logs) on any HTML
