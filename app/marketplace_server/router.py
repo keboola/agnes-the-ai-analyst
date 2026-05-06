@@ -1,12 +1,19 @@
 """FastAPI router for the aggregated marketplace endpoint.
 
-Three GET routes:
+Four GET routes:
   - /marketplace/info                              → JSON summary (diagnostic / admin)
   - /marketplace.zip                               → ZIP download with ETag / If-None-Match
-  - /marketplace.git/.claude-plugin/marketplace.json → JSON manifest for
-    `claude plugin marketplace add <https-url>`. Registered before the
-    `/marketplace.git` mount in main.py so FastAPI matches the explicit
-    route before falling through to the git smart-HTTP WSGI app.
+  - /marketplace.git/                              → JSON manifest at the
+    bare URL Claude Code's `plugin marketplace add <https-url>` actually
+    fetches (it GETs the URL verbatim, doesn't append `.claude-plugin/...`).
+  - /marketplace.git/.claude-plugin/marketplace.json → same JSON, kept for
+    callers that follow the standard `.claude-plugin/marketplace.json`
+    convention (curl, future Claude Code versions).
+
+All four registered before the `/marketplace.git` mount in main.py so
+FastAPI matches the explicit routes before falling through to the git
+smart-HTTP WSGI app — git's own paths (`info/refs`, `git-upload-pack`)
+land on the mount and the smart-HTTP clone keeps working.
 
 All gated by the existing `get_current_user` dependency (Bearer PAT or cookie).
 The git smart-HTTP channel lives in git_router.py and is mounted separately
@@ -38,6 +45,7 @@ async def marketplace_info(
     return JSONResponse(info)
 
 
+@router.get("/marketplace.git/")
 @router.get("/marketplace.git/.claude-plugin/marketplace.json")
 async def marketplace_json(
     user: dict = Depends(get_current_user),
