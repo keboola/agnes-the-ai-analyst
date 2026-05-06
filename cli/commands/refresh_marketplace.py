@@ -623,9 +623,21 @@ def _emit_hook_message(events: dict[str, list[str]]) -> None:
         "Claude Code only picks up new/updated plugins on session start."
     )
 
+    # Compact summary string used by the persistent log line, the
+    # statusline state file, and the systemMessage toast. Keep it short
+    # — statusline rendering wraps awkwardly on long single-line text.
+    short_summary = "; ".join(parts)
+
     # Persistent log line — survives across sessions, user can `cat` it
     # to see what's been installed/updated by the SessionStart hook.
     _append_refresh_log(f"{summary} {restart_hint}")
+
+    # Statusline state file — read by ~/.claude/agnes-statusline.sh
+    # (installed by `agnes init` via cli/lib/statusline.py) and rendered
+    # at the bottom of the Claude Code UI. Persistent until age-out
+    # (default 30 min), so users who missed the transient hook toast
+    # still see what just changed.
+    _write_status_file(short_summary, needs_restart=True)
 
     # additionalContext is phrased as a direct instruction so Claude
     # mentions the change at the top of its first reply (the toast is
@@ -680,6 +692,42 @@ def _append_refresh_log(summary: str) -> None:
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         with log_path.open("a", encoding="utf-8") as f:
             f.write(f"{ts}  {summary}\n")
+    except OSError:
+        pass
+
+
+def _write_status_file(summary: str, *, needs_restart: bool) -> None:
+    """Write the statusline state file consumed by ``agnes-statusline.sh``.
+
+    Lives at ``~/.agnes/refresh.status``. Single JSON object, three keys
+    (the bash script peeks at each via grep so the schema is intentionally
+    flat — no nested objects, no arrays):
+
+      timestamp     — POSIX seconds at write time. Statusline uses this
+                      for age-out (default 30 min) so a stale "installed
+                      X" message doesn't linger forever.
+      summary       — short human-readable string, e.g.
+                      ``installed 1 plugin(s): grpn-fin``. Surfaced as
+                      ``agnes ⟳ <summary>`` in the bottom UI bar.
+      needs_restart — bool. When true the statusline appends "/exit +
+                      restart to load" so the user knows the install
+                      isn't yet active in this session.
+
+    Best-effort: I/O errors swallowed silently. The hook JSON output and
+    the persistent log are independent surfaces — losing the statusline
+    file just means one less surface for that single refresh.
+    """
+    status_path = CLONE_DIR.parent / "refresh.status"
+    try:
+        from datetime import datetime, timezone
+        payload = {
+            "timestamp": int(datetime.now(timezone.utc).timestamp()),
+            "summary": summary,
+            "needs_restart": bool(needs_restart),
+        }
+        status_path.write_text(
+            json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+        )
     except OSError:
         pass
 

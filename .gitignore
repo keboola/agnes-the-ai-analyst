@@ -124,6 +124,12 @@ docs/data_description.md
 # Project-specific: Data directory
 # Downloaded source data - never commit
 data/
+# Exception: cli/data/ ships package data inside the wheel (e.g. the
+# agnes-statusline.sh template materialized by `agnes init`). The
+# `data/` rule above matches any depth, so without this re-include
+# the statusline template would silently get dropped from commits.
+!cli/data/
+!cli/data/**
 
 # Metadata tooling - entire folder
 # Tooling for metadata enrichment - not part of main application

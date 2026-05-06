@@ -52,6 +52,7 @@ This will remove the Agnes client install from this machine:
   - ~/.config/agnes (token, server URL, sync state)
   - ~/.agnes/ca.pem, ~/.agnes/ca-bundle.pem (TLS bootstrap)
   - ~/.agnes/marketplace (local clone of the per-user marketplace)
+  - ~/.agnes/refresh.log, ~/.agnes/refresh.status (refresh audit + statusline state)
   - ~/.claude/skills/agnes (skills cached on disk)
   - ~/.claude/plugins/marketplaces/agnes (Claude's marketplace registration)
   - ~/.claude/plugins/cache/agnes (Claude's per-plugin install cache)
@@ -66,6 +67,10 @@ NOT removed (workspace-specific, can't enumerate from here):
     'agnes refresh-marketplace' / 'agnes push' and stay until you either
     re-init that workspace or delete the file. They're harmless when the
     CLI is uninstalled (the hook command becomes a no-op via '|| true').
+  - <workspace>/.claude/agnes-statusline.sh and the matching
+    `statusLine` block in <workspace>/.claude/settings.json. The script
+    silent-noops when ~/.agnes/refresh.status is missing (which it is
+    after this reset), so the statusline just renders nothing.
 
 Platform: $PLATFORM
 EOF
@@ -259,9 +264,12 @@ Sanity checks for "fresh state":
 
 If you used 'agnes init' in workspaces other than the one you're in now,
 those workspaces still have:
-  <workspace>/.claude/settings.json  # SessionStart/End hooks pointing at agnes
-  <workspace>/CLAUDE.md              # RBAC-filtered docs from agnes init
-  <workspace>/AGNES_WORKSPACE.md     # human-facing workspace docs
+  <workspace>/.claude/settings.json     # SessionStart/End hooks + statusLine
+  <workspace>/.claude/agnes-statusline.sh  # bash script the statusLine calls
+  <workspace>/CLAUDE.md                 # RBAC-filtered docs from agnes init
+  <workspace>/AGNES_WORKSPACE.md        # human-facing workspace docs
 Delete those by hand if you want a fully clean slate per workspace. The
-hook commands no-op safely while the CLI is uninstalled (`|| true`).
+hook commands no-op safely while the CLI is uninstalled (`|| true`), and
+the statusline script silent-noops once `~/.agnes/refresh.status` is gone
+(which this reset takes care of via the `~/.agnes` recursive cleanup).
 EOF

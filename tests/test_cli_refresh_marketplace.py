@@ -571,6 +571,60 @@ def test_quiet_appends_persistent_refresh_log_on_change(
     )
 
 
+def test_quiet_writes_status_file_on_change(
+    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
+):
+    """The statusline state file at ~/.agnes/refresh.status must be
+    written whenever the refresh actually installed/updated something.
+    Schema: flat JSON with `timestamp` (POSIX seconds), `summary` (short
+    human-readable string), and `needs_restart` (bool). The bash script
+    at ~/.claude/agnes-statusline.sh peeks at all three — see
+    cli/data/agnes-statusline.sh."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    _set_marketplace_manifest(with_clone, [{"name": "grpn-fin", "version": "0.5.0"}])
+    recorder.script(("claude", "plugin", "list", "--json"),
+                    stdout=_plugin_list_json([]))
+
+    result = runner.invoke(refresh_marketplace_app, ["--quiet"])
+    assert result.exit_code == 0
+
+    status_path = with_clone.parent / "refresh.status"
+    assert status_path.is_file(), f"expected statusline state file at {status_path}"
+    payload = json.loads(status_path.read_text(encoding="utf-8"))
+    # Schema invariants the bash script's grep patterns rely on.
+    assert isinstance(payload.get("timestamp"), int) and payload["timestamp"] > 0
+    assert isinstance(payload.get("summary"), str) and "grpn-fin" in payload["summary"]
+    assert payload.get("needs_restart") is True
+
+
+def test_quiet_no_change_does_not_write_status_file(
+    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
+):
+    """No-op refresh → no statusline state file written. So the bottom
+    UI bar doesn't permanently show "Your Agnes stack changed" from a
+    refresh that didn't actually change anything."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    _set_marketplace_manifest(with_clone, [{"name": "grpn-eng", "version": "1.0.0"}])
+    recorder.script(
+        ("claude", "plugin", "list", "--json"),
+        stdout=_plugin_list_json([
+            {"id": "grpn-eng@agnes", "version": "1.0.0", "projectPath": str(workspace)},
+        ]),
+    )
+    result = runner.invoke(refresh_marketplace_app, ["--quiet"])
+    assert result.exit_code == 0
+
+    status_path = with_clone.parent / "refresh.status"
+    assert not status_path.exists(), (
+        f"statusline state file should NOT be written on no-op refresh; "
+        f"found {status_path}"
+    )
+
+
 def test_quiet_no_change_does_not_append_to_refresh_log(
     with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
 ):

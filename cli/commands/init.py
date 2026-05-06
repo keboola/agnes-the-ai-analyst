@@ -45,6 +45,7 @@ from cli.client import api_get
 from cli.config import save_config, save_token
 from cli.error_render import render_error
 from cli.lib.hooks import install_claude_hooks
+from cli.lib.statusline import install_claude_statusline
 from cli.lib.pull import PullResult, _override_server_env, run_pull
 
 
@@ -167,6 +168,12 @@ def init(
             indent=2,
         ), encoding="utf-8")
     install_claude_hooks(workspace)
+    # Statusline surfaces `agnes refresh-marketplace` results in the
+    # bottom Claude Code UI bar — supplements the (transient) hook
+    # systemMessage and the (model-side) additionalContext with a
+    # persistent indicator the user reliably sees. Workspace-scoped,
+    # idempotent, no-overwrite of operator's existing statusLine.
+    install_claude_statusline(workspace)
 
     # ------------------------------------------------------------------
     # Step 6: CLAUDE.local.md stub — only when absent. `--force` does NOT
