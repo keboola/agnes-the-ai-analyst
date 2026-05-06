@@ -90,6 +90,29 @@ BQ_PATH = re.compile(
 )
 
 
+# Issue #201 — full backtick BQ path `<project>.<dataset>.<table>` in user
+# SQL. Used by the registry-gating pass and (via `_mask_backticks`) to keep
+# bare-name regexes from firing inside backtick-quoted segments.
+_BACKTICK_SEGMENT = re.compile(r'`[^`]*`')
+_BACKTICK_FULL_PATH = re.compile(r'`([^.`]+)\.([^.`]+)\.([^.`]+)`')
+
+
+def _mask_backticks(sql: str) -> str:
+    """Replace each `…`-quoted segment with spaces of equal length so
+    word-boundary regexes find positions outside backticks but ignore
+    everything inside. Preserves all character offsets so ``re.search``
+    on the masked string returns matches at the same positions as on the
+    original.
+
+    Issue #201: `\\b` matches inside backtick segments because both `.`
+    and `` ` `` are non-word characters. A registered bare-name like
+    ``unit_economics`` would otherwise match inside a user-supplied full
+    backtick path ``\\`<project>.<dataset>.unit_economics\\``` and get
+    falsely rewritten — corrupting the user's intended SQL.
+    """
+    return _BACKTICK_SEGMENT.sub(lambda m: ' ' * len(m.group(0)), sql)
+
+
 def _default_remote_query_cap_bytes() -> int:
     """5 GiB default cap on /api/query BQ-touching scans. Configurable via
     `data_source.bigquery.bq_max_scan_bytes` in /admin/server-config —
@@ -197,11 +220,18 @@ def execute_query(
                 if r.get("name") and r.get("id") in allowed_ids
             }
 
-            # Check if query references any forbidden tables (word-boundary match)
+            # Check if query references any forbidden tables (word-boundary
+            # match). Issue #201: mask backtick segments so `\b` doesn't
+            # falsely fire inside a user-supplied full backtick path like
+            # `<project>.<dataset>.<table>` whose final segment happens to
+            # collide with a forbidden master view name. The full-path
+            # registry-gate downstream is the proper authorization check
+            # for those.
+            sql_lower_masked = _mask_backticks(sql_lower)
             forbidden = all_views - allowed_view_names
             for table in forbidden:
                 pattern = r'\b' + re.escape(table.lower()) + r'\b'
-                if re.search(pattern, sql_lower):
+                if re.search(pattern, sql_lower_masked):
                     raise HTTPException(status_code=403, detail=f"Access denied to table '{table}'")
 
         # ---- #160 BQ remote-row guardrail + RBAC patch -------------------
@@ -467,6 +497,11 @@ def _bq_guardrail_inputs(
     name_lookups: list = []
     seen_paths: set = set()
     accessible_set = set(allowed) if allowed is not None else None
+    # Issue #201: mask backtick segments so a registered bare name like
+    # `unit_economics` doesn't false-positive on a user-supplied full
+    # backtick path `<project>.<dataset>.unit_economics`. The full-path
+    # pass below registry-gates those properly.
+    sql_lower_masked = _mask_backticks(sql_lower)
     for r in repo.list_by_source("bigquery"):
         if (r.get("query_mode") or "") != "remote":
             continue
@@ -481,7 +516,7 @@ def _bq_guardrail_inputs(
             # before we get here. Defensive skip.
             continue
         pattern = r'\b' + re.escape(str(name).lower()) + r'\b'
-        if re.search(pattern, sql_lower):
+        if re.search(pattern, sql_lower_masked):
             key = (bucket.lower(), source_table.lower())
             if key not in seen_paths:
                 seen_paths.add(key)
@@ -528,6 +563,66 @@ def _bq_guardrail_inputs(
             if key not in seen_paths:
                 seen_paths.add(key)
                 dry_run.append((bucket, source_table, 0))
+
+    # 3. Full backtick path `<project>.<dataset>.<table>` pass (issue #201).
+    # Pre-#201 these bypassed Agnes RBAC entirely — only the configured
+    # service account scope limited which tables a user could reach. Gate
+    # them identically to the `bq.<ds>.<tbl>` pass: must match the
+    # configured data project, must point at a registered row, and the
+    # caller must hold a grant on that row's id (admin bypasses the grant
+    # check but still requires registration + project match).
+    #
+    # Lazy `get_bq_access()` import via the module-level alias so tests
+    # can monkeypatch a fake. When BQ isn't configured (no data project),
+    # fall through silently — full backtick paths can't possibly resolve
+    # against this instance, so leave them to BQ to reject if a query
+    # somehow makes it through.
+    try:
+        bq = get_bq_access()
+        data_project = (bq.projects.data or "").strip()
+    except Exception:
+        data_project = ""
+
+    if data_project:
+        for m in _BACKTICK_FULL_PATH.finditer(sql):
+            proj, ds, tbl = m.group(1), m.group(2), m.group(3)
+            if proj.lower() != data_project.lower():
+                return [], [], {
+                    "reason": "bq_path_cross_project",
+                    "path": f"`{proj}.{ds}.{tbl}`",
+                    "expected_project": data_project,
+                    "hint": (
+                        "--remote queries can only reference tables in the "
+                        "configured BigQuery data project. Register "
+                        "cross-project tables via `agnes admin "
+                        "register-table` if needed."
+                    ),
+                }
+            row = repo.find_by_bq_path(ds, tbl)
+            if row is None:
+                return [], [], {
+                    "reason": "bq_path_not_registered",
+                    "path": f"`{proj}.{ds}.{tbl}`",
+                    "hint": (
+                        "Direct BigQuery paths must point to a registered "
+                        "table. Register via `agnes admin register-table` "
+                        "or use the registered name from `agnes catalog`."
+                    ),
+                }
+            if not is_admin:
+                if accessible_set is None or row["id"] not in accessible_set:
+                    return [], [], {
+                        "reason": "bq_path_access_denied",
+                        "path": f"`{proj}.{ds}.{tbl}`",
+                        "registered_as": row["name"],
+                    }
+            bucket = row["bucket"]
+            source_table = row["source_table"]
+            if bucket and source_table:
+                key = (bucket.lower(), source_table.lower())
+                if key not in seen_paths:
+                    seen_paths.add(key)
+                    dry_run.append((bucket, source_table, 0))
 
     return dry_run, name_lookups, None
 
@@ -579,6 +674,15 @@ def _rewrite_bq_table_refs_to_native(
     # name up in a case-insensitive dict. Single-pass means freshly
     # inserted backticked text isn't re-scanned, fixing the
     # project-ID-contains-name corruption (Devin Review on query.py:464).
+    #
+    # Issue #201: split the SQL on `…` segments and rewrite ONLY in the
+    # outside-backtick chunks. Without this, a user-supplied full backtick
+    # path like ``\\`<project>.<dataset>.unit_economics\\``` whose final
+    # segment matches a registered bare name would have the bare-name
+    # regex fire INSIDE the backticks (since `\\b` treats both `.` and
+    # `` ` `` as non-word boundaries), producing malformed nested
+    # backticks. Splitting confines the rewrite to user identifier
+    # positions where bare-name resolution is the intended behaviour.
     if name_lookups:
         # Map name (lower-cased) → backticked target. Names are
         # case-insensitive on the input side per the existing helper
@@ -598,7 +702,15 @@ def _rewrite_bq_table_refs_to_native(
         def _name_repl(m: re.Match) -> str:
             return name_to_target[m.group(1).lower()]
 
-        out = re.sub(pattern, _name_repl, out, flags=re.IGNORECASE)
+        # `re.split` with a captured group returns: [outside, backtick,
+        # outside, backtick, …]. Even indices are outside-backtick chunks
+        # eligible for bare-name rewrite; odd indices are full backtick
+        # segments preserved verbatim.
+        parts = re.split(r'(`[^`]*`)', out)
+        for i, part in enumerate(parts):
+            if i % 2 == 0:
+                parts[i] = re.sub(pattern, _name_repl, part, flags=re.IGNORECASE)
+        out = "".join(parts)
 
     # Pass 2: bq."ds"."tbl" / bq.ds.tbl → `<project>.<ds>.<tbl>`.
     def _bq_path_repl(m: re.Match) -> str:
@@ -675,8 +787,17 @@ def _rewrite_user_sql_for_bigquery_query(
         return user_sql, False
 
     # Find all referenced BQ remote-mode rows (bare-name + direct bq.path).
-    # Mirrors the non-RBAC parts of `_bq_guardrail_inputs`.
+    # Mirrors the non-RBAC parts of `_bq_guardrail_inputs`. Issue #201:
+    # bare-name regex must run against a backtick-masked copy so a
+    # registered name like ``orders`` doesn't false-positive when it
+    # appears as the table segment of a user-supplied full backtick path
+    # like ``\\`<project>.<dataset>.orders\\```. Without masking, the
+    # cross-source check below would falsely conclude the SQL touches
+    # both BQ-remote and local sources, dropping every backtick-path
+    # query into the 50-100× slower ATTACH-catalog fallback. Devin
+    # Review on PR #208.
     sql_lower = user_sql.lower()
+    sql_lower_masked = _mask_backticks(sql_lower)
     name_lookups: list = []
     seen_paths: set = set()
 
@@ -715,7 +836,7 @@ def _rewrite_user_sql_for_bigquery_query(
             # mix rewritten and non-rewritten BQ paths in one query.
             return user_sql, False
         pattern = r'\b' + re.escape(str(name).lower()) + r'\b'
-        if re.search(pattern, sql_lower):
+        if re.search(pattern, sql_lower_masked):
             key = (bucket.lower(), source_table.lower())
             if key not in seen_paths:
                 seen_paths.add(key)
@@ -752,7 +873,7 @@ def _rewrite_user_sql_for_bigquery_query(
             # Same name registered both BQ-remote and local? Pathological;
             # skip as a safety measure.
             return user_sql, False
-        if re.search(r'\b' + re.escape(name_lc) + r'\b', sql_lower):
+        if re.search(r'\b' + re.escape(name_lc) + r'\b', sql_lower_masked):
             logger.info(
                 "rewrite_skip_cross_source: user SQL references both "
                 "BQ-remote and local-mode tables; falling back to "
@@ -839,28 +960,32 @@ def _bq_quota_and_cap_guard(
     partitioned/clustered tables and rejecting narrow queries that BQ
     itself would dry-run as a few MB.
 
-    Fallback: if BQ rejects the rewritten SQL with a parse-level
-    ``client_error`` (e.g. DuckDB-only syntax like ``::INT`` casts that
-    don't translate to BQ), fall back to the pre-#171 per-table
-    SELECT * approach so the cap-guard still functions — over-estimate
-    is preferred over fail-open. Forbidden / upstream errors still
-    propagate as HTTP 502.
+    Issue #201 fix: when BQ rejects the rewritten SQL with a parse-level
+    ``bq_bad_request`` (e.g. DuckDB-only syntax like ``::INT`` casts, or
+    a rewriter bug that broke valid BQ-native input), retry with the
+    user's ORIGINAL SQL — BQ-native input dry-runs cleanly. If the
+    original ALSO fails, return a structured `remote_estimate_failed`
+    HTTP 400 instead of the pre-#201 synthetic ``SELECT *`` per-table
+    over-estimate. The synthetic fallback threw away user filters and
+    routinely ballooned to "full table size", blocking legitimate narrow
+    queries via `remote_scan_too_large`. Forbidden / upstream errors
+    still propagate as HTTP 502.
 
     Flow:
     1. `check_daily_budget` — over-cap users get 429 BEFORE any BQ work.
     2. `quota.acquire(user_id)` opened — concurrent-slot held throughout.
     3. Single dry-run of rewritten user SQL → `total_bytes`.
-       On parse error, fall back to per-table SELECT * → sum.
+       On parse error, retry with the user's original SQL.
+       On second parse error, raise 400 `remote_estimate_failed`.
     4. If total > cap → 400 `remote_scan_too_large`.
     5. Yield. Caller runs `analytics.execute(...)` + `record_bytes(...)`.
     6. On exit, slot released.
 
     Mutates `dry_run_set` in place: the third tuple element (bytes) is
     populated so the caller can sum and record bytes against the user's
-    quota post-flight. Single-dry-run path puts `total_bytes` on the first
-    entry and zero on the rest (BQ doesn't expose per-table bytes for a
-    composite query); the caller's `sum(b for _, _, b in dry_run_set)`
-    still equals `total_bytes`.
+    quota post-flight. Pin `total_bytes` on entry 0 and zero on the rest
+    — BQ doesn't expose per-table bytes for a composite query — so
+    `sum(b for _, _, b in dry_run_set)` still equals `total_bytes`.
     """
     quota = _build_quota_tracker()
     try:
@@ -901,61 +1026,71 @@ def _bq_quota_and_cap_guard(
                 sql, name_lookups, project,
             )
 
-            # Try the single-dry-run path first (issue #171). Falls back
-            # to the per-table SELECT * approach only on BQ parse errors
-            # (kind="bq_bad_request" — DuckDB-only syntax that BQ can't
-            # translate). All other BQ errors propagate as 502 below.
+            # Try the single-dry-run path first (issue #171). On BQ parse
+            # errors (`bq_bad_request` — typically DuckDB-only syntax the
+            # rewriter couldn't translate, OR — pre-#201 fix — a
+            # rewriter-corrupted backtick path) retry the user's ORIGINAL
+            # SQL: when the user submitted BQ-native SQL, the rewriter is
+            # the only thing standing between them and a clean dry-run.
+            # If the original ALSO fails, this is true DuckDB-only syntax
+            # that BQ cannot estimate — fail fast with a structured
+            # `remote_estimate_failed` instead of the pre-#201 synthetic
+            # `SELECT *` over-estimate (which threw away user filters and
+            # often ballooned to "full table size", blocking legitimate
+            # narrow queries via `remote_scan_too_large`).
+            #
+            # All other BQ errors (forbidden, upstream) propagate as 502.
             total_bytes = 0
-            used_fallback = False
             try:
                 total_bytes = _bq_dry_run_bytes(bq, rewritten_sql)
             except BqAccessError as exc:
-                if exc.kind == "bq_bad_request":
-                    logger.warning(
-                        "BQ dry-run rejected the rewritten SQL "
-                        "(kind=%s, message=%s). Falling back to per-table "
-                        "SELECT * estimate; the cap check will over-estimate "
-                        "scan bytes for this query. Consider rewriting to "
-                        "BQ-native syntax for a tight pre-check.",
-                        exc.kind, exc.message,
-                    )
-                    used_fallback = True
-                else:
+                if exc.kind != "bq_bad_request":
                     raise HTTPException(status_code=502, detail={
                         "kind": exc.kind,
                         "message": exc.message,
                         **(exc.details or {}),
                     })
-
-            if used_fallback:
-                # Pre-#171 path: estimate per registered table from a
-                # synthetic SELECT *. Over-estimates partitioned scans but
-                # never under-estimates, so the cap still bounds risk.
-                for i, (bucket, source_table, _) in enumerate(dry_run_set):
-                    fallback_sql = (
-                        f"SELECT * FROM `{project}.{bucket}.{source_table}`"
-                    )
-                    try:
-                        est = _bq_dry_run_bytes(bq, fallback_sql)
-                    except BqAccessError as exc:
+                logger.warning(
+                    "BQ dry-run rejected the rewritten SQL "
+                    "(kind=%s, message=%s). Retrying with the user's "
+                    "original SQL.",
+                    exc.kind, exc.message,
+                )
+                try:
+                    total_bytes = _bq_dry_run_bytes(bq, sql)
+                except BqAccessError as exc2:
+                    if exc2.kind != "bq_bad_request":
                         raise HTTPException(status_code=502, detail={
-                            "kind": exc.kind,
-                            "message": exc.message,
-                            **(exc.details or {}),
+                            "kind": exc2.kind,
+                            "message": exc2.message,
+                            **(exc2.details or {}),
                         })
-                    dry_run_set[i] = (bucket, source_table, est)
-                    total_bytes += est
-            else:
-                # Single-dry-run path. Distribute the total to dry_run_set
-                # so the caller's `record_bytes(sum(...))` stays correct.
-                # Per-table breakdown is unavailable from a composite
-                # dry-run; pin total to entry 0, zero the rest.
-                if dry_run_set:
-                    b0, t0, _ = dry_run_set[0]
-                    dry_run_set[0] = (b0, t0, total_bytes)
-                    for i in range(1, len(dry_run_set)):
-                        bi, ti, _ = dry_run_set[i]
-                        dry_run_set[i] = (bi, ti, 0)
+                    raise HTTPException(status_code=400, detail={
+                        "kind": "remote_estimate_failed",
+                        "message": (
+                            "Could not estimate scan size for this query."
+                        ),
+                        "hint": (
+                            "Use a registered table name from `agnes "
+                            "catalog`, or write BQ-native SQL with full "
+                            "backtick paths. Pure DuckDB-only syntax is "
+                            "not supported for --remote queries."
+                        ),
+                        "underlying": exc2.message,
+                    })
+
+            # Distribute the total to dry_run_set so the caller's
+            # `record_bytes(sum(...))` stays correct. Per-table breakdown
+            # is unavailable from a composite dry-run; pin total to entry
+            # 0, zero the rest. (Same accounting symmetry whether the
+            # bytes came from the rewritten SQL or the original-SQL
+            # retry.)
+            if dry_run_set:
+                b0, t0, _ = dry_run_set[0]
+                dry_run_set[0] = (b0, t0, total_bytes)
+                for i in range(1, len(dry_run_set)):
+                    bi, ti, _ = dry_run_set[i]
+                    dry_run_set[i] = (bi, ti, 0)
 
             if cap_bytes > 0 and total_bytes > cap_bytes:
                 tables = [f"{b}.{t}" for b, t, _ in dry_run_set]
