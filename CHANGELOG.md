@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **Admin / Tables**: long table descriptions no longer push the row's Edit / Manage access / Delete buttons off-screen. The Description column is now clamped to 2 lines with the full text available on hover and in the Edit modal.
+
 ## [0.38.0] — 2026-05-06
 
 ### Added
