@@ -465,6 +465,10 @@ def test_quiet_emits_hook_json_when_plugin_installed(
     assert "Agnes stack" in payload["systemMessage"]
     assert "installed" in payload["systemMessage"]
 
+    # systemMessage must include the restart hint so users who DO catch
+    # the transient toast learn that they need to /exit + restart.
+    assert "/exit" in payload["systemMessage"] or "restart" in payload["systemMessage"].lower()
+
     hook_specific = payload.get("hookSpecificOutput", {})
     assert hook_specific.get("hookEventName") == "SessionStart"
     additional = hook_specific.get("additionalContext", "")
@@ -476,6 +480,13 @@ def test_quiet_emits_hook_json_when_plugin_installed(
     # by users (per claude-code-guide research), so the in-context
     # prompt is the reliable surface for getting the user informed.
     assert "BEFORE responding" in additional or "before responding" in additional.lower()
+    # Restart instruction is mandatory: `claude plugin install/update`
+    # lands files on disk but Claude Code only scans plugins at session
+    # start, so the just-installed plugin isn't usable until the user
+    # /exits and re-runs `claude`. Pin the model's instruction to call
+    # this out so the user knows what to do next.
+    assert "/exit" in additional
+    assert "restart" in additional.lower()
     # Must reflect the three-source model so the model knows the change
     # could've come from any of those, not just admin grants.
     assert "RBAC" in additional
@@ -484,6 +495,50 @@ def test_quiet_emits_hook_json_when_plugin_installed(
     # Must explain the bundle quirk so the model understands why a
     # skill/agent change shows up as "updated", not "installed".
     assert "agnes-store-bundle" in additional
+
+
+def test_manual_mode_prints_restart_hint_when_anything_changed(
+    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
+):
+    """When `agnes refresh-marketplace` runs without --quiet AND something
+    actually got installed/updated, the operator needs to know they should
+    /exit + restart Claude Code for the change to take effect (Claude only
+    scans plugins at session start). Print the hint at end of run."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    _set_marketplace_manifest(with_clone, [{"name": "grpn-fin", "version": "0.5.0"}])
+    recorder.script(("claude", "plugin", "list", "--json"),
+                    stdout=_plugin_list_json([]))
+
+    result = runner.invoke(refresh_marketplace_app, [])
+    assert result.exit_code == 0
+    out = _clean(result.output)
+    assert "Restart Claude Code" in out or "restart" in out.lower()
+    assert "/exit" in out
+
+
+def test_manual_mode_no_change_does_not_print_restart_hint(
+    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
+):
+    """Manual `agnes refresh-marketplace` over an already-up-to-date stack
+    must NOT spam the restart hint — there's nothing to restart for."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    _set_marketplace_manifest(with_clone, [{"name": "grpn-eng", "version": "1.0.0"}])
+    recorder.script(
+        ("claude", "plugin", "list", "--json"),
+        stdout=_plugin_list_json([
+            {"id": "grpn-eng@agnes", "version": "1.0.0", "projectPath": str(workspace)},
+        ]),
+    )
+    result = runner.invoke(refresh_marketplace_app, [])
+    assert result.exit_code == 0
+    out = _clean(result.output)
+    # The restart hint sentence specifically — not the substring "restart"
+    # which might appear elsewhere benignly.
+    assert "Restart Claude Code" not in out
 
 
 def test_quiet_appends_persistent_refresh_log_on_change(

@@ -219,6 +219,17 @@ def refresh_marketplace(
     # sessions stay quiet.
     if quiet and (events["installed"] or events["updated"]):
         _emit_hook_message(events)
+    elif not quiet and (events["installed"] or events["updated"]):
+        # Manual-mode operator finishing a refresh that did install/update
+        # something needs the same restart heads-up the hook flow surfaces
+        # via additionalContext. `claude plugin install/update` lands the
+        # files on disk, but Claude Code only scans plugins at session
+        # start, so changes don't take effect in the running session.
+        typer.echo(
+            "\nRestart Claude Code (`/exit`, then `claude`) to load the "
+            "new/updated plugins — they're on disk now but Claude only "
+            "picks them up on session start."
+        )
 
 
 def _bootstrap_clone(token: str, *, quiet: bool) -> bool:
@@ -290,7 +301,7 @@ def _bootstrap_clone(token: str, *, quiet: bool) -> bool:
 
     clone_cmd = ["git", "clone", auth_url, str(CLONE_DIR)]
     try:
-        result = subprocess.run(clone_cmd, capture_output=True, text=True, check=False)
+        result = subprocess.run(clone_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
     except FileNotFoundError:
         typer.echo("error: `git` not found in PATH; cannot clone marketplace.", err=True)
         return False
@@ -305,7 +316,7 @@ def _bootstrap_clone(token: str, *, quiet: bool) -> bool:
     # `.git/config`. Refreshes use the per-invocation credential helper.
     set_url = subprocess.run(
         ["git", "-C", str(CLONE_DIR), "remote", "set-url", "origin", clean_url],
-        capture_output=True, text=True, check=False,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
     )
     if set_url.returncode != 0:
         # Non-fatal — the refresh path's credential helper still works
@@ -337,7 +348,7 @@ def _bootstrap_clone(token: str, *, quiet: bool) -> bool:
     # will warn). This matches the soft-fail behavior elsewhere.
     if shutil.which("claude") is not None:
         add_cmd = ["claude", "plugin", "marketplace", "add", str(CLONE_DIR)]
-        add = subprocess.run(add_cmd, capture_output=True, text=True, check=False)
+        add = subprocess.run(add_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
         if add.returncode != 0:
             typer.echo(
                 f"warn: `claude plugin marketplace add {CLONE_DIR}` "
@@ -376,7 +387,7 @@ def _git_fetch_and_reset(token: str, *, quiet: bool) -> bool:
         "fetch", "origin",
     ]
     try:
-        fetch = subprocess.run(fetch_cmd, env=env, capture_output=True, text=True, check=False)
+        fetch = subprocess.run(fetch_cmd, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
     except FileNotFoundError:
         typer.echo("error: `git` not found in PATH; cannot refresh marketplace.", err=True)
         return False
@@ -388,7 +399,7 @@ def _git_fetch_and_reset(token: str, *, quiet: bool) -> bool:
         return False
 
     reset_cmd = ["git", "-C", str(CLONE_DIR), "reset", "--hard", "FETCH_HEAD"]
-    reset = subprocess.run(reset_cmd, capture_output=True, text=True, check=False)
+    reset = subprocess.run(reset_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
     if reset.returncode != 0:
         if reset.stdout:
             typer.echo(reset.stdout, err=True)
@@ -417,7 +428,7 @@ def _claude_marketplace_update(*, quiet: bool) -> None:
         )
         return
     cmd = ["claude", "plugin", "marketplace", "update", MARKETPLACE_NAME]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
     if result.returncode != 0:
         typer.echo(
             f"warn: `claude plugin marketplace update {MARKETPLACE_NAME}` "
@@ -527,7 +538,7 @@ def _reconcile_with_manifest(
     for name in to_install:
         target = f"{name}@{MARKETPLACE_NAME}"
         cmd = ["claude", "plugin", "install", target, "--scope", "project"]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
         if result.returncode != 0:
             typer.echo(
                 f"warn: `claude plugin install {target} --scope project` "
@@ -544,7 +555,7 @@ def _reconcile_with_manifest(
     for name in to_update:
         target = f"{name}@{MARKETPLACE_NAME}"
         cmd = ["claude", "plugin", "update", target]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
         if result.returncode != 0:
             typer.echo(
                 f"warn: `claude plugin update {target}` exited {result.returncode}.",
@@ -601,20 +612,32 @@ def _emit_hook_message(events: dict[str, list[str]]) -> None:
             + ", ".join(events["updated"])
         )
     summary = "Your Agnes stack changed: " + "; ".join(parts) + "."
+    # `claude plugin --help` says of `update`: "(restart required to
+    # apply)", and the same is true of `install` — plugins go onto disk
+    # in the current session but Claude Code only loads them on the
+    # NEXT session start. So whatever just got installed/updated is
+    # NOT yet active in this session. The user has to /exit and run
+    # `claude` again to actually use the plugin. Surface that.
+    restart_hint = (
+        "Run `/exit` and then `claude` again to load the changes — "
+        "Claude Code only picks up new/updated plugins on session start."
+    )
 
     # Persistent log line — survives across sessions, user can `cat` it
     # to see what's been installed/updated by the SessionStart hook.
-    _append_refresh_log(summary)
+    _append_refresh_log(f"{summary} {restart_hint}")
 
     # additionalContext is phrased as a direct instruction so Claude
     # mentions the change at the top of its first reply (the toast is
     # transient and easy to miss).
     additional = (
-        f"{summary} BEFORE responding to the user's first message, "
-        "open with one short sentence acknowledging this change so the "
-        "user knows the SessionStart hook just installed/updated their "
-        "stack — then proceed with their actual request. Keep the "
-        "acknowledgement to a single sentence; don't dwell. "
+        f"{summary} {restart_hint} BEFORE responding to the user's "
+        "first message, open with one short sentence acknowledging the "
+        "change AND the restart requirement so the user knows what was "
+        "installed/updated and that they need to /exit + restart Claude "
+        "Code to actually use it — then proceed with their actual "
+        "request. Keep the acknowledgement to a single sentence; "
+        "don't dwell."
         "\n\n"
         "Background for your own understanding (don't repeat this to "
         "the user unless asked): the Agnes stack is composed as "
@@ -626,10 +649,12 @@ def _emit_hook_message(events: dict[str, list[str]]) -> None:
         "pushed a new version, or the user added/removed a skill/agent "
         "from /store (those share one synth plugin `agnes-store-bundle` "
         "whose version is a content hash). The CLI can't tell which "
-        "source from the diff alone."
+        "source from the diff alone. Plugins require a Claude Code "
+        "restart because Claude scans the plugin cache once at session "
+        "start; mid-session installs land on disk but aren't loaded."
     )
     payload = {
-        "systemMessage": summary,
+        "systemMessage": f"{summary} {restart_hint}",
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
             "additionalContext": additional,
@@ -717,7 +742,7 @@ def _list_installed_agnes_plugins_in_cwd() -> Optional[dict[str, str]]:
         return None
     cmd = ["claude", "plugin", "list", "--json"]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
     except FileNotFoundError:
         return None
     if result.returncode != 0 or not result.stdout.strip():
