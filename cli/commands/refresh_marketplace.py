@@ -146,6 +146,27 @@ def refresh_marketplace(
     install flow can call it once and not need a separate `git clone` /
     `claude plugin marketplace add` sequence.
     """
+    clone_exists = (CLONE_DIR / ".git").is_dir()
+
+    if not clone_exists and not bootstrap:
+        # No clone → nothing to refresh. Hook contexts hit this on every
+        # workspace that didn't go through step 5; silent exit keeps logs
+        # clean. Manual invocation gets a hint so the user knows why.
+        # Importantly: we don't read the token here. The hook command
+        # `agnes refresh-marketplace --quiet` runs in every workspace that
+        # has the hook installed, including ones where no agnes token is
+        # configured yet (e.g. a fresh CI checkout). Forcing a token check
+        # before the no-op short-circuit would surface spurious auth_failed
+        # errors on workspaces that legitimately have no marketplace.
+        if not quiet:
+            typer.echo(
+                f"No marketplace clone at {CLONE_DIR} — nothing to refresh. "
+                "Re-run setup with `agnes refresh-marketplace --bootstrap` "
+                "(or re-run setup from the dashboard) to clone it."
+            )
+        raise typer.Exit(0)
+
+    # Token is needed for both bootstrap-clone and the fetch+reset path.
     token = get_token()
     if not token:
         typer.echo(
@@ -157,18 +178,7 @@ def refresh_marketplace(
         )
         raise typer.Exit(1)
 
-    if not (CLONE_DIR / ".git").is_dir():
-        if not bootstrap:
-            # No clone → nothing to refresh. Hook contexts hit this on every
-            # workspace that didn't go through step 5; silent exit keeps logs
-            # clean. Manual invocation gets a hint so the user knows why.
-            if not quiet:
-                typer.echo(
-                    f"No marketplace clone at {CLONE_DIR} — nothing to refresh. "
-                    "Re-run setup with `agnes refresh-marketplace --bootstrap` "
-                    "(or re-run setup from the dashboard) to clone it."
-                )
-            raise typer.Exit(0)
+    if not clone_exists:
         # --bootstrap requested + no clone: do the initial clone + register
         # with Claude. Then fall through to the normal fetch/reset/reconcile
         # flow so any plugins listed in the manifest get installed too.
