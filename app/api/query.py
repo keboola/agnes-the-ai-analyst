@@ -46,16 +46,23 @@ router = APIRouter(prefix="/api/query", tags=["query"])
 # fallback there is a 2× latency tax on every typo (devil's-advocate R1
 # finding #2).
 #
-# Conservative pattern set: only ``Syntax error`` covers genuine
-# parse-level dialect mismatch. ``Unrecognized name`` etc. surface for
-# both bad-user-column AND DuckDB-only-name cases — the safe assumption
-# is that user-column-typo is the more common case, so we don't fall
-# back. If a deployment surfaces a real DuckDB-only-name regression,
-# it's better caught as a BinderException with the original SQL in the
-# logs than amplified via slow-path retry.
+# Conservative pattern set: only the BQ-emitted ``Syntax error: <detail>``
+# (with trailing colon) covers genuine parse-level dialect mismatch.
+# ``Unrecognized name`` etc. surface for both bad-user-column AND
+# DuckDB-only-name cases — the safe assumption is that user-column-typo
+# is the more common case, so we don't fall back. If a deployment
+# surfaces a real DuckDB-only-name regression, it's better caught as
+# a BinderException with the original SQL in the logs than amplified
+# via slow-path retry.
+#
+# The trailing colon (devil's-advocate R2 finding #3) anchors the match
+# against BQ's verbatim error format and avoids false positives where
+# the literal substring `Syntax error` appears in a user's SQL string
+# literal that DuckDB then echoes back in an unrelated error message
+# (e.g. `WHERE log_msg = 'Syntax error in foo'` failing on quota).
 _BQ_REWRITE_PARSE_ERROR_PATTERNS = (
-    "Syntax error",
-    "syntax error",
+    "Syntax error: ",
+    "syntax error: ",
 )
 
 
