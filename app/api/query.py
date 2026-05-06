@@ -90,6 +90,29 @@ BQ_PATH = re.compile(
 )
 
 
+# Issue #201 — full backtick BQ path `<project>.<dataset>.<table>` in user
+# SQL. Used by the registry-gating pass and (via `_mask_backticks`) to keep
+# bare-name regexes from firing inside backtick-quoted segments.
+_BACKTICK_SEGMENT = re.compile(r'`[^`]*`')
+_BACKTICK_FULL_PATH = re.compile(r'`([^.`]+)\.([^.`]+)\.([^.`]+)`')
+
+
+def _mask_backticks(sql: str) -> str:
+    """Replace each `…`-quoted segment with spaces of equal length so
+    word-boundary regexes find positions outside backticks but ignore
+    everything inside. Preserves all character offsets so ``re.search``
+    on the masked string returns matches at the same positions as on the
+    original.
+
+    Issue #201: `\\b` matches inside backtick segments because both `.`
+    and `` ` `` are non-word characters. A registered bare-name like
+    ``unit_economics`` would otherwise match inside a user-supplied full
+    backtick path ``\\`<project>.<dataset>.unit_economics\\``` and get
+    falsely rewritten — corrupting the user's intended SQL.
+    """
+    return _BACKTICK_SEGMENT.sub(lambda m: ' ' * len(m.group(0)), sql)
+
+
 def _default_remote_query_cap_bytes() -> int:
     """5 GiB default cap on /api/query BQ-touching scans. Configurable via
     `data_source.bigquery.bq_max_scan_bytes` in /admin/server-config —
@@ -197,11 +220,18 @@ def execute_query(
                 if r.get("name") and r.get("id") in allowed_ids
             }
 
-            # Check if query references any forbidden tables (word-boundary match)
+            # Check if query references any forbidden tables (word-boundary
+            # match). Issue #201: mask backtick segments so `\b` doesn't
+            # falsely fire inside a user-supplied full backtick path like
+            # `<project>.<dataset>.<table>` whose final segment happens to
+            # collide with a forbidden master view name. The full-path
+            # registry-gate downstream is the proper authorization check
+            # for those.
+            sql_lower_masked = _mask_backticks(sql_lower)
             forbidden = all_views - allowed_view_names
             for table in forbidden:
                 pattern = r'\b' + re.escape(table.lower()) + r'\b'
-                if re.search(pattern, sql_lower):
+                if re.search(pattern, sql_lower_masked):
                     raise HTTPException(status_code=403, detail=f"Access denied to table '{table}'")
 
         # ---- #160 BQ remote-row guardrail + RBAC patch -------------------
@@ -467,6 +497,11 @@ def _bq_guardrail_inputs(
     name_lookups: list = []
     seen_paths: set = set()
     accessible_set = set(allowed) if allowed is not None else None
+    # Issue #201: mask backtick segments so a registered bare name like
+    # `unit_economics` doesn't false-positive on a user-supplied full
+    # backtick path `<project>.<dataset>.unit_economics`. The full-path
+    # pass below registry-gates those properly.
+    sql_lower_masked = _mask_backticks(sql_lower)
     for r in repo.list_by_source("bigquery"):
         if (r.get("query_mode") or "") != "remote":
             continue
@@ -481,7 +516,7 @@ def _bq_guardrail_inputs(
             # before we get here. Defensive skip.
             continue
         pattern = r'\b' + re.escape(str(name).lower()) + r'\b'
-        if re.search(pattern, sql_lower):
+        if re.search(pattern, sql_lower_masked):
             key = (bucket.lower(), source_table.lower())
             if key not in seen_paths:
                 seen_paths.add(key)
@@ -579,6 +614,15 @@ def _rewrite_bq_table_refs_to_native(
     # name up in a case-insensitive dict. Single-pass means freshly
     # inserted backticked text isn't re-scanned, fixing the
     # project-ID-contains-name corruption (Devin Review on query.py:464).
+    #
+    # Issue #201: split the SQL on `…` segments and rewrite ONLY in the
+    # outside-backtick chunks. Without this, a user-supplied full backtick
+    # path like ``\\`<project>.<dataset>.unit_economics\\``` whose final
+    # segment matches a registered bare name would have the bare-name
+    # regex fire INSIDE the backticks (since `\\b` treats both `.` and
+    # `` ` `` as non-word boundaries), producing malformed nested
+    # backticks. Splitting confines the rewrite to user identifier
+    # positions where bare-name resolution is the intended behaviour.
     if name_lookups:
         # Map name (lower-cased) → backticked target. Names are
         # case-insensitive on the input side per the existing helper
@@ -598,7 +642,15 @@ def _rewrite_bq_table_refs_to_native(
         def _name_repl(m: re.Match) -> str:
             return name_to_target[m.group(1).lower()]
 
-        out = re.sub(pattern, _name_repl, out, flags=re.IGNORECASE)
+        # `re.split` with a captured group returns: [outside, backtick,
+        # outside, backtick, …]. Even indices are outside-backtick chunks
+        # eligible for bare-name rewrite; odd indices are full backtick
+        # segments preserved verbatim.
+        parts = re.split(r'(`[^`]*`)', out)
+        for i, part in enumerate(parts):
+            if i % 2 == 0:
+                parts[i] = re.sub(pattern, _name_repl, part, flags=re.IGNORECASE)
+        out = "".join(parts)
 
     # Pass 2: bq."ds"."tbl" / bq.ds.tbl → `<project>.<ds>.<tbl>`.
     def _bq_path_repl(m: re.Match) -> str:

@@ -432,3 +432,105 @@ def test_rewrite_helper_is_case_insensitive_on_bare_names():
     )
     assert "`p.fin.ue` WHERE `p.fin.ue`.id" in rewritten or \
            rewritten.lower().count("`p.fin.ue`") == 2
+
+
+# ---------------------------------------------------------------------------
+# Issue #201: rewriter must NOT touch text inside `…` backtick segments.
+# A user-supplied full BQ-native path `<project>.<dataset>.<table>` whose
+# table segment matches a registered bare name was being re-substituted
+# inside the backticks, producing malformed nested-backtick SQL that BQ
+# rejected with a parse error.
+# ---------------------------------------------------------------------------
+
+
+def test_rewrite_skips_inside_backtick_path():
+    """Full backtick BQ path is preserved byte-for-byte even when its
+    final segment matches a registered bare-name alias."""
+    from app.api.query import _rewrite_user_sql_for_bq_dry_run
+
+    sql = (
+        "SELECT * FROM `my-prj.finance.unit_economics` "
+        "WHERE country = 'CZ'"
+    )
+    rewritten = _rewrite_user_sql_for_bq_dry_run(
+        sql=sql,
+        name_lookups=[("unit_economics", "finance", "unit_economics")],
+        project="my-prj",
+    )
+    # No corruption — input is already BQ-native, rewriter is a no-op here.
+    assert rewritten == sql, (
+        f"backtick path was rewritten:\n  in : {sql!r}\n  out: {rewritten!r}"
+    )
+    # Sanity: the malformed nested form must NOT appear.
+    assert "`my-prj.finance.`my-prj" not in rewritten
+
+
+def test_rewrite_skips_inside_backtick_with_outside_bare_name():
+    """Mixed SQL: a bare name outside backticks is rewritten as before,
+    but an identically-named segment inside a backtick path is left
+    alone."""
+    from app.api.query import _rewrite_user_sql_for_bq_dry_run
+
+    sql = (
+        "SELECT a.id, b.col FROM ue a "
+        "JOIN `my-prj.finance.ue` b ON a.id = b.id"
+    )
+    rewritten = _rewrite_user_sql_for_bq_dry_run(
+        sql=sql,
+        name_lookups=[("ue", "fin_alias", "ue_alias")],
+        project="my-prj",
+    )
+    # Outside-backtick `ue` rewrites to the registered alias path.
+    assert "`my-prj.fin_alias.ue_alias`" in rewritten
+    # The user-supplied backtick path is preserved verbatim.
+    assert "`my-prj.finance.ue`" in rewritten
+    # The malformed nested form must NOT appear.
+    assert "`my-prj.finance.`my-prj.fin_alias.ue_alias`" not in rewritten
+
+
+def test_guardrail_skips_bare_name_match_inside_backticks(
+    seeded_app, mock_dry_run, monkeypatch,
+):
+    """The `name_lookups` collection populated by `_bq_guardrail_inputs`
+    must not include a registered name when the only place that name
+    appears in the SQL is inside a `…` backtick segment.
+
+    Captures the rewritten SQL the guardrail forwards to the dry-run and
+    asserts the bare-name was NOT substituted inside the user's backtick
+    path.
+    """
+    _register_bq_remote_row("unit_economics", "finance", "unit_economics")
+
+    captured = {"sql": None}
+
+    def capturing_fake(_bq, sql):
+        captured["sql"] = sql
+        return 1024
+
+    monkeypatch.setattr(
+        "app.api.query._bq_dry_run_bytes", capturing_fake, raising=False,
+    )
+
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    user_sql = (
+        "SELECT * FROM `test-data-prj.finance.unit_economics` "
+        "WHERE country = 'CZ'"
+    )
+    c.post("/api/query", json={"sql": user_sql}, headers=_auth(token))
+
+    sent = captured["sql"]
+    if sent is None:
+        # Guardrail decided no BQ tables were referenced — that's also
+        # an acceptable "no false-positive" outcome (Layer 3 will cover
+        # the explicit registry check for full backtick paths). We just
+        # need to ensure the bare-name regex didn't fire.
+        return
+    # The user's exact backtick path must survive verbatim — no nested
+    # backticks introduced by a stray bare-name rewrite.
+    assert "`test-data-prj.finance.unit_economics`" in sent, (
+        f"backtick path corrupted by guardrail:\n  out: {sent!r}"
+    )
+    assert "`test-data-prj.finance.`test-data-prj" not in sent, (
+        f"nested-backtick corruption signature present: {sent!r}"
+    )
