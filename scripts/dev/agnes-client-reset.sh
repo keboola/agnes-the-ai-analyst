@@ -50,12 +50,22 @@ if [ "$YES" -eq 0 ] && [ "$DRY" -eq 0 ]; then
 This will remove the Agnes client install from this machine:
   - 'agnes' CLI (uv tool uninstall)
   - ~/.config/agnes (token, server URL, sync state)
-  - ~/.agnes (CA cert, ca-bundle, marketplace clone)
-  - ~/.claude/skills/agnes
-  - Claude Code marketplace 'agnes' + its plugins
+  - ~/.agnes/ca.pem, ~/.agnes/ca-bundle.pem (TLS bootstrap)
+  - ~/.agnes/marketplace (local clone of the per-user marketplace)
+  - ~/.claude/skills/agnes (skills cached on disk)
+  - ~/.claude/plugins/marketplaces/agnes (Claude's marketplace registration)
+  - ~/.claude/plugins/cache/agnes (Claude's per-plugin install cache)
+  - Claude Code marketplace 'agnes' + its plugins (best-effort via claude CLI)
   - 'AGNES_CA_PEM_TRUST' block from your shell rc
   - Agnes CA from the OS trust store (certutil / keychain / ca-certificates)
   - /tmp/agnes*.whl
+
+NOT removed (workspace-specific, can't enumerate from here):
+  - SessionStart / SessionEnd hooks in any <workspace>/.claude/settings.json
+    you ran 'agnes init' in. Those reference 'agnes pull' /
+    'agnes refresh-marketplace' / 'agnes push' and stay until you either
+    re-init that workspace or delete the file. They're harmless when the
+    CLI is uninstalled (the hook command becomes a no-op via '|| true').
 
 Platform: $PLATFORM
 EOF
@@ -148,10 +158,22 @@ fi
 step "Remove Agnes filesystem state"
 # Honor the same AGNES_CONFIG_DIR override the CLI reads.
 AGNES_CONFIG_DIR_RESOLVED="${AGNES_CONFIG_DIR:-$HOME/.config/agnes}"
+# `~/.claude/plugins/cache/agnes/` and `~/.claude/plugins/marketplaces/agnes`
+# are normally cleaned by `claude plugin marketplace remove agnes` (step 2),
+# but we wipe them defensively because:
+#   - `claude` may not be on PATH (e.g. uninstalled in a previous step,
+#     fresh machine, etc.) — step 2 silently skips, leaving stale dirs.
+#   - Claude Code's cleanup of `cache/` is lazy in some versions; partial
+#     dirs from interrupted installs survive `marketplace remove`.
+# `rm -rf` handles both file-shaped and dir-shaped registrations
+# (the registration entry is a single JSON file when the marketplace was
+# added via HTTPS, a full git working tree when added via local path).
 for path in \
     "$AGNES_CONFIG_DIR_RESOLVED" \
     "$HOME/.agnes" \
     "$HOME/.claude/skills/agnes" \
+    "$HOME/.claude/plugins/marketplaces/agnes" \
+    "$HOME/.claude/plugins/cache/agnes" \
 ; do
     if [ -e "$path" ]; then
         run "rm -rf \"$path\""
@@ -215,6 +237,15 @@ from /install on the Agnes server to validate a fresh-machine install.
 Sanity checks for "fresh state":
   command -v agnes           # should be absent
   ls ~/.config/agnes ~/.agnes   # both should not exist
+  ls ~/.claude/plugins/marketplaces/agnes ~/.claude/plugins/cache/agnes   # both gone
   env | grep -E 'AGNES|SSL_CERT_FILE|NODE_EXTRA_CA_CERTS'   # empty
   claude plugin marketplace list   # no 'agnes' entry
+
+If you used 'agnes init' in workspaces other than the one you're in now,
+those workspaces still have:
+  <workspace>/.claude/settings.json  # SessionStart/End hooks pointing at agnes
+  <workspace>/CLAUDE.md              # RBAC-filtered docs from agnes init
+  <workspace>/AGNES_WORKSPACE.md     # human-facing workspace docs
+Delete those by hand if you want a fully clean slate per workspace. The
+hook commands no-op safely while the CLI is uninstalled (`|| true`).
 EOF
