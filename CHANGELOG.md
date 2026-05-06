@@ -10,6 +10,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.38.1] — 2026-05-06
+
+### Internal
+- `CLAUDE.md` — `Claude Code marketplace endpoint` section now documents the
+  two-step fallback (system `git clone` + local `claude plugin marketplace
+  add`) for users registering manually against a private-CA Agnes instance.
+  Bun-compiled `claude` ignores the OS trust store and CA env vars on the
+  marketplace HTTPS path, so direct `/plugin marketplace add` over HTTPS can
+  fail with TLS errors on macOS / Windows even when system tools work fine.
+  The dashboard-served setup payload (`app/web/setup_instructions.py`)
+  already branches between the two automatically based on platform; the
+  doc snippet now matches that behavior for manual flows.
+
 ## [0.38.0] — 2026-05-06
 
 ### Added
