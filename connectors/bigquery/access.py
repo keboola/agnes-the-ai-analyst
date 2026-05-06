@@ -249,12 +249,24 @@ def apply_bq_session_settings(conn) -> None:
 
     Call AFTER ``LOAD bigquery`` on every DuckDB session that touches BQ:
     BqAccess's session factory, the standalone extractor in
-    ``connectors/bigquery/extractor.py``, and the orchestrator's
-    ``_remote_attach`` path in ``src/orchestrator.py``.
+    ``connectors/bigquery/extractor.py``, the orchestrator's
+    ``_remote_attach`` path in ``src/orchestrator.py``, and ``src/db.py``'s
+    read-only analytics-DB factory (called from ``_reattach_remote_extensions``
+    plus a belt-and-suspenders call from ``get_analytics_db_readonly`` itself).
+
+    SET failures are logged at WARNING level (previously silent) so operators
+    can diagnose timeouts that surface as the extension default 90 s when the
+    intended value was higher. The applied value is verified via
+    ``current_setting('bq_query_timeout_ms')``; a mismatch is also logged.
     """
     try:
         from app.instance_config import get_value
-    except Exception:
+    except Exception as e:
+        logger.warning(
+            "apply_bq_session_settings: instance_config unavailable (%s); "
+            "extension default bq_query_timeout_ms (90 s) will apply",
+            e,
+        )
         return
     raw = get_value(
         "data_source", "bigquery", "query_timeout_ms", default=600_000,
@@ -262,16 +274,61 @@ def apply_bq_session_settings(conn) -> None:
     try:
         ms = int(raw) if raw is not None else 0
     except (TypeError, ValueError):
+        logger.warning(
+            "apply_bq_session_settings: query_timeout_ms=%r is not an int; "
+            "extension default (90 s) will apply",
+            raw,
+        )
         return
     if ms <= 0:
+        # Operator opt-out: leave extension default in place. Log INFO so the
+        # choice shows up in startup logs without being noisy.
+        logger.info(
+            "apply_bq_session_settings: query_timeout_ms=%d (≤0); extension "
+            "default bq_query_timeout_ms (90 s) will apply",
+            ms,
+        )
         return
     try:
         conn.execute(f"SET bq_query_timeout_ms = {int(ms)}")
-    except Exception:
-        # Fail-soft: extension version may not support the setting, or the
-        # session may already have been frozen — leave the default rather
-        # than poisoning the whole session.
-        pass
+    except Exception as e:
+        # Most common cause: the BigQuery extension is not loaded on this
+        # connection yet (caller forgot the `LOAD bigquery` step), or the
+        # installed extension version pre-dates the setting. Either way the
+        # 90 s default sticks and remote queries time out unexpectedly.
+        # Surface this — silent fallback was the bug behind real outages.
+        logger.warning(
+            "apply_bq_session_settings: SET bq_query_timeout_ms=%d failed (%s); "
+            "extension default (90 s) will apply. Likely cause: BigQuery "
+            "extension not loaded on this connection, or the installed "
+            "extension version does not support this setting.",
+            ms, e,
+        )
+        return
+    # Verify the setting actually landed — protects against silent ignores
+    # the extension might do in some failure modes.
+    try:
+        result = conn.execute(
+            "SELECT current_setting('bq_query_timeout_ms')"
+        ).fetchone()
+        actual = int(result[0]) if result and result[0] is not None else None
+    except Exception as e:
+        logger.warning(
+            "apply_bq_session_settings: could not read back "
+            "bq_query_timeout_ms (%s); cannot verify setting was applied",
+            e,
+        )
+        return
+    if actual != ms:
+        logger.warning(
+            "apply_bq_session_settings: requested bq_query_timeout_ms=%d but "
+            "current_setting reports %r — extension may have ignored the SET",
+            ms, actual,
+        )
+    else:
+        logger.debug(
+            "apply_bq_session_settings: bq_query_timeout_ms=%d applied", ms,
+        )
 
 
 class BqAccess:
