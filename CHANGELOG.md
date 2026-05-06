@@ -10,6 +10,40 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.42.0] — 2026-05-06
+
+### Fixed
+- `agnes query --remote`: full backtick BigQuery paths in user SQL are no
+  longer corrupted by the registered-name rewriter. Previously a query
+  like ``SELECT … FROM `<project>.<dataset>.<table>` WHERE …`` whose
+  table name happened to be registered as a bare-name alias would have
+  the alias re-substituted *inside* the backtick path, producing
+  malformed SQL that BigQuery rejected with a parse error. The cap-guard
+  then fell back to a filter-less `SELECT *` size estimate (often orders
+  of magnitude larger than the real scan), blocking the query as
+  `remote_scan_too_large`. Issue #201.
+
+### Changed
+- `agnes query --remote`: cap-guard fallback no longer estimates from
+  a synthetic `SELECT *` when the rewritten SQL fails dry-run. It first
+  retries the user's original SQL (handles BQ-native input cleanly), and
+  only when *that* also fails returns a structured `remote_estimate_failed`
+  HTTP 400 with a hint instead of silently over-estimating.
+- **BREAKING (clients matching error kinds)**: failure to estimate
+  remote-query scan size now returns `kind="remote_estimate_failed"`
+  instead of being masked as `remote_scan_too_large` caused by
+  over-estimation. Operators that grep for the old kind in dashboards
+  should update.
+
+### Security
+- `agnes query --remote`: full backtick BigQuery paths are now
+  registry-gated identically to `bq."<dataset>"."<table>"` syntax.
+  Previously, full backtick paths bypassed Agnes RBAC entirely — only
+  the configured service account scope limited what users could query.
+  New `bq_path_cross_project` (when the project ≠ configured data
+  project) and `bq_path_not_registered` (when path is unknown) error
+  kinds. Issue #201.
+
 ## [0.41.0] — 2026-05-06
 
 ### Fixed
