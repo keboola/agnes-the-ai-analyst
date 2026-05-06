@@ -196,11 +196,22 @@ def refresh_marketplace(
         # `|| true`, but a manual `agnes refresh-marketplace` should fail).
         raise typer.Exit(1)
 
+    # Capture installed versions BEFORE telling Claude Code to re-read
+    # the marketplace. `claude plugin marketplace update` auto-applies
+    # version bumps for plugins registered as a local-path marketplace
+    # — Claude reads the new manifest off disk and silently updates the
+    # plugin's installed version to match. If we captured AFTER that,
+    # the diff against the new manifest would always be zero on real
+    # version-bump scenarios (admin pushes v1.0.1, /store skill bumps
+    # the agnes-store-bundle content hash, etc.) and the reconcile-event
+    # tracking would never fire — no notification surface for the user,
+    # despite the plugin actually getting updated. Snapshot now while
+    # the old version is still observable.
+    installed_pre = _list_installed_agnes_plugins_in_cwd()
+
     _claude_marketplace_update(quiet=quiet)
 
-    # Reconcile runs after marketplace update so claude knows about any
-    # newly-listed plugins before we ask it to install/update them.
-    _reconcile_with_manifest(quiet=quiet, events=events)
+    _reconcile_with_manifest(quiet=quiet, events=events, installed_pre=installed_pre)
 
     # In hook context (--quiet), emit a Claude Code hook JSON object on
     # stdout summarizing the run so the user gets a notification + the
@@ -420,7 +431,12 @@ def _claude_marketplace_update(*, quiet: bool) -> None:
         typer.echo(result.stdout.rstrip())
 
 
-def _reconcile_with_manifest(*, quiet: bool, events: dict[str, list[str]]) -> None:
+def _reconcile_with_manifest(
+    *,
+    quiet: bool,
+    events: dict[str, list[str]],
+    installed_pre: Optional[dict[str, str]] = None,
+) -> None:
     """Make installed plugins match the served manifest.
 
     For each plugin in the marketplace.json:
@@ -434,6 +450,20 @@ def _reconcile_with_manifest(*, quiet: bool, events: dict[str, list[str]]) -> No
     without changing the manifest's plugin set. A "missing-only" install
     flow would never see those changes. Same applies to admin pushing a
     new version of an existing plugin.
+
+    The ``installed_pre`` arg is the snapshot of plugins-as-installed
+    captured BEFORE ``claude plugin marketplace update`` ran. Why a
+    pre-snapshot matters: ``claude plugin marketplace update`` for a
+    local-path marketplace silently auto-applies version bumps from the
+    refreshed manifest, so an installed-snapshot taken AFTER it would
+    already match the manifest in the very scenarios we want to detect
+    (admin pushed a new version, /store bundle hash changed, …). The
+    caller passes the pre-snapshot it captured between fetch+reset and
+    the marketplace update; we diff against it to see what *was actually
+    different* before Claude silently reconciled. As a fallback (e.g.
+    bootstrap path where the caller passed ``None``), we re-read live —
+    that case has no pre-state to preserve anyway because the clone
+    just appeared.
 
     We don't auto-uninstall plugins that disappeared from the manifest —
     that's destructive (transient server-side empty-manifest bug would
@@ -459,7 +489,7 @@ def _reconcile_with_manifest(*, quiet: bool, events: dict[str, list[str]]) -> No
         # Empty stack (RBAC granted nothing, no /store installs). Nothing to do.
         return
 
-    installed = _list_installed_agnes_plugins_in_cwd()
+    installed = installed_pre if installed_pre is not None else _list_installed_agnes_plugins_in_cwd()
     if installed is None:
         typer.echo(
             "warn: could not enumerate installed plugins; "
@@ -678,6 +708,13 @@ def _list_installed_agnes_plugins_in_cwd() -> Optional[dict[str, str]]:
     --json flag unsupported, output not parseable). Empty dict means
     "nothing currently installed in this workspace from agnes".
     """
+    # Short-circuit when `claude` isn't on PATH so callers (including the
+    # pre-snapshot capture in the main flow) don't trigger a subprocess
+    # invocation that would either fail with FileNotFoundError or in
+    # tests register a spurious `claude` call against a `which`-less
+    # fixture. Matches the soft-fail philosophy in _claude_marketplace_update.
+    if shutil.which("claude") is None:
+        return None
     cmd = ["claude", "plugin", "list", "--json"]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=False)
