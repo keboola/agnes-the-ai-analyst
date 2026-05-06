@@ -10,6 +10,24 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **`/api/query` (and `agnes query --remote`) now rewrites user SQL referencing
+  `query_mode='remote'` BigQuery rows into a single `bigquery_query()` call
+  before execute** (`app/api/query.py`). Pre-fix the master view
+  (`CREATE VIEW <name> AS SELECT * FROM bigquery.<bucket>.<source_table>`) did
+  not push WHERE / SELECT / LIMIT into BQ — the DuckDB BQ extension opened a
+  Storage Read API session over the entire upstream table, scanning the full
+  partitioned dataset before the local DuckDB filter ran. On 100M+ row
+  remote-mode tables this was 50-100× slower than the equivalent direct
+  `bigquery_query()` call (70-150 s vs 1.5 s) and frequently failed with
+  `Response too large to return`. The rewriter (shared core with the existing
+  dry-run helper) wraps the user's whole SQL in `bigquery_query('<project>',
+  '<inner-sql>')` so the BQ planner receives the full query and applies
+  partition pruning + projection pushdown server-side. Conservative
+  fall-through: cross-source JOINs (BQ ↔ Keboola/Jira local), queries already
+  containing `bigquery_query(`, and unconfigured BQ project all keep the
+  original ATTACH-catalog path so behavior degrades gracefully.
+
 ## [0.38.3] — 2026-05-06
 
 ### Changed

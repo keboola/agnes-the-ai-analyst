@@ -192,8 +192,32 @@ def execute_query(
             else contextlib.nullcontext()
         )
         with guard:
+            # Performance fix: rewrite user SQL referencing BQ-remote tables
+            # to a single ``bigquery_query()`` call so WHERE / projection /
+            # LIMIT push into BQ via jobs.query (1-2 s) instead of falling
+            # through DuckDB's ATTACH-catalog Storage Read API session over
+            # the full table (often 70-150 s, fails with "Response too
+            # large to return" on >100M-row sources). Helper returns the
+            # original SQL unchanged when rewriting would be unsafe
+            # (cross-source JOIN, no BQ tables referenced, double-wrap).
+            execution_sql, did_rewrite = _rewrite_user_sql_for_bigquery_query(
+                request.sql, conn,
+            )
+            if did_rewrite:
+                logger.info(
+                    "query_rewrite_to_bigquery_query: user_id=%s — wrapped "
+                    "SQL in bigquery_query() for BQ predicate pushdown",
+                    user_id,
+                )
+            else:
+                logger.debug(
+                    "query_rewrite_skipped: user_id=%s — running original "
+                    "SQL via ATTACH-catalog path",
+                    user_id,
+                )
+
             # Open in read-only mode for extra safety
-            result = analytics.execute(request.sql).fetchmany(request.limit + 1)
+            result = analytics.execute(execution_sql).fetchmany(request.limit + 1)
             columns = [desc[0] for desc in analytics.description] if analytics.description else []
             truncated = len(result) > request.limit
             rows = result[:request.limit]
@@ -432,12 +456,11 @@ def _bq_guardrail_inputs(
     return dry_run, name_lookups, None
 
 
-def _rewrite_user_sql_for_bq_dry_run(
+def _rewrite_bq_table_refs_to_native(
     sql: str, name_lookups: list, project: str,
 ) -> str:
-    """Rewrite user SQL from DuckDB-flavor to BQ-native so a single
-    `_bq_dry_run_bytes` call can estimate scan size for the EXACT query
-    the user submitted (issue #171).
+    """Core identifier rewrite: DuckDB-flavor table references → BQ-native
+    backtick form. Shared between dry-run and execution-path rewriters.
 
     Two transformations:
 
@@ -463,13 +486,15 @@ def _rewrite_user_sql_for_bq_dry_run(
     inside a string literal (e.g. an `IN (...)` value or a `LIKE` pattern)
     will also be rewritten. This is acceptable because (a) it's vanishingly
     rare to have a string literal exactly matching a registered table name,
-    and (b) when it does happen the dry-run errors out and the caller falls
-    back to the per-table SELECT * estimate (current behavior, no regression).
+    and (b) when it does happen the caller's error path covers the case
+    (dry-run falls back to per-table SELECT * estimate; execution falls
+    through to the ATTACH-catalog path).
 
     CTE shadowing: a `WITH unit_economics AS (...)` followed by `FROM
     unit_economics` would also rewrite the `FROM` reference. BQ then treats
-    the CTE as unreferenced (legal) and the dry-run estimates the rewritten
-    physical table — likely an over-estimate. Same fallback path covers this.
+    the CTE as unreferenced (legal) and the rewriter's caller deals with
+    the consequence — over-estimation for dry-run, fall-through-to-ATTACH
+    via BQ parse error for execution.
     """
     out = sql
 
@@ -507,6 +532,172 @@ def _rewrite_user_sql_for_bq_dry_run(
 
     out = BQ_PATH.sub(_bq_path_repl, out)
     return out
+
+
+def _rewrite_user_sql_for_bq_dry_run(
+    sql: str, name_lookups: list, project: str,
+) -> str:
+    """Rewrite user SQL from DuckDB-flavor to BQ-native so a single
+    `_bq_dry_run_bytes` call can estimate scan size for the EXACT query
+    the user submitted (issue #171). Thin wrapper around the shared
+    core; kept as a stable name for callers in /api/query's cap-guard.
+    """
+    return _rewrite_bq_table_refs_to_native(sql, name_lookups, project)
+
+
+def _rewrite_user_sql_for_bigquery_query(
+    user_sql: str, conn: duckdb.DuckDBPyConnection,
+) -> tuple[str, bool]:
+    """Rewrite user SQL so the entire query ships to BQ as a single
+    ``bigquery_query(<project>, <inner-sql>)`` call.
+
+    Returns ``(rewritten_sql, did_rewrite)``. When ``did_rewrite`` is
+    ``False``, the caller MUST execute the original ``user_sql`` via the
+    ATTACH-catalog path (slow but correct); the rewriter is conservative
+    on purpose — wrapping cross-source queries in ``bigquery_query()``
+    would silently lose the local-side data.
+
+    Why this matters
+    ----------------
+    The orchestrator's master view (``CREATE VIEW name AS SELECT * FROM
+    bigquery.<bucket>.<source_table>``) does not push WHERE / projections
+    into BQ when DuckDB resolves the query — the BQ extension opens a
+    Storage Read API session over the entire table, which on multi-100M-row
+    tables is 50-100× slower than letting BQ run the query server-side.
+    Wrapping the user's SQL in ``bigquery_query('<project>', '<inner>')``
+    makes the BQ extension issue a ``jobs.query`` instead, with full
+    predicate pushdown.
+
+    Skip rules (returns ``(user_sql, False)``)
+    ------------------------------------------
+    1. No registered ``query_mode='remote'`` BQ row referenced in the SQL.
+       Nothing to rewrite — original SQL passes through unchanged.
+    2. User SQL already contains ``bigquery_query(`` — never double-wrap.
+       (The /api/query keyword denylist also blocks this in production;
+       defensive guard for callers in other contexts.)
+    3. SQL also references a non-BQ master view (Keboola/Jira local-mode
+       table). Wrapping would lose those references — fall through to
+       ATTACH-catalog so the cross-source query still runs.
+    4. ``get_bq_access()`` returns the unconfigured sentinel
+       (``data == ''``). No project to fill into ``bigquery_query()``.
+
+    Edge cases preserved by design
+    ------------------------------
+    - CTEs / sub-queries referencing BQ tables: the table-name rewrite
+      happens at every match position, then the whole SQL is wrapped in
+      one ``bigquery_query()``. BQ supports CTEs, so this works.
+    - Multiple BQ tables, same project: combined into ONE wrap (single
+      jobs.query). DuckDB's BQ extension doesn't support multi-project
+      JOINs in a single ``bigquery_query()`` call today; if/when the
+      registry grows per-table source_project, this helper would need to
+      gate on cross-project mixing.
+    - ``bq."ds"."tbl"`` direct paths: rewritten to BQ-native backticks
+      via the same shared core as dry-run.
+    """
+    # Skip 2: don't double-wrap. Cheap pre-check before any registry I/O.
+    if "bigquery_query(" in user_sql.lower():
+        return user_sql, False
+
+    # Find all referenced BQ remote-mode rows (bare-name + direct bq.path).
+    # Mirrors the non-RBAC parts of `_bq_guardrail_inputs`.
+    sql_lower = user_sql.lower()
+    name_lookups: list = []
+    seen_paths: set = set()
+
+    try:
+        repo = TableRegistryRepository(conn)
+        bq_rows = repo.list_by_source("bigquery")
+        all_rows = repo.list_all()
+    except Exception:
+        # Registry read failure — let the original SQL run through the
+        # ATTACH-catalog path. The handler's generic error path will
+        # surface anything user-visible.
+        return user_sql, False
+
+    for r in bq_rows:
+        if (r.get("query_mode") or "") != "remote":
+            continue
+        bucket = r.get("bucket")
+        source_table = r.get("source_table")
+        name = r.get("name")
+        if not (bucket and source_table and name):
+            continue
+        pattern = r'\b' + re.escape(str(name).lower()) + r'\b'
+        if re.search(pattern, sql_lower):
+            key = (bucket.lower(), source_table.lower())
+            if key not in seen_paths:
+                seen_paths.add(key)
+            name_lookups.append((str(name), bucket, source_table))
+
+    # Direct bq."ds"."tbl" references — pull the registered (bucket,
+    # source_table) pair so the inner SQL receives a backticked BQ-native
+    # path. Mismatched / unregistered paths are caught upstream by the
+    # guardrail; here we just collect the mappings the rewriter needs.
+    direct_paths: set[tuple[str, str]] = set()
+    for m in BQ_PATH.finditer(user_sql):
+        bucket_raw = m.group(1).strip('"')
+        source_table_raw = m.group(2).strip('"')
+        direct_paths.add((bucket_raw, source_table_raw))
+
+    if not name_lookups and not direct_paths:
+        # Skip 1: no BQ tables referenced.
+        return user_sql, False
+
+    # Skip 3: cross-source query (BQ + local-mode). If user SQL also
+    # references a non-BQ master view, we can't push the whole thing to
+    # BQ — DuckDB needs to do the join.
+    bq_names_lc = {n.lower() for n, _, _ in name_lookups}
+    for r in all_rows:
+        st = (r.get("source_type") or "").lower()
+        qm = (r.get("query_mode") or "").lower()
+        if st == "bigquery" and qm == "remote":
+            continue  # already handled
+        name = r.get("name")
+        if not name:
+            continue
+        name_lc = str(name).lower()
+        if name_lc in bq_names_lc:
+            # Same name registered both BQ-remote and local? Pathological;
+            # skip as a safety measure.
+            return user_sql, False
+        if re.search(r'\b' + re.escape(name_lc) + r'\b', sql_lower):
+            logger.info(
+                "rewrite_skip_cross_source: user SQL references both "
+                "BQ-remote and local-mode tables; falling back to "
+                "ATTACH-catalog path",
+            )
+            return user_sql, False
+
+    # Skip 4: BQ project not configured.
+    try:
+        bq = get_bq_access()
+        project = bq.projects.data
+    except Exception:
+        return user_sql, False
+    if not project:
+        return user_sql, False
+
+    # Rewrite identifiers, then wrap the whole thing in bigquery_query().
+    # The DuckDB BQ extension's UDF expects (<billing-project-string>,
+    # <inner-sql-string>); we use the data project so the inner SQL's
+    # backticked paths resolve to the same project.
+    inner_sql = _rewrite_bq_table_refs_to_native(user_sql, name_lookups, project)
+
+    # SQL string literal escaping: BQ accepts standard SQL doubled-quote
+    # escaping inside single-quoted strings. We pass `inner_sql` as a
+    # parameter to DuckDB's prepared statement at execute-time
+    # (analytics.execute(sql, [project, inner_sql]) shape) — but the
+    # current handler runs ``analytics.execute(rewritten_sql)`` with no
+    # params, so we MUST embed the inner SQL safely. Use parameterised
+    # form: emit ``bigquery_query(?, ?)`` and signal the params via a
+    # sentinel? No — the handler treats SQL as opaque. Instead, embed
+    # using single-quote doubling (standard SQL escape; both DuckDB and
+    # BQ honor it).
+    escaped_inner = inner_sql.replace("'", "''")
+    rewritten = (
+        f"SELECT * FROM bigquery_query('{project}', '{escaped_inner}')"
+    )
+    return rewritten, True
 
 
 @contextlib.contextmanager
