@@ -787,8 +787,17 @@ def _rewrite_user_sql_for_bigquery_query(
         return user_sql, False
 
     # Find all referenced BQ remote-mode rows (bare-name + direct bq.path).
-    # Mirrors the non-RBAC parts of `_bq_guardrail_inputs`.
+    # Mirrors the non-RBAC parts of `_bq_guardrail_inputs`. Issue #201:
+    # bare-name regex must run against a backtick-masked copy so a
+    # registered name like ``orders`` doesn't false-positive when it
+    # appears as the table segment of a user-supplied full backtick path
+    # like ``\\`<project>.<dataset>.orders\\```. Without masking, the
+    # cross-source check below would falsely conclude the SQL touches
+    # both BQ-remote and local sources, dropping every backtick-path
+    # query into the 50-100× slower ATTACH-catalog fallback. Devin
+    # Review on PR #208.
     sql_lower = user_sql.lower()
+    sql_lower_masked = _mask_backticks(sql_lower)
     name_lookups: list = []
     seen_paths: set = set()
 
@@ -827,7 +836,7 @@ def _rewrite_user_sql_for_bigquery_query(
             # mix rewritten and non-rewritten BQ paths in one query.
             return user_sql, False
         pattern = r'\b' + re.escape(str(name).lower()) + r'\b'
-        if re.search(pattern, sql_lower):
+        if re.search(pattern, sql_lower_masked):
             key = (bucket.lower(), source_table.lower())
             if key not in seen_paths:
                 seen_paths.add(key)
@@ -864,7 +873,7 @@ def _rewrite_user_sql_for_bigquery_query(
             # Same name registered both BQ-remote and local? Pathological;
             # skip as a safety measure.
             return user_sql, False
-        if re.search(r'\b' + re.escape(name_lc) + r'\b', sql_lower):
+        if re.search(r'\b' + re.escape(name_lc) + r'\b', sql_lower_masked):
             logger.info(
                 "rewrite_skip_cross_source: user SQL references both "
                 "BQ-remote and local-mode tables; falling back to "
