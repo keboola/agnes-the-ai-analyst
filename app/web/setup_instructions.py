@@ -584,28 +584,69 @@ def _marketplace_block(
         ])
         return lines
 
-    # Legacy path: no ca_pem on disk. Keep the old behavior verbatim
-    # (host-scoped sslVerify=false when self_signed_tls is set, otherwise
-    # plain direct HTTPS) so existing AGNES_DEBUG_AUTH instances keep
-    # working until they roll a fullchain.pem.
+    # Legacy path: no fullchain.pem inlined into the prompt. Two TLS
+    # sub-cases:
+    #   self_signed_tls=True  — self-signed cert, no trust block. Disable
+    #                           git's TLS verify host-scoped so `git clone`
+    #                           accepts the un-trusted endpoint. AGNES_DEBUG_AUTH
+    #                           setups land here.
+    #   self_signed_tls=False — publicly-trusted cert (Let's Encrypt etc.)
+    #                           that certifi already accepts. System git
+    #                           trusts via the OS store; no special config
+    #                           needed.
+    # In either sub-case the marketplace install is the SAME shape as the
+    # `has_ca` branch: explicit `git clone` + register the local path.
+    # Direct HTTPS via `claude plugin marketplace add <url>` is broken
+    # end-to-end here too (Claude stores JSON as single file, plugin install
+    # 404s on the local plugin paths) — see _marketplace_block docstring
+    # for the full reasoning.
     lines = [
         "",
         f"{step_num}) Register the Agnes Claude Code marketplace and install plugins:",
     ]
     if self_signed_tls:
         lines.extend([
-            "   # Self-signed TLS cert on this Agnes instance — scoped to the host above.",
+            "   # Self-signed TLS cert on this Agnes instance — host-scoped",
+            "   # `sslVerify=false` so the marketplace `git clone` accepts it.",
+            "   # Without a CA bundle we can't do better than this; flip your",
+            "   # AGNES_DEBUG_AUTH instance to a real fullchain.pem to drop this line.",
             "   git config --global http.\"{server_url}/\".sslVerify false",
         ])
-    lines.append(
-        "   claude plugin marketplace add \"https://x:{token}@{server_host}/marketplace.git/\""
-    )
+    lines.extend([
+        "   # Heads-up: 'git: credential-manager-core is not a git command' is a",
+        "   # harmless warning from a stale git config — the clone itself succeeds.",
+        "   rm -rf ~/.agnes/marketplace",
+        "   git clone \"https://x:{token}@{server_host}/marketplace.git/\" ~/.agnes/marketplace || {",
+        "     echo \"ERROR: marketplace clone failed\" >&2",
+        "     exit 1",
+        "   }",
+        "   # Strip the PAT from origin so it doesn't sit in plaintext at",
+        "   # ~/.agnes/marketplace/.git/config. Refreshes use",
+        "   # `agnes refresh-marketplace`, which re-injects the PAT via a",
+        "   # per-invocation git credential helper.",
+        "   git -C ~/.agnes/marketplace remote set-url origin \"https://{server_host}/marketplace.git/\"",
+        "   chmod 700 ~/.agnes/marketplace ~/.agnes/marketplace/.git 2>/dev/null || true",
+        "   chmod 600 ~/.agnes/marketplace/.git/config 2>/dev/null || true",
+        "   claude plugin marketplace add ~/.agnes/marketplace || {",
+        "     echo \"ERROR: claude plugin marketplace add failed\" >&2",
+        "     exit 1",
+        "   }",
+        "",
+    ])
     for name in plugin_install_names:
-        lines.append(f"   claude plugin install {name}@{_MARKETPLACE_NAME} --scope project")
+        lines.append(
+            f"   claude plugin install {name}@{_MARKETPLACE_NAME} --scope project || {{"
+        )
+        lines.append(
+            f"     echo \"ERROR: claude plugin install {name}@{_MARKETPLACE_NAME} failed\" >&2; exit 1"
+        )
+        lines.append("   }")
     lines.extend([
         "",
         "   These run non-interactively. After they finish, tell the user to /exit",
-        "   and run `claude` again so the new plugins load.",
+        "   and run `claude` again so the new plugins load. From then on, the",
+        "   SessionStart hook keeps the marketplace clone in sync via",
+        "   `agnes refresh-marketplace --quiet` on every Claude Code session.",
     ])
     return lines
 
