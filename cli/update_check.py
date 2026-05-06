@@ -114,13 +114,23 @@ def _fetch_latest(server_url: str) -> Optional[dict]:
         return None
 
 
-def check(server_url: Optional[str]) -> Optional[UpdateInfo]:
+def check(
+    server_url: Optional[str], *, bypass_disabled: bool = False
+) -> Optional[UpdateInfo]:
     """Return UpdateInfo if a check ran (cached or fresh), else None.
 
     Silent on every failure path: no server configured, CLI package not
     installed, network down, malformed response, cache unreadable.
+
+    `bypass_disabled=True` ignores `AGNES_NO_UPDATE_CHECK`. The env var
+    silences the implicit warning loop in the root callback; an explicit
+    user-typed `agnes self-upgrade` is not the implicit loop and must
+    still probe. Default keeps existing call sites (root callback) silent
+    when the env var is set.
     """
-    if is_disabled() or not server_url:
+    if not bypass_disabled and is_disabled():
+        return None
+    if not server_url:
         return None
 
     installed = _installed_version()
