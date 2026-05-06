@@ -10,6 +10,21 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Performance
+- **`agnes pull` chunked download for large parquets**: when the server
+  advertises `accept-ranges: bytes` and a parquet exceeds
+  `AGNES_PULL_CHUNK_THRESHOLD_BYTES` (default 50 MB), the CLI now splits
+  the file into N parallel HTTP Range requests
+  (`AGNES_PULL_CHUNK_PARALLELISM`, default 4, capped 1..16) and assembles
+  the parts into the destination atomically. Targets the per-flow-shaped
+  network (corp VPN with per-TCP-connection rate-limiting) where a single
+  stream is throttled but N parallel streams over the same connection
+  scale roughly linearly. Falls back to single-stream when the server
+  responds 200 instead of 206 to a Range probe, when no
+  `accept-ranges: bytes` is advertised, or when content is below the
+  threshold — no behavior change in the small-file / non-cooperating-
+  server cases.
+
 ## [0.38.0] — 2026-05-06
 
 ### Added
