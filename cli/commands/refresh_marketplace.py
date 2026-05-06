@@ -1,79 +1,85 @@
-"""`agnes refresh-marketplace` — keep the local Claude Code marketplace clone current.
+"""`agnes refresh-marketplace` — reconcile the workspace plugin set with
+the user's current Agnes stack.
 
-The marketplace is registered with Claude Code as a *local clone path*
-(see `setup_instructions._marketplace_block` and the design rationale
-there). After the initial clone, server-side changes (new plugins added
-to a user's RBAC view, version bumps, removed plugins) reach the user
-only when this command runs:
+The Agnes "stack" served to a user is composed server-side as
+``(admin RBAC grants ∖ user MyAIStack opt-outs) ∪ user /store installs``
+(see ``src/marketplace_filter.py:resolve_user_marketplace``). The served
+manifest treats the three sources slightly differently:
+
+- **Admin RBAC grants** materialize as one plugin entry each, version
+  taken from the upstream ``plugin.json``.
+- **/store ``type=plugin`` installs** also get one entry each, with a
+  ``store-<entity_id>`` prefix so two owners' same-named plugins don't
+  collide.
+- **/store ``type=skill`` and ``type=agent`` installs** ALL collapse into
+  ONE synth plugin called ``agnes-store-bundle`` whose ``version`` is a
+  sha256 of the bundle's contents. Adding a single skill via /store
+  doesn't add a marketplace entry — it bumps the bundle's version.
+
+That aggregation has a direct consequence for refresh logic: if we only
+auto-installed plugins listed in the manifest but missing locally,
+adding a /store skill would never propagate (the bundle is already
+installed; only its version changed). So this command does
+**version-aware reconciliation**, not just "install missing":
 
   1. ``git fetch`` against the clone with PAT injection (per-pull
      credential helper, no persistent change to the user's git config —
-     PAT stays out of `.git/config` URL at rest), then ``git reset
-     --hard FETCH_HEAD``. The bare repo on the server is rebuilt as a
-     fresh orphan commit on every content change (see
-     `app/marketplace_server/git_backend.py:build_bare_repo` —
-     `commit.parents = []`), so a normal `pull --ff-only` would hit
+     PAT stays out of ``.git/config`` URL at rest), then
+     ``git reset --hard FETCH_HEAD``. The bare repo on the server is
+     rebuilt as a fresh orphan commit on every content change (see
+     ``app/marketplace_server/git_backend.py:build_bare_repo`` —
+     ``commit.parents = []``), so a normal ``pull --ff-only`` would hit
      "Not possible to fast-forward" the moment the server-side manifest
-     changes. We treat the local clone as a snapshot mirror, not a
+     changes. The local clone is treated as a snapshot mirror, not a
      history we own.
   2. ``claude plugin marketplace update agnes`` so Claude Code re-reads
      the refreshed manifest.
-  3. **Auto-install missing plugins** — read the now-fresh
-     ``.claude-plugin/marketplace.json`` from the clone, list the plugins
-     installed in this workspace (filtered by ``projectPath``), and run
-     ``claude plugin install <name>@agnes --scope project`` for any
-     plugin in the marketplace that isn't yet installed here. This is
-     default behavior because the agnes marketplace IS the admin-curated
-     plugin set for this user — RBAC has already decided what they get,
-     so propagating that decision into the workspace mirrors the intent.
-  4. Optionally (``--auto-upgrade``) iterate installed agnes-marketplace
-     plugins and run ``claude plugin update <name>@agnes`` for each,
-     picking up version bumps without manual prompting.
+  3. **Reconcile installed vs. manifest** — for each plugin in the
+     manifest:
+       - Not installed in this workspace → ``claude plugin install
+         <name>@agnes --scope project``
+       - Installed but version differs → ``claude plugin update
+         <name>@agnes``
+       - Installed and version matches → skip
+     We DON'T auto-uninstall plugins that disappeared from the manifest
+     (admin revoked, user opted out via MyAIStack, /store uninstall) —
+     uninstall is destructive and a transient server bug returning an
+     empty manifest would wipe everything. Future opt-in flag.
 
 When invoked with ``--quiet`` (the SessionStart hook context) and at
-least one plugin was installed or upgraded, this command emits a Claude
-Code hook JSON object on stdout:
-
-    {
-      "systemMessage": "Agnes marketplace: installed grpn-fin",
-      "hookSpecificOutput": {
-        "hookEventName": "SessionStart",
-        "additionalContext": "Agnes refresh installed: grpn-fin. Available plugins: ..."
-      }
-    }
-
-Claude Code surfaces ``systemMessage`` to the user as a transient
-notification and ``additionalContext`` is wrapped in a system reminder
-so the model sees what changed at session start. Empty / no-op runs
-produce empty stdout, so quiet sessions stay quiet.
+least one plugin was installed or updated, this command emits a Claude
+Code hook JSON object on stdout. ``systemMessage`` becomes a transient
+notification visible to the user; ``hookSpecificOutput.additionalContext``
+is wrapped in a system reminder so the model sees what changed at
+session start. Empty / no-op runs produce empty stdout, so quiet
+sessions stay quiet.
 
 Used by:
-- Manual invocation: ``agnes refresh-marketplace`` after a known
-  marketplace change, or just to verify the clone is healthy.
+- Manual invocation: ``agnes refresh-marketplace`` after a known stack
+  change, or just to verify the clone is healthy.
 - SessionStart hook: ``agnes refresh-marketplace --quiet 2>/dev/null || true``
-  runs every Claude Code session so users get marketplace changes (new
-  plugins auto-installed, removed plugins surfaced, optionally auto-
-  upgraded versions) without re-running setup.
+  runs every Claude Code session so users get stack changes (new plugins
+  installed, version bumps applied) without re-running setup.
 
 Design choices:
 - **No-op when the clone is missing.** Workspaces that don't use the
-  marketplace (no plugin grants, or skipped step 5) shouldn't see hook
-  noise. Exits 0 silently if `~/.agnes/marketplace/.git` isn't there.
+  stack (no plugin grants, or skipped step 5) shouldn't see hook noise.
+  Exits 0 silently if ``~/.agnes/marketplace/.git`` isn't there.
 - **No-op when claude isn't in PATH.** The git fetch+reset still runs,
   so the next session that does have claude available picks up the
   changes via Claude Code's natural startup re-read of the registered
-  marketplace. Auto-install is also skipped (it requires `claude`).
-- **PAT injection only via env-var.** Never appears in argv, so `ps`
-  on Linux/macOS or `tasklist /v` on Windows can't observe it. The
+  marketplace. Reconcile is also skipped (it requires ``claude``).
+- **PAT injection only via env-var.** Never appears in argv, so ``ps``
+  on Linux/macOS or ``tasklist /v`` on Windows can't observe it. The
   one-shot credential helper is scoped to this single git invocation
-  via `git -c credential.helper=...`, so unrelated git commands the user
-  later runs don't see our helper or our token.
-- **Auto-install scope: project.** Mirrors the initial setup-instructions
-  install line (`--scope project`), so plugins land in the workspace
-  that the user is currently in (where the SessionStart hook fires).
-  Workspace match is enforced by filtering `claude plugin list --json`
-  on `projectPath == cwd`; without that, a plugin installed in
-  workspace A would mistakenly count as already-installed in B.
+  via ``git -c credential.helper=...``, so unrelated git commands the
+  user later runs don't see our helper or our token.
+- **Install scope: project.** Mirrors the initial setup-instructions
+  install line (``--scope project``), so plugins land in the workspace
+  the SessionStart hook fired in. Workspace match enforced by filtering
+  ``claude plugin list --json`` on ``projectPath == cwd``; without that
+  a plugin installed in workspace A would mask a missing/outdated entry
+  in workspace B.
 """
 
 from __future__ import annotations
@@ -93,7 +99,7 @@ from cli.lib.marketplace import CLONE_DIR, MARKETPLACE_NAME
 
 
 refresh_marketplace_app = typer.Typer(
-    help="Refresh the Claude Code marketplace clone (git fetch + claude marketplace update + auto-install)."
+    help="Reconcile the workspace plugins with the user's current Agnes stack."
 )
 
 
@@ -112,16 +118,8 @@ def refresh_marketplace(
         False, "--quiet",
         help="Suppress success stdout (errors and warnings still surface on stderr).",
     ),
-    auto_upgrade: bool = typer.Option(
-        False, "--auto-upgrade",
-        help=(
-            "After refresh + auto-install, iterate already-installed plugins "
-            "from the agnes marketplace and run `claude plugin update <name>@agnes` "
-            "on each to pick up version bumps."
-        ),
-    ),
 ):
-    """Sync the marketplace clone, re-register with Claude, and install any new grants."""
+    """Sync the marketplace clone, re-register with Claude, install/update plugins."""
     if not (CLONE_DIR / ".git").is_dir():
         # No clone → nothing to refresh. Hook contexts hit this on every
         # workspace that didn't go through step 5; silent exit keeps logs
@@ -146,7 +144,7 @@ def refresh_marketplace(
 
     # Collected during the run so the hook-output JSON can summarize what
     # changed. Empty lists → quiet stdout (no JSON emitted).
-    events: dict[str, list[str]] = {"installed": [], "upgraded": []}
+    events: dict[str, list[str]] = {"installed": [], "updated": []}
 
     fetch_ok = _git_fetch_and_reset(token, quiet=quiet)
     if not fetch_ok:
@@ -157,28 +155,25 @@ def refresh_marketplace(
 
     _claude_marketplace_update(quiet=quiet)
 
-    # Auto-install runs after marketplace update so claude knows about any
-    # newly-listed plugins before we ask it to install them.
-    _auto_install_missing(quiet=quiet, events=events)
-
-    if auto_upgrade:
-        _claude_auto_upgrade(quiet=quiet, events=events)
+    # Reconcile runs after marketplace update so claude knows about any
+    # newly-listed plugins before we ask it to install/update them.
+    _reconcile_with_manifest(quiet=quiet, events=events)
 
     # In hook context (--quiet), emit a Claude Code hook JSON object on
     # stdout summarizing the run so the user gets a notification + the
     # session model sees what changed. Skip when nothing changed so quiet
     # sessions stay quiet.
-    if quiet and (events["installed"] or events["upgraded"]):
+    if quiet and (events["installed"] or events["updated"]):
         _emit_hook_message(events)
 
 
 def _git_fetch_and_reset(token: str, *, quiet: bool) -> bool:
     """Fetch from origin then hard-reset to FETCH_HEAD.
 
-    Why not `pull --ff-only`? The marketplace bare repo on the server
-    rebuilds as a brand-new orphan commit (`commit.parents = []`) on
-    every content change — see `app/marketplace_server/git_backend.py:
-    build_bare_repo`. Two snapshots have unrelated histories, so a
+    Why not ``pull --ff-only``? The marketplace bare repo on the server
+    rebuilds as a brand-new orphan commit (``commit.parents = []``) on
+    every content change — see ``app/marketplace_server/git_backend.py:
+    build_bare_repo``. Two snapshots have unrelated histories, so a
     fast-forward is mathematically impossible. We treat the local clone
     as a snapshot mirror: whatever the server has now becomes our local
     HEAD, no merge attempted.
@@ -249,61 +244,81 @@ def _claude_marketplace_update(*, quiet: bool) -> None:
         typer.echo(result.stdout.rstrip())
 
 
-def _auto_install_missing(*, quiet: bool, events: dict[str, list[str]]) -> None:
-    """Install plugins listed in the agnes marketplace that aren't yet in
-    this workspace.
+def _reconcile_with_manifest(*, quiet: bool, events: dict[str, list[str]]) -> None:
+    """Make installed plugins match the served manifest.
 
-    The agnes marketplace is admin-curated per RBAC — every plugin in the
-    served manifest is one that the admin granted to this user. Mirroring
-    that grant set into the user's workspace is the propagation step
-    that makes "admin adds a plugin" → "user has it on next session".
+    For each plugin in the marketplace.json:
+      - Not installed locally → ``claude plugin install <name>@agnes --scope project``
+      - Installed at a different version → ``claude plugin update <name>@agnes``
+      - Installed and version matches → skip
 
-    Idempotent: re-installing an already-installed plugin is a no-op
-    (Claude Code reports "already installed"), so we don't gate on a
-    delta calculation — but we DO compute the delta to keep the log
-    output minimal in the common case (nothing new to install).
+    Why version-aware?  The /store skill+agent bundle (``agnes-store-bundle``)
+    shares ONE manifest entry across every skill/agent the user installed
+    from /store; adding a skill bumps the bundle's sha256-based version
+    without changing the manifest's plugin set. A "missing-only" install
+    flow would never see those changes. Same applies to admin pushing a
+    new version of an existing plugin.
 
-    Successful installs are appended to ``events["installed"]`` so the
-    caller can summarize the run via the hook JSON output.
+    We don't auto-uninstall plugins that disappeared from the manifest —
+    that's destructive (transient server-side empty-manifest bug would
+    wipe the user's stack) and the user can ``claude plugin uninstall``
+    explicitly. Future opt-in flag possible.
+
+    Successful actions are appended to ``events["installed"]`` /
+    ``events["updated"]`` so the caller can summarize via the hook JSON.
     """
     if shutil.which("claude") is None:
         # _claude_marketplace_update already warned; don't double-print.
         return
 
-    available = _read_marketplace_plugin_names()
-    if available is None:
+    manifest = _read_marketplace_plugin_versions()
+    if manifest is None:
         typer.echo(
             "warn: could not read marketplace.json from the clone; "
-            "skipping auto-install.",
+            "skipping reconcile.",
             err=True,
         )
         return
-    if not available:
-        # Empty marketplace (RBAC granted nothing). Nothing to install.
+    if not manifest:
+        # Empty stack (RBAC granted nothing, no /store installs). Nothing to do.
         return
 
     installed = _list_installed_agnes_plugins_in_cwd()
     if installed is None:
         typer.echo(
             "warn: could not enumerate installed plugins; "
-            "skipping auto-install.",
+            "skipping reconcile.",
             err=True,
         )
         return
 
-    missing = sorted(available - installed)
-    if not missing:
+    to_install: list[str] = []
+    to_update: list[str] = []
+    for name, manifest_version in sorted(manifest.items()):
+        installed_version = installed.get(name)
+        if installed_version is None:
+            to_install.append(name)
+        elif installed_version != manifest_version:
+            to_update.append(name)
+
+    if not to_install and not to_update:
         if not quiet:
-            typer.echo(f"All {len(available)} agnes-marketplace plugin(s) already installed.")
+            typer.echo(f"All {len(manifest)} Agnes-stack plugin(s) up to date.")
         return
 
     if not quiet:
-        typer.echo(
-            f"Installing {len(missing)} new plugin(s) from agnes marketplace: "
-            + ", ".join(missing)
-        )
+        if to_install:
+            typer.echo(
+                f"Installing {len(to_install)} new plugin(s): "
+                + ", ".join(to_install)
+            )
+        if to_update:
+            typer.echo(
+                f"Updating {len(to_update)} plugin(s) to latest version: "
+                + ", ".join(to_update)
+            )
 
-    for name in missing:
+    for name in to_install:
         target = f"{name}@{MARKETPLACE_NAME}"
         cmd = ["claude", "plugin", "install", target, "--scope", "project"]
         result = subprocess.run(cmd, capture_output=True, text=True, check=False)
@@ -320,34 +335,7 @@ def _auto_install_missing(*, quiet: bool, events: dict[str, list[str]]) -> None:
         if not quiet and result.stdout:
             typer.echo(result.stdout.rstrip())
 
-
-def _claude_auto_upgrade(*, quiet: bool, events: dict[str, list[str]]) -> None:
-    """`claude plugin update <name>@agnes` for each installed agnes plugin
-    in this workspace.
-
-    Best-effort. If the plugin list query fails, warn and bail rather
-    than fail the command — the manifest update + auto-install already
-    happened, so the user just doesn't get auto-version-bump this run.
-
-    Successful updates are appended to ``events["upgraded"]`` for the
-    hook JSON summary.
-    """
-    if shutil.which("claude") is None:
-        return
-    installed = _list_installed_agnes_plugins_in_cwd()
-    if installed is None:
-        typer.echo(
-            "warn: could not enumerate installed plugins for --auto-upgrade; "
-            "skipping. Plugins from the agnes marketplace can be updated "
-            "manually via `claude plugin update <name>@agnes`.",
-            err=True,
-        )
-        return
-    if not installed:
-        if not quiet:
-            typer.echo("No installed plugins from the agnes marketplace; nothing to upgrade.")
-        return
-    for name in sorted(installed):
+    for name in to_update:
         target = f"{name}@{MARKETPLACE_NAME}"
         cmd = ["claude", "plugin", "update", target]
         result = subprocess.run(cmd, capture_output=True, text=True, check=False)
@@ -359,7 +347,7 @@ def _claude_auto_upgrade(*, quiet: bool, events: dict[str, list[str]]) -> None:
             if result.stderr:
                 typer.echo(result.stderr.rstrip(), err=True)
             continue
-        events["upgraded"].append(name)
+        events["updated"].append(name)
         if not quiet and result.stdout:
             typer.echo(result.stdout.rstrip())
 
@@ -375,8 +363,18 @@ def _emit_hook_message(events: dict[str, list[str]]) -> None:
         (e.g. "Agnes installed grpn-fin — let me know if you want me to
         explore what it adds").
 
-    Caller has already verified that at least one of `installed` /
-    `upgraded` is non-empty, so we always emit something useful.
+    User-facing language deliberately says "your Agnes stack" rather than
+    "the Agnes marketplace": the served set is **per-user composed**, not
+    a single shared catalog. From ``src/marketplace_filter.py:236`` the
+    formula is ``(admin RBAC grants ∖ MyAIStack opt-outs) ∪ /store
+    installs`` — three independent sources, any of which can change and
+    show up here on the next refresh. Plus the ``agnes-store-bundle``
+    quirk: skill / agent additions don't add a manifest entry, they just
+    bump the bundle's version (so they materialize as an "updated" event,
+    not an "installed" one).
+
+    Caller has already verified that at least one of ``installed`` /
+    ``updated`` is non-empty, so we always emit something useful.
     """
     parts: list[str] = []
     if events["installed"]:
@@ -384,32 +382,46 @@ def _emit_hook_message(events: dict[str, list[str]]) -> None:
             f"installed {len(events['installed'])} plugin(s): "
             + ", ".join(events["installed"])
         )
-    if events["upgraded"]:
+    if events["updated"]:
         parts.append(
-            f"upgraded {len(events['upgraded'])} plugin(s): "
-            + ", ".join(events["upgraded"])
+            f"updated {len(events['updated'])} plugin(s): "
+            + ", ".join(events["updated"])
         )
-    summary = "Agnes marketplace: " + "; ".join(parts) + "."
+    summary = "Your Agnes stack changed: " + "; ".join(parts) + "."
     payload = {
         "systemMessage": summary,
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
             "additionalContext": (
-                f"{summary} The agnes marketplace is admin-curated per RBAC; "
-                "these came from server-side grant changes."
+                f"{summary} The Agnes stack served to a user is composed "
+                "as `(admin RBAC grants ∖ user MyAIStack opt-outs) ∪ user "
+                "/store installs` (see src/marketplace_filter.py:236). "
+                "An 'installed' event means a new plugin appeared in the "
+                "stack — the user got a fresh admin RBAC grant, untoggled "
+                "an opt-out on MyAIStack, or installed a `type=plugin` "
+                "from /store. An 'updated' event means an existing plugin "
+                "version changed — admin pushed a new version, or the "
+                "user added/removed a skill / agent from /store (those "
+                "share one synth plugin called `agnes-store-bundle` "
+                "whose version is a hash of all bundled content). The "
+                "CLI can't tell which source from the diff alone."
             ),
         },
     }
     typer.echo(json.dumps(payload))
 
 
-def _read_marketplace_plugin_names() -> Optional[set[str]]:
-    """Return the set of plugin names listed in the local marketplace.json.
+def _read_marketplace_plugin_versions() -> Optional[dict[str, str]]:
+    """Map ``plugin name → version`` from the local marketplace.json.
 
-    Returns None if the file is missing/unreadable/malformed (caller treats
-    that as "warn and skip"). Returns an empty set when the manifest is
-    valid but lists no plugins (RBAC-empty user — caller treats that as
-    "nothing to do, no warning").
+    Returns None if the file is missing/unreadable/malformed (caller
+    treats that as "warn and skip"). Returns an empty dict when the
+    manifest is valid but lists no plugins (RBAC-empty, no /store
+    installs).
+
+    A plugin entry without a ``version`` field is skipped — Claude Code
+    can't reason about updates without one, and ``compare != ""`` would
+    be useless.
     """
     manifest_path = CLONE_DIR / ".claude-plugin" / "marketplace.json"
     try:
@@ -423,27 +435,29 @@ def _read_marketplace_plugin_names() -> Optional[set[str]]:
     plugins = payload.get("plugins")
     if not isinstance(plugins, list):
         return None
-    names: set[str] = set()
+    versions: dict[str, str] = {}
     for entry in plugins:
         if not isinstance(entry, dict):
             continue
         name = entry.get("name")
-        if isinstance(name, str) and name:
-            names.add(name)
-    return names
+        version = entry.get("version")
+        if isinstance(name, str) and name and isinstance(version, str) and version:
+            versions[name] = version
+    return versions
 
 
-def _list_installed_agnes_plugins_in_cwd() -> Optional[set[str]]:
-    """Names of installed agnes-marketplace plugins in the current workspace.
+def _list_installed_agnes_plugins_in_cwd() -> Optional[dict[str, str]]:
+    """Map ``plugin name → installed version`` for agnes-marketplace plugins
+    in the current workspace.
 
-    Best-effort enumeration via `claude plugin list --json`. The output
+    Best-effort enumeration via ``claude plugin list --json``. The output
     is a flat list across all workspaces, so we filter by:
-      - id ends with `@agnes` (parses out the marketplace from the id field)
-      - projectPath equals current working directory (so plugins from
+      - ``id`` ends with ``@agnes`` (parses out the marketplace from the id)
+      - ``projectPath`` equals current working directory (so plugins from
         sibling workspaces don't get counted as already-installed here)
 
     Returns None if we can't get a structured answer (claude missing,
-    --json flag unsupported, output not parseable). Empty set means
+    --json flag unsupported, output not parseable). Empty dict means
     "nothing currently installed in this workspace from agnes".
     """
     cmd = ["claude", "plugin", "list", "--json"]
@@ -462,7 +476,7 @@ def _list_installed_agnes_plugins_in_cwd() -> Optional[set[str]]:
 
     cwd = Path.cwd().resolve()
     suffix = f"@{MARKETPLACE_NAME}"
-    names: set[str] = set()
+    versions: dict[str, str] = {}
     for entry in payload:
         if not isinstance(entry, dict):
             return None
@@ -477,8 +491,11 @@ def _list_installed_agnes_plugins_in_cwd() -> Optional[set[str]]:
                 continue
         except OSError:
             continue
+        version = entry.get("version")
+        if not isinstance(version, str) or not version:
+            continue
         # Strip the @agnes suffix to get the plain name.
         name = plugin_id[: -len(suffix)]
         if name:
-            names.add(name)
-    return names
+            versions[name] = version
+    return versions
