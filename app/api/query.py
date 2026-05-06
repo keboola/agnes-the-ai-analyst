@@ -763,17 +763,27 @@ def _rewrite_user_sql_for_bigquery_query(
     # Skip 4: BQ project not configured.
     try:
         bq = get_bq_access()
-        project = bq.projects.data
+        data_project = bq.projects.data
+        # The first arg to `bigquery_query()` is the **execution / billing**
+        # project — the project under which the BQ job runs and is billed.
+        # In cross-project deployments the SA may only have
+        # `serviceusage.services.use` on the billing project, so passing
+        # the data project there returns 403 USER_PROJECT_DENIED. Match
+        # the convention used everywhere else in the codebase (v2_scan /
+        # v2_sample / v2_schema / extractor): backtick paths use the
+        # **data** project, `bigquery_query()` first-arg uses the
+        # **billing** project. For single-project deploys the two are
+        # identical so the fix is a no-op there.
+        billing_project = bq.projects.billing or data_project
     except Exception:
         return user_sql, False
-    if not project:
+    if not data_project:
         return user_sql, False
 
-    # Rewrite identifiers, then wrap the whole thing in bigquery_query().
-    # The DuckDB BQ extension's UDF expects (<billing-project-string>,
-    # <inner-sql-string>); we use the data project so the inner SQL's
-    # backticked paths resolve to the same project.
-    inner_sql = _rewrite_bq_table_refs_to_native(user_sql, name_lookups, project)
+    # Rewrite identifiers using the DATA project — backtick paths
+    # `<data-project>.<dataset>.<table>` resolve to the same logical
+    # source no matter which project bills the query.
+    inner_sql = _rewrite_bq_table_refs_to_native(user_sql, name_lookups, data_project)
 
     # Embed the inner SQL using DuckDB's dollar-quoted string literal form
     # (`$tag$ ... $tag$`). Naive `replace("'", "''")` doubling misses
@@ -790,11 +800,11 @@ def _rewrite_user_sql_for_bigquery_query(
     if DOLLAR_TAG in inner_sql:
         escaped_inner = inner_sql.replace("'", "''")
         rewritten = (
-            f"SELECT * FROM bigquery_query('{project}', '{escaped_inner}')"
+            f"SELECT * FROM bigquery_query('{billing_project}', '{escaped_inner}')"
         )
     else:
         rewritten = (
-            f"SELECT * FROM bigquery_query('{project}', "
+            f"SELECT * FROM bigquery_query('{billing_project}', "
             f"{DOLLAR_TAG}{inner_sql}{DOLLAR_TAG})"
         )
     return rewritten, True

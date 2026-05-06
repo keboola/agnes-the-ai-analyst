@@ -67,11 +67,16 @@ def _register_local(conn, *, table_id, name, source_type="keboola"):
     )
 
 
-def _set_bq_project(monkeypatch, project="test-prj"):
-    """Stub get_bq_access so the rewriter sees a real-looking project ID."""
+def _set_bq_project(monkeypatch, project="test-prj", billing=None):
+    """Stub get_bq_access so the rewriter sees a real-looking project ID.
+
+    `project` configures the data project (used in backtick paths).
+    `billing` (when provided) configures a different billing project so
+    cross-project deployments can be exercised; defaults to `project`
+    for the single-project case."""
     from connectors.bigquery.access import BqAccess, BqProjects, get_bq_access
     bq = BqAccess(
-        BqProjects(billing=project, data=project),
+        BqProjects(billing=billing or project, data=project),
         client_factory=lambda projects: object(),
     )
     monkeypatch.setattr(
@@ -544,6 +549,38 @@ def test_endpoint_falls_back_to_original_sql_on_bq_parse_error(
     assert len(calls["sqls"]) == 2
     assert "bigquery_query(" in calls["sqls"][0]
     assert calls["sqls"][1] == "SELECT (count(*))::INT FROM ue"
+
+
+def test_rewriter_uses_billing_project_for_bigquery_query_first_arg(
+    seeded_registry, monkeypatch,
+):
+    """Devin-review BUG #1: `bigquery_query()` first arg is the
+    **billing** project (where BQ jobs are billed + executed), backtick
+    paths use the **data** project. In cross-project deploys the SA
+    has `serviceusage.services.use` only on the billing project, so
+    using the data project as billing → 403 USER_PROJECT_DENIED.
+
+    Match the existing convention in v2_scan / v2_sample / v2_schema /
+    extractor.
+    """
+    from app.api.query import _rewrite_user_sql_for_bigquery_query
+    _register_bq_remote(
+        seeded_registry, table_id="bq.fin.ue", name="ue",
+        bucket="fin", source_table="ue",
+    )
+    _set_bq_project(monkeypatch, project="data-prj", billing="billing-prj")
+
+    rewritten, did_rewrite = _rewrite_user_sql_for_bigquery_query(
+        "SELECT count(*) FROM ue",
+        seeded_registry,
+    )
+    assert did_rewrite is True
+    # First arg of bigquery_query must be the billing project.
+    assert "bigquery_query('billing-prj'" in rewritten
+    # Backtick path must use the data project.
+    assert "`data-prj.fin.ue`" in rewritten
+    # And the data project must NOT appear as the first arg.
+    assert "bigquery_query('data-prj'" not in rewritten
 
 
 def test_rewriter_skips_when_bq_row_bucket_contains_dot(
