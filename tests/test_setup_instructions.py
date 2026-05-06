@@ -78,7 +78,7 @@ def test_resolve_lines_no_plugins_unified_six_step_layout():
     # report on phantom steps.
     assert "step 0(d)" not in joined
     assert "Which CA bundle source got picked" not in joined
-    assert "Whether the marketplace add went via direct HTTPS" not in joined
+    assert "~/.agnes/marketplace/.git/" not in joined
     # Legacy admin-only auth verbs are gone — `agnes init` subsumes them.
     assert "agnes auth import-token" not in joined
     assert "agnes auth whoami" not in joined
@@ -109,7 +109,7 @@ def test_preamble_step_zero_d_reference_only_when_trust_block_emitted():
 def test_finale_bullets_match_emitted_steps():
     """The Confirm step's bullets must reference only steps that were
     actually emitted. CA bundle bullet only when has_ca=True; marketplace
-    direct-vs-clone bullet only when plugins are configured."""
+    clone bullet only when plugins are configured."""
     from app.web.setup_instructions import resolve_lines
 
     fake_ca = (
@@ -121,19 +121,19 @@ def test_finale_bullets_match_emitted_steps():
     # No ca, no plugins: neither bullet present.
     plain = "\n".join(resolve_lines("agnes.whl"))
     assert "Which CA bundle source got picked" not in plain
-    assert "Whether the marketplace add went via direct HTTPS" not in plain
+    assert "~/.agnes/marketplace/.git/" not in plain
 
     # ca only: CA bullet yes, marketplace bullet no.
     ca_only = "\n".join(resolve_lines("agnes.whl", ca_pem=fake_ca))
     assert "Which CA bundle source got picked" in ca_only
-    assert "Whether the marketplace add went via direct HTTPS" not in ca_only
+    assert "~/.agnes/marketplace/.git/" not in ca_only
 
     # plugins only: marketplace bullet yes, CA bullet no.
     pl_only = "\n".join(
         resolve_lines("agnes.whl", plugin_install_names=["foo"], server_host="h")
     )
     assert "Which CA bundle source got picked" not in pl_only
-    assert "Whether the marketplace add went via direct HTTPS" in pl_only
+    assert "~/.agnes/marketplace/.git/" in pl_only
 
     # Both: both bullets present.
     both = "\n".join(
@@ -145,46 +145,7 @@ def test_finale_bullets_match_emitted_steps():
         )
     )
     assert "Which CA bundle source got picked" in both
-    assert "Whether the marketplace add went via direct HTTPS" in both
-
-
-def test_marketplace_block_redetects_platform_for_self_containment():
-    """Marketplace `case "$PLATFORM" in` would silently fall through to the
-    `*)` catch-all on every platform if `$PLATFORM` from step 0 isn't in
-    the current shell — which the prompt itself warns about
-    ("env vars do NOT persist between separate Bash invocations"). Linux
-    would then never get the direct-HTTPS attempt the comment promises.
-    The marketplace block must therefore re-detect $PLATFORM via uname
-    before its case statement, mirroring step 0(a)."""
-    from app.web.setup_instructions import resolve_lines
-
-    fake_ca = (
-        "-----BEGIN CERTIFICATE-----\n"
-        "FAKE\n"
-        "-----END CERTIFICATE-----\n"
-    )
-    joined = "\n".join(
-        resolve_lines(
-            "agnes.whl",
-            plugin_install_names=["foo"],
-            server_host="agnes.example.com",
-            ca_pem=fake_ca,
-        )
-    )
-    # Locate the marketplace section.
-    section_idx = joined.index("Register the Agnes Claude Code marketplace")
-    section = joined[section_idx:]
-
-    # Re-detection block must appear BEFORE the `case "$PLATFORM" in`
-    # check so the variable is set when the case runs.
-    redetect_idx = section.index('case "$(uname -s)" in')
-    platform_case_idx = section.index('case "$PLATFORM" in')
-    assert redetect_idx < platform_case_idx
-    # All three platform branches must be covered (same shape as step 0(a)).
-    redetect_block = section[redetect_idx:platform_case_idx]
-    assert "Darwin" in redetect_block and "PLATFORM=macos" in redetect_block
-    assert "Linux" in redetect_block and "PLATFORM=linux" in redetect_block
-    assert "MINGW*|MSYS*|CYGWIN*" in redetect_block and "PLATFORM=windows" in redetect_block
+    assert "~/.agnes/marketplace/.git/" in both
 
 
 def test_trust_block_rc_heredoc_writes_exactly_8_lines():
@@ -541,12 +502,16 @@ def test_resolve_lines_with_ca_pem_switches_step_one_to_curl_then_local_install(
     assert "uv tool install --native-tls" not in joined_plain
 
 
-def test_resolve_lines_with_ca_pem_marketplace_is_platform_aware():
-    """When ca_pem is set + plugins requested, step 5 emits a platform branch:
-    Linux → try direct HTTPS first, fall back to git clone on failure
-    (node-based claude honors NODE_EXTRA_CA_CERTS);
-    Windows + macOS → straight to git-clone fallback (Bun-compiled claude
-    binary ignores OS trust store and CA env vars on both platforms)."""
+def test_resolve_lines_with_ca_pem_marketplace_always_clones():
+    """When ca_pem is set + plugins requested, step 5 always uses git-clone
+    on every platform — no direct-HTTPS attempt, no `case "$PLATFORM"` switch.
+
+    Direct HTTPS via `claude plugin marketplace add <https-url>` IS available
+    server-side and even returns 200, but Claude Code stores the JSON as a
+    single file and resolves plugin `source: "./plugins/<name>"` paths as
+    local filesystem references — which 404 because there's no plugin tree
+    on disk. The clone path is the only one that produces a working install,
+    so we never try direct first."""
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(
@@ -557,29 +522,18 @@ def test_resolve_lines_with_ca_pem_marketplace_is_platform_aware():
             ca_pem=_FAKE_CA_PEM,
         )
     )
-    # The platform branch + MARKETPLACE_VIA selector.
-    assert "MARKETPLACE_VIA=clone" in joined
-    assert "MARKETPLACE_VIA=direct" in joined
-    # Locate the marketplace step's case block specifically — there is
-    # ALSO a `case "$PLATFORM" in` block in step 0(c) (OS trust store
-    # registration), so we anchor on the marketplace section header to
-    # narrow the slice.
+    # No platform-aware switch in the marketplace section (there's still
+    # one in step 0(c) for OS trust-store registration; we anchor on the
+    # marketplace header to narrow the slice).
     section_idx = joined.index("Register the Agnes Claude Code marketplace")
-    market_case_idx = joined.index('case "$PLATFORM" in', section_idx)
-    market_esac_idx = joined.index("esac", market_case_idx)
-    branch_block = joined[market_case_idx:market_esac_idx]
-    assert "linux)" in branch_block
-    # Direct attempt only in the linux branch.
-    assert (
-        'claude plugin marketplace add "https://x:{token}@agnes.example.com/marketplace.git/" 2>/dev/null'
-        in branch_block
-    )
-    # The default `*)` branch must hard-set clone (no direct attempt).
-    star_idx = branch_block.index("*)")
-    star_branch = branch_block[star_idx:]
-    assert "MARKETPLACE_VIA=clone" in star_branch
-    assert "claude plugin marketplace add" not in star_branch
-    # Git-clone fallback writes to ~/.agnes/marketplace and adds it as a local path.
+    section = joined[section_idx:]
+    assert 'case "$PLATFORM"' not in section
+    assert "MARKETPLACE_VIA=" not in section  # no selector at all
+    # No standalone `claude plugin marketplace add "https://...` (which would
+    # be the direct-HTTPS attempt). The only `marketplace add` should target
+    # the LOCAL clone path.
+    assert 'claude plugin marketplace add "https://' not in section
+    # Git-clone writes to ~/.agnes/marketplace and registers it as a local path.
     assert 'git clone "https://x:{token}@agnes.example.com/marketplace.git/" ~/.agnes/marketplace' in joined
     assert "claude plugin marketplace add ~/.agnes/marketplace" in joined
     # Harmless credential-manager-core warning is called out.
@@ -596,7 +550,8 @@ def test_resolve_lines_with_ca_pem_marketplace_strips_pat_after_clone():
     `git remote set-url origin <url-without-token>` after clone, plus a
     best-effort chmod tighten. claude registers the *local path* (not the
     remote URL), so stripping the token doesn't break marketplace
-    registration — refreshes go via re-running setup with a fresh PAT."""
+    registration — incremental refreshes via `agnes refresh-marketplace`
+    re-inject the PAT through a per-invocation git credential helper."""
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(

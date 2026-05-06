@@ -58,17 +58,30 @@ practice and the design here exists to dodge each one:
    `update-ca-trust`) doesn't fix it on Windows or macOS either — the
    binary's bundled CA list isn't refreshable from the OS store.
 
-   So the marketplace step branches on platform:
-     - Windows + macOS → straight to system-`git clone` fallback
-       (system git honors `GIT_SSL_CAINFO`, so the clone works).
-     - Linux → typically the node-based npm install where
-       `NODE_EXTRA_CA_CERTS` does take effect; try direct first, fall
-       back to git clone on failure.
+   So the marketplace step always uses system `git clone` regardless of
+   platform — system git honors `GIT_SSL_CAINFO` from the combined bundle
+   in step 0(d). We tried having Linux attempt direct HTTPS first (where
+   node-based claude DOES respect `NODE_EXTRA_CA_CERTS`), but `claude
+   plugin marketplace add <https-url>` is broken end-to-end on every
+   distribution: it does succeed at downloading the marketplace.json, but
+   stores it as a single file. The plugin entries' `source: "./plugins/<name>"`
+   paths are then resolved as local filesystem paths against that file's
+   parent dir — and the plugin tree obviously isn't there. Only the clone
+   path produces a real directory tree that `plugin install` can read.
 
    The OS trust-store registration in (c) is still done on all three
    platforms because it's needed for *non-claude* native tools — e.g.
    the system git fetch path itself (Schannel on Windows, Security
    framework on macOS) trusts via the OS store, not via env vars.
+
+   Marketplace refresh: after the initial clone, `agnes refresh-marketplace`
+   incrementally `git pull`s against the same clone and runs `claude plugin
+   marketplace update agnes`. Credentials are injected per-pull via a
+   one-shot git credential helper (PAT from `~/.config/agnes/token.json`)
+   so the cloned repo's `origin` URL stays PAT-free at rest. The
+   SessionStart hook (installed by `agnes init`) calls refresh-marketplace
+   on every Claude Code session so changes server-side propagate
+   automatically.
 
 ## Step ordering
 
@@ -401,10 +414,10 @@ def _finale_lines(*, confirm_step_num: str, has_ca: bool, has_marketplace: bool)
     only reference earlier steps that were actually emitted, otherwise the
     assistant either hallucinates an answer or asks the user about a
     non-existent step. The CA-bundle-source bullet only makes sense when
-    the trust block ran (`has_ca`); the marketplace direct-vs-clone bullet
-    only makes sense when the marketplace block ran (`has_marketplace`).
-    Init + catalog + diagnose + skills + version always render, so their
-    bullets are unconditional."""
+    the trust block ran (`has_ca`); the marketplace bullet only makes
+    sense when the marketplace block ran (`has_marketplace`). Init +
+    catalog + diagnose + skills + version always render, so their bullets
+    are unconditional."""
     bullets = [
         "   - `agnes --version` output",
         "   - First few lines of `agnes catalog` (tables you can see)",
@@ -420,8 +433,8 @@ def _finale_lines(*, confirm_step_num: str, has_ca: bool, has_marketplace: bool)
         )
     if has_marketplace:
         bullets.append(
-            "   - Whether the marketplace add went via direct HTTPS or via the "
-            "git-clone fallback (and on which platform)"
+            "   - Confirmation that `~/.agnes/marketplace/.git/` exists "
+            "(the marketplace clone) and that all requested plugins installed"
         )
     return [
         f"{confirm_step_num}) Confirm:",
@@ -489,29 +502,34 @@ def _marketplace_block(
     layouts (this block now runs before diagnose/skills, so it's step 5
     instead of the old step 7).
 
-    With `has_ca=True`: the user has the trust block from step 0, so we know
-    the cert is in the OS store and our env vars are set. Strategy:
-      - Windows: claude.exe is a Bun-compiled binary that ignores both the
-        Windows trust store AND NODE_EXTRA_CA_CERTS for marketplace HTTPS.
-        Skip the direct attempt; system `git clone` honors GIT_SSL_CAINFO
-        (the combined bundle from step 0) and works.
-      - macOS: same story. `claude` on macOS arm64 ships as a Mach-O binary
-        with a `__BUN` segment (single-file Bun build); empirically it
-        ignores SSL_CERT_FILE / NODE_EXTRA_CA_CERTS / login keychain alike,
-        even though `strings` shows the binary recognizes those env-var
-        names. Go straight to git-clone on macOS too.
-      - Linux: still ships node-based claude on most distros (npm install
-        path), where NODE_EXTRA_CA_CERTS does take effect. Try direct
-        first, fall back to git clone on failure.
+    With `has_ca=True`: clone the marketplace bare-repo via system `git`
+    (which honors GIT_SSL_CAINFO from step 0's combined bundle), then
+    register the local clone path with `claude plugin marketplace add`.
 
-    Token hygiene: after the clone, we strip the PAT from the cloned repo's
+    Why always clone, on every platform, instead of trying direct HTTPS
+    first? `claude plugin marketplace add <https-url>` does succeed against
+    our /marketplace.git/ endpoint, but Claude Code stores the response as
+    a single-file marketplace.json. The plugin entries' `source: "./plugins/<name>"`
+    paths are then resolved as **local filesystem paths**, not URLs — so
+    the subsequent `claude plugin install` looks for plugin contents at
+    `<marketplace-dir>/plugins/<name>/...` and 404s because the dir is
+    actually a single file. The git-clone path produces a real directory
+    tree with the plugin contents in place, which is what `plugin install`
+    needs. So direct HTTPS is broken end-to-end on every Claude Code
+    distribution (Bun-compiled on Windows/macOS, node-based on Linux),
+    not just the platforms where TLS fails. Cloning is the only reliable
+    install path, and it doubles as the basis for `agnes refresh-marketplace`
+    (incremental `git pull` against the same clone keeps things current
+    after marketplace changes server-side).
+
+    Token hygiene: after the clone, strip the PAT from the cloned repo's
     `origin` URL (`git remote set-url`) and chmod ~/.agnes/marketplace tight.
     Reason: `git clone https://x:<PAT>@host/...` writes the URL verbatim
     into `.git/config`, where it sits in plaintext for anything that reads
-    home (cloud sync, antivirus scanners, peer processes). claude's
-    marketplace registration uses the local FS path, not the remote URL,
-    so stripping the token after clone is harmless — to refresh later, the
-    user re-runs setup from the dashboard with a fresh PAT.
+    home (cloud sync, antivirus scanners, peer processes). Future refreshes
+    go via `agnes refresh-marketplace`, which re-injects the PAT from
+    `~/.config/agnes/token.json` on demand through a per-invocation
+    git credential helper — never persisted in the URL.
 
     With `has_ca=False`: the legacy path. If `self_signed_tls=True` we emit
     the host-scoped `git config sslVerify=false` downgrade so the marketplace
@@ -522,60 +540,31 @@ def _marketplace_block(
             "",
             f"{step_num}) Register the Agnes Claude Code marketplace and install plugins.",
             "",
-            "   Strategy depends on platform:",
-            "     - Windows + macOS: `claude` ships as a Bun-compiled native binary on",
-            "       these platforms, which ignores the OS trust store and our CA env",
-            "       vars for marketplace HTTPS. Skip the direct attempt and use a",
-            "       system `git clone` (system git honors GIT_SSL_CAINFO from step 0).",
-            "     - Linux: claude is typically the node-based npm install, where",
-            "       NODE_EXTRA_CA_CERTS works. Try direct first; fall back to git",
-            "       clone on failure.",
+            "   Always via system `git clone` (system git honors GIT_SSL_CAINFO",
+            "   from step 0). Direct HTTPS via `claude plugin marketplace add",
+            "   <url>` is broken end-to-end on every Claude Code distribution",
+            "   — see _marketplace_block docstring for the full reasoning.",
             "",
-            "   # Re-detect $PLATFORM — env vars from step 0 don't persist across",
-            "   # separate Bash invocations (per the IMPORTANT note in step 0(e)),",
-            "   # so without this the case below would fall through `*)` on every",
-            "   # platform and never attempt the direct path on Linux.",
-            "   case \"$(uname -s)\" in",
-            "     Darwin)               PLATFORM=macos ;;",
-            "     Linux)                PLATFORM=linux ;;",
-            "     MINGW*|MSYS*|CYGWIN*) PLATFORM=windows ;;",
-            "   esac",
-            "",
-            "   case \"$PLATFORM\" in",
-            "     linux)",
-            "       if claude plugin marketplace add \"https://x:{token}@{server_host}/marketplace.git/\" 2>/dev/null; then",
-            "         MARKETPLACE_VIA=direct",
-            "       else",
-            "         MARKETPLACE_VIA=clone",
-            "       fi",
-            "       ;;",
-            "     *)",
-            "       MARKETPLACE_VIA=clone",
-            "       ;;",
-            "   esac",
-            "",
-            "   if [ \"$MARKETPLACE_VIA\" = \"clone\" ]; then",
-            "     # Heads-up: 'git: credential-manager-core is not a git command' is a",
-            "     # harmless warning from a stale git config — the clone itself succeeds.",
-            "     rm -rf ~/.agnes/marketplace",
-            "     git clone \"https://x:{token}@{server_host}/marketplace.git/\" ~/.agnes/marketplace || {",
-            "       echo \"ERROR: marketplace clone failed — verify step 0 trust block + network reachability\" >&2",
-            "       exit 1",
-            "     }",
-            "     # Strip the PAT from the cloned repo's origin URL so it doesn't sit",
-            "     # in plaintext at ~/.agnes/marketplace/.git/config. Future marketplace",
-            "     # refreshes go via re-running setup (new PAT) from the dashboard, not",
-            "     # via `git pull` against this clone.",
-            "     git -C ~/.agnes/marketplace remote set-url origin \"https://{server_host}/marketplace.git/\"",
-            "     # Best-effort tighten on POSIX; chmod is a no-op on Windows NTFS via",
-            "     # MSYS / Git Bash, hence the `|| true` so the step never fails there.",
-            "     chmod 700 ~/.agnes/marketplace ~/.agnes/marketplace/.git 2>/dev/null || true",
-            "     chmod 600 ~/.agnes/marketplace/.git/config 2>/dev/null || true",
-            "     claude plugin marketplace add ~/.agnes/marketplace || {",
-            "       echo \"ERROR: claude plugin marketplace add failed\" >&2",
-            "       exit 1",
-            "     }",
-            "   fi",
+            "   # Heads-up: 'git: credential-manager-core is not a git command' is a",
+            "   # harmless warning from a stale git config — the clone itself succeeds.",
+            "   rm -rf ~/.agnes/marketplace",
+            "   git clone \"https://x:{token}@{server_host}/marketplace.git/\" ~/.agnes/marketplace || {",
+            "     echo \"ERROR: marketplace clone failed — verify step 0 trust block + network reachability\" >&2",
+            "     exit 1",
+            "   }",
+            "   # Strip the PAT from the cloned repo's origin URL so it doesn't",
+            "   # sit in plaintext at ~/.agnes/marketplace/.git/config. Future",
+            "   # refreshes use `agnes refresh-marketplace` which injects the PAT",
+            "   # from agnes config via a per-invocation git credential helper.",
+            "   git -C ~/.agnes/marketplace remote set-url origin \"https://{server_host}/marketplace.git/\"",
+            "   # Best-effort tighten on POSIX; chmod is a no-op on Windows NTFS via",
+            "   # MSYS / Git Bash, hence the `|| true` so the step never fails there.",
+            "   chmod 700 ~/.agnes/marketplace ~/.agnes/marketplace/.git 2>/dev/null || true",
+            "   chmod 600 ~/.agnes/marketplace/.git/config 2>/dev/null || true",
+            "   claude plugin marketplace add ~/.agnes/marketplace || {",
+            "     echo \"ERROR: claude plugin marketplace add failed\" >&2",
+            "     exit 1",
+            "   }",
             "",
         ]
         for name in plugin_install_names:
@@ -589,7 +578,9 @@ def _marketplace_block(
         lines.extend([
             "",
             "   These run non-interactively. After they finish, tell the user to /exit",
-            "   and run `claude` again so the new plugins load.",
+            "   and run `claude` again so the new plugins load. From then on, the",
+            "   SessionStart hook keeps the marketplace clone in sync via",
+            "   `agnes refresh-marketplace --quiet` on every Claude Code session.",
         ])
         return lines
 
