@@ -10,6 +10,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Performance
+- **DuckDB BigQuery-extension session pool**
+  (`connectors/bigquery/access.py`). `BqAccess.duckdb_session()` now acquires
+  pre-warmed connections from a bounded process-local pool instead of running
+  `INSTALL bigquery; LOAD bigquery; CREATE SECRET; ATTACH …` on every request.
+  Each acquire saves the ~0.5 s extension-load + secret-creation cost when
+  the pool has a warm entry; auth SECRET is refreshed on acquire so a
+  long-lived pooled entry doesn't keep a stale GCE metadata token past its
+  TTL. Pool size is configurable via `data_source.bigquery.session_pool_size`
+  (default 4; sentinel `0` disables pooling). Affects every BQ-touching path
+  — `/api/query`, `/api/v2/scan`, `/api/v2/sample`, `/api/v2/schema`,
+  materialize, and the orchestrator's remote-attach.
+
 ### Fixed
 - **`/api/query` (and `agnes query --remote`) now rewrites user SQL referencing
   `query_mode='remote'` BigQuery rows into a single `bigquery_query()` call
