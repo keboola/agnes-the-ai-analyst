@@ -185,6 +185,8 @@ def create_app() -> FastAPI:
     @app.middleware("http")
     async def _add_version_headers(request, call_next):
         response = await call_next(request)
+        # /api/* only — headers are advisory to the agnes CLI; UI/docs/marketplace
+        # traffic doesn't consume them.
         if request.url.path.startswith("/api/"):
             response.headers["X-Agnes-Latest-Version"] = APP_VERSION
             response.headers["X-Agnes-Min-Version"] = MIN_COMPAT_CLI_VERSION
