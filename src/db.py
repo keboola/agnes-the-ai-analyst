@@ -690,10 +690,21 @@ def _reattach_remote_extensions(
                     conn.execute(
                         f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, TOKEN '{escaped_token}')"
                     )
+                    # Apply BQ session settings on every BQ-extension attach,
+                    # not only the metadata-token branch above. Previously the
+                    # token-based branch fell through without setting
+                    # bq_query_timeout_ms, leaving the 90 s extension default
+                    # in place and causing "remote query timeout" surprises.
+                    if extension == "bigquery":
+                        from connectors.bigquery.access import apply_bq_session_settings
+                        apply_bq_session_settings(conn)
                 else:
                     conn.execute(
                         f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)"
                     )
+                    if extension == "bigquery":
+                        from connectors.bigquery.access import apply_bq_session_settings
+                        apply_bq_session_settings(conn)
                 attached_dbs.add(alias)
                 logger.debug("Re-attached remote source %s via %s extension", alias, extension)
             except Exception as e:

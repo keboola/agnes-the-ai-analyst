@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.38.3] — 2026-05-06
+
 ### Changed
 - **Admin / Tables**: registry table now shows Source (bucket/table), Schedule, Folder, Registered by/at, and a sync-error warning icon per row. The page widens to ~1600px to accommodate.
 
@@ -17,6 +19,41 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **Admin / Tables**: long table descriptions no longer push the row's Edit / Manage access / Delete buttons off-screen. The Description column is now clamped to 2 lines with the full text available on hover and in the Edit modal.
 - **Admin / Tables**: descriptions stored with shell-quoting backslash-escapes (`Don\'t`, `\n`) now render correctly. The same normalization also runs at register/update time so newly-saved descriptions are never corrupted.
 - **Admin / Tables**: `scripts/fix_description_escapes.py` cleans up already-corrupted descriptions in `table_registry` (run with `--dry-run` first, then `--apply`).
+
+## [0.38.2] — 2026-05-06
+
+### Fixed
+- **`bq_query_timeout_ms` was not applied on every BigQuery ATTACH branch**
+  (`src/db.py:_reattach_remote_extensions`,
+  `src/orchestrator.py:_attach_remote_extensions`). Pre-fix only the
+  metadata-token branch (the BqAccess contract, `token_env=''`) called
+  `apply_bq_session_settings`. BigQuery sources registered with an explicit
+  `token_env`, or with no auth env, ATTACH'd without ever applying the
+  timeout — falling back to the extension's 90 s default. Default-config
+  operators on those branches now consistently get the configured 600 s
+  (or whatever `data_source.bigquery.query_timeout_ms` is set to).
+- **`apply_bq_session_settings` swallowed every `Exception` silently**
+  (`connectors/bigquery/access.py`). Two realistic failure modes — the
+  BigQuery extension not yet loaded on the connection, or an installed
+  extension version that doesn't recognise the setting — left the 90 s
+  default in place with no log line explaining why. Each failure path
+  now logs `WARNING` with the actionable cause; on success the applied
+  value is verified via a `current_setting('bq_query_timeout_ms')`
+  readback (catches the silent-ignore mode some extension versions
+  exhibit) and a mismatch logs `WARNING` too.
+
+## [0.38.1] — 2026-05-06
+
+### Internal
+- `CLAUDE.md` — `Claude Code marketplace endpoint` section now documents the
+  two-step fallback (system `git clone` + local `claude plugin marketplace
+  add`) for users registering manually against a private-CA Agnes instance.
+  Bun-compiled `claude` ignores the OS trust store and CA env vars on the
+  marketplace HTTPS path, so direct `/plugin marketplace add` over HTTPS can
+  fail with TLS errors on macOS / Windows even when system tools work fine.
+  The dashboard-served setup payload (`app/web/setup_instructions.py`)
+  already branches between the two automatically based on platform; the
+  doc snippet now matches that behavior for manual flows.
 
 ## [0.38.0] — 2026-05-06
 

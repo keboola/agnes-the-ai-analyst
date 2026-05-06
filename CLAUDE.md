@@ -363,9 +363,31 @@ User registration inside Claude Code:
 # ZIP channel (typically via a SessionStart hook that unpacks into ./marketplace/)
 curl -H "Authorization: Bearer $AGNES_PAT" https://agnes.example.com/marketplace.zip
 
-# Git channel — one-time registration
+# Git channel — one-time registration. Two paths; pick the first that works.
+
+# (a) Direct registration — preferred when it works.
 /plugin marketplace add https://x:$AGNES_PAT@agnes.example.com/marketplace.git/
+
+# (b) Two-step fallback — required when (a) fails. Bun-compiled `claude` on
+#     macOS / Windows ignores the OS trust store and CA env vars on the
+#     marketplace HTTPS path, so direct add can fail with TLS errors against
+#     a private-CA Agnes instance even when system tools work fine. System
+#     `git` honors GIT_SSL_CAINFO + the OS trust store, so cloning manually
+#     and pointing Claude Code at the local clone sidesteps the Bun TLS path
+#     entirely.
+git clone https://x:$AGNES_PAT@agnes.example.com/marketplace.git/ ~/agnes-marketplace
+claude plugin marketplace add ~/agnes-marketplace
+# Optional hardening: strip the PAT from the cloned repo's origin so it
+# doesn't sit in plaintext at ~/agnes-marketplace/.git/config — re-clone via
+# the dashboard's setup flow when the PAT rotates.
+git -C ~/agnes-marketplace remote set-url origin https://agnes.example.com/marketplace.git/
 ```
+
+The dashboard-served setup payload (see `app/web/setup_instructions.py`) already
+branches between (a) and (b) automatically based on platform when a private CA
+is in play. The block above is the manual equivalent for users registering
+outside that flow (e.g. operators bringing up a new instance, or
+analysts whose first attempt failed and need to retry by hand).
 
 ## Hybrid Queries (BigQuery + Local)
 

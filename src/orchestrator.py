@@ -512,11 +512,22 @@ class SyncOrchestrator:
                     conn.execute(
                         f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, TOKEN '{escaped_token}')"
                     )
+                    # Apply BQ session settings on every BQ-extension attach,
+                    # not only the metadata-token branch above. The token-based
+                    # branch previously fell through without calling
+                    # apply_bq_session_settings, leaving the 90 s extension
+                    # default for bq_query_timeout_ms in place.
+                    if extension == "bigquery":
+                        from connectors.bigquery.access import apply_bq_session_settings
+                        apply_bq_session_settings(conn)
                 else:
                     # No auth required (or extension handles it via env automatically)
                     conn.execute(
                         f"ATTACH '{safe_url}' AS {alias} (TYPE {extension}, READ_ONLY)"
                     )
+                    if extension == "bigquery":
+                        from connectors.bigquery.access import apply_bq_session_settings
+                        apply_bq_session_settings(conn)
 
                 logger.info("Attached remote source %s via %s extension", alias, extension)
             except Exception as e:
