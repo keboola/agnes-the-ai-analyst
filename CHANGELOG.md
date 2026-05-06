@@ -10,6 +10,80 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.39.0] — 2026-05-06
+
+### Performance
+- **`/api/query` (and `agnes query --remote`) now rewrites user SQL referencing
+  `query_mode='remote'` BigQuery rows into a single `bigquery_query()` call
+  before execute** (`app/api/query.py`). Pre-fix the master view
+  (`CREATE VIEW <name> AS SELECT * FROM bigquery.<bucket>.<source_table>`) did
+  not push WHERE / SELECT / LIMIT into BQ — the DuckDB BQ extension opened a
+  Storage Read API session over the entire upstream table, scanning the full
+  partitioned dataset before the local DuckDB filter ran. On 100M+ row
+  remote-mode tables this was 50-100× slower than the equivalent direct
+  `bigquery_query()` call (70-150 s vs 1.5 s) and frequently failed with
+  `Response too large to return`. The rewriter (shared core with the existing
+  dry-run helper) wraps the user's whole SQL in `bigquery_query('<project>',
+  '<inner-sql>')` so the BQ planner receives the full query and applies
+  partition pruning + projection pushdown server-side. Conservative
+  fall-through: cross-source JOINs (BQ ↔ Keboola/Jira local), queries already
+  containing `bigquery_query(`, and unconfigured BQ project all keep the
+  original ATTACH-catalog path so behavior degrades gracefully.
+- **DuckDB BigQuery-extension session pool**
+  (`connectors/bigquery/access.py`). `BqAccess.duckdb_session()` now acquires
+  pre-warmed connections from a bounded process-local pool instead of running
+  `INSTALL bigquery; LOAD bigquery; CREATE SECRET; ATTACH …` on every request.
+  Each acquire saves the ~0.5 s extension-load + secret-creation cost when
+  the pool has a warm entry; auth SECRET is refreshed on acquire so a
+  long-lived pooled entry doesn't keep a stale GCE metadata token past its
+  TTL. Pool size is configurable via `data_source.bigquery.session_pool_size`
+  (default 4; sentinel `0` disables pooling). Affects every BQ-touching path
+  — `/api/query`, `/api/v2/scan`, `/api/v2/sample`, `/api/v2/schema`,
+  materialize, and the orchestrator's remote-attach.
+- **`agnes pull` chunked download for large parquets**: when the server
+  advertises `accept-ranges: bytes` and a parquet exceeds
+  `AGNES_PULL_CHUNK_THRESHOLD_BYTES` (default 50 MB), the CLI now splits
+  the file into N parallel HTTP Range requests
+  (`AGNES_PULL_CHUNK_PARALLELISM`, default 4, capped 1..16) and assembles
+  the parts into the destination atomically. Targets the per-flow-shaped
+  network (corp VPN with per-TCP-connection rate-limiting) where a single
+  stream is throttled but N parallel streams over the same connection
+  scale roughly linearly. Falls back to single-stream when the server
+  responds 200 instead of 206 to a Range probe, when no
+  `accept-ranges: bytes` is advertised, or when content is below the
+  threshold — no behavior change in the small-file / non-cooperating-
+  server cases.
+- **Persistent HTTP/2 client across `agnes pull`**: `stream_download` now
+  routes through a process-wide pooled `httpx.Client` so N parquet
+  downloads share a single TLS handshake; HTTP/2 multiplexing
+  (when the optional `h2` package is installed) lets all chunk Range
+  requests share one TCP connection. Gracefully falls back to HTTP/1.1
+  pooling when `h2` is missing — no crash, just slightly less benefit.
+
+### Fixed
+- **BigQuery `responseTooLarge` no longer surfaces as a generic 400 / 502 with
+  the raw upstream message** (`connectors/bigquery/access.py`). The
+  `translate_bq_error` helper now classifies "Response too large to return"
+  errors via a dedicated `bq_response_too_large` kind (HTTP 400) with an
+  actionable hint pointing at the WHERE / aggregation / materialized-table
+  remediations. Pre-fix this failure mode fell through to the generic
+  `bq_bad_request` mapping, which implied the user's SQL had a syntax error
+  — wrong root cause. Affects every BQ-touching path (`/api/query`,
+  `/api/v2/scan`, `/api/v2/sample`, `/api/v2/schema`, materialize) since
+  they all share `translate_bq_error`.
+
+### Added
+- New optional dependency `h2>=4.1.0` (HTTP/2 transport for httpx). Pure
+  performance — `agnes pull` works on HTTP/1.1 if the install skips it.
+- **Textual progress fallback for non-TTY `agnes pull`**: when stderr is
+  not a terminal (Claude Code SessionStart hook, CI runner, Docker log
+  capture, …), `agnes pull --no-quiet` now emits a plain-text progress
+  line per file at most every 10% or 30 s, plus a final completion line.
+  Replaces the previous Rich-bar-on-pipe behavior that either suppressed
+  output entirely or leaked ANSI escape sequences. TTY path unchanged
+  (Rich progress bar with bytes / speed / ETA, aggregated per-file
+  across chunked-download chunks).
+
 ## [0.38.3] — 2026-05-06
 
 ### Changed

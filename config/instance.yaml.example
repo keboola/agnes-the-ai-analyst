@@ -135,6 +135,13 @@ data_source:
     #                                    # view-backed datasets -- bumped to 600 000 ms = 10 min by default.
     #                                    # Set 0 to fall through to the extension default. Configurable via
     #                                    # /admin/server-config UI.
+    # session_pool_size: 4
+    #                                    # Number of pre-warmed DuckDB+bigquery-extension sessions kept
+    #                                    # in a process-local pool. Each acquire amortizes the
+    #                                    # ~0.5 s INSTALL/LOAD/CREATE-SECRET cost across requests; a fresh
+    #                                    # build only happens when the pool is empty. Default 4. Set 0
+    #                                    # to disable pooling (every acquire builds + closes a fresh
+    #                                    # session; matches pre-pool behavior).
 
 # --- OpenMetadata catalog (optional) ---
 # Enriches table and column metadata from OpenMetadata REST API.
