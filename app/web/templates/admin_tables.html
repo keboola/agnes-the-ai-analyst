@@ -114,7 +114,7 @@
 
         /* ── Page Title ── */
         .page-title {
-            max-width: 1000px;
+            max-width: 1600px;
             margin: 0 auto;
             padding: 32px 24px 24px;
         }
@@ -133,7 +133,7 @@
 
         /* ── Content Layout ── */
         .content {
-            max-width: 1000px;
+            max-width: 1600px;
             margin: 0 auto;
             padding: 0 24px 32px;
             display: flex;
@@ -473,6 +473,17 @@
         .registry-table {
             width: 100%;
             border-collapse: collapse;
+            table-layout: fixed;
+        }
+
+        .registry-table .col-description {
+            overflow: hidden;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow-wrap: anywhere;
+            line-height: 1.4;
+            color: var(--text-secondary);
         }
 
         .registry-table th {
@@ -505,15 +516,105 @@
         .registry-table .col-id {
             font-family: var(--font-mono);
             font-size: 12px;
-            max-width: 280px;
+            max-width: 220px;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
         }
 
         .registry-table .col-actions {
-            width: 80px;
-            text-align: right;
+            width: 120px;
+            min-width: 120px;
+            white-space: nowrap;
+            vertical-align: top;
+        }
+
+        /* ── Registry table — wide layout ── */
+        .registry-table .col-mode {
+            width: 100px;
+        }
+
+        .registry-table .col-source {
+            width: 200px;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            color: var(--text-secondary);
+        }
+
+        .registry-table .col-pk {
+            width: 100px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .registry-table .col-schedule {
+            width: 100px;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .registry-table .col-folder {
+            width: 120px;
+        }
+
+        .registry-table .col-registered {
+            width: 160px;
+            font-size: 11px;
+            line-height: 1.4;
+            overflow: hidden;
+        }
+
+        .registry-table .col-registered .registered-by {
+            color: var(--text-primary);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .registry-table .col-registered .registered-at {
+            color: var(--text-secondary);
+        }
+
+        .registry-table .col-status {
+            width: 40px;
+            text-align: center;
+        }
+
+        .mode-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        .mode-badge.mode-local {
+            background: var(--success-light);
+            color: var(--success);
+        }
+
+        .mode-badge.mode-remote {
+            background: var(--primary-light);
+            color: var(--primary);
+        }
+
+        .mode-badge.mode-materialized {
+            background: rgba(139, 92, 246, 0.1);
+            color: #8B5CF6;
+        }
+
+        .folder-badge {
+            display: inline-block;
+            padding: 1px 6px;
+            border-radius: 3px;
+            background: var(--background);
+            border: 1px solid var(--border);
+            font-size: 11px;
+            color: var(--text-secondary);
         }
 
         /* ── Modal overlay ── */
@@ -1542,6 +1643,24 @@
         var div = document.createElement('div');
         div.textContent = str;
         return div.innerHTML;
+    }
+
+    // Defensive normalization for descriptions registered via shell-quoting
+    // tooling that injected literal backslash escapes (e.g. `Don\'t`, `\n`).
+    // Mirrors _unescape_shell_quoting in app/api/admin.py — applied at render
+    // time so already-stored corrupt rows still display readably.
+    function unescapeShellQuoting(s) {
+        if (!s) return s;
+        // Order matters: protect real backslashes via NUL sentinel first,
+        // unescape the well-known sequences, then restore real backslashes.
+        return s
+            .replace(/\\\\/g, ' ')
+            .replace(/\\n/g, '\n')
+            .replace(/\\r/g, '\r')
+            .replace(/\\t/g, '\t')
+            .replace(/\\'/g, "'")
+            .replace(/\\"/g, '"')
+            .replace(/ /g, '\\');
     }
 
     // C3: removed dead Discovery panel JS. The global Discovery card +
@@ -2587,6 +2706,12 @@
             });
     }
 
+    function renderModeBadge(mode) {
+        var m = (mode || 'local').toLowerCase();
+        var cls = 'mode-badge mode-' + (['local','remote','materialized'].indexOf(m) >= 0 ? m : 'local');
+        return '<span class="' + cls + '">' + escapeHtml(m) + '</span>';
+    }
+
     function renderRegistryListing(target, tables) {
         if (!target) return;
         if (tables.length === 0) {
@@ -2595,19 +2720,69 @@
         }
         var html = '<table class="registry-table">';
         html += '<thead><tr>';
-        html += '<th>Table ID</th>';
-        html += '<th>Mode</th>';
-        html += '<th>Primary Key</th>';
+        html += '<th class="col-id">Table ID</th>';
+        html += '<th class="col-mode">Mode</th>';
+        html += '<th class="col-source">Source</th>';
+        html += '<th class="col-pk">Primary Key</th>';
+        html += '<th class="col-schedule">Schedule</th>';
+        html += '<th class="col-folder">Folder</th>';
         html += '<th>Description</th>';
+        html += '<th class="col-registered">Registered</th>';
+        html += '<th class="col-status"></th>';
         html += '<th class="col-actions">Actions</th>';
         html += '</tr></thead><tbody>';
         tables.forEach(function(table) {
             html += '<tr>';
             html += '<td class="col-id" title="' + escapeHtml(table.id) + '">' + escapeHtml(table.id) + '</td>';
-            html += '<td>' + escapeHtml(table.query_mode || 'local') + '</td>';
-            html += '<td>' + escapeHtml((table.primary_key || []).join(', ') || '-') + '</td>';
-            html += '<td>' + escapeHtml(table.description || '-') + '</td>';
-            html += '<td class="col-actions">';
+            html += '<td class="col-mode">' + renderModeBadge(table.query_mode) + '</td>';
+
+            // Source: bucket / source_table; em-dash when both empty (custom-SQL row).
+            var bucket = table.bucket || '';
+            var srcTable = table.source_table || '';
+            var sourceText = '';
+            if (bucket && srcTable) {
+                sourceText = bucket + ' / ' + srcTable;
+            } else if (bucket || srcTable) {
+                sourceText = bucket || srcTable;
+            }
+            var sourceCell = sourceText ? escapeHtml(sourceText) : '—';
+            html += '<td class="col-source" title="' + escapeHtml(sourceText) + '">' + sourceCell + '</td>';
+
+            html += '<td class="col-pk">' + escapeHtml((table.primary_key || []).join(', ') || '—') + '</td>';
+            html += '<td class="col-schedule">' + escapeHtml(table.sync_schedule || '—') + '</td>';
+
+            // Folder badge — '—' when null/empty.
+            if (table.folder) {
+                html += '<td class="col-folder"><span class="folder-badge">' + escapeHtml(table.folder) + '</span></td>';
+            } else {
+                html += '<td class="col-folder">—</td>';
+            }
+
+            var desc = unescapeShellQuoting(table.description || '');
+            html += '<td class="col-description" title="' + escapeHtml(desc) + '">' + escapeHtml(desc || '—') + '</td>';
+
+            // Registered: stacked email + date (first 10 chars of ISO timestamp).
+            var regBy = table.registered_by || '';
+            var regByDisplay = regBy;
+            if (regBy.length > 24 && regBy.indexOf('@') > 0) {
+                regByDisplay = regBy.split('@')[0];
+            }
+            var regAt = table.registered_at ? String(table.registered_at).slice(0, 10) : '';
+            html += '<td class="col-registered">';
+            html += '<div class="registered-by" title="' + escapeHtml(regBy) + '">' + (regByDisplay ? escapeHtml(regByDisplay) : '—') + '</div>';
+            html += '<div class="registered-at">' + escapeHtml(regAt || '') + '</div>';
+            html += '</td>';
+
+            // Status: warning icon when the last sync errored.
+            html += '<td class="col-status">';
+            if (table.last_sync_error) {
+                html += '<span title="' + escapeHtml(table.last_sync_error) + '">';
+                html += '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--error);"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>';
+                html += '</span>';
+            }
+            html += '</td>';
+
+            html += '<td class="col-actions"><div style="display:flex; gap:4px; justify-content:flex-end;">';
             html += '<button class="btn-icon" title="Edit" onclick=\'openEditModal(' + JSON.stringify(table).replace(/'/g, "\\'") + ')\'>';
             html += '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>';
             html += '</button>';
@@ -2618,7 +2793,7 @@
             html += '<button class="btn-icon danger" title="Delete" onclick="deleteTable(\'' + escapeHtml(table.id).replace(/'/g, "\\'") + '\')">';
             html += '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
             html += '</button>';
-            html += '</td></tr>';
+            html += '</div></td></tr>';
         });
         html += '</tbody></table>';
         target.innerHTML = html;

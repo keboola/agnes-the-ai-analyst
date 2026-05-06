@@ -10,6 +10,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.38.3] — 2026-05-06
+
+### Changed
+- **Admin / Tables**: registry table now shows Source (bucket/table), Schedule, Folder, Registered by/at, and a sync-error warning icon per row. The page widens to ~1600px to accommodate.
+
+### Fixed
+- **Admin / Tables**: long table descriptions no longer push the row's Edit / Manage access / Delete buttons off-screen. The Description column is now clamped to 2 lines with the full text available on hover and in the Edit modal.
+- **Admin / Tables**: descriptions stored with shell-quoting backslash-escapes (`Don\'t`, `\n`) now render correctly. The same normalization also runs at register/update time so newly-saved descriptions are never corrupted.
+- **Admin / Tables**: `scripts/fix_description_escapes.py` cleans up already-corrupted descriptions in `table_registry` (run with `--dry-run` first, then `--apply`).
+
 ## [0.38.2] — 2026-05-06
 
 ### Fixed

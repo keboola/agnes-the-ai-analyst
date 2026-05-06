@@ -88,6 +88,31 @@ def _validate_url_not_private(url: str, field_name: str = "url") -> None:
             )
 
 
+def _unescape_shell_quoting(s: str | None) -> str | None:
+    """Defensive normalization for descriptions arriving via shell-quoting tooling.
+
+    Some operators register tables with bash/curl invocations whose quoting
+    injects literal backslash escapes into the payload (e.g. ``Don\\'t`` or
+    embedded ``\\n`` instead of real newlines). The backend would otherwise
+    persist those bytes verbatim and the UI would render them verbatim too.
+    Mirrored in JS as ``unescapeShellQuoting`` in
+    ``app/web/templates/admin_tables.html`` for already-stored rows.
+    """
+    if not s:
+        return s
+    # Order matters: protect real backslashes first.
+    SENTINEL = "\x00"
+    return (
+        s.replace("\\\\", SENTINEL)
+         .replace("\\n", "\n")
+         .replace("\\r", "\r")
+         .replace("\\t", "\t")
+         .replace("\\'", "'")
+         .replace('\\"', '"')
+         .replace(SENTINEL, "\\")
+    )
+
+
 def _normalize_primary_key(v):
     """Coerce a string primary_key to ``[v]`` for backward compatibility.
 
@@ -1273,6 +1298,13 @@ class RegisterTableRequest(BaseModel):
     def _coerce_primary_key(cls, v):
         return _normalize_primary_key(v)
 
+    @field_validator("description", mode="before")
+    @classmethod
+    def _normalize_description(cls, v):
+        # Defensive normalization for descriptions arriving via shell-quoting
+        # tooling that injects literal backslash escapes (e.g. `Don\'t`, `\n`).
+        return _unescape_shell_quoting(v)
+
     @field_validator("source_type", mode="before")
     @classmethod
     def _validate_source_type(cls, v):
@@ -1675,6 +1707,13 @@ class UpdateTableRequest(BaseModel):
     @classmethod
     def _coerce_primary_key(cls, v):
         return _normalize_primary_key(v)
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def _normalize_description(cls, v):
+        # Defensive normalization for descriptions arriving via shell-quoting
+        # tooling that injects literal backslash escapes (e.g. `Don\'t`, `\n`).
+        return _unescape_shell_quoting(v)
 
     # Duplicated from RegisterTableRequest — Pydantic v2 validators don't
     # inherit cleanly across unrelated BaseModel classes; a shared mixin
