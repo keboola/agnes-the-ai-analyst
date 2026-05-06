@@ -151,6 +151,44 @@ def test_refresh_marketplace_no_clone_explains_in_manual_mode(tmp_path, monkeypa
     assert recorder.calls == []
 
 
+def test_no_clone_short_circuits_before_token_check(tmp_path, monkeypatch, recorder):
+    """The no-clone no-op path must NOT require a token.
+
+    The SessionStart hook (`agnes refresh-marketplace --quiet`) runs in
+    every workspace that has the hook installed, including ones where no
+    agnes token is configured (e.g. a fresh CI checkout, a workspace
+    that never went through `agnes init`, a project sharing the user's
+    SessionStart settings.json without sharing their agnes config dir).
+    Forcing token resolution before the no-op short-circuit would surface
+    spurious auth_failed errors on those legitimate no-marketplace setups.
+
+    Regression: an earlier rev moved the token check above the clone-
+    exists check (needed it for --bootstrap), which broke CI on the
+    silent-noop tests that don't seed a token.
+    """
+    # No token on disk, no AGNES_TOKEN env var, no clone.
+    cfg_dir = tmp_path / "_cfg_empty"
+    cfg_dir.mkdir()
+    monkeypatch.setenv("AGNES_CONFIG_DIR", str(cfg_dir))
+    monkeypatch.delenv("AGNES_TOKEN", raising=False)
+    monkeypatch.setattr(rm_module, "CLONE_DIR", tmp_path / "nonexistent")
+
+    # --quiet (hook context).
+    result = runner.invoke(refresh_marketplace_app, ["--quiet"])
+    assert result.exit_code == 0, (
+        f"hook context should silent-noop without a token; got exit "
+        f"{result.exit_code} and output {result.output!r}"
+    )
+    assert _clean(result.output) == ""
+    assert recorder.calls == []
+
+    # Manual mode (no --quiet): hint, but still exit 0 + no token resolution.
+    result = runner.invoke(refresh_marketplace_app, [])
+    assert result.exit_code == 0
+    assert "No marketplace clone" in _clean(result.output)
+    assert recorder.calls == []
+
+
 def test_refresh_marketplace_no_token_friendly_exit(with_clone, tmp_path, monkeypatch, recorder):
     cfg_dir = tmp_path / "_cfg_empty"
     cfg_dir.mkdir()
