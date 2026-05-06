@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.39.0] — 2026-05-06
+
 ### Performance
 - **`/api/query` (and `agnes query --remote`) now rewrites user SQL referencing
   `query_mode='remote'` BigQuery rows into a single `bigquery_query()` call
