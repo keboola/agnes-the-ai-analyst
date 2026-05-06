@@ -19,6 +19,15 @@ import httpx
 from cli.config import _config_dir, get_server_url, get_token
 from cli.update_check import _installed_version, _version_lt
 
+# User-Agent is invariant for the life of the process — installed
+# version doesn't change, OS doesn't change. Cache it at import time so
+# every `get_client()` call doesn't re-do the importlib.metadata lookup
+# + `platform.system()` call. (Reviewer note: do NOT cache the
+# `_installed_version` lookup inside `_check_version_headers` — tests
+# patch `cli.client._installed_version` and a cached value would defeat
+# the patch. The hook keeps calling it; network cost dwarfs the lookup.)
+_USER_AGENT = f"agnes/{_installed_version()} ({platform.system().lower()})"
+
 
 # PID-suffixed tmp / part files — see `_download_chunked` and
 # `_download_single_stream`. We extract the embedded PID and reap any
@@ -266,7 +275,7 @@ def get_client(timeout: float = 30.0) -> httpx.Client:
         headers["Authorization"] = f"Bearer {token}"
     return httpx.Client(
         base_url=get_server_url(),
-        headers={**headers, "User-Agent": f"agnes/{_installed_version()} ({platform.system().lower()})"},
+        headers={**headers, "User-Agent": _USER_AGENT},
         timeout=timeout,
         event_hooks={"response": [_check_version_headers]},
     )
