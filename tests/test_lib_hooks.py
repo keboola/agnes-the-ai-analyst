@@ -14,9 +14,9 @@ def _read_settings(workspace: Path) -> dict:
 def test_install_creates_settings_file(tmp_path):
     install_claude_hooks(tmp_path)
     cfg = _read_settings(tmp_path)
-    assert cfg["hooks"]["SessionStart"]
-    assert "agnes pull --quiet" in cfg["hooks"]["SessionStart"][0]["hooks"][0]["command"]
-    assert cfg["hooks"]["SessionEnd"]
+    cmd = cfg["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+    assert "agnes self-upgrade --quiet" in cmd
+    assert "agnes pull --quiet" in cmd
     assert "agnes push --quiet" in cfg["hooks"]["SessionEnd"][0]["hooks"][0]["command"]
 
 
@@ -74,3 +74,25 @@ def test_install_handles_invalid_json(tmp_path, capsys):
     install_claude_hooks(tmp_path)
     captured = capsys.readouterr()
     assert "not valid JSON" in captured.err or "warning" in captured.err.lower()
+
+
+def test_install_chains_self_upgrade_then_pull_in_one_entry(tmp_path):
+    install_claude_hooks(tmp_path)
+    cfg = _read_settings(tmp_path)
+    session_start = cfg["hooks"]["SessionStart"]
+    assert len(session_start) == 1, session_start
+    cmd = session_start[0]["hooks"][0]["command"]
+    assert "agnes self-upgrade --quiet" in cmd
+    assert "agnes pull --quiet" in cmd
+    # Order is encoded in the shell — self-upgrade must appear first
+    assert cmd.index("agnes self-upgrade") < cmd.index("agnes pull")
+    # Both segments carry || true so neither failure aborts the line
+    assert cmd.count("|| true") >= 2
+
+
+def test_install_idempotent_chained_entry(tmp_path):
+    install_claude_hooks(tmp_path)
+    install_claude_hooks(tmp_path)
+    cfg = _read_settings(tmp_path)
+    assert len(cfg["hooks"]["SessionStart"]) == 1
+    assert len(cfg["hooks"]["SessionEnd"]) == 1

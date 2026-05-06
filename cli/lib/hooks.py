@@ -24,7 +24,7 @@ from pathlib import Path
 # Substrings that identify "our" hook commands. Includes legacy `da sync`
 # so a workspace bootstrapped by an older CLI gets cleanly upgraded on the
 # next `agnes init` run.
-_OUR_COMMAND_MARKERS = ("agnes pull", "agnes push", "da sync")
+_OUR_COMMAND_MARKERS = ("agnes self-upgrade", "agnes pull", "agnes push", "da sync")
 
 
 def install_claude_hooks(workspace: Path) -> None:
@@ -60,7 +60,11 @@ def install_claude_hooks(workspace: Path) -> None:
                 existing.remove(entry)
         existing.append({"hooks": [{"type": "command", "command": command}]})
 
-    _replace_or_add("SessionStart", "agnes pull --quiet 2>/dev/null || true")
+    _replace_or_add(
+        "SessionStart",
+        "agnes self-upgrade --quiet 2>/dev/null || true; "
+        "agnes pull --quiet 2>/dev/null || true",
+    )
     _replace_or_add("SessionEnd", "agnes push --quiet 2>/dev/null || true")
 
     settings_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
