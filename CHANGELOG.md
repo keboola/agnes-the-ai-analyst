@@ -34,6 +34,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Added
 - New optional dependency `h2>=4.1.0` (HTTP/2 transport for httpx). Pure
   performance — `agnes pull` works on HTTP/1.1 if the install skips it.
+- **Textual progress fallback for non-TTY `agnes pull`**: when stderr is
+  not a terminal (Claude Code SessionStart hook, CI runner, Docker log
+  capture, …), `agnes pull --no-quiet` now emits a plain-text progress
+  line per file at most every 10% or 30 s, plus a final completion line.
+  Replaces the previous Rich-bar-on-pipe behavior that either suppressed
+  output entirely or leaked ANSI escape sequences. TTY path unchanged
+  (Rich progress bar with bytes / speed / ETA, aggregated per-file
+  across chunked-download chunks).
 
 ## [0.38.0] — 2026-05-06
 
