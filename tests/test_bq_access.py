@@ -37,6 +37,12 @@ class TestBqAccessError:
             "bq_forbidden": 502,
             "bq_bad_request": 400,
             "bq_upstream_error": 502,
+            # User-facing class for "Response too large to return" — an
+            # upstream BQ refusal, but caused by query shape (too many rows
+            # to fit in a single jobs.query response) rather than auth or
+            # syntax. 400 so the user sees an actionable error and not a
+            # 502 that suggests "BQ is broken".
+            "bq_response_too_large": 400,
         }
         assert BqAccessError.HTTP_STATUS == expected
 
@@ -143,6 +149,70 @@ class TestTranslateBqError:
         with pytest.raises(ValueError, match="not a BQ error"):
             translate_bq_error(ValueError("not a BQ error"), self.projects,
                                bad_request_status="client_error")
+
+    def test_response_too_large_via_gax_bad_request(self):
+        """BQ ``responseTooLarge`` arrives as ``gax.BadRequest`` (HTTP 400
+        with a specific `reason` field). Pre-fix this fell through to the
+        generic ``bq_bad_request`` mapping — surfacing as a 400 with the
+        raw upstream message and no actionable hint. Now it routes to a
+        dedicated ``bq_response_too_large`` kind whose message tells the
+        user exactly what to do (narrow WHERE / aggregate / use materialized).
+        """
+        from google.api_core.exceptions import BadRequest
+        from connectors.bigquery.access import translate_bq_error
+        e = BadRequest("Response too large to return. Consider setting allowLargeResults to true ...")
+        result = translate_bq_error(
+            e, self.projects, bad_request_status="client_error",
+        )
+        assert result.kind == "bq_response_too_large", (
+            f"got {result.kind!r}; expected dedicated mapping for "
+            "'Response too large' to avoid the generic bq_bad_request 400 "
+            "with no actionable hint"
+        )
+        # User-facing message must point at the actionable remediations,
+        # not just echo the raw BQ string.
+        assert "exceeded" in result.message.lower() or "too large" in result.message.lower()
+        assert "where" in result.message.lower() or "aggregate" in result.message.lower() or "materialized" in result.message.lower()
+        # Original upstream text preserved in details for operator debugging.
+        assert "original" in result.details
+        assert "Response too large" in result.details["original"]
+
+    def test_response_too_large_via_duckdb_native_string(self):
+        """DuckDB-native exceptions (the BQ extension's C++ HTTP path)
+        carry the same 'Response too large' marker in plain ``Exception``
+        messages — must classify the same way as the gax.BadRequest case."""
+        from connectors.bigquery.access import translate_bq_error
+        e = Exception("HTTP 400: Response too large to return.")
+        result = translate_bq_error(
+            e, self.projects, bad_request_status="upstream_error",
+        )
+        assert result.kind == "bq_response_too_large"
+
+    def test_response_too_large_classification_is_status_independent(self):
+        """The mapping must fire regardless of ``bad_request_status``
+        (some callers route via 'upstream_error', others via 'client_error').
+        It's the BQ error shape that matters, not who's calling."""
+        from google.api_core.exceptions import BadRequest
+        from connectors.bigquery.access import translate_bq_error
+        e = BadRequest("Response too large to return")
+        for status in ("client_error", "upstream_error"):
+            result = translate_bq_error(e, self.projects, bad_request_status=status)
+            assert result.kind == "bq_response_too_large", (
+                f"bad_request_status={status!r} routed to {result.kind!r}; "
+                "expected bq_response_too_large for both"
+            )
+
+    def test_response_too_large_does_not_trigger_on_unrelated_bad_request(self):
+        """Other BadRequests (syntax errors, malformed identifiers, …)
+        must keep going through the generic bq_bad_request mapping — only
+        the 'Response too large' substring triggers the dedicated kind."""
+        from google.api_core.exceptions import BadRequest
+        from connectors.bigquery.access import translate_bq_error
+        e = BadRequest("Syntax error at [1:23] near unexpected token")
+        result = translate_bq_error(
+            e, self.projects, bad_request_status="client_error",
+        )
+        assert result.kind == "bq_bad_request"
 
 
 class TestDefaultClientFactory:

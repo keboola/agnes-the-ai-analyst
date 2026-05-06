@@ -24,6 +24,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   materialize, and the orchestrator's remote-attach.
 
 ### Fixed
+- **BigQuery `responseTooLarge` no longer surfaces as a generic 400 / 502 with
+  the raw upstream message** (`connectors/bigquery/access.py`). The
+  `translate_bq_error` helper now classifies "Response too large to return"
+  errors via a dedicated `bq_response_too_large` kind (HTTP 400) with an
+  actionable hint pointing at the WHERE / aggregation / materialized-table
+  remediations. Pre-fix this failure mode fell through to the generic
+  `bq_bad_request` mapping, which implied the user's SQL had a syntax error
+  — wrong root cause. Affects every BQ-touching path (`/api/query`,
+  `/api/v2/scan`, `/api/v2/sample`, `/api/v2/schema`, materialize) since
+  they all share `translate_bq_error`.
+
 - **`/api/query` (and `agnes query --remote`) now rewrites user SQL referencing
   `query_mode='remote'` BigQuery rows into a single `bigquery_query()` call
   before execute** (`app/api/query.py`). Pre-fix the master view

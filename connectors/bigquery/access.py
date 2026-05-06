@@ -44,6 +44,12 @@ class BqAccessError(Exception):
         "bq_forbidden":            502,  # other Forbidden from BQ
         "bq_bad_request":          400,  # 400 from BQ when caller flagged it as client-derived
         "bq_upstream_error":       502,  # all other upstream BQ failures
+        # `responseTooLarge` is a BQ refusal whose root cause is query shape
+        # (the user asked for too many rows back inline), not auth or syntax.
+        # 400 with a specific actionable hint instead of the generic
+        # bq_bad_request / bq_upstream_error mappings, which surfaced the
+        # raw BQ message and gave operators no path forward.
+        "bq_response_too_large":   400,
     }
 
     def __init__(self, kind: str, message: str, details: dict | None = None):
@@ -51,6 +57,43 @@ class BqAccessError(Exception):
         self.message = message
         self.details = details or {}
         super().__init__(message)
+
+
+_RESPONSE_TOO_LARGE_HINT = (
+    "BigQuery refused to return the result inline; the query exceeded BQ's "
+    "response size limit. Narrow the WHERE clause, aggregate further, "
+    "select fewer columns, or query a materialized table that's already "
+    "been bounded server-side."
+)
+
+
+def _classify_response_too_large(msg: str, projects: BqProjects) -> BqAccessError:
+    """Build the `bq_response_too_large` BqAccessError with the canonical
+    actionable hint and the original BQ message preserved in details for
+    operator debugging."""
+    return BqAccessError(
+        "bq_response_too_large",
+        _RESPONSE_TOO_LARGE_HINT,
+        details={
+            "original": msg,
+            "billing_project": projects.billing,
+            "data_project": projects.data,
+        },
+    )
+
+
+def _is_response_too_large(msg: str) -> bool:
+    """Detect BQ's `responseTooLarge` failure mode by message substring.
+
+    The reason code is stable across HTTP transports (gax.BadRequest from
+    google-cloud-bigquery, duckdb.IOException from the BQ extension's own
+    HTTP layer); both surface 'Response too large to return' verbatim in
+    the message body. Match case-insensitively + tolerate the slight
+    variant 'response too large' that some surfaces emit without the
+    'to return' suffix.
+    """
+    ml = msg.lower()
+    return "response too large" in ml
 
 
 def translate_bq_error(
@@ -69,12 +112,24 @@ def translate_bq_error(
       2. Forbidden + 'serviceusage' in str(e).lower()
                                           -> cross_project_forbidden (with hint)
       3. Forbidden                        -> bq_forbidden
-      4. BadRequest, bad_request_status='client_error'
+      4. 'response too large' in str(e).lower()
+                                          -> bq_response_too_large (HTTP 400, with
+                                             actionable hint pointing at WHERE /
+                                             aggregate / materialized remediations)
+      5. BadRequest, bad_request_status='client_error'
                                           -> bq_bad_request (HTTP 400)
-      5. BadRequest, bad_request_status='upstream_error'
+      6. BadRequest, bad_request_status='upstream_error'
                                           -> bq_upstream_error (HTTP 502)
-      6. GoogleAPICallError (other)       -> bq_upstream_error
-      7. Anything else                    -> RE-RAISED unchanged (don't swallow programmer errors)
+      7. GoogleAPICallError (other)       -> bq_upstream_error
+      8. Anything else                    -> RE-RAISED unchanged (don't swallow programmer errors)
+
+    The `responseTooLarge` mapping (4) sits ahead of the generic BadRequest
+    cases on purpose: BQ surfaces this failure mode as a 400 with a
+    specific reason, but the actionable remediation is "shape your query
+    differently" — not "your SQL has a syntax error" (the typical
+    bq_bad_request user-facing meaning) and not "BQ is broken"
+    (bq_upstream_error). Routing it via its own kind keeps the user-facing
+    message tight + correct.
     """
     if isinstance(e, BqAccessError):
         return e
@@ -107,6 +162,13 @@ def translate_bq_error(
             msg,
             details={"billing_project": projects.billing, "data_project": projects.data},
         )
+
+    # Special-case: `responseTooLarge` arrives as gax.BadRequest (HTTP 400)
+    # but has a unique reason code with a specific, actionable remediation.
+    # Catch it BEFORE the generic BadRequest mapping below so it doesn't
+    # surface as a confusing "bad request" (which implies bad SQL).
+    if _is_response_too_large(msg):
+        return _classify_response_too_large(msg, projects)
 
     if isinstance(e, gax.BadRequest):
         if bad_request_status == "client_error":
