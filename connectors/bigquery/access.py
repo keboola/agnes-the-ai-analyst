@@ -435,6 +435,22 @@ def _default_duckdb_session_factory(projects: BqProjects):
                 except Exception:
                     pass
                 continue
+            # Re-apply session settings (`bq_query_timeout_ms`, …) on
+            # every reuse so an operator's `/admin/server-config` change
+            # propagates to pooled entries without requiring container
+            # restart. Without this, a long-lived pool entry keeps the
+            # value baked in at first build forever (devil's-advocate
+            # R1 finding #3). `apply_bq_session_settings` is idempotent
+            # and fail-soft — re-running on every acquire is cheap.
+            try:
+                apply_bq_session_settings(entry)
+            except Exception:
+                # apply_bq_session_settings is documented as never
+                # raising for legitimate "extension doesn't recognise
+                # setting" cases (it only logs). Defensive guard for
+                # any unforeseen failure mode — keep the entry, the
+                # caller's actual query may still succeed.
+                pass
             conn = entry
             break
 

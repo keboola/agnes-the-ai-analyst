@@ -33,23 +33,29 @@ router = APIRouter(prefix="/api/query", tags=["query"])
 
 
 # Heuristic: did the BQ-side execution of a `bigquery_query()`-rewritten
-# query reject the inner SQL? Errors we want to fall back on are upstream
-# parse / validation errors — DuckDB-only syntax that survives identifier
-# rewrite (`::INT` casts, `STRPTIME`, COALESCE arity differences) is
-# accepted by the wrapping DuckDB layer but BQ refuses with a parse
-# message that DuckDB surfaces back as a BinderException / RuntimeError
-# with the BQ message embedded. Forbidden / quota / network errors should
-# NOT trigger fallback (they would just fail again on the legacy path).
+# query reject the inner SQL because of a **DuckDB-vs-BQ dialect mismatch**
+# specifically? We want to fall back ONLY on cases where the same SQL
+# would have worked under the legacy DuckDB ATTACH-catalog path —
+# DuckDB-only syntax (``::INT`` casts, ``STRPTIME``, COALESCE arity quirks)
+# that BQ's parser rejects.
+#
+# We DO NOT want to fall back on user-data errors that BQ would reject in
+# either path (unknown column name, wrong function signature, invalid cast
+# of literal user input). For those, the legacy ATTACH path would issue
+# the same query and fail the same way — just 50-100× slower. Triggering
+# fallback there is a 2× latency tax on every typo (devil's-advocate R1
+# finding #2).
+#
+# Conservative pattern set: only ``Syntax error`` covers genuine
+# parse-level dialect mismatch. ``Unrecognized name`` etc. surface for
+# both bad-user-column AND DuckDB-only-name cases — the safe assumption
+# is that user-column-typo is the more common case, so we don't fall
+# back. If a deployment surfaces a real DuckDB-only-name regression,
+# it's better caught as a BinderException with the original SQL in the
+# logs than amplified via slow-path retry.
 _BQ_REWRITE_PARSE_ERROR_PATTERNS = (
     "Syntax error",
     "syntax error",
-    "Unrecognized name",
-    "unrecognized name",
-    "Function not found",
-    "function not found",
-    "No matching signature",
-    "Invalid cast",
-    "invalid cast",
 )
 
 
@@ -677,6 +683,17 @@ def _rewrite_user_sql_for_bigquery_query(
         # surface anything user-visible.
         return user_sql, False
 
+    # Multi-project guard (devil's-advocate R1 finding #5): the rewriter
+    # assumes every BQ-remote table resolves under the single
+    # `bq.projects.data` project. The current registry schema doesn't
+    # store `source_project` per row, so `bucket` is the only place a
+    # cross-project leak could hide. A bucket containing `.` (e.g.
+    # `other_prj.dataset`) suggests the operator encoded a project
+    # prefix into the bucket name — wrapping that under our single
+    # project would silently target the wrong project. Conservative
+    # skip: any BQ row whose bucket contains `.` aborts the rewrite,
+    # falling through to the legacy ATTACH-catalog path which uses
+    # whatever resolution the operator's _remote_attach configured.
     for r in bq_rows:
         if (r.get("query_mode") or "") != "remote":
             continue
@@ -685,6 +702,11 @@ def _rewrite_user_sql_for_bigquery_query(
         name = r.get("name")
         if not (bucket and source_table and name):
             continue
+        if "." in str(bucket):
+            # Project-qualified bucket — can't safely wrap under our
+            # single-project assumption. Bail out completely so we don't
+            # mix rewritten and non-rewritten BQ paths in one query.
+            return user_sql, False
         pattern = r'\b' + re.escape(str(name).lower()) + r'\b'
         if re.search(pattern, sql_lower):
             key = (bucket.lower(), source_table.lower())

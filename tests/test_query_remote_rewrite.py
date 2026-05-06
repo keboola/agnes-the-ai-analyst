@@ -546,6 +546,85 @@ def test_endpoint_falls_back_to_original_sql_on_bq_parse_error(
     assert calls["sqls"][1] == "SELECT (count(*))::INT FROM ue"
 
 
+def test_rewriter_skips_when_bq_row_bucket_contains_dot(
+    seeded_registry, monkeypatch,
+):
+    """Devil's-advocate R1 finding #5: a BQ row whose `bucket` contains
+    `.` suggests the operator encoded a project prefix in the bucket
+    name. Wrapping under our single-project assumption could silently
+    target the wrong project. Rewriter must skip in that case (fall
+    through to ATTACH-catalog path which respects the operator's
+    `_remote_attach` configuration).
+    """
+    from app.api.query import _rewrite_user_sql_for_bigquery_query
+    _register_bq_remote(
+        seeded_registry,
+        table_id="bq.other-prj.dataset.ue",
+        name="ue",
+        # Project-qualified bucket — the multi-project red flag.
+        bucket="other-prj.dataset",
+        source_table="ue",
+    )
+    _set_bq_project(monkeypatch, "test-prj")
+
+    rewritten, did_rewrite = _rewrite_user_sql_for_bigquery_query(
+        "SELECT count(*) FROM ue",
+        seeded_registry,
+    )
+    # Skip — original SQL returned, no rewrite.
+    assert did_rewrite is False
+    assert rewritten == "SELECT count(*) FROM ue"
+
+
+def test_fallback_does_not_trigger_on_user_column_typo(
+    seeded_app, stub_bq_for_endpoint, monkeypatch,
+):
+    """Devil's-advocate R1 finding #2: previously the fallback
+    heuristic matched `Unrecognized name`, which BQ surfaces for both
+    DuckDB-only-name AND user-column-typo cases. The user-typo case
+    triggered re-running the original SQL through the slow ATTACH-
+    catalog path (90+ s) → 2× latency tax on every typo.
+
+    Post-fix: heuristic only matches `Syntax error`. A BQ-side
+    `Unrecognized name: bad_col` should propagate as-is, NOT trigger
+    a fallback retry.
+    """
+    _register_bq_remote_row("ue", "fin", "ue")
+
+    calls = {"sqls": []}
+
+    class _StubAnalytics:
+        description = [("c0",)]
+        def execute(self, sql, *args, **kwargs):
+            calls["sqls"].append(sql)
+            raise RuntimeError(
+                "BinderException: Query execution failed: "
+                "Unrecognized name: bad_col at [1:8]"
+            )
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "app.api.query.get_analytics_db_readonly",
+        lambda: _StubAnalytics(),
+        raising=False,
+    )
+
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.post(
+        "/api/query",
+        json={"sql": "SELECT bad_col FROM ue"},
+        headers=_auth(token),
+    )
+    # Error propagates; fallback NOT triggered (only one execute call).
+    assert r.status_code in (400, 500, 502)
+    assert len(calls["sqls"]) == 1, (
+        "user column typo must NOT trigger fallback retry"
+    )
+    assert "bigquery_query(" in calls["sqls"][0]
+
+
 def test_endpoint_does_not_fall_back_on_non_parse_errors(
     seeded_app, stub_bq_for_endpoint, monkeypatch,
 ):

@@ -322,14 +322,55 @@ def _probe_range_support(client: httpx.Client, path: str) -> tuple[int, bool]:
     Never raises; transport errors during the probe are treated as
     "no chunking, try the GET instead and let it surface the failure
     in the normal retry loop".
+
+    Probe order: HEAD first (cheap, idempotent), then GET-with-tiny-range
+    fallback. The HEAD path covers Caddy's `file_server` (which advertises
+    HEAD) and Caddy's `reverse_proxy` (which forwards HEAD upstream). The
+    GET-fallback covers the dev `docker compose up` deployment where
+    requests go straight to FastAPI's GET-only `/api/data/{tid}/download`
+    route — FastAPI returns **405 Method Not Allowed** to a HEAD on a
+    GET-only route, which without this fallback would silently disable
+    chunked download for every dev / non-TLS install. The GET-with-Range
+    probe asks for 1 byte so the server response is bounded; we discard
+    the body and read only the headers + status code.
     """
     try:
         resp = client.head(path)
-        if getattr(resp, "status_code", 200) >= 400:
-            return (0, False)
-        size = int(resp.headers.get("content-length", "0") or 0)
-        accepts = (resp.headers.get("accept-ranges", "").lower() == "bytes")
-        return (size, accepts)
+        status = getattr(resp, "status_code", 200)
+        if status < 400:
+            size = int(resp.headers.get("content-length", "0") or 0)
+            accepts = (resp.headers.get("accept-ranges", "").lower() == "bytes")
+            if size > 0:
+                return (size, accepts)
+        # HEAD failed (405 from GET-only route is the common case in
+        # non-Caddy deployments) or returned 0-length — fall through to
+        # the tiny-Range GET probe.
+    except Exception:
+        pass
+    try:
+        with client.stream("GET", path, headers={"Range": "bytes=0-0"}) as resp:
+            status = getattr(resp, "status_code", 0)
+            if status not in (200, 206):
+                return (0, False)
+            # Drain the 1-byte body so the connection is reusable.
+            for _ in resp.iter_bytes():
+                pass
+            # Content-Range on a 206 response carries the total: `bytes 0-0/12345`.
+            # On a 200 response the server didn't honor Range — content-length is the total.
+            if status == 206:
+                cr = resp.headers.get("content-range", "")
+                if "/" in cr:
+                    try:
+                        total = int(cr.rsplit("/", 1)[1])
+                        return (total, True)
+                    except ValueError:
+                        return (0, False)
+                return (0, False)
+            # status == 200 → server ignored Range; we can read content-length but
+            # accept-ranges is False (or missing) so the caller will not chunk.
+            size = int(resp.headers.get("content-length", "0") or 0)
+            accepts = (resp.headers.get("accept-ranges", "").lower() == "bytes")
+            return (size, accepts)
     except Exception:
         return (0, False)
 
@@ -551,6 +592,22 @@ def _stream_download_via(
     accepts_ranges = False
     if parallelism > 1:
         total_size, accepts_ranges = _probe_range_support(client, path)
+
+    # Sanity bound on the advertised total size (devil's-advocate R1
+    # finding #4): a misconfigured proxy or buggy server returning a
+    # wildly inflated `Content-Length` would make us split into huge
+    # `Range: bytes=N-M` requests; the server then clamps each to actual
+    # bytes available, and we end up with overlapping bytes from the
+    # start of the file in every part → corrupt assembled output (caught
+    # later by manifest hash check, but only after wasted bandwidth).
+    # 100 GiB is the operational ceiling for any single materialized
+    # parquet on a typical Agnes deployment; values above suggest a
+    # server / proxy bug rather than a legitimate huge file. Drop to
+    # single-stream (which can't be confused by overlapping chunks).
+    SANE_MAX_TOTAL = 100 * 1024**3  # 100 GiB
+    if total_size > SANE_MAX_TOTAL:
+        total_size = 0
+        accepts_ranges = False
 
     use_chunked = (
         parallelism > 1
