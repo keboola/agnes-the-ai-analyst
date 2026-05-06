@@ -107,10 +107,13 @@ def test_simple_select_where_against_one_bq_table_rewrites(seeded_registry, monk
     assert "test-prj" in rewritten
     # Inner SQL: bare name rewritten to backticked BQ-native path.
     assert "`test-prj.fin.ue`" in rewritten
-    # WHERE predicate is preserved (single-quote-doubled for embedding
-    # inside the outer string literal — standard SQL escaping that
-    # both DuckDB and BQ honor).
-    assert "event_date = ''2026-01-01''" in rewritten
+    # Inner SQL is dollar-quoted (`$bqq_inner$ ... $bqq_inner$`), so
+    # single quotes inside the WHERE predicate remain literal — no
+    # doubling, no backslash escaping. Verifies the safer embedding form
+    # introduced after the code review caught naive single-quote-only
+    # escape doubling missing DuckDB backslash sequences.
+    assert "$bqq_inner$" in rewritten
+    assert "event_date = '2026-01-01'" in rewritten
 
 
 def test_direct_bq_path_rewrites(seeded_registry, monkeypatch):
@@ -442,3 +445,141 @@ def test_endpoint_passes_original_sql_when_no_bq_table(
     assert r.status_code == 200, r.json()
     assert captured["sql"] == user_sql
     assert "bigquery_query(" not in captured["sql"]
+
+
+def test_endpoint_wraps_rewritten_sql_with_outer_limit(
+    seeded_app, stub_bq_for_endpoint, monkeypatch,
+):
+    """Memory-safety regression — when the rewriter fires, the handler
+    MUST wrap the bigquery_query() call in an outer ``LIMIT N+1`` so a
+    `SELECT *` against a billion-row remote table doesn't materialise the
+    full result into the worker before fetchmany applies the cap.
+    Code-review #2a fix.
+    """
+    _register_bq_remote_row("ue", "fin", "ue")
+
+    captured = {"sql": None}
+
+    class _StubAnalytics:
+        description = [("c0",)]
+        def execute(self, sql, *args, **kwargs):
+            captured["sql"] = sql
+            class _R:
+                def fetchmany(self, _n):
+                    return []
+            return _R()
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "app.api.query.get_analytics_db_readonly",
+        lambda: _StubAnalytics(),
+        raising=False,
+    )
+
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.post(
+        "/api/query",
+        json={"sql": "SELECT * FROM ue", "limit": 100},
+        headers=_auth(token),
+    )
+    assert r.status_code == 200, r.json()
+    sent = captured["sql"]
+    # The bigquery_query() wrap is present, AND the whole thing is wrapped
+    # again with an outer LIMIT that includes the user-requested cap +1
+    # (the +1 is the existing truncation-detection pattern).
+    assert "bigquery_query(" in sent
+    assert "_bqq_outer" in sent
+    assert "LIMIT 101" in sent  # request.limit (100) + 1
+
+
+def test_endpoint_falls_back_to_original_sql_on_bq_parse_error(
+    seeded_app, stub_bq_for_endpoint, monkeypatch,
+):
+    """When the rewritten ``bigquery_query()`` path fails with a parse-
+    level error (e.g. user SQL contained DuckDB-only syntax that BQ
+    can't parse), the handler MUST retry with the original SQL via the
+    ATTACH-catalog path so the user request still succeeds. Code-review
+    #4 fix.
+    """
+    _register_bq_remote_row("ue", "fin", "ue")
+
+    calls = {"sqls": []}
+
+    class _StubAnalytics:
+        description = [("c0",)]
+        def execute(self, sql, *args, **kwargs):
+            calls["sqls"].append(sql)
+            # First call (rewritten) raises a BQ-style parse error;
+            # second call (original SQL fallback) returns rows.
+            if "bigquery_query(" in sql:
+                raise RuntimeError(
+                    "BinderException: Query execution failed: "
+                    "Syntax error: Unexpected token at [1:42]"
+                )
+            class _R:
+                def fetchmany(self, _n):
+                    return [(1,)]
+            return _R()
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "app.api.query.get_analytics_db_readonly",
+        lambda: _StubAnalytics(),
+        raising=False,
+    )
+
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.post(
+        "/api/query",
+        # DuckDB-only ::INT cast — survives identifier rewrite, BQ refuses.
+        json={"sql": "SELECT (count(*))::INT FROM ue"},
+        headers=_auth(token),
+    )
+    assert r.status_code == 200, r.json()
+    # Two execute calls: 1) rewritten (raised) 2) fallback to original.
+    assert len(calls["sqls"]) == 2
+    assert "bigquery_query(" in calls["sqls"][0]
+    assert calls["sqls"][1] == "SELECT (count(*))::INT FROM ue"
+
+
+def test_endpoint_does_not_fall_back_on_non_parse_errors(
+    seeded_app, stub_bq_for_endpoint, monkeypatch,
+):
+    """Non-parse-error exceptions from the rewritten path (network,
+    quota, forbidden, generic runtime) must propagate, NOT silently
+    retry against the legacy path. Otherwise the legacy path would
+    just fail again and the user sees a slow + double-failure.
+    """
+    _register_bq_remote_row("ue", "fin", "ue")
+
+    calls = {"sqls": []}
+
+    class _StubAnalytics:
+        description = [("c0",)]
+        def execute(self, sql, *args, **kwargs):
+            calls["sqls"].append(sql)
+            raise RuntimeError("Network unreachable: BQ endpoint timed out")
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "app.api.query.get_analytics_db_readonly",
+        lambda: _StubAnalytics(),
+        raising=False,
+    )
+
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.post(
+        "/api/query",
+        json={"sql": "SELECT count(*) FROM ue"},
+        headers=_auth(token),
+    )
+    # Generic 400 from the handler's outer except — body will surface
+    # the runtime error message; we just need to confirm no fallback.
+    assert r.status_code in (400, 500, 502)
+    assert len(calls["sqls"]) == 1, "must not retry on non-parse error"

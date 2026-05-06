@@ -128,37 +128,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   The dashboard-served setup payload (`app/web/setup_instructions.py`)
   already branches between the two automatically based on platform; the
   doc snippet now matches that behavior for manual flows.
-- **`agnes pull` chunked download for large parquets**: when the server
-  advertises `accept-ranges: bytes` and a parquet exceeds
-  `AGNES_PULL_CHUNK_THRESHOLD_BYTES` (default 50 MB), the CLI now splits
-  the file into N parallel HTTP Range requests
-  (`AGNES_PULL_CHUNK_PARALLELISM`, default 4, capped 1..16) and assembles
-  the parts into the destination atomically. Targets the per-flow-shaped
-  network (corp VPN with per-TCP-connection rate-limiting) where a single
-  stream is throttled but N parallel streams over the same connection
-  scale roughly linearly. Falls back to single-stream when the server
-  responds 200 instead of 206 to a Range probe, when no
-  `accept-ranges: bytes` is advertised, or when content is below the
-  threshold — no behavior change in the small-file / non-cooperating-
-  server cases.
-- **Persistent HTTP/2 client across `agnes pull`**: `stream_download` now
-  routes through a process-wide pooled `httpx.Client` so N parquet
-  downloads share a single TLS handshake; HTTP/2 multiplexing
-  (when the optional `h2` package is installed) lets all chunk Range
-  requests share one TCP connection. Gracefully falls back to HTTP/1.1
-  pooling when `h2` is missing — no crash, just slightly less benefit.
-
-### Added
-- New optional dependency `h2>=4.1.0` (HTTP/2 transport for httpx). Pure
-  performance — `agnes pull` works on HTTP/1.1 if the install skips it.
-- **Textual progress fallback for non-TTY `agnes pull`**: when stderr is
-  not a terminal (Claude Code SessionStart hook, CI runner, Docker log
-  capture, …), `agnes pull --no-quiet` now emits a plain-text progress
-  line per file at most every 10% or 30 s, plus a final completion line.
-  Replaces the previous Rich-bar-on-pipe behavior that either suppressed
-  output entirely or leaked ANSI escape sequences. TTY path unchanged
-  (Rich progress bar with bytes / speed / ETA, aggregated per-file
-  across chunked-download chunks).
 
 ## [0.38.0] — 2026-05-06
 

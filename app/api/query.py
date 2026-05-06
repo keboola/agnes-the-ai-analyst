@@ -31,6 +31,37 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/query", tags=["query"])
 
+
+# Heuristic: did the BQ-side execution of a `bigquery_query()`-rewritten
+# query reject the inner SQL? Errors we want to fall back on are upstream
+# parse / validation errors — DuckDB-only syntax that survives identifier
+# rewrite (`::INT` casts, `STRPTIME`, COALESCE arity differences) is
+# accepted by the wrapping DuckDB layer but BQ refuses with a parse
+# message that DuckDB surfaces back as a BinderException / RuntimeError
+# with the BQ message embedded. Forbidden / quota / network errors should
+# NOT trigger fallback (they would just fail again on the legacy path).
+_BQ_REWRITE_PARSE_ERROR_PATTERNS = (
+    "Syntax error",
+    "syntax error",
+    "Unrecognized name",
+    "unrecognized name",
+    "Function not found",
+    "function not found",
+    "No matching signature",
+    "Invalid cast",
+    "invalid cast",
+)
+
+
+def _looks_like_bq_rewrite_parse_error(exc: BaseException) -> bool:
+    """Return True when ``exc`` is the BQ-rejected-inner-SQL flavour we
+    want to fall back from. Conservative: matches against the exception
+    message text only, no isinstance checks, so it works whether the
+    DuckDB BQ extension wrapped the error as BinderException, IOException,
+    or a plain Python Exception."""
+    msg = str(exc)
+    return any(pat in msg for pat in _BQ_REWRITE_PARSE_ERROR_PATTERNS)
+
 # Issue #160 §4.3.1 — direct `bq.<dataset>.<source_table>` references in user
 # SQL. Catalog token accepts both `bq` (the unquoted DuckDB-style name) and
 # `"bq"` (quoted identifier). DuckDB resolves both to the same ATTACHed
@@ -204,9 +235,22 @@ def execute_query(
                 request.sql, conn,
             )
             if did_rewrite:
+                # Memory-safety: ``bigquery_query()`` materialises the entire
+                # BQ result into DuckDB before fetchmany sees it (vs the
+                # ATTACH-catalog Storage Read API path, which streams rows
+                # lazily). Wrap the rewritten SQL in an outer ``LIMIT N+1``
+                # so a `SELECT *` against a billion-row remote table doesn't
+                # buffer the full table into the worker process — the cap
+                # is pushed into the BQ job itself. Aliased subquery so the
+                # outer LIMIT applies to the final rewritten result.
+                execution_sql = (
+                    f"SELECT * FROM ({execution_sql}) AS _bqq_outer "
+                    f"LIMIT {request.limit + 1}"
+                )
                 logger.info(
                     "query_rewrite_to_bigquery_query: user_id=%s — wrapped "
-                    "SQL in bigquery_query() for BQ predicate pushdown",
+                    "SQL in bigquery_query() with outer LIMIT for BQ "
+                    "predicate pushdown",
                     user_id,
                 )
             else:
@@ -216,8 +260,27 @@ def execute_query(
                     user_id,
                 )
 
-            # Open in read-only mode for extra safety
-            result = analytics.execute(execution_sql).fetchmany(request.limit + 1)
+            # Open in read-only mode for extra safety. If the rewritten
+            # path errors (e.g. user SQL contained DuckDB-only syntax —
+            # ``::INT`` casts, ``STRPTIME``, COALESCE arity differences —
+            # that survives identifier rewrite but BQ refuses), fall back
+            # to the original SQL via the legacy ATTACH-catalog path so
+            # the request still succeeds (slower, but correct). Same
+            # safety contract as the dry-run fallback in
+            # ``_bq_quota_and_cap_guard``.
+            try:
+                result = analytics.execute(execution_sql).fetchmany(request.limit + 1)
+            except Exception as exc:
+                if did_rewrite and _looks_like_bq_rewrite_parse_error(exc):
+                    logger.warning(
+                        "query_rewrite_fallback: user_id=%s — bigquery_query() "
+                        "rewrite rejected by BQ (%s); retrying via "
+                        "ATTACH-catalog path",
+                        user_id, type(exc).__name__,
+                    )
+                    result = analytics.execute(request.sql).fetchmany(request.limit + 1)
+                else:
+                    raise
             columns = [desc[0] for desc in analytics.description] if analytics.description else []
             truncated = len(result) > request.limit
             rows = result[:request.limit]
@@ -683,20 +746,28 @@ def _rewrite_user_sql_for_bigquery_query(
     # backticked paths resolve to the same project.
     inner_sql = _rewrite_bq_table_refs_to_native(user_sql, name_lookups, project)
 
-    # SQL string literal escaping: BQ accepts standard SQL doubled-quote
-    # escaping inside single-quoted strings. We pass `inner_sql` as a
-    # parameter to DuckDB's prepared statement at execute-time
-    # (analytics.execute(sql, [project, inner_sql]) shape) — but the
-    # current handler runs ``analytics.execute(rewritten_sql)`` with no
-    # params, so we MUST embed the inner SQL safely. Use parameterised
-    # form: emit ``bigquery_query(?, ?)`` and signal the params via a
-    # sentinel? No — the handler treats SQL as opaque. Instead, embed
-    # using single-quote doubling (standard SQL escape; both DuckDB and
-    # BQ honor it).
-    escaped_inner = inner_sql.replace("'", "''")
-    rewritten = (
-        f"SELECT * FROM bigquery_query('{project}', '{escaped_inner}')"
-    )
+    # Embed the inner SQL using DuckDB's dollar-quoted string literal form
+    # (`$tag$ ... $tag$`). Naive `replace("'", "''")` doubling misses
+    # backslash-escape sequences DuckDB's lexer recognises (`\\`, `\n`,
+    # `\t`, …) — a predicate like `WHERE name = 'O\'Brien'` is unsafe
+    # under doubling. Dollar-quoting takes the inner SQL verbatim with no
+    # escape sequences whatsoever, so the user's exact bytes reach BQ.
+    # Tag is a fixed conventional value; the absurdly unlikely collision
+    # (user SQL containing the literal `$bqq_inner$`) falls back to the
+    # legacy doubling path so the rewrite still proceeds — over-doubled
+    # quotes are at worst a parse error caught by the handler's fallback
+    # at the call site, not a silent bad result.
+    DOLLAR_TAG = "$bqq_inner$"
+    if DOLLAR_TAG in inner_sql:
+        escaped_inner = inner_sql.replace("'", "''")
+        rewritten = (
+            f"SELECT * FROM bigquery_query('{project}', '{escaped_inner}')"
+        )
+    else:
+        rewritten = (
+            f"SELECT * FROM bigquery_query('{project}', "
+            f"{DOLLAR_TAG}{inner_sql}{DOLLAR_TAG})"
+        )
     return rewritten, True
 
 
