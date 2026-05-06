@@ -48,7 +48,7 @@ step() { echo; echo "==> $*"; }
 if [ "$YES" -eq 0 ] && [ "$DRY" -eq 0 ]; then
     cat <<EOF
 This will remove the Agnes client install from this machine:
-  - 'agnes' CLI (uv tool uninstall)
+  - 'agnes' CLI (uv tool uninstall + uv cache clean)
   - ~/.config/agnes (token, server URL, sync state)
   - ~/.agnes/ca.pem, ~/.agnes/ca-bundle.pem (TLS bootstrap)
   - ~/.agnes/marketplace (local clone of the per-user marketplace)
@@ -137,7 +137,18 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 3. The 'agnes' CLI itself, installed via 'uv tool install'.
+# 3. The 'agnes' CLI itself, installed via 'uv tool install'. Plus the uv
+#    *build cache* keyed by `agnes-the-ai-analyst==<version>`.
+#
+#    Why drop the cache too: uv keys its build cache by name+version, and
+#    our wheel ships at a stable version string (e.g. `0.38.3`) across many
+#    server-side commits. Two distinct builds with the same version number
+#    (a stale cached one + a fresh one served from the dashboard wheel
+#    endpoint) are indistinguishable to the resolver — `uv tool install
+#    --force <https-url>` happily reuses the cached build instead of
+#    fetching the new wheel. That's invisible to the operator until they
+#    run a freshly-deployed CLI command and find it missing. Reset means
+#    "fresh state", so the cache has to go too.
 # ---------------------------------------------------------------------------
 step "Uninstall 'agnes' CLI"
 if command -v uv >/dev/null 2>&1; then
@@ -146,6 +157,11 @@ if command -v uv >/dev/null 2>&1; then
     else
         echo "  (agnes-the-ai-analyst not in 'uv tool list' — skipping)"
     fi
+    # Always-safe: `uv cache clean <pkg>` exits 0 with a "no entries" line
+    # when the package isn't cached, so it's a no-op when there's nothing
+    # to drop. We do this even if uv tool list didn't show the package
+    # (the cache and the active install track separately).
+    run "uv cache clean agnes-the-ai-analyst 2>/dev/null || true"
 else
     echo "  (uv not found — skipping)"
     # Defensive cleanup if uv is gone but the binary lingers.
