@@ -128,7 +128,12 @@ def _try_attach_extension(conn: duckdb.DuckDBPyConnection, keboola_url: str, keb
     try:
         conn.execute("INSTALL keboola FROM community; LOAD keboola;")
         escaped_token = keboola_token.replace("'", "''")
-        conn.execute(f"ATTACH '{keboola_url}' AS kbc (TYPE keboola, TOKEN '{escaped_token}')")
+        # Strip trailing slash — the Keboola DuckDB extension's ATTACH fails
+        # with a network error when the URL ends in `/` (e.g. the canonical
+        # `https://connection.us-east4.gcp.keboola.com/` form). Bare host
+        # works.
+        attach_url = keboola_url.rstrip("/")
+        conn.execute(f"ATTACH '{attach_url}' AS kbc (TYPE keboola, TOKEN '{escaped_token}')")
         logger.info("Using DuckDB Keboola extension")
         return True
     except Exception as e:
@@ -162,6 +167,11 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
 
     stats = {"tables_extracted": 0, "tables_failed": 0, "errors": []}
     now = datetime.now(timezone.utc)
+
+    # Per-table workitems whose extension scan failed and need the legacy
+    # Storage-API fallback. Drained in a parallel pool below the per-table
+    # serial loop. Items are `(tc, pq_path)` tuples.
+    legacy_queue: List[tuple] = []
 
     try:
         # Try DuckDB Keboola extension
@@ -244,30 +254,25 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
                         # (`Schema '..."in.c-..."' does not exist or not
                         # authorized`, see keboola/duckdb-extension#17). The
                         # legacy Storage-API client doesn't go through
-                        # QueryService at all, so retry there.
+                        # QueryService at all, so queue for the parallel
+                        # legacy fallback below.
                         logger.warning(
-                            "Keboola extension scan failed for %s (%s); retrying via legacy Storage-API client",
+                            "Keboola extension scan failed for %s (%s); queued for legacy Storage-API fallback",
                             table_name, ext_err,
                         )
-                        _extract_via_legacy(tc, pq_path, keboola_url, keboola_token)
+                        legacy_queue.append((tc, pq_path))
+                        continue
                 else:
-                    _extract_via_legacy(tc, pq_path, keboola_url, keboola_token)
+                    legacy_queue.append((tc, pq_path))
+                    continue
 
-                # Get row count and file size. pq_path is built from the
-                # validated table_name above, but escape the parquet path
-                # literal for defense-in-depth.
-                safe_pq_lit = pq_path.replace("'", "''")
-                rows = conn.execute(f"SELECT count(*) FROM read_parquet('{safe_pq_lit}')").fetchone()[0]
-                size = os.path.getsize(pq_path)
-
-                # Create view and register in _meta
-                conn.execute(f"CREATE OR REPLACE VIEW \"{table_name}\" AS SELECT * FROM read_parquet('{safe_pq_lit}')")
-                conn.execute(
-                    "INSERT INTO _meta VALUES (?, ?, ?, ?, ?, 'local')",
-                    [table_name, tc.get("description", ""), rows, size, now],
-                )
+                # Extension path succeeded — register _meta synchronously.
+                _register_local_meta(conn, tc, pq_path, now)
                 stats["tables_extracted"] += 1
-                logger.info("Extracted %s: %d rows, %d bytes", table_name, rows, size)
+                rows_log = conn.execute(
+                    f"SELECT count(*) FROM read_parquet('{pq_path.replace(chr(39), chr(39)*2)}')"
+                ).fetchone()[0]
+                logger.info("Extracted %s via extension: %d rows", table_name, rows_log)
 
             except Exception as e:
                 logger.error("Failed to extract %s: %s", table_name, e)
@@ -280,6 +285,61 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
                 conn.execute("DETACH kbc")
             except Exception:
                 pass
+
+        # Phase 2: legacy fallback in parallel. Keboola Storage API export
+        # jobs are independent per table — a worker pool of N workers fans
+        # out the per-table HTTP roundtrips (export job submit + poll +
+        # CSV download) instead of stacking them sequentially. Project-level
+        # concurrency is bounded by the storage.jobsParallelism limit
+        # (typically 10); default to 4 to leave headroom for other clients.
+        # Override via AGNES_KEBOOLA_PARALLELISM env var.
+        #
+        # Workers are PROCESSES, not threads — `connectors/keboola/client.py:
+        # export_table` does `os.chdir(temp_dir)` to redirect kbcstorage's
+        # slice-file downloads into a per-call temp directory, and `os.chdir`
+        # is process-global. With threads, two parallel exports race on CWD
+        # and slice files end up in the wrong directory; the merge step then
+        # fails with `[Errno 2] No such file or directory:
+        # '<job_id>.csv_X_Y_Z.csv'`. ProcessPoolExecutor gives each worker
+        # its own process and therefore its own CWD.
+        if legacy_queue:
+            parallelism = max(1, int(os.environ.get("AGNES_KEBOOLA_PARALLELISM", "8")))
+            workers = min(parallelism, len(legacy_queue))
+            logger.info(
+                "Running legacy Storage-API fallback for %d tables across %d worker processes",
+                len(legacy_queue), workers,
+            )
+
+            if workers == 1:
+                legacy_results = [_legacy_worker(item, keboola_url, keboola_token) for item in legacy_queue]
+            else:
+                from concurrent.futures import ProcessPoolExecutor
+
+                with ProcessPoolExecutor(max_workers=workers) as ex:
+                    futures = [ex.submit(_legacy_worker, item, keboola_url, keboola_token) for item in legacy_queue]
+                    legacy_results = [f.result() for f in futures]
+
+            # Phase 3: serial _meta insert for legacy results. DuckDB conn
+            # isn't thread-safe, so we collect parallel work and only touch
+            # `conn` (and `stats`) here on the main thread.
+            for tc_, pq_, err in legacy_results:
+                tn = tc_["name"]
+                if err is not None:
+                    logger.error("Failed to extract %s via legacy: %s", tn, err)
+                    stats["tables_failed"] += 1
+                    stats["errors"].append({"table": tn, "error": err})
+                    continue
+                try:
+                    _register_local_meta(conn, tc_, pq_, now)
+                    stats["tables_extracted"] += 1
+                    rows_log = conn.execute(
+                        f"SELECT count(*) FROM read_parquet('{pq_.replace(chr(39), chr(39)*2)}')"
+                    ).fetchone()[0]
+                    logger.info("Extracted %s via legacy: %d rows", tn, rows_log)
+                except Exception as e:
+                    logger.error("Failed to register _meta for %s: %s", tn, e)
+                    stats["tables_failed"] += 1
+                    stats["errors"].append({"table": tn, "error": str(e)})
 
     finally:
         conn.execute("CHECKPOINT")
@@ -302,6 +362,29 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
     return stats
 
 
+def _register_local_meta(
+    conn: duckdb.DuckDBPyConnection,
+    tc: Dict[str, Any],
+    pq_path: str,
+    extracted_at: datetime,
+) -> None:
+    """After a parquet has been written for a local-mode table, create the
+    DuckDB view and register the row in `_meta`. Hoisted out of the run()
+    body so both the serial extension-success path and the parallel
+    legacy-result path share one implementation."""
+    table_name = tc["name"]
+    safe_pq_lit = pq_path.replace("'", "''")
+    rows = conn.execute(f"SELECT count(*) FROM read_parquet('{safe_pq_lit}')").fetchone()[0]
+    size = os.path.getsize(pq_path)
+    conn.execute(
+        f'CREATE OR REPLACE VIEW "{table_name}" AS SELECT * FROM read_parquet(\'{safe_pq_lit}\')'
+    )
+    conn.execute(
+        "INSERT INTO _meta VALUES (?, ?, ?, ?, ?, 'local')",
+        [table_name, tc.get("description", ""), rows, size, extracted_at],
+    )
+
+
 def _extract_via_extension(conn: duckdb.DuckDBPyConnection, tc: Dict[str, Any], pq_path: str) -> None:
     """Extract a table using the DuckDB Keboola extension."""
     bucket = tc.get("bucket", "")
@@ -313,6 +396,20 @@ def _extract_via_extension(conn: duckdb.DuckDBPyConnection, tc: Dict[str, Any], 
         raise ValueError(f"unsafe bucket/source_table: {bucket!r}/{source_table!r}")
     safe_pq_lit = pq_path.replace("'", "''")
     conn.execute(f'COPY (SELECT * FROM kbc."{bucket}"."{source_table}") TO \'{safe_pq_lit}\' (FORMAT PARQUET)')
+
+
+def _legacy_worker(tc_pq, keboola_url: str, keboola_token: str):
+    """Module-level wrapper for ProcessPoolExecutor — must be picklable.
+
+    Returns `(tc, pq_path, error_str_or_None)` so the main process can
+    aggregate results and update _meta serially on its DuckDB connection.
+    """
+    tc_, pq_ = tc_pq
+    try:
+        _extract_via_legacy(tc_, pq_, keboola_url, keboola_token)
+        return (tc_, pq_, None)
+    except Exception as exc:
+        return (tc_, pq_, str(exc))
 
 
 def _extract_via_legacy(tc: Dict[str, Any], pq_path: str, keboola_url: str, keboola_token: str) -> None:
