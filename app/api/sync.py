@@ -155,10 +155,18 @@ def _run_materialized_pass(conn: duckdb.DuckDBPyConnection, bq) -> dict:
                 )
             elif source_type == "keboola":
                 if keboola_access is None:
-                    from connectors.keboola.access import KeboolaAccess
+                    # Lazy-init the Storage API client (replaces the old
+                    # DuckDB extension `KeboolaAccess`). One client is shared
+                    # across all keboola materialized rows in this pass —
+                    # `requests.Session` inside it is thread-safe and reuses
+                    # the connection pool for HTTP keep-alive across rows.
+                    # Variable name kept as `keboola_access` to minimise
+                    # diff churn against the surrounding error-handling
+                    # block; the type is now `KeboolaStorageClient`.
+                    from connectors.keboola.storage_api import KeboolaStorageClient
                     keboola_url = get_value(
                         "data_source", "keboola", "stack_url", default=""
-                    ) or ""
+                    ) or os.environ.get("KEBOOLA_STACK_URL", "")
                     token_env = get_value(
                         "data_source", "keboola", "token_env",
                         default="KEBOOLA_STORAGE_TOKEN",
@@ -174,17 +182,32 @@ def _run_materialized_pass(conn: duckdb.DuckDBPyConnection, bq) -> dict:
                             ),
                         })
                         continue
-                    keboola_access = KeboolaAccess(
+                    keboola_access = KeboolaStorageClient(
                         url=keboola_url, token=keboola_token,
                     )
                 kb_output_dir.mkdir(parents=True, exist_ok=True)
                 from connectors.keboola.extractor import (
                     materialize_query as kb_materialize_query,
                 )
+                # Storage API needs the bucket+table split — registry rows
+                # carry both fields per the standard register-table schema.
+                bucket = row.get("bucket", "")
+                source_table = row.get("source_table") or ref_name
+                if not bucket:
+                    summary["errors"].append({
+                        "table": ref_name,
+                        "error": (
+                            "materialized keboola row is missing 'bucket'; "
+                            "re-register with --bucket <in.c-...>"
+                        ),
+                    })
+                    continue
                 kb_stats = kb_materialize_query(
                     table_id=ref_name,
-                    sql=row["source_query"],
-                    keboola_access=keboola_access,
+                    bucket=bucket,
+                    source_table=source_table,
+                    source_query=row.get("source_query"),
+                    storage_client=keboola_access,
                     output_dir=kb_output_dir,
                 )
                 # Normalize Keboola materialize_query output to the shape the

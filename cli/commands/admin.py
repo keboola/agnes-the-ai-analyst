@@ -279,12 +279,20 @@ def discover_and_register(
             typer.echo(f"  [DRY RUN] {name:30s} bucket={bucket_id:20s} rows={t.get('rowsCount', 0):>10,}")
             continue
 
+        # Keboola tables always go through the Storage API export-async
+        # path (`materialize_query`), which is `query_mode='materialized'`
+        # in the registry. A NULL source_query means "full table export"
+        # — same effective semantics the old 'local' mode gave, but via
+        # the Storage API instead of the DuckDB extension. See
+        # connectors/keboola/storage_api.py + the v25→v26 migration.
+        # Other connectors keep their per-source default.
+        default_mode = "materialized" if source_type == "keboola" else "local"
         resp = api_post("/api/admin/register-table", json={
             "name": name,
             "source_type": source_type,
             "bucket": bucket_id,
             "source_table": name,
-            "query_mode": "local",
+            "query_mode": default_mode,
             "description": f"Auto-discovered from {source_type}",
         })
 

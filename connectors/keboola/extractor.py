@@ -4,7 +4,7 @@ import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 import duckdb
 
@@ -19,70 +19,161 @@ logger = logging.getLogger(__name__)
 
 def materialize_query(
     table_id: str,
-    sql: str,
     *,
-    keboola_access,  # KeboolaAccess (avoid circular import)
+    bucket: str,
+    source_table: str,
+    source_query: Optional[str] = None,
+    storage_client=None,  # KeboolaStorageClient (avoid circular import)
+    keboola_url: Optional[str] = None,
+    keboola_token: Optional[str] = None,
     output_dir: Path,
 ) -> dict:
-    """Materialize an admin-registered SELECT against the Keboola Storage
-    API extension into a parquet file.
+    """Materialize a Keboola Storage table to a local parquet via Storage API.
 
-    Parallel of `connectors/bigquery/extractor.py:materialize_query`.
-    Cost guardrail: the Keboola extension has no analog of BQ dry-run;
-    Storage API cost is download-shaped (per-byte egress + Storage API
-    job). Phase B ships without a guardrail and logs the byte count;
-    a future PR can add a configurable `max_bytes_per_keboola_materialize`
-    gate similar to BQ's `max_bytes_per_materialize`.
+    Replaces the previous DuckDB-extension path. The extension's QueryService
+    scan is unreliable on linked-bucket projects (keboola/duckdb-extension#17;
+    fix shipped upstream as v0.1.6 but not yet in the community CDN, and on
+    flag-restricted projects the pre-fix workspace role wouldn't have GRANTs
+    on the bucket schema anyway). The Storage API export-async path always
+    works regardless of project flags.
+
+    Parallel of `connectors/bigquery/extractor.py:materialize_query` in
+    surface — same return shape, same atomic write, same MD5 contract — but
+    the inputs differ because Keboola's structured filter spec replaces
+    BQ's free-form SQL.
+
+    Args:
+        table_id: parquet filename + sync_state key (must be a safe ident).
+        bucket: Keboola bucket id, e.g. ``in.c-crm``.
+        source_table: table id within the bucket, e.g. ``orders``.
+        source_query: optional JSON string with a Storage API filter spec
+            (see `storage_api.ExportFilter`). Empty / NULL = full table.
+        storage_client: pre-built `KeboolaStorageClient` (preferred — lets
+            sync.py share one across rows). When omitted, ``keboola_url``
+            and ``keboola_token`` are used to construct a one-shot client.
+        keboola_url, keboola_token: alternative to ``storage_client`` for
+            single-call usage (tests, ad-hoc).
+        output_dir: directory to write `<table_id>.parquet`.
+
+    Returns:
+        ``{"table_id", "path", "rows", "bytes", "md5"}`` — same shape the
+        BQ branch returns, so ``app/api/sync.py:_run_materialized_pass``
+        downstream code stays uniform.
     """
     import re
     import hashlib
+    import json
+    import duckdb
 
-    # Defense: table_id is interpolated into the parquet filename.
-    # Reject anything that's not a safe identifier.
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table_id):
         raise ValueError(f"unsafe table_id for materialize: {table_id!r}")
 
-    parquet_path = Path(output_dir) / f"{table_id}.parquet"
-    tmp_path = Path(output_dir) / f"{table_id}.parquet.tmp"
-    if tmp_path.exists():
-        tmp_path.unlink()
-    safe_tmp_lit = str(tmp_path).replace("'", "''")
+    # Lazy import to avoid pulling `requests` at module import time when only
+    # the sync trigger imports `extractor` for `run()`.
+    from connectors.keboola.storage_api import (
+        ExportFilter, KeboolaStorageClient,
+    )
 
-    # Atomic write — mirror BQ's pattern at connectors/bigquery/extractor.py:370.
-    # COPY into a `.parquet.tmp`, hash + size from the tmp file, only swap to
-    # the final path on success. A mid-COPY failure (network, disk full,
-    # extension crash) leaves no partial parquet at the canonical path that
-    # the orchestrator rebuild would pick up. Devin finding 2026-05-01:
-    # BUG_pr-review-job-3fbd31c9_0003.
-    with keboola_access.duckdb_session() as conn:
+    if storage_client is None:
+        if not (keboola_url and keboola_token):
+            raise ValueError(
+                "materialize_query requires either storage_client or "
+                "(keboola_url + keboola_token)"
+            )
+        storage_client = KeboolaStorageClient(url=keboola_url, token=keboola_token)
+
+    # Filter spec is optional. Admin can register a row with no
+    # source_query at all (= full-table export), or with a JSON object
+    # describing whereFilters / columns / changedSince.
+    export_filter = ExportFilter()
+    if source_query:
         try:
-            conn.execute(f"COPY ({sql}) TO '{safe_tmp_lit}' (FORMAT PARQUET)")
-            row_count = conn.execute(
-                f"SELECT COUNT(*) FROM read_parquet('{safe_tmp_lit}')"
-            ).fetchone()[0]
-        except Exception:
-            if tmp_path.exists():
-                tmp_path.unlink()
-            raise
+            payload = json.loads(source_query)
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                f"source_query for {table_id} is not valid JSON: {e}"
+            ) from e
+        export_filter = ExportFilter.from_dict(payload)
 
-    # Streaming MD5 — never read the entire parquet into memory. Keboola
-    # materialized results can reach multi-GB sizes (admin-aggregated
-    # subsets); hashing in 8 KiB chunks keeps memory bounded. Mirror of BQ's
-    # streaming hash at connectors/bigquery/extractor.py:438. Devin finding
-    # 2026-05-01: BUG_pr-review-job-3fbd31c9_0002.
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    parquet_path = output_dir / f"{table_id}.parquet"
+    tmp_parquet = output_dir / f"{table_id}.parquet.tmp"
+    if tmp_parquet.exists():
+        tmp_parquet.unlink()
+
+    # Per-call temp dir for the intermediate CSV — separates concurrent
+    # exports cleanly without the os.chdir() race the kbcstorage SDK has.
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix=f"kbc-export-{table_id}-") as tmpdir:
+        csv_path = Path(tmpdir) / f"{table_id}.csv"
+
+        full_table_id = f"{bucket}.{source_table}"
+        stats = storage_client.export_table_to_csv(
+            full_table_id, csv_path, export_filter=export_filter,
+        )
+
+        if not csv_path.exists() or csv_path.stat().st_size == 0:
+            # Storage API succeeded but produced no rows — log instead of
+            # crashing. An admin filter that legitimately matches nothing
+            # is a valid scenario; the registry row stays "ok" so the
+            # next sync can pick up new data.
+            logger.warning(
+                "Storage API export for %s returned no data (filter may be "
+                "too restrictive)",
+                full_table_id,
+            )
+            # Write an empty parquet so the orchestrator doesn't choke on
+            # a missing file. DuckDB's `read_csv(... empty.csv)` would
+            # error; build a 0-row parquet from a SELECT with no rows.
+            duckdb.connect().execute(
+                f"COPY (SELECT 1 AS _empty WHERE FALSE) TO '{tmp_parquet}' (FORMAT PARQUET)"
+            ).close()
+        else:
+            # CSV → parquet via DuckDB. `all_varchar=True` matches the
+            # legacy client's behavior — preserves the source's exact
+            # character data without DuckDB's type inference rewriting
+            # numeric-looking strings (e.g. "Non-Manager") as NULL.
+            safe_csv = str(csv_path).replace("'", "''")
+            safe_tmp = str(tmp_parquet).replace("'", "''")
+            try:
+                conv = duckdb.connect()
+                conv.execute(
+                    f"COPY (SELECT * FROM read_csv('{safe_csv}', all_varchar=true)) "
+                    f"TO '{safe_tmp}' (FORMAT PARQUET)"
+                )
+                conv.close()
+            except Exception:
+                if tmp_parquet.exists():
+                    tmp_parquet.unlink()
+                raise
+
+    # Row count from the parquet, not from `stats["rows"]` — Storage API
+    # sometimes omits totalRowsCount on small results, and the parquet is
+    # the authoritative count we'll be serving downstream anyway.
+    safe_tmp = str(tmp_parquet).replace("'", "''")
+    cnt_conn = duckdb.connect()
+    try:
+        row_count = cnt_conn.execute(
+            f"SELECT COUNT(*) FROM read_parquet('{safe_tmp}')"
+        ).fetchone()[0]
+    finally:
+        cnt_conn.close()
+
+    # Streaming MD5 — bounded memory regardless of parquet size.
     h = hashlib.md5()
-    with open(tmp_path, "rb") as f:
+    with open(tmp_parquet, "rb") as f:
         for chunk in iter(lambda: f.read(8192), b""):
             h.update(chunk)
     md5 = h.hexdigest()
-    size = tmp_path.stat().st_size
+    size = tmp_parquet.stat().st_size
 
-    os.replace(tmp_path, parquet_path)
+    os.replace(tmp_parquet, parquet_path)
 
     if row_count == 0:
         logger.warning(
-            "Materialized Keboola query for %s wrote 0 rows — verify the "
-            "SQL filters and that the source bucket has data.",
+            "Materialized Keboola export for %s wrote 0 rows — verify the "
+            "filter and that the source bucket has data.",
             table_id,
         )
 
@@ -413,34 +504,53 @@ def _legacy_worker(tc_pq, keboola_url: str, keboola_token: str):
 
 
 def _extract_via_legacy(tc: Dict[str, Any], pq_path: str, keboola_url: str, keboola_token: str) -> None:
-    """Fallback: extract using legacy Keboola client (kbcstorage SDK)."""
-    from connectors.keboola.client import KeboolaClient
+    """Per-table extract via the Storage API export-async path.
 
-    client = KeboolaClient(token=keboola_token, url=keboola_url)
+    Despite the name (kept for caller compatibility with `_legacy_worker`),
+    this no longer goes through the `kbcstorage` SDK — it talks to the
+    Storage API directly via `connectors/keboola/storage_api.py`. The old
+    SDK path had a thread-unsafe `os.chdir(temp_dir)` that broke parallel
+    execution; the direct path uses per-call temp directories and signed-URL
+    downloads, so threads / processes don't trip on each other.
 
-    # Export to CSV temp file, then convert to parquet via DuckDB
+    Same surface as before — `(tc, pq_path, url, token) → writes parquet at
+    pq_path` — so callers (including the parallel `_legacy_worker`) don't
+    need to change.
+    """
     import tempfile
+    from connectors.keboola.storage_api import KeboolaStorageClient
 
-    with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as tmp:
-        csv_path = tmp.name
+    bucket = tc.get("bucket", "")
+    source_table = tc.get("source_table", tc["name"])
+    table_id = f"{bucket}.{source_table}" if bucket else tc.get("id", tc["name"])
 
-    try:
-        # Construct full Keboola table ID: bucket.source_table (e.g., in.c-finance.circle)
-        bucket = tc.get("bucket", "")
-        source_table = tc.get("source_table", tc["name"])
-        table_id = f"{bucket}.{source_table}" if bucket else tc.get("id", tc["name"])
-        client.export_table(table_id, Path(csv_path))
+    with tempfile.TemporaryDirectory(prefix=f"kbc-export-{tc['name']}-") as tmpdir:
+        csv_path = Path(tmpdir) / f"{tc['name']}.csv"
+        client = KeboolaStorageClient(url=keboola_url, token=keboola_token)
+        client.export_table_to_csv(table_id, csv_path)
 
-        # Convert CSV to Parquet using DuckDB — all_varchar avoids type inference errors
-        # (e.g. columns with mostly numeric values but some strings like "Non-Manager")
-        conv_conn = duckdb.connect()
-        conv_conn.execute(
-            f"COPY (SELECT * FROM read_csv('{csv_path}', all_varchar=true)) TO '{pq_path}' (FORMAT PARQUET)"
-        )
-        conv_conn.close()
-    finally:
-        if os.path.exists(csv_path):
-            os.unlink(csv_path)
+        if not csv_path.exists() or csv_path.stat().st_size == 0:
+            # Storage API succeeded but produced no rows. Emit an empty
+            # parquet rather than crashing — same defensive behavior as
+            # `materialize_query`.
+            duckdb.connect().execute(
+                f"COPY (SELECT 1 AS _empty WHERE FALSE) TO '{pq_path}' (FORMAT PARQUET)"
+            ).close()
+            return
+
+        # all_varchar=true preserves the source's exact character data —
+        # matches what the kbcstorage path used to do, prevents DuckDB
+        # type inference from rewriting numeric-looking strings as NULL.
+        safe_csv = str(csv_path).replace("'", "''")
+        safe_pq = pq_path.replace("'", "''")
+        conv = duckdb.connect()
+        try:
+            conv.execute(
+                f"COPY (SELECT * FROM read_csv('{safe_csv}', all_varchar=true)) "
+                f"TO '{safe_pq}' (FORMAT PARQUET)"
+            )
+        finally:
+            conv.close()
 
 
 def compute_exit_code(stats: Dict[str, Any], total: int) -> int:

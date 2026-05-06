@@ -1,41 +1,54 @@
-"""Tests for the Keboola materialize_query path."""
+"""Tests for the Keboola materialize_query path.
+
+Surface contract: takes ``bucket`` + ``source_table`` (+ optional
+``source_query`` JSON filter spec), exports via Storage API, writes a
+parquet, returns the same {table_id, path, rows, bytes, md5} shape the
+BQ branch returns. We mock `KeboolaStorageClient` so tests don't hit
+the network — the real Storage API client is exercised in
+tests/test_keboola_storage_api.py.
+"""
 import hashlib
-import pytest
+import os
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
+
+import duckdb
+import pytest
 
 from connectors.keboola import extractor as kbe
 
 
-def test_materialize_query_writes_parquet_and_returns_metadata(tmp_path, monkeypatch):
-    """Mock-mode: feed in a fake KeboolaAccess that yields a fake DuckDB
-    connection accepting `COPY ... TO '...' (FORMAT PARQUET)` and just
-    writes a small parquet via duckdb's own primitive on a tmp DB.
-    """
-    import duckdb
-    real_conn = duckdb.connect(":memory:")
-    # Pre-create a small relation the fake materialize "copies".
-    real_conn.execute("CREATE TABLE t AS SELECT 1 AS x, 'hello' AS y UNION ALL SELECT 2, 'world'")
+def _seed_csv(dest: Path, header: str, rows: list[str]) -> None:
+    """Write a tiny CSV the materialize path will convert to parquet."""
+    dest.write_text("\n".join([header, *rows]) + "\n", encoding="utf-8")
 
-    class FakeAccess:
-        def duckdb_session(self):
-            from contextlib import contextmanager
-            @contextmanager
-            def _cm():
-                yield real_conn
-            return _cm()
-    fake_access = FakeAccess()
 
+@pytest.fixture
+def fake_storage_client(tmp_path):
+    """Return a MagicMock KeboolaStorageClient whose `export_table_to_csv`
+    drops a small CSV at the requested dest path. Used as the
+    `storage_client=` arg to materialize_query — bypasses real HTTP."""
+    def fake_export(table_id, dest, *, export_filter=None, export_timeout=None):
+        _seed_csv(dest, "id,name", ["1,alpha", "2,beta"])
+        return {"job_id": 100, "file_id": 200, "rows": 2, "bytes": dest.stat().st_size}
+
+    client = MagicMock()
+    client.export_table_to_csv.side_effect = fake_export
+    return client
+
+
+def test_materialize_query_writes_parquet_and_returns_metadata(
+    tmp_path, fake_storage_client
+):
     output_dir = tmp_path / "out"
     output_dir.mkdir()
 
-    # Submit a query that selects from the in-memory table (not a real
-    # Keboola bucket — the test verifies the COPY/parquet/hash path,
-    # not the extension behavior).
     result = kbe.materialize_query(
         table_id="example_subset",
-        sql="SELECT * FROM t",
-        keboola_access=fake_access,
+        bucket="in.c-sales",
+        source_table="orders",
+        source_query=None,
+        storage_client=fake_storage_client,
         output_dir=output_dir,
     )
 
@@ -45,23 +58,24 @@ def test_materialize_query_writes_parquet_and_returns_metadata(tmp_path, monkeyp
     assert result["path"] == str(parquet_path)
     assert result["rows"] == 2
     assert result["bytes"] > 0
-    # MD5 of the bytes should match what we recompute.
     expected_md5 = hashlib.md5(parquet_path.read_bytes()).hexdigest()
     assert result["md5"] == expected_md5
 
+    # Storage client was called with the bucket-qualified table id.
+    call_args = fake_storage_client.export_table_to_csv.call_args
+    assert call_args.args[0] == "in.c-sales.orders"
 
-def test_materialize_query_zero_rows_logs_warning(tmp_path, caplog):
-    import duckdb
-    real_conn = duckdb.connect(":memory:")
-    real_conn.execute("CREATE TABLE t AS SELECT 1 AS x WHERE FALSE")
 
-    class FakeAccess:
-        def duckdb_session(self):
-            from contextlib import contextmanager
-            @contextmanager
-            def _cm():
-                yield real_conn
-            return _cm()
+def test_materialize_query_zero_rows_emits_empty_parquet(tmp_path, caplog):
+    """Storage API succeeded but the filter matched 0 rows. We log a
+    warning and write an empty parquet so the orchestrator doesn't choke
+    on a missing file."""
+    def fake_export(table_id, dest, *, export_filter=None, export_timeout=None):
+        # Do NOT create the CSV — simulates "no rows matched".
+        return {"job_id": 1, "file_id": 2, "rows": 0, "bytes": 0}
+
+    client = MagicMock()
+    client.export_table_to_csv.side_effect = fake_export
 
     output_dir = tmp_path / "out"
     output_dir.mkdir()
@@ -69,69 +83,121 @@ def test_materialize_query_zero_rows_logs_warning(tmp_path, caplog):
     with caplog.at_level("WARNING"):
         result = kbe.materialize_query(
             table_id="empty_subset",
-            sql="SELECT * FROM t",
-            keboola_access=FakeAccess(),
+            bucket="in.c-test", source_table="empty",
+            source_query=None,
+            storage_client=client,
             output_dir=output_dir,
         )
+
     assert result["rows"] == 0
-    assert "0 rows" in caplog.text or "empty" in caplog.text.lower()
+    assert (output_dir / "empty_subset.parquet").exists()
+    assert "no data" in caplog.text.lower() or "0 rows" in caplog.text
 
 
-def test_materialize_query_rejects_unsafe_table_id(tmp_path):
+def test_materialize_query_rejects_unsafe_table_id(tmp_path, fake_storage_client):
     """Defense: table_id is interpolated into the parquet filename. SQL/
-    path-traversal-unsafe values must be rejected up-front (mirror of BQ
-    materialize_query's validation)."""
-    class FakeAccess:
-        def duckdb_session(self):
-            raise AssertionError("should not be called")
+    path-traversal-unsafe values must be rejected up-front."""
     output_dir = tmp_path / "out"
     output_dir.mkdir()
     with pytest.raises(ValueError, match="table_id"):
         kbe.materialize_query(
             table_id="../../etc/passwd",
-            sql="SELECT 1",
-            keboola_access=FakeAccess(),
+            bucket="in.c-test", source_table="t",
+            source_query=None,
+            storage_client=fake_storage_client,
             output_dir=output_dir,
         )
 
 
-def test_keboola_materialize_atomic_write_on_failure(tmp_path, monkeypatch):
-    """Devin finding 2026-05-01 (BUG_pr-review-job-3fbd31c9_0003):
-    if the COPY raises mid-stream, no partial file is left at the final
-    .parquet path AND the .parquet.tmp staging file is cleaned up. Pre-fix,
-    materialize_query wrote directly to the final path, so a network/disk
-    error mid-COPY would leave a corrupt parquet that the orchestrator
-    rebuild could pick up and serve to analysts."""
-    from connectors.keboola import extractor as kbe
+def test_materialize_query_invalid_source_query_json_raises(tmp_path, fake_storage_client):
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    with pytest.raises(ValueError, match="not valid JSON"):
+        kbe.materialize_query(
+            table_id="bad_filter",
+            bucket="in.c-test", source_table="t",
+            source_query="this is not json",
+            storage_client=fake_storage_client,
+            output_dir=output_dir,
+        )
+
+
+def test_materialize_query_passes_filter_spec_to_export(tmp_path):
+    """source_query JSON is parsed into ExportFilter and forwarded to the
+    Storage API client. Verifies the dispatch shape — the actual
+    filter→params conversion is covered in test_keboola_storage_api.py."""
+    received_filter = {}
+
+    def fake_export(table_id, dest, *, export_filter=None, export_timeout=None):
+        received_filter["filter"] = export_filter
+        _seed_csv(dest, "id", ["1"])
+        return {"job_id": 1, "file_id": 2, "rows": 1, "bytes": dest.stat().st_size}
+
+    client = MagicMock()
+    client.export_table_to_csv.side_effect = fake_export
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+
+    kbe.materialize_query(
+        table_id="filtered",
+        bucket="in.c-sales", source_table="orders",
+        source_query='{"where_filters": [{"column": "status", "operator": "eq", "values": ["open"]}], "columns": ["id"]}',
+        storage_client=client,
+        output_dir=output_dir,
+    )
+
+    f = received_filter["filter"]
+    assert f.where_filters == [
+        {"column": "status", "operator": "eq", "values": ["open"]}
+    ]
+    assert f.columns == ["id"]
+
+
+def test_keboola_materialize_atomic_write_on_failure(tmp_path):
+    """If the CSV→parquet conversion fails, no partial file is left at the
+    final .parquet path AND the .parquet.tmp staging file is cleaned up."""
+    def fake_export_with_garbled_csv(table_id, dest, *, export_filter=None, export_timeout=None):
+        # Write something that DuckDB read_csv accepts as 0 rows / valid
+        # parquet target — then we simulate the conversion error by
+        # patching duckdb.connect.execute to raise.
+        _seed_csv(dest, "id,name", ["1,alpha"])
+        return {"job_id": 1, "file_id": 2, "rows": 1, "bytes": dest.stat().st_size}
+
+    client = MagicMock()
+    client.export_table_to_csv.side_effect = fake_export_with_garbled_csv
 
     output_dir = tmp_path / "data"
     output_dir.mkdir()
 
-    class FakeAccess:
-        def duckdb_session(self):
-            from contextlib import contextmanager
+    # DuckDBPyConnection.execute is read-only, so we wrap with a thin
+    # tracing/failing proxy and patch the module-level `connect`.
+    real_connect = duckdb.connect
 
-            class FailingConn:
-                def execute(self, sql, *a, **kw):
-                    if "COPY" in sql:
-                        raise RuntimeError("simulated mid-COPY failure")
-                    raise AssertionError("unexpected execute: " + sql)
+    class FailingConn:
+        def __init__(self, inner):
+            self._inner = inner
 
-                def close(self):
-                    pass
+        def execute(self, sql, *a, **kw):
+            if "FORMAT PARQUET" in sql:
+                raise RuntimeError("simulated mid-COPY failure")
+            return self._inner.execute(sql, *a, **kw)
 
-            @contextmanager
-            def _cm():
-                yield FailingConn()
-            return _cm()
+        def close(self):
+            self._inner.close()
 
-    with pytest.raises(RuntimeError, match="simulated mid-COPY failure"):
-        kbe.materialize_query(
-            table_id="atomic_test",
-            sql="SELECT 1",
-            keboola_access=FakeAccess(),
-            output_dir=output_dir,
-        )
+    def patched_connect(*args, **kwargs):
+        return FailingConn(real_connect(*args, **kwargs))
+
+    with patch("connectors.keboola.extractor.duckdb.connect", side_effect=patched_connect):
+        with pytest.raises(RuntimeError, match="simulated mid-COPY failure"):
+            kbe.materialize_query(
+                table_id="atomic_test",
+                bucket="in.c-test", source_table="t",
+                source_query=None,
+                storage_client=client,
+                output_dir=output_dir,
+            )
 
     # Final parquet must NOT exist (we never reached os.replace).
     final_path = output_dir / "atomic_test.parquet"
@@ -139,65 +205,38 @@ def test_keboola_materialize_atomic_write_on_failure(tmp_path, monkeypatch):
         f"Partial parquet left at final path {final_path} — orchestrator "
         f"rebuild would pick this up and serve corrupt data."
     )
-    # tmp file also cleaned up (the extractor unlinks it on COPY failure).
-    tmp_path_marker = output_dir / "atomic_test.parquet.tmp"
-    assert not tmp_path_marker.exists(), (
-        f"Stale .parquet.tmp left at {tmp_path_marker}"
-    )
+    # tmp file also cleaned up.
+    tmp_marker = output_dir / "atomic_test.parquet.tmp"
+    assert not tmp_marker.exists(), f"Stale .parquet.tmp left at {tmp_marker}"
 
 
-def test_keboola_materialize_uses_tmp_path_during_copy(tmp_path):
-    """Atomic-write contract: COPY targets <id>.parquet.tmp first (verifiable
-    via the SQL string passed to conn.execute). After success, the file lands
-    at <id>.parquet (no .tmp suffix). This documents the contract that
-    BUG_pr-review-job-3fbd31c9_0003 closed."""
-    import duckdb
-    from connectors.keboola import extractor as kbe
-
-    real_conn = duckdb.connect(":memory:")
-    real_conn.execute("CREATE TABLE t AS SELECT 1 AS x, 'hello' AS y")
-
-    sqls_seen = []
-
-    class TracingConn:
-        """Thin wrapper that records SQL strings. DuckDBPyConnection.execute
-        is read-only, so monkey-patching the method directly fails."""
-
-        def __init__(self, inner):
-            self._inner = inner
-
-        def execute(self, sql, *args, **kwargs):
-            sqls_seen.append(sql)
-            return self._inner.execute(sql, *args, **kwargs)
-
-        def close(self):
-            self._inner.close()
-
-    class FakeAccess:
-        def duckdb_session(self):
-            from contextlib import contextmanager
-
-            @contextmanager
-            def _cm():
-                yield TracingConn(real_conn)
-            return _cm()
-
+def test_keboola_materialize_uses_tmp_path_during_copy(tmp_path, fake_storage_client):
+    """Atomic-write contract: parquet first lands at <id>.parquet.tmp, then
+    is os.replaced into <id>.parquet on success. Verified by patching
+    os.replace to capture the (src, dst) pair."""
     output_dir = tmp_path / "data"
     output_dir.mkdir()
 
-    result = kbe.materialize_query(
-        table_id="tmp_path_test",
-        sql="SELECT * FROM t",
-        keboola_access=FakeAccess(),
-        output_dir=output_dir,
-    )
+    captured = {}
+    real_replace = os.replace
 
-    # COPY SQL targeted .parquet.tmp.
-    copy_sql = next((s for s in sqls_seen if "COPY" in s), None)
-    assert copy_sql is not None, sqls_seen
-    assert ".parquet.tmp" in copy_sql, copy_sql
+    def trace_replace(src, dst):
+        captured["src"] = str(src)
+        captured["dst"] = str(dst)
+        real_replace(src, dst)
 
-    # Final file landed without .tmp suffix.
+    with patch.object(kbe.os, "replace", side_effect=trace_replace):
+        result = kbe.materialize_query(
+            table_id="tmp_path_test",
+            bucket="in.c-test", source_table="t",
+            source_query=None,
+            storage_client=fake_storage_client,
+            output_dir=output_dir,
+        )
+
+    assert captured["src"].endswith(".parquet.tmp"), captured
+    assert captured["dst"].endswith(".parquet") and not captured["dst"].endswith(".tmp")
+
     assert (output_dir / "tmp_path_test.parquet").exists()
     assert not (output_dir / "tmp_path_test.parquet.tmp").exists()
     assert result["path"].endswith(".parquet")
