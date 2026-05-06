@@ -361,7 +361,7 @@ def _reconcile_with_manifest(
     for name in to_update:
         target = f"{name}@{MARKETPLACE_NAME}"
         result = subprocess.run(
-            ["claude", "plugin", "update", target],
+            ["claude", "plugin", "update", target, "--scope", "project"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
         )
         if result.returncode != 0:
