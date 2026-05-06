@@ -207,19 +207,26 @@ def test_run_sync_filters_local_tables_by_schedule(monkeypatch, tmp_path):
         ),
     )
 
-    # Capture the configs that subprocess.run sees (via stdin payload).
+    # Capture the configs the extractor subprocess sees (via stdin
+    # payload). Hooks subprocess.Popen because _run_sync now uses Popen
+    # (with start_new_session=True so a timeout can SIGTERM the whole
+    # process group, including ProcessPoolExecutor workers spawned by
+    # the parallel legacy fallback).
     captured = {}
 
-    def _fake_run(cmd, input, capture_output, text, timeout, env, cwd):
-        import json as _json
-        captured["configs"] = _json.loads(input)
-        class _R:
-            returncode = 0
-            stdout = "{}"
-            stderr = ""
-        return _R()
+    class _FakePopen:
+        def __init__(self, cmd, **kwargs):
+            self.cmd = cmd
+            self.returncode = 0
+            self.pid = 999
 
-    monkeypatch.setattr(sync_module.subprocess, "run", _fake_run)
+        def communicate(self, input=None, timeout=None):
+            import json as _json
+            if input is not None:
+                captured["configs"] = _json.loads(input)
+            return ("{}", "")
+
+    monkeypatch.setattr(sync_module.subprocess, "Popen", _FakePopen)
 
     # Stub orchestrator + profiler imports inside the function so we don't
     # require a real DuckDB analytics file.

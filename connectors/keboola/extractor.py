@@ -303,7 +303,7 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
         # '<job_id>.csv_X_Y_Z.csv'`. ProcessPoolExecutor gives each worker
         # its own process and therefore its own CWD.
         if legacy_queue:
-            parallelism = max(1, int(os.environ.get("AGNES_KEBOOLA_PARALLELISM", "4")))
+            parallelism = max(1, int(os.environ.get("AGNES_KEBOOLA_PARALLELISM", "8")))
             workers = min(parallelism, len(legacy_queue))
             logger.info(
                 "Running legacy Storage-API fallback for %d tables across %d worker processes",
