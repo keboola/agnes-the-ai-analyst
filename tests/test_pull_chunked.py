@@ -347,3 +347,53 @@ def test_progress_callback_aggregates_across_chunks(tmp_path, monkeypatch):
     stream_download("/api/data/x/download", str(target),
                     progress_callback=lambda n: advances.append(n))
     assert sum(advances) == len(body)
+
+
+def test_dead_pid_leftovers_are_reaped(tmp_path, monkeypatch):
+    """Devil's-advocate R3 finding #1: PID-suffixed `<target>.{pid}.tmp`
+    and `.partN` files from a SIGKILL'd previous pull must be reaped on
+    the next pull, otherwise they accumulate on disk indefinitely.
+
+    PID 1 (init) is always alive, so a file with pid=1 must NOT be
+    reaped. PID 99999999 (~10⁸) is essentially guaranteed not-alive on
+    any modern Linux/macOS — used as the dead-PID marker.
+    """
+    target = tmp_path / "out.bin"
+
+    # Live-PID leftover (pid=1 = init, always alive). Must NOT be reaped.
+    live_path = tmp_path / "out.bin.1.tmp"
+    live_path.write_bytes(b"live process leftover")
+
+    # Dead-PID leftovers — both .tmp and .part0 forms.
+    dead_tmp = tmp_path / "out.bin.99999999.tmp"
+    dead_tmp.write_bytes(b"dead process leftover tmp")
+    dead_part = tmp_path / "out.bin.99999999.part0"
+    dead_part.write_bytes(b"dead process leftover part")
+
+    # Bare-name leftover (no PID suffix) — pre-existing pattern, NOT
+    # touched by the new reaper. Reaper only matches `.{digits}.tmp`
+    # / `.{digits}.partN` exactly.
+    bare_tmp = tmp_path / "out.bin.tmp"
+    bare_tmp.write_bytes(b"bare leftover")
+
+    from cli.client import _reap_dead_pid_leftovers
+    _reap_dead_pid_leftovers(str(target))
+
+    assert live_path.exists(), "live-PID leftover must be preserved"
+    assert not dead_tmp.exists(), "dead-PID .tmp must be reaped"
+    assert not dead_part.exists(), "dead-PID .partN must be reaped"
+    assert bare_tmp.exists(), "bare-name leftover is out of scope for the reaper"
+
+
+def test_reap_handles_garbage_in_filename(tmp_path):
+    """Files in the parquet dir whose names happen to glob-match but
+    don't conform to the PID-suffix shape must be skipped without
+    raising."""
+    target = tmp_path / "out.bin"
+    weird = tmp_path / "out.bin.garbage.tmp"
+    weird.write_bytes(b"x")
+
+    from cli.client import _reap_dead_pid_leftovers
+    # Must not raise even though the filename has no integer PID.
+    _reap_dead_pid_leftovers(str(target))
+    assert weird.exists(), "non-PID-shaped file must not be reaped"

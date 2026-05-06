@@ -1,7 +1,9 @@
 """HTTP client wrapper for CLI — handles auth, retries, streaming."""
 
 import atexit
+import glob
 import os
+import re
 import threading
 import time
 import traceback
@@ -13,6 +15,60 @@ from typing import Optional
 import httpx
 
 from cli.config import _config_dir, get_server_url, get_token
+
+
+# PID-suffixed tmp / part files — see `_download_chunked` and
+# `_download_single_stream`. We extract the embedded PID and reap any
+# leftover whose process is no longer alive on every pull. Without this,
+# every SIGKILL'd pull leaks files indefinitely (devil's-advocate R3
+# finding #1).
+_PID_SUFFIX_RE = re.compile(r"\.(\d+)\.(?:tmp|part\d+)$")
+
+
+def _is_pid_alive(pid: int) -> bool:
+    """Return True if a process with the given PID exists. POSIX-only;
+    Windows users get the conservative `True` (file kept) which means
+    no reaping but also no false-deletion of a live sibling."""
+    if pid <= 0:
+        return False
+    try:
+        # Signal 0 = no-op kill; raises ProcessLookupError when PID is
+        # gone, PermissionError when the PID exists but isn't ours
+        # (still alive, just owned by someone else — keep the file).
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except Exception:
+        # Anything else (e.g. AttributeError on Windows where os.kill
+        # exists but signal 0 isn't supported the same way): be
+        # conservative and don't reap.
+        return True
+
+
+def _reap_dead_pid_leftovers(target_path: str) -> None:
+    """Remove `<target>.{pid}.tmp` and `<target>.{pid}.partN` files
+    whose embedded PID is no longer alive. Called at the start of every
+    download to keep the parquet directory tidy across SIGKILL'd or
+    crashed prior runs. Never raises — leaked file is preferable to
+    failing the new pull on a permission error."""
+    candidates = glob.glob(f"{target_path}.*.tmp") + glob.glob(f"{target_path}.*.part*")
+    for path in candidates:
+        m = _PID_SUFFIX_RE.search(path)
+        if not m:
+            continue
+        try:
+            pid = int(m.group(1))
+        except ValueError:
+            continue
+        if _is_pid_alive(pid):
+            continue
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 # Retry policy for transient failures during stream downloads. Scoped to
 # network issues and 5xx — 4xx (auth, 404, 400) is NOT retried. Tunable via
@@ -425,6 +481,10 @@ def _download_chunked(
     caller's `<target>.tmp` and renamed atomically.
     """
     target = Path(target_path)
+    # Reap leftovers from previously SIGKILL'd / crashed pulls before we
+    # start writing — without this, PID-suffixed files from dead PIDs
+    # accumulate forever on disk (devil's-advocate R3 finding #1).
+    _reap_dead_pid_leftovers(target_path)
     # Per-process tmp + part suffixes (devil's-advocate R2 finding #2):
     # if two `agnes pull` invocations target the same parquet
     # concurrently (e.g. SessionStart hook + manual run, or two
@@ -520,6 +580,9 @@ def _download_single_stream(
 ) -> int:
     """Original single-stream path with retry. Used when chunking is
     disabled (small file, no range support, or fallback after 200-on-Range)."""
+    # Same dead-PID reap as `_download_chunked` so leftovers from
+    # crashed prior pulls don't accumulate indefinitely.
+    _reap_dead_pid_leftovers(target_path)
     # Per-process tmp suffix — same rationale as `_download_chunked`
     # (devil's-advocate R2 finding #2): concurrent `agnes pull`
     # invocations against the same target dir must not yank each
