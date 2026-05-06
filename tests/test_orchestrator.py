@@ -702,6 +702,33 @@ def _write_minimal_parquet(path: Path, n_rows: int = 3) -> None:
         conn.close()
 
 
+def _seed_registry_materialized_row(table_id: str, source_type: str = "bigquery") -> None:
+    """Insert a `query_mode='materialized'` row into table_registry so
+    the filesystem-fallback scan recognises the parquet as live (not
+    orphan from a deleted registry row).
+
+    Uses the same `get_system_db` + `TableRegistryRepository` path the
+    orchestrator's fallback uses internally."""
+    from src.db import get_system_db
+    from src.repositories.table_registry import TableRegistryRepository
+    conn = get_system_db()
+    try:
+        TableRegistryRepository(conn).register(
+            id=table_id,
+            name=table_id,
+            source_type=source_type,
+            bucket="bkt",
+            source_table=table_id,
+            source_query=f"SELECT 1 AS id",
+            query_mode="materialized",
+        )
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 class TestFilesystemFallbackMasterViews:
     """If a parquet exists on disk but never made it into _meta (the
     open-handle race that bit 0.40.0), the orchestrator must still
@@ -724,6 +751,9 @@ class TestFilesystemFallbackMasterViews:
         # registration hit lock conflict" scenario.
         data_dir = setup_env["extracts_dir"] / "bigquery" / "data"
         _write_minimal_parquet(data_dir / "order_economics.parquet", n_rows=42)
+        # Seed the matching materialized registry row — orphan parquets
+        # without a registry row are deliberately skipped.
+        _seed_registry_materialized_row("order_economics")
 
         orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
         result = orch.rebuild()
@@ -766,6 +796,7 @@ class TestFilesystemFallbackMasterViews:
         # Also drop a parquet of the same name on disk.
         data_dir = setup_env["extracts_dir"] / "bigquery" / "data"
         _write_minimal_parquet(data_dir / "order_economics.parquet", n_rows=99)
+        _seed_registry_materialized_row("order_economics")
 
         import logging
         orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
@@ -806,6 +837,15 @@ class TestFilesystemFallbackMasterViews:
         # Identifier validator rejects names starting with a digit.
         data_dir = setup_env["extracts_dir"] / "bigquery" / "data"
         _write_minimal_parquet(data_dir / "9bad_name.parquet")
+        # Even though the registry would let it through, the identifier
+        # validator should still reject. (Seed registry to isolate the
+        # validator path from the orphan-skip path.)
+        try:
+            _seed_registry_materialized_row("9bad_name")
+        except Exception:
+            # Registry row insert may itself reject the bad id; that's
+            # fine — the orchestrator scan never sees it then either.
+            pass
 
         orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
         result = orch.rebuild()
@@ -823,6 +863,39 @@ class TestFilesystemFallbackMasterViews:
             assert "9bad_name" not in tables
         finally:
             master.close()
+
+    def test_filesystem_fallback_skips_orphan_parquet(self, setup_env):
+        """Orphan parquets — files left on disk after `DELETE
+        /api/admin/registry/{id}` either crashed mid-cleanup or the
+        operator dropped the row but the file lingers — must NOT get a
+        master view. Otherwise the deleted table would resurrect on next
+        rebuild, defeating the unregister contract.
+
+        Existing test `test_orchestrator_skips_orphan_parquet_in_extracts`
+        in `tests/test_admin_unregister_cleanup.py` pins this rule for the
+        wider unregister flow; this test pins it specifically for the
+        new filesystem-fallback path."""
+        from src.orchestrator import SyncOrchestrator
+
+        _create_mock_extract(
+            setup_env["extracts_dir"],
+            "bigquery",
+            tables=[
+                {"name": "remote_one", "data": [{"x": "1"}], "query_mode": "remote"},
+            ],
+        )
+        # Orphan parquet — NO registry row.
+        data_dir = setup_env["extracts_dir"] / "bigquery" / "data"
+        _write_minimal_parquet(data_dir / "deleted_table.parquet")
+        # NOT calling _seed_registry_materialized_row here — that's the
+        # whole point: registry row is missing.
+
+        orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
+        result = orch.rebuild()
+        bq_tables = result.get("bigquery", [])
+        assert "deleted_table" not in bq_tables, (
+            f"orphan parquet must NOT resurrect as a master view; got {bq_tables}"
+        )
 
     def test_filesystem_fallback_no_data_dir_is_safe(self, setup_env):
         """Sources without a `<extract_dir>/data/` directory (e.g. the
