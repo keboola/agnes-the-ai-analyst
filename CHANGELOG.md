@@ -10,6 +10,28 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.38.2] — 2026-05-06
+
+### Fixed
+- **`bq_query_timeout_ms` was not applied on every BigQuery ATTACH branch**
+  (`src/db.py:_reattach_remote_extensions`,
+  `src/orchestrator.py:_attach_remote_extensions`). Pre-fix only the
+  metadata-token branch (the BqAccess contract, `token_env=''`) called
+  `apply_bq_session_settings`. BigQuery sources registered with an explicit
+  `token_env`, or with no auth env, ATTACH'd without ever applying the
+  timeout — falling back to the extension's 90 s default. Default-config
+  operators on those branches now consistently get the configured 600 s
+  (or whatever `data_source.bigquery.query_timeout_ms` is set to).
+- **`apply_bq_session_settings` swallowed every `Exception` silently**
+  (`connectors/bigquery/access.py`). Two realistic failure modes — the
+  BigQuery extension not yet loaded on the connection, or an installed
+  extension version that doesn't recognise the setting — left the 90 s
+  default in place with no log line explaining why. Each failure path
+  now logs `WARNING` with the actionable cause; on success the applied
+  value is verified via a `current_setting('bq_query_timeout_ms')`
+  readback (catches the silent-ignore mode some extension versions
+  exhibit) and a mismatch logs `WARNING` too.
+
 ## [0.38.1] — 2026-05-06
 
 ### Internal
