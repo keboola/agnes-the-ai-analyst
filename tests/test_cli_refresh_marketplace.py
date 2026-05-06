@@ -504,3 +504,141 @@ def test_manual_mode_does_not_emit_hook_json(
     assert "grpn-fin" in out
     assert not out.strip().startswith("{"), \
         f"manual mode should not emit JSON envelope; got: {out.strip()[:200]!r}"
+
+
+# --- --bootstrap flag (initial install path) ------------------------------------
+
+
+def test_bootstrap_flag_appears_in_help():
+    result = runner.invoke(refresh_marketplace_app, ["--help"])
+    assert result.exit_code == 0
+    assert "--bootstrap" in _clean(result.output)
+
+
+def test_no_bootstrap_no_clone_is_noop_default(
+    tmp_path, monkeypatch, with_token, recorder,
+):
+    """Without --bootstrap, missing clone → silent no-op (manual mode hint).
+    No git/claude calls happen."""
+    monkeypatch.setattr(rm_module, "CLONE_DIR", tmp_path / "nonexistent")
+    result = runner.invoke(refresh_marketplace_app, [])
+    assert result.exit_code == 0
+    assert "No marketplace clone" in _clean(result.output)
+    # No subprocess calls — we exited before fetch+reset.
+    assert recorder.calls == []
+
+
+def test_bootstrap_with_no_existing_clone_clones_and_registers(
+    tmp_path, monkeypatch, with_token, claude_in_path, recorder,
+):
+    """--bootstrap on a fresh machine (no clone yet) must:
+      1. git clone https://x:<PAT>@host/marketplace.git/ to CLONE_DIR
+      2. git remote set-url origin <token-stripped URL>
+      3. claude plugin marketplace add <CLONE_DIR>
+      4. then proceed to the normal fetch+reset+reconcile flow
+
+    PAT must be in the clone URL (HTTP Basic in user-info, the only
+    auth path raw `git clone` understands), but stripped from the
+    origin URL after the clone so it doesn't sit at rest in
+    .git/config."""
+    # `with_token` fixture already wrote token.json + set AGNES_CONFIG_DIR;
+    # just append the server URL config so bootstrap can read it.
+    cfg_dir = tmp_path / "_cfg"
+    (cfg_dir / "config.yaml").write_text(
+        "server: https://agnes.example.com\n", encoding="utf-8",
+    )
+
+    clone_target = tmp_path / "fresh_marketplace"
+    monkeypatch.setattr(rm_module, "CLONE_DIR", clone_target)
+
+    # Create the .git/ dir as a side effect of the scripted clone so the
+    # subsequent fetch+reset path sees a "cloned" state.
+    real_run = recorder.run
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[:2] == ["git", "clone"]:
+            (clone_target / ".git").mkdir(parents=True, exist_ok=True)
+            (clone_target / ".claude-plugin").mkdir(parents=True, exist_ok=True)
+            (clone_target / ".claude-plugin" / "marketplace.json").write_text(
+                json.dumps({"name": "agnes", "plugins": []}),
+                encoding="utf-8",
+            )
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(rm_module.subprocess, "run", fake_run)
+
+    result = runner.invoke(refresh_marketplace_app, ["--bootstrap"])
+    assert result.exit_code == 0, result.output
+
+    # 1. git clone with embedded PAT.
+    clone_calls = [c for c in recorder.calls if c.cmd[:2] == ["git", "clone"]]
+    assert len(clone_calls) == 1
+    clone = clone_calls[0]
+    assert any(
+        with_token in arg and "agnes.example.com/marketplace.git/" in arg
+        for arg in clone.cmd
+    ), f"PAT-bearing clone URL must be in argv, got: {clone.cmd}"
+    assert str(clone_target) in clone.cmd
+
+    # 2. remote set-url (PAT-stripped URL).
+    set_url_calls = [
+        c for c in recorder.calls
+        if c.cmd[:5] == ["git", "-C", str(clone_target), "remote", "set-url"]
+    ]
+    assert len(set_url_calls) == 1
+    new_url = set_url_calls[0].cmd[6]
+    assert "agnes.example.com/marketplace.git/" in new_url
+    assert with_token not in new_url
+    assert "x:" not in new_url
+
+    # 3. claude plugin marketplace add <clone_target>.
+    add_calls = [
+        c for c in recorder.calls
+        if c.cmd[:4] == ["claude", "plugin", "marketplace", "add"]
+    ]
+    assert len(add_calls) == 1
+    assert add_calls[0].cmd[4] == str(clone_target)
+
+
+def test_bootstrap_clone_failure_exits_nonzero(
+    tmp_path, monkeypatch, with_token, claude_in_path, recorder,
+):
+    """If `git clone` fails during bootstrap, exit non-zero and don't
+    proceed to fetch+reset."""
+    # `with_token` fixture already created _cfg + token.json; just add
+    # the server URL config so the bootstrap path can read it.
+    cfg_dir = tmp_path / "_cfg"
+    (cfg_dir / "config.yaml").write_text(
+        "server: https://agnes.example.com\n", encoding="utf-8",
+    )
+
+    monkeypatch.setattr(rm_module, "CLONE_DIR", tmp_path / "fresh_marketplace")
+    recorder.script(("git", "clone"), returncode=1, stderr="fatal: TLS error")
+
+    result = runner.invoke(refresh_marketplace_app, ["--bootstrap"])
+    assert result.exit_code == 1
+    # The fetch+reset step should NOT have run (we exit on bootstrap failure).
+    fetch_calls = [c for c in recorder.calls if "fetch" in c.cmd and "origin" in c.cmd]
+    assert fetch_calls == []
+
+
+def test_bootstrap_with_existing_clone_skips_clone_proceeds_to_refresh(
+    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
+):
+    """--bootstrap on a machine that already has a clone must NOT re-clone
+    (idempotent). It just falls through to the normal fetch+reset path."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+
+    result = runner.invoke(refresh_marketplace_app, ["--bootstrap"])
+    assert result.exit_code == 0
+
+    # No git clone (clone already existed).
+    clone_calls = [c for c in recorder.calls if c.cmd[:2] == ["git", "clone"]]
+    assert clone_calls == []
+    # But fetch+reset DID happen.
+    fetch_calls = [c for c in recorder.calls if "fetch" in c.cmd and "origin" in c.cmd]
+    assert fetch_calls
+    reset_calls = [c for c in recorder.calls if "reset" in c.cmd and "--hard" in c.cmd]
+    assert reset_calls
