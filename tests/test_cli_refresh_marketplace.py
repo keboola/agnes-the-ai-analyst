@@ -468,6 +468,14 @@ def test_quiet_emits_hook_json_when_plugin_installed(
     hook_specific = payload.get("hookSpecificOutput", {})
     assert hook_specific.get("hookEventName") == "SessionStart"
     additional = hook_specific.get("additionalContext", "")
+    # Plugin name must be in the context.
+    assert "grpn-fin" in additional
+    # additionalContext is phrased as an INSTRUCTION (not passive
+    # documentation) so Claude proactively mentions the change in its
+    # first reply. The transient `systemMessage` toast is often missed
+    # by users (per claude-code-guide research), so the in-context
+    # prompt is the reliable surface for getting the user informed.
+    assert "BEFORE responding" in additional or "before responding" in additional.lower()
     # Must reflect the three-source model so the model knows the change
     # could've come from any of those, not just admin grants.
     assert "RBAC" in additional
@@ -476,6 +484,61 @@ def test_quiet_emits_hook_json_when_plugin_installed(
     # Must explain the bundle quirk so the model understands why a
     # skill/agent change shows up as "updated", not "installed".
     assert "agnes-store-bundle" in additional
+
+
+def test_quiet_appends_persistent_refresh_log_on_change(
+    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
+):
+    """A change must also append a timestamped line to ``~/.agnes/refresh.log``
+    so the user can review what was installed/updated even after the
+    transient systemMessage toast vanished from the UI."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    _set_marketplace_manifest(with_clone, [{"name": "grpn-fin", "version": "0.5.0"}])
+    recorder.script(("claude", "plugin", "list", "--json"),
+                    stdout=_plugin_list_json([]))
+
+    result = runner.invoke(refresh_marketplace_app, ["--quiet"])
+    assert result.exit_code == 0
+
+    # Log lives next to the clone (parent dir of CLONE_DIR).
+    log_path = with_clone.parent / "refresh.log"
+    assert log_path.is_file(), f"expected refresh log at {log_path}"
+    content = log_path.read_text(encoding="utf-8")
+    assert "grpn-fin" in content
+    assert "Agnes stack" in content
+    # Each line begins with an ISO-8601 UTC timestamp (YYYY-MM-DDThh:mm:ssZ)
+    # so log entries are sortable + auditable.
+    first_line = content.splitlines()[0]
+    assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z  ", first_line), (
+        f"log line should start with ISO-8601 UTC timestamp, got: {first_line!r}"
+    )
+
+
+def test_quiet_no_change_does_not_append_to_refresh_log(
+    with_clone, with_token, claude_in_path, recorder, monkeypatch, tmp_path,
+):
+    """When nothing changed, no log line is appended. The log is for
+    actual changes only — every SessionStart writing 'no-op at 14:23:01'
+    would be noise."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    _set_marketplace_manifest(with_clone, [{"name": "grpn-eng", "version": "1.0.0"}])
+    recorder.script(
+        ("claude", "plugin", "list", "--json"),
+        stdout=_plugin_list_json([
+            {"id": "grpn-eng@agnes", "version": "1.0.0", "projectPath": str(workspace)},
+        ]),
+    )
+    result = runner.invoke(refresh_marketplace_app, ["--quiet"])
+    assert result.exit_code == 0
+
+    log_path = with_clone.parent / "refresh.log"
+    # Either the file doesn't exist at all, or it exists but stayed empty.
+    if log_path.exists():
+        assert log_path.read_text(encoding="utf-8") == ""
 
 
 def test_quiet_emits_hook_json_when_plugin_updated(

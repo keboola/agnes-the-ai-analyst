@@ -532,22 +532,29 @@ def _emit_hook_message(events: dict[str, list[str]]) -> None:
     """Emit a Claude Code hook JSON object summarizing what changed.
 
     Output shape (per Claude Code hook protocol):
-      - ``systemMessage`` is shown to the user as a transient warning-style
-        notification — keeps it short.
+      - ``systemMessage`` is a transient warning-style toast. It's
+        best-effort: users frequently miss it because the toast vanishes
+        a few seconds after session start, before the user gets a chance
+        to look. We still emit it for the lucky cases.
       - ``hookSpecificOutput.additionalContext`` is wrapped in a system
-        reminder so the model can reference the change at session start
-        (e.g. "Agnes installed grpn-fin — let me know if you want me to
-        explore what it adds").
+        reminder before the user's first prompt — Claude *reliably* sees
+        it. So we phrase it as a direct instruction to mention the change
+        at the start of the first response, not as passive documentation.
+        Without that prompting, Claude reads the context but only mentions
+        it if the user happens to ask "what's new?".
 
-    User-facing language deliberately says "your Agnes stack" rather than
-    "the Agnes marketplace": the served set is **per-user composed**, not
-    a single shared catalog. From ``src/marketplace_filter.py:236`` the
-    formula is ``(admin RBAC grants ∖ MyAIStack opt-outs) ∪ /store
-    installs`` — three independent sources, any of which can change and
-    show up here on the next refresh. Plus the ``agnes-store-bundle``
-    quirk: skill / agent additions don't add a manifest entry, they just
-    bump the bundle's version (so they materialize as an "updated" event,
-    not an "installed" one).
+    Plus a persistent log line at ``~/.agnes/refresh.log`` so the user
+    can ``cat`` it later if they noticed something installed itself but
+    missed the in-session notification.
+
+    User-facing language says "your Agnes stack" rather than "the Agnes
+    marketplace": the served set is **per-user composed**, not a single
+    shared catalog. From ``src/marketplace_filter.py:236`` the formula
+    is ``(admin RBAC grants ∖ MyAIStack opt-outs) ∪ /store installs`` —
+    three independent sources, any of which can change. Plus the
+    ``agnes-store-bundle`` quirk: skill / agent additions don't add a
+    manifest entry, they just bump the bundle's version (so they
+    materialize as an "updated" event, not an "installed" one).
 
     Caller has already verified that at least one of ``installed`` /
     ``updated`` is non-empty, so we always emit something useful.
@@ -564,27 +571,62 @@ def _emit_hook_message(events: dict[str, list[str]]) -> None:
             + ", ".join(events["updated"])
         )
     summary = "Your Agnes stack changed: " + "; ".join(parts) + "."
+
+    # Persistent log line — survives across sessions, user can `cat` it
+    # to see what's been installed/updated by the SessionStart hook.
+    _append_refresh_log(summary)
+
+    # additionalContext is phrased as a direct instruction so Claude
+    # mentions the change at the top of its first reply (the toast is
+    # transient and easy to miss).
+    additional = (
+        f"{summary} BEFORE responding to the user's first message, "
+        "open with one short sentence acknowledging this change so the "
+        "user knows the SessionStart hook just installed/updated their "
+        "stack — then proceed with their actual request. Keep the "
+        "acknowledgement to a single sentence; don't dwell. "
+        "\n\n"
+        "Background for your own understanding (don't repeat this to "
+        "the user unless asked): the Agnes stack is composed as "
+        "`(admin RBAC grants ∖ user MyAIStack opt-outs) ∪ user /store "
+        "installs` (see src/marketplace_filter.py:236). 'Installed' "
+        "means a plugin newly appeared in the stack — admin grant, "
+        "MyAIStack untoggle, or a /store type=plugin install. "
+        "'Updated' means an existing plugin's version changed — admin "
+        "pushed a new version, or the user added/removed a skill/agent "
+        "from /store (those share one synth plugin `agnes-store-bundle` "
+        "whose version is a content hash). The CLI can't tell which "
+        "source from the diff alone."
+    )
     payload = {
         "systemMessage": summary,
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
-            "additionalContext": (
-                f"{summary} The Agnes stack served to a user is composed "
-                "as `(admin RBAC grants ∖ user MyAIStack opt-outs) ∪ user "
-                "/store installs` (see src/marketplace_filter.py:236). "
-                "An 'installed' event means a new plugin appeared in the "
-                "stack — the user got a fresh admin RBAC grant, untoggled "
-                "an opt-out on MyAIStack, or installed a `type=plugin` "
-                "from /store. An 'updated' event means an existing plugin "
-                "version changed — admin pushed a new version, or the "
-                "user added/removed a skill / agent from /store (those "
-                "share one synth plugin called `agnes-store-bundle` "
-                "whose version is a hash of all bundled content). The "
-                "CLI can't tell which source from the diff alone."
-            ),
+            "additionalContext": additional,
         },
     }
     typer.echo(json.dumps(payload))
+
+
+def _append_refresh_log(summary: str) -> None:
+    """Persist a one-line entry per refresh that changed something.
+
+    Lives at ``~/.agnes/refresh.log`` (next to the marketplace clone).
+    Best-effort: any I/O error is swallowed silently — losing a log line
+    is a worse-than-nothing UX, but it's still UX, not a fatal flow.
+
+    Format: ``<ISO-8601 UTC>  <summary>`` per line. A user who notices a
+    plugin installed itself can ``cat ~/.agnes/refresh.log`` to confirm
+    when and what.
+    """
+    log_path = CLONE_DIR.parent / "refresh.log"
+    try:
+        from datetime import datetime, timezone
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(f"{ts}  {summary}\n")
+    except OSError:
+        pass
 
 
 def _read_marketplace_plugin_versions() -> Optional[dict[str, str]]:
