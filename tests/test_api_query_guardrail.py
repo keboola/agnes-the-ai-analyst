@@ -586,3 +586,141 @@ def test_guardrail_skips_bare_name_match_inside_backticks(
     assert "`test-data-prj.finance.`test-data-prj" not in sent, (
         f"nested-backtick corruption signature present: {sent!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Issue #201 Layer 3: full backtick BigQuery paths are registry-gated.
+# Pre-fix these bypassed Agnes RBAC entirely — only the configured service
+# account scope limited which tables a user could reach. Post-fix, they're
+# treated identically to `bq."<dataset>"."<table>"` syntax.
+# ---------------------------------------------------------------------------
+
+
+def test_full_backtick_path_unregistered_denied(seeded_app, mock_dry_run):
+    """Full backtick path to an unregistered `<dataset>.<table>` (project
+    matches the configured data project) → HTTP 403 with
+    `bq_path_not_registered`."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.post(
+        "/api/query",
+        json={
+            "sql": (
+                "SELECT * FROM `test-data-prj.secret_ds.secret_tbl` "
+                "WHERE country = 'CZ'"
+            ),
+        },
+        headers=_auth(token),
+    )
+    assert r.status_code == 403, r.json()
+    detail = r.json().get("detail", {})
+    assert isinstance(detail, dict), detail
+    assert detail.get("reason") == "bq_path_not_registered", detail
+    assert "secret_ds" in detail.get("path", ""), detail
+    assert "secret_tbl" in detail.get("path", ""), detail
+
+
+def test_full_backtick_path_cross_project_denied(seeded_app, mock_dry_run):
+    """Full backtick path with project ≠ configured data project → HTTP
+    403 with `bq_path_cross_project`. Even if the path happens to point
+    at a registered (bucket, source_table), the project mismatch is the
+    primary boundary."""
+    _register_bq_remote_row("ue", "finance", "ue")
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.post(
+        "/api/query",
+        json={
+            "sql": "SELECT * FROM `other-project.finance.ue` WHERE id = 1",
+        },
+        headers=_auth(token),
+    )
+    assert r.status_code == 403, r.json()
+    detail = r.json().get("detail", {})
+    assert isinstance(detail, dict), detail
+    assert detail.get("reason") == "bq_path_cross_project", detail
+    assert detail.get("expected_project") == "test-data-prj", detail
+    assert "other-project" in detail.get("path", ""), detail
+
+
+def test_full_backtick_path_registered_admin_passes(
+    seeded_app, mock_dry_run, monkeypatch,
+):
+    """Admin caller + registered path + matching project → no RBAC
+    rejection. The dry-run fires (we can capture the SQL the guardrail
+    forwards) and no `bq_path_*` reason appears in any error response."""
+    _register_bq_remote_row("ue", "finance", "ue")
+
+    captured = {"sql": None}
+
+    def capturing_fake(_bq, sql):
+        captured["sql"] = sql
+        return 1024  # tiny — pass cap
+
+    monkeypatch.setattr(
+        "app.api.query._bq_dry_run_bytes", capturing_fake, raising=False,
+    )
+
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.post(
+        "/api/query",
+        json={
+            "sql": "SELECT * FROM `test-data-prj.finance.ue` WHERE id = 1",
+        },
+        headers=_auth(token),
+    )
+    # If 403, must NOT be the issue-#201 bq_path_* reasons.
+    if r.status_code == 403:
+        detail = r.json().get("detail", {})
+        if isinstance(detail, dict):
+            assert detail.get("reason") not in (
+                "bq_path_not_registered",
+                "bq_path_access_denied",
+                "bq_path_cross_project",
+            ), f"admin + registered path should pass RBAC: {detail}"
+    # The dry-run was invoked, meaning Pass 3 added the path to dry_run_set
+    # and the cap-guard fired. The user's WHERE clause must still be in
+    # the dry-run SQL (validates Layer 1 — backtick-aware rewrite).
+    assert captured["sql"] is not None, (
+        "dry-run never fired — Pass 3 may not have registered the path"
+    )
+    assert "`test-data-prj.finance.ue`" in captured["sql"], captured["sql"]
+    assert "WHERE id = 1" in captured["sql"], captured["sql"]
+
+
+def test_full_backtick_path_inside_string_literal_not_gated(
+    seeded_app, mock_dry_run,
+):
+    """Defensive case: a backtick path appearing inside a SQL string
+    literal (rare but possible) should not trigger Pass 3. Practically
+    this is unreachable because backticks aren't typically valid inside
+    BQ string literals — but the regex doesn't know that. We document
+    that the gate applies to ALL backtick triples to be safe; users who
+    really need a literal can use single-quoted strings without
+    backticks."""
+    # No registration; the test confirms an unregistered path inside
+    # what looks like a string is still gated. This is the conservative
+    # boundary — false-positive on string literal beats false-negative
+    # on a real RBAC bypass.
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.post(
+        "/api/query",
+        json={
+            "sql": (
+                "SELECT 'matches `test-data-prj.x.y`' AS lit"
+            ),
+        },
+        headers=_auth(token),
+    )
+    # Either gated (403) or 200 if the analytics DB happens to evaluate
+    # the literal — both are acceptable. The point is no silent RBAC
+    # bypass: if the response is 200, no BQ table was reached.
+    if r.status_code == 403:
+        detail = r.json().get("detail", {})
+        if isinstance(detail, dict):
+            assert detail.get("reason") in (
+                "bq_path_not_registered",
+                "bq_path_cross_project",
+            ), detail

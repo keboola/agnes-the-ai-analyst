@@ -564,6 +564,66 @@ def _bq_guardrail_inputs(
                 seen_paths.add(key)
                 dry_run.append((bucket, source_table, 0))
 
+    # 3. Full backtick path `<project>.<dataset>.<table>` pass (issue #201).
+    # Pre-#201 these bypassed Agnes RBAC entirely — only the configured
+    # service account scope limited which tables a user could reach. Gate
+    # them identically to the `bq.<ds>.<tbl>` pass: must match the
+    # configured data project, must point at a registered row, and the
+    # caller must hold a grant on that row's id (admin bypasses the grant
+    # check but still requires registration + project match).
+    #
+    # Lazy `get_bq_access()` import via the module-level alias so tests
+    # can monkeypatch a fake. When BQ isn't configured (no data project),
+    # fall through silently — full backtick paths can't possibly resolve
+    # against this instance, so leave them to BQ to reject if a query
+    # somehow makes it through.
+    try:
+        bq = get_bq_access()
+        data_project = (bq.projects.data or "").strip()
+    except Exception:
+        data_project = ""
+
+    if data_project:
+        for m in _BACKTICK_FULL_PATH.finditer(sql):
+            proj, ds, tbl = m.group(1), m.group(2), m.group(3)
+            if proj.lower() != data_project.lower():
+                return [], [], {
+                    "reason": "bq_path_cross_project",
+                    "path": f"`{proj}.{ds}.{tbl}`",
+                    "expected_project": data_project,
+                    "hint": (
+                        "--remote queries can only reference tables in the "
+                        "configured BigQuery data project. Register "
+                        "cross-project tables via `agnes admin "
+                        "register-table` if needed."
+                    ),
+                }
+            row = repo.find_by_bq_path(ds, tbl)
+            if row is None:
+                return [], [], {
+                    "reason": "bq_path_not_registered",
+                    "path": f"`{proj}.{ds}.{tbl}`",
+                    "hint": (
+                        "Direct BigQuery paths must point to a registered "
+                        "table. Register via `agnes admin register-table` "
+                        "or use the registered name from `agnes catalog`."
+                    ),
+                }
+            if not is_admin:
+                if accessible_set is None or row["id"] not in accessible_set:
+                    return [], [], {
+                        "reason": "bq_path_access_denied",
+                        "path": f"`{proj}.{ds}.{tbl}`",
+                        "registered_as": row["name"],
+                    }
+            bucket = row["bucket"]
+            source_table = row["source_table"]
+            if bucket and source_table:
+                key = (bucket.lower(), source_table.lower())
+                if key not in seen_paths:
+                    seen_paths.add(key)
+                    dry_run.append((bucket, source_table, 0))
+
     return dry_run, name_lookups, None
 
 
