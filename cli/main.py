@@ -28,6 +28,7 @@ from cli.commands.auth import auth_app
 from cli.commands.init import init_app
 from cli.commands.pull import pull_app
 from cli.commands.push import push_app
+from cli.commands.refresh_marketplace import refresh_marketplace_app
 from cli.commands.query import query_command
 from cli.commands.status import status_app
 from cli.commands.admin import admin_app
@@ -110,6 +111,7 @@ app.add_typer(auth_app, name="auth")
 app.add_typer(init_app, name="init")
 app.add_typer(pull_app, name="pull")
 app.add_typer(push_app, name="push")
+app.add_typer(refresh_marketplace_app, name="refresh-marketplace")
 app.command("query")(query_command)
 app.add_typer(status_app, name="status")
 app.add_typer(admin_app, name="admin")
