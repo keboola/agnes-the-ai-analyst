@@ -10,6 +10,35 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.41.0] — 2026-05-06
+
+### Fixed
+- **Orchestrator filesystem fallback for materialized parquets that
+  couldn't register in `extract.duckdb`'s `_meta`**
+  (`src/orchestrator.py:_attach_and_create_views`). The 0.40.0 fix in
+  `materialize_query` opens `extract.duckdb` from a fresh DuckDB handle
+  to write the `_meta` row + inner view; in production the same uvicorn
+  process already holds `extract.duckdb` ATTACHed read-only as the
+  source-name alias under the orchestrator's analytics connection, and
+  DuckDB's single-process file-handle uniqueness rejects the second
+  open with `Binder Error: Unique file handle conflict: Cannot attach
+  "extract" — already attached by database "<source>"`. The 0.40.0
+  helper logs WARNING and falls through; parquet stays canonical, but
+  the master view never appears via the meta path.
+
+  This release adds a second pass at the end of
+  `_attach_and_create_views`: scan `<extract_dir>/data/*.parquet` and
+  create a master view via `read_parquet('<path>')` for any parquet
+  whose `<id>` is not already in the per-source `tables` list (i.e. the
+  meta path didn't pick it up). Decoupled from `materialize_query`'s
+  open-handle race; robust against any registration drift between
+  materialize and rebuild. Honors the same `view_ownership` / cross-
+  connector collision rules as the meta path (first-come-first-served
+  via `view_repo.claim`). Tests cover: fallback fires when meta row is
+  missing; fallback skips when meta path already created the view (no
+  shadow); invalid identifier in parquet stem is skipped without crash;
+  source without `data/` subdir doesn't crash the scan.
+
 ## [0.40.0] — 2026-05-06
 
 ### Fixed
