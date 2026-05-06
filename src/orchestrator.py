@@ -395,6 +395,69 @@ class SyncOrchestrator:
                         source_name, table_name, e,
                     )
 
+            # Filesystem-fallback master views (0.41.0). The 0.40.0 fix in
+            # `materialize_query` tries to register the parquet in
+            # `extract.duckdb`'s `_meta` + inner view, but the open-as-
+            # second-write-handle from the same uvicorn process collides
+            # with the existing read-only ATTACH that `rebuild()` itself
+            # holds (`Unique file handle conflict: Cannot attach "extract"
+            # — already attached by database "<source>"`). The 0.40.0
+            # helper logs a WARNING and falls through, parquet is
+            # canonical, but the master view never appears via the meta
+            # path. This second pass scans `<extract_dir>/data/*.parquet`
+            # directly and creates a master view via `read_parquet()` for
+            # any parquet that didn't already get one through the meta
+            # path. Decoupled from materialize_query's open-handle race;
+            # robust against any registration drift between materialize
+            # and rebuild.
+            try:
+                extracts_dir = _get_extracts_dir()
+            except Exception:
+                extracts_dir = None
+            if extracts_dir is not None:
+                data_dir = extracts_dir / source_name / "data"
+                if data_dir.exists():
+                    already_created = set(tables)
+                    for parquet_path in sorted(data_dir.glob("*.parquet")):
+                        table_id = parquet_path.stem
+                        if not _validate_identifier(table_id, "fs_fallback table_id"):
+                            continue
+                        if table_id in already_created:
+                            continue
+                        # view_repo claim — same first-come-first-served
+                        # rule as the meta-path branch above.
+                        if view_repo is not None:
+                            if not view_repo.claim(table_id, source_name):
+                                prior_owner = (
+                                    view_repo.get_owner(table_id)
+                                    or existing_owners.get(table_id, "<unknown>")
+                                )
+                                logger.error(
+                                    "view_ownership collision: %s already owns view %r; "
+                                    "%s.%s (filesystem-fallback) will NOT be exposed.",
+                                    prior_owner, table_id, source_name, table_id,
+                                )
+                                continue
+                            if claimed_pairs is not None:
+                                claimed_pairs.append((source_name, table_id))
+                        try:
+                            safe_path = str(parquet_path).replace("'", "''")
+                            conn.execute(
+                                f"CREATE OR REPLACE VIEW \"{table_id}\" AS "
+                                f"SELECT * FROM read_parquet('{safe_path}')"
+                            )
+                            tables.append(table_id)
+                            logger.info(
+                                "filesystem-fallback master view created: "
+                                "%s/%s (parquet at %s) — meta row was missing",
+                                source_name, table_id, parquet_path,
+                            )
+                        except Exception as e:
+                            logger.error(
+                                "filesystem-fallback master view failed for %s/%s: %s",
+                                source_name, table_id, e,
+                            )
+
             # Update sync_state in system DB
             self._update_sync_state(meta_rows, source_name)
 
