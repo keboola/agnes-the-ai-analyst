@@ -32,6 +32,17 @@ def test_local_at_or_above_min_does_not_exit():
         _check_version_headers(resp)  # must not raise
 
 
+def test_local_equal_to_min_does_not_exit():
+    """`Version("X.Y.Z") < Version("X.Y.Z")` is False — equality must pass."""
+    from cli.client import _check_version_headers
+    with patch("cli.client._installed_version", return_value="0.35.0"):
+        resp = _fake_response({
+            "X-Agnes-Latest-Version": "0.40.0",
+            "X-Agnes-Min-Version": "0.35.0",
+        })
+        _check_version_headers(resp)  # must not raise
+
+
 def test_missing_headers_no_enforcement():
     """Older server without middleware → no headers → no-op."""
     from cli.client import _check_version_headers
