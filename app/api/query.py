@@ -891,28 +891,32 @@ def _bq_quota_and_cap_guard(
     partitioned/clustered tables and rejecting narrow queries that BQ
     itself would dry-run as a few MB.
 
-    Fallback: if BQ rejects the rewritten SQL with a parse-level
-    ``client_error`` (e.g. DuckDB-only syntax like ``::INT`` casts that
-    don't translate to BQ), fall back to the pre-#171 per-table
-    SELECT * approach so the cap-guard still functions — over-estimate
-    is preferred over fail-open. Forbidden / upstream errors still
-    propagate as HTTP 502.
+    Issue #201 fix: when BQ rejects the rewritten SQL with a parse-level
+    ``bq_bad_request`` (e.g. DuckDB-only syntax like ``::INT`` casts, or
+    a rewriter bug that broke valid BQ-native input), retry with the
+    user's ORIGINAL SQL — BQ-native input dry-runs cleanly. If the
+    original ALSO fails, return a structured `remote_estimate_failed`
+    HTTP 400 instead of the pre-#201 synthetic ``SELECT *`` per-table
+    over-estimate. The synthetic fallback threw away user filters and
+    routinely ballooned to "full table size", blocking legitimate narrow
+    queries via `remote_scan_too_large`. Forbidden / upstream errors
+    still propagate as HTTP 502.
 
     Flow:
     1. `check_daily_budget` — over-cap users get 429 BEFORE any BQ work.
     2. `quota.acquire(user_id)` opened — concurrent-slot held throughout.
     3. Single dry-run of rewritten user SQL → `total_bytes`.
-       On parse error, fall back to per-table SELECT * → sum.
+       On parse error, retry with the user's original SQL.
+       On second parse error, raise 400 `remote_estimate_failed`.
     4. If total > cap → 400 `remote_scan_too_large`.
     5. Yield. Caller runs `analytics.execute(...)` + `record_bytes(...)`.
     6. On exit, slot released.
 
     Mutates `dry_run_set` in place: the third tuple element (bytes) is
     populated so the caller can sum and record bytes against the user's
-    quota post-flight. Single-dry-run path puts `total_bytes` on the first
-    entry and zero on the rest (BQ doesn't expose per-table bytes for a
-    composite query); the caller's `sum(b for _, _, b in dry_run_set)`
-    still equals `total_bytes`.
+    quota post-flight. Pin `total_bytes` on entry 0 and zero on the rest
+    — BQ doesn't expose per-table bytes for a composite query — so
+    `sum(b for _, _, b in dry_run_set)` still equals `total_bytes`.
     """
     quota = _build_quota_tracker()
     try:
@@ -953,61 +957,71 @@ def _bq_quota_and_cap_guard(
                 sql, name_lookups, project,
             )
 
-            # Try the single-dry-run path first (issue #171). Falls back
-            # to the per-table SELECT * approach only on BQ parse errors
-            # (kind="bq_bad_request" — DuckDB-only syntax that BQ can't
-            # translate). All other BQ errors propagate as 502 below.
+            # Try the single-dry-run path first (issue #171). On BQ parse
+            # errors (`bq_bad_request` — typically DuckDB-only syntax the
+            # rewriter couldn't translate, OR — pre-#201 fix — a
+            # rewriter-corrupted backtick path) retry the user's ORIGINAL
+            # SQL: when the user submitted BQ-native SQL, the rewriter is
+            # the only thing standing between them and a clean dry-run.
+            # If the original ALSO fails, this is true DuckDB-only syntax
+            # that BQ cannot estimate — fail fast with a structured
+            # `remote_estimate_failed` instead of the pre-#201 synthetic
+            # `SELECT *` over-estimate (which threw away user filters and
+            # often ballooned to "full table size", blocking legitimate
+            # narrow queries via `remote_scan_too_large`).
+            #
+            # All other BQ errors (forbidden, upstream) propagate as 502.
             total_bytes = 0
-            used_fallback = False
             try:
                 total_bytes = _bq_dry_run_bytes(bq, rewritten_sql)
             except BqAccessError as exc:
-                if exc.kind == "bq_bad_request":
-                    logger.warning(
-                        "BQ dry-run rejected the rewritten SQL "
-                        "(kind=%s, message=%s). Falling back to per-table "
-                        "SELECT * estimate; the cap check will over-estimate "
-                        "scan bytes for this query. Consider rewriting to "
-                        "BQ-native syntax for a tight pre-check.",
-                        exc.kind, exc.message,
-                    )
-                    used_fallback = True
-                else:
+                if exc.kind != "bq_bad_request":
                     raise HTTPException(status_code=502, detail={
                         "kind": exc.kind,
                         "message": exc.message,
                         **(exc.details or {}),
                     })
-
-            if used_fallback:
-                # Pre-#171 path: estimate per registered table from a
-                # synthetic SELECT *. Over-estimates partitioned scans but
-                # never under-estimates, so the cap still bounds risk.
-                for i, (bucket, source_table, _) in enumerate(dry_run_set):
-                    fallback_sql = (
-                        f"SELECT * FROM `{project}.{bucket}.{source_table}`"
-                    )
-                    try:
-                        est = _bq_dry_run_bytes(bq, fallback_sql)
-                    except BqAccessError as exc:
+                logger.warning(
+                    "BQ dry-run rejected the rewritten SQL "
+                    "(kind=%s, message=%s). Retrying with the user's "
+                    "original SQL.",
+                    exc.kind, exc.message,
+                )
+                try:
+                    total_bytes = _bq_dry_run_bytes(bq, sql)
+                except BqAccessError as exc2:
+                    if exc2.kind != "bq_bad_request":
                         raise HTTPException(status_code=502, detail={
-                            "kind": exc.kind,
-                            "message": exc.message,
-                            **(exc.details or {}),
+                            "kind": exc2.kind,
+                            "message": exc2.message,
+                            **(exc2.details or {}),
                         })
-                    dry_run_set[i] = (bucket, source_table, est)
-                    total_bytes += est
-            else:
-                # Single-dry-run path. Distribute the total to dry_run_set
-                # so the caller's `record_bytes(sum(...))` stays correct.
-                # Per-table breakdown is unavailable from a composite
-                # dry-run; pin total to entry 0, zero the rest.
-                if dry_run_set:
-                    b0, t0, _ = dry_run_set[0]
-                    dry_run_set[0] = (b0, t0, total_bytes)
-                    for i in range(1, len(dry_run_set)):
-                        bi, ti, _ = dry_run_set[i]
-                        dry_run_set[i] = (bi, ti, 0)
+                    raise HTTPException(status_code=400, detail={
+                        "kind": "remote_estimate_failed",
+                        "message": (
+                            "Could not estimate scan size for this query."
+                        ),
+                        "hint": (
+                            "Use a registered table name from `agnes "
+                            "catalog`, or write BQ-native SQL with full "
+                            "backtick paths. Pure DuckDB-only syntax is "
+                            "not supported for --remote queries."
+                        ),
+                        "underlying": exc2.message,
+                    })
+
+            # Distribute the total to dry_run_set so the caller's
+            # `record_bytes(sum(...))` stays correct. Per-table breakdown
+            # is unavailable from a composite dry-run; pin total to entry
+            # 0, zero the rest. (Same accounting symmetry whether the
+            # bytes came from the rewritten SQL or the original-SQL
+            # retry.)
+            if dry_run_set:
+                b0, t0, _ = dry_run_set[0]
+                dry_run_set[0] = (b0, t0, total_bytes)
+                for i in range(1, len(dry_run_set)):
+                    bi, ti, _ = dry_run_set[i]
+                    dry_run_set[i] = (bi, ti, 0)
 
             if cap_bytes > 0 and total_bytes > cap_bytes:
                 tables = [f"{b}.{t}" for b, t, _ in dry_run_set]

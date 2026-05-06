@@ -242,15 +242,17 @@ def test_guardrail_invokes_dry_run_exactly_once_per_request(
     assert "`test-data-prj.marketing.traffic`" in state["last_sql"]
 
 
-def test_guardrail_falls_back_to_per_table_estimate_on_bq_parse_error(
+def test_fallback_tries_original_sql_first(
     seeded_app, mock_dry_run, monkeypatch,
 ):
-    """When BQ rejects the rewritten SQL with ``bq_bad_request`` (DuckDB-only
-    syntax that doesn't translate — e.g. ``::INT`` casts, ``STRPOS``, …),
-    the cap-guard falls back to the pre-#171 per-table SELECT * approach
-    so a non-portable query still gets a (loose) cap estimate instead of
-    fail-opening.
-    """
+    """Issue #201 — when the rewriter produces SQL that BQ rejects with
+    `bq_bad_request` but the user's ORIGINAL SQL dry-runs cleanly, the
+    cap-guard uses the original SQL's byte estimate. No more synthetic
+    `SELECT *` over-estimate.
+
+    Bare-name reference populates `dry_run_set` so the cap-guard
+    actually fires. Mock returns parse-error on the first call
+    (rewritten SQL) and small bytes on the second (original)."""
     from connectors.bigquery.access import BqAccessError
 
     _register_bq_remote_row("ue", "finance", "ue")
@@ -259,10 +261,10 @@ def test_guardrail_falls_back_to_per_table_estimate_on_bq_parse_error(
 
     def fake_dry_run(_bq, sql):
         state["calls"].append(sql)
-        # First call (rewritten user SQL) → BQ parse error.
+        # First call (rewritten SQL) → BQ parse error.
         if len(state["calls"]) == 1:
-            raise BqAccessError("bq_bad_request", "Syntax error: unexpected '::'")
-        # Second call (fallback per-table SELECT *) → small bytes, pass cap.
+            raise BqAccessError("bq_bad_request", "Syntax error: simulated")
+        # Second call (the user's original SQL) → small, passes cap.
         return 4096
 
     monkeypatch.setattr(
@@ -271,28 +273,78 @@ def test_guardrail_falls_back_to_per_table_estimate_on_bq_parse_error(
 
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
-    # SQL with DuckDB-only `::INT` cast that BQ would reject.
+    user_sql = "SELECT order_id FROM ue WHERE country = 'CZ'"
+    r = c.post("/api/query", json={"sql": user_sql}, headers=_auth(token))
+
+    # Two dry-runs: rewritten then original. No third synthetic-SELECT-*
+    # call.
+    assert len(state["calls"]) == 2, (
+        f"expected rewritten + original-SQL retry, got "
+        f"{len(state['calls'])}: {state['calls']}"
+    )
+    assert state["calls"][1] == user_sql, (
+        f"second call must be the user's ORIGINAL SQL, got "
+        f"{state['calls'][1]!r}"
+    )
+    # The response must NOT be remote_scan_too_large from a synthetic
+    # over-estimate — 4096 bytes is well under the 5 GiB cap.
+    if r.status_code == 400:
+        detail = r.json().get("detail", {})
+        if isinstance(detail, dict):
+            assert detail.get("reason") != "remote_scan_too_large", detail
+
+
+def test_fallback_fails_fast_on_pure_duckdb_syntax(
+    seeded_app, mock_dry_run, monkeypatch,
+):
+    """When BOTH the rewritten and original SQL fail with `bq_bad_request`
+    (true DuckDB-only syntax like `::INT`), return HTTP 400
+    `remote_estimate_failed` — never silently over-estimate via a
+    synthetic `SELECT *`."""
+    from connectors.bigquery.access import BqAccessError
+
+    _register_bq_remote_row("ue", "finance", "ue")
+
+    state = {"calls": []}
+
+    def always_parse_error(_bq, sql):
+        state["calls"].append(sql)
+        raise BqAccessError("bq_bad_request", "Syntax error: unexpected '::'")
+
+    monkeypatch.setattr(
+        "app.api.query._bq_dry_run_bytes", always_parse_error, raising=False,
+    )
+
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
     r = c.post(
         "/api/query",
         json={"sql": "SELECT order_id::INT FROM ue WHERE country = 'CZ'"},
         headers=_auth(token),
     )
 
-    # Two dry-runs (rewritten + fallback per-table) before the (failed)
-    # execute. Status will be a downstream error from analytics.execute()
-    # since `::INT` doesn't work in DuckDB either against a remote view —
-    # but the GUARDRAIL must have completed without 5xx-ing.
+    # Two dry-runs (rewritten + original retry). NO synthetic SELECT * fallback.
     assert len(state["calls"]) == 2, (
-        f"expected 1 rewritten + 1 fallback dry-run, got {len(state['calls'])}: "
-        f"{state['calls']}"
+        f"expected 1 rewritten + 1 original-retry, got "
+        f"{len(state['calls'])}: {state['calls']}"
     )
-    assert "::" in state["calls"][0], "first call should be the rewritten user SQL"
-    assert state["calls"][1].startswith("SELECT * FROM"), (
-        "second call should be the per-table fallback"
-    )
-    # Whatever HTTP status comes back must NOT be 502 from the guard's
-    # transport-error path — fallback must absorb the bq_bad_request.
-    assert r.status_code != 502, r.json()
+    # No call should be a synthetic ``SELECT * FROM `<project>...```. The
+    # original-SQL retry contains the user's SELECT clause.
+    for c_sql in state["calls"]:
+        # If a call is just a synthetic ``SELECT * FROM `<project>.<bucket>.<table>```
+        # the user's `WHERE country = 'CZ'` would be missing.
+        if c_sql.startswith("SELECT * FROM `") and "WHERE" not in c_sql:
+            raise AssertionError(
+                f"synthetic SELECT * fallback was used: {c_sql!r}"
+            )
+
+    assert r.status_code == 400, r.json()
+    detail = r.json().get("detail", {})
+    assert isinstance(detail, dict), detail
+    assert detail.get("kind") == "remote_estimate_failed", detail
+    assert "underlying" in detail, detail
+    assert "agnes catalog" in detail.get("hint", "").lower() or \
+           "backtick" in detail.get("hint", "").lower(), detail
 
 
 def test_guardrail_propagates_502_on_non_parse_bq_errors(
