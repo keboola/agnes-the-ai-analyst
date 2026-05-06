@@ -1558,6 +1558,22 @@
         return div.innerHTML;
     }
 
+    // Defensive normalization for descriptions registered via shell-quoting
+    // tooling that injected literal backslash escapes (e.g. `Don\'t`, `\n`).
+    // Mirrors _unescape_shell_quoting in app/api/admin.py — applied at render
+    // time so already-stored corrupt rows still display readably.
+    function unescapeShellQuoting(s) {
+        if (!s) return s;
+        return s
+            .replace(/\\\\/g, ' ')
+            .replace(/\\n/g, '\n')
+            .replace(/\\r/g, '\r')
+            .replace(/\\t/g, '\t')
+            .replace(/\\'/g, "'")
+            .replace(/\\"/g, '"')
+            .replace(/ /g, '\\');
+    }
+
     // C3: removed dead Discovery panel JS. The global Discovery card +
     // its #discoverBtn / #discoveryResults DOM hooks were removed when
     // the per-tab UI landed; per-tab Discover/List datalist helpers live
@@ -2620,7 +2636,8 @@
             html += '<td class="col-id" title="' + escapeHtml(table.id) + '">' + escapeHtml(table.id) + '</td>';
             html += '<td>' + escapeHtml(table.query_mode || 'local') + '</td>';
             html += '<td>' + escapeHtml((table.primary_key || []).join(', ') || '-') + '</td>';
-            html += '<td class="col-description" title="' + escapeHtml(table.description || '') + '">' + escapeHtml(table.description || '-') + '</td>';
+            var desc = unescapeShellQuoting(table.description || '');
+            html += '<td class="col-description" title="' + escapeHtml(desc) + '">' + escapeHtml(desc || '-') + '</td>';
             html += '<td class="col-actions"><div style="display:flex; gap:4px; justify-content:flex-end;">';
             html += '<button class="btn-icon" title="Edit" onclick=\'openEditModal(' + JSON.stringify(table).replace(/'/g, "\\'") + ')\'>';
             html += '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>';
