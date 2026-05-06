@@ -95,7 +95,7 @@ def file_set_for_user(
     pass them through to avoid doubling the DB + disk-hash work).
     """
     if plugins is None:
-        plugins = marketplace_filter.resolve_allowed_plugins(conn, user)
+        plugins = marketplace_filter.resolve_user_marketplace(conn, user)
     if etag is None:
         etag = marketplace_filter.compute_etag(plugins)
 
@@ -103,12 +103,26 @@ def file_set_for_user(
     files[".claude-plugin/marketplace.json"] = _merged_manifest_bytes(plugins, etag)
 
     for plugin in plugins:
+        prefix = plugin["prefixed_name"]
+        if plugin.get("bundle_dirs"):
+            # Bundle entry: synth plugin.json + every non-`.claude-plugin/`
+            # file from each source dir merged into one tree. See
+            # packager._collect_members for the equivalent ZIP path.
+            from app.marketplace_server.packager import _bundle_plugin_json_bytes
+            from src.marketplace_filter import _bundle_files
+            files[f"plugins/{prefix}/.claude-plugin/plugin.json"] = (
+                _bundle_plugin_json_bytes(plugin)
+            )
+            for rel, abs_path in _bundle_files(plugin["bundle_dirs"]):
+                files[f"plugins/{prefix}/{rel}"] = abs_path.read_bytes()
+            continue
+
         plugin_dir: Path = plugin["plugin_dir"]
-        if not plugin_dir.is_dir():
+        if plugin_dir is None or not plugin_dir.is_dir():
             continue
         for f in sorted(p for p in plugin_dir.rglob("*") if p.is_file()):
             rel = f.relative_to(plugin_dir).as_posix()
-            arc = f"plugins/{plugin['prefixed_name']}/{rel}"
+            arc = f"plugins/{prefix}/{rel}"
             files[arc] = f.read_bytes()
     return files
 
@@ -151,7 +165,7 @@ def ensure_repo_for_user(conn: duckdb.DuckDBPyConnection, user: dict) -> Path:
     lazily if needed. Safe under concurrent identical-etag requests: each
     builder uses a unique tmp dir and atomic rename; loser deletes its tmp.
     """
-    plugins = marketplace_filter.resolve_allowed_plugins(conn, user)
+    plugins = marketplace_filter.resolve_user_marketplace(conn, user)
     etag = marketplace_filter.compute_etag(plugins)
 
     root = cache_dir()

@@ -101,10 +101,24 @@ def _merged_manifest(plugins: List[dict], etag: str) -> Dict[str, Any]:
 def build_info(conn: duckdb.DuckDBPyConnection, user: dict) -> Dict[str, Any]:
     """Return a JSON-serializable summary for diagnostic / admin endpoints.
 
-    Mirrors the PoC's /marketplace/info contract.
+    Mirrors the PoC's /marketplace/info contract; v24 splits the plugin list
+    by ``source`` so operators can tell at a glance whether a user's
+    marketplace view is admin-curated, Store-installed, or both.
     """
-    plugins = marketplace_filter.resolve_allowed_plugins(conn, user)
+    plugins = marketplace_filter.resolve_user_marketplace(conn, user)
     etag = marketplace_filter.compute_etag(plugins)
+
+    def _entry(p: dict) -> Dict[str, Any]:
+        return {
+            "name": p["manifest_name"],
+            "original_name": p["original_name"],
+            "prefixed_name": p["prefixed_name"],
+            "marketplace_slug": p["marketplace_slug"],
+            "version": p.get("version"),
+            "description": p["raw"].get("description"),
+            "source": p.get("source", "marketplace"),
+        }
+
     return {
         "user_id": user.get("id"),
         "email": user.get("email"),
@@ -112,17 +126,8 @@ def build_info(conn: duckdb.DuckDBPyConnection, user: dict) -> Dict[str, Any]:
         "marketplace_name": MARKETPLACE_NAME,
         "etag": etag,
         "plugin_count": len(plugins),
-        "plugins": [
-            {
-                "name": p["manifest_name"],
-                "original_name": p["original_name"],
-                "prefixed_name": p["prefixed_name"],
-                "marketplace_slug": p["marketplace_slug"],
-                "version": p.get("version"),
-                "description": p["raw"].get("description"),
-            }
-            for p in plugins
-        ],
+        "plugins": [_entry(p) for p in plugins if p.get("source") != "store"],
+        "store_plugins": [_entry(p) for p in plugins if p.get("source") == "store"],
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
 
@@ -131,6 +136,10 @@ def _collect_members(plugins: List[dict], etag: str) -> List[Tuple[str, bytes]]:
     """Collect (arcname, bytes) pairs for everything that goes into the ZIP.
 
     Intentionally returns unsorted — caller sorts for deterministic order.
+
+    Bundle entries (``bundle_dirs`` set, ``plugin_dir`` is None) get a synth
+    ``.claude-plugin/plugin.json`` and content merged from every source dir
+    minus each source's own ``.claude-plugin/`` (the bundle ships its own).
     """
     members: List[Tuple[str, bytes]] = []
     manifest = _merged_manifest(plugins, etag)
@@ -142,15 +151,42 @@ def _collect_members(plugins: List[dict], etag: str) -> List[Tuple[str, bytes]]:
     )
 
     for plugin in plugins:
+        prefix = plugin["prefixed_name"]
+        if plugin.get("bundle_dirs"):
+            members.append(
+                (
+                    f"plugins/{prefix}/.claude-plugin/plugin.json",
+                    _bundle_plugin_json_bytes(plugin),
+                )
+            )
+            from src.marketplace_filter import _bundle_files
+            for rel, abs_path in _bundle_files(plugin["bundle_dirs"]):
+                members.append(
+                    (f"plugins/{prefix}/{rel}", abs_path.read_bytes())
+                )
+            continue
+
         plugin_dir = plugin["plugin_dir"]
-        if not plugin_dir.is_dir():
+        if plugin_dir is None or not plugin_dir.is_dir():
             continue
         for f in sorted(p for p in plugin_dir.rglob("*") if p.is_file()):
             rel = f.relative_to(plugin_dir).as_posix()
-            arc = f"plugins/{plugin['prefixed_name']}/{rel}"
+            arc = f"plugins/{prefix}/{rel}"
             members.append((arc, f.read_bytes()))
 
     return members
+
+
+def _bundle_plugin_json_bytes(plugin: dict) -> bytes:
+    """Synth plugin.json for a bundle entry — uses the same fields as the
+    served marketplace.json plugin entry so Claude Code's catalog lookup
+    matches the loaded plugin's identity."""
+    payload = {
+        "name": plugin["manifest_name"],
+        "version": plugin.get("version") or "",
+        "description": plugin["raw"].get("description") or "",
+    }
+    return json.dumps(payload, indent=2).encode("utf-8")
 
 
 def _write_zip_entry(zf: zipfile.ZipFile, arcname: str, data: bytes) -> None:
@@ -172,13 +208,13 @@ def _etag_cache_key(plugins: List[dict]) -> tuple:
 def compute_etag_for_user(
     conn: duckdb.DuckDBPyConnection, user: dict
 ) -> Tuple[str, List[dict]]:
-    """Resolve the user's allowed plugins and compute their content-addressed
-    ETag, without doing any file collection or ZIP assembly.
+    """Resolve the user's served plugin set (admin grants minus opt-outs,
+    plus Store installs) and compute its content-addressed ETag.
 
     Returns (etag, plugins) so callers that proceed to build_zip can reuse
     the resolved plugin set and skip the second DB query.
     """
-    plugins = marketplace_filter.resolve_allowed_plugins(conn, user)
+    plugins = marketplace_filter.resolve_user_marketplace(conn, user)
     if _ETAG_CACHE is None:
         return marketplace_filter.compute_etag(plugins), plugins
     cache_key = _etag_cache_key(plugins)

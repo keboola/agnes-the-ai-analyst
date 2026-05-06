@@ -13,9 +13,10 @@ import duckdb
 from src.db import SCHEMA_VERSION, _ensure_schema, get_schema_version
 
 
-def test_schema_version_is_24():
-    # bumped from 23→24 for the materialized BQ source_query rewrite migration
-    assert SCHEMA_VERSION == 24
+def test_schema_version_is_25():
+    # bumped 24→25 for the Store + opt-out tables backing /store + /my-ai-stack
+    # (24 was the materialized BQ source_query rewrite migration)
+    assert SCHEMA_VERSION == 25
 
 
 def test_v20_adds_source_query(tmp_path):
@@ -84,7 +85,7 @@ def test_v19_db_migrates_to_v20(tmp_path):
 
     _ensure_schema(conn)
 
-    assert get_schema_version(conn) == SCHEMA_VERSION  # bumped 23→24
+    assert get_schema_version(conn) == SCHEMA_VERSION  # bumped 19→25 forward
     cols = {
         r[0] for r in conn.execute(
             "SELECT column_name FROM information_schema.columns "

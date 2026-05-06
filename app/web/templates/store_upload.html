@@ -1,0 +1,675 @@
+{% extends "base.html" %}
+{% block title %}Upload to Store — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{% block content %}
+<style>
+  /* ── Container override ────────────────────────────────────────── */
+  .container:has(.upload-page) { max-width: 880px; margin: 0 auto; padding: 16px 32px 48px; }
+  .container:has(.upload-page) > main { margin: 0; padding: 0; }
+
+  /* ── Hero (mirrors /setup) ─────────────────────────────────────── */
+  .upload-hero {
+    background: linear-gradient(135deg, #0073D1 0%, #0056A3 100%);
+    border-radius: 12px;
+    padding: 32px 36px;
+    margin-bottom: 24px;
+    box-shadow: 0 4px 16px rgba(0, 115, 209, 0.2);
+    color: white;
+  }
+  .upload-hero .eyebrow {
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.8px; color: rgba(255, 255, 255, 0.75);
+    margin-bottom: 10px;
+  }
+  .upload-hero h1 {
+    font-size: 30px; font-weight: 700; margin: 0 0 8px;
+    color: #fff; letter-spacing: -0.4px;
+  }
+  .upload-hero .sub { font-size: 14px; color: rgba(255,255,255,0.85); line-height: 1.6; }
+  .upload-hero .meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+  .upload-hero .pill {
+    background: rgba(255,255,255,0.15); padding: 6px 12px;
+    border-radius: 6px; font-family: var(--font-mono); font-size: 12px; color: #fff;
+  }
+
+  /* ── Progress bar (4-segment style, matches first-time-setup) ──── */
+  .progress {
+    display: flex; gap: 8px; margin-bottom: 20px;
+  }
+  .progress .seg {
+    flex: 1; height: 4px; border-radius: 2px;
+    background: var(--border, #e5e7eb);
+    transition: background 0.15s ease;
+  }
+  .progress .seg.is-done { background: var(--primary, #0073D1); }
+
+  /* ── Card (mirrors /setup) ─────────────────────────────────────── */
+  .card {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    overflow: hidden;
+    margin-bottom: 20px;
+  }
+  .card-header { padding: 22px 24px 0; display: flex; align-items: center; gap: 12px; }
+  .card-body { padding: 16px 24px 24px; }
+  .step-num {
+    width: 26px; height: 26px;
+    background: var(--primary, #0073D1); color: #fff;
+    border-radius: 50%; display: inline-flex; align-items: center;
+    justify-content: center; font-size: 12px; font-weight: 700; flex-shrink: 0;
+  }
+  .card-title { font-size: 16px; font-weight: 600; color: var(--text-primary, #111827); }
+  .card-sub {
+    font-size: 13px; color: var(--text-secondary, #6b7280);
+    line-height: 1.6; margin: 0 0 14px;
+  }
+  .card-sub code {
+    background: var(--border-light, #f3f4f6); padding: 1px 6px;
+    border-radius: 4px; font-family: var(--font-mono); font-size: 12px;
+    color: var(--text-primary, #111827);
+  }
+
+  /* ── Form bits ─────────────────────────────────────────────────── */
+  .field { margin-bottom: 16px; }
+  .field-label {
+    display: block; font-size: 13px; font-weight: 500;
+    color: var(--text-primary, #111827); margin-bottom: 6px;
+  }
+  .field-hint { font-size: 12px; color: var(--text-secondary, #6b7280); margin-top: 6px; }
+  .field input[type=text],
+  .field input[type=url],
+  .field textarea,
+  .field select {
+    width: 100%; padding: 10px 12px;
+    border: 1px solid var(--border, #d1d5db); border-radius: 8px;
+    font-size: 14px; font-family: var(--font-primary, inherit);
+    box-sizing: border-box; background: #fff;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+  .field textarea { min-height: 90px; resize: vertical; }
+  .field input[type=text]:focus,
+  .field input[type=url]:focus,
+  .field textarea:focus,
+  .field select:focus {
+    outline: none; border-color: var(--primary, #0073D1);
+    box-shadow: 0 0 0 3px rgba(0, 115, 209, 0.12);
+  }
+
+  /* ── Type tiles (radio cards) ──────────────────────────────────── */
+  .type-tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .type-tiles label {
+    cursor: pointer; padding: 14px 12px;
+    border: 1px solid var(--border, #e5e7eb); border-radius: 10px;
+    text-align: center; transition: all 0.15s ease;
+    background: #fff;
+  }
+  .type-tiles label:hover { border-color: #c7d2fe; }
+  .type-tiles label.is-active {
+    border-color: var(--primary, #0073D1);
+    background: linear-gradient(180deg, rgba(0,115,209,0.06), rgba(0,115,209,0.02));
+    box-shadow: 0 0 0 3px rgba(0, 115, 209, 0.12);
+  }
+  .type-tiles input[type=radio] { display: none; }
+  .type-tiles .type-name {
+    font-weight: 600; font-size: 14px; color: var(--text-primary, #111827); margin-bottom: 4px;
+  }
+  .type-tiles .type-hint { font-size: 11px; color: var(--text-secondary, #6b7280); line-height: 1.4; }
+
+  /* ── ZIP drop zone (file input wrapper) ────────────────────────── */
+  .file-drop {
+    border: 1.5px dashed var(--border, #d1d5db);
+    border-radius: 10px; padding: 18px;
+    background: var(--background, #f9fafb);
+    display: flex; align-items: center; gap: 12px;
+    transition: all 0.15s ease;
+  }
+  .file-drop:hover { border-color: var(--primary, #0073D1); background: #fff; }
+  .file-drop.is-dragover {
+    border-color: var(--primary, #0073D1); background: #fff;
+    box-shadow: 0 0 0 4px rgba(0, 115, 209, 0.15);
+    transform: scale(1.005);
+  }
+  .file-drop.has-file { border-style: solid; border-color: #10b981; background: #f0fdf4; }
+  .file-drop .icon {
+    width: 36px; height: 36px; border-radius: 8px;
+    background: rgba(0, 115, 209, 0.1); color: var(--primary, #0073D1);
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0; font-size: 16px;
+  }
+  .file-drop.has-file .icon { background: rgba(16, 185, 129, 0.1); color: #10b981; }
+  .file-drop .file-info { flex: 1; min-width: 0; }
+  .file-drop .file-info .label { font-size: 13px; font-weight: 500; color: var(--text-primary, #111827); }
+  .file-drop .file-info .label .filename { color: var(--primary, #0073D1); margin-left: 6px; }
+  .file-drop.has-file .file-info .label { color: #047857; }
+  .file-drop .file-info .meta { font-size: 12px; color: var(--text-secondary, #6b7280); margin-top: 2px; }
+  .file-drop input[type=file] { display: none; }
+  .file-drop button {
+    appearance: none; padding: 7px 14px;
+    border: 1px solid var(--border, #d1d5db); background: #fff;
+    color: var(--text-primary, #111827); border-radius: 8px;
+    font-size: 12px; font-weight: 500; cursor: pointer;
+    flex-shrink: 0; font-family: var(--font-primary, inherit);
+  }
+  .file-drop button:hover { border-color: var(--primary, #0073D1); color: var(--primary, #0073D1); }
+
+  /* ── Doc list ──────────────────────────────────────────────────── */
+  .doc-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+  .doc-item {
+    display: flex; align-items: center; gap: 10px; justify-content: space-between;
+    padding: 8px 12px; border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px; background: var(--background, #f9fafb); font-size: 13px;
+  }
+  .doc-item .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary, #111827); }
+  .doc-item .size { color: var(--text-secondary, #6b7280); flex-shrink: 0; font-size: 12px; }
+  .doc-item button {
+    appearance: none; border: none; background: transparent;
+    color: #b91c1c; cursor: pointer; font-size: 16px;
+    padding: 0 4px; line-height: 1;
+  }
+  .doc-add {
+    appearance: none; padding: 8px 14px;
+    border: 1px dashed var(--border, #d1d5db); background: transparent;
+    color: var(--text-secondary, #6b7280); border-radius: 8px;
+    font-size: 13px; cursor: pointer; align-self: flex-start;
+    font-family: var(--font-primary, inherit);
+  }
+  .doc-add:hover { border-color: var(--primary, #0073D1); color: var(--primary, #0073D1); }
+
+  /* ── Buttons (mirror /setup primary CTA) ───────────────────────── */
+  .actions { display: flex; gap: 10px; align-items: center; margin-top: 8px; }
+  .btn-primary {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: var(--font-primary, inherit);
+    font-size: 14px; font-weight: 600; color: #fff;
+    background: var(--primary, #0073D1); border: none;
+    border-radius: 8px; padding: 11px 22px; cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .btn-primary:hover {
+    background: var(--primary-dark, #0056A3);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 14px rgba(0, 115, 209, 0.25);
+  }
+  .btn-primary:disabled { opacity: 0.7; cursor: wait; transform: none; box-shadow: none; }
+  .btn-secondary {
+    appearance: none; padding: 10px 18px;
+    border: 1px solid var(--border, #d1d5db); background: #fff;
+    color: var(--text-secondary, #6b7280); border-radius: 8px;
+    font-size: 14px; font-weight: 500; cursor: pointer;
+    font-family: var(--font-primary, inherit);
+    transition: all 0.15s ease;
+  }
+  .btn-secondary:hover { border-color: var(--primary, #0073D1); color: var(--primary, #0073D1); }
+  .btn-link {
+    color: var(--text-secondary, #6b7280); text-decoration: none;
+    font-size: 13px; padding: 10px 8px;
+  }
+  .btn-link:hover { color: var(--text-primary, #111827); }
+
+  /* ── Status banner ─────────────────────────────────────────────── */
+  /* `display: flex` on .banner overrides the user-agent default for the
+     `hidden` attribute, leaving the banner visible even with no error.
+     Force the override here so the empty banner stays out of the layout. */
+  .banner[hidden] { display: none !important; }
+  .banner {
+    padding: 12px 16px; border-radius: 8px; margin-bottom: 16px;
+    font-size: 13px; line-height: 1.5; display: flex; align-items: center; gap: 10px;
+  }
+  .banner.error { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
+  .banner.success { background: #f0fdf4; color: #16a34a; border: 1px solid #bbf7d0; }
+  .banner .ico { flex-shrink: 0; font-size: 16px; }
+
+  /* ── Step swap ─────────────────────────────────────────────────── */
+  .step { display: none; }
+  .step.is-active { display: block; }
+</style>
+
+<div class="upload-page">
+  <div class="upload-hero">
+    <div class="eyebrow">Store</div>
+    <h1>Upload an entity</h1>
+    <p class="sub">
+      Share a skill, agent, or plugin with everyone on this instance.
+      Display name will be suffixed with
+      <code style="background: rgba(255,255,255,0.18); padding: 1px 6px; border-radius: 4px; font-family: var(--font-mono); font-size: 12px;">-by-{{ session.user.email.split('@')[0] }}</code>
+      so it doesn't collide.
+    </p>
+  </div>
+
+  <div class="progress">
+    <div class="seg is-done" id="seg-1"></div>
+    <div class="seg" id="seg-2"></div>
+  </div>
+
+  <div id="banner" class="banner error" hidden>
+    <span class="ico">!</span><span id="banner-text"></span>
+  </div>
+
+  <!-- ─── Step 1: Type + ZIP ──────────────────────────────────────── -->
+  <div id="step-1" class="step is-active">
+    <div class="card">
+      <div class="card-header">
+        <div class="step-num">1</div>
+        <div class="card-title">Type &amp; ZIP</div>
+      </div>
+      <div class="card-body">
+        <p class="card-sub">Pick what you're uploading and the ZIP archive.
+          The server validates the layout when you click <code>Next</code>.</p>
+
+        <div class="field">
+          <label class="field-label">Type</label>
+          <div class="type-tiles" id="type-tiles">
+            <label class="is-active">
+              <input type="radio" name="type" value="skill" checked>
+              <div class="type-name">Skill</div>
+              <div class="type-hint">Folder with SKILL.md</div>
+            </label>
+            <label>
+              <input type="radio" name="type" value="agent">
+              <div class="type-name">Agent</div>
+              <div class="type-hint">.md file with name + description frontmatter</div>
+            </label>
+            <label>
+              <input type="radio" name="type" value="plugin">
+              <div class="type-name">Plugin</div>
+              <div class="type-hint">Directory with .claude-plugin/plugin.json</div>
+            </label>
+          </div>
+        </div>
+
+        <div class="field">
+          <label class="field-label">ZIP archive</label>
+          <label class="file-drop" id="zip-drop">
+            <div class="icon">📦</div>
+            <div class="file-info">
+              <div class="label" id="zip-label">No file selected</div>
+              <div class="meta" id="zip-meta">Drag & drop a .zip here, or click Choose file</div>
+            </div>
+            <input type="file" id="zip" accept=".zip">
+            <button type="button" id="zip-pick">Choose file</button>
+          </label>
+        </div>
+
+        <div class="actions">
+          <button type="button" class="btn-primary" id="next-btn">Next →</button>
+          <a href="/store" class="btn-link">Cancel</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── Step 2: Details ─────────────────────────────────────────── -->
+  <div id="step-2" class="step">
+    <div class="card">
+      <div class="card-header">
+        <div class="step-num">2</div>
+        <div class="card-title">Details</div>
+      </div>
+      <div class="card-body">
+        <p class="card-sub">Pre-filled from the ZIP's frontmatter — change anything you want.
+          Name and description are required; everything below is optional.</p>
+
+        <div class="field">
+          <label class="field-label" for="name">Name</label>
+          <input type="text" id="name" required placeholder="my-awesome-skill">
+          <div class="field-hint">Lowercase letters, digits, hyphens. Max 64 characters.</div>
+        </div>
+
+        <div class="field">
+          <label class="field-label" for="description">Description</label>
+          <textarea id="description" placeholder="What does it do?"></textarea>
+        </div>
+
+        <div class="field">
+          <label class="field-label" for="category">Category</label>
+          <select id="category">
+            <option value="">— None —</option>
+            {% for cat in categories %}
+            <option value="{{ cat }}">{{ cat }}</option>
+            {% endfor %}
+          </select>
+          <div class="field-hint">Subject area of your entity — helps people filter the Store.</div>
+        </div>
+
+        <div class="field">
+          <label class="field-label">Cover photo <span style="color:var(--text-secondary,#6b7280);font-weight:400;">(optional)</span></label>
+          <label class="file-drop" id="photo-drop">
+            <div class="icon">🖼</div>
+            <div class="file-info">
+              <div class="label" id="photo-label">No photo</div>
+              <div class="meta">Drag & drop or click Choose · JPG, PNG, WebP · Max 5 MB</div>
+            </div>
+            <input type="file" id="photo" accept="image/jpeg,image/png,image/webp">
+            <button type="button" id="photo-pick">Choose</button>
+          </label>
+        </div>
+
+        <div class="field">
+          <label class="field-label" for="video_url">Video URL <span style="color:var(--text-secondary,#6b7280);font-weight:400;">(optional)</span></label>
+          <input type="url" id="video_url" placeholder="https://...">
+        </div>
+
+        <div class="field">
+          <label class="field-label">Documentation <span style="color:var(--text-secondary,#6b7280);font-weight:400;">(optional)</span></label>
+          <div class="doc-list" id="doc-list"></div>
+          <input type="file" id="doc-input" hidden>
+          <button type="button" class="doc-add" id="add-doc-btn">+ Add file</button>
+          <div class="field-hint">Each file max 10 MB. Add as many as you want.</div>
+        </div>
+
+        <div class="actions">
+          <button type="button" class="btn-primary" id="finish-btn">Finish</button>
+          <button type="button" class="btn-secondary" id="back-btn">← Back</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const banner = document.getElementById('banner');
+const bannerText = document.getElementById('banner-text');
+const nextBtn = document.getElementById('next-btn');
+const finishBtn = document.getElementById('finish-btn');
+const backBtn = document.getElementById('back-btn');
+const zipInput = document.getElementById('zip');
+const zipPick = document.getElementById('zip-pick');
+const zipDrop = document.getElementById('zip-drop');
+const zipLabel = document.getElementById('zip-label');
+const zipMeta = document.getElementById('zip-meta');
+const photoInput = document.getElementById('photo');
+const photoPick = document.getElementById('photo-pick');
+const photoDrop = document.getElementById('photo-drop');
+const photoLabel = document.getElementById('photo-label');
+const addDocBtn = document.getElementById('add-doc-btn');
+const docInput = document.getElementById('doc-input');
+const docList = document.getElementById('doc-list');
+
+let zipFile = null;
+let docs = [];
+
+// Server returns short machine codes in `detail`. Map them to human-friendly
+// sentences here. Any unknown code falls back to a generic prefix + the raw
+// code so debugging stays possible without leaking jargon.
+const ERROR_MESSAGES = {
+  // Step 1 — validation
+  invalid_type: 'Pick one of: skill, agent, or plugin.',
+  zip_invalid: 'That file isn\'t a valid ZIP archive.',
+  zip_unsafe_path: 'The ZIP contains a path that escapes the archive — refuse to extract.',
+  zip_missing_skill_md: 'A Skill ZIP must contain a SKILL.md file.',
+  zip_missing_agent_md_with_frontmatter:
+    'An Agent ZIP must contain a Markdown file with name + description in YAML frontmatter.',
+  zip_missing_claude_plugin_json:
+    'A Plugin ZIP must contain a .claude-plugin/plugin.json file at its root.',
+  plugin_json_invalid: 'The .claude-plugin/plugin.json file is not valid JSON.',
+  zip_looks_like_skill:
+    'This ZIP contains a SKILL.md — looks like a Skill, not an Agent. Switch the type to Skill or remove SKILL.md.',
+  zip_looks_like_plugin:
+    'This ZIP contains a .claude-plugin/plugin.json — looks like a Plugin, not the type you picked. Switch the type to Plugin.',
+
+  // Step 1 + 2 — file size
+  file_too_large: 'File too large — max 50 MB for the ZIP, 5 MB for photos, 10 MB per doc.',
+
+  // Step 2 — metadata
+  missing_name:
+    'Name is required. Either fill it in here or add a `name:` field to your frontmatter.',
+  invalid_name_format:
+    'Name must be lowercase letters, digits, and hyphens only (max 64 characters).',
+  invalid_category: 'Pick a category from your own groups, or leave it blank.',
+  invalid_email:
+    'Couldn\'t derive a username from your email. Contact your administrator.',
+  conflict_owner_name:
+    'You already have a Store entity with this name. Each owner needs unique names — pick a different one or delete the existing entity first.',
+
+  // Step 2 — photo
+  photo_unsupported_format: 'Photo must be JPG, PNG, or WebP.',
+
+  // Other
+  entity_not_found: 'That entity no longer exists.',
+  not_owner: 'You don\'t own this entity, so you can\'t change it.',
+};
+
+function humanizeError(detail) {
+  if (!detail) return 'Something went wrong. Please try again.';
+  const s = String(detail);
+  if (ERROR_MESSAGES[s]) return ERROR_MESSAGES[s];
+  // Codes with a parameter (e.g. "unknown_type:foo")
+  const head = s.split(':', 1)[0];
+  if (ERROR_MESSAGES[head]) return ERROR_MESSAGES[head];
+  // Last resort — show a friendly wrapper plus the raw token.
+  return 'Upload failed: ' + s;
+}
+
+function showError(msg) {
+  banner.className = 'banner error';
+  banner.firstElementChild.textContent = '!';
+  bannerText.textContent = msg;
+  banner.hidden = false;
+}
+function clearBanner() { banner.hidden = true; }
+
+function showStep(n) {
+  document.getElementById('step-1').classList.toggle('is-active', n === 1);
+  document.getElementById('step-2').classList.toggle('is-active', n === 2);
+  document.getElementById('seg-2').classList.toggle('is-done', n >= 2);
+  clearBanner();
+  window.scrollTo({top: 0, behavior: 'smooth'});
+}
+
+// Type tiles
+document.querySelectorAll('#type-tiles label').forEach(lbl => {
+  lbl.addEventListener('click', () => {
+    document.querySelectorAll('#type-tiles label').forEach(l => l.classList.remove('is-active'));
+    lbl.classList.add('is-active');
+  });
+});
+
+// Generic drop-zone wiring — used for both the ZIP archive and the cover
+// photo. The two differ only in their accepted MIME/extension and the
+// onAccept callback that updates page state.
+function wireDropZone(dropEl, fileInput, pickBtn, validate, onAccept) {
+  // Click anywhere on the zone (except the explicit button — which already
+  // fires its own click) opens the file picker.
+  pickBtn.addEventListener('click', (e) => { e.stopPropagation(); fileInput.click(); });
+  dropEl.addEventListener('click', (e) => {
+    if (e.target.tagName !== 'BUTTON') fileInput.click();
+  });
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files[0]) handle(fileInput.files[0]);
+  });
+
+  function handle(f) {
+    const err = validate(f);
+    if (err) { showError(err); return; }
+    // Sync the <input> so the form-submit fallback works too.
+    try {
+      const dt = new DataTransfer();
+      dt.items.add(f);
+      fileInput.files = dt.files;
+    } catch (_) {}
+    dropEl.classList.remove('is-dragover');
+    onAccept(f);
+    clearBanner();
+  }
+
+  ['dragenter', 'dragover'].forEach(evt => {
+    dropEl.addEventListener(evt, (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+      dropEl.classList.add('is-dragover');
+    });
+  });
+  ['dragleave', 'dragend'].forEach(evt => {
+    dropEl.addEventListener(evt, (e) => {
+      // dragleave fires when entering a child; only un-highlight when the
+      // pointer actually leaves the drop zone.
+      if (evt === 'dragleave' && dropEl.contains(e.relatedTarget)) return;
+      dropEl.classList.remove('is-dragover');
+    });
+  });
+  dropEl.addEventListener('drop', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dropEl.classList.remove('is-dragover');
+    const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (file) handle(file);
+  });
+}
+
+// Page-level guard: dropping anywhere outside the zones shouldn't navigate
+// away from the page (browser default behavior for files).
+['dragover', 'drop'].forEach(evt => {
+  window.addEventListener(evt, (e) => { e.preventDefault(); });
+});
+
+// ZIP zone
+wireDropZone(
+  zipDrop, zipInput, zipPick,
+  (f) => /\.zip$/i.test(f.name) ? null : 'Only .zip files are accepted.',
+  (f) => {
+    zipFile = f;
+    zipDrop.classList.add('has-file');
+    zipLabel.innerHTML = 'Selected:<span class="filename">' + escapeHtml(f.name) + '</span>';
+    zipMeta.textContent = formatSize(f.size);
+  },
+);
+
+// Photo zone — accepts JPG / PNG / WebP up to 5 MB.
+const PHOTO_MAX = 5 * 1024 * 1024;
+wireDropZone(
+  photoDrop, photoInput, photoPick,
+  (f) => {
+    if (!/^image\/(jpeg|png|webp)$/i.test(f.type) &&
+        !/\.(jpe?g|png|webp)$/i.test(f.name)) {
+      return 'Photo must be a JPG, PNG, or WebP image.';
+    }
+    if (f.size > PHOTO_MAX) {
+      return 'Photo too large — max 5 MB.';
+    }
+    return null;
+  },
+  (f) => {
+    photoDrop.classList.add('has-file');
+    photoLabel.innerHTML = 'Selected:<span class="filename">' + escapeHtml(f.name) + '</span>';
+  },
+);
+
+// Docs
+addDocBtn.addEventListener('click', () => docInput.click());
+docInput.addEventListener('change', () => {
+  for (const f of docInput.files) docs.push(f);
+  docInput.value = '';
+  renderDocs();
+});
+
+function renderDocs() {
+  docList.innerHTML = '';
+  docs.forEach((f, i) => {
+    const item = document.createElement('div');
+    item.className = 'doc-item';
+    item.innerHTML = `
+      <span class="name">${escapeHtml(f.name)}</span>
+      <span class="size">${formatSize(f.size)}</span>
+      <button type="button" data-i="${i}" title="Remove">✕</button>`;
+    docList.appendChild(item);
+  });
+  docList.querySelectorAll('button[data-i]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      docs.splice(parseInt(btn.dataset.i, 10), 1);
+      renderDocs();
+    });
+  });
+}
+
+// Step 1 → preview
+nextBtn.addEventListener('click', async () => {
+  clearBanner();
+  if (!zipFile) { showError('Please choose a ZIP file.'); return; }
+  const type = document.querySelector('input[name=type]:checked').value;
+
+  nextBtn.disabled = true;
+  nextBtn.textContent = 'Validating…';
+  try {
+    const fd = new FormData();
+    fd.append('file', zipFile);
+    fd.append('type', type);
+    const res = await fetch('/api/store/entities/preview', {method: 'POST', body: fd});
+    if (!res.ok) {
+      let msg = 'Validation failed.';
+      try {
+        const j = await res.json();
+        if (j.detail) msg = humanizeError(j.detail);
+      } catch(_) {}
+      showError(msg);
+      return;
+    }
+    const preview = await res.json();
+    document.getElementById('name').value = preview.name || '';
+    document.getElementById('description').value = preview.description || '';
+    showStep(2);
+  } catch (err) {
+    showError(String(err));
+  } finally {
+    nextBtn.disabled = false;
+    nextBtn.textContent = 'Next →';
+  }
+});
+
+backBtn.addEventListener('click', () => showStep(1));
+
+// Step 2 → final create
+finishBtn.addEventListener('click', async () => {
+  clearBanner();
+  const name = document.getElementById('name').value.trim();
+  if (!name) { showError('Name is required.'); return; }
+  const type = document.querySelector('input[name=type]:checked').value;
+
+  finishBtn.disabled = true;
+  finishBtn.textContent = 'Uploading…';
+  try {
+    const fd = new FormData();
+    fd.append('file', zipFile);
+    fd.append('type', type);
+    fd.append('name', name);
+    fd.append('description', document.getElementById('description').value);
+    const cat = document.getElementById('category').value;
+    if (cat) fd.append('category', cat);
+    const vurl = document.getElementById('video_url').value.trim();
+    if (vurl) fd.append('video_url', vurl);
+    const photo = document.getElementById('photo').files[0];
+    if (photo) fd.append('photo', photo);
+    for (const d of docs) fd.append('docs', d);
+
+    const res = await fetch('/api/store/entities', {method: 'POST', body: fd});
+    if (res.ok) {
+      const entity = await res.json();
+      window.location = `/store/${encodeURIComponent(entity.id)}`;
+      return;
+    }
+    let msg = 'Upload failed.';
+    try {
+      const j = await res.json();
+      if (j.detail) msg = humanizeError(j.detail);
+    } catch(_) {}
+    showError(msg);
+  } catch (err) {
+    showError(String(err));
+  } finally {
+    finishBtn.disabled = false;
+    finishBtn.textContent = 'Finish';
+  }
+});
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+}
+function formatSize(n) {
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1024 / 1024).toFixed(1) + ' MB';
+}
+</script>
+{% endblock %}

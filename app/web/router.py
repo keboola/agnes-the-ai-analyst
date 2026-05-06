@@ -62,6 +62,33 @@ class _SafeEncoder(_json.JSONEncoder):
 templates.env.policies["json.dumps_function"] = lambda obj, **kw: _json.dumps(obj, cls=_SafeEncoder, **kw)
 
 
+def _humanbytes(value) -> str:
+    """Render a byte count as the largest binary-prefixed unit it fits in.
+
+    Below 1 KiB → integer bytes; otherwise two decimal places of KB / MB / GB
+    (binary, 1024-based). Used by the Store detail template; intentionally
+    permissive about input type so missing / undefined values render as
+    ``0 B`` rather than crashing the page.
+    """
+    try:
+        n = int(value or 0)
+    except (TypeError, ValueError):
+        return "0 B"
+    if n < 1024:
+        return f"{n} B"
+    kb = n / 1024
+    if kb < 1024:
+        return f"{kb:.2f} KB"
+    mb = kb / 1024
+    if mb < 1024:
+        return f"{mb:.2f} MB"
+    gb = mb / 1024
+    return f"{gb:.2f} GB"
+
+
+templates.env.filters["humanbytes"] = _humanbytes
+
+
 class _FlexDict(dict):
     """Dict that returns empty _FlexDict for missing keys and attributes.
     Prevents Jinja2 UndefinedError when templates access missing nested values."""
@@ -136,12 +163,20 @@ def _read_agnes_ca_pem() -> Optional[str]:
     """Read the Agnes server's TLS fullchain for inlining into the setup prompt.
 
     Returns the PEM string when the cert needs trust-bootstrapping —
-    self-signed (subject == issuer of the leaf), private CA chain, or any
-    case where we can't cheaply prove the OS would trust it. Returns None
-    only for chains where the leaf's issuer matches a CA already in the
-    server's `certifi`-backed default trust store (publicly-trusted CA
-    like Let's Encrypt or a real corp PKI root that's distributed widely
-    enough to be in `certifi`).
+    self-signed (leaf issuer == subject), private-CA chain that doesn't
+    terminate in a `certifi`-known root, or any case where we can't
+    cheaply prove the OS would trust it. Returns None when the chain in
+    the served fullchain.pem terminates in a publicly-trusted root that
+    `certifi` already ships (Let's Encrypt's ISRG Root X1, DigiCert,
+    etc.) — clients (Bun-compiled `claude.exe`, system git, Python with
+    certifi) all accept the chain without help.
+
+    Chain validation walks every cert in the served fullchain and
+    succeeds the first time any cert's issuer matches a `certifi` root
+    subject. That captures the standard fullchain shape (leaf +
+    intermediate(s)) where `intermediate.issuer == publicly_trusted_root`,
+    even though the leaf's *immediate* issuer is the intermediate (which
+    is rarely shipped in trust stores — only roots are).
 
     Inlining a publicly-trusted cert is harmless (clients already trust
     it via OS roots), but it bloats the prompt and steers users into
@@ -166,18 +201,20 @@ def _read_agnes_ca_pem() -> Optional[str]:
 
     try:
         from cryptography import x509
-        # Parse just the first cert in the chain — that's the leaf, and
-        # leaf issuer/subject is what determines self-signed vs CA-signed.
-        first_block = pem.split("-----END CERTIFICATE-----", 1)[0] + "-----END CERTIFICATE-----\n"
-        leaf = x509.load_pem_x509_certificate(first_block.encode("utf-8"))
+        chain = x509.load_pem_x509_certificates(pem.encode("utf-8"))
+        if not chain:
+            return None
+        leaf = chain[0]
 
         if leaf.issuer == leaf.subject:
             # Self-signed — definitely needs bootstrap on the client.
             return pem
 
-        # CA-signed leaf: check whether `certifi`'s trust store already
-        # contains the issuer. If yes, the user's `da`/uv (which both
-        # use `certifi` by default) will validate without our help.
+        # CA-signed leaf: walk every cert in the served fullchain (leaf +
+        # intermediates) and check whether ANY of their issuers is in
+        # `certifi`'s trust store. The first match means the chain
+        # terminates in a publicly-trusted root, so the client OS / Bun
+        # bundle / certifi already accept it.
         try:
             import certifi
             with open(certifi.where(), "rb") as fh:
@@ -185,9 +222,12 @@ def _read_agnes_ca_pem() -> Optional[str]:
         except Exception:
             return pem  # can't enumerate trust → assume bootstrap needed
 
-        issuer_dn = leaf.issuer.rfc4514_string()
-        for ca in x509.load_pem_x509_certificates(trust_pem):
-            if ca.subject.rfc4514_string() == issuer_dn:
+        trusted_subjects = {
+            ca.subject.rfc4514_string()
+            for ca in x509.load_pem_x509_certificates(trust_pem)
+        }
+        for cert in chain:
+            if cert.issuer.rfc4514_string() in trusted_subjects:
                 return None  # publicly trusted; client OS already accepts
         return pem
     except Exception:  # pragma: no cover — defensive: bad PEM / x509 error
@@ -799,6 +839,99 @@ async def install_redirect(request: Request):
     require manual cache clearing to recover.
     """
     return RedirectResponse(url="/setup", status_code=302)
+
+
+# ---------------------------------------------------------------------------
+# Store + My AI Stack — community marketplace + per-user composition page.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/store", response_class=HTMLResponse)
+async def store_listing(
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "store_listing.html", ctx)
+
+
+@router.get("/store/new", response_class=HTMLResponse)
+async def store_new(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    from src.store_categories import STORE_CATEGORIES
+    ctx = _build_context(request, user=user, categories=list(STORE_CATEGORIES))
+    return templates.TemplateResponse(request, "store_upload.html", ctx)
+
+
+@router.get("/store/{entity_id}", response_class=HTMLResponse)
+async def store_detail(
+    request: Request,
+    entity_id: str,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    from src.repositories.store_entities import StoreEntitiesRepository
+    from src.repositories.user_store_installs import UserStoreInstallsRepository
+    from src.store_naming import suffixed_name
+    from app.utils import get_store_dir
+    from app.auth.access import is_user_admin
+
+    entity = StoreEntitiesRepository(conn).get(entity_id)
+    if not entity:
+        raise HTTPException(status_code=404, detail="Entity not found")
+
+    # File listing for the detail page (read directly from disk).
+    plugin_dir = get_store_dir() / entity_id / "plugin"
+    files = []
+    if plugin_dir.is_dir():
+        for f in sorted(plugin_dir.rglob("*")):
+            if f.is_file():
+                files.append(
+                    {
+                        "path": f.relative_to(plugin_dir).as_posix(),
+                        "size": f.stat().st_size,
+                    }
+                )
+
+    # Owner display name.
+    owner_row = conn.execute(
+        "SELECT name, email FROM users WHERE id = ?", [entity["owner_user_id"]]
+    ).fetchone()
+    owner_display = (owner_row[0] or owner_row[1]) if owner_row else entity["owner_username"]
+
+    is_installed = UserStoreInstallsRepository(conn).is_installed(
+        user["id"], entity_id
+    )
+    is_owner = entity["owner_user_id"] == user["id"]
+    # Admin can also Edit/Delete (parity with the API: store.py guards both
+    # mutations on owner OR admin). Without this the store_detail buttons
+    # would be hidden from admin even though they have authority.
+    is_admin = is_user_admin(user["id"], conn)
+
+    ctx = _build_context(
+        request,
+        user=user,
+        entity=entity,
+        invocation_name=suffixed_name(entity["name"], entity["owner_username"]),
+        owner_display=owner_display,
+        files=files,
+        is_installed=is_installed,
+        is_owner=is_owner,
+        is_admin=is_admin,
+    )
+    return templates.TemplateResponse(request, "store_detail.html", ctx)
+
+
+@router.get("/my-ai-stack", response_class=HTMLResponse)
+async def my_ai_stack_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    ctx = _build_context(request, user=user)
+    return templates.TemplateResponse(request, "my_ai_stack.html", ctx)
 
 
 @router.get("/admin/tables", response_class=HTMLResponse)

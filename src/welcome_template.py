@@ -154,19 +154,32 @@ def compute_default_agent_prompt(
         _wheel = _find_wheel()
         _wheel_filename = _wheel.name if _wheel else "agnes.whl"
 
-        # RBAC plugin resolution is unconditional — same code path for
-        # admin and non-admin. Users with no `resource_grants` rows get an
-        # empty list and the no-marketplace layout; users with grants get
-        # the marketplace block. Admin-vs-analyst is no longer a layout
-        # branch.
+        # The install commands emitted in the marketplace block must match
+        # exactly what /marketplace.zip + /marketplace.git/ serve. That's
+        # the `resolve_user_marketplace` view: admin grants minus the
+        # user's opt-outs, plus their Store installs (skills + agents
+        # rolled up into the synth `agnes-store-bundle` plugin, plugin-
+        # typed entities standalone). `resolve_allowed_plugins` was the
+        # pre-store admin-only feed and would emit installs for plugins
+        # the user has opted out of, while skipping the bundle entirely.
+        #
+        # Dedup by manifest_name handles the documented case where two
+        # upstream marketplaces ship a plugin with the same name (see
+        # CLAUDE.md "Same-named plugins ... collide in the catalog by
+        # design"). The synth marketplace.json carries one entry per
+        # name; a second `claude plugin install <name>@agnes` would be
+        # a no-op anyway.
         plugin_install_names: list[str] = []
         if user and conn is not None:
             try:
                 from src import marketplace_filter
-                plugin_install_names = [
-                    p["manifest_name"]
-                    for p in marketplace_filter.resolve_allowed_plugins(conn, user)
-                ]
+                seen: set[str] = set()
+                for p in marketplace_filter.resolve_user_marketplace(conn, user):
+                    name = p["manifest_name"]
+                    if name in seen:
+                        continue
+                    seen.add(name)
+                    plugin_install_names.append(name)
             except Exception:
                 logger.exception("compute_default_agent_prompt: marketplace plugin resolution failed")
 

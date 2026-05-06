@@ -39,7 +39,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 24
+SCHEMA_VERSION = 25
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -438,6 +438,55 @@ CREATE TABLE IF NOT EXISTS claude_md_template (
     updated_at TIMESTAMP,
     updated_by VARCHAR,
     CONSTRAINT singleton CHECK (id = 1)
+);
+
+-- v25: per-user marketplace composition layer on top of admin grants.
+--   * store_entities       — community-uploaded skills/agents/plugins
+--   * user_store_installs  — which entities each user has chosen to install
+--   * user_plugin_optouts  — opt-out overlay on top of admin-granted plugins
+--
+-- The served Claude Code marketplace for a user is computed as:
+--     (admin_granted ∖ opt_outs) ∪ store_installs
+--
+-- See src/marketplace_filter.py:resolve_user_marketplace.
+-- FK refs to users(id) intentionally omitted (matches the
+-- personal_access_tokens / marketplace_registry pattern). DuckDB blocks
+-- ALTER on a referenced parent — past finalize steps RENAME / DROP COLUMN
+-- on `users`, which would fail if these store tables held FK refs at the
+-- time the ladder reaches them. App-level deletes already cascade
+-- explicitly (see app/api/store.py + the resource_grant-deletion hook).
+CREATE TABLE IF NOT EXISTS store_entities (
+    id              VARCHAR PRIMARY KEY,
+    owner_user_id   VARCHAR NOT NULL,
+    owner_username  VARCHAR NOT NULL,
+    type            VARCHAR NOT NULL CHECK (type IN ('skill','agent','plugin')),
+    name            VARCHAR NOT NULL,
+    description     TEXT,
+    category        VARCHAR,
+    version         VARCHAR NOT NULL,
+    photo_path      VARCHAR,
+    video_url       VARCHAR,
+    doc_paths       JSON,
+    file_size       BIGINT,
+    install_count   BIGINT NOT NULL DEFAULT 0,
+    created_at      TIMESTAMP DEFAULT current_timestamp,
+    updated_at      TIMESTAMP DEFAULT current_timestamp,
+    UNIQUE (owner_user_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS user_store_installs (
+    user_id      VARCHAR NOT NULL,
+    entity_id    VARCHAR NOT NULL,
+    installed_at TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (user_id, entity_id)
+);
+
+CREATE TABLE IF NOT EXISTS user_plugin_optouts (
+    user_id        VARCHAR NOT NULL,
+    marketplace_id VARCHAR NOT NULL,
+    plugin_name    VARCHAR NOT NULL,
+    opted_out_at   TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (user_id, marketplace_id, plugin_name)
 );
 """
 
@@ -1700,6 +1749,48 @@ _V22_TO_V23_MIGRATIONS = [
     "INSERT INTO claude_md_template (id, content) VALUES (1, NULL) ON CONFLICT (id) DO NOTHING",
 ]
 
+# v25: store + opt-out tables backing the /store and /my-ai-stack pages.
+_V24_TO_V25_MIGRATIONS = [
+    # FK refs deliberately omitted — see the matching note in _SYSTEM_SCHEMA.
+    """
+    CREATE TABLE IF NOT EXISTS store_entities (
+        id              VARCHAR PRIMARY KEY,
+        owner_user_id   VARCHAR NOT NULL,
+        owner_username  VARCHAR NOT NULL,
+        type            VARCHAR NOT NULL CHECK (type IN ('skill','agent','plugin')),
+        name            VARCHAR NOT NULL,
+        description     TEXT,
+        category        VARCHAR,
+        version         VARCHAR NOT NULL,
+        photo_path      VARCHAR,
+        video_url       VARCHAR,
+        doc_paths       JSON,
+        file_size       BIGINT,
+        install_count   BIGINT NOT NULL DEFAULT 0,
+        created_at      TIMESTAMP DEFAULT current_timestamp,
+        updated_at      TIMESTAMP DEFAULT current_timestamp,
+        UNIQUE (owner_user_id, name)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS user_store_installs (
+        user_id      VARCHAR NOT NULL,
+        entity_id    VARCHAR NOT NULL,
+        installed_at TIMESTAMP DEFAULT current_timestamp,
+        PRIMARY KEY (user_id, entity_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS user_plugin_optouts (
+        user_id        VARCHAR NOT NULL,
+        marketplace_id VARCHAR NOT NULL,
+        plugin_name    VARCHAR NOT NULL,
+        opted_out_at   TIMESTAMP DEFAULT current_timestamp,
+        PRIMARY KEY (user_id, marketplace_id, plugin_name)
+    )
+    """,
+]
+
 
 # v24: rewrite materialized BQ source_query from DuckDB-flavor
 # (bq."<dataset>"."<table>") to BigQuery-native (`<project>.<dataset>.<table>`)
@@ -1951,6 +2042,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                     conn.execute(sql)
             if current < 24:
                 _v23_to_v24_finalize(conn)
+            if current < 25:
+                for sql in _V24_TO_V25_MIGRATIONS:
+                    conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

@@ -10,6 +10,143 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.38.0] — 2026-05-06
+
+### Added
+- **`/store` page** — community marketplace where every authenticated user
+  can upload skills, agents, and plugins as ZIPs. Listing has type / category /
+  search filters; detail page shows metadata, file list, photo, video link,
+  and an `[Install]` button. Same owner can't have two entities with the same
+  `name` (any type). Plugin/skill/agent name is suffixed `-by-<owner-username>`
+  (sanitized email-local-part) at upload time to avoid collisions in Claude
+  Code's flat namespace.
+- **`/my-ai-stack` page** — every user's per-user composition view: the
+  admin-granted plugins (with an opt-out toggle each, default enabled) plus
+  the entities they've installed from the Store. Toggling a curated plugin
+  off writes a `user_plugin_optouts` row; admin removing the underlying
+  grant drops everyone's opt-out (re-grant restarts at enabled).
+- **Composed served marketplace**: the `/marketplace.zip` and
+  `/marketplace.git/` endpoints now serve `(admin_granted ∖ opt_outs) ∪
+  store_installs` — driven by the new
+  `src/marketplace_filter.py:resolve_user_marketplace`. Same content-addressed
+  ETag / git-commit-SHA contract as before; any change on either layer
+  propagates to Claude Code on the next refresh.
+- **Store skill+agent bundle**: skill/agent installs are merged into a single
+  synthetic `agnes-store-bundle` plugin in the served marketplace (one plugin
+  with N skills/agents inside), while `type='plugin'` Store entities stay
+  standalone. Cuts plugin-entry count in Claude Code from O(installs) down
+  to O(1) for the skill+agent path. Bundle's `version` field hashes its
+  combined contents so install/uninstall flips it for auto-update detection.
+- REST: `POST/PUT/DELETE/GET /api/store/entities[/{id}]`,
+  `POST/DELETE /api/store/entities/{id}/install`,
+  `GET /api/store/entities/{id}/photo`,
+  `GET /api/store/entities/{id}/docs/{filename}`,
+  `POST /api/store/entities/preview` (wizard step-1 validation),
+  `GET /api/store/categories`, `GET /api/store/owners`,
+  `GET /api/my-stack`,
+  `PUT /api/my-stack/curated/{marketplace_id}/{plugin_name}`.
+- **CLI: `agnes store {list,show,install,uninstall,upload,update,delete,pull,info}`** and
+  **`agnes my-stack {show,toggle}`** — full analyst-side coverage of the
+  new Store + composition REST surface. Multipart upload helper added to
+  `cli/v2_client.py` (`api_post_multipart` / `api_put_multipart` /
+  `api_get_stream`) so future multipart and binary-download endpoints
+  don't have to roll their own httpx wiring.
+- **CLI: `agnes admin store {pull,push,info}`** — operator-flavored
+  bulk Store ops. ``pull`` and ``info`` share the open
+  `GET /api/store/bundle.zip` / `/entities` endpoints; ``push`` wraps
+  the admin-gated `POST /api/store/import-bundle`. ``push`` accepts
+  either a *.zip file or a directory containing `manifest.json` +
+  `entities/` (CLI zips a directory client-side, so a backup git
+  repo's working tree round-trips straight back into Agnes via a
+  single command).
+- **CLI: `agnes store mine`** — analyst-facing self-bundle. Same
+  endpoint as `admin store pull`, scoped via `?owner=me` (server
+  resolves the magic value to the caller's user_id) so authors can
+  archive their own uploads without admin role.
+- **REST: `GET /api/store/bundle.zip`** — deterministic ZIP of all
+  (filtered) Store entities for whole-Store backup. Layout:
+  `manifest.json` at the top with per-entity metadata + `owner_email`
+  for cross-instance restore, then `entities/<entity_id>/{plugin,assets}/`.
+  Auth: any authenticated user (Store is community-open, the same set
+  is already visible via `GET /api/store/entities`). Filters mirror the
+  listing endpoint (type / category / owner / search).
+- **REST: `POST /api/store/import-bundle`** — admin-only restore of a
+  bundle ZIP. Modes: `merge` (default — upsert by `entity_id`, replace
+  when version differs), `replace` (overwrite all matching), `skip`
+  (only insert new). Owner resolution by `owner_email` against
+  `users.email`; missing emails get a stub disabled user
+  (`active=False`, no password, id `imported-<sha256[:12]>`) so the
+  historical owner stays attached and an admin can later activate or
+  reassign in `/admin/users`. Audit-logged with the full counts.
+
+### Changed
+- `/admin/marketplaces` admin nav entry moved from the top-level header into
+  the Admin dropdown and renamed to **Curated Marketplaces** to disambiguate
+  from the new community Store.
+- `app/api/access.py` `DELETE /api/admin/grants/{grant_id}` now drops every
+  user's `user_plugin_optouts` row matching the deleted plugin and flushes
+  the marketplace ETag cache. Audit log entry for `resource_grant.deleted`
+  carries `optouts_dropped` so operators can correlate.
+- `app/marketplace_server/{packager,git_backend}.py` consume
+  `resolve_user_marketplace` instead of `resolve_allowed_plugins`. The
+  `/marketplace/info` payload now splits its `plugins` array by `source`,
+  exposing `plugins` (admin) and `store_plugins` (community).
+
+### Fixed
+- **Stored XSS via `video_url`** (`app/api/store.py`) — `video_url` accepted
+  on `POST/PUT /api/store/entities` is now scheme-validated to `http(s)://`
+  only. Previously a `javascript:` URI flowed through the form field into
+  `store_detail.html`'s `<a href>` and would execute in any viewer's
+  session on click. 400 `invalid_video_url` on bad input.
+- **ZIP decompression bomb** (`app/api/store.py:_safe_zip_extract`) — the
+  uncompressed-side total of an upload is now capped at 200 MB
+  (`MAX_ZIP_UNCOMPRESSED`); the compressed-side cap (50 MB) alone did not
+  bound the on-disk footprint. 413 `zip_too_large_uncompressed` on
+  oversize.
+- **Admin authz parity for Store mutations** (`app/api/store.py`,
+  `app/web/router.py`, `app/web/templates/store_detail.html`) —
+  `PUT /api/store/entities/{id}` now permits owner OR admin (matches
+  `DELETE`); the store-detail page passes `is_admin` to the template and
+  gates the Edit/Delete buttons on `is_owner OR is_admin`. Pre-fix, an
+  admin could delete via the API but saw no Edit/Delete affordance in the
+  UI, and could not update non-owned entities at all.
+- **Scratch directory leak on ZIP validation failure** (`app/api/store.py`,
+  Devin Review) — `create_entity` and `update_entity` created the `scratch`
+  temp dir inside one `try/finally` block but cleaned it up in a separate
+  one. When `_safe_zip_extract` raised `HTTPException` (zip-slip,
+  uncompressed-too-large) or `BadZipFile` was caught and re-raised, the
+  exception exited the first scope and the cleanup `finally` was never
+  reached. Each failed upload leaked a temp dir. Fixed by collapsing
+  scratch creation + cleanup into a single outer `try/finally` covering
+  both extraction and the metadata/bake work.
+- **Cross-owner suffix collision** (`app/api/store.py:create_entity`) —
+  `sanitize_username` is many-to-one (`alice.smith` and `alice_smith`
+  both → `alice-smith`). Two such users uploading entities with the same
+  display `name` produced identical `<name>-by-<username>` suffixes,
+  silently colliding in the served bundle's on-disk paths and the
+  manifest catalog (Claude Code dedupes by `plugin.json`'s `name`).
+  We now refuse the second upload with 409 `conflict_global_suffix`.
+
+### Internal
+- Schema **v24 → v25**: adds `store_entities`, `user_store_installs`,
+  `user_plugin_optouts`. Auto-migration via `_V24_TO_V25_MIGRATIONS` ladder
+  branch in `src/db.py` (existing self-heal path also creates the tables on
+  same-version starts).
+- New helpers in `src/store_naming.py`: `sanitize_username`, `suffixed_name`,
+  `compute_entity_version` (sha256 of sorted `(relpath, content)` tuples,
+  16-char hex prefix). Predefined category taxonomy in `src/store_categories.py`.
+- New repositories: `src/repositories/{store_entities,user_store_installs,
+  user_plugin_optouts}.py` (mirror existing `marketplace_plugins` style — dict
+  returns, parameterized SQL, no ORM).
+- `app/utils.py:get_store_dir()` — `${DATA_DIR}/store/`.
+- `humanbytes` Jinja2 filter on Store detail page (binary KB/MB/GB).
+- New CLI command modules: `cli/commands/store.py`, `cli/commands/my_stack.py`.
+  Registered as Typer subapps `agnes store` and `agnes my-stack` in
+  `cli/main.py`. Tests at `tests/test_cli_store.py`.
+- `tests/test_store_api.py:TestStoreSecurityFixes` — regression suite for
+  F1 (video_url), F2 (zip-bomb), F4 (admin authz parity), F5 (cross-owner
+  suffix collision).
+
 ## [0.37.0] — 2026-05-06
 
 Operator-side disk-layout release. Closes the 2026-05-05 shadow-mount class identified in v0.36.0's deploy notes via two independent fixes that operators can adopt separately: (#194 folds in @cvrysanek's #191 + #192). The image-side change is invisible — `STATE_DIR` defaults to the legacy nested path, so existing deployments see no behavior change unless they opt into the new flat layout. Folds in three rounds of Devin Review (3 BUGs + 1 ANALYSIS class, ANALYSIS deferred per the operator-side limitation it describes).
