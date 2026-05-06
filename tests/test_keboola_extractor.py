@@ -131,7 +131,7 @@ class TestKeboolaExtractor:
         # No parquet file should exist
         assert not (Path(output_dir) / "data" / "big_table.parquet").exists()
 
-    def test_handles_extraction_failure(self, output_dir, sample_configs):
+    def test_handles_extraction_failure(self, output_dir, sample_configs, monkeypatch):
         """Test that a failed table doesn't stop other tables from extracting."""
         from connectors.keboola.extractor import run
 
@@ -144,8 +144,18 @@ class TestKeboolaExtractor:
             # Second call succeeds
             _write_parquet(pq_path, "SELECT 1 AS id")
 
+        # Mock the legacy fallback too — without it the real client
+        # attempts an HTTPS round-trip to the test URL and hangs ~minute.
+        # Force inline (PARALLELISM=1) so the mock survives — the parallel
+        # path would spawn a subprocess that doesn't see the patch.
+        monkeypatch.setenv("AGNES_KEBOOLA_PARALLELISM", "1")
+
+        def legacy_reraise(tc, pq_path, url, token):
+            raise Exception("Network error")
+
         with patch("connectors.keboola.extractor._try_attach_extension", side_effect=_mock_attach), \
-             patch("connectors.keboola.extractor._extract_via_extension", side_effect=side_effect):
+             patch("connectors.keboola.extractor._extract_via_extension", side_effect=side_effect), \
+             patch("connectors.keboola.extractor._extract_via_legacy", side_effect=legacy_reraise):
             result = run(output_dir, sample_configs, "https://example.com", "test-token")
 
         assert result["tables_extracted"] == 1
