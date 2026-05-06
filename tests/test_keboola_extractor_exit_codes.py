@@ -77,14 +77,22 @@ class TestSyncApiPartialFailureHandling:
         from unittest.mock import MagicMock, patch
         from app.api import sync as sync_mod
 
-        def fake_run(*args, **kwargs):
-            return MagicMock(
-                returncode=returncode, stdout="{}", stderr="",
-            )
-        # subprocess is imported locally inside _run_sync; patching the
-        # real module's run() works because Python's module cache means
-        # both call sites resolve to the same object.
-        monkeypatch.setattr(subprocess_real, "run", fake_run)
+        # _run_sync now uses subprocess.Popen (with start_new_session=True
+        # so the timeout path can SIGTERM the whole process group, including
+        # ProcessPoolExecutor workers spawned by the parallel legacy
+        # fallback). Patch Popen with a stand-in whose .communicate()
+        # returns immediately with the injected returncode — covers both
+        # the "happy path" (no timeout fired) and exit-code mapping.
+        class _FakePopen:
+            def __init__(self_inner, cmd, **kwargs):
+                self_inner.cmd = cmd
+                self_inner.returncode = returncode
+                self_inner.pid = 999
+
+            def communicate(self_inner, input=None, timeout=None):
+                return ("{}", "")
+
+        monkeypatch.setattr(subprocess_real, "Popen", _FakePopen)
 
         # SyncOrchestrator is imported as `from src.orchestrator import
         # SyncOrchestrator` inside _run_sync, so patching sync_mod

@@ -4,6 +4,7 @@ import hashlib
 import logging
 import os
 import subprocess
+import threading
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +25,17 @@ from src.scheduler import filter_due_tables, is_table_due
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/sync", tags=["sync"])
+
+# Process-wide guard against overlapping `_run_sync` invocations. Two
+# concurrent extractor subprocesses both write `extract.duckdb` and fight
+# for its file lock — the first sync stalls, the second crashes, and the
+# `/api/health` check times out long enough that Docker flips the
+# container to `unhealthy`, which (behind a `reverse_proxy` upstream)
+# bricks external traffic until contention drains. The singleton-ness is
+# enforced both in the trigger handler (return 409 fast, before the work
+# is scheduled) and in `_run_sync` itself (defense in depth, in case
+# something bypasses the handler).
+_sync_lock = threading.Lock()
 
 
 def _file_hash(path: Path) -> str:
@@ -258,9 +270,20 @@ def _run_sync(tables: Optional[List[str]] = None):
     Reads table configs from DuckDB (in main process which has the shared
     connection), passes them as JSON via stdin to the extractor subprocess.
     This avoids DuckDB lock conflicts — subprocess never opens system.duckdb.
+
+    Singleton: only one invocation runs at a time per process (see
+    `_sync_lock` module-level). The trigger handler also fast-fails with
+    409 when the lock is held, so this branch is defense in depth.
     """
     import json as _json
-    import sys
+    import sys as _sys
+
+    if not _sync_lock.acquire(blocking=False):
+        print(
+            "[SYNC] another sync is already in flight — skipping",
+            file=_sys.stderr, flush=True,
+        )
+        return
 
     try:
         from app.instance_config import get_data_source_type, get_value
@@ -342,7 +365,6 @@ def _run_sync(tables: Optional[List[str]] = None):
             )
 
         env = {**os.environ}
-        import sys as _sys
 
         if run_extractor_subprocess:
             # Serialize configs — strip non-serializable fields
@@ -353,8 +375,8 @@ def _run_sync(tables: Optional[List[str]] = None):
 
             # Run extractor subprocess with table configs via stdin
             # Subprocess does NOT open system.duckdb — no lock conflict
-            cmd = [sys.executable, "-c", """
-import json, sys, os, logging
+            cmd = [_sys.executable, "-c", """
+import json, sys, os, logging, signal
 from pathlib import Path
 
 # Subprocess inherits no logging config — without basicConfig, Python's
@@ -363,6 +385,19 @@ from pathlib import Path
 # dropped. capture_output=True in the parent then swallows the rest.
 # Devin BUG_0002 on PR #136 review.
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+# Convert SIGTERM into a controlled SystemExit so the ProcessPoolExecutor
+# `with` block in connectors.keboola.extractor.run() runs its __exit__
+# (shutdown/wait_for_workers) before this process dies. Without this,
+# SIGTERM kills the parent abruptly, leaving the OS to clean up the pool
+# children — but each worker holds an open Keboola Storage export job
+# whose lifetime is tied to the HTTP poll loop, and those leak until the
+# Keboola side TTLs them out. The parent extractor calls this from
+# app.api.sync._run_sync after `subprocess.Popen(start_new_session=True)`
+# + `os.killpg(SIGTERM)` on timeout.
+def _exit_on_sigterm(signum, frame):
+    sys.exit(143)
+signal.signal(signal.SIGTERM, _exit_on_sigterm)
 
 configs = json.load(sys.stdin)
 url = os.environ.get("KEBOOLA_STACK_URL", "")
@@ -383,24 +418,53 @@ sys.exit(compute_exit_code(result, len(configs)))
 
             print(f"[SYNC] Starting extractor subprocess for {len(table_configs)} tables", file=_sys.stderr, flush=True)
 
+            # Run in a new process group (start_new_session=True) so a
+            # timeout can take down the whole tree — the extractor itself
+            # plus any ProcessPoolExecutor workers it spawned for parallel
+            # legacy-fallback. Without this, plain `subprocess.run` on
+            # timeout SIGKILLs only the immediate child; the pool workers
+            # are reparented to PID 1 and continue holding open Keboola
+            # Storage export jobs, blocking the next sync cycle's
+            # connectivity to those same job IDs.
+            extractor_timeout = int(os.environ.get("AGNES_EXTRACTOR_TIMEOUT_SEC", "3600"))
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, env=env,
+                cwd=str(Path(__file__).parent.parent.parent),
+                start_new_session=True,
+            )
             try:
-                result = subprocess.run(
-                    cmd, input=_json.dumps(serializable), capture_output=True, text=True,
-                    timeout=1800, env=env,
-                    cwd=str(Path(__file__).parent.parent.parent),
-                )
+                stdout, stderr = proc.communicate(input=_json.dumps(serializable), timeout=extractor_timeout)
+                result = subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
             except subprocess.TimeoutExpired:
+                # SIGTERM the whole process group first to give workers a
+                # chance to shut down cleanly (release Keboola export jobs,
+                # close DuckDB conns), then SIGKILL the stragglers after a
+                # short grace window.
+                import signal
+                try:
+                    os.killpg(proc.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                try:
+                    proc.communicate(timeout=10)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        proc.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        pass
                 # Catch the timeout LOCALLY so the materialized BQ pass and
-                # orchestrator rebuild below still fire. Pre-fix the timeout
+                # orchestrator rebuild below still fire — pre-fix the timeout
                 # propagated to the outer except handler and skipped the rest
-                # of `_run_sync` — on a dual-source deployment a slow Keboola
-                # extractor would silently block all materialized parquets +
-                # master-view rebuild until the next trigger. Devin BUG_0001
-                # on PR #148 commit 2219255. Mirrors the per-custom-connector
-                # timeout pattern below (line ~347).
+                # of `_run_sync` (Devin BUG_0001 on PR #148 commit 2219255).
                 print(
-                    "[SYNC] Extractor timed out after 1800s — continuing to "
-                    "materialized pass + orchestrator rebuild",
+                    f"[SYNC] Extractor timed out after {extractor_timeout}s — process "
+                    "group killed; continuing to materialized pass + orchestrator rebuild",
                     file=_sys.stderr, flush=True,
                 )
                 result = None
@@ -441,7 +505,7 @@ sys.exit(compute_exit_code(result, len(configs)))
                     logger.info("Running custom connector: %s", connector_dir.name)
                     try:
                         custom_result = subprocess.run(
-                            [sys.executable, str(extractor)],
+                            [_sys.executable, str(extractor)],
                             env=env, capture_output=True, text=True, timeout=600,
                             cwd=str(Path(__file__).parent.parent.parent),
                         )
@@ -531,10 +595,16 @@ sys.exit(compute_exit_code(result, len(configs)))
             print(f"[SYNC] Profiler skipped: {e}", file=_sys.stderr, flush=True)
 
     except subprocess.TimeoutExpired:
-        print("[SYNC] Extractor timed out after 1800s", file=_sys.stderr, flush=True)
+        # Outer-handler fallback for any subprocess.run call site (e.g.
+        # custom-connectors below) that didn't already catch its own
+        # TimeoutExpired. Concrete timeout value isn't available here —
+        # log generically.
+        print("[SYNC] Extractor subprocess timed out", file=_sys.stderr, flush=True)
     except Exception as e:
         print(f"[SYNC] FAILED: {e}", file=_sys.stderr, flush=True)
         traceback.print_exc()
+    finally:
+        _sync_lock.release()
 
 
 # ---- Manifest ----
@@ -625,7 +695,20 @@ async def trigger_sync(
     tables: Optional[List[str]] = None,
     user: dict = Depends(require_admin),
 ):
-    """Trigger data sync from configured source. Admin only. Runs in background."""
+    """Trigger data sync from configured source. Admin only. Runs in background.
+
+    Returns 409 if a previously-triggered sync is still running. Two
+    concurrent extractor subprocesses fight for the same `extract.duckdb`
+    file lock — that contention starves uvicorn, makes `/api/health` time
+    out, flips the container to `unhealthy`, and (behind a `reverse_proxy`
+    upstream like the bundled Caddy overlay) bricks external traffic
+    until contention drains. Fast-fail here keeps that from happening.
+    """
+    if _sync_lock.locked():
+        raise HTTPException(
+            status_code=409,
+            detail="sync_already_in_progress",
+        )
     background_tasks.add_task(_run_sync, tables)
     return {
         "status": "triggered",
