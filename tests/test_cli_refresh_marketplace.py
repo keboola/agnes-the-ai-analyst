@@ -464,17 +464,15 @@ def test_quiet_emits_hook_json_when_plugin_installed(
     assert "grpn-fin" in payload["systemMessage"]
     assert "Agnes stack" in payload["systemMessage"]
     assert "installed" in payload["systemMessage"]
-    # Restart hint: plugins land on disk this session but only load on
-    # next session start, so the user must /exit + restart.
-    assert "/exit" in payload["systemMessage"]
-    assert "session start" in payload["systemMessage"].lower()
+    # Reload hint: `/reload-plugins` loads the on-disk plugins into the
+    # running Claude Code session without a full restart.
+    assert "/reload-plugins" in payload["systemMessage"]
 
     hook_specific = payload.get("hookSpecificOutput", {})
     assert hook_specific.get("hookEventName") == "SessionStart"
     additional = hook_specific.get("additionalContext", "")
     assert "grpn-fin" in additional
-    assert "/exit" in additional
-    assert "session start" in additional.lower()
+    assert "/reload-plugins" in additional
 
 
 def test_manual_mode_prints_restart_hint_when_anything_changed(

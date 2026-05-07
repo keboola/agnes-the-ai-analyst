@@ -383,8 +383,8 @@ def _emit_hook_message(events: dict[str, list[str]]) -> None:
     `systemMessage` is a transient toast (often missed). `additionalContext`
     is wrapped in a system reminder Claude reads at session start, so the
     model can mention the change if it's relevant to the user's first ask.
-    Plugins require a Claude Code restart — they land on disk this session
-    but only load on next session start.
+    Plugins land on disk during the hook; `/reload-plugins` loads them into
+    the running session without a restart.
     """
     parts: list[str] = []
     if events["installed"]:
@@ -399,8 +399,8 @@ def _emit_hook_message(events: dict[str, list[str]]) -> None:
         )
     summary = "Your Agnes stack changed: " + "; ".join(parts) + "."
     restart_hint = (
-        "Run `/exit` and then `claude` again to load the changes — "
-        "Claude Code only picks up new/updated plugins on session start."
+        "Run `/reload-plugins` to load the changes into this session — "
+        "no restart needed."
     )
     payload = {
         "systemMessage": f"{summary} {restart_hint}",
