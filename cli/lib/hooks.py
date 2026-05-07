@@ -21,6 +21,15 @@ Design notes:
     2. `agnes refresh-marketplace` — independent entry so a fresh
        workspace (no marketplace cloned yet) failing this command doesn't
        suppress the data pull above.
+- SessionEnd gets one entry: `agnes push --quiet`, wrapped to detach into
+  the background. Claude Code in `-p` (headless) mode terminates SessionEnd
+  hook subprocesses after ~1 second regardless of work in progress, so a
+  synchronous `agnes push` (which uploads N session JSONLs serially and
+  typically takes 5-30s) gets killed mid-stream and most files never reach
+  the server. The `( nohup ... & )` subshell orphans the upload child so
+  it survives the Claude shutdown. Errors are routed to /dev/null — no
+  worse than the previous `2>/dev/null` form. Operators who want visibility
+  into push failures can manually run `agnes push --json`.
 """
 
 from __future__ import annotations
@@ -97,8 +106,18 @@ def install_claude_hooks(workspace: Path) -> None:
         "agnes pull --quiet 2>/dev/null || true",
         'bash -c "agnes refresh-marketplace --quiet 2>/dev/null || true"',
     ])
+    # SessionEnd push must run detached. Claude Code in `-p` (headless) mode
+    # SIGTERMs hook subprocesses after ~1 second regardless of work in
+    # progress; a synchronous `agnes push` (5-30s for a typical workspace)
+    # gets killed mid-first-upload and most session JSONLs never reach the
+    # server. The subshell `( ... & )` backgrounds the child and exits
+    # immediately, orphaning it to init/launchd so it survives the hook
+    # subprocess kill. `bash -c` mirrors the refresh-marketplace pattern
+    # for Windows compatibility (Claude Code on Windows runs hook commands
+    # directly, no shell). `; true` keeps the line exit-0 like the old
+    # `|| true` form.
     _replace_or_add("SessionEnd", [
-        "agnes push --quiet 2>/dev/null || true",
+        'bash -c "( nohup agnes push --quiet </dev/null >/dev/null 2>&1 & ) ; true"',
     ])
 
     settings_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")

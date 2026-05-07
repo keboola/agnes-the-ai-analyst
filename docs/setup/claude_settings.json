@@ -15,7 +15,7 @@
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "agnes push --quiet 2>/dev/null || true"
+                        "command": "bash -c \"( nohup agnes push --quiet </dev/null >/dev/null 2>&1 & ) ; true\""
                     }
                 ]
             }
