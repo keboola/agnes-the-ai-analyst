@@ -62,7 +62,7 @@ def test_happy_path_returns_full_metadata(req, monkeypatch):
     from connectors.bigquery import metadata
 
     monkeypatch.setattr(
-        "app.instance_config.get_value",
+        "connectors.bigquery.metadata.get_value",
         lambda key, default=None: "us-central1" if "location" in key else default,
         raising=False,
     )
@@ -99,7 +99,7 @@ def test_view_path_returns_metadata_with_null_rows_size(req, monkeypatch):
     partition + cluster from COLUMNS still surface."""
     from connectors.bigquery import metadata
     monkeypatch.setattr(
-        "app.instance_config.get_value",
+        "connectors.bigquery.metadata.get_value",
         lambda key, default=None: "us-central1" if "location" in key else default,
         raising=False,
     )
@@ -122,7 +122,7 @@ def test_region_typo_falls_through_to_legacy_tables(req, monkeypatch):
     """TABLE_STORAGE raises (typo'd region) → fall through to __TABLES__."""
     from connectors.bigquery import metadata
     monkeypatch.setattr(
-        "app.instance_config.get_value",
+        "connectors.bigquery.metadata.get_value",
         lambda key, default=None: "us-central" if "location" in key else default,  # typo!
         raising=False,
     )
@@ -142,7 +142,7 @@ def test_both_paths_fail_returns_metadata_with_partition_only(req, monkeypatch):
     """Both TABLE_STORAGE and __TABLES__ fail → rows/size None, partition still fills."""
     from connectors.bigquery import metadata
     monkeypatch.setattr(
-        "app.instance_config.get_value",
+        "connectors.bigquery.metadata.get_value",
         lambda key, default=None: "us-central1" if "location" in key else default,
         raising=False,
     )
