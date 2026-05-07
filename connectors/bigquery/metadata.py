@@ -34,6 +34,7 @@ from __future__ import annotations
 import logging
 
 from app.api._metadata_models import MetadataRequest, TableMetadata
+from app.instance_config import get_value
 from connectors.bigquery.access import (
     BqAccessError, fetch_bq_columns_full, get_bq_access,
 )
@@ -101,7 +102,6 @@ def _fetch_rows_and_size(bq, req: MetadataRequest) -> dict | None:
 
 def _resolve_bq_location(bq, req: MetadataRequest) -> str | None:
     """instance.yaml.location → REST get_dataset → None."""
-    from app.instance_config import get_value
     cfg_location = (get_value("data_source.bigquery.location") or "").strip()
     if cfg_location:
         return cfg_location
@@ -134,6 +134,9 @@ def _fetch_via_table_storage(bq, req: MetadataRequest, location: str) -> dict | 
     from src.identifier_validation import validate_quoted_identifier
     if not validate_quoted_identifier(location, "BQ region"):
         return None
+    # `req.bucket` / `req.source_table` are pre-validated by the
+    # dispatcher; `location` is validated locally above because it
+    # originates from instance.yaml, not from the registry row.
     try:
         bq_sql = (
             f"SELECT total_rows, "
@@ -163,6 +166,10 @@ def _fetch_via_table_storage(bq, req: MetadataRequest, location: str) -> dict | 
 
 def _fetch_via_legacy_tables(bq, req: MetadataRequest) -> dict | None:
     """Last-resort dataset-scoped __TABLES__ — works without region."""
+    # `req.bucket` and `req.source_table` are pre-validated by
+    # `app/api/v2_catalog._build_metadata_request` via
+    # `validate_quoted_identifier` before MetadataRequest construction;
+    # safe to interpolate into the backtick-quoted path here.
     try:
         bq_sql = (
             f"SELECT row_count, size_bytes "
