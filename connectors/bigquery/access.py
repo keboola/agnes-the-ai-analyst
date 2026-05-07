@@ -610,6 +610,64 @@ class BqAccess:
             yield conn
 
 
+def fetch_bq_columns_full(bq, dataset: str, table: str) -> list[dict] | None:
+    """Single round-trip to INFORMATION_SCHEMA.COLUMNS pulling everything
+    both v2_schema and the metadata provider need.
+
+    Returns one dict per column with the keys ``name``, ``type``,
+    ``nullable``, ``is_partitioning_column``, ``clustering_ordinal_position``.
+    Consumers project the fields they care about.
+
+    Best-effort: returns ``None`` on any failure (sentinel-unconfigured,
+    unsafe identifier, BQ query exception). Does NOT raise. Mirrors the
+    failure posture of `app/api/v2_schema.py:_fetch_bq_table_options`,
+    which it replaces.
+
+    Replaces two BQ jobs (one for column list + one for partition/cluster)
+    with one — half the on-demand cost on each `/api/v2/schema/{id}`
+    cache miss.
+    """
+    from src.identifier_validation import validate_quoted_identifier
+
+    if not bq.projects.data:
+        return None
+
+    if not (validate_quoted_identifier(bq.projects.data, "BQ project")
+            and validate_quoted_identifier(dataset, "BQ dataset")
+            and validate_quoted_identifier(table, "BQ source_table")):
+        return None
+
+    bq_sql = (
+        f"SELECT column_name, data_type, is_nullable, "
+        f"       is_partitioning_column, clustering_ordinal_position "
+        f"FROM `{bq.projects.data}.{dataset}.INFORMATION_SCHEMA.COLUMNS` "
+        f"WHERE table_name = ? ORDER BY ordinal_position"
+    )
+    try:
+        with bq.duckdb_session() as conn:
+            rows = conn.execute(
+                "SELECT * FROM bigquery_query(?, ?, ?)",
+                [bq.projects.billing, bq_sql, table],
+            ).fetchall()
+    except Exception as e:
+        logger.warning(
+            "BQ COLUMNS fetch failed for %s.%s.%s: %s",
+            bq.projects.data, dataset, table, e,
+        )
+        return None
+
+    return [
+        {
+            "name": r[0],
+            "type": r[1],
+            "nullable": (r[2] or "").upper() == "YES",
+            "is_partitioning_column": (r[3] or "").upper() == "YES",
+            "clustering_ordinal_position": r[4],
+        }
+        for r in rows
+    ]
+
+
 @functools.cache
 def get_bq_access() -> BqAccess:
     """Module-level FastAPI Depends target. Resolves projects from config and returns

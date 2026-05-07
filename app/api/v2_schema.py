@@ -31,51 +31,75 @@ _BQ_DIALECT_HINTS = {
 
 
 def _fetch_bq_schema(bq, dataset: str, table: str) -> list[dict]:
-    """Fetch column list via INFORMATION_SCHEMA.COLUMNS using DuckDB BQ extension.
+    """Fetch column list via the shared `fetch_bq_columns_full` helper.
 
-    `bq.duckdb_session()` provides a DuckDB conn with the bigquery extension
-    loaded + auth secret installed. SQL here is server-constructed (queries
-    INFORMATION_SCHEMA.COLUMNS with validated identifiers, no user-derived
-    fragments), so a BQ BadRequest means registry corruption, not user input
-    → surfaces as `bq_upstream_error` (HTTP 502), same as `/sample`, opposite
-    of `/scan*`.
+    Pre-#155 this had its own INFORMATION_SCHEMA.COLUMNS query; consolidating
+    with `_fetch_bq_table_options` (now also delegating to the same helper)
+    halves the BQ job count on cache miss. Returns the schema-endpoint
+    column shape: name / type / nullable / description.
     """
-    from connectors.bigquery.access import translate_bq_error
+    from connectors.bigquery.access import fetch_bq_columns_full, translate_bq_error, BqAccessError
     from src.identifier_validation import validate_quoted_identifier
 
-    # Surface "BQ not configured" as the structured 500 BqAccessError(not_configured)
-    # with hint, not the misleading 400 unsafe_identifier the empty-string sentinel
-    # would otherwise trigger from validate_quoted_identifier below. Devin BUG_0002.
+    # Surface "BQ not configured" as the structured 500 BqAccessError
+    # (with hint), not a misleading empty-list. Mirrors pre-refactor
+    # behavior — see Devin BUG_0002 in the original docstring.
     if not bq.projects.data:
         bq.client()  # raises BqAccessError(not_configured); endpoint catches it
 
-    # Defense in depth (cf. v2_sample) — registry already validates these,
-    # but the v2 endpoints are downstream of admin REST writes that could
-    # bypass that gate. A backtick in `dataset` would otherwise break out
-    # of `…` quoting and execute arbitrary BQ SQL.
+    # Defense in depth — refuse unsafe identifiers before any SQL construction.
+    # The helper also validates, but we need to surface this as ValueError (not
+    # None) here so the endpoint returns 400 unsafe_identifier.
     if not (validate_quoted_identifier(bq.projects.data, "BQ project")
             and validate_quoted_identifier(dataset, "BQ dataset")
             and validate_quoted_identifier(table, "BQ source_table")):
         raise ValueError("unsafe BQ identifier in registry — refusing to query")
 
-    bq_sql = (
-        f"SELECT column_name, data_type, is_nullable "
-        f"FROM `{bq.projects.data}.{dataset}.INFORMATION_SCHEMA.COLUMNS` "
-        f"WHERE table_name = ? ORDER BY ordinal_position"
+    # Run the shared single-round-trip query. Capture the original BQ exception
+    # so translate_bq_error can classify it correctly (Forbidden → 502, etc.)
+    # rather than wrapping a generic RuntimeError that translate_bq_error would
+    # re-raise unclassified.
+    _last_exc: list = []
+
+    def _session_factory_capturing(projects):
+        """Thin wrapper around bq.duckdb_session() that intercepts exceptions
+        and stashes them in _last_exc before re-raising, so the caller's
+        translate_bq_error path sees the original Google API exception type."""
+        from contextlib import contextmanager
+
+        @contextmanager
+        def _cm():
+            with bq.duckdb_session() as conn:
+                try:
+                    yield conn
+                except Exception as exc:
+                    _last_exc.append(exc)
+                    raise
+        return _cm()
+
+    # Build a thin BqAccess wrapper that uses our capturing session factory.
+    from connectors.bigquery.access import BqAccess
+    bq_capturing = BqAccess(
+        bq.projects,
+        client_factory=lambda p: bq.client(),
+        duckdb_session_factory=_session_factory_capturing,
     )
-    with bq.duckdb_session() as conn:
-        try:
-            rows = conn.execute(
-                "SELECT * FROM bigquery_query(?, ?, ?)",
-                [bq.projects.billing, bq_sql, table],
-            ).fetchall()
-        except Exception as e:
-            raise translate_bq_error(e, bq.projects, bad_request_status="upstream_error")
+
+    rows = fetch_bq_columns_full(bq_capturing, dataset, table)
+    if rows is None:
+        # fetch_bq_columns_full swallowed the exception. Re-raise via
+        # translate_bq_error using the captured original exception if available,
+        # so Forbidden/BadRequest classifications survive the helper boundary.
+        orig = _last_exc[0] if _last_exc else RuntimeError(
+            "BQ INFORMATION_SCHEMA.COLUMNS query failed"
+        )
+        raise translate_bq_error(orig, bq.projects, bad_request_status="upstream_error")
+
     return [
         {
-            "name": r[0],
-            "type": r[1],
-            "nullable": r[2] == "YES",
+            "name": r["name"],
+            "type": r["type"],
+            "nullable": r["nullable"],
             "description": "",
         }
         for r in rows
@@ -83,61 +107,27 @@ def _fetch_bq_schema(bq, dataset: str, table: str) -> list[dict]:
 
 
 def _fetch_bq_table_options(bq, dataset: str, table: str) -> dict:
-    """Best-effort fetch of partition/cluster info from INFORMATION_SCHEMA.COLUMNS.
+    """Best-effort fetch of partition/cluster info via the shared
+    `fetch_bq_columns_full` helper.
 
-    BigQuery exposes partition + cluster metadata as per-column flags:
-      - `is_partitioning_column` ('YES' / 'NO') — at most one column per table
-      - `clustering_ordinal_position` (INT64, null for non-clustered columns;
-        otherwise 1, 2, ... in cluster-key order)
-
-    Returns `{}` on ANY failure (best-effort). The outer
-    `try/except Exception → return {}` is a load-bearing contract: the
-    /schema endpoint must keep returning 200 with empty partition info even
-    when this query fails (e.g. on permissioned tables, on cross-project
-    misconfigurations). DO NOT route this through `translate_bq_error` —
-    that would convert errors to BqAccessError which the endpoint would 502
-    on. See tests/test_v2_schema.py::test_schema_returns_200_with_empty_…
+    Returns ``{}`` on ANY failure (best-effort). Same load-bearing
+    contract as before: the /schema endpoint must keep returning 200
+    with empty partition info when this fails.
     """
-    from src.identifier_validation import validate_quoted_identifier
+    from connectors.bigquery.access import fetch_bq_columns_full
 
-    # Best-effort path: if BQ isn't configured (sentinel BqAccess), return
-    # empty partition info silently — operator gets schema (200) without
-    # failing on the missing config. The strict /schema path (_fetch_bq_schema)
-    # surfaces the not_configured error separately.
-    if not bq.projects.data:
+    rows = fetch_bq_columns_full(bq, dataset, table)
+    if not rows:
         return {}
 
-    if not (validate_quoted_identifier(bq.projects.data, "BQ project")
-            and validate_quoted_identifier(dataset, "BQ dataset")
-            and validate_quoted_identifier(table, "BQ source_table")):
-        return {}  # Best-effort; refuse to query unsafe identifiers.
-
-    try:
-        with bq.duckdb_session() as conn:
-            bq_sql = (
-                f"SELECT column_name, is_partitioning_column, clustering_ordinal_position "
-                f"FROM `{bq.projects.data}.{dataset}.INFORMATION_SCHEMA.COLUMNS` "
-                f"WHERE table_name = ? "
-                f"ORDER BY clustering_ordinal_position NULLS LAST"
-            )
-            rows = conn.execute(
-                "SELECT * FROM bigquery_query(?, ?, ?)",
-                [bq.projects.billing, bq_sql, table],
-            ).fetchall()
-        if not rows:
-            return {}
-        partition_by = next(
-            (r[0] for r in rows if (r[1] or "").upper() == "YES"),
-            None,
-        )
-        clustered_by = [r[0] for r in rows if r[2] is not None]
-        return {"partition_by": partition_by, "clustered_by": clustered_by}
-    except Exception as e:
-        logger.warning(
-            "BQ table options fetch failed for %s.%s.%s: %s",
-            bq.projects.data, dataset, table, e,
-        )
-        return {}
+    partition_by = next(
+        (r["name"] for r in rows if r["is_partitioning_column"]),
+        None,
+    )
+    clustered_rows = [r for r in rows if r["clustering_ordinal_position"] is not None]
+    clustered_rows.sort(key=lambda r: r["clustering_ordinal_position"])
+    clustered_by = [r["name"] for r in clustered_rows]
+    return {"partition_by": partition_by, "clustered_by": clustered_by}
 
 
 def build_schema(
