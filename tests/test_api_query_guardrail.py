@@ -347,6 +347,72 @@ def test_fallback_fails_fast_on_pure_duckdb_syntax(
            "backtick" in detail.get("hint", "").lower(), detail
 
 
+def test_remote_estimate_failed_surfaces_first_error_when_attempts_differ(
+    seeded_app, mock_dry_run, monkeypatch,
+):
+    """When the rewritten-SQL dry-run fails with a column-not-found /
+    syntax error and the original-SQL retry fails with the unhelpful
+    "must be qualified" (the typical shape for catalog-id references —
+    user SQL has no qualifying dataset, so the retry is guaranteed to
+    fail this way), the surfaced `underlying` MUST be the first
+    attempt's diagnostic. Pre-fix the second attempt's message
+    overwrote the first, masking the real cause from the user.
+    """
+    from connectors.bigquery.access import BqAccessError
+
+    _register_bq_remote_row("ue", "finance", "ue")
+
+    state = {"calls": 0}
+
+    def two_different_errors(_bq, _sql):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            raise BqAccessError(
+                "bq_bad_request",
+                "Unrecognized name: authorize_date at [1:88]",
+            )
+        raise BqAccessError(
+            "bq_bad_request",
+            "Table 'unit_economics' must be qualified with a dataset "
+            "(e.g. dataset.table)",
+        )
+
+    monkeypatch.setattr(
+        "app.api.query._bq_dry_run_bytes", two_different_errors,
+        raising=False,
+    )
+
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.post(
+        "/api/query",
+        json={
+            "sql": (
+                "SELECT COUNT(*) FROM ue "
+                "WHERE authorize_date = DATE '2025-05-06'"
+            ),
+        },
+        headers=_auth(token),
+    )
+
+    assert state["calls"] == 2, (
+        f"expected rewritten + original-retry = 2 dry-runs, got "
+        f"{state['calls']}"
+    )
+    assert r.status_code == 400, r.json()
+    detail = r.json().get("detail", {})
+    assert isinstance(detail, dict), detail
+    assert detail.get("kind") == "remote_estimate_failed", detail
+    # The FIRST attempt's diagnostic — the actually-useful one — wins.
+    assert "authorize_date" in detail.get("underlying", ""), detail
+    # The second attempt's context is preserved for operator visibility.
+    assert "must be qualified" in detail.get("underlying_original", ""), \
+        detail
+    # Hint now points at `agnes schema` first — the typical cause is a
+    # typo'd column name on the FROM table.
+    assert "agnes schema" in detail.get("hint", "").lower(), detail
+
+
 def test_guardrail_propagates_502_on_non_parse_bq_errors(
     seeded_app, mock_dry_run, monkeypatch,
 ):

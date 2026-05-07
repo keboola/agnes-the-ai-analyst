@@ -10,6 +10,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.47.2] — 2026-05-07
+
+### Fixed
+
+- Restore #218 (real BQ error surfacing in `remote_estimate_failed`) and #219 (friendlier missing-table hint in `agnes query`) — both fixes were silently reverted by the squash merge of #217 because that branch carried stale snapshots of `app/api/query.py` and `cli/commands/query.py` from before #218 and #219 merged. Verified end-to-end against production: `agnes query --remote "SELECT FROM unit_economics WHERE bad_col=1"` now returns the BQ "Unrecognized name" diagnostic; `agnes query "DESCRIBE unit_economics"` now appends the remote-table hint.
+
 ## [0.47.1] — 2026-05-07
 
 Keboola connector v27 — incremental, partitioned, where_filters, typed parquet.
