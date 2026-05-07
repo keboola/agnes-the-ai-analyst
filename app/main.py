@@ -113,6 +113,7 @@ from app.api.store import router as store_router
 from app.api.my_stack import router as my_stack_router
 from app.api.welcome import router as welcome_router
 from app.api.claude_md import router as claude_md_router
+from app.api.cache_warmup import router as cache_warmup_router
 from app.marketplace_server.router import router as marketplace_server_router
 from app.marketplace_server.git_router import make_git_wsgi_app
 from app.web.router import router as web_router
@@ -552,6 +553,7 @@ def create_app() -> FastAPI:
     app.include_router(my_stack_router)
     app.include_router(welcome_router)
     app.include_router(claude_md_router)
+    app.include_router(cache_warmup_router)
     app.include_router(marketplace_server_router)
 
     # Git smart-HTTP endpoint for Claude Code: /marketplace.git/*
