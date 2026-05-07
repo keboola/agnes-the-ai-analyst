@@ -11,6 +11,8 @@ from app.utils import get_data_dir as _get_data_dir
 from src.rbac import can_access_table
 from src.repositories.table_registry import TableRegistryRepository
 from app.api.v2_cache import TTLCache
+from app.api._metadata_models import MetadataRequest, TableMetadata
+from src.identifier_validation import validate_quoted_identifier
 
 router = APIRouter(prefix="/api/v2", tags=["v2"])
 
@@ -24,6 +26,44 @@ router = APIRouter(prefix="/api/v2", tags=["v2"])
 # a no-op — tracked separately.
 _table_rows_cache = TTLCache(maxsize=1, ttl_seconds=300)
 _TABLE_ROWS_KEY = "all"
+
+
+def _metadata_provider_for(source_type: str):
+    """Lazy-import dispatch for source-specific metadata providers.
+
+    Lazy because connector modules are heavy (BQ extension, google-cloud
+    client, etc.) and a Keboola-only deployment shouldn't pay the BQ
+    import cost. Returns ``None`` for unknown source types — the caller
+    treats that as "no metadata enrichment available" and falls through.
+    """
+    if source_type == "bigquery":
+        from connectors.bigquery import metadata as m
+        return m.fetch
+    if source_type == "keboola":
+        from connectors.keboola import metadata as m
+        return m.fetch
+    return None
+
+
+def _build_metadata_request(row: dict) -> MetadataRequest | None:
+    """Construct a validated MetadataRequest from a registry row.
+
+    Pre-validates the identifiers via `validate_quoted_identifier` before
+    constructing the request — providers can then interpolate
+    `req.bucket` / `req.source_table` into SQL/URL paths without
+    re-checking. Returns ``None`` when validation fails; provider is not
+    dispatched for that row.
+    """
+    bucket = row.get("bucket") or ""
+    source_table = row.get("source_table") or row.get("id") or ""
+    if not bucket or not source_table:
+        return None
+    if not (validate_quoted_identifier(bucket, "bucket")
+            and validate_quoted_identifier(source_table, "source_table")):
+        return None
+    return MetadataRequest(
+        table_id=row["id"], bucket=bucket, source_table=source_table,
+    )
 
 
 def _flavor_for(source_type: str) -> str:
