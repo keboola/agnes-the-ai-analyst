@@ -10,6 +10,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.46.0] — 2026-05-07
+
+Keboola cutover bundle: native parquet on the materialized sync,
+auto-discover protection against admin overrides, sync-routing
+correctness, plus a bunch of operational paper-cuts surfaced during
+a fresh deploy on a Snowflake-backed Keboola project. **BREAKING**
+for Keboola operators: schema bump to v26 migrates Keboola
+`query_mode='local'` rows to `materialized` (auto-migration runs on
+first start; same effective behavior, different internal path —
+Storage API direct via `fileType=parquet` instead of the DuckDB
+extension).
+
 ### Added
 
 - `AGNES_TEMP_DIR` env var (default in `docker-compose.yml`: `/data/tmp`) routes per-call extractor tempdirs (Snowflake-UNLOAD slice staging, CSV→parquet intermediates) off the container's overlayfs `/tmp` onto the data volume. Boot-disk overlayfs filled to 100% on agnes-dev during a multi-GiB sliced parquet export; the dedicated data disk had 15 GiB free at the time. Helper `connectors/keboola/storage_api.py:get_temp_root` mkdirs the target on first use; unset / empty / unwritable falls back to system `/tmp` for compat with OSS users on a single-disk host.
