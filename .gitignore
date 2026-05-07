@@ -150,3 +150,9 @@ docs/ZS_PADAK_*
 # GCP service account keys — never commit
 *-key.json
 /agnes-deploy-*.json
+
+# Vendor-loaded design mocks pulled into the worktree for plan-phase reference.
+# These contain customer-specific tokens (hostnames, plugin names, brand strings)
+# and cannot ship in OSS commit history per CLAUDE.md vendor-agnostic policy.
+# Sanitize and replace with placeholders before committing any reference content.
+docs/brainstorms/agnes-home-mock-*.html

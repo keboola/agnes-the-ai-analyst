@@ -39,7 +39,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 25
+SCHEMA_VERSION = 26
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -64,7 +64,12 @@ CREATE TABLE IF NOT EXISTS users (
     deactivated_at TIMESTAMP,
     deactivated_by VARCHAR,
     created_at TIMESTAMP DEFAULT current_timestamp,
-    updated_at TIMESTAMP
+    updated_at TIMESTAMP,
+    -- v26: onboarded flag flipped by `agnes init` success path or by the
+    -- self-mark "I've already set up Agnes locally" button on /home.
+    -- Default FALSE; explicit signal required to flip (no PAT-heuristic
+    -- auto-flip per the brainstorm decision §D).
+    onboarded BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 CREATE TABLE IF NOT EXISTS sync_state (
@@ -406,18 +411,6 @@ CREATE TABLE IF NOT EXISTS resource_grants (
     UNIQUE (group_id, resource_type, resource_id)
 );
 
--- v21: customizable analyst-bootstrap welcome prompt.
--- Singleton row (id=1). NULL content means "use the default template
--- shipped at config/claude_md_template.txt"; admin-edited override
--- stores the raw Jinja2 source string.
-CREATE TABLE IF NOT EXISTS welcome_template (
-    id INTEGER PRIMARY KEY DEFAULT 1,
-    content TEXT,
-    updated_at TIMESTAMP,
-    updated_by VARCHAR,
-    CONSTRAINT singleton CHECK (id = 1)
-);
-
 -- v22: reserved (formerly setup_banner — feature dropped, table kept for
 -- forward compatibility with already-migrated instances).
 CREATE TABLE IF NOT EXISTS setup_banner (
@@ -428,16 +421,18 @@ CREATE TABLE IF NOT EXISTS setup_banner (
     CONSTRAINT singleton CHECK (id = 1)
 );
 
--- v23: customizable analyst-workspace CLAUDE.md template.
--- Singleton row (id=1). NULL content means "use the default template
--- shipped at config/claude_md_template.txt" (Jinja2 markdown). Admin override
--- stores the raw Jinja2 source string.
-CREATE TABLE IF NOT EXISTS claude_md_template (
-    id INTEGER PRIMARY KEY DEFAULT 1,
+-- v26: generic per-key instance-template storage. Consolidates the v21
+-- welcome_template and v23 claude_md_template singletons into one shape
+-- so future operator-customizable surfaces ship as a row insert + admin-UI
+-- section, not a fresh schema bump. Pre-seeded keys: 'welcome', 'claude_md',
+-- 'home'. NULL content means "use the OSS-shipped default"; an admin override
+-- replaces the OSS default at render time.
+CREATE TABLE IF NOT EXISTS instance_templates (
+    key VARCHAR PRIMARY KEY,
     content TEXT,
+    previous_content TEXT,
     updated_at TIMESTAMP,
-    updated_by VARCHAR,
-    CONSTRAINT singleton CHECK (id = 1)
+    updated_by VARCHAR
 );
 
 -- v25: per-user marketplace composition layer on top of admin grants.
@@ -1792,6 +1787,92 @@ _V24_TO_V25_MIGRATIONS = [
 ]
 
 
+# v26: /home page rollout. Two changes bundled because they ship together.
+#
+#   1. instance_templates(key, content, ...) consolidates the v21
+#      welcome_template + v23 claude_md_template singletons into one shape so
+#      future operator-customizable surfaces ship as a row insert + admin-UI
+#      section, not a fresh schema bump.
+#
+#      Migration semantics: CREATE the new table, INSERT existing rows from the
+#      legacy tables (preserving content + updated_at + updated_by), DROP the
+#      legacy tables. Per Decision §B in the brainstorm — consolidate now
+#      before a third copy ships.
+#
+#      The CREATE+seed pure-SQL portion lives in this list; the conditional
+#      INSERT-from-legacy + DROP lives in _v25_to_v26_finalize() below because
+#      it needs information_schema lookups to handle both fresh-install
+#      (no legacy tables) and existing-v25 (legacy tables present) paths
+#      cleanly.
+#
+#   2. users.onboarded BOOLEAN NOT NULL DEFAULT FALSE — feeds the /home
+#      state-aware landing. Default FALSE for everyone on migration; explicit
+#      signal (`POST /api/me/onboarded` from `agnes init` success or the
+#      self-mark button on the not-onboarded view) flips it to TRUE. Per
+#      Decision §D: no PAT-heuristic auto-flip, no operator pre-flip recipe
+#      shipped with the OSS — operators run their own UPDATE if they want.
+_V25_TO_V26_MIGRATIONS = [
+    """
+    CREATE TABLE IF NOT EXISTS instance_templates (
+        key VARCHAR PRIMARY KEY,
+        content TEXT,
+        previous_content TEXT,
+        updated_at TIMESTAMP,
+        updated_by VARCHAR
+    )
+    """,
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarded BOOLEAN DEFAULT FALSE",
+    # Backfill any pre-existing NULL onboarded values to FALSE so the column
+    # carries the documented "default FALSE" semantics for legacy users
+    # (DuckDB ADD COLUMN with DEFAULT applies to new INSERTs but leaves
+    # existing rows NULL — UPDATE here closes that gap).
+    "UPDATE users SET onboarded = FALSE WHERE onboarded IS NULL",
+]
+
+
+def _v25_to_v26_finalize(conn) -> None:
+    """Migrate legacy welcome_template + claude_md_template rows into
+    instance_templates, then drop the legacy tables.
+
+    Runs after _V25_TO_V26_MIGRATIONS creates the new table. Idempotent:
+    re-running on an already-v26 DB is a no-op because the legacy tables
+    are gone after the first run and the seed INSERTs use ON CONFLICT.
+    """
+    has_welcome = conn.execute(
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema = 'main' AND table_name = 'welcome_template'"
+    ).fetchone()
+    if has_welcome:
+        conn.execute(
+            "INSERT INTO instance_templates (key, content, updated_at, updated_by) "
+            "SELECT 'welcome', content, updated_at, updated_by FROM welcome_template "
+            "ON CONFLICT (key) DO NOTHING"
+        )
+        conn.execute("DROP TABLE welcome_template")
+
+    has_claude_md = conn.execute(
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema = 'main' AND table_name = 'claude_md_template'"
+    ).fetchone()
+    if has_claude_md:
+        conn.execute(
+            "INSERT INTO instance_templates (key, content, updated_at, updated_by) "
+            "SELECT 'claude_md', content, updated_at, updated_by FROM claude_md_template "
+            "ON CONFLICT (key) DO NOTHING"
+        )
+        conn.execute("DROP TABLE claude_md_template")
+
+    # Seed the canonical key set with NULL content. The INSERTs are no-ops if
+    # the keys already landed via the legacy migration above (existing
+    # operators) or via a prior migration run (idempotent re-execution).
+    for key in ("welcome", "claude_md", "home"):
+        conn.execute(
+            "INSERT INTO instance_templates (key, content) VALUES (?, NULL) "
+            "ON CONFLICT (key) DO NOTHING",
+            [key],
+        )
+
+
 # v24: rewrite materialized BQ source_query from DuckDB-flavor
 # (bq."<dataset>"."<table>") to BigQuery-native (`<project>.<dataset>.<table>`)
 # so the new connectors.bigquery.extractor.materialize_query wrapping
@@ -1942,18 +2023,19 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 "INSERT INTO schema_version (version) VALUES (?)",
                 [SCHEMA_VERSION],
             )
-            conn.execute(
-                "INSERT INTO welcome_template (id, content) VALUES (1, NULL) "
-                "ON CONFLICT (id) DO NOTHING"
-            )
+            # v22 setup_banner row (kept as compat per CLAUDE.md schema notes).
             conn.execute(
                 "INSERT INTO setup_banner (id, content) VALUES (1, NULL) "
                 "ON CONFLICT (id) DO NOTHING"
             )
-            conn.execute(
-                "INSERT INTO claude_md_template (id, content) VALUES (1, NULL) "
-                "ON CONFLICT (id) DO NOTHING"
-            )
+            # v26 instance_templates seed — three canonical keys with NULL
+            # content (operator override absent → render OSS default).
+            for key in ("welcome", "claude_md", "home"):
+                conn.execute(
+                    "INSERT INTO instance_templates (key, content) VALUES (?, NULL) "
+                    "ON CONFLICT (key) DO NOTHING",
+                    [key],
+                )
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -2045,6 +2127,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             if current < 25:
                 for sql in _V24_TO_V25_MIGRATIONS:
                     conn.execute(sql)
+            if current < 26:
+                for sql in _V25_TO_V26_MIGRATIONS:
+                    conn.execute(sql)
+                _v25_to_v26_finalize(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],

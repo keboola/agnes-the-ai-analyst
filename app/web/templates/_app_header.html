@@ -10,8 +10,15 @@
     </div>
     <div class="app-header-right">
         {% set _path = request.url.path %}
-        <a class="app-nav-link {% if _path == '/dashboard' or _path == '/' %}is-active{% endif %}" href="/dashboard">Dashboard</a>
+        {% set _home = home_route or '/dashboard' %}
+        <a class="app-nav-link {% if _path == _home or _path == '/' or _path == '/dashboard' or _path == '/home' %}is-active{% endif %}" href="{{ _home }}">Dashboard</a>
+        {# Setup-local-agent nav link hidden when /home is the active landing —
+           the not-onboarded /home view already carries the full install flow,
+           the one-click setup CTA, and the connector prompts. /setup itself
+           still works for direct deep-links and admin-override editing. #}
+        {% if _home != '/home' %}
         <a class="app-nav-link {% if _path.startswith('/setup') or _path.startswith('/install') %}is-active{% endif %}" href="/setup">Setup local agent</a>
+        {% endif %}
         <a class="app-nav-link {% if _path.startswith('/store') %}is-active{% endif %}" href="/store">Store</a>
         <a class="app-nav-link {% if _path.startswith('/my-ai-stack') %}is-active{% endif %}" href="/my-ai-stack">My AI Stack</a>
         {% if session.user.is_admin %}

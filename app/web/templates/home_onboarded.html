@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+
+{% block title %}Home — {{ instance_name or "AI Data Analyst" }}{% endblock %}
+
+{% block content %}
+<style>
+body:has(.home-mock) .container { max-width: 1200px; padding: 32px; }
+body:has(.home-mock) { background: #F9FAFB; }
+.home-mock {
+    --hp-primary: #0073D1;
+    --hp-primary-dark: #0056A3;
+    --hp-primary-light: #E6F3FC;
+    --hp-border: #E5E7EB;
+    --hp-border-light: #F3F4F6;
+    --hp-text-primary: #111827;
+    --hp-text-secondary: #6B7280;
+    max-width: 1200px;
+    margin: 0 auto;
+    color: var(--hp-text-primary);
+    font-size: 14px;
+    line-height: 1.5;
+}
+.home-mock * { box-sizing: border-box; }
+
+.home-mock .hero {
+    background: linear-gradient(135deg, #0073D1 0%, #0056A3 100%);
+    color: white;
+    border-radius: 16px;
+    padding: 38px 40px;
+    margin-bottom: 22px;
+    box-shadow: 0 8px 24px rgba(0, 86, 163, 0.18);
+}
+.home-mock .hero .eyebrow {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    opacity: 0.85;
+    margin-bottom: 10px;
+}
+.home-mock .hero h1 {
+    font-size: 30px;
+    font-weight: 600;
+    letter-spacing: -0.4px;
+    margin-bottom: 12px;
+    line-height: 1.2;
+    color: white;
+}
+.home-mock .hero p {
+    font-size: 15px;
+    opacity: 0.94;
+    max-width: 680px;
+    line-height: 1.6;
+}
+
+.home-mock .section-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--hp-text-secondary);
+    margin: 30px 0 12px;
+}
+
+.home-mock .quick-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 18px;
+    margin-bottom: 18px;
+}
+.home-mock .quick-card {
+    background: white;
+    border: 1px solid var(--hp-border);
+    border-radius: 12px;
+    padding: 22px;
+    text-decoration: none;
+    color: inherit;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    transition: border-color .15s, box-shadow .15s;
+}
+.home-mock .quick-card:hover {
+    border-color: var(--hp-primary);
+    box-shadow: 0 4px 12px rgba(0, 115, 209, 0.10);
+}
+.home-mock .quick-card .ico {
+    font-size: 22px;
+    margin-bottom: 8px;
+}
+.home-mock .quick-card .ttl {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--hp-text-primary);
+}
+.home-mock .quick-card .desc {
+    font-size: 13px;
+    color: var(--hp-text-secondary);
+    line-height: 1.55;
+}
+</style>
+
+<div class="home-mock">
+    {% set display_name = (user.name or (user.email or "").split("@")[0] or "back") %}
+
+    <div class="hero">
+        <div class="eyebrow">Welcome back, {{ display_name }}</div>
+        <h1>You're all set up</h1>
+        <p>
+            Open Claude Code in any project under <code style="background: rgba(255,255,255,0.12); padding: 1px 6px; border-radius: 4px; font-family: ui-monospace, 'SF Mono', Consolas, monospace; font-size: 12.5px;">~/Agnes/Projects/</code>
+            and start a session — your data and plugins are already synced. Use the cards below to jump into the parts of {{ instance_name or "Agnes" }} you need.
+        </p>
+    </div>
+
+    <div class="section-label">Quick links</div>
+
+    <div class="quick-grid">
+        <a class="quick-card" href="/dashboard">
+            <span class="ico">&#x1F4CA;</span>
+            <div class="ttl">Dashboard</div>
+            <div class="desc">Sync state, table inventory, recent activity.</div>
+        </a>
+        <a class="quick-card" href="/catalog">
+            <span class="ico">&#x1F4DA;</span>
+            <div class="ttl">Catalog</div>
+            <div class="desc">Browse tables, schema, and metric definitions.</div>
+        </a>
+        {% if is_admin %}
+        <a class="quick-card" href="/activity-center">
+            <span class="ico">&#x1F4C8;</span>
+            <div class="ttl">Activity Center</div>
+            <div class="desc">Per-user analytics on Agnes adoption.</div>
+        </a>
+        {% endif %}
+        <a class="quick-card" href="/corporate-memory">
+            <span class="ico">&#x1F9E0;</span>
+            <div class="ttl">Corporate Memory</div>
+            <div class="desc">Shared analyst knowledge and prior solutions.</div>
+        </a>
+        {% if is_admin %}
+        <a class="quick-card" href="/admin/server-config">
+            <span class="ico">&#x2699;&#xFE0F;</span>
+            <div class="ttl">Admin</div>
+            <div class="desc">Server configuration, RBAC, marketplaces.</div>
+        </a>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
