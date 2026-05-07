@@ -1222,21 +1222,32 @@
                         </button>
                     </div>
                     <div class="modal-body">
-                        {# Q2 radio — Sync mode. (Q1 is implicitly 'synced'; Keboola
-                           has no Live mode.) Whole and Custom both map to
-                           query_mode='materialized'. #}
+                        {# Three sync-mode radios:
+                           - whole / custom → query_mode='materialized' (DuckDB Keboola
+                             extension; whole synthesizes SELECT *, custom uses admin SQL)
+                           - direct → query_mode='local' (Storage API SDK, supports
+                             v26 sync strategies: incremental/partitioned + where_filters) #}
                         <div class="form-group">
                             <label class="form-label">What to sync?</label>
-                            <div class="bq-sync-radio-group" style="display:flex; gap:12px; margin-top:6px;">
-                                <label style="flex:1; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                            <div class="bq-sync-radio-group" style="display:flex; gap:12px; margin-top:6px; flex-wrap:wrap;">
+                                <label style="flex:1; min-width:200px; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
                                     <input type="radio" name="kbSyncMode" value="whole" checked onchange="onKbSyncModeChange()">
-                                    <strong>Whole table</strong>
+                                    <strong>Whole table (extension)</strong>
                                     <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
-                                        Pull everything in the bucket/table on each
-                                        schedule tick. Disk + sync cost = full table size.
+                                        DuckDB Keboola extension pulls the full table on
+                                        each tick. Fastest path; full overwrite each run.
                                     </div>
                                 </label>
-                                <label style="flex:1; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                <label style="flex:1; min-width:200px; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                    <input type="radio" name="kbSyncMode" value="direct" onchange="onKbSyncModeChange()">
+                                    <strong>Direct extract (Storage API)</strong>
+                                    <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
+                                        Storage API SDK. Supports incremental sync
+                                        (changedSince + PK merge), partitioned files,
+                                        and server-side <code>where_filters</code>.
+                                    </div>
+                                </label>
+                                <label style="flex:1; min-width:200px; padding:12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
                                     <input type="radio" name="kbSyncMode" value="custom" onchange="onKbSyncModeChange()">
                                     <strong>Custom SQL</strong>
                                     <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
@@ -1331,12 +1342,87 @@
                                 <label class="form-label" for="kbPrimaryKey">Primary Key</label>
                                 <input type="text" class="form-input" id="kbPrimaryKey"
                                        placeholder="e.g. id">
-                                <div class="form-hint">Comma-separated list. <strong>Catalog
-                                    metadata only</strong> — Agnes always does full-overwrite
-                                    sync; no upsert/dedup. Auto-filled from the Keboola source
-                                    when available.</div>
+                                <div class="form-hint">Comma-separated list. Required for
+                                    Direct extract → Incremental (used as the dedup key on
+                                    delta merge). Auto-filled from the Keboola source when
+                                    available.</div>
                             </div>
                         </details>
+
+                        <!-- v26 Direct-extract sync-strategy panel — visible only when
+                             "Direct extract (Storage API)" is selected. Field visibility
+                             within the panel further branches on the sync_strategy
+                             dropdown (incremental / partitioned).  -->
+                        <div class="form-group kb-direct-only" style="display:none; padding:12px; border:1px solid var(--border); border-radius:8px; background:var(--background);">
+                            <h3 style="margin:0 0 12px 0; font-size:14px;">Direct extract — sync strategy</h3>
+
+                            <div class="form-group">
+                                <label class="form-label" for="kbStrategy">Sync strategy</label>
+                                <select class="form-select" id="kbStrategy" onchange="onKbStrategyChange()">
+                                    <option value="full_refresh">Full refresh — pull entire table each tick</option>
+                                    <option value="incremental">Incremental — pull rows changed since last sync</option>
+                                    <option value="partitioned">Partitioned — per-partition files, per-month/day/year</option>
+                                </select>
+                            </div>
+
+                            <div class="form-group kb-strategy-incremental kb-strategy-partitioned" style="display:none;">
+                                <label class="form-label" for="kbIncrementalWindowDays">Incremental window (days)
+                                    <span class="optional">(default 7)</span></label>
+                                <input type="number" class="form-input" id="kbIncrementalWindowDays" min="0" placeholder="7">
+                                <div class="form-hint">Backtrack window applied to last_sync timestamp on each tick.
+                                    Higher = more reliable on late-arriving rows; lower = less data per tick.</div>
+                            </div>
+                            <div class="form-group kb-strategy-incremental kb-strategy-partitioned" style="display:none;">
+                                <label class="form-label" for="kbMaxHistoryDays">Max history (days)
+                                    <span class="optional">(first sync only, default unbounded)</span></label>
+                                <input type="number" class="form-input" id="kbMaxHistoryDays" min="1" placeholder="365">
+                                <div class="form-hint">Cap on how far back the first-ever sync goes. Multi-year tables
+                                    without this can OOM at write — set 90/180/365 for safety.</div>
+                            </div>
+
+                            <div class="form-group kb-strategy-partitioned" style="display:none;">
+                                <label class="form-label" for="kbPartitionBy">Partition by column <strong>(required)</strong></label>
+                                <input type="text" class="form-input" id="kbPartitionBy" placeholder="e.g. event_date">
+                                <div class="form-hint">Date / timestamp column whose value drives the partition key.
+                                    Rows with NULL or unparseable values are dropped (logged warning).</div>
+                            </div>
+                            <div class="form-group kb-strategy-partitioned" style="display:none;">
+                                <label class="form-label" for="kbPartitionGranularity">Granularity</label>
+                                <select class="form-select" id="kbPartitionGranularity">
+                                    <option value="month">Month — YYYY_MM.parquet (default)</option>
+                                    <option value="day">Day — YYYY_MM_DD.parquet</option>
+                                    <option value="year">Year — YYYY.parquet</option>
+                                </select>
+                            </div>
+                            <div class="form-group kb-strategy-partitioned" style="display:none;">
+                                <label class="form-label" for="kbInitialLoadChunkDays">Initial-load chunk size (days)
+                                    <span class="optional">(default 30)</span></label>
+                                <input type="number" class="form-input" id="kbInitialLoadChunkDays" min="1" placeholder="30">
+                                <div class="form-hint">First-sync chunked load step. Smaller = more API calls, less
+                                    memory per chunk. Larger = fewer calls, more memory.</div>
+                            </div>
+
+                            <div class="form-group kb-strategy-not-incremental" style="display:none;">
+                                <label class="form-label" for="kbWhereFilters">Where filters
+                                    <span class="optional">(JSON array, optional)</span></label>
+                                <textarea class="form-textarea" id="kbWhereFilters" rows="6"
+                                          placeholder='[{"column": "date", "operator": "ge", "values": ["{{last_3_months}}"]}]'></textarea>
+                                <div class="form-hint">
+                                    Server-side row filter. Operators: <code>eq, ne, gt, ge, lt, le</code>.
+                                    Date placeholders resolved at sync time:
+                                    <code>{{ '{{today}}' }}</code>,
+                                    <code>{{ '{{last_week}}' }}</code>,
+                                    <code>{{ '{{last_month}}' }}</code>,
+                                    <code>{{ '{{last_2_months}}' }}</code>,
+                                    <code>{{ '{{last_3_months}}' }}</code>,
+                                    <code>{{ '{{last_6_months}}' }}</code>,
+                                    <code>{{ '{{last_year}}' }}</code>,
+                                    <code>{{ '{{last_2_years}}' }}</code>,
+                                    <code>{{ '{{start_of_3_months_ago}}' }}</code>.
+                                    Not compatible with Incremental strategy.
+                                </div>
+                            </div>
+                        </div>
                     </div>
                     <div class="modal-footer">
                         <button class="btn btn-secondary" onclick="closeRegisterKeboolaModal()">Cancel</button>
@@ -1365,19 +1451,28 @@
                             <div class="form-hint">Slugified id, immutable.</div>
                         </div>
 
-                        {# Q2 radio — Sync mode (mirror of Register). #}
+                        {# Three sync-mode radios (mirror of Register). #}
                         <div class="form-group">
                             <label class="form-label">What to sync?</label>
-                            <div class="bq-sync-radio-group" style="display:flex; gap:12px; margin-top:6px;">
-                                <label style="flex:1; padding:10px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                            <div class="bq-sync-radio-group" style="display:flex; gap:12px; margin-top:6px; flex-wrap:wrap;">
+                                <label style="flex:1; min-width:200px; padding:10px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
                                     <input type="radio" name="editKbSyncMode" value="whole"
                                            onchange="onEditKbSyncModeChange()">
-                                    <strong>Whole table</strong>
+                                    <strong>Whole table (extension)</strong>
                                     <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
-                                        Pull everything in the bucket/table on each schedule tick.
+                                        DuckDB Keboola extension; full overwrite each tick.
                                     </div>
                                 </label>
-                                <label style="flex:1; padding:10px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                <label style="flex:1; min-width:200px; padding:10px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+                                    <input type="radio" name="editKbSyncMode" value="direct"
+                                           onchange="onEditKbSyncModeChange()">
+                                    <strong>Direct extract (Storage API)</strong>
+                                    <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">
+                                        Storage API SDK. Supports incremental, partitioned,
+                                        <code>where_filters</code>.
+                                    </div>
+                                </label>
+                                <label style="flex:1; min-width:200px; padding:10px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
                                     <input type="radio" name="editKbSyncMode" value="custom"
                                            onchange="onEditKbSyncModeChange()">
                                     <strong>Custom SQL</strong>
@@ -1455,10 +1550,65 @@
                                 <label class="form-label" for="editKbPrimaryKey">Primary Key</label>
                                 <input type="text" class="form-input" id="editKbPrimaryKey"
                                        placeholder="e.g. id">
-                                <div class="form-hint">Comma-separated list. <strong>Catalog
-                                    metadata only</strong> — Agnes always does full-overwrite sync.</div>
+                                <div class="form-hint">Comma-separated list. Required for
+                                    Direct extract → Incremental.</div>
                             </div>
                         </details>
+
+                        <!-- v26 Direct-extract sync-strategy panel — mirror of Register. -->
+                        <div class="form-group editkb-direct-only" style="display:none; padding:12px; border:1px solid var(--border); border-radius:8px; background:var(--background);">
+                            <h3 style="margin:0 0 12px 0; font-size:14px;">Direct extract — sync strategy</h3>
+
+                            <div class="form-group">
+                                <label class="form-label" for="editKbStrategy">Sync strategy</label>
+                                <select class="form-select" id="editKbStrategy" onchange="onEditKbStrategyChange()">
+                                    <option value="full_refresh">Full refresh — pull entire table each tick</option>
+                                    <option value="incremental">Incremental — pull rows changed since last sync</option>
+                                    <option value="partitioned">Partitioned — per-partition files, per-month/day/year</option>
+                                </select>
+                            </div>
+
+                            <div class="form-group editkb-strategy-incremental editkb-strategy-partitioned" style="display:none;">
+                                <label class="form-label" for="editKbIncrementalWindowDays">Incremental window (days)
+                                    <span class="optional">(default 7)</span></label>
+                                <input type="number" class="form-input" id="editKbIncrementalWindowDays" min="0" placeholder="7">
+                            </div>
+                            <div class="form-group editkb-strategy-incremental editkb-strategy-partitioned" style="display:none;">
+                                <label class="form-label" for="editKbMaxHistoryDays">Max history (days)
+                                    <span class="optional">(first sync only)</span></label>
+                                <input type="number" class="form-input" id="editKbMaxHistoryDays" min="1" placeholder="365">
+                            </div>
+
+                            <div class="form-group editkb-strategy-partitioned" style="display:none;">
+                                <label class="form-label" for="editKbPartitionBy">Partition by column <strong>(required)</strong></label>
+                                <input type="text" class="form-input" id="editKbPartitionBy" placeholder="e.g. event_date">
+                            </div>
+                            <div class="form-group editkb-strategy-partitioned" style="display:none;">
+                                <label class="form-label" for="editKbPartitionGranularity">Granularity</label>
+                                <select class="form-select" id="editKbPartitionGranularity">
+                                    <option value="month">Month (default)</option>
+                                    <option value="day">Day</option>
+                                    <option value="year">Year</option>
+                                </select>
+                            </div>
+                            <div class="form-group editkb-strategy-partitioned" style="display:none;">
+                                <label class="form-label" for="editKbInitialLoadChunkDays">Initial-load chunk size (days)
+                                    <span class="optional">(default 30)</span></label>
+                                <input type="number" class="form-input" id="editKbInitialLoadChunkDays" min="1" placeholder="30">
+                            </div>
+
+                            <div class="form-group editkb-strategy-not-incremental" style="display:none;">
+                                <label class="form-label" for="editKbWhereFilters">Where filters
+                                    <span class="optional">(JSON array, optional)</span></label>
+                                <textarea class="form-textarea" id="editKbWhereFilters" rows="6"
+                                          placeholder='[{"column": "date", "operator": "ge", "values": ["{{last_3_months}}"]}]'></textarea>
+                                <div class="form-hint">
+                                    Operators: <code>eq, ne, gt, ge, lt, le</code>. Date placeholders
+                                    (<code>{{ '{{today}}' }}</code>, <code>{{ '{{last_3_months}}' }}</code>, etc.) resolved at
+                                    sync time. Not compatible with Incremental.
+                                </div>
+                            </div>
+                        </div>
                     </div>
                     <div class="modal-footer">
                         <button class="btn btn-secondary" onclick="closeEditKeboolaModal()">Cancel</button>
@@ -1733,10 +1883,19 @@
         var radio = modal.querySelector('input[name="kbSyncMode"][value="whole"]');
         if (radio) radio.checked = true;
         ['kbViewName', 'kbBucket', 'kbSourceTable', 'kbSourceQuery',
-         'kbSyncSchedule', 'kbDescription', 'kbFolder', 'kbPrimaryKey'].forEach(function(id) {
+         'kbSyncSchedule', 'kbDescription', 'kbFolder', 'kbPrimaryKey',
+         // v26 Direct-extract fields — reset so a stale value from a prior
+         // open doesn't leak into the next registration.
+         'kbIncrementalWindowDays', 'kbMaxHistoryDays', 'kbPartitionBy',
+         'kbInitialLoadChunkDays', 'kbWhereFilters'].forEach(function(id) {
             var el = document.getElementById(id);
             if (el) el.value = '';
         });
+        // Default v26 dropdowns
+        var kbStrategyEl = document.getElementById('kbStrategy');
+        if (kbStrategyEl) kbStrategyEl.value = 'full_refresh';
+        var kbGranEl = document.getElementById('kbPartitionGranularity');
+        if (kbGranEl) kbGranEl.value = 'month';
         onKbSyncModeChange();  // apply default visibility
         var btn = document.getElementById('registerKeboolaSubmitBtn');
         btn.disabled = false;
@@ -1755,19 +1914,64 @@
 
     function onKbSyncModeChange() {
         var mode = _getKbSyncMode();
+        // Whole + Direct both need bucket/source_table inputs; only Custom hides them
         document.querySelectorAll('.kb-source-table').forEach(function(el) {
-            el.style.display = (mode === 'whole') ? '' : 'none';
+            el.style.display = (mode === 'custom') ? 'none' : '';
         });
         document.querySelectorAll('.kb-source-custom').forEach(function(el) {
             el.style.display = (mode === 'custom') ? '' : 'none';
         });
+        // v26 strategy panel — Direct mode only
+        document.querySelectorAll('.kb-direct-only').forEach(function(el) {
+            el.style.display = (mode === 'direct') ? '' : 'none';
+        });
+        if (mode === 'direct') onKbStrategyChange();
+    }
+
+    function _getKbStrategy() {
+        var el = document.getElementById('kbStrategy');
+        return el ? el.value : 'full_refresh';
+    }
+
+    function onKbStrategyChange() {
+        // Show/hide per-strategy field groups inside the Direct-extract panel.
+        var s = _getKbStrategy();
+        document.querySelectorAll('.kb-strategy-incremental').forEach(function(el) {
+            el.style.display = (s === 'incremental') ? '' : 'none';
+        });
+        document.querySelectorAll('.kb-strategy-partitioned').forEach(function(el) {
+            // partitioned shares window_days + max_history fields with incremental
+            el.style.display = (s === 'partitioned') ? '' : 'none';
+        });
+        // where_filters: visible for full_refresh + partitioned; the API rejects
+        // incremental + where_filters (changedSince already filters temporally).
+        document.querySelectorAll('.kb-strategy-not-incremental').forEach(function(el) {
+            el.style.display = (s !== 'incremental') ? '' : 'none';
+        });
+    }
+
+    function _intOrNull(id) {
+        var raw = (document.getElementById(id).value || '').trim();
+        if (!raw) return null;
+        var n = parseInt(raw, 10);
+        return isNaN(n) ? null : n;
+    }
+
+    function _parseFiltersJSONOrThrow(id) {
+        var raw = (document.getElementById(id).value || '').trim();
+        if (!raw) return null;
+        try {
+            return JSON.parse(raw);
+        } catch (e) {
+            throw new Error('where_filters: invalid JSON — ' + e.message);
+        }
     }
 
     function _buildKeboolaPayload() {
-        // Phase F: canonical Keboola payload builder for the Keboola-tab
-        // Register modal. Whole mode synthesizes SELECT * FROM kbc."b"."t";
-        // Custom mode posts the admin-supplied SELECT verbatim. Both map
-        // to query_mode='materialized'.
+        // Three modes:
+        //   whole / custom → query_mode='materialized' (DuckDB Keboola extension)
+        //   direct         → query_mode='local' + v26 sync_strategy fields
+        //                    (Storage API SDK, supports incremental/partitioned/where_filters)
         var mode = _getKbSyncMode();
         var viewName = (document.getElementById('kbViewName').value || '').trim();
         var bucket = (document.getElementById('kbBucket').value || '').trim();
@@ -1777,6 +1981,36 @@
             ? pk.split(',').map(function(s) { return s.trim(); }).filter(Boolean)
             : [];
 
+        if (mode === 'direct') {
+            var strategy = _getKbStrategy();
+            var payload = {
+                name: viewName || sourceTable,
+                source_type: 'keboola',
+                query_mode: 'local',
+                bucket: bucket,
+                source_table: sourceTable,
+                primary_key: primaryKey,
+                sync_strategy: strategy,
+                sync_schedule: (document.getElementById('kbSyncSchedule').value || '').trim() || null,
+                description: (document.getElementById('kbDescription').value || '').trim() || null,
+                folder: (document.getElementById('kbFolder').value || '').trim() || null,
+            };
+            if (strategy === 'incremental' || strategy === 'partitioned') {
+                payload.incremental_window_days = _intOrNull('kbIncrementalWindowDays');
+                payload.max_history_days = _intOrNull('kbMaxHistoryDays');
+            }
+            if (strategy === 'partitioned') {
+                payload.partition_by = (document.getElementById('kbPartitionBy').value || '').trim() || null;
+                payload.partition_granularity = document.getElementById('kbPartitionGranularity').value || null;
+                payload.initial_load_chunk_days = _intOrNull('kbInitialLoadChunkDays');
+            }
+            if (strategy !== 'incremental') {
+                payload.where_filters = _parseFiltersJSONOrThrow('kbWhereFilters');
+            }
+            return payload;
+        }
+
+        // Materialized paths (whole / custom)
         var common = {
             name: viewName || sourceTable,
             source_type: 'keboola',
@@ -1804,7 +2038,18 @@
         var btn = document.getElementById('registerKeboolaSubmitBtn');
         btn.disabled = true;
         btn.textContent = 'Registering...';
-        var payload = _buildKeboolaPayload();
+        var payload;
+        try {
+            payload = _buildKeboolaPayload();
+        } catch (e) {
+            // _parseFiltersJSONOrThrow surfaces malformed JSON before the
+            // POST so the operator sees the parse error inline rather than
+            // a 422 from the server. Re-enable the submit button.
+            showToast('' + e.message, 'error');
+            btn.disabled = false;
+            btn.textContent = 'Register';
+            return;
+        }
         fetch('/api/admin/register-table', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1927,10 +2172,32 @@
     function onEditKbSyncModeChange() {
         var mode = _getEditKbSyncMode();
         document.querySelectorAll('.editkb-source-table').forEach(function(el) {
-            el.style.display = (mode === 'whole') ? '' : 'none';
+            el.style.display = (mode === 'custom') ? 'none' : '';
         });
         document.querySelectorAll('.editkb-source-custom').forEach(function(el) {
             el.style.display = (mode === 'custom') ? '' : 'none';
+        });
+        document.querySelectorAll('.editkb-direct-only').forEach(function(el) {
+            el.style.display = (mode === 'direct') ? '' : 'none';
+        });
+        if (mode === 'direct') onEditKbStrategyChange();
+    }
+
+    function _getEditKbStrategy() {
+        var el = document.getElementById('editKbStrategy');
+        return el ? el.value : 'full_refresh';
+    }
+
+    function onEditKbStrategyChange() {
+        var s = _getEditKbStrategy();
+        document.querySelectorAll('.editkb-strategy-incremental').forEach(function(el) {
+            el.style.display = (s === 'incremental') ? '' : 'none';
+        });
+        document.querySelectorAll('.editkb-strategy-partitioned').forEach(function(el) {
+            el.style.display = (s === 'partitioned') ? '' : 'none';
+        });
+        document.querySelectorAll('.editkb-strategy-not-incremental').forEach(function(el) {
+            el.style.display = (s !== 'incremental') ? '' : 'none';
         });
     }
 
@@ -1940,21 +2207,29 @@
     }
 
     function openEditKeboolaModal(table) {
-        // Populate fields from a registry row. The classic Keboola row may
-        // have query_mode='local' (legacy) or 'materialized' with
-        // source_query. Auto-detect mode: a SELECT * FROM kbc."b"."t"
-        // synthetic SQL → Whole; anything else → Custom.
+        // Populate fields from a registry row. Mode detection:
+        //   - query_mode='local' → 'direct' (v26 sync-strategy path)
+        //   - query_mode='materialized' + auto SELECT * → 'whole'
+        //   - query_mode='materialized' + custom SQL  → 'custom'
         table = table || {};
         document.getElementById('editKbTableId').value = table.id || '';
         var bucket = table.bucket || '';
         var sourceTable = table.source_table || '';
         var sourceQuery = table.source_query || '';
+        var queryMode = table.query_mode || 'materialized';
         var isAutoSelectStar = false;
         if (sourceQuery && bucket && sourceTable) {
             var auto = 'SELECT * FROM kbc."' + bucket + '"."' + sourceTable + '"';
             isAutoSelectStar = sourceQuery.replace(/\s+/g, ' ').trim() === auto;
         }
-        var mode = (sourceQuery && !isAutoSelectStar) ? 'custom' : 'whole';
+        var mode;
+        if (queryMode === 'local') {
+            mode = 'direct';
+        } else if (sourceQuery && !isAutoSelectStar) {
+            mode = 'custom';
+        } else {
+            mode = 'whole';
+        }
         _setEditKbRadio(mode);
         document.getElementById('editKbBucket').value = bucket;
         document.getElementById('editKbSourceTable').value = sourceTable;
@@ -1963,6 +2238,21 @@
         document.getElementById('editKbDescription').value = table.description || '';
         document.getElementById('editKbFolder').value = table.folder || '';
         document.getElementById('editKbPrimaryKey').value = (table.primary_key || []).join(', ');
+
+        // v26 fields
+        document.getElementById('editKbStrategy').value = table.sync_strategy || 'full_refresh';
+        document.getElementById('editKbIncrementalWindowDays').value =
+            table.incremental_window_days != null ? table.incremental_window_days : '';
+        document.getElementById('editKbMaxHistoryDays').value =
+            table.max_history_days != null ? table.max_history_days : '';
+        document.getElementById('editKbPartitionBy').value = table.partition_by || '';
+        document.getElementById('editKbPartitionGranularity').value =
+            table.partition_granularity || 'month';
+        document.getElementById('editKbInitialLoadChunkDays').value =
+            table.initial_load_chunk_days != null ? table.initial_load_chunk_days : '';
+        document.getElementById('editKbWhereFilters').value =
+            table.where_filters ? JSON.stringify(table.where_filters, null, 2) : '';
+
         onEditKbSyncModeChange();
         var btn = document.getElementById('editKeboolaSubmitBtn');
         btn.disabled = false;
@@ -1974,6 +2264,23 @@
         document.getElementById('editKeboolaModal').classList.remove('active');
     }
 
+    function _editIntOrNull(id) {
+        var raw = (document.getElementById(id).value || '').trim();
+        if (!raw) return null;
+        var n = parseInt(raw, 10);
+        return isNaN(n) ? null : n;
+    }
+
+    function _editParseFiltersJSONOrThrow(id) {
+        var raw = (document.getElementById(id).value || '').trim();
+        if (!raw) return null;
+        try {
+            return JSON.parse(raw);
+        } catch (e) {
+            throw new Error('where_filters: invalid JSON — ' + e.message);
+        }
+    }
+
     function _buildKeboolaEditPayload() {
         var mode = _getEditKbSyncMode();
         var bucket = (document.getElementById('editKbBucket').value || '').trim();
@@ -1982,6 +2289,43 @@
         var primaryKey = pk
             ? pk.split(',').map(function(s) { return s.trim(); }).filter(Boolean)
             : [];
+
+        if (mode === 'direct') {
+            var strategy = _getEditKbStrategy();
+            var payload = {
+                query_mode: 'local',
+                bucket: bucket,
+                source_table: sourceTable,
+                primary_key: primaryKey,
+                sync_strategy: strategy,
+                sync_schedule: (document.getElementById('editKbSyncSchedule').value || '').trim() || null,
+                description: (document.getElementById('editKbDescription').value || '').trim() || null,
+                folder: (document.getElementById('editKbFolder').value || '').trim() || null,
+                // PUT requires explicit nulls to clear v26 fields when switching
+                // away from a strategy that used them — otherwise the merged-dict
+                // path keeps the stale value.
+                incremental_window_days: null,
+                max_history_days: null,
+                partition_by: null,
+                partition_granularity: null,
+                initial_load_chunk_days: null,
+                where_filters: null,
+            };
+            if (strategy === 'incremental' || strategy === 'partitioned') {
+                payload.incremental_window_days = _editIntOrNull('editKbIncrementalWindowDays');
+                payload.max_history_days = _editIntOrNull('editKbMaxHistoryDays');
+            }
+            if (strategy === 'partitioned') {
+                payload.partition_by = (document.getElementById('editKbPartitionBy').value || '').trim() || null;
+                payload.partition_granularity = document.getElementById('editKbPartitionGranularity').value || null;
+                payload.initial_load_chunk_days = _editIntOrNull('editKbInitialLoadChunkDays');
+            }
+            if (strategy !== 'incremental') {
+                payload.where_filters = _editParseFiltersJSONOrThrow('editKbWhereFilters');
+            }
+            return payload;
+        }
+
         var common = {
             query_mode: 'materialized',
             primary_key: primaryKey,
@@ -2010,7 +2354,15 @@
         }
         btn.disabled = true;
         btn.textContent = 'Saving...';
-        var payload = _buildKeboolaEditPayload();
+        var payload;
+        try {
+            payload = _buildKeboolaEditPayload();
+        } catch (e) {
+            showToast('' + e.message, 'error');
+            btn.disabled = false;
+            btn.textContent = 'Save Changes';
+            return;
+        }
         fetch('/api/admin/registry/' + encodeURIComponent(tableId), {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
