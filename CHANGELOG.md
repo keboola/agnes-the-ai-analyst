@@ -16,7 +16,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - `remote_estimate_failed` now surfaces the rewritten-SQL diagnostic (the actual BQ "Unrecognized name" / "Syntax error" message) instead of the unhelpful "Table must be qualified" from the user-original-SQL retry. Adds `underlying_original` for the second-attempt context. Hint now points users to `agnes schema <id>` first — the typical cause is a typo'd column name.
 
-## [0.46.0] — 2026-05-07
+## [0.47.0] — 2026-05-07
 
 Catalog metadata enrichment + cache discipline + automatic warmup.
 Closes #155 + #156.
