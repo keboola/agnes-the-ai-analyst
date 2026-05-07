@@ -4,7 +4,7 @@ import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 import duckdb
 
@@ -93,6 +93,31 @@ def materialize_query(
         "bytes": size,
         "md5": md5,
     }
+
+
+def _read_last_sync(table_id: str):
+    """Read the last successful sync timestamp from sync_state for incremental
+    and partitioned dispatch.
+
+    Returns None when no row exists or status is 'error' (treat error
+    state as never-synced so the next attempt redownloads from
+    max_history_days, not a stale watermark from a half-finished run).
+
+    Caller uses the returned value as input to compute_changed_since.
+    Tests stub this directly (`monkeypatch.setattr(extractor, "_read_last_sync", ...)`).
+    """
+    from src.db import get_system_db
+    from src.repositories.sync_state import SyncStateRepository
+
+    conn = get_system_db()
+    try:
+        repo = SyncStateRepository(conn)
+        state = repo.get_table_state(table_id)
+        if not state or state.get("status") == "error":
+            return None
+        return state.get("last_sync")
+    finally:
+        conn.close()
 
 
 def _create_meta_table(conn: duckdb.DuckDBPyConnection) -> None:
@@ -232,10 +257,116 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
                 stats["tables_extracted"] += 1
                 continue
 
+            # v26 dispatcher: route per-table by sync_strategy.
+            # API-layer validators reject conflicting combinations
+            # (incremental + where_filters, partitioned + remote) before
+            # rows reach this point — here we trust tc and dispatch.
+            sync_strategy = tc.get("sync_strategy") or "full_refresh"
+
+            # Resolve where_filters once for any strategy that supports them.
+            # Storage API extension does not expose whereFilters, so any
+            # filter forces the SDK path. Resolution happens here so a
+            # placeholder typo surfaces as a per-table error, not silent.
+            resolved_filters = None
+            raw_filters = tc.get("where_filters")
+            if raw_filters:
+                from connectors.keboola.where_filters import (
+                    InvalidFilterError, parse_filters, resolve_placeholders,
+                )
+                try:
+                    resolved_filters = resolve_placeholders(
+                        parse_filters(raw_filters), datetime.now(timezone.utc),
+                    )
+                except InvalidFilterError as e:
+                    logger.error("where_filters invalid for %s: %s", table_name, e)
+                    stats["tables_failed"] += 1
+                    stats["errors"].append({"table": table_name, "error": f"where_filters: {e}"})
+                    continue
+
+            if sync_strategy == "incremental":
+                try:
+                    pq_path = data_dir / f"{table_name}.parquet"
+                    last_sync = _read_last_sync(tc.get("id") or table_name)
+                    from connectors.keboola.incremental import extract_incremental
+                    incr_result = extract_incremental(
+                        table_config=tc,
+                        parquet_path=pq_path,
+                        last_sync=last_sync,
+                        keboola_url=keboola_url,
+                        keboola_token=keboola_token,
+                    )
+                    safe_pq_lit = str(pq_path).replace("'", "''")
+                    rows = incr_result["rows"]
+                    size = pq_path.stat().st_size if pq_path.exists() else 0
+                    conn.execute(
+                        f'CREATE OR REPLACE VIEW "{table_name}" AS '
+                        f"SELECT * FROM read_parquet('{safe_pq_lit}')"
+                    )
+                    conn.execute(
+                        "INSERT INTO _meta VALUES (?, ?, ?, ?, ?, 'local')",
+                        [table_name, tc.get("description", ""), rows, size, now],
+                    )
+                    stats["tables_extracted"] += 1
+                    logger.info(
+                        "Incremental %s: %d rows (%d delta), changedSince=%s",
+                        table_name, rows, incr_result["delta_rows"],
+                        incr_result["changed_since_used"],
+                    )
+                except Exception as e:
+                    logger.error("Incremental extract failed for %s: %s", table_name, e)
+                    stats["tables_failed"] += 1
+                    stats["errors"].append({"table": table_name, "error": str(e)})
+                continue
+
+            if sync_strategy == "partitioned":
+                try:
+                    partition_dir = data_dir / table_name
+                    partition_dir.mkdir(exist_ok=True)
+                    last_sync = _read_last_sync(tc.get("id") or table_name)
+                    from connectors.keboola.partitioned import extract_partitioned
+                    part_result = extract_partitioned(
+                        table_config=tc,
+                        output_dir=partition_dir,
+                        last_sync=last_sync,
+                        keboola_url=keboola_url,
+                        keboola_token=keboola_token,
+                    )
+                    glob_lit = str(partition_dir / "*.parquet").replace("'", "''")
+                    rows = part_result["rows"]
+                    size = sum(p.stat().st_size for p in partition_dir.glob("*.parquet"))
+                    conn.execute(
+                        f'CREATE OR REPLACE VIEW "{table_name}" AS '
+                        f"SELECT * FROM read_parquet('{glob_lit}')"
+                    )
+                    conn.execute(
+                        "INSERT INTO _meta VALUES (?, ?, ?, ?, ?, 'local')",
+                        [table_name, tc.get("description", ""), rows, size, now],
+                    )
+                    stats["tables_extracted"] += 1
+                    logger.info(
+                        "Partitioned %s: %d rows across %d partition file(s)",
+                        table_name, rows,
+                        part_result.get("partitions_touched",
+                                        part_result.get("partitions_written", 0)),
+                    )
+                except Exception as e:
+                    logger.error("Partitioned extract failed for %s: %s", table_name, e)
+                    stats["tables_failed"] += 1
+                    stats["errors"].append({"table": table_name, "error": str(e)})
+                continue
+
+            # full_refresh fall-through: existing extension/legacy logic.
+            # When where_filters are set we MUST force the legacy path
+            # (extension lacks whereFilters support).
             try:
                 pq_path = str(data_dir / f"{table_name}.parquet")
 
-                if use_extension:
+                if resolved_filters:
+                    _extract_via_legacy(
+                        tc, pq_path, keboola_url, keboola_token,
+                        where_filters=resolved_filters,
+                    )
+                elif use_extension:
                     try:
                         _extract_via_extension(conn, tc, pq_path)
                     except Exception as ext_err:
@@ -315,7 +446,13 @@ def _extract_via_extension(conn: duckdb.DuckDBPyConnection, tc: Dict[str, Any], 
     conn.execute(f'COPY (SELECT * FROM kbc."{bucket}"."{source_table}") TO \'{safe_pq_lit}\' (FORMAT PARQUET)')
 
 
-def _extract_via_legacy(tc: Dict[str, Any], pq_path: str, keboola_url: str, keboola_token: str) -> None:
+def _extract_via_legacy(
+    tc: Dict[str, Any],
+    pq_path: str,
+    keboola_url: str,
+    keboola_token: str,
+    where_filters: Optional[List[Dict[str, Any]]] = None,
+) -> None:
     """Fallback: extract using kbcstorage SDK and write a typed parquet.
 
     Sources the PyArrow schema + pandas dtypes + date columns from
@@ -327,14 +464,30 @@ def _extract_via_legacy(tc: Dict[str, Any], pq_path: str, keboola_url: str, kebo
     the whole extraction. The caller sees row count and can flag the
     untyped result.
 
+    `where_filters` is the resolved (placeholders substituted) filter
+    list produced by `connectors.keboola.where_filters.resolve_placeholders`.
+    Converted to kbcstorage `WhereFilter` objects before the SDK call.
+    Filters force this path because the DuckDB Keboola extension does
+    not expose whereFilters.
+
     Pre-v26 this used `read_csv(all_varchar=true)` which flattened every
     column to VARCHAR. The current path matches the internal data analyst
     repo's typed-parquet behavior.
     """
     import tempfile
 
-    from connectors.keboola.client import KeboolaClient
+    from connectors.keboola.client import KeboolaClient, WhereFilter
     from connectors.keboola.parquet_io import csv_to_parquet
+
+    sdk_filters = None
+    if where_filters:
+        sdk_filters = [
+            WhereFilter(
+                column=f["column"], operator=f.get("operator", "eq"),
+                values=list(f["values"]),
+            )
+            for f in where_filters
+        ]
 
     client = KeboolaClient(token=keboola_token, url=keboola_url)
 
@@ -365,7 +518,7 @@ def _extract_via_legacy(tc: Dict[str, Any], pq_path: str, keboola_url: str, kebo
         csv_path = tmp.name
 
     try:
-        client.export_table(table_id, Path(csv_path))
+        client.export_table(table_id, Path(csv_path), where_filters=sdk_filters)
         csv_to_parquet(
             csv_path=Path(csv_path),
             parquet_path=Path(pq_path),
