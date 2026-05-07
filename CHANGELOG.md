@@ -10,6 +10,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.46.3] — 2026-05-07
+
+### Added
+
+- `agnes init` now installs a third SessionStart hook entry (`agnes push --quiet`) so orphan session JSONLs left behind by `claude -p` headless invocations (where Claude Code does NOT fire SessionEnd) or abnormal exits get uploaded on the next interactive session start. Symmetric self-healing alongside the existing `agnes pull` SessionStart entry. Existing workspaces pick up the third entry on their next `agnes init` invocation via the existing migration path in `cli/lib/hooks.py:_OUR_COMMAND_MARKERS`.
+
+### Fixed
+
+- `agnes diagnose` `session_pipeline` warning previously read "uploads are not being processed", which led users to suspect their `agnes push` uploads were failing. The warning now reads "verification-detector backlog" and includes `last_processed` so operators see at a glance that uploads are fine and only the LLM extraction step is behind.
+
 ## [0.46.0] — 2026-05-07
 
 Keboola cutover bundle: native parquet on the materialized sync,
