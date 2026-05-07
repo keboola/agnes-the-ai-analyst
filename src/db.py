@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import shutil
+import time
 from pathlib import Path
 
 import duckdb
@@ -39,7 +40,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 27
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -268,7 +269,18 @@ CREATE TABLE IF NOT EXISTS table_registry (
     folder VARCHAR,
     description TEXT,
     registered_by VARCHAR,
-    registered_at TIMESTAMP DEFAULT current_timestamp
+    registered_at TIMESTAMP DEFAULT current_timestamp,
+    -- v26: Keboola sync-strategy support columns. NULL on existing rows;
+    -- meaningful only when sync_strategy ∈ {'incremental', 'partitioned'}
+    -- (or any strategy + where_filters). API-layer validators enforce the
+    -- per-strategy required-field rules.
+    incremental_window_days INTEGER,
+    max_history_days INTEGER,
+    incremental_column VARCHAR,
+    where_filters VARCHAR,
+    partition_by VARCHAR,
+    partition_granularity VARCHAR,
+    initial_load_chunk_days INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS table_profiles (
@@ -519,6 +531,59 @@ def _get_state_dir() -> Path:
     return _get_data_dir() / "state"
 
 
+def _try_open_system_db(db_path: str) -> duckdb.DuckDBPyConnection:
+    """Open ``system.duckdb``. If DuckDB's WAL replay raises an
+    ``INTERNAL Error`` from ``ReplayAlter`` (a known failure mode when a
+    container is killed mid-migration window with an unflushed
+    ``ALTER TABLE … ADD COLUMN`` op in the WAL), fall back to the
+    ``system.duckdb.pre-migrate`` snapshot taken at the start of the
+    most recent migration. The migration ladder is idempotent, so the
+    second start re-runs it and ends up at the same SCHEMA_VERSION
+    cleanly. Without this fallback, an operator hits an unhealthy
+    instance after every mid-migration crash and has to restore the
+    snapshot by hand — even though the snapshot is right there.
+
+    Only fires on the specific WAL-replay error class to avoid masking
+    legitimate corruption (operator-edited DB, disk failure, etc.).
+    """
+    try:
+        return duckdb.connect(db_path)
+    except duckdb.Error as e:
+        msg = str(e)
+        is_wal_replay = (
+            "Failure while replaying WAL" in msg
+            or "ReplayAlter" in msg
+            or "GetDefaultDatabase with no default database set" in msg
+        )
+        if not is_wal_replay:
+            raise
+        snapshot = Path(db_path).parent / "system.duckdb.pre-migrate"
+        if not snapshot.exists():
+            logger.error(
+                "WAL replay failed and no pre-migrate snapshot at %s — "
+                "manual recovery required.", snapshot,
+            )
+            raise
+        wal_path = Path(db_path + ".wal")
+        logger.warning(
+            "WAL replay failed (%s) — auto-restoring from pre-migrate "
+            "snapshot %s. The migration ladder will re-run on this start.",
+            msg.split("\n", 1)[0][:200], snapshot,
+        )
+        # Move (not copy) the broken DB aside so an operator can post-
+        # mortem if needed. The pre-migrate snapshot becomes the new
+        # main DB; the WAL is dropped (its content is what failed to
+        # replay).
+        broken = Path(db_path + f".broken.{int(time.time())}")
+        shutil.move(db_path, str(broken))
+        if wal_path.exists():
+            shutil.move(str(wal_path), str(broken) + ".wal")
+        shutil.copy2(str(snapshot), db_path)
+        # Re-open. If THIS also fails, propagate — auto-recovery has
+        # exhausted its options.
+        return duckdb.connect(db_path)
+
+
 def get_system_db() -> duckdb.DuckDBPyConnection:
     """Get a connection to the system state database.
 
@@ -538,7 +603,7 @@ def get_system_db() -> duckdb.DuckDBPyConnection:
                 except Exception:
                     pass
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-            _system_db_conn = duckdb.connect(db_path)
+            _system_db_conn = _try_open_system_db(db_path)
             _system_db_path = db_path
             _ensure_schema(_system_db_conn)
         return _maybe_instrument(_system_db_conn.cursor(), "system")
@@ -1830,6 +1895,42 @@ _V25_TO_V26_MIGRATIONS = [
 ]
 
 
+# v27: Keboola sync-strategy support columns on table_registry.
+#
+# Layered on top of v26's local→materialized unification. Admins can opt
+# specific Keboola tables back to `query_mode='local'` (via the Direct
+# extract Edit-modal radio) to enable the new sync_strategy dispatcher.
+# The existing `sync_strategy` column (default 'full_refresh') drives one
+# of {'full_refresh', 'incremental', 'partitioned'} from v27 onward. The
+# seven columns added here are the per-strategy knobs:
+#   - incremental_window_days: backtrack window applied to last_sync (default 7)
+#   - max_history_days: cap on first-sync history depth
+#   - incremental_column: reserved for future use when changedSince's
+#     lastChangeDate isn't the right mutation column for a table
+#   - where_filters: JSON array of {column, operator, values} filter entries
+#     resolved at sync time (date placeholders like {{last_3_months}})
+#   - partition_by: column whose value drives the partition key
+#   - partition_granularity: 'day' | 'month' | 'year'
+#   - initial_load_chunk_days: chunked initial-load step size (default 30)
+#
+# All NULL on existing rows → no behavior change for tables that don't
+# opt in. v26's local→materialized flip preserves the migration-correct
+# behavior for the default case; new-or-edited rows that pick Direct
+# extract land at `query_mode='local'` again with sync_strategy in play.
+# API-layer validators enforce per-strategy required-field combinations
+# (e.g. partitioned ⇒ partition_by required) and reject conflicting combos
+# (e.g. incremental + where_filters → 422).
+_V26_TO_V27_MIGRATIONS = [
+    "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS incremental_window_days INTEGER",
+    "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS max_history_days INTEGER",
+    "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS incremental_column VARCHAR",
+    "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS where_filters VARCHAR",
+    "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS partition_by VARCHAR",
+    "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS partition_granularity VARCHAR",
+    "ALTER TABLE table_registry ADD COLUMN IF NOT EXISTS initial_load_chunk_days INTEGER",
+]
+
+
 # v24: rewrite materialized BQ source_query from DuckDB-flavor
 # (bq."<dataset>"."<table>") to BigQuery-native (`<project>.<dataset>.<table>`)
 # so the new connectors.bigquery.extractor.materialize_query wrapping
@@ -2086,10 +2187,44 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             if current < 26:
                 for sql in _V25_TO_V26_MIGRATIONS:
                     conn.execute(sql)
+            if current < 27:
+                for sql in _V26_TO_V27_MIGRATIONS:
+                    conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
             )
+            # Force WAL → main DB consolidation immediately after the
+            # migration ladder. Without this, the v27 `ALTER TABLE
+            # table_registry ADD COLUMN` statements sit in
+            # `system.duckdb.wal` until DuckDB's next implicit checkpoint;
+            # if the container is killed in that window (e.g. by the
+            # auto-upgrade cron's `docker compose up -d` mid-deploy),
+            # the next start's WAL replay hits an `INTERNAL Error:
+            # Calling DatabaseManager::GetDefaultDatabase with no default
+            # database set` on the `ReplayAlter` path and the system
+            # database becomes unrecoverable from the running binary —
+            # the operator has to restore from the pre-migrate snapshot
+            # by hand. This was reproduced on agnes-dev during PR #217
+            # rollout: container restart 5s after the v27 migration
+            # window left the DB in an unhealthy=db_schema=unreachable
+            # state.
+            #
+            # CHECKPOINT flushes the WAL to the main DB file
+            # synchronously. Best-effort: if it fails (read-only handle,
+            # in-memory DB, or transient lock), log and continue —
+            # exactly the same exposure as before this fix.
+            try:
+                conn.execute("CHECKPOINT")
+            except Exception as e:
+                logger.warning(
+                    "Post-migration CHECKPOINT failed (%s); WAL may "
+                    "contain unflushed ALTER ops. A clean shutdown of "
+                    "this process before any container restart is the "
+                    "safe path; otherwise, the next start may need to "
+                    "restore from %s.",
+                    e, _get_state_dir() / "system.duckdb.pre-migrate",
+                )
 
     # Always run the system-groups seed when the DB is on a version this binary
     # understands — per-connect safety net so a manually-deleted Admin/Everyone

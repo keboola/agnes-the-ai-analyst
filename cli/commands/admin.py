@@ -85,6 +85,54 @@ def register_table(
         "",
         help="Cron schedule (e.g. 'every 6h' / 'daily 03:00'); honored by materialized BQ rows",
     ),
+    # v26 Keboola sync-strategy support
+    sync_strategy: str = typer.Option(
+        "full_refresh",
+        "--sync-strategy",
+        help="Keboola: full_refresh (default) | incremental | partitioned",
+    ),
+    primary_key: str = typer.Option(
+        "",
+        "--primary-key",
+        help="Primary key column(s), comma-separated. Required for incremental dedup.",
+    ),
+    incremental_window_days: int = typer.Option(
+        None,
+        "--incremental-window-days",
+        help="Backtrack window applied to last_sync (default 7 at sync time)",
+    ),
+    max_history_days: int = typer.Option(
+        None,
+        "--max-history-days",
+        help="Cap on first-sync history depth (None = unbounded)",
+    ),
+    where_filters_json: str = typer.Option(
+        "",
+        "--where-filters-json",
+        help=(
+            "JSON array of {column, operator, values}. Inline JSON or "
+            "@path/to/filters.json. Date placeholders supported: "
+            "{{today}}, {{last_week}}, {{last_3_months}}, etc. "
+            "(see connectors.keboola.where_filters for the full list). "
+            "Filters force the SDK extraction path (slower than the "
+            "DuckDB extension); use only when needed."
+        ),
+    ),
+    partition_by: str = typer.Option(
+        "",
+        "--partition-by",
+        help="Date column driving partition keys (required for partitioned strategy)",
+    ),
+    partition_granularity: str = typer.Option(
+        "",
+        "--partition-granularity",
+        help="day | month (default) | year — for partitioned strategy",
+    ),
+    initial_load_chunk_days: int = typer.Option(
+        None,
+        "--initial-load-chunk-days",
+        help="Chunk size for partitioned first-sync chunked initial load (default 30)",
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
@@ -166,6 +214,39 @@ def register_table(
         payload["source_query"] = source_query
     if sync_schedule:
         payload["sync_schedule"] = sync_schedule
+
+    # v26 sync-strategy support fields. Always send sync_strategy (it has a
+    # default). Send the rest only when the operator set them — empty/None
+    # → omit so the server stores NULL.
+    payload["sync_strategy"] = sync_strategy
+    if primary_key:
+        payload["primary_key"] = [c.strip() for c in primary_key.split(",") if c.strip()]
+    if incremental_window_days is not None:
+        payload["incremental_window_days"] = incremental_window_days
+    if max_history_days is not None:
+        payload["max_history_days"] = max_history_days
+    if partition_by:
+        payload["partition_by"] = partition_by
+    if partition_granularity:
+        payload["partition_granularity"] = partition_granularity
+    if initial_load_chunk_days is not None:
+        payload["initial_load_chunk_days"] = initial_load_chunk_days
+    if where_filters_json:
+        # Inline JSON or @path/to.json
+        if where_filters_json.startswith("@"):
+            wf_path = Path(where_filters_json[1:])
+            if not wf_path.exists():
+                typer.echo(f"Error: where_filters file not found: {wf_path}", err=True)
+                raise typer.Exit(2)
+            wf_text = wf_path.read_text(encoding="utf-8")
+        else:
+            wf_text = where_filters_json
+        try:
+            import json as _json
+            payload["where_filters"] = _json.loads(wf_text)
+        except _json.JSONDecodeError as e:
+            typer.echo(f"Error: --where-filters-json is not valid JSON: {e}", err=True)
+            raise typer.Exit(2)
 
     if dry_run:
         # Hits /precheck — no DB write, but for BQ does a real

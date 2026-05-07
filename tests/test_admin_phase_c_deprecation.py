@@ -1,12 +1,21 @@
-"""Verify Phase C deprecation marks + profile_after_sync becomes inert."""
+"""Verify Phase C deprecation marks + profile_after_sync becomes inert.
+
+NOTE: sync_strategy was previously marked deprecated (Phase C era) when
+the field was inert catalog metadata. v26 reuses it as the Keboola
+extractor's strategy dispatcher (full_refresh | incremental |
+partitioned), so the deprecation marker has been removed. The
+profile_after_sync deprecation is unchanged.
+"""
 import pytest
 from app.api.admin import RegisterTableRequest, UpdateTableRequest
 
 
-def test_register_request_marks_sync_strategy_deprecated():
+def test_register_request_sync_strategy_no_longer_deprecated():
+    """v26: sync_strategy drives the keboola extractor dispatcher and is
+    no longer deprecated metadata."""
     schema = RegisterTableRequest.model_json_schema()
     field = schema["properties"]["sync_strategy"]
-    assert field.get("deprecated") is True
+    assert field.get("deprecated") is not True
 
 
 def test_register_request_marks_profile_after_sync_deprecated():

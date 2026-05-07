@@ -186,14 +186,12 @@ def _check_session_pipeline(conn: duckdb.DuckDBPyConnection) -> dict:
         return {
             "status": "warning",
             "detail": (
-                f"verification-detector backlog: ~{lag_seconds}s "
-                f"(grace={grace_seconds}s, last_processed={last_processed.isoformat()}). "
-                f"Uploads are unaffected — only the LLM extraction step is behind. "
-                f"Check the verification-detector scheduler job."
+                f"session jsonls newer than session_extraction_state by ~{lag_seconds}s "
+                f"(grace={grace_seconds}s). Check the verification-detector scheduler "
+                f"job — uploads are not being processed."
             ),
             "lag_seconds": lag_seconds,
             "session_files": len(session_files),
-            "last_processed": last_processed.isoformat(),
         }
 
     return {"status": "ok", "session_files": len(session_files)}
