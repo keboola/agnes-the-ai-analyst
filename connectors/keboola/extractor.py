@@ -114,9 +114,15 @@ def materialize_query(
 
     # Per-call temp dir for the intermediate file (CSV or parquet) —
     # separates concurrent exports cleanly without the os.chdir() race
-    # the kbcstorage SDK has.
+    # the kbcstorage SDK has. ``ignore_cleanup_errors=True`` keeps
+    # disk-full / permission errors from masking the original
+    # exception, and prevents a half-cleaned dir from sitting around
+    # forever (a 12 GiB stale slice tree was seen after a worker died
+    # mid-write on a saturated boot disk).
     import tempfile
-    with tempfile.TemporaryDirectory(prefix=f"kbc-export-{table_id}-") as tmpdir:
+    with tempfile.TemporaryDirectory(
+        prefix=f"kbc-export-{table_id}-", ignore_cleanup_errors=True,
+    ) as tmpdir:
         full_table_id = f"{bucket}.{source_table}"
 
         if export_filter.file_type == FILE_TYPE_PARQUET:

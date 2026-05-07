@@ -10,6 +10,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- `connectors/keboola/extractor.py`: `materialize_query` per-call tempdir is now opened with `ignore_cleanup_errors=True`. Previously a worker death mid-write under disk-full state could leave a multi-GiB stale slice tree (12 GiB seen on agnes-dev) because `TemporaryDirectory.__exit__` itself raised, masking the original exception and skipping cleanup. Now cleanup is best-effort and always fires.
+- `src/scheduler.py`: `is_valid_schedule` now accepts `every 0m` (interval = 0 = "always due"). Useful as a force-resync override on a row whose previous attempt errored without recording `last_sync` — the default `every 1h` would otherwise block the retry for an hour. Existing values reject as before.
+- `app/api/sync.py`: `POST /api/sync/trigger` now accepts both `["table_id"]` (legacy) and `{"tables": ["table_id"]}` (mirrors response shape) request bodies, plus `null` / no body for "sync everything". Malformed shapes return HTTP 422 with a structured detail. No client breakage — the old wire format keeps working.
+
 ### Changed
 
 - `connectors/keboola`: materialized sync now requests **parquet directly** from the Storage API (`POST /v2/storage/tables/{id}/export-async` with `fileType=parquet`) instead of CSV → DuckDB COPY → parquet. The extractor downloads the Snowflake-UNLOADed parquet, renames into place, and skips the DuckDB roundtrip entirely. Eliminates the OOM that hits multi-GB Keboola tables when `read_csv(..., all_varchar=true, max_line_size=64MB)` materializes the whole CSV in memory before COPY. Sliced exports (large tables that Snowflake UNLOAD writes as multiple files) are merged via `DuckDB COPY (SELECT * FROM read_parquet([...]))` — peak memory bounded to one parquet row group (~1 MiB) regardless of table size. Admin can pin the legacy CSV path with `source_query='{"file_type":"csv"}'`. Backward-compat alias `KeboolaStorageClient.export_table_to_csv` retained.

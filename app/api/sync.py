@@ -8,9 +8,9 @@ import threading
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, List
+from typing import Any, Optional, List
 
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Body, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 import duckdb
 
@@ -725,10 +725,24 @@ async def sync_manifest(
 @router.post("/trigger")
 async def trigger_sync(
     background_tasks: BackgroundTasks,
-    tables: Optional[List[str]] = None,
+    body: Optional[Any] = Body(None),
     user: dict = Depends(require_admin),
 ):
     """Trigger data sync from configured source. Admin only. Runs in background.
+
+    Body accepts three shapes (all optional — empty body / `null` syncs
+    every registered table):
+
+      - ``["kbc_job", "orders"]`` — bare JSON array of table ids
+      - ``{"tables": ["kbc_job", "orders"]}`` — object with a ``tables``
+        key (matches the wire shape of the response, more discoverable
+        for clients building requests by hand)
+      - ``null`` / no body — sync everything
+
+    Both array forms have shipped at different times; accepting both
+    keeps older clients (PR-build CLIs, helper scripts) working while
+    surfacing the shape that mirrors the response payload. Anything
+    else returns HTTP 422 with a structured detail.
 
     Returns 409 if a previously-triggered sync is still running. Two
     concurrent extractor subprocesses fight for the same `extract.duckdb`
@@ -737,6 +751,31 @@ async def trigger_sync(
     upstream like the bundled Caddy overlay) bricks external traffic
     until contention drains. Fast-fail here keeps that from happening.
     """
+    if body is None:
+        tables: Optional[List[str]] = None
+    elif isinstance(body, list):
+        tables = list(body)
+    elif isinstance(body, dict):
+        tables = body.get("tables")
+        if tables is not None and not isinstance(tables, list):
+            raise HTTPException(
+                status_code=422,
+                detail="`tables` must be a list of strings",
+            )
+    else:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "body must be a list of table ids, an object with a "
+                "`tables` list, or null"
+            ),
+        )
+    if tables is not None and not all(isinstance(t, str) for t in tables):
+        raise HTTPException(
+            status_code=422,
+            detail="all entries in `tables` must be strings",
+        )
+
     if _sync_lock.locked():
         raise HTTPException(
             status_code=409,

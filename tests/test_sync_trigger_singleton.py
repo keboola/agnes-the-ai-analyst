@@ -108,3 +108,62 @@ def test_trigger_endpoint_succeeds_when_lock_free():
         assert body["status"] == "triggered"
         # BackgroundTasks runs after response; TestClient awaits them
         run_mock.assert_called_once()
+
+
+# ---- body shape acceptance -------------------------------------------------
+
+def _make_client():
+    """Stand up a minimal FastAPI app exposing the sync router with auth
+    bypassed and `_run_sync` mocked. Returns (client, run_mock)."""
+    from fastapi.testclient import TestClient
+    from fastapi import FastAPI
+    from app.auth.access import require_admin
+
+    app = FastAPI()
+    app.include_router(sync_module.router)
+    app.dependency_overrides[require_admin] = lambda: {"id": "test", "email": "t@e"}
+    return TestClient(app)
+
+
+@pytest.mark.parametrize("body,expected_tables", [
+    (None,                                  None),               # no body
+    ([],                                    []),                 # empty array
+    (["kbc_job"],                           ["kbc_job"]),        # bare array
+    (["a", "b", "c"],                       ["a", "b", "c"]),
+    ({"tables": None},                      None),               # explicit null
+    ({"tables": []},                        []),
+    ({"tables": ["kbc_job"]},               ["kbc_job"]),        # object form
+    ({"tables": ["a", "b"], "extra": "x"},  ["a", "b"]),         # extra keys ignored
+])
+def test_trigger_accepts_both_body_shapes(body, expected_tables):
+    """Both ``["x", "y"]`` and ``{"tables": ["x", "y"]}`` (and `null` /
+    no body) reach `_run_sync` with the same `tables` arg. Lets older
+    clients (raw array) and newer ones (object matching the response
+    payload shape) both work."""
+    client = _make_client()
+    with patch("app.api.sync._run_sync") as run_mock:
+        if body is None:
+            resp = client.post("/api/sync/trigger")
+        else:
+            resp = client.post("/api/sync/trigger", json=body)
+    assert resp.status_code == 200, resp.text
+    run_mock.assert_called_once_with(expected_tables)
+
+
+@pytest.mark.parametrize("bad_body", [
+    "kbc_job",                  # bare string
+    42,                          # number
+    {"tables": "kbc_job"},       # tables as string, not array
+    {"tables": [1, 2, 3]},       # tables entries not strings
+    [1, 2, 3],                   # array of ints
+    [{"id": "x"}],               # array of objects
+])
+def test_trigger_rejects_malformed_bodies(bad_body):
+    """Anything that isn't a list-of-strings, an object with a
+    list-of-strings under `tables`, or null/missing returns 422 with a
+    structured detail — never silently treated as 'sync everything'."""
+    client = _make_client()
+    with patch("app.api.sync._run_sync") as run_mock:
+        resp = client.post("/api/sync/trigger", json=bad_body)
+    assert resp.status_code == 422, resp.text
+    assert not run_mock.called

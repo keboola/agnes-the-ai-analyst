@@ -10,6 +10,7 @@ from src.scheduler import filter_due_tables, is_valid_schedule
 # ---------------- is_valid_schedule -----------------------------------------
 
 @pytest.mark.parametrize("schedule", [
+    "every 0m",          # always-due (force-resync of an errored row)
     "every 15m",
     "every 1h",
     "every 6h",
@@ -23,7 +24,6 @@ def test_is_valid_schedule_accepts_documented_formats(schedule):
 @pytest.mark.parametrize("schedule", [
     "",
     "every",
-    "every 0m",          # zero is not a positive interval
     "every 15s",         # seconds not supported
     "daily",
     "daily 25:00",       # invalid hour

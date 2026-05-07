@@ -88,6 +88,14 @@ class TestIsTableDueInterval:
     def test_empty_last_sync_is_due(self) -> None:
         assert is_table_due("every 15m", last_sync_iso="", now=NOW) is True
 
+    def test_every_0m_is_always_due(self) -> None:
+        # ``every 0m`` opts out of rate limiting — used to force-resync
+        # a row whose previous attempt errored without recording
+        # last_sync. Even a sync seconds ago must come back as due.
+        last_sync = (NOW - timedelta(seconds=5)).isoformat()
+        assert is_table_due("every 0m", last_sync_iso=last_sync, now=NOW) is True
+        assert is_table_due("every 0m", last_sync_iso=None, now=NOW) is True
+
     def test_synced_10min_ago_every_15m_not_due(self) -> None:
         last_sync = (NOW - timedelta(minutes=10)).isoformat()
         assert is_table_due("every 15m", last_sync_iso=last_sync, now=NOW) is False

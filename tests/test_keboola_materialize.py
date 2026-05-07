@@ -227,6 +227,65 @@ def test_materialize_query_admin_can_pin_file_type_csv(tmp_path, fake_storage_cl
     assert call.kwargs["export_filter"].file_type == "csv"
 
 
+# ---- tempdir cleanup on failure --------------------------------------------
+
+def test_materialize_query_sliced_parquet_tempdir_cleaned_on_exception(tmp_path):
+    """When a sliced parquet download raises mid-flight (e.g. OSError 28
+    'No space left'), the per-call tempdir at /tmp/kbc-export-<id>-*
+    that was already populated with downloaded slices must not survive.
+
+    Regression: an earlier worker death mid-write left a 12 GiB stale
+    slice tree on the boot disk because TemporaryDirectory's default
+    cleanup path itself raised under disk-full state, masking the
+    original exception AND leaving the dir behind. The fix uses
+    ``ignore_cleanup_errors=True`` so cleanup is best-effort but always
+    fires — the dir is empty (or at least mostly) after the function
+    returns."""
+    captured_tmpdir: dict[str, Path] = {}
+
+    def fake_prepare(table_id, *, export_filter=None, export_timeout=None):
+        return {
+            "job_id": 1, "file_id": 2, "rows": 1,
+            "file_info": {"id": 2, "url": "https://fake/manifest", "isSliced": True},
+            "file_type": "parquet",
+        }
+
+    def boom_download_slices(file_info, dest_dir):
+        # Capture the tempdir the extractor created (parent of dest_dir).
+        captured_tmpdir["path"] = Path(dest_dir).parent
+        # Simulate a real download writing partial state, then disk full.
+        Path(dest_dir).mkdir(parents=True, exist_ok=True)
+        (Path(dest_dir) / "slice-00000").write_bytes(b"PAR1...partial")
+        raise OSError(28, "No space left on device")
+
+    client = MagicMock()
+    client.prepare_export.side_effect = fake_prepare
+    client.download_file_slices.side_effect = boom_download_slices
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+
+    with pytest.raises(OSError, match="No space left"):
+        kbe.materialize_query(
+            table_id="will_fail_sliced",
+            bucket="in.c-test", source_table="t",
+            source_query=None,
+            storage_client=client,
+            output_dir=output_dir,
+        )
+
+    # The tempdir that held the partial slice must be gone (or at least
+    # not the half-populated state that leaked previously).
+    assert "path" in captured_tmpdir, "download_file_slices was not invoked"
+    leftover = captured_tmpdir["path"]
+    assert not leftover.exists(), (
+        f"tempdir {leftover} must be cleaned on exception "
+        f"(otherwise leaks under disk-full conditions)"
+    )
+    # Final parquet must NOT exist.
+    assert not (output_dir / "will_fail_sliced.parquet").exists()
+
+
 # ---- generic guards (file_type-agnostic) -----------------------------------
 
 def test_materialize_query_rejects_unsafe_table_id(tmp_path, fake_storage_client_parquet):
