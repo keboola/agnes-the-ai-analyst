@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import logging
+import math
 from fastapi import APIRouter, Depends, HTTPException, Query
 import duckdb
 
@@ -16,6 +17,27 @@ router = APIRouter(prefix="/api/v2", tags=["v2"])
 
 _sample_cache = TTLCache(maxsize=512, ttl_seconds=3600)
 _MAX_N = 100
+
+
+def _sanitize_for_json(obj):
+    """Recursively replace NaN / ±inf floats with None so the response
+    survives JSON serialization. FastAPI's default encoder rejects these
+    (``ValueError: Out of range float values are not JSON compliant``)
+    even though Python's stdlib ``json`` accepts them by default. NaNs
+    show up routinely in DuckDB / BigQuery scans (NULL → NaN through the
+    pandas DataFrame round-trip), so the endpoint must sanitize at the
+    data-prep boundary rather than rely on the serializer."""
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    if isinstance(obj, list):
+        return [_sanitize_for_json(x) for x in obj]
+    if isinstance(obj, tuple):
+        return tuple(_sanitize_for_json(x) for x in obj)
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    return obj
 
 
 def _fetch_bq_sample(bq, dataset: str, table: str, n: int) -> list[dict]:
@@ -98,6 +120,7 @@ def build_sample(
         finally:
             c.close()
 
+    rows = _sanitize_for_json(rows)
     payload = {"table_id": table_id, "rows": rows, "source": source_type}
     _sample_cache.set(cache_key, payload)
     return payload
