@@ -331,3 +331,47 @@ class TestBqAccessErrors:
         assert captured["billing_project"] == "billing-proj"
         # FROM clause uses data project (where INFORMATION_SCHEMA.COLUMNS lives)
         assert "`data-proj.ds.INFORMATION_SCHEMA.COLUMNS`" in captured["bq_sql"]
+
+
+class TestBuildSchemaUncached:
+    """The uncached entry point exists for warmup, which has no user
+    context. RBAC + cache check live in `build_schema`; the BQ work +
+    cache write live in `build_schema_uncached`."""
+
+    def test_uncached_function_exists_and_does_not_take_user(self):
+        """Signature: build_schema_uncached(conn, table_id, *, bq)"""
+        from app.api.v2_schema import build_schema_uncached
+        import inspect
+        sig = inspect.signature(build_schema_uncached)
+        params = list(sig.parameters)
+        assert "user" not in params, (
+            "build_schema_uncached should NOT require a user — that's "
+            "the whole point of the split (warmup has no user)."
+        )
+        assert "table_id" in params
+        assert "bq" in params
+
+    def test_build_schema_delegates_to_uncached(self, monkeypatch):
+        """build_schema should call build_schema_uncached after RBAC+cache check."""
+        from app.api import v2_schema
+
+        called_with = {}
+        def fake_uncached(conn, table_id, *, bq):
+            called_with["table_id"] = table_id
+            return {"table_id": table_id, "columns": []}
+
+        monkeypatch.setattr(v2_schema, "build_schema_uncached", fake_uncached)
+        # Bypass the cache + RBAC for this assertion — both are tested elsewhere.
+        monkeypatch.setattr(v2_schema._schema_cache, "get", lambda k, default=None: None)
+        monkeypatch.setattr(v2_schema, "can_access_table", lambda u, tid, c: True)
+
+        # Synthetic registry row.
+        from unittest.mock import MagicMock
+        repo_mock = MagicMock()
+        repo_mock.get.return_value = {"id": "x", "source_type": "bigquery"}
+        monkeypatch.setattr(v2_schema, "TableRegistryRepository", lambda c: repo_mock)
+
+        v2_schema.build_schema(
+            conn=MagicMock(), user={"id": "u"}, table_id="x", bq=MagicMock(),
+        )
+        assert called_with["table_id"] == "x"
