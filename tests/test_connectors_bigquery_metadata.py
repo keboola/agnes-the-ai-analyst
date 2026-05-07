@@ -57,13 +57,24 @@ def _bq_with_session(table_storage_rows=None, columns_rows=None,
     return bq
 
 
+def _location_get_value(*keys, default=None):
+    """Mock for `app.instance_config.get_value` matching its multi-positional
+    signature. Returns 'us-central1' for the BQ location key, default otherwise.
+    Regression-anchored to Devin Review #1: the prior buggy single-string call
+    silently dropped the configured location; this fixture intentionally
+    requires the correct ('data_source', 'bigquery', 'location') tuple."""
+    if keys == ("data_source", "bigquery", "location"):
+        return "us-central1"
+    return default
+
+
 def test_happy_path_returns_full_metadata(req, monkeypatch):
     """TABLE_STORAGE returns rows+size, COLUMNS returns partition+cluster."""
     from connectors.bigquery import metadata
 
     monkeypatch.setattr(
         "connectors.bigquery.metadata.get_value",
-        lambda key, default=None: "us-central1" if "location" in key else default,
+        _location_get_value,
         raising=False,
     )
 
@@ -100,7 +111,7 @@ def test_view_path_returns_metadata_with_null_rows_size(req, monkeypatch):
     from connectors.bigquery import metadata
     monkeypatch.setattr(
         "connectors.bigquery.metadata.get_value",
-        lambda key, default=None: "us-central1" if "location" in key else default,
+        _location_get_value,
         raising=False,
     )
     bq = _bq_with_session(
@@ -121,9 +132,15 @@ def test_view_path_returns_metadata_with_null_rows_size(req, monkeypatch):
 def test_region_typo_falls_through_to_legacy_tables(req, monkeypatch):
     """TABLE_STORAGE raises (typo'd region) → fall through to __TABLES__."""
     from connectors.bigquery import metadata
+
+    def typo_get_value(*keys, default=None):
+        if keys == ("data_source", "bigquery", "location"):
+            return "us-central"  # typo!
+        return default
+
     monkeypatch.setattr(
         "connectors.bigquery.metadata.get_value",
-        lambda key, default=None: "us-central" if "location" in key else default,  # typo!
+        typo_get_value,
         raising=False,
     )
     bq = _bq_with_session(
@@ -143,7 +160,7 @@ def test_both_paths_fail_returns_metadata_with_partition_only(req, monkeypatch):
     from connectors.bigquery import metadata
     monkeypatch.setattr(
         "connectors.bigquery.metadata.get_value",
-        lambda key, default=None: "us-central1" if "location" in key else default,
+        _location_get_value,
         raising=False,
     )
     bq = _bq_with_session(
@@ -157,6 +174,65 @@ def test_both_paths_fail_returns_metadata_with_partition_only(req, monkeypatch):
     assert result.rows is None
     assert result.size_bytes is None
     assert result.partition_by == "event_date"
+
+
+def test_location_config_uses_multi_positional_get_value_args(req, monkeypatch):
+    """Devin Review #1 regression: `get_value` was called with a single
+    dot-separated string `'data_source.bigquery.location'`, but the function
+    iterates over separate positional keys — so the call always returned None
+    and the BQ location config was never read.
+
+    This test records every call to `get_value` and asserts that the location
+    lookup goes through the correct multi-positional form
+    (`'data_source', 'bigquery', 'location'`)."""
+    from connectors.bigquery import metadata
+
+    calls: list[tuple] = []
+
+    def recording_get_value(*keys, default=None):
+        calls.append(keys)
+        if keys == ("data_source", "bigquery", "location"):
+            return "europe-west1"
+        return default
+
+    monkeypatch.setattr(
+        "connectors.bigquery.metadata.get_value",
+        recording_get_value,
+        raising=False,
+    )
+
+    captured: dict = {}
+
+    def execute(outer_sql, params):
+        if "TABLE_STORAGE" in (params[1] if len(params) > 1 else ""):
+            captured["table_storage_sql"] = params[1]
+            return MagicMock(fetchone=lambda: (5, 10))
+        return MagicMock(fetchall=lambda: [], fetchone=lambda: None)
+
+    bq = MagicMock()
+    bq.projects.data = "data-proj"
+    bq.projects.billing = "billing-proj"
+    session = MagicMock()
+    session.execute.side_effect = execute
+    cm = MagicMock()
+    cm.__enter__.return_value = session
+    cm.__exit__.return_value = False
+    bq.duckdb_session.return_value = cm
+
+    with patch("connectors.bigquery.metadata.get_bq_access", return_value=bq):
+        metadata.fetch(req)
+
+    # The fix: `get_value("data_source", "bigquery", "location")` must appear.
+    assert ("data_source", "bigquery", "location") in calls, (
+        f"expected ('data_source','bigquery','location') tuple in get_value "
+        f"calls, got: {calls}"
+    )
+    # And the configured location must reach the TABLE_STORAGE SQL — proving
+    # the value was actually consumed, not just looked up.
+    assert "region-europe-west1" in captured.get("table_storage_sql", ""), (
+        f"location config was not propagated to BQ SQL: "
+        f"{captured.get('table_storage_sql', '<no SQL captured>')}"
+    )
 
 
 def test_bq_access_error_returns_none(req):

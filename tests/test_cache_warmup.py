@@ -105,5 +105,50 @@ def test_run_endpoint_returns_run_id_not_none(seeded_app, monkeypatch):
     assert len(body["run_id"]) == 8  # uuid4 hex prefix
 
 
+def test_list_remote_rows_filters_to_bigquery_source_type(monkeypatch):
+    """Devin Review #1 regression: `_list_remote_rows` previously returned
+    every `query_mode='remote'` row regardless of `source_type`. The downstream
+    `_warm_schema_sync` always calls `get_bq_access()`, so a non-BQ remote row
+    (hypothetical today, plausible as connectors expand) would crash the
+    warmup pass.
+
+    Fix: filter on `source_type == 'bigquery'` in `_list_remote_rows` so the
+    BQ-only warmup path only sees rows it can handle. Rows from other sources
+    are simply skipped — they'll grow their own warmup paths as needed."""
+    from app.api import cache_warmup
+
+    fake_rows = [
+        {"id": "bq_remote", "query_mode": "remote", "source_type": "bigquery"},
+        {"id": "kbc_remote", "query_mode": "remote", "source_type": "keboola"},
+        {"id": "bq_local", "query_mode": "local", "source_type": "bigquery"},
+        {"id": "future_remote", "query_mode": "remote", "source_type": "snowflake"},
+        {"id": "bq_remote2", "query_mode": "remote", "source_type": "bigquery"},
+    ]
+
+    class FakeRepo:
+        def __init__(self, conn):
+            pass
+
+        def list_all(self):
+            return fake_rows
+
+    class FakeConn:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "src.repositories.table_registry.TableRegistryRepository", FakeRepo,
+    )
+    monkeypatch.setattr(
+        "src.db.get_system_db", lambda: FakeConn(),
+    )
+
+    result = cache_warmup._list_remote_rows()
+    ids = sorted(r["id"] for r in result)
+    assert ids == ["bq_remote", "bq_remote2"], (
+        f"only remote+bigquery rows should be warmed, got {ids}"
+    )
+
+
 async def _async_noop():
     return None

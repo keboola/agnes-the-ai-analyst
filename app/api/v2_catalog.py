@@ -148,7 +148,7 @@ def _size_hint_for_row(row: dict) -> dict:
         return {"rough_size_hint": None}
 
     return {
-        "rough_size_hint": _bucket_size(cached.size_bytes) if cached.size_bytes else None,
+        "rough_size_hint": _bucket_size(cached.size_bytes) if cached.size_bytes is not None else None,
         "rows": cached.rows,
         "size_bytes": cached.size_bytes,
         "partition_by": cached.partition_by,

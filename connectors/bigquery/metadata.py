@@ -102,7 +102,7 @@ def _fetch_rows_and_size(bq, req: MetadataRequest) -> dict | None:
 
 def _resolve_bq_location(bq, req: MetadataRequest) -> str | None:
     """instance.yaml.location → REST get_dataset → None."""
-    cfg_location = (get_value("data_source.bigquery.location") or "").strip()
+    cfg_location = (get_value("data_source", "bigquery", "location") or "").strip()
     if cfg_location:
         return cfg_location
     try:
