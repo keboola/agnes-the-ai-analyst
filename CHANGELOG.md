@@ -76,6 +76,24 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   did my toolbar go?" sessions after env-var refactors. `DEBUG=1` alone
   still works (production-mirror smoke tests). `app/main.py:_is_truthy_env`
   factors the shared check.
+- **`dashboard.html` now extends `base.html`** like every other page. It
+  used to ship its own `<!DOCTYPE>` / `<head>` / `<body>` and re-include
+  `_app_header.html` + `_version_badge.html` directly, which meant that
+  global rules in `style.css` (e.g. `header { margin-bottom: 24px }`) hit
+  the navbar without any way to scope the override. Now base.html exposes
+  a `{% block layout %}` opt-out for full-width pages: the standard pages
+  fill `{% block content %}` and get the 800px `.container` wrap; pages
+  like `dashboard.html` override `layout` and render their own
+  `<main class="main">` at full width. Net: one shell, one place to fix
+  chrome bugs.
+- **Design tokens extended in `style-custom.css`** — added the gaps that
+  inline page styles had been hardcoding: `--space-7/9/10/12`
+  (28/40/48/64px), `--radius-2xl` (16px), `--shadow-card` and
+  `--shadow-elevated` (the home install-hero's blue-tinted shadow),
+  `--text-muted` / `--text-disabled`, `--focus-ring`,
+  `--transition-{fast,base,slow}`, and layout widths
+  `--width-{narrow,app,wide}`. Existing inline styles are not migrated
+  in this commit — the tokens just unblock incremental migration.
 
 ## [0.38.0] — 2026-05-06
 
