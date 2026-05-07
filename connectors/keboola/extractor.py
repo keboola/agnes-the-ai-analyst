@@ -134,12 +134,27 @@ def materialize_query(
             # legacy client's behavior — preserves the source's exact
             # character data without DuckDB's type inference rewriting
             # numeric-looking strings (e.g. "Non-Manager") as NULL.
+            #
+            # `max_line_size=64MB` overrides DuckDB's default 2 MB cap on
+            # any single CSV line. Keboola tables that store embedded
+            # JSON / SQL transformation bodies routinely have multi-MB
+            # cells (e.g. `kbc_component_configuration` rows ship full
+            # Snowflake transformation SQL inline as a JSON column value);
+            # the default 2 MB ceiling rejects them with
+            # `Maximum line size of 2000000 bytes exceeded`.
+            #
+            # 64 MB is generous enough to absorb any reasonable embedded
+            # blob without becoming a memory footgun: DuckDB allocates a
+            # single buffer of this size during line scanning, and one
+            # buffer per worker thread. At 64 MB × default 1 thread per
+            # extractor process = bounded peak.
             safe_csv = str(csv_path).replace("'", "''")
             safe_tmp = str(tmp_parquet).replace("'", "''")
             try:
                 conv = duckdb.connect()
                 conv.execute(
-                    f"COPY (SELECT * FROM read_csv('{safe_csv}', all_varchar=true)) "
+                    f"COPY (SELECT * FROM read_csv('{safe_csv}', "
+                    f"all_varchar=true, max_line_size=67108864)) "
                     f"TO '{safe_tmp}' (FORMAT PARQUET)"
                 )
                 conv.close()
@@ -541,12 +556,15 @@ def _extract_via_legacy(tc: Dict[str, Any], pq_path: str, keboola_url: str, kebo
         # all_varchar=true preserves the source's exact character data —
         # matches what the kbcstorage path used to do, prevents DuckDB
         # type inference from rewriting numeric-looking strings as NULL.
+        # max_line_size=64MB overrides DuckDB's 2MB default; matches the
+        # materialize_query path. See comment there for rationale.
         safe_csv = str(csv_path).replace("'", "''")
         safe_pq = pq_path.replace("'", "''")
         conv = duckdb.connect()
         try:
             conv.execute(
-                f"COPY (SELECT * FROM read_csv('{safe_csv}', all_varchar=true)) "
+                f"COPY (SELECT * FROM read_csv('{safe_csv}', "
+                f"all_varchar=true, max_line_size=67108864)) "
                 f"TO '{safe_pq}' (FORMAT PARQUET)"
             )
         finally:

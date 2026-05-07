@@ -1277,11 +1277,22 @@ class RegisterTableRequest(BaseModel):
             raise ValueError(
                 "source_query is only valid when query_mode='materialized'"
             )
-        # Non-BQ materialized rows must supply source_query explicitly — there
-        # is no server-generate fallback for Keboola materialized.
-        if self.query_mode == "materialized" and not sq and self.source_type != "bigquery":
+        # BigQuery materialized auto-generates a full-table-dump SQL from
+        # `bucket`+`source_table` when source_query is omitted (see
+        # `register_table` BQ branch). Keboola materialized: a NULL
+        # source_query means "full-table export via Storage API
+        # export-async" — no SQL needed (the API takes a structured
+        # filter, see `connectors/keboola/storage_api.py:ExportFilter`).
+        # Other source_types (e.g. jira) don't support materialized mode
+        # and require an explicit source_query if the operator opts in.
+        if (
+            self.query_mode == "materialized"
+            and not sq
+            and self.source_type not in ("bigquery", "keboola")
+        ):
             raise ValueError(
-                "query_mode='materialized' requires a non-empty source_query"
+                f"query_mode='materialized' for source_type='{self.source_type}' "
+                "requires a non-empty source_query"
             )
         # Backtick guard stays for non-materialized rows (DuckDB-flavor SQL
         # contract); materialized SQL is BigQuery-native and MUST allow
@@ -2802,10 +2813,26 @@ def _discover_and_register_tables(conn: duckdb.DuckDBPyConnection, user_email: s
             continue
 
         try:
-            # Parse bucket from table ID (format: in.c-bucket.table_name)
-            parts = table.get("id", "").split(".")
-            bucket = parts[1] if len(parts) > 1 else ""
-            source_table = parts[2] if len(parts) > 2 else table.get("name", "")
+            # Parse bucket from table ID. Keboola format is
+            # `<stage>.<bucket-id>.<table>` where stage ∈ {in, out, sys}
+            # and bucket-id starts with `c-` (e.g. `in.c-finance.orders`).
+            # Storage API export-async expects the FULL `<stage>.<bucket-id>`
+            # as the bucket — a stripped `c-finance` 404s. Pre-fix this
+            # split dropped the stage prefix, so every auto-discovered row
+            # had `bucket="c-finance"` and any subsequent sync against it
+            # failed. Reassemble by joining everything except the trailing
+            # table name.
+            full_id = (table.get("id") or "").strip()
+            parts = full_id.split(".")
+            if len(parts) >= 3:
+                bucket = ".".join(parts[:-1])  # everything but the last segment
+                source_table = parts[-1]
+            elif len(parts) == 2:
+                bucket = parts[0]
+                source_table = parts[1]
+            else:
+                bucket = ""
+                source_table = table.get("name", "")
 
             repo.register(
                 id=table_id,
@@ -2813,9 +2840,13 @@ def _discover_and_register_tables(conn: duckdb.DuckDBPyConnection, user_email: s
                 source_type="keboola",
                 bucket=bucket,
                 source_table=source_table,
-                query_mode="local",
+                # Keboola goes through Storage API export-async via the
+                # materialized path (NULL source_query = full table). The
+                # legacy `local` mode for Keboola was retired in v26 and
+                # would no-op here anyway.
+                query_mode="materialized",
                 registered_by=user_email,
-                description=f"Auto-discovered from Keboola: {table.get('id', '')}",
+                description=f"Auto-discovered from Keboola: {full_id}",
             )
             registered += 1
             table_names.append(table_id)

@@ -124,25 +124,29 @@ def register_table(
         else:
             source_query = query.strip()
 
-    if query_mode == "materialized" and not source_query:
+    # Keboola materialized rows can omit --query: a NULL source_query means
+    # "full-table export via Storage API export-async" (see v25→v26
+    # migration notes). For BigQuery materialized rows, --query is still
+    # required — BQ has no analogous "full table" semantic at the registry
+    # layer (the path is a SELECT against `<project>.<dataset>.<table>`,
+    # which the admin must spell out).
+    if query_mode == "materialized" and not source_query and source_type != "keboola":
         typer.echo(
-            "Error: --query-mode materialized requires --query (literal SQL or @path.sql)",
+            "Error: --query-mode materialized requires --query (literal SQL or @path.sql) for source_type=" + source_type,
             err=True,
         )
         raise typer.Exit(2)
 
-    # Bucket is load-bearing for the BQ destination identifier on
-    # materialized rows. Without it, registration succeeds but
-    # subsequent `agnes schema <name>` builds `bq."".."<src>"` from
-    # the empty bucket and the server rejects with HTTP 400 "unsafe
-    # BQ identifier in registry". Catch this at register time so the
-    # operator gets a clear error pointing at the right knob.
+    # Bucket is load-bearing on materialized rows. For BQ it backs the
+    # destination identifier (`agnes schema <name>` builds `bq."<bucket>"."
+    # <src>"` from it; an empty bucket trips "unsafe BQ identifier in
+    # registry" at query time). For Keboola it's the bucket id passed to
+    # `/v2/storage/tables/<bucket>.<source_table>/export-async` — without
+    # it the export call would 404. Same requirement, different rationale.
     if query_mode == "materialized" and not bucket:
         typer.echo(
-            "Error: --query-mode materialized requires --bucket (the BQ "
-            "dataset for the destination identifier). Without it the row "
-            "registers but `agnes schema <name>` later fails with "
-            "'unsafe BQ identifier in registry'.",
+            "Error: --query-mode materialized requires --bucket (the "
+            "BQ dataset / Keboola bucket id for the source identifier).",
             err=True,
         )
         raise typer.Exit(2)

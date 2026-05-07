@@ -333,7 +333,17 @@ def _run_sync(tables: Optional[List[str]] = None):
                 registry_has_tables = bool(table_configs)
             else:
                 table_configs = repo.list_local(source_type) if source_type else repo.list_local()
-                registry_has_tables = bool(table_configs)
+                # Auto-discover gate must consider the WHOLE registry, not
+                # just `local` rows. After the Keboola migration to
+                # materialized (v25→v26), an instance can have 30
+                # materialized Keboola rows and zero local rows — but
+                # `bool(table_configs)` here would be False, and
+                # `not registry_has_tables` would re-trigger
+                # `_discover_and_register_tables` on every scheduler tick,
+                # creating duplicate "auto-discovered" rows with the wrong
+                # bucket prefix every time.
+                # Use list_all (any source, any mode) for the gate.
+                registry_has_tables = bool(repo.list_all())
                 # Without this filter, every scheduler tick would re-sync
                 # every table regardless of its sync_schedule cadence,
                 # making the field a no-op at trigger time. Tables with

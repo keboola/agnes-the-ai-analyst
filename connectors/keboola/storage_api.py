@@ -265,14 +265,24 @@ class KeboolaStorageClient:
     def download_file(self, file_info: dict, dest_path: Path) -> Path:
         """Download a Storage API file (single or sliced) to `dest_path`.
 
-        Single-file: stream the signed URL directly, gunzipping if
-        Content-Encoding is gzip OR if the URL's `name` ends in `.gz` (the
-        Storage API exporter compresses CSVs by default).
+        Backend variants:
+        - **AWS / Azure**: signed HTTPS URL in `file_info["url"]` (S3
+          presigned / SAS). Sliced manifest entries are signed HTTPS too.
+          Plain HTTP GET works.
+        - **GCP**: `file_info["url"]` is a signed HTTPS URL for the
+          single-file case. For sliced exports, the manifest at `url`
+          lists per-slice paths as `gs://<bucket>/<key>` (NOT signed) —
+          requires GCS authentication. We use the OAuth access token from
+          `file_info["gcsCredentials"]["access_token"]` and hit the REST
+          endpoint
+          `https://storage.googleapis.com/storage/v1/b/<bucket>/o/<urlencoded_key>?alt=media`
+          with `Authorization: Bearer <token>`. No google-cloud-storage
+          SDK dependency.
 
-        Sliced: GET the manifest JSON, then HTTP GET each slice's signed
-        URL serially into `dest_path` (concatenated). Slices are independent
-        files, so even a 1 GB sliced export is a sequence of bounded
-        downloads — bounded memory regardless of total result size.
+        Single-file: stream the signed URL directly, gunzipping if the
+        URL/name ends in `.gz`. Sliced: stream each slice into
+        `dest_path` in order (slice 0 has the CSV header per Storage
+        API contract, subsequent slices are header-less data).
         """
         url = file_info.get("url")
         if not url:
@@ -290,19 +300,35 @@ class KeboolaStorageClient:
         dest_path.parent.mkdir(parents=True, exist_ok=True)
 
         if is_sliced:
-            self._download_sliced(url, dest_path)
+            # GCP sliced manifests carry `gs://` URIs that need an OAuth
+            # bearer; AWS / Azure carry signed HTTPS URLs that work
+            # without auth. The presence of `gcsCredentials` in the file
+            # detail signals a GCP backend.
+            gcs_token = (file_info.get("gcsCredentials") or {}).get("access_token")
+            self._download_sliced(url, dest_path, gcs_token=gcs_token)
         else:
             self._download_single(url, dest_path, gunzip_on_read=is_gzipped)
         return dest_path
 
-    def _download_single(self, url: str, dest_path: Path, *, gunzip_on_read: bool) -> None:
-        """Stream a single signed URL into `dest_path`, transparently
-        gunzipping if the file name suggests it's a `.gz`. We don't trust
-        the response Content-Encoding header alone — Storage API often
-        serves through proxies that transparently decompress and rewrite
-        the header, so the `name`-ends-in-`.gz` heuristic is more reliable
-        in practice."""
-        with self.session.get(url, stream=True, timeout=_DEFAULT_SLICE_DOWNLOAD_TIMEOUT_SEC) as r:
+    def _download_single(
+        self,
+        url: str,
+        dest_path: Path,
+        *,
+        gunzip_on_read: bool,
+        extra_headers: Optional[dict] = None,
+    ) -> None:
+        """Stream a single signed URL (or GCS REST URL with bearer token
+        in `extra_headers`) into `dest_path`. Transparently gunzips if
+        the file name suggests it's a `.gz` — Storage API serves through
+        proxies that may rewrite Content-Encoding, so name-based
+        detection is more reliable than the header in practice."""
+        with self.session.get(
+            url,
+            stream=True,
+            timeout=_DEFAULT_SLICE_DOWNLOAD_TIMEOUT_SEC,
+            headers=extra_headers,
+        ) as r:
             r.raise_for_status()
             tmp = dest_path.with_suffix(dest_path.suffix + ".part")
             try:
@@ -319,11 +345,42 @@ class KeboolaStorageClient:
                 if tmp.exists():
                     tmp.unlink(missing_ok=True)
 
-    def _download_sliced(self, manifest_url: str, dest_path: Path) -> None:
+    @staticmethod
+    def _gs_to_https(gs_url: str) -> str:
+        """Rewrite `gs://<bucket>/<key>` to GCS JSON API media-download URL.
+
+        The JSON API requires the object name URL-encoded as a single
+        path segment (slashes inside the key are escaped). `alt=media`
+        switches the response from object metadata JSON to the actual
+        bytes — matches what `bucket.blob(key).download_as_bytes()` does
+        in the google-cloud-storage SDK.
+        """
+        from urllib.parse import quote
+        if not gs_url.startswith("gs://"):
+            raise ValueError(f"_gs_to_https expects gs://; got {gs_url!r}")
+        path = gs_url[5:]  # strip "gs://"
+        bucket, _, key = path.partition("/")
+        if not bucket or not key:
+            raise ValueError(f"malformed gs:// URL: {gs_url!r}")
+        return (
+            f"https://storage.googleapis.com/storage/v1/b/{bucket}"
+            f"/o/{quote(key, safe='')}?alt=media"
+        )
+
+    def _download_sliced(
+        self, manifest_url: str, dest_path: Path, *, gcs_token: Optional[str] = None
+    ) -> None:
         """Sliced exports: the file detail's `url` points at a JSON manifest
-        whose `entries[].url` are signed per-slice URLs. Download each slice
+        whose `entries[].url` lists per-slice locations. Download each slice
         and concatenate into `dest_path`. The first slice contains the CSV
-        header (Storage API guarantees stable header positioning)."""
+        header (Storage API guarantees stable header positioning).
+
+        Per-slice URL forms:
+        - signed HTTPS (S3 presigned, Azure SAS) — plain GET works.
+        - `gs://<bucket>/<key>` (GCP) — requires `gcs_token` (OAuth bearer
+          shipped in the file_detail's `gcsCredentials.access_token`).
+          Mapped to `https://storage.googleapis.com/storage/v1/b/<bucket>/o/<encoded_key>?alt=media`.
+        """
         m = self.session.get(
             manifest_url, timeout=_DEFAULT_SLICE_DOWNLOAD_TIMEOUT_SEC
         )
@@ -346,11 +403,27 @@ class KeboolaStorageClient:
                         body=entry,
                     )
                 sp = Path(tmpdir) / f"slice-{i:05d}"
+                # GCP backend: rewrite gs:// to GCS REST + bearer auth.
+                # The OAuth token comes from the file_detail's
+                # `gcsCredentials.access_token` (passed as `gcs_token`
+                # arg).
+                if surl.startswith("gs://"):
+                    if not gcs_token:
+                        raise StorageApiError(
+                            f"slice {i} URL is gs:// but no gcs_token "
+                            f"provided in file_detail.gcsCredentials"
+                        )
+                    surl = self._gs_to_https(surl)
+                    extra_headers = {"Authorization": f"Bearer {gcs_token}"}
+                else:
+                    extra_headers = None
                 # Slices may individually be gzipped — same heuristic as
                 # single-file: if the slice URL's path ends in `.gz`, gunzip
                 # after download.
                 gz = ".gz" in surl.split("?")[0].rsplit("/", 1)[-1]
-                self._download_single(surl, sp, gunzip_on_read=gz)
+                self._download_single(
+                    surl, sp, gunzip_on_read=gz, extra_headers=extra_headers,
+                )
                 slice_paths.append(sp)
 
             # Concat. Sliced CSV exports include the header in slice 0 only
