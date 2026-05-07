@@ -31,69 +31,28 @@ _BQ_DIALECT_HINTS = {
 
 
 def _fetch_bq_schema(bq, dataset: str, table: str) -> list[dict]:
-    """Fetch column list via the shared `fetch_bq_columns_full` helper.
+    """Fetch column list via the shared ``_fetch_bq_columns_full_impl`` helper.
 
     Pre-#155 this had its own INFORMATION_SCHEMA.COLUMNS query; consolidating
-    with `_fetch_bq_table_options` (now also delegating to the same helper)
-    halves the BQ job count on cache miss. Returns the schema-endpoint
+    with ``_fetch_bq_table_options`` (now also delegating to the same shared
+    SQL) halves the BQ job count on cache miss. Returns the schema-endpoint
     column shape: name / type / nullable / description.
+
+    Calls the raising variant so BQ exceptions reach ``translate_bq_error``
+    with their original type (Forbidden → 502, BadRequest → 400, etc.).
     """
-    from connectors.bigquery.access import fetch_bq_columns_full, translate_bq_error, BqAccessError
-    from src.identifier_validation import validate_quoted_identifier
+    from connectors.bigquery.access import _fetch_bq_columns_full_impl, translate_bq_error, BqAccessError
 
-    # Surface "BQ not configured" as the structured 500 BqAccessError
-    # (with hint), not a misleading empty-list. Mirrors pre-refactor
-    # behavior — see Devin BUG_0002 in the original docstring.
-    if not bq.projects.data:
-        bq.client()  # raises BqAccessError(not_configured); endpoint catches it
-
-    # Defense in depth — refuse unsafe identifiers before any SQL construction.
-    # The helper also validates, but we need to surface this as ValueError (not
-    # None) here so the endpoint returns 400 unsafe_identifier.
-    if not (validate_quoted_identifier(bq.projects.data, "BQ project")
-            and validate_quoted_identifier(dataset, "BQ dataset")
-            and validate_quoted_identifier(table, "BQ source_table")):
-        raise ValueError("unsafe BQ identifier in registry — refusing to query")
-
-    # Run the shared single-round-trip query. Capture the original BQ exception
-    # so translate_bq_error can classify it correctly (Forbidden → 502, etc.)
-    # rather than wrapping a generic RuntimeError that translate_bq_error would
-    # re-raise unclassified.
-    _last_exc: list = []
-
-    def _session_factory_capturing(projects):
-        """Thin wrapper around bq.duckdb_session() that intercepts exceptions
-        and stashes them in _last_exc before re-raising, so the caller's
-        translate_bq_error path sees the original Google API exception type."""
-        from contextlib import contextmanager
-
-        @contextmanager
-        def _cm():
-            with bq.duckdb_session() as conn:
-                try:
-                    yield conn
-                except Exception as exc:
-                    _last_exc.append(exc)
-                    raise
-        return _cm()
-
-    # Build a thin BqAccess wrapper that uses our capturing session factory.
-    from connectors.bigquery.access import BqAccess
-    bq_capturing = BqAccess(
-        bq.projects,
-        client_factory=lambda p: bq.client(),
-        duckdb_session_factory=_session_factory_capturing,
-    )
-
-    rows = fetch_bq_columns_full(bq_capturing, dataset, table)
-    if rows is None:
-        # fetch_bq_columns_full swallowed the exception. Re-raise via
-        # translate_bq_error using the captured original exception if available,
-        # so Forbidden/BadRequest classifications survive the helper boundary.
-        orig = _last_exc[0] if _last_exc else RuntimeError(
-            "BQ INFORMATION_SCHEMA.COLUMNS query failed"
-        )
-        raise translate_bq_error(orig, bq.projects, bad_request_status="upstream_error")
+    try:
+        rows = _fetch_bq_columns_full_impl(bq, dataset, table)
+    except (ValueError, BqAccessError):
+        # ValueError ("unsafe identifier") and BqAccessError propagate
+        # unchanged — the endpoint's existing handlers expect those types.
+        raise
+    except Exception as e:
+        # Any other BQ-side exception goes through translate_bq_error so
+        # the response status is classified correctly.
+        raise translate_bq_error(e, bq.projects, bad_request_status="upstream_error")
 
     return [
         {
