@@ -4,10 +4,14 @@
 
 {% block content %}
 <style>
-/* Lift the global 800px container constraint on /home so the blue hero
-   reaches the same 1200px width as the mock. Scoped via :has() so other
-   pages keep their narrow chrome. */
-body:has(.home-mock) .container { max-width: 1200px; padding: 32px; }
+/* Lift the global 800px container constraint on /home and match the
+   dashboard's outer chrome (1280px wide, 28px / 32px / 48px padding) so
+   /home and /dashboard feel like the same surface. Scoped via :has() so
+   other pages keep their narrow defaults. */
+/* No container top-padding — the blue install-hero owns its own top
+   spacing (38px internal). The container's old 28px-top added a stripe
+   of pale grey above the hero that read as dead vertical space. */
+body:has(.home-mock) .container { max-width: 1280px; padding: 0 32px 48px; }
 body:has(.home-mock) { background: #F9FAFB; }
 
 .home-mock {

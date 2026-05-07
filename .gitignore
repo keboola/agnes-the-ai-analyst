@@ -156,3 +156,10 @@ docs/ZS_PADAK_*
 # and cannot ship in OSS commit history per CLAUDE.md vendor-agnostic policy.
 # Sanitize and replace with placeholders before committing any reference content.
 docs/brainstorms/agnes-home-mock-*.html
+
+# Brainstorms + plans authored against this repo. They typically reference
+# customer-specific mocks, plugin names, or org context that has not been
+# generalized for OSS. Keep them local; lift sanitized excerpts into
+# docs/operator/ or docs/decisions/ when ready to ship.
+docs/brainstorms/
+docs/plans/
