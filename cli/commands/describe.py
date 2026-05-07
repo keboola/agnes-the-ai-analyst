@@ -1,22 +1,25 @@
-"""`agnes describe <table>` — schema + sample rows (spec §4.1)."""
+"""`agnes describe <table>` — schema + sample rows (spec §4.1).
+
+Registered as a flat ``@app.command("describe")`` in ``cli/main.py`` rather
+than as a ``Typer.Typer`` subcommand-group + callback. The group pattern
+mis-parses ``agnes describe TABLE -n 5`` (positional + short option with a
+separated INTEGER value) — Typer hands the "5" to the positional and then
+errors on a missing TABLE_ID. There were no actual subcommands of
+``describe`` to justify the group wrapping anyway. Issue surfaced from a
+real analyst session following the CLAUDE.md "agent rails" workflow.
+"""
 
 import json as json_lib
 import typer
 from cli.v2_client import api_get_json, V2ClientError
 
-describe_app = typer.Typer(help="Show schema + sample rows for a table")
 
-
-@describe_app.callback(invoke_without_command=True)
 def describe(
-    ctx: typer.Context,
     table_id: str = typer.Argument(...),
     n: int = typer.Option(5, "-n", "--rows", help="Sample rows count"),
     json: bool = typer.Option(False, "--json"),
 ):
     """Show schema + sample rows for a table."""
-    if ctx.invoked_subcommand is not None:
-        return
     try:
         sch = api_get_json(f"/api/v2/schema/{table_id}")
         sam = api_get_json(f"/api/v2/sample/{table_id}", n=n)

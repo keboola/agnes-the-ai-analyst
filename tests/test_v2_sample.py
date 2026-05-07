@@ -83,6 +83,62 @@ class TestSampleEndpoint:
             conn.close()
         assert captured["n"] == 100
 
+    def test_sample_handles_nan_values_in_rows(self, reload_db, monkeypatch):
+        """Regression: rows containing NaN floats from a DuckDB / BigQuery
+        scan used to crash the response with `ValueError: Out of range
+        float values are not JSON compliant: nan`. The endpoint now
+        sanitizes NaN/±inf to None before returning the payload."""
+        import math
+        from app.api import v2_sample
+        v2_sample._sample_cache.clear()
+        monkeypatch.setattr(
+            v2_sample, "_fetch_bq_sample",
+            lambda bq, dataset, table, n: [
+                {"col": float("nan"), "ok": 1.0},
+                {"col": float("inf"), "ok": 2.0},
+                {"col": float("-inf"), "ok": 3.0},
+            ],
+        )
+        conn = reload_db.get_system_db()
+        try:
+            _seed(conn)
+            user = {"id": "admin1", "email": "a@x.com"}
+            data = v2_sample.build_sample(conn, user, "bq_view", n=3, bq=_bq())
+        finally:
+            conn.close()
+        assert data["rows"] == [
+            {"col": None, "ok": 1.0},
+            {"col": None, "ok": 2.0},
+            {"col": None, "ok": 3.0},
+        ]
+        # Belt-and-braces: payload must round-trip through stdlib json
+        # in strict mode (allow_nan=False) — that's what FastAPI's
+        # serializer enforces internally.
+        import json as _json
+        _json.dumps(data, allow_nan=False)  # must not raise
+
+    def test_sample_handles_nested_nan_in_arrays(self, reload_db, monkeypatch):
+        """Sanitizer recurses into nested lists/dicts — array-typed BQ
+        cells with NaN inside also serialize cleanly."""
+        from app.api import v2_sample
+        v2_sample._sample_cache.clear()
+        monkeypatch.setattr(
+            v2_sample, "_fetch_bq_sample",
+            lambda *a, **kw: [{"arr": [1.0, float("nan"), 3.0],
+                                "nested": {"x": float("inf")}}],
+        )
+        conn = reload_db.get_system_db()
+        try:
+            _seed(conn)
+            user = {"id": "admin1", "email": "a@x.com"}
+            data = v2_sample.build_sample(conn, user, "bq_view", n=1, bq=_bq())
+        finally:
+            conn.close()
+        assert data["rows"][0]["arr"] == [1.0, None, 3.0]
+        assert data["rows"][0]["nested"] == {"x": None}
+        import json as _json
+        _json.dumps(data, allow_nan=False)
+
     def test_rbac_check_runs_before_cache(self, reload_db, monkeypatch):
         """Regression: cache check used to come before RBAC, leaking sample rows
         cached by an authorized user to subsequent unauthorized callers."""
