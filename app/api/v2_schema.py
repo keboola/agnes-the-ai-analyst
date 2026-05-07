@@ -111,7 +111,25 @@ def build_schema(
     if cached is not None:
         return cached
 
-    source_type = row.get("source_type") or ""
+    return build_schema_uncached(conn, table_id, bq=bq)
+
+
+def build_schema_uncached(
+    conn: duckdb.DuckDBPyConnection,
+    table_id: str,
+    *,
+    bq: BqAccess,
+) -> dict:
+    """Build the schema response and populate `_schema_cache`. **Skips
+    RBAC and cache-hit short-circuit** — call only from contexts where
+    those are either unnecessary (warmup) or already enforced upstream
+    (`build_schema` above). The BQ work is the same; the entry-point
+    contract is what differs.
+    """
+    repo = TableRegistryRepository(conn)
+    row = repo.get(table_id)
+
+    source_type = (row.get("source_type") if row else None) or ""
     if source_type == "bigquery":
         dataset = row.get("bucket") or ""
         source_table = row.get("source_table") or table_id
@@ -128,7 +146,6 @@ def build_schema(
         }
     else:
         # Local source — read schema from the parquet via DuckDB
-        from pathlib import Path
         from app.utils import get_data_dir
         parquet = (
             get_data_dir() / "extracts" / source_type / "data" / f"{table_id}.parquet"
@@ -153,6 +170,7 @@ def build_schema(
             "where_dialect_hints": {},
         }
 
+    cache_key = f"{table_id}"
     _schema_cache.set(cache_key, payload)
     return payload
 
