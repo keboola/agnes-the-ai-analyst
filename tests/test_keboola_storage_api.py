@@ -518,3 +518,45 @@ class TestParquetPath:
         }, dest)
 
         assert dest.read_bytes() == b"PAR1\x00\x00\x00binary"
+
+
+# ---- get_table_info --------------------------------------------------------
+
+class TestGetTableInfo:
+    """`get_table_info` is a thin wrapper around the existing _get path
+    so the metadata provider doesn't have to bleed `_get` out of the
+    module (#155)."""
+
+    def test_calls_storage_api_with_table_id(self, monkeypatch):
+        from connectors.keboola.storage_api import KeboolaStorageClient
+
+        captured = {}
+
+        def fake_get(self, path, **kwargs):
+            captured["path"] = path
+            return {"rowsCount": 100, "dataSizeBytes": 4096}
+
+        monkeypatch.setattr(KeboolaStorageClient, "_get", fake_get)
+
+        client = KeboolaStorageClient(
+            url="https://connection.keboola.com", token="tok"
+        )
+        info = client.get_table_info("in.c-orders.events")
+        assert captured["path"] == "/tables/in.c-orders.events"
+        assert info["rowsCount"] == 100
+        assert info["dataSizeBytes"] == 4096
+
+    def test_propagates_storage_api_error(self, monkeypatch):
+        from connectors.keboola.storage_api import (
+            KeboolaStorageClient, StorageApiError,
+        )
+
+        def fake_get(self, path, **kwargs):
+            raise StorageApiError("404 not found", status=404, body={})
+
+        monkeypatch.setattr(KeboolaStorageClient, "_get", fake_get)
+
+        client = KeboolaStorageClient(url="https://x", token="tok")
+        import pytest
+        with pytest.raises(StorageApiError):
+            client.get_table_info("missing.table")
