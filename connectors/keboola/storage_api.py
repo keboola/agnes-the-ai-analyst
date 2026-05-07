@@ -285,6 +285,16 @@ class KeboolaStorageClient:
         via `wait_for_job` to find the file id when status='success'."""
         return self._post(f"/tables/{table_id}/export-async", data=params)
 
+    def get_table_info(self, table_id: str) -> dict:
+        """GET /v2/storage/tables/{table_id} — full table metadata.
+
+        Storage API guarantees `rowsCount` + `dataSizeBytes` on success.
+        Other fields (`columns`, `primaryKey`, ...) are present but not
+        consumed by the metadata provider today. Raises `StorageApiError`
+        on 4xx/5xx — caller decides whether to soften to `None`.
+        """
+        return self._get(f"/tables/{table_id}")
+
     def wait_for_job(
         self,
         job_id: int,
