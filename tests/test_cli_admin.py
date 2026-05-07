@@ -264,6 +264,37 @@ class TestUpdateTable:
         assert result.exit_code == 1
 
 
+class TestRegisterTableHints:
+    """The CLI prints helpful follow-up hints after a successful
+    register-table call. v0.46 adds a third hint for query_mode=remote
+    pointing at the IAM verify-your-SA smoke check."""
+
+    def test_remote_register_emits_iam_verify_hint(self):
+        with patch("cli.commands.admin.api_post", return_value=_resp(201, {"id": "t"})):
+            result = runner.invoke(app, [
+                "admin", "register-table", "orders",
+                "--source-type", "bigquery",
+                "--bucket", "dwh_base",
+                "--source-table", "orders",
+                "--query-mode", "remote",
+            ])
+        assert result.exit_code == 0
+        assert "agnes query --remote" in result.output
+        assert "query-modes.md" in result.output
+
+    def test_local_register_does_not_emit_remote_hint(self):
+        with patch("cli.commands.admin.api_post", return_value=_resp(201, {"id": "t"})):
+            result = runner.invoke(app, [
+                "admin", "register-table", "users",
+                "--source-type", "keboola",
+                "--bucket", "in.c-crm",
+                "--source-table", "users",
+                "--query-mode", "local",
+            ])
+        assert result.exit_code == 0
+        assert "agnes query --remote" not in result.output
+
+
 def test_admin_set_role_returns_hardfail():
     """v19: `agnes admin set-role` was removed. Calling it must hard-fail
     with a non-zero exit code and a message pointing at the replacement
