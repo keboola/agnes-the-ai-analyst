@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Internal
+
+- `infra/modules/customer-instance` (tag `infra-v1.7.0`): `google_compute_instance.vm` now sets `allow_stopping_for_update = true`. Without it, changing `machine_type` (or any other field GCP will only mutate on a stopped VM) caused Terraform to fall back to a destroy + recreate, churning VM-local state for what should be an in-place resize. Consumers do not need to update — the field is provider-side only — but bumping the module ref to `infra-v1.7.0` enables in-place machine-type bumps.
+
 ## [0.43.0] — 2026-05-06
 
 ### Added
