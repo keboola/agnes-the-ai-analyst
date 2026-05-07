@@ -4,6 +4,7 @@ import asyncio
 from unittest.mock import patch
 
 import pytest
+from app.api.cache_warmup import WarmupRunState
 
 
 def test_warmup_run_state_starts_empty():
@@ -67,7 +68,7 @@ def test_run_endpoint_starts_warmup(seeded_app, monkeypatch):
     monkeypatch.setattr(cache_warmup, "WARMUP_STATE", None)
     # Patch the actual warmup so the test doesn't run a real one.
     monkeypatch.setattr(cache_warmup, "_warm_catalog_caches_bg",
-                        lambda trigger="manual": _async_noop())
+                        lambda trigger="manual", state=None: _async_noop())
 
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
@@ -76,6 +77,30 @@ def test_run_endpoint_starts_warmup(seeded_app, monkeypatch):
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r.status_code == 200
+
+
+def test_run_endpoint_returns_run_id_not_none(seeded_app, monkeypatch):
+    """POST /run returns a non-null run_id even when the bg task hasn't
+    started running yet (no race between create_task and the handler return)."""
+    from app.api import cache_warmup
+
+    async def fake_bg(trigger="manual", state=None):
+        await asyncio.sleep(0.01)  # don't actually warm
+
+    monkeypatch.setattr(cache_warmup, "WARMUP_STATE", None)
+    monkeypatch.setattr(cache_warmup, "_warm_catalog_caches_bg", fake_bg)
+
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    r = c.post(
+        "/api/admin/cache-warmup/run",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "started"
+    assert body["run_id"] is not None
+    assert len(body["run_id"]) == 8  # uuid4 hex prefix
 
 
 async def _async_noop():
