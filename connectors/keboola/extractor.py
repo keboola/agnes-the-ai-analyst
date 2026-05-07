@@ -316,31 +316,64 @@ def _extract_via_extension(conn: duckdb.DuckDBPyConnection, tc: Dict[str, Any], 
 
 
 def _extract_via_legacy(tc: Dict[str, Any], pq_path: str, keboola_url: str, keboola_token: str) -> None:
-    """Fallback: extract using legacy Keboola client (kbcstorage SDK)."""
+    """Fallback: extract using kbcstorage SDK and write a typed parquet.
+
+    Sources the PyArrow schema + pandas dtypes + date columns from
+    Keboola Storage metadata via `KeboolaClient` (provider cascade
+    `user > ai-metadata-enrichment > keboola.snowflake-transformation`)
+    so column types survive the CSV → parquet roundtrip. When the
+    metadata fetch fails (network, permissions, or no metadata at all),
+    we still write a parquet — with string types — rather than failing
+    the whole extraction. The caller sees row count and can flag the
+    untyped result.
+
+    Pre-v26 this used `read_csv(all_varchar=true)` which flattened every
+    column to VARCHAR. The current path matches the internal data analyst
+    repo's typed-parquet behavior.
+    """
+    import tempfile
+
     from connectors.keboola.client import KeboolaClient
+    from connectors.keboola.parquet_io import csv_to_parquet
 
     client = KeboolaClient(token=keboola_token, url=keboola_url)
 
-    # Export to CSV temp file, then convert to parquet via DuckDB
-    import tempfile
+    bucket = tc.get("bucket", "")
+    source_table = tc.get("source_table", tc["name"])
+    table_id = f"{bucket}.{source_table}" if bucket else tc.get("id", tc["name"])
+
+    try:
+        pyarrow_schema = client.get_pyarrow_schema(table_id)
+    except Exception as e:
+        logger.warning(
+            "Keboola schema unavailable for %s (%s); writing string-typed parquet",
+            table_id, e,
+        )
+        pyarrow_schema = None
+
+    try:
+        dtypes = client.get_pandas_dtypes(table_id) if pyarrow_schema else {}
+    except Exception:
+        dtypes = {}
+
+    try:
+        date_columns = client.get_date_columns(table_id) if pyarrow_schema else []
+    except Exception:
+        date_columns = []
 
     with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as tmp:
         csv_path = tmp.name
 
     try:
-        # Construct full Keboola table ID: bucket.source_table (e.g., in.c-finance.circle)
-        bucket = tc.get("bucket", "")
-        source_table = tc.get("source_table", tc["name"])
-        table_id = f"{bucket}.{source_table}" if bucket else tc.get("id", tc["name"])
         client.export_table(table_id, Path(csv_path))
-
-        # Convert CSV to Parquet using DuckDB — all_varchar avoids type inference errors
-        # (e.g. columns with mostly numeric values but some strings like "Non-Manager")
-        conv_conn = duckdb.connect()
-        conv_conn.execute(
-            f"COPY (SELECT * FROM read_csv('{csv_path}', all_varchar=true)) TO '{pq_path}' (FORMAT PARQUET)"
+        csv_to_parquet(
+            csv_path=Path(csv_path),
+            parquet_path=Path(pq_path),
+            dtypes=dtypes,
+            date_columns=date_columns,
+            pyarrow_schema=pyarrow_schema,
+            table_id=table_id,
         )
-        conv_conn.close()
     finally:
         if os.path.exists(csv_path):
             os.unlink(csv_path)
