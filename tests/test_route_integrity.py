@@ -51,6 +51,16 @@ ALLOWLIST = {
     "/admin/grants",
     # Reached from /corporate-memory's "Manage knowledge" admin link.
     "/corporate-memory/admin",
+    # Debug/error routes — developer-only, not surfaced in the nav.
+    "/_debug/throw/exc",
+    "/_debug/throw/http/{code:int}",
+    # Onboarding flow triggered from the landing page, not the nav.
+    "/first-time-setup",
+    # Store detail pages reached from /store list view.
+    "/store/new",
+    "/store/{entity_id}",
+    # Catch-all 404 handler — not a real page.
+    "/{full_path:path}",
 }
 
 
@@ -115,7 +125,7 @@ def test_required_top_level_nav_links_present():
     the kind of regression operators only notice when an analyst opens
     a support ticket asking 'where did the data catalog go?'."""
     nav = _nav_hrefs()
-    required = {"/dashboard", "/catalog", "/corporate-memory", "/install"}
+    required = {"/dashboard", "/catalog", "/corporate-memory", "/setup"}
     missing = required - nav
     assert not missing, (
         f"Top nav missing required entries: {sorted(missing)}."
