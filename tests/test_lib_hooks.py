@@ -108,6 +108,46 @@ def test_install_replaces_prior_single_pull_entry(tmp_path):
     assert any("agnes refresh-marketplace" in c for c in starts)
 
 
+def test_install_replaces_v0_43_chained_self_upgrade_pull_entry(tmp_path):
+    """Workspaces bootstrapped on v0.43.0 had a single SessionStart entry
+    chaining `agnes self-upgrade; agnes pull` in one shell line. Upgrading
+    those workspaces to v0.44.0+ must collapse that entry and re-install
+    the new two-entry layout — not stack the v0.44 entries on top of the
+    v0.43 chained one (which would re-run self-upgrade twice on every
+    session and leave the old format around forever).
+    """
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(json.dumps({
+        "hooks": {
+            "SessionStart": [
+                {"hooks": [{"type": "command", "command": (
+                    "agnes self-upgrade --quiet 2>/dev/null || true; "
+                    "agnes pull --quiet 2>/dev/null || true"
+                )}]},
+            ],
+            "SessionEnd": [
+                {"hooks": [{"type": "command", "command": "agnes push --quiet 2>/dev/null || true"}]},
+            ],
+        }
+    }))
+    install_claude_hooks(tmp_path)
+    cfg = _read_settings(tmp_path)
+    starts = _commands_for(cfg, "SessionStart")
+    # Exactly two entries — the v0.43 chained line was replaced, not stacked.
+    assert len(starts) == 2, starts
+    chain = next(
+        (c for c in starts if "agnes self-upgrade" in c and "agnes pull" in c),
+        None,
+    )
+    assert chain is not None
+    assert any("agnes refresh-marketplace" in c for c in starts)
+    # SessionEnd untouched (single push entry).
+    ends = _commands_for(cfg, "SessionEnd")
+    assert len(ends) == 1
+    assert "agnes push --quiet" in ends[0]
+
+
 def test_install_preserves_third_party_hooks(tmp_path):
     settings_path = tmp_path / ".claude" / "settings.json"
     settings_path.parent.mkdir(parents=True)
