@@ -10,6 +10,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.46.4] — 2026-05-07
+
+### Fixed
+
+- SessionEnd `agnes push` hook previously synchronous-ran in the foreground; Claude Code's `-p` (headless) mode terminates SessionEnd hook subprocesses after ~1 second regardless of work in progress, so the upload was killed mid-stream and most session JSONLs never reached the server. Now wrapped in `bash -c "( nohup agnes push ... & ) ; true"` so the upload child detaches from the hook subprocess and survives Claude's aggressive shutdown. Existing workspaces pick up the detached form on their next `agnes init` invocation via the existing migration path. Verified end-to-end against production: `claude -p` exited in 5s, the detached child completed the upload, and the session JSONL landed on the server within 30s.
+
 ## [0.46.3] — 2026-05-07
 
 ### Added
