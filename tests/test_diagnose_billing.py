@@ -1,9 +1,11 @@
-"""Phase K — `agnes diagnose` warning when BQ billing_project == project.
+"""Phase K — `agnes diagnose` info entry when BQ billing_project == project.
 
 Surfaces via /api/health/detailed (which `agnes diagnose` already consumes):
 when data_source.type == 'bigquery' and the resolved BqProjects.billing equals
 BqProjects.data, the response includes a `services.bq_config` entry with
-status='warning' and a hint about the 403 USER_PROJECT_DENIED footgun.
+status='info' (since #178 — was 'warning' before) and a hint about the 403
+USER_PROJECT_DENIED footgun. `info` keeps the message visible without
+promoting the overall check to 'degraded' the way 'warning' did.
 """
 
 import pytest
@@ -46,7 +48,14 @@ def _reset_after(monkeypatch):
 
 
 def test_diagnose_warns_when_billing_equals_project(seeded_app, monkeypatch):
-    """BQ instance with billing_project missing (or equal to project) → warning."""
+    """BQ instance with billing_project missing (or equal to project) → info.
+
+    Pre-#178 this returned `warning`, which promoted the overall headline
+    to `degraded`. The check is informational — many valid single-project
+    dev instances run with billing == data — so it now returns `info` and
+    the headline stays `healthy` (issue #178). The detail message still
+    appears so operators can see it.
+    """
     _patch_instance_config(monkeypatch, {
         "data_source": {
             "type": "bigquery",
@@ -65,10 +74,12 @@ def test_diagnose_warns_when_billing_equals_project(seeded_app, monkeypatch):
 
     bq_cfg = body.get("services", {}).get("bq_config")
     assert bq_cfg is not None, body
-    assert bq_cfg.get("status") == "warning", bq_cfg
+    assert bq_cfg.get("status") == "info", bq_cfg
     # Hint mentions the YAML field path so operators know what to fix.
     blob = (str(bq_cfg.get("detail", "")) + " " + str(bq_cfg.get("hint", ""))).lower()
     assert "billing_project" in blob, bq_cfg
+    # Info severity must not promote the headline to degraded.
+    assert body.get("status") == "healthy", body.get("status")
 
 
 def test_diagnose_clean_when_billing_differs(seeded_app, monkeypatch):

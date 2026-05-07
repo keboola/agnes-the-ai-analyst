@@ -7,7 +7,7 @@ Thread-safe file operations with atomic writes.
 import json
 import logging
 import os
-import random
+import secrets
 import string
 import tempfile
 import time
@@ -95,8 +95,14 @@ def get_user_status(username: str) -> dict | None:
 
 
 def _generate_code() -> str:
-    """Generate a random numeric verification code."""
-    return "".join(random.choices(string.digits, k=config.CODE_LENGTH))
+    """Generate a cryptographically random numeric verification code.
+
+    Uses `secrets.choice` (CSPRNG) rather than `random.choices` because
+    pairing codes gate account linkage — a predictable PRNG output would
+    let an attacker who scrapes one code recover the RNG state and predict
+    others issued in the same process.
+    """
+    return "".join(secrets.choice(string.digits) for _ in range(config.CODE_LENGTH))
 
 
 def _cleanup_expired(codes: dict) -> dict:

@@ -95,6 +95,29 @@ def init(
             }}), err=True)
             raise typer.Exit(1)
 
+    # On --force, snapshot the existing CLAUDE.md before regenerating it
+    # so an operator who edited it can recover their notes (issue #164).
+    # Backup name carries an ISO timestamp so multiple `--force` runs in
+    # the same workspace don't clobber each other. We write the backup
+    # *after* the existing-workspace gate above so the un-forced path is
+    # unchanged.
+    if claude_md.exists() and force:
+        try:
+            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            backup_path = workspace / f"CLAUDE.md.bak.{ts}"
+            backup_path.write_bytes(claude_md.read_bytes())
+            typer.echo(f"Backed up existing CLAUDE.md → {backup_path.name}")
+        except OSError as exc:
+            # FS error on the backup is annoying but shouldn't abort the
+            # init. Surface it so the operator knows their pre-existing
+            # CLAUDE.md is about to be overwritten without a recoverable
+            # copy on disk, then proceed.
+            typer.echo(
+                f"Warning: could not write CLAUDE.md backup ({exc}); "
+                f"continuing with --force overwrite",
+                err=True,
+            )
+
     # ------------------------------------------------------------------
     # Step 2: verify the PAT via /api/catalog/tables.
     #

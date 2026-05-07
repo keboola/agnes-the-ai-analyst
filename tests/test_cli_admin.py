@@ -156,6 +156,114 @@ class TestMetadataShow:
         assert result.exit_code == 1
 
 
+class TestUnregisterTable:
+    """Issue #177: `agnes admin unregister-table` wraps DELETE
+    /api/admin/registry/{id}. The server endpoint already does the
+    parquet/sync_state cleanup; the CLI is a thin client."""
+
+    def test_unregister_success(self):
+        with patch("cli.commands.admin.api_delete", return_value=_resp(204)):
+            result = runner.invoke(
+                app, ["admin", "unregister-table", "orders", "--yes"]
+            )
+        assert result.exit_code == 0, result.output
+        assert "Unregistered: orders" in result.output
+
+    def test_unregister_not_found(self):
+        with patch(
+            "cli.commands.admin.api_delete",
+            return_value=_resp(404, {"detail": "Table not found"}),
+        ):
+            result = runner.invoke(
+                app, ["admin", "unregister-table", "nope", "--yes"]
+            )
+        assert result.exit_code == 1
+
+    def test_unregister_prompts_without_yes(self):
+        """Without --yes, the CLI confirms before destructive action."""
+        with patch("cli.commands.admin.api_delete", return_value=_resp(204)) as d:
+            # Simulate operator typing "n" at the prompt.
+            result = runner.invoke(
+                app, ["admin", "unregister-table", "orders"], input="n\n"
+            )
+        # Either Aborted (exit 0) or refuses entirely; either way the
+        # server must not have been called.
+        d.assert_not_called()
+        assert result.exit_code == 0
+
+
+class TestUpdateTable:
+    """Issue #177: `agnes admin update-table` wraps PUT
+    /api/admin/registry/{id}. Only fields the operator passes go in the
+    body — server-side merge keeps the rest unchanged."""
+
+    def test_update_only_supplied_fields_sent(self):
+        captured = {}
+
+        def fake_put(path, **kwargs):
+            captured["path"] = path
+            captured["json"] = kwargs.get("json")
+            return _resp(200, {"id": "orders", "updated": ["bucket"]})
+
+        with patch("cli.commands.admin.api_put", side_effect=fake_put):
+            result = runner.invoke(
+                app, ["admin", "update-table", "orders", "--bucket", "out.c-prod"]
+            )
+        assert result.exit_code == 0, result.output
+        assert captured["path"] == "/api/admin/registry/orders"
+        # description must NOT be in the body — operator didn't pass it.
+        assert captured["json"] == {"bucket": "out.c-prod"}
+        assert "Updated orders" in result.output
+
+    def test_update_inline_query_for_materialized(self):
+        captured = {}
+
+        def fake_put(path, **kwargs):
+            captured["json"] = kwargs.get("json")
+            return _resp(200, {"id": "rev", "updated": ["query_mode", "source_query"]})
+
+        with patch("cli.commands.admin.api_put", side_effect=fake_put):
+            result = runner.invoke(app, [
+                "admin", "update-table", "rev",
+                "--query-mode", "materialized",
+                "--query", "SELECT 1",
+            ])
+        assert result.exit_code == 0, result.output
+        assert captured["json"]["query_mode"] == "materialized"
+        assert captured["json"]["source_query"] == "SELECT 1"
+
+    def test_update_query_at_file(self, tmp_path):
+        sql_file = tmp_path / "q.sql"
+        sql_file.write_text("SELECT * FROM orders\n")
+        captured = {}
+
+        def fake_put(path, **kwargs):
+            captured["json"] = kwargs.get("json")
+            return _resp(200, {"id": "rev", "updated": ["source_query"]})
+
+        with patch("cli.commands.admin.api_put", side_effect=fake_put):
+            result = runner.invoke(
+                app, ["admin", "update-table", "rev", "--query", f"@{sql_file}"]
+            )
+        assert result.exit_code == 0, result.output
+        assert captured["json"]["source_query"] == "SELECT * FROM orders"
+
+    def test_update_no_fields_supplied_errors(self):
+        result = runner.invoke(app, ["admin", "update-table", "orders"])
+        assert result.exit_code == 2
+        assert "No fields supplied" in (result.output + (result.stderr or ""))
+
+    def test_update_table_not_found(self):
+        with patch(
+            "cli.commands.admin.api_put",
+            return_value=_resp(404, {"detail": "Table not found"}),
+        ):
+            result = runner.invoke(
+                app, ["admin", "update-table", "nope", "--bucket", "x"]
+            )
+        assert result.exit_code == 1
+
+
 def test_admin_set_role_returns_hardfail():
     """v19: `agnes admin set-role` was removed. Calling it must hard-fail
     with a non-zero exit code and a message pointing at the replacement

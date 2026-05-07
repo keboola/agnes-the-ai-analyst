@@ -121,3 +121,65 @@ def test_textual_progress_emits_at_completion(
         or "done" in captured.err.lower()
         or "complete" in captured.err.lower()
     )
+
+
+class TestProgressIntervalKnobs:
+    """Issue #203: cadence is configurable via env vars so non-TTY
+    consumers (CI runners, sub-agent watchdogs) can tighten the floor
+    when the default is too quiet for their dead-process detector."""
+
+    def _stream(self):
+        return io.StringIO()
+
+    def test_default_seconds_floor_is_5s(self, monkeypatch):
+        """Default cadence is 5 s (was 30 s pre-#203)."""
+        monkeypatch.delenv("AGNES_PULL_PROGRESS_INTERVAL_SECONDS", raising=False)
+        from cli.lib.pull import _read_progress_interval_seconds
+        assert _read_progress_interval_seconds() == 5.0
+
+    def test_default_bytes_floor_is_1mib(self, monkeypatch):
+        """Default cadence is 1 MiB; complements the time-based floor."""
+        monkeypatch.delenv("AGNES_PULL_PROGRESS_INTERVAL_BYTES", raising=False)
+        from cli.lib.pull import _read_progress_interval_bytes
+        assert _read_progress_interval_bytes() == 1024 * 1024
+
+    def test_seconds_env_override(self, monkeypatch):
+        monkeypatch.setenv("AGNES_PULL_PROGRESS_INTERVAL_SECONDS", "0.5")
+        from cli.lib.pull import _read_progress_interval_seconds
+        assert _read_progress_interval_seconds() == 0.5
+
+    def test_bytes_env_override(self, monkeypatch):
+        monkeypatch.setenv("AGNES_PULL_PROGRESS_INTERVAL_BYTES", "131072")
+        from cli.lib.pull import _read_progress_interval_bytes
+        assert _read_progress_interval_bytes() == 131072
+
+    def test_invalid_envs_fall_back_to_default(self, monkeypatch):
+        """Garbage input doesn't break the pull — fall back to defaults."""
+        monkeypatch.setenv("AGNES_PULL_PROGRESS_INTERVAL_SECONDS", "nope")
+        monkeypatch.setenv("AGNES_PULL_PROGRESS_INTERVAL_BYTES", "-1")
+        from cli.lib.pull import (
+            _read_progress_interval_bytes,
+            _read_progress_interval_seconds,
+        )
+        assert _read_progress_interval_seconds() == 5.0
+        assert _read_progress_interval_bytes() == 1024 * 1024
+
+    def test_byte_floor_emits_more_often_than_pct_threshold(self, monkeypatch):
+        """A 100 MB file with 1 MiB byte cadence should emit far more
+        than 10 progress lines (the 10%-of-total cadence alone would).
+        This was the operator complaint in #203: on multi-GB parquets
+        the 30 s / 10 % policy produced one line every ~3 minutes."""
+        monkeypatch.setenv("AGNES_PULL_PROGRESS_INTERVAL_SECONDS", "9999")
+        monkeypatch.setenv("AGNES_PULL_PROGRESS_INTERVAL_BYTES", "1048576")
+        from cli.lib.pull import _TextualProgress
+        sink = self._stream()
+        total = 100 * 1024 * 1024  # 100 MiB
+        prog = _TextualProgress(
+            stream=sink, total_files=1, file_sizes={"tbl": total}
+        )
+        chunk = 64 * 1024  # 64 KiB chunks → 1600 advances
+        for _ in range(total // chunk):
+            prog.advance("tbl", chunk)
+        prog.finish()
+        emitted = sink.getvalue().count("\n")
+        assert emitted >= 50, f"only {emitted} lines emitted; cadence too coarse"
