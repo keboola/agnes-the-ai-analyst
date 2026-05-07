@@ -106,12 +106,11 @@ def build_schema(
     if not can_access_table(user, table_id, conn):
         raise PermissionError(table_id)
 
-    cache_key = f"{table_id}"
-    cached = _schema_cache.get(cache_key)
+    cached = _schema_cache.get(table_id)
     if cached is not None:
         return cached
 
-    return build_schema_uncached(conn, table_id, bq=bq)
+    return build_schema_uncached(conn, table_id, bq=bq, row=row)
 
 
 def build_schema_uncached(
@@ -119,17 +118,24 @@ def build_schema_uncached(
     table_id: str,
     *,
     bq: BqAccess,
+    row: dict | None = None,
 ) -> dict:
     """Build the schema response and populate `_schema_cache`. **Skips
     RBAC and cache-hit short-circuit** — call only from contexts where
-    those are either unnecessary (warmup) or already enforced upstream
-    (`build_schema` above). The BQ work is the same; the entry-point
-    contract is what differs.
-    """
-    repo = TableRegistryRepository(conn)
-    row = repo.get(table_id)
+    those are unnecessary (warmup) or already enforced upstream
+    (`build_schema`).
 
-    source_type = (row.get("source_type") if row else None) or ""
+    Pass `row` from the upstream caller's `repo.get(table_id)` to avoid
+    a redundant DB round-trip; if not provided, `build_schema_uncached`
+    fetches it itself (the warmup-direct call site).
+    """
+    if row is None:
+        repo = TableRegistryRepository(conn)
+        row = repo.get(table_id)
+        if not row:
+            raise NotFound(table_id)
+
+    source_type = row.get("source_type") or ""
     if source_type == "bigquery":
         dataset = row.get("bucket") or ""
         source_table = row.get("source_table") or table_id
@@ -170,8 +176,7 @@ def build_schema_uncached(
             "where_dialect_hints": {},
         }
 
-    cache_key = f"{table_id}"
-    _schema_cache.set(cache_key, payload)
+    _schema_cache.set(table_id, payload)
     return payload
 
 
