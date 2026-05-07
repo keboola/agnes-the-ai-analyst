@@ -66,6 +66,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - `src/profiler.py:TableInfo.__init__` makes `description` optional (defaults to `""`). Two call sites in `app/api/catalog.py` and `app/api/sync.py` instantiate `TableInfo(name=..., table_id=...)` without it; the previous required-arg signature crashed sync's profiler pass with `TableInfo.__init__() missing 1 required positional argument: 'description'`, leaving `[SYNC] Profiled 0 tables` after every run.
 - `scripts/ops/agnes-auto-upgrade.sh` now `chown`s `${STATE_DIR}` (`/data/state` by default), `/data/extracts`, `/data/analytics` to the new image's runtime UID:GID before `docker compose up` when the image digest moves. Catches root → non-root UID transitions across upgrades — without it, the new image's first start `PermissionError`s on `.session_secret` / DuckDB. Reads the target uid:gid from `/etc/passwd` inside the image so the script stays honest if the runtime user ever moves off uid 999.
 
+### Internal
+
+- `infra/modules/customer-instance` (tag `infra-v1.8.0`): `startup-script.sh.tpl` no longer overwrites operator-edited `AGNES_TAG` / `AGNES_TEMP_DIR` in `/opt/agnes/.env` on every boot. Reads the existing values when present and lets them win over the template-computed `$IMAGE_TAG`. Pre-fix, an in-place TF action that stopped/started the VM (e.g. `machine_type` change) would re-run the startup script and clobber any manually-pinned image tag — operators had to re-edit the file post-restart. Fresh provisions still get the TF-driven values; the `.env` file's existence is the disambiguator. To force a TF-driven reset, `rm /opt/agnes/.env` and reboot.
+
 ## [0.44.1] — 2026-05-07
 
 ### Fixed
