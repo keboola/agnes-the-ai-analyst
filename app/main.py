@@ -148,6 +148,9 @@ async def lifespan(app):
     except Exception as e:
         logger.warning("failed to bump anyio thread pool capacity: %s", e)
 
+    from app.api.cache_warmup import maybe_schedule_startup_warmup
+    maybe_schedule_startup_warmup()
+
     yield
     from src.db import close_system_db
     close_system_db()
