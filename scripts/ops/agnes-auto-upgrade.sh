@@ -134,12 +134,54 @@ fi
 BEFORE=$(docker images --no-trunc --format '{{.Digest}}' "$IMAGE" | head -1)
 docker compose "${COMPOSE_FILES[@]}" pull >/dev/null 2>&1
 AFTER=$(docker images --no-trunc --format '{{.Digest}}' "$IMAGE" | head -1)
-
 if [ "$BEFORE" != "$AFTER" ] || [ "$CONFIG_BEFORE" != "$CONFIG_AFTER" ]; then
     REASON=()
     [ "$BEFORE" != "$AFTER" ] && REASON+=("image digest")
     [ "$CONFIG_BEFORE" != "$CONFIG_AFTER" ] && REASON+=("config files")
+
+    # Sync-in-flight defer guard. ``docker compose up -d`` recreates the
+    # uvicorn worker, which kills any in-flight extractor / materialized
+    # pass that was holding ``_sync_lock``. The next 5-min cron tick
+    # picks up the same change — we just delay the upgrade until the
+    # current sync finishes (typically minutes for small tables, longer
+    # for big Snowflake UNLOADs). curl with a 5s timeout: if the app is
+    # unreachable for any reason (already crashed, port not bound,
+    # older app version without /api/sync/status), we proceed with the
+    # upgrade — being stuck on a wedged previous version is worse than
+    # interrupting a hypothetical sync.
+    LOCK_JSON=$(curl -sf --max-time 5 http://localhost:8000/api/sync/status 2>/dev/null || true)
+    if echo "$LOCK_JSON" | grep -q '"locked"[[:space:]]*:[[:space:]]*true'; then
+        echo "$(date): sync in flight (${REASON[*]} pending) — deferring recreate to next tick"
+        logger -t agnes-auto-upgrade "deferred recreate: sync in flight (${REASON[*]})"
+        exit 0
+    fi
+
     echo "$(date): change detected (${REASON[*]}) — recreating containers"
+
+    # Re-align ownership of mounted state to the image's runtime user
+    # before bringing containers up. Catches root → non-root UID
+    # transitions across upgrades — old root-owned files would otherwise
+    # cause PermissionError on .session_secret / DuckDB on the new
+    # image's first start. Idempotent (no-op when ownership already
+    # matches). The Dockerfile pins runtime to uid:gid 999:999 today
+    # (`useradd --system --uid 999 ... agnes`); read it back from the
+    # image config to stay honest if that ever changes. Only relevant
+    # when the image digest actually changed.
+    if [ "$BEFORE" != "$AFTER" ]; then
+        IMAGE_USER=$(docker image inspect -f '{{.Config.User}}' "$IMAGE" 2>/dev/null || true)
+        if [ -n "$IMAGE_USER" ] && [ "$IMAGE_USER" != "root" ] && [ "$IMAGE_USER" != "0" ]; then
+            # IMAGE_USER may be "agnes" (name) or "999" or "999:999".
+            # Resolve via /etc/passwd inside the image — works without
+            # requiring a shell in the runtime layer.
+            IMAGE_UIDGID=$(docker run --rm --entrypoint cat "$IMAGE" /etc/passwd 2>/dev/null \
+                | awk -F: -v u="${IMAGE_USER%%:*}" '$1==u || $3==u {print $3":"$4; exit}')
+            if [ -n "$IMAGE_UIDGID" ]; then
+                for d in "$STATE_DIR" /data/extracts /data/analytics; do
+                    [ -d "$d" ] && chown -R "$IMAGE_UIDGID" "$d" 2>/dev/null || true
+                done
+            fi
+        fi
+    fi
     # ${arr[@]+"${arr[@]}"} pattern: expands to nothing when array is
     # empty (vs. plain "${arr[@]}" which trips `set -u` on bash <4.4).
     docker compose "${COMPOSE_FILES[@]}" ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} up -d

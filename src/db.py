@@ -39,7 +39,7 @@ def _maybe_instrument(con, db_tag: str):
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 25
+SCHEMA_VERSION = 26
 
 _SYSTEM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -1803,6 +1803,33 @@ _V24_TO_V25_MIGRATIONS = [
 ]
 
 
+# v26: unify Keboola query_mode='local' rows into 'materialized'.
+#
+# The old `local` flow ran the DuckDB Keboola extension's COPY through
+# QueryService — which is unreliable on linked-bucket projects (and was
+# wholly broken pre-v0.1.6 of the extension). The new `materialized`
+# flow uses the Storage API export-async path directly:
+#   POST /v2/storage/tables/<id>/export-async
+#   GET  /v2/storage/jobs/<id>  (poll)
+#   GET  /v2/storage/files/<id>?federationToken=1  (signed URL)
+#   download → CSV → parquet
+# That works regardless of project flags, and a NULL `source_query`
+# means "full table export" — same effective behavior the `local` mode
+# previously gave.
+#
+# Existing Keboola rows registered as `query_mode='local'` are flipped
+# to 'materialized'; their source_query stays NULL (full table). Jira
+# and BigQuery 'local' rows are untouched (this connector still uses
+# its own path).
+_V25_TO_V26_MIGRATIONS = [
+    """
+    UPDATE table_registry
+    SET query_mode = 'materialized'
+    WHERE source_type = 'keboola' AND query_mode = 'local'
+    """,
+]
+
+
 # v24: rewrite materialized BQ source_query from DuckDB-flavor
 # (bq."<dataset>"."<table>") to BigQuery-native (`<project>.<dataset>.<table>`)
 # so the new connectors.bigquery.extractor.materialize_query wrapping
@@ -2055,6 +2082,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v23_to_v24_finalize(conn)
             if current < 25:
                 for sql in _V24_TO_V25_MIGRATIONS:
+                    conn.execute(sql)
+            if current < 26:
+                for sql in _V25_TO_V26_MIGRATIONS:
                     conn.execute(sql)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",

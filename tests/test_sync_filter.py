@@ -10,6 +10,7 @@ from src.scheduler import filter_due_tables, is_valid_schedule
 # ---------------- is_valid_schedule -----------------------------------------
 
 @pytest.mark.parametrize("schedule", [
+    "every 0m",          # always-due (force-resync of an errored row)
     "every 15m",
     "every 1h",
     "every 6h",
@@ -23,7 +24,6 @@ def test_is_valid_schedule_accepts_documented_formats(schedule):
 @pytest.mark.parametrize("schedule", [
     "",
     "every",
-    "every 0m",          # zero is not a positive interval
     "every 15s",         # seconds not supported
     "daily",
     "daily 25:00",       # invalid hour
@@ -172,6 +172,9 @@ def test_run_sync_filters_local_tables_by_schedule(monkeypatch, tmp_path):
     class _StubRegistry:
         def __init__(self, conn): pass
         def list_local(self, source_type=None): return list(fake_configs)
+        # `_run_sync` calls `list_all()` purely for an emptiness check on
+        # the auto-discover gate — content does not matter, only truthiness.
+        def list_all(self): return list(fake_configs)
         def get(self, table_id):
             return next((c for c in fake_configs if c["id"] == table_id), None)
 
@@ -207,19 +210,26 @@ def test_run_sync_filters_local_tables_by_schedule(monkeypatch, tmp_path):
         ),
     )
 
-    # Capture the configs that subprocess.run sees (via stdin payload).
+    # Capture the configs the extractor subprocess sees (via stdin
+    # payload). Hooks subprocess.Popen because _run_sync now uses Popen
+    # (with start_new_session=True so a timeout can SIGTERM the whole
+    # process group, including ProcessPoolExecutor workers spawned by
+    # the parallel legacy fallback).
     captured = {}
 
-    def _fake_run(cmd, input, capture_output, text, timeout, env, cwd):
-        import json as _json
-        captured["configs"] = _json.loads(input)
-        class _R:
-            returncode = 0
-            stdout = "{}"
-            stderr = ""
-        return _R()
+    class _FakePopen:
+        def __init__(self, cmd, **kwargs):
+            self.cmd = cmd
+            self.returncode = 0
+            self.pid = 999
 
-    monkeypatch.setattr(sync_module.subprocess, "run", _fake_run)
+        def communicate(self, input=None, timeout=None):
+            import json as _json
+            if input is not None:
+                captured["configs"] = _json.loads(input)
+            return ("{}", "")
+
+    monkeypatch.setattr(sync_module.subprocess, "Popen", _FakePopen)
 
     # Stub orchestrator + profiler imports inside the function so we don't
     # require a real DuckDB analytics file.
@@ -263,6 +273,9 @@ def test_run_sync_does_not_auto_discover_when_filter_returns_empty(monkeypatch, 
     class _StubRegistry:
         def __init__(self, conn): pass
         def list_local(self, source_type=None): return list(fake_configs)
+        # `_run_sync` calls `list_all()` purely for an emptiness check on
+        # the auto-discover gate — content does not matter, only truthiness.
+        def list_all(self): return list(fake_configs)
         def get(self, table_id):
             return next((c for c in fake_configs if c["id"] == table_id), None)
 

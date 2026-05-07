@@ -174,7 +174,10 @@ def is_valid_schedule(schedule: Optional[str]) -> bool:
     """Return True iff ``schedule`` parses as a documented schedule string.
 
     Accepted forms (mirroring the rest of this module):
-      - ``"every Nm"`` / ``"every Nh"`` with N a positive integer
+      - ``"every Nm"`` / ``"every Nh"`` with N a non-negative integer
+        (``every 0m`` = always due, useful for force-resync of a row whose
+        previous attempt errored without recording last_sync — bypasses
+        the rate limit on the next ``/api/sync/trigger`` tick)
       - ``"daily HH:MM"`` (24-h, UTC) optionally comma-separated:
         ``"daily 07:00,13:00"``
 
@@ -187,7 +190,7 @@ def is_valid_schedule(schedule: Optional[str]) -> bool:
         return False
     interval = parse_interval_minutes(schedule)
     if interval is not None:
-        return interval > 0
+        return interval >= 0
     match = DAILY_PATTERN.match(schedule)
     if not match:
         return False

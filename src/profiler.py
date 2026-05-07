@@ -197,7 +197,7 @@ class TableInfo:
         self,
         table_id: str,
         name: str,
-        description: str,
+        description: str = "",
         primary_key: str = "",
         sync_strategy: str = "none",
         foreign_keys: Optional[List[ForeignKeyInfo]] = None,
