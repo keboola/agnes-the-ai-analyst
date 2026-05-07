@@ -999,15 +999,21 @@ YOU run every command via your Bash tool. Do NOT print install commands and ask 
    c. Create an OAuth 2.0 client of type "Desktop app".
    d. Copy the resulting client_id and client_secret. Paste them back into the terminal where `gws auth setup` is waiting. These identify the OAuth app — not the user — but still don't echo them back to me in chat.{% endif %}
 
-6. Run `gws auth login` (no `--readonly` flag — Agnes uses full read + write access across Drive / Calendar / Gmail / Sheets / Docs / Chat so the agent can actually create, edit, and send on my behalf). One env var the loopback redirect needs is OAUTHLIB_INSECURE_TRANSPORT — set it in the SAME Bash invocation that runs login: `OAUTHLIB_INSECURE_TRANSPORT={{ gws_oauth.oauthlib_insecure_transport if gws_oauth.configured else "1" }} gws auth login`. The CLI binds a local loopback server at http://127.0.0.1:8080 and prints an OAuth URL.
+6. Run `gws auth login --full` (no `--readonly` flag — Agnes uses full read + write access across Drive / Calendar / Gmail / Sheets / Docs / Chat so the agent can actually create, edit, and send on my behalf). The `--full` flag widens the default scope picker; without it Chat / People / Tasks scopes are silently dropped. One env var the loopback redirect needs is OAUTHLIB_INSECURE_TRANSPORT — set it in the SAME Bash invocation that runs login: `OAUTHLIB_INSECURE_TRANSPORT={{ gws_oauth.oauthlib_insecure_transport if gws_oauth.configured else "1" }} gws auth login --full`. The CLI binds a local loopback server at http://127.0.0.1:8080 and prints an OAuth URL.
 
-   Capture the URL from gws's stdout and open it programmatically — do NOT print it to chat. Markdown line-wrapping in chat corrupts the long scope query string when the user copies it. Use your Bash tool: macOS `open "$URL"`, Linux/WSL `xdg-open "$URL"`, Windows `Start-Process "$URL"`. Detect OS first.
+   Capture the URL from gws's stdout. Before opening the browser, append the Chat write scopes (`https://www.googleapis.com/auth/chat.spaces` and `https://www.googleapis.com/auth/chat.messages`) to the URL's `scope=` query parameter — `--full` includes the readonly Chat scopes but NOT the read+write ones, and `gws chat ... send` calls fail without them. Decode the existing scope list, append the two URLs space-separated, re-encode, then open. Python one-liner via Bash tool:
 
-   While the browser tab is loading, read each requested scope in plain language for me — full read + write across Drive, Calendar, Gmail, and the rest — so I know what I'm consenting to before I click Approve. Tell me I can revoke any time at https://myaccount.google.com/permissions if I change my mind.
+      `URL=$(printf '%s' "$URL" | python3 -c 'import sys,urllib.parse as u; q=u.urlparse(sys.stdin.read().strip()); p=u.parse_qs(q.query); s=set(p.get("scope",[""])[0].split()); s |= {"https://www.googleapis.com/auth/chat.spaces","https://www.googleapis.com/auth/chat.messages"}; p["scope"]=[" ".join(sorted(s))]; print(q._replace(query=u.urlencode(p, doseq=True, quote_via=u.quote)).geturl())')`
+
+   Then open the rewritten URL programmatically — do NOT print it to chat. Markdown line-wrapping in chat corrupts the long scope query string when the user copies it. Use your Bash tool: macOS `open "$URL"`, Linux/WSL `xdg-open "$URL"`, Windows `Start-Process "$URL"`. Detect OS first.
+
+   While the browser tab is loading, read each requested scope in plain language for me — full read + write across Drive, Calendar, Gmail, Chat, and the rest — so I know what I'm consenting to before I click Approve. Tell me I can revoke any time at https://myaccount.google.com/permissions if I change my mind.
+
+   If `gws auth status` later shows Chat scopes missing (e.g. on a re-run where a stale token cached the previous scope set), `rm ~/.config/gws/token.json` (or `%APPDATA%\gws\token.json` on native Windows) and re-run this step — the OAuth flow re-prompts with the new scope list.
 
 7. Find where gws stored my credentials (`gws auth status` should show the path; typically ~/.config/gws/ on Unix, %APPDATA%\gws\ on Windows). chmod 600 on Unix; on native Windows, restrict ACLs to my user with `icacls "$creds_path" /inheritance:r /grant:r "$env:USERNAME:F"` — file is already in my user profile so this needs no admin.
 
-8. Verify with a low-impact read: `gws drive files list --params '{"pageSize": 1}'`. Print only "Connected as &lt;my email&gt;" plus the count of files visible. Never echo tokens, file metadata, or scope strings to chat.
+8. Verify with two low-impact reads, one per scope group: `gws drive files list --params '{"pageSize": 1}'` (Drive scope landed) and `gws chat spaces list --params '{"pageSize": 1}'` (Chat scope landed). Print only "Connected as &lt;my email&gt;" plus the file + space counts. Never echo tokens, file/message metadata, or scope strings to chat.
 
 9. Remind me how to revoke later: `gws auth logout` clears local creds; the OAuth grant also appears at https://myaccount.google.com/permissions for Google-side revocation.</code></div>
                         </details>
