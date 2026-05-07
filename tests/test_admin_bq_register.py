@@ -2137,12 +2137,16 @@ def test_register_request_accepts_valid_sync_schedule(schedule):
 
 @pytest.mark.parametrize("schedule", [
     "hourly",
-    "every 0m",
     "daily 25:00",
     "every 5x",
     "  ",
 ])
 def test_register_request_rejects_malformed_sync_schedule(schedule):
+    # `every 0m` was previously here as a rejected value; the runtime
+    # now accepts it as the "always due" force-resync override (used
+    # to bypass the default 1h interval on a row whose previous
+    # attempt errored without recording last_sync). See group A
+    # commit `fix: tempdir leak cleanup, every 0m schedule, ...`.
     with pytest.raises(ValidationError) as exc_info:
         RegisterTableRequest(name="orders", sync_schedule=schedule)
     assert "sync_schedule" in str(exc_info.value)

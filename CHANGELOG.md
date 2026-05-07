@@ -12,10 +12,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+- `POST /api/admin/discover-and-register?dry_run=true` returns the planned mutations without writing — lists `would_register`, `drift` (existing rows whose registry coordinates differ from what discovery would write), and `invalid` ids. Useful for auditing before re-running auto-discovery on a registry that's already had admin overrides applied.
 - `GET /api/sync/status` returns `{"locked": bool}` — public, no auth. Consumed by the host-side `agnes-auto-upgrade.sh` cron to decide whether to defer `docker compose up -d` until the running sync finishes. Cheap (single Lock check), no sensitive data.
 
 ### Fixed
 
+- `app/api/admin.py`: `_discover_and_register_tables` no longer overwrites admin-corrected registry rows. Two drift flavours surfaced (and skipped):
+  - **same_id_diff_coords** — registry has a row at the same id but different `(bucket, source_table)`; admin migrated coordinates.
+  - **name_collision** — discovery's slugified id differs from any registry id, but the discovered `name` matches an existing row's `name` (case-insensitive). Real-world cause: the `kbc_job` row was registered manually with the right bucket; Keboola's discovery exposes it under a different stage prefix that slugs to a different id. Pre-fix, auto-discovery would have inserted a duplicate whose Storage API export-async 404s. Now classified as drift, surfaced with `registry_id` so an operator can reconcile.
+- `app/api/admin.py`: bucket detection in auto-discovery now uses the Keboola API's authoritative `bucket_id` field directly (with id-string parsing only as a fallback). Pre-fix, parsing the id string was the primary path and a stripped stage prefix inserted 137 broken rows.
 - `app/api/sync.py`: `POST /api/sync/trigger` with a `tables` payload now actually scopes the materialized pass too. Previously the targeted trigger only filtered the legacy extractor subprocess; `_run_materialized_pass` still iterated every materialized row in the registry, so an admin asking to re-sync `kbc_job` re-ran every other due materialized row alongside it. The pass now takes a `tables` arg and skips rows not in the target set with `reason="not_in_target"`. Both registry id and name match.
 - `scripts/ops/agnes-auto-upgrade.sh`: defers `docker compose up -d` while a sync is in flight. Probes `GET /api/sync/status` with a 5s timeout; if the response carries `"locked":true`, exits 0 with a deferred-recreate log line and waits for the next 5-min cron tick. Connection failures (older app version without the endpoint, app crashed, etc.) fall through to the upgrade — being stuck on a wedged image is worse than interrupting a hypothetical sync.
 - `connectors/keboola/extractor.py`: `materialize_query` per-call tempdir is now opened with `ignore_cleanup_errors=True`. Previously a worker death mid-write under disk-full state could leave a multi-GiB stale slice tree (12 GiB seen on agnes-dev) because `TemporaryDirectory.__exit__` itself raised, masking the original exception and skipping cleanup. Now cleanup is best-effort and always fires.
