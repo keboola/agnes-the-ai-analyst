@@ -172,6 +172,9 @@ def test_run_sync_filters_local_tables_by_schedule(monkeypatch, tmp_path):
     class _StubRegistry:
         def __init__(self, conn): pass
         def list_local(self, source_type=None): return list(fake_configs)
+        # `_run_sync` calls `list_all()` purely for an emptiness check on
+        # the auto-discover gate — content does not matter, only truthiness.
+        def list_all(self): return list(fake_configs)
         def get(self, table_id):
             return next((c for c in fake_configs if c["id"] == table_id), None)
 
@@ -270,6 +273,9 @@ def test_run_sync_does_not_auto_discover_when_filter_returns_empty(monkeypatch, 
     class _StubRegistry:
         def __init__(self, conn): pass
         def list_local(self, source_type=None): return list(fake_configs)
+        # `_run_sync` calls `list_all()` purely for an emptiness check on
+        # the auto-discover gate — content does not matter, only truthiness.
+        def list_all(self): return list(fake_configs)
         def get(self, table_id):
             return next((c for c in fake_configs if c["id"] == table_id), None)
 

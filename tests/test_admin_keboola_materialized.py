@@ -46,7 +46,14 @@ def test_register_keboola_materialized_accepts_source_query(seeded_app):
     assert r.status_code == 201, r.text
 
 
-def test_register_keboola_materialized_rejects_missing_source_query(seeded_app):
+def test_register_keboola_materialized_accepts_missing_source_query(seeded_app):
+    """A NULL source_query on a keboola materialized row means
+    'full-table export via Storage API export-async' — no SQL needed.
+    The admin path must accept it. (BigQuery materialized has the same
+    no-source-query semantic via the SELECT *-from-bucket auto-fill in
+    the BQ branch of register_table; for keboola the export-async API
+    takes a structured filter, not a SQL string, so we just persist
+    NULL and let the extractor pass an empty ExportFilter.)"""
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
     auth = {"Authorization": f"Bearer {token}"}
@@ -57,11 +64,12 @@ def test_register_keboola_materialized_rejects_missing_source_query(seeded_app):
             "name": "orders_recent",
             "source_type": "keboola",
             "query_mode": "materialized",
-            # source_query missing
+            "bucket": "in.c-sales",
+            "source_table": "orders",
+            # source_query intentionally omitted.
         },
     )
-    assert r.status_code == 422
-    assert "source_query" in r.text
+    assert r.status_code == 201, r.text
 
 
 def test_register_keboola_materialized_skips_bucket_check(seeded_app):
