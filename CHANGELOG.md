@@ -10,6 +10,89 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **feat(keboola)**: per-table sync strategies. The Keboola extractor now
+  dispatches by `sync_strategy` ∈ {`full_refresh` (default, unchanged
+  behavior), `incremental`, `partitioned`}. Existing tables stay on
+  `full_refresh` after the migration; admins opt individual tables in
+  via `agnes admin register-table --sync-strategy ...` or
+  `POST /api/admin/registry`.
+  - **`incremental`**: Storage API `changedSince` pulls only rows changed
+    since the last successful sync, merges into the existing parquet by
+    `primary_key` (drop_duplicates with keep='last'). Per-table knobs:
+    `--incremental-window-days` (backtrack window applied to last_sync,
+    default 7), `--max-history-days` (cap on first-sync history depth).
+    Cuts daily extraction from O(full table) to O(delta) for opted-in
+    tables. The DuckDB Keboola extension does not expose `changedSince`,
+    so incremental tables are extracted via the SDK path with typed parquet.
+  - **`partitioned`**: per-partition parquet files (flat layout
+    `data/<table>/<key>.parquet`, e.g. `2026_05.parquet`) keyed by
+    `--partition-by` column with `--partition-granularity` ∈ {day, month
+    (default), year}. Daily delta touches only affected partitions; first
+    sync uses chunked initial load (`--initial-load-chunk-days`, default
+    30) walking history backwards with 1-day overlap, stops after 2
+    consecutive empty chunks or `--max-history-days` reached. The
+    orchestrator exposes the directory as a single DuckDB view via
+    `read_parquet('<table>/*.parquet')`.
+- **feat(keboola)**: server-side `where_filters` per table. Filters use
+  the Keboola Storage API's `whereFilters` shape — `{column, operator,
+  values}` with `operator ∈ {eq, ne, gt, ge, lt, le}`. Multiple filter
+  entries are AND'd; multiple values within one entry are IN'd. Date
+  placeholders resolve at sync time: `{{today}}`, `{{last_week}}`,
+  `{{last_month}}`, `{{last_2_months}}`, `{{last_3_months}}`,
+  `{{last_6_months}}`, `{{last_year}}`, `{{last_2_years}}`,
+  `{{start_of_3_months_ago}}`. Set via
+  `agnes admin register-table --where-filters-json '@filters.json'` or
+  the `where_filters` body field on `POST /api/admin/registry`. Tables
+  with filters are extracted via the SDK path (the DuckDB Keboola
+  extension does not expose `whereFilters`).
+
+### Fixed
+
+- **fix(keboola/legacy)**: legacy SDK extraction path (the fallback used
+  when the DuckDB Keboola extension errors, e.g. on alias tables hitting
+  QueryService permission errors per `keboola/duckdb-extension#17`) now
+  preserves column types from Keboola Storage metadata via the provider
+  cascade (`user > ai-metadata-enrichment > keboola.snowflake-transformation`)
+  instead of flattening every column to VARCHAR. Invalid date strings
+  (`'0000-00-00'`) and invalid numeric strings (`'Non-Manager'`) become
+  NULL while keeping the column's typed schema. Falls back to string
+  typing only when the Keboola Storage metadata API is unreachable. The
+  DuckDB extension path is unchanged — it already returns typed columns.
+
+### Changed
+
+- **schema migration v25 → v26**: adds 7 columns to `table_registry`
+  (`incremental_window_days`, `max_history_days`, `incremental_column`,
+  `where_filters`, `partition_by`, `partition_granularity`,
+  `initial_load_chunk_days`). All NULL on existing rows; meaningful only
+  when paired with the matching `sync_strategy`. The existing
+  `sync_strategy` column (default `'full_refresh'`) is reused — pre-v26
+  it was inert catalog metadata; post-v26 the extractor dispatches off it.
+- **feat(admin/api)**: `RegisterTableRequest` enforces `sync_strategy ∈
+  {full_refresh, incremental, partitioned}` and rejects conflicting
+  combinations with HTTP 422:
+  `incremental + where_filters` (changedSince already filters temporally;
+  legacy repo silently dropped filters in this combo) and
+  `partitioned + query_mode='remote'` (partitioned writes parquets locally).
+  `partitioned` requires `partition_by`; `partition_granularity` defaults
+  to `'month'` when omitted.
+
+### Internal
+
+- **memory**: `merge_parquet` and `merge_partition` use
+  `pd.concat` + `drop_duplicates`, loading both existing parquet and
+  delta into pandas RAM. For tables in the multi-million-row range this
+  may OOM. Switch to `partitioned` strategy for those — per-partition
+  merge keeps memory bounded.
+- **deferred**: HTML form template (`app/web/templates/admin_tables.html`)
+  not updated to surface the new fields. Admin currently uses
+  `agnes admin register-table` flags or `curl POST /api/admin/registry`.
+  The API accepts the new fields with defaults so the existing JS
+  frontend continues to work — fields just stay NULL for tables
+  registered through the UI.
+
 ## [0.45.0] — 2026-05-07
 
 Operator-and-analyst quality bundle: a security fix for the optional
