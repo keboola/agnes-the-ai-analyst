@@ -57,6 +57,11 @@ _DEFAULT_SLICE_DOWNLOAD_TIMEOUT_SEC = int(
 )
 
 
+FILE_TYPE_CSV = "csv"
+FILE_TYPE_PARQUET = "parquet"
+_VALID_FILE_TYPES = {FILE_TYPE_CSV, FILE_TYPE_PARQUET}
+
+
 @dataclass
 class ExportFilter:
     """Structured Keboola Storage API filter spec.
@@ -68,12 +73,28 @@ class ExportFilter:
     full table.
 
     Operators per Apiary docs: eq, ne, in, notIn, ge, gt, le, lt.
+
+    `file_type` controls the format Storage API materializes into File
+    Storage. `parquet` is the recommended path for the materialized sync:
+    Keboola serves the parquet directly (UNLOADed from Snowflake), the
+    extractor renames it into place — no CSV intermediate, no DuckDB
+    COPY, no peak-memory load. Falls back to CSV when an admin pins
+    `{"file_type":"csv"}` in source_query (e.g. for projects whose
+    backend can't UNLOAD parquet, or legacy debugging).
     """
     where_filters: List[dict] = field(default_factory=list)
     columns: List[str] = field(default_factory=list)
     changed_since: Optional[str] = None
     changed_until: Optional[str] = None
     limit: Optional[int] = None
+    file_type: str = FILE_TYPE_CSV
+
+    def __post_init__(self):
+        if self.file_type not in _VALID_FILE_TYPES:
+            raise ValueError(
+                f"file_type must be one of {sorted(_VALID_FILE_TYPES)}, "
+                f"got {self.file_type!r}"
+            )
 
     @classmethod
     def from_dict(cls, data: Optional[dict]) -> "ExportFilter":
@@ -85,12 +106,17 @@ class ExportFilter:
             raise ValueError(
                 f"ExportFilter.from_dict expects a dict, got {type(data).__name__}"
             )
+        # Accept both `file_type` (preferred, matches the rest of the
+        # snake_case API) and `fileType` (matches Storage API wire name)
+        # so an admin who copies an example from Apiary docs doesn't trip.
+        ft = data.get("file_type") or data.get("fileType") or FILE_TYPE_CSV
         return cls(
             where_filters=list(data.get("where_filters") or []),
             columns=list(data.get("columns") or []),
             changed_since=data.get("changed_since"),
             changed_until=data.get("changed_until"),
             limit=data.get("limit"),
+            file_type=ft,
         )
 
     def to_export_params(self) -> dict:
@@ -124,6 +150,11 @@ class ExportFilter:
             params["changedUntil"] = self.changed_until
         if self.limit is not None:
             params["limit"] = int(self.limit)
+        # Only emit fileType when non-default — keeps the request body
+        # quiet for legacy callers that never knew about parquet, and
+        # matches the wire-side default behaviour.
+        if self.file_type and self.file_type != FILE_TYPE_CSV:
+            params["fileType"] = self.file_type
         return params
 
 
@@ -292,10 +323,14 @@ class KeboolaStorageClient:
             )
 
         is_sliced = bool(file_info.get("isSliced"))
-        is_gzipped = bool(
-            file_info.get("name", "").endswith(".gz")
-            or file_info.get("isEncrypted") is False  # not encrypted ≠ not gzipped, but defensive
-        )
+        # Gzip detection is name-based only. Snowflake UNLOAD adds the
+        # `.gz` suffix when compression is requested (CSV exports), and
+        # leaves it off otherwise (parquet has its own internal
+        # compression and is served as plain `.parquet`). The previous
+        # `isEncrypted is False` fallback gated on a property that's
+        # orthogonal to compression — it would have flagged parquet
+        # downloads as gzipped and corrupted them at gunzip time.
+        is_gzipped = file_info.get("name", "").endswith(".gz")
 
         dest_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -438,22 +473,27 @@ class KeboolaStorageClient:
         with gzip.open(src, "rb") as gz, open(dest, "wb") as out:
             shutil.copyfileobj(gz, out, length=64 * 1024)
 
-    # ---- high-level: export to local CSV ----------------------------------
+    # ---- high-level: export-async + poll, returning file metadata ---------
 
-    def export_table_to_csv(
+    def prepare_export(
         self,
         table_id: str,
-        dest_csv: Path,
         *,
         export_filter: Optional[ExportFilter] = None,
         export_timeout: float = _DEFAULT_EXPORT_TIMEOUT_SEC,
     ) -> dict:
-        """End-to-end: export-async → poll → download to local CSV.
+        """Run export-async + wait_for_job + file_detail and return the
+        file metadata. Caller decides how to download (single vs
+        sliced) — needed for the parquet path where sliced output must
+        be downloaded slice-by-slice and then DuckDB-merged (cat-style
+        concat would corrupt the per-slice parquet footers).
 
-        Returns a small stats dict so callers can log / record provenance:
-            {"job_id": int, "file_id": int, "rows": int|None, "bytes": int}
+        Returns:
+            {"job_id": int, "file_id": int, "rows": int|None,
+             "file_info": dict, "file_type": str}
         """
-        params = (export_filter or ExportFilter()).to_export_params()
+        f = export_filter or ExportFilter()
+        params = f.to_export_params()
         job_resp = self.export_table_async(table_id, params)
         job_id = job_resp.get("id")
         if not job_id:
@@ -461,7 +501,6 @@ class KeboolaStorageClient:
                 f"export-async response missing job id: {self._redact(job_resp)}",
                 body=job_resp,
             )
-
         job = self.wait_for_job(job_id, timeout=export_timeout)
         results = job.get("results") or {}
         file_id = (results.get("file") or {}).get("id") or results.get("fileId")
@@ -471,15 +510,148 @@ class KeboolaStorageClient:
                 f"{self._redact(job)}",
                 body=job,
             )
-
         file_info = self.file_detail(file_id)
-        self.download_file(file_info, dest_csv)
-        size = dest_csv.stat().st_size if dest_csv.exists() else 0
         return {
             "job_id": int(job_id),
             "file_id": int(file_id),
             "rows": (results.get("totalRowsCount")
                      or results.get("rowsCount")
                      or job.get("totalRowsCount")),
-            "bytes": size,
+            "file_info": file_info,
+            "file_type": f.file_type,
         }
+
+    def download_file_slices(
+        self, file_info: dict, dest_dir: Path
+    ) -> List[Path]:
+        """Download a sliced Storage API export as separate per-slice
+        files into ``dest_dir``. Returns the slice paths in manifest
+        order. Use when the slices must be processed individually
+        (e.g. parquet — each slice is a complete parquet file with its
+        own footer; concatenation would invalidate it). For CSV where
+        concat-with-header-only-on-first-slice is the right thing,
+        ``download_file`` is the correct entry point.
+        """
+        url = file_info.get("url")
+        if not url:
+            raise StorageApiError(
+                f"file detail missing 'url': {self._redact(file_info)}",
+                body=file_info,
+            )
+        if not file_info.get("isSliced"):
+            raise StorageApiError(
+                "download_file_slices called on a non-sliced file_info; "
+                "use download_file for the single-file case"
+            )
+        gcs_token = (file_info.get("gcsCredentials") or {}).get("access_token")
+        m = self.session.get(url, timeout=_DEFAULT_SLICE_DOWNLOAD_TIMEOUT_SEC)
+        m.raise_for_status()
+        manifest = m.json()
+        entries = manifest.get("entries") or []
+        if not entries:
+            raise StorageApiError(
+                f"sliced manifest had no entries: {str(manifest)[:200]}",
+                body=manifest,
+            )
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        slice_paths: List[Path] = []
+        for i, entry in enumerate(entries):
+            surl = entry.get("url")
+            if not surl:
+                raise StorageApiError(
+                    f"slice {i} missing 'url': {str(entry)[:200]}",
+                    body=entry,
+                )
+            # Reuse the same gs:// rewrite + bearer + per-slice gz
+            # heuristics used by the concat path.
+            if surl.startswith("gs://"):
+                if not gcs_token:
+                    raise StorageApiError(
+                        f"slice {i} URL is gs:// but no gcs_token "
+                        f"provided in file_detail.gcsCredentials"
+                    )
+                surl = self._gs_to_https(surl)
+                extra_headers = {"Authorization": f"Bearer {gcs_token}"}
+            else:
+                extra_headers = None
+            gz = ".gz" in surl.split("?")[0].rsplit("/", 1)[-1]
+            sp = dest_dir / f"slice-{i:05d}"
+            self._download_single(
+                surl, sp, gunzip_on_read=gz, extra_headers=extra_headers,
+            )
+            slice_paths.append(sp)
+        return slice_paths
+
+    # ---- high-level: export to local file (csv or parquet) ----------------
+
+    def export_table(
+        self,
+        table_id: str,
+        dest_path: Path,
+        *,
+        export_filter: Optional[ExportFilter] = None,
+        export_timeout: float = _DEFAULT_EXPORT_TIMEOUT_SEC,
+    ) -> dict:
+        """End-to-end: export-async → poll → download to ``dest_path``.
+
+        ``export_filter.file_type`` controls the format Storage API
+        materializes (``csv`` default, ``parquet`` when explicitly set).
+        ``dest_path`` is the local file we write the bytes to; the caller
+        decides the extension. The downloader streams chunks to disk so
+        memory stays bounded regardless of file size.
+
+        For CSV the sliced case is handled transparently — slices are
+        concatenated into ``dest_path`` (header in slice 0 only). For
+        **sliced parquet**, callers must use ``prepare_export`` +
+        ``download_file_slices`` instead — concatenating parquet slices
+        invalidates the per-slice footer. ``export_table`` will raise
+        StorageApiError if it sees a sliced parquet, to fail loud.
+
+        Returns a small stats dict so callers can log / record provenance:
+            {"job_id": int, "file_id": int, "rows": int|None, "bytes": int,
+             "file_type": str}
+        """
+        prep = self.prepare_export(
+            table_id, export_filter=export_filter, export_timeout=export_timeout,
+        )
+        file_info = prep["file_info"]
+        if (
+            prep["file_type"] == FILE_TYPE_PARQUET
+            and file_info.get("isSliced")
+        ):
+            raise StorageApiError(
+                f"sliced parquet export for {table_id}: use "
+                f"prepare_export + download_file_slices and merge with "
+                f"DuckDB COPY (concat would corrupt parquet footers)",
+                body=file_info,
+            )
+        self.download_file(file_info, dest_path)
+        size = dest_path.stat().st_size if dest_path.exists() else 0
+        return {
+            "job_id": prep["job_id"],
+            "file_id": prep["file_id"],
+            "rows": prep["rows"],
+            "bytes": size,
+            "file_type": prep["file_type"],
+        }
+
+    # Backwards-compat alias retained for external callers (e.g. ad-hoc
+    # scripts) that imported the old name. The behavior matches calling
+    # `export_table` with whatever `file_type` the export_filter carries
+    # — the *_to_csv suffix is now imprecise (Storage API can also serve
+    # parquet here), but renaming the import would force unrelated repos
+    # to coordinate. Prefer `export_table` in new code.
+    def export_table_to_csv(
+        self,
+        table_id: str,
+        dest_csv: Path,
+        *,
+        export_filter: Optional[ExportFilter] = None,
+        export_timeout: float = _DEFAULT_EXPORT_TIMEOUT_SEC,
+    ) -> dict:
+        return self.export_table(
+            table_id,
+            dest_csv,
+            export_filter=export_filter,
+            export_timeout=export_timeout,
+        )

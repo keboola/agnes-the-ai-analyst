@@ -17,6 +17,8 @@ import pytest
 import requests
 
 from connectors.keboola.storage_api import (
+    FILE_TYPE_CSV,
+    FILE_TYPE_PARQUET,
     ExportFilter,
     KeboolaStorageClient,
     StorageApiError,
@@ -64,6 +66,30 @@ class TestExportFilter:
         })
         with pytest.raises(ValueError, match="values must be a list"):
             f.to_export_params()
+
+    def test_default_file_type_is_csv_and_omits_param(self):
+        # Wire-side default is csv — preserve old behavior for callers
+        # that never set file_type.
+        assert ExportFilter().file_type == FILE_TYPE_CSV
+        assert "fileType" not in ExportFilter().to_export_params()
+
+    def test_file_type_parquet_emits_fileType_param(self):
+        f = ExportFilter(file_type=FILE_TYPE_PARQUET)
+        assert f.to_export_params()["fileType"] == "parquet"
+
+    def test_from_dict_reads_file_type_snake_case(self):
+        f = ExportFilter.from_dict({"file_type": "parquet"})
+        assert f.file_type == "parquet"
+        assert f.to_export_params()["fileType"] == "parquet"
+
+    def test_from_dict_reads_fileType_camel_case_alias(self):
+        # Operators copying examples from Apiary docs ship the wire name.
+        f = ExportFilter.from_dict({"fileType": "parquet"})
+        assert f.file_type == "parquet"
+
+    def test_from_dict_invalid_file_type_raises(self):
+        with pytest.raises(ValueError, match="file_type"):
+            ExportFilter.from_dict({"file_type": "orc"})
 
 
 # ---- HTTP client low-level -------------------------------------------------
@@ -329,3 +355,125 @@ class TestExportTableToCsv:
 
         with pytest.raises(StorageApiError, match="no result file"):
             c.export_table_to_csv("in.c-x.t", tmp_path / "x")
+
+
+# ---- prepare_export + download_file_slices (parquet path) ------------------
+
+class TestParquetPath:
+    def test_parquet_request_emits_fileType_in_post_body(self, tmp_path):
+        sess = MagicMock()
+        sess.post.return_value = _mock_response(200, {"id": 100})
+        sess.get.side_effect = [
+            _mock_response(200, {
+                "id": 100, "status": "success",
+                "results": {"file": {"id": 200}, "totalRowsCount": 3},
+            }),
+            _mock_response(200, {
+                "id": 200, "url": "https://signed/x.parquet",
+                "name": "x.parquet", "isSliced": False,
+            }),
+        ]
+        c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
+
+        prep = c.prepare_export(
+            "in.c-x.t",
+            export_filter=ExportFilter(file_type=FILE_TYPE_PARQUET),
+        )
+
+        assert prep["file_type"] == "parquet"
+        assert prep["file_info"]["isSliced"] is False
+        assert sess.post.call_args.kwargs["data"]["fileType"] == "parquet"
+
+    def test_export_table_rejects_sliced_parquet(self, tmp_path):
+        """Concatenating sliced parquet would corrupt per-slice footers.
+        ``export_table`` must fail loud and direct callers at
+        ``download_file_slices``."""
+        sess = MagicMock()
+        sess.post.return_value = _mock_response(200, {"id": 1})
+        sess.get.side_effect = [
+            _mock_response(200, {
+                "id": 1, "status": "success",
+                "results": {"file": {"id": 2}},
+            }),
+            _mock_response(200, {
+                "id": 2, "url": "https://signed/manifest.json",
+                "name": "x.parquet", "isSliced": True,
+            }),
+        ]
+        c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
+
+        with pytest.raises(StorageApiError, match="sliced parquet"):
+            c.export_table(
+                "in.c-x.t", tmp_path / "x.parquet",
+                export_filter=ExportFilter(file_type=FILE_TYPE_PARQUET),
+            )
+
+    def test_download_file_slices_returns_per_slice_paths(self, tmp_path):
+        sess = MagicMock()
+
+        manifest_resp = MagicMock()
+        manifest_resp.json.return_value = {
+            "entries": [
+                {"url": "https://signed/slice-0"},
+                {"url": "https://signed/slice-1"},
+            ],
+        }
+        manifest_resp.raise_for_status = MagicMock()
+
+        def mk_chunk_resp(payload: bytes):
+            r = MagicMock()
+            r.__enter__ = MagicMock(return_value=r)
+            r.__exit__ = MagicMock(return_value=False)
+            r.iter_content.return_value = [payload]
+            r.raise_for_status = MagicMock()
+            return r
+
+        slice0 = mk_chunk_resp(b"PAR1...slice0...")
+        slice1 = mk_chunk_resp(b"PAR1...slice1...")
+        sess.get.side_effect = [manifest_resp, slice0, slice1]
+
+        c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
+        paths = c.download_file_slices(
+            {"url": "https://signed/manifest.json", "isSliced": True,
+             "name": "x.parquet"},
+            tmp_path / "slices",
+        )
+
+        assert len(paths) == 2
+        assert paths[0].read_bytes() == b"PAR1...slice0..."
+        assert paths[1].read_bytes() == b"PAR1...slice1..."
+        # Naming preserves manifest order — required for deterministic
+        # downstream merge.
+        assert paths[0].name < paths[1].name
+
+    def test_download_file_slices_refuses_non_sliced(self):
+        c = KeboolaStorageClient(url="https://kbc", token="t",
+                                  session=MagicMock())
+        with pytest.raises(StorageApiError, match="non-sliced"):
+            c.download_file_slices(
+                {"url": "https://x", "isSliced": False}, Path("/tmp/x"),
+            )
+
+    def test_parquet_download_does_not_gunzip_plain_parquet(self, tmp_path):
+        """Regression: previous heuristic flagged any unencrypted file as
+        gzipped, which would corrupt parquet downloads at gunzip time.
+        Verify a `.parquet` file is written through unmodified."""
+        sess = MagicMock()
+        single_resp = MagicMock()
+        single_resp.__enter__ = MagicMock(return_value=single_resp)
+        single_resp.__exit__ = MagicMock(return_value=False)
+        # Real parquet magic bytes — not valid gzip, would crash gunzip.
+        single_resp.iter_content.return_value = [b"PAR1\x00\x00\x00binary"]
+        single_resp.raise_for_status = MagicMock()
+        sess.get.return_value = single_resp
+
+        c = KeboolaStorageClient(url="https://kbc", token="t", session=sess)
+        dest = tmp_path / "out.parquet"
+        c.download_file({
+            "url": "https://signed/x.parquet",
+            "name": "x.parquet",
+            "isSliced": False,
+            "isEncrypted": False,
+        }, dest)
+
+        assert dest.read_bytes() == b"PAR1\x00\x00\x00binary"

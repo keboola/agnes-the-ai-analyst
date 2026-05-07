@@ -71,7 +71,7 @@ def materialize_query(
     # Lazy import to avoid pulling `requests` at module import time when only
     # the sync trigger imports `extractor` for `run()`.
     from connectors.keboola.storage_api import (
-        ExportFilter, KeboolaStorageClient,
+        FILE_TYPE_CSV, FILE_TYPE_PARQUET, ExportFilter, KeboolaStorageClient,
     )
 
     if storage_client is None:
@@ -84,8 +84,8 @@ def materialize_query(
 
     # Filter spec is optional. Admin can register a row with no
     # source_query at all (= full-table export), or with a JSON object
-    # describing whereFilters / columns / changedSince.
-    export_filter = ExportFilter()
+    # describing whereFilters / columns / changedSince / file_type.
+    payload: dict = {}
     if source_query:
         try:
             payload = json.loads(source_query)
@@ -93,7 +93,17 @@ def materialize_query(
             raise ValueError(
                 f"source_query for {table_id} is not valid JSON: {e}"
             ) from e
-        export_filter = ExportFilter.from_dict(payload)
+    export_filter = ExportFilter.from_dict(payload)
+
+    # Default the materialized path to parquet — Storage API serves it
+    # via native Snowflake UNLOAD, the extractor renames it into place,
+    # no CSV intermediate, no DuckDB COPY, no peak-memory load. Admin
+    # can pin `{"file_type":"csv"}` in source_query to fall back (legacy
+    # debugging, or projects whose backend can't UNLOAD parquet — none
+    # known today, but the escape hatch costs nothing). Only override
+    # when the admin spec didn't *explicitly* set a file_type.
+    if "file_type" not in payload and "fileType" not in payload:
+        export_filter.file_type = FILE_TYPE_PARQUET
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -102,66 +112,121 @@ def materialize_query(
     if tmp_parquet.exists():
         tmp_parquet.unlink()
 
-    # Per-call temp dir for the intermediate CSV — separates concurrent
-    # exports cleanly without the os.chdir() race the kbcstorage SDK has.
+    # Per-call temp dir for the intermediate file (CSV or parquet) —
+    # separates concurrent exports cleanly without the os.chdir() race
+    # the kbcstorage SDK has.
     import tempfile
     with tempfile.TemporaryDirectory(prefix=f"kbc-export-{table_id}-") as tmpdir:
-        csv_path = Path(tmpdir) / f"{table_id}.csv"
-
         full_table_id = f"{bucket}.{source_table}"
-        stats = storage_client.export_table_to_csv(
-            full_table_id, csv_path, export_filter=export_filter,
-        )
 
-        if not csv_path.exists() or csv_path.stat().st_size == 0:
-            # Storage API succeeded but produced no rows — log instead of
-            # crashing. An admin filter that legitimately matches nothing
-            # is a valid scenario; the registry row stays "ok" so the
-            # next sync can pick up new data.
-            logger.warning(
-                "Storage API export for %s returned no data (filter may be "
-                "too restrictive)",
-                full_table_id,
+        if export_filter.file_type == FILE_TYPE_PARQUET:
+            # Native parquet path. Storage API serves Snowflake UNLOAD
+            # output directly. Two shapes to handle:
+            #
+            # 1. **Single file** (small exports): file_info.url points at
+            #    one signed URL; download to tmp_parquet and we're done.
+            # 2. **Sliced** (large exports — Snowflake UNLOAD respects
+            #    MAX_FILE_SIZE, default 16 MiB, so anything past that
+            #    arrives as a manifest of N parquet slices). Each slice
+            #    is itself a complete parquet file with its own footer;
+            #    naively concatenating them like CSV would be invalid.
+            #    We download all slices into the per-call tempdir, then
+            #    DuckDB-COPY across `read_parquet([slice1, slice2, ...])`
+            #    into one consolidated tmp_parquet. DuckDB streams row
+            #    groups during this consolidation — peak memory is one
+            #    row group (~1 MiB), not the full table.
+            stats = storage_client.prepare_export(
+                full_table_id, export_filter=export_filter,
             )
-            # Write an empty parquet so the orchestrator doesn't choke on
-            # a missing file. DuckDB's `read_csv(... empty.csv)` would
-            # error; build a 0-row parquet from a SELECT with no rows.
-            duckdb.connect().execute(
-                f"COPY (SELECT 1 AS _empty WHERE FALSE) TO '{tmp_parquet}' (FORMAT PARQUET)"
-            ).close()
-        else:
-            # CSV → parquet via DuckDB. `all_varchar=True` matches the
-            # legacy client's behavior — preserves the source's exact
-            # character data without DuckDB's type inference rewriting
-            # numeric-looking strings (e.g. "Non-Manager") as NULL.
-            #
-            # `max_line_size=64MB` overrides DuckDB's default 2 MB cap on
-            # any single CSV line. Keboola tables that store embedded
-            # JSON / SQL transformation bodies routinely have multi-MB
-            # cells (e.g. `kbc_component_configuration` rows ship full
-            # Snowflake transformation SQL inline as a JSON column value);
-            # the default 2 MB ceiling rejects them with
-            # `Maximum line size of 2000000 bytes exceeded`.
-            #
-            # 64 MB is generous enough to absorb any reasonable embedded
-            # blob without becoming a memory footgun: DuckDB allocates a
-            # single buffer of this size during line scanning, and one
-            # buffer per worker thread. At 64 MB × default 1 thread per
-            # extractor process = bounded peak.
-            safe_csv = str(csv_path).replace("'", "''")
-            safe_tmp = str(tmp_parquet).replace("'", "''")
-            try:
-                conv = duckdb.connect()
-                conv.execute(
-                    f"COPY (SELECT * FROM read_csv('{safe_csv}', "
-                    f"all_varchar=true, max_line_size=67108864)) "
-                    f"TO '{safe_tmp}' (FORMAT PARQUET)"
+            file_info = stats["file_info"]
+            if file_info.get("isSliced"):
+                slice_dir = Path(tmpdir) / "slices"
+                slice_paths = storage_client.download_file_slices(
+                    file_info, slice_dir
                 )
-                conv.close()
-            except Exception:
-                if tmp_parquet.exists():
-                    tmp_parquet.unlink()
-                raise
+                if not slice_paths:
+                    raise RuntimeError(
+                        f"sliced parquet export for {full_table_id} "
+                        f"yielded no slices"
+                    )
+                quoted = ", ".join(
+                    "'" + str(p).replace("'", "''") + "'" for p in slice_paths
+                )
+                safe_tmp = str(tmp_parquet).replace("'", "''")
+                conv = duckdb.connect()
+                try:
+                    conv.execute(
+                        f"COPY (SELECT * FROM read_parquet([{quoted}])) "
+                        f"TO '{safe_tmp}' (FORMAT PARQUET)"
+                    )
+                finally:
+                    conv.close()
+            else:
+                storage_client.download_file(file_info, tmp_parquet)
+                stats["bytes"] = (
+                    tmp_parquet.stat().st_size if tmp_parquet.exists() else 0
+                )
+
+            if not tmp_parquet.exists() or tmp_parquet.stat().st_size == 0:
+                logger.warning(
+                    "Storage API parquet export for %s returned no data "
+                    "(filter may be too restrictive)",
+                    full_table_id,
+                )
+                # Empty placeholder parquet so the orchestrator doesn't
+                # choke on a missing file.
+                duckdb.connect().execute(
+                    f"COPY (SELECT 1 AS _empty WHERE FALSE) TO '{tmp_parquet}' (FORMAT PARQUET)"
+                ).close()
+        else:
+            # Legacy CSV path. Kept for the explicit `{"file_type":"csv"}`
+            # opt-in. Slower (CSV parse + parquet rewrite) and
+            # memory-heavier (DuckDB pulls the CSV into a buffer with
+            # max_line_size headroom), but doesn't depend on Storage
+            # API parquet support if a future project backend lacks it.
+            csv_path = Path(tmpdir) / f"{table_id}.csv"
+            stats = storage_client.export_table(
+                full_table_id, csv_path, export_filter=export_filter,
+            )
+            if not csv_path.exists() or csv_path.stat().st_size == 0:
+                logger.warning(
+                    "Storage API CSV export for %s returned no data "
+                    "(filter may be too restrictive)",
+                    full_table_id,
+                )
+                duckdb.connect().execute(
+                    f"COPY (SELECT 1 AS _empty WHERE FALSE) TO '{tmp_parquet}' (FORMAT PARQUET)"
+                ).close()
+            else:
+                # CSV → parquet via DuckDB. `all_varchar=True` matches the
+                # legacy client's behavior — preserves the source's exact
+                # character data without DuckDB's type inference rewriting
+                # numeric-looking strings (e.g. "Non-Manager") as NULL.
+                #
+                # `max_line_size=64MB` overrides DuckDB's default 2 MB cap
+                # on any single CSV line. Keboola tables that store
+                # embedded JSON / SQL transformation bodies routinely
+                # have multi-MB cells (e.g. `kbc_component_configuration`
+                # rows ship full Snowflake transformation SQL inline as
+                # a JSON column value); the default 2 MB ceiling rejects
+                # them with `Maximum line size of 2000000 bytes
+                # exceeded`. 64 MB is generous enough to absorb any
+                # reasonable embedded blob; DuckDB allocates a single
+                # buffer of this size per worker thread.
+                safe_csv = str(csv_path).replace("'", "''")
+                safe_tmp = str(tmp_parquet).replace("'", "''")
+                try:
+                    conv = duckdb.connect()
+                    conv.execute(
+                        f"COPY (SELECT * FROM read_csv('{safe_csv}', "
+                        f"all_varchar=true, max_line_size=67108864)) "
+                        f"TO '{safe_tmp}' (FORMAT PARQUET)"
+                    )
+                    conv.close()
+                except Exception:
+                    if tmp_parquet.exists():
+                        tmp_parquet.unlink()
+                    raise
 
     # Row count from the parquet, not from `stats["rows"]` — Storage API
     # sometimes omits totalRowsCount on small results, and the parquet is
