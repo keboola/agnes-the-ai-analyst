@@ -1415,7 +1415,7 @@ class RegisterTableRequest(BaseModel):
 
     @model_validator(mode="after")
     def _check_strategy_invariants(self):
-        """v26 conflict policy + per-strategy required-field rules.
+        """v27 conflict policy + per-strategy required-field rules.
 
         Reject combinations that are silently broken at the extractor
         layer rather than letting the row land in the registry and
@@ -1427,6 +1427,14 @@ class RegisterTableRequest(BaseModel):
           temporal filtering; layering server-side row filters on top is
           not supported by the extractor (legacy repo silently drops
           filters in this combination — match the rejection here).
+        - partitioned + where_filters → 400. extract_partitioned does
+          not thread where_filters through to its chunked downloads;
+          accepting the pair would persist a filter that gets silently
+          ignored at sync time (Devin Review concern). Reject explicitly
+          until threading lands.
+        - query_mode='remote' + where_filters → 400. _extract_via_extension
+          (the remote/extension path) doesn't take a filters argument;
+          accepting would silently drop them.
         """
         if self.sync_strategy == "partitioned":
             if not self.partition_by:
@@ -1438,6 +1446,14 @@ class RegisterTableRequest(BaseModel):
                     "sync_strategy='partitioned' is incompatible with query_mode='remote' "
                     "— partitioned writes per-partition parquet files locally"
                 )
+            if self.where_filters:
+                raise ValueError(
+                    "sync_strategy='partitioned' is incompatible with where_filters "
+                    "in v27 — extract_partitioned does not thread where_filters "
+                    "through its chunked downloads; the filter would be silently "
+                    "ignored. Use 'full_refresh' for filter+full-overwrite, or "
+                    "wait for partitioned + where_filters wiring in a future PR."
+                )
             if not self.partition_granularity:
                 self.partition_granularity = "month"
 
@@ -1446,7 +1462,19 @@ class RegisterTableRequest(BaseModel):
                 "sync_strategy='incremental' is incompatible with where_filters "
                 "— changedSince already filters temporally; layering whereFilters "
                 "on top is silently dropped by the extractor (use 'full_refresh' "
-                "or 'partitioned' if you need where_filters)"
+                "for filter+full-overwrite)"
+            )
+
+        # query_mode='remote' + where_filters: the DuckDB Keboola extension
+        # path does not consume whereFilters. Accepting would silently drop
+        # them at sync time. Caller must use query_mode='local' (Direct
+        # extract) to apply filters.
+        if self.query_mode == "remote" and self.where_filters:
+            raise ValueError(
+                "query_mode='remote' is incompatible with where_filters "
+                "— the DuckDB Keboola extension does not expose whereFilters. "
+                "Use query_mode='local' (Direct extract) to apply server-side "
+                "row filters."
             )
 
         return self

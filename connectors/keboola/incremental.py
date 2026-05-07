@@ -100,6 +100,23 @@ def merge_parquet(
     new_csv = Path(new_csv)
 
     existing_df = pq.read_table(existing_parquet).to_pandas()
+    # Memory-pressure heuristic. pandas concat + drop_duplicates loads
+    # both sides into RAM; large slowly-changing tables can OOM the
+    # extractor subprocess. Surface a WARNING at the merge call site —
+    # operators see the signal at the point the work is happening
+    # instead of post-mortem after a kill. 5M rows is roughly 0.5-2 GB
+    # depending on column count + dtype mix; for tables that consistently
+    # cross this, switch to sync_strategy='partitioned' (per-partition
+    # merge keeps memory bounded).
+    if len(existing_df) > 5_000_000:
+        logger.warning(
+            "merge: %s has %d existing rows — pandas merge loads the full "
+            "parquet + delta into RAM and may OOM. Consider switching this "
+            "table to sync_strategy='partitioned' (per-partition merge "
+            "keeps memory bounded). See CHANGELOG ### Internal for the "
+            "OOM caveat.",
+            existing_parquet.name, len(existing_df),
+        )
 
     delta_df = pd.read_csv(new_csv, dtype=str)
     if dtypes:

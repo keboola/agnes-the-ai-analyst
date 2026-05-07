@@ -10,14 +10,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-<<<<<<< HEAD
 ### Added
 
 - **feat(keboola)**: per-table sync strategies. The Keboola extractor now
   dispatches by `sync_strategy` ∈ {`full_refresh` (default, unchanged
   behavior), `incremental`, `partitioned`}. Existing tables stay on
   `full_refresh` after the migration; admins opt individual tables in
-  via `agnes admin register-table --sync-strategy ...` or
+  via the **Direct extract (Storage API)** radio in the Keboola
+  Register/Edit modals at `/admin/tables`, or via
+  `agnes admin register-table --sync-strategy ...`, or
   `POST /api/admin/registry`.
   - **`incremental`**: Storage API `changedSince` pulls only rows changed
     since the last successful sync, merges into the existing parquet by
@@ -25,8 +26,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
     `--incremental-window-days` (backtrack window applied to last_sync,
     default 7), `--max-history-days` (cap on first-sync history depth).
     Cuts daily extraction from O(full table) to O(delta) for opted-in
-    tables. The DuckDB Keboola extension does not expose `changedSince`,
-    so incremental tables are extracted via the SDK path with typed parquet.
+    tables.
   - **`partitioned`**: per-partition parquet files (flat layout
     `data/<table>/<key>.parquet`, e.g. `2026_05.parquet`) keyed by
     `--partition-by` column with `--partition-granularity` ∈ {day, month
@@ -43,57 +43,81 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   placeholders resolve at sync time: `{{today}}`, `{{last_week}}`,
   `{{last_month}}`, `{{last_2_months}}`, `{{last_3_months}}`,
   `{{last_6_months}}`, `{{last_year}}`, `{{last_2_years}}`,
-  `{{start_of_3_months_ago}}`. Set via
-  `agnes admin register-table --where-filters-json '@filters.json'` or
-  the `where_filters` body field on `POST /api/admin/registry`. Tables
-  with filters are extracted via the SDK path (the DuckDB Keboola
-  extension does not expose `whereFilters`).
+  `{{start_of_3_months_ago}}`. Set via the v27 admin form, the CLI
+  (`agnes admin register-table --where-filters-json '@filters.json'`),
+  or `POST /api/admin/registry`. Filters are forwarded as `ExportFilter`
+  to `KeboolaStorageClient.export_table_to_csv`, then the Storage API
+  applies them server-side before signing the parquet/CSV file.
+- **feat(admin/ui)**: third **Direct extract (Storage API)** radio added
+  to the Keboola Register and Edit modals at `/admin/tables`, alongside
+  the existing **Whole table (extension)** and **Custom SQL** options.
+  When selected, exposes the per-strategy v27 panel: `sync_strategy`
+  dropdown plus conditional fields per choice (window/history days for
+  incremental + partitioned; partition_by/granularity/chunk_days for
+  partitioned; where_filters JSON textarea for full_refresh +
+  partitioned). PUT semantics fix lets the Edit modal switch a
+  partitioned row back to full_refresh and have the stale
+  partition_by / partition_granularity actually clear.
 
 ### Fixed
 
-- **fix(keboola/legacy)**: legacy SDK extraction path (the fallback used
-  when the DuckDB Keboola extension errors, e.g. on alias tables hitting
-  QueryService permission errors per `keboola/duckdb-extension#17`) now
-  preserves column types from Keboola Storage metadata via the provider
-  cascade (`user > ai-metadata-enrichment > keboola.snowflake-transformation`)
+- **fix(keboola/legacy)**: the Storage API export-async path (used since
+  v0.46.0 for all Keboola extraction) now preserves column types from
+  Keboola Storage metadata via the provider cascade
+  (`user > ai-metadata-enrichment > keboola.snowflake-transformation`)
   instead of flattening every column to VARCHAR. Invalid date strings
   (`'0000-00-00'`) and invalid numeric strings (`'Non-Manager'`) become
   NULL while keeping the column's typed schema. Falls back to string
-  typing only when the Keboola Storage metadata API is unreachable. The
-  DuckDB extension path is unchanged — it already returns typed columns.
+  typing only when the Keboola Storage metadata API is unreachable.
 
 ### Changed
 
-- **schema migration v25 → v26**: adds 7 columns to `table_registry`
+- **schema migration v26 → v27**: adds 7 columns to `table_registry`
   (`incremental_window_days`, `max_history_days`, `incremental_column`,
   `where_filters`, `partition_by`, `partition_granularity`,
   `initial_load_chunk_days`). All NULL on existing rows; meaningful only
   when paired with the matching `sync_strategy`. The existing
-  `sync_strategy` column (default `'full_refresh'`) is reused — pre-v26
-  it was inert catalog metadata; post-v26 the extractor dispatches off it.
+  `sync_strategy` column (default `'full_refresh'`) is reused — pre-v27
+  it was inert catalog metadata; post-v27 the extractor dispatches off it.
+  Layered on top of v26's local→materialized unification: admins can opt
+  specific tables back to `query_mode='local'` (Direct extract) to enable
+  the new dispatcher.
 - **feat(admin/api)**: `RegisterTableRequest` enforces `sync_strategy ∈
   {full_refresh, incremental, partitioned}` and rejects conflicting
   combinations with HTTP 422:
-  `incremental + where_filters` (changedSince already filters temporally;
-  legacy repo silently dropped filters in this combo) and
-  `partitioned + query_mode='remote'` (partitioned writes parquets locally).
-  `partitioned` requires `partition_by`; `partition_granularity` defaults
-  to `'month'` when omitted.
+  - `incremental + where_filters` (changedSince already filters temporally)
+  - `partitioned + query_mode='remote'` (partitioned writes parquets locally)
+  - `partitioned + where_filters` (extract_partitioned does not thread
+    filters through chunked downloads in v27 — would silently drop)
+  - `query_mode='remote' + where_filters` (the DuckDB Keboola extension
+    does not expose whereFilters — would silently drop)
+  - `partitioned` requires `partition_by`; `partition_granularity`
+    defaults to `'month'` when omitted.
+- **PUT semantics**: `update_table` (`PUT /api/admin/registry/{id}`)
+  switched from `model_dump() | filter_none` to `model_dump(exclude_unset
+  =True)`. Explicit `null` in a PUT body now CLEARS the field instead of
+  being silently ignored. Required for the Edit modal to switch a
+  partitioned row back to full_refresh and clear the stale partition_by.
+  Pre-v27 callers that relied on `null` meaning "no-op" should switch to
+  omitting the field instead — the Edit modal's pre-populate JSON-encodes
+  the existing value back so this is transparent.
 
 ### Internal
 
 - **memory**: `merge_parquet` and `merge_partition` use
   `pd.concat` + `drop_duplicates`, loading both existing parquet and
-  delta into pandas RAM. For tables in the multi-million-row range this
-  may OOM. Switch to `partitioned` strategy for those — per-partition
-  merge keeps memory bounded.
-- **deferred**: HTML form template (`app/web/templates/admin_tables.html`)
-  not updated to surface the new fields. Admin currently uses
-  `agnes admin register-table` flags or `curl POST /api/admin/registry`.
-  The API accepts the new fields with defaults so the existing JS
-  frontend continues to work — fields just stay NULL for tables
-  registered through the UI.
-=======
+  delta into pandas RAM. The merge call site logs a `WARNING` when the
+  existing parquet exceeds 5M rows so operators see the signal at the
+  point the work happens, not post-mortem after a SIGKILL. Switch to
+  `partitioned` strategy for tables that consistently cross the
+  threshold — per-partition merge keeps memory bounded.
+- **rollback**: the v27 column adds use `ALTER TABLE ... ADD COLUMN IF
+  NOT EXISTS` and are idempotent. A deployment that lands v27 then
+  reverts to v0.46.0 leaves the new columns in the schema as harmless
+  NULLs (the v0.46.0 binary doesn't reference them); the
+  `schema_version` row's downgrade path is a no-op (`current >
+  SCHEMA_VERSION` skips the migration ladder, see `_ensure_schema`).
+
 ## [0.46.0] — 2026-05-07
 
 Keboola cutover bundle: native parquet on the materialized sync,
@@ -165,7 +189,6 @@ extension).
 ### Internal
 
 - `infra/modules/customer-instance` (tag `infra-v1.8.0`): `startup-script.sh.tpl` no longer overwrites operator-edited `AGNES_TAG` / `AGNES_TEMP_DIR` in `/opt/agnes/.env` on every boot. Reads the existing values when present and lets them win over the template-computed `$IMAGE_TAG`. Pre-fix, an in-place TF action that stopped/started the VM (e.g. `machine_type` change) would re-run the startup script and clobber any manually-pinned image tag — operators had to re-edit the file post-restart. Fresh provisions still get the TF-driven values; the `.env` file's existence is the disambiguator. To force a TF-driven reset, `rm /opt/agnes/.env` and reboot.
->>>>>>> origin/main
 
 ## [0.45.0] — 2026-05-07
 

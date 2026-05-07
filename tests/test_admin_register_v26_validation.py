@@ -122,15 +122,31 @@ def test_full_refresh_with_where_filters_accepted():
     assert req.where_filters[0]["column"] == "date"
 
 
-def test_partitioned_with_where_filters_accepted():
-    req = RegisterTableRequest(**_base(
-        sync_strategy="partitioned",
-        partition_by="date",
-        where_filters=[
-            {"column": "date", "operator": "ge", "values": ["{{last_year}}"]},
-        ],
-    ))
-    assert req.where_filters[0]["values"] == ["{{last_year}}"]
+def test_partitioned_with_where_filters_rejected():
+    """v27 conflict policy: extract_partitioned does not thread where_filters
+    through its chunked downloads, so accepting the pair would silently drop
+    the filter at sync time. Reject at registration until threading lands."""
+    with pytest.raises(ValidationError, match="partitioned.*where_filters|where_filters.*partitioned"):
+        RegisterTableRequest(**_base(
+            sync_strategy="partitioned",
+            partition_by="date",
+            where_filters=[
+                {"column": "date", "operator": "ge", "values": ["{{last_year}}"]},
+            ],
+        ))
+
+
+def test_remote_query_mode_with_where_filters_rejected():
+    """v27 conflict policy: the DuckDB Keboola extension (query_mode='remote'
+    path) does not expose whereFilters. Reject explicitly so admin sees the
+    mismatch at registration instead of finding zero rows applied at sync."""
+    with pytest.raises(ValidationError, match="remote.*where_filters|where_filters"):
+        RegisterTableRequest(**_base(
+            query_mode="remote",
+            where_filters=[
+                {"column": "date", "operator": "ge", "values": ["2026-01-01"]},
+            ],
+        ))
 
 
 # ───────────────────────────── where_filters shape validation ─────────────────

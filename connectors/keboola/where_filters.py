@@ -62,7 +62,11 @@ def _resolve_one(value: Any, now: datetime) -> Any:
     if "{{" not in value:
         return value
     out = value
-    for token in SUPPORTED_PLACEHOLDERS:
+    # Sort by length descending so longer placeholders (e.g. {{last_2_years}})
+    # are substituted before any shorter prefix-overlap (e.g. {{last_2_months}}).
+    # `frozenset` iteration order is non-deterministic; explicit sort makes the
+    # contract clear even if the current placeholder set has no actual overlap.
+    for token in sorted(SUPPORTED_PLACEHOLDERS, key=len, reverse=True):
         if token in out:
             out = out.replace(token, _placeholder_value(token, now))
     if "{{" in out:
