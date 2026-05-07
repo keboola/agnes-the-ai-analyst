@@ -10,29 +10,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-## [0.46.3] — 2026-05-07
-
-### Added
-
-- `agnes init` now installs a third SessionStart hook entry (`agnes push --quiet`) so orphan session JSONLs left behind by `claude -p` headless invocations (where Claude Code does NOT fire SessionEnd) or abnormal exits get uploaded on the next interactive session start. Symmetric self-healing alongside the existing `agnes pull` SessionStart entry. Existing workspaces pick up the third entry on their next `agnes init` invocation via the existing migration path in `cli/lib/hooks.py:_OUR_COMMAND_MARKERS`.
-
-### Fixed
-
-- `agnes diagnose` `session_pipeline` warning previously read "uploads are not being processed", which led users to suspect their `agnes push` uploads were failing. The warning now reads "verification-detector backlog" and includes `last_processed` so operators see at a glance that uploads are fine and only the LLM extraction step is behind.
-
-## [0.46.2] — 2026-05-07
-
-### Fixed
-
-- `agnes query` against a `query_mode='remote'` table previously surfaced DuckDB's misleading "did you mean <similar materialized table>" suggestion. Now appends a friendlier hint pointing users to `agnes catalog`, `agnes schema <id>`, and `agnes query --remote`. Reproduces from a real analyst session where `DESCRIBE unit_economics` (a remote table) sent the user down a 30-second wrong path.
-
-## [0.46.1] — 2026-05-07
-
-### Fixed
-
-- `remote_estimate_failed` now surfaces the rewritten-SQL diagnostic (the actual BQ "Unrecognized name" / "Syntax error" message) instead of the unhelpful "Table must be qualified" from the user-original-SQL retry. Adds `underlying_original` for the second-attempt context. Hint now points users to `agnes schema <id>` first — the typical cause is a typo'd column name.
-
-## [0.46.0] — 2026-05-07
+## [0.47.0] — 2026-05-07
 
 Catalog metadata enrichment + cache discipline + automatic warmup.
 Closes #155 + #156.
@@ -113,6 +91,28 @@ Closes #155 + #156.
   `test_connectors_keboola_metadata`, `test_v2_catalog_remote_metadata`,
   `test_v2_catalog_invalidation`, `test_cache_warmup`,
   `test_main_startup_warmup`, `test_admin_tables_warmup_ui`.
+
+## [0.46.3] — 2026-05-07
+
+### Added
+
+- `agnes init` now installs a third SessionStart hook entry (`agnes push --quiet`) so orphan session JSONLs left behind by `claude -p` headless invocations (where Claude Code does NOT fire SessionEnd) or abnormal exits get uploaded on the next interactive session start. Symmetric self-healing alongside the existing `agnes pull` SessionStart entry. Existing workspaces pick up the third entry on their next `agnes init` invocation via the existing migration path in `cli/lib/hooks.py:_OUR_COMMAND_MARKERS`.
+
+### Fixed
+
+- `agnes diagnose` `session_pipeline` warning previously read "uploads are not being processed", which led users to suspect their `agnes push` uploads were failing. The warning now reads "verification-detector backlog" and includes `last_processed` so operators see at a glance that uploads are fine and only the LLM extraction step is behind.
+
+## [0.46.2] — 2026-05-07
+
+### Fixed
+
+- `agnes query` against a `query_mode='remote'` table previously surfaced DuckDB's misleading "did you mean <similar materialized table>" suggestion. Now appends a friendlier hint pointing users to `agnes catalog`, `agnes schema <id>`, and `agnes query --remote`. Reproduces from a real analyst session where `DESCRIBE unit_economics` (a remote table) sent the user down a 30-second wrong path.
+
+## [0.46.1] — 2026-05-07
+
+### Fixed
+
+- `remote_estimate_failed` now surfaces the rewritten-SQL diagnostic (the actual BQ "Unrecognized name" / "Syntax error" message) instead of the unhelpful "Table must be qualified" from the user-original-SQL retry. Adds `underlying_original` for the second-attempt context. Hint now points users to `agnes schema <id>` first — the typical cause is a typo'd column name.
 
 ## [0.45.0] — 2026-05-07
 
