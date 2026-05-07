@@ -278,6 +278,63 @@ def materialize_query(
     }
 
 
+def _read_last_sync_for_tc(tc: Dict[str, Any]):
+    """Resolve last_sync for an incremental/partitioned table_config.
+
+    Two paths, in order of preference:
+    1. `__last_sync__` injected by the parent server before subprocess
+       spawn (see app/api/sync.py:_run_sync) — this is the canonical
+       path because the subprocess holds no DuckDB lock.
+    2. Direct sync_state read — only safe in same-process callers
+       (tests, in-process sync). The subprocess path errors out with
+       "Conflicting lock is held" because the web server keeps an
+       open write handle on system.duckdb.
+
+    Returns None when no prior sync (treat error state as never-synced
+    so the next attempt redownloads from max_history_days, not a stale
+    watermark from a half-finished run).
+
+    Tests stub this directly (`monkeypatch.setattr(extractor, "_read_last_sync_for_tc", ...)`).
+    Pre-v26 fallback name `_read_last_sync` retained for monkeypatching tests.
+    """
+    injected = tc.get("__last_sync__")
+    if injected is not None:
+        if isinstance(injected, str):
+            from datetime import datetime
+            try:
+                return datetime.fromisoformat(injected)
+            except ValueError:
+                return None
+        return injected
+
+    # Direct DB read — same-process fallback only.
+    try:
+        from src.db import get_system_db
+        from src.repositories.sync_state import SyncStateRepository
+
+        conn = get_system_db()
+        try:
+            repo = SyncStateRepository(conn)
+            state = repo.get_table_state(tc.get("id") or tc.get("name"))
+            if not state or state.get("status") == "error":
+                return None
+            return state.get("last_sync")
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning(
+            "_read_last_sync_for_tc fallback failed for %s (%s); "
+            "treating as first sync",
+            tc.get("id") or tc.get("name"), e,
+        )
+        return None
+
+
+# Back-compat alias for tests written against the pre-v26 name.
+def _read_last_sync(table_id: str):
+    return _read_last_sync_for_tc({"id": table_id})
+
+
 def _create_meta_table(conn: duckdb.DuckDBPyConnection) -> None:
     """Create the _meta table required by the extract.duckdb contract."""
     conn.execute("DROP TABLE IF EXISTS _meta")
@@ -425,10 +482,116 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
                 stats["tables_extracted"] += 1
                 continue
 
+            # v26 dispatcher: route per-table by sync_strategy.
+            # API-layer validators reject conflicting combinations
+            # (incremental + where_filters, partitioned + remote) before
+            # rows reach this point — here we trust tc and dispatch.
+            sync_strategy = tc.get("sync_strategy") or "full_refresh"
+
+            # Resolve where_filters once for any strategy that supports them.
+            # Storage API extension does not expose whereFilters, so any
+            # filter forces the SDK path. Resolution happens here so a
+            # placeholder typo surfaces as a per-table error, not silent.
+            resolved_filters = None
+            raw_filters = tc.get("where_filters")
+            if raw_filters:
+                from connectors.keboola.where_filters import (
+                    InvalidFilterError, parse_filters, resolve_placeholders,
+                )
+                try:
+                    resolved_filters = resolve_placeholders(
+                        parse_filters(raw_filters), datetime.now(timezone.utc),
+                    )
+                except InvalidFilterError as e:
+                    logger.error("where_filters invalid for %s: %s", table_name, e)
+                    stats["tables_failed"] += 1
+                    stats["errors"].append({"table": table_name, "error": f"where_filters: {e}"})
+                    continue
+
+            if sync_strategy == "incremental":
+                try:
+                    pq_path = data_dir / f"{table_name}.parquet"
+                    last_sync = _read_last_sync_for_tc(tc)
+                    from connectors.keboola.incremental import extract_incremental
+                    incr_result = extract_incremental(
+                        table_config=tc,
+                        parquet_path=pq_path,
+                        last_sync=last_sync,
+                        keboola_url=keboola_url,
+                        keboola_token=keboola_token,
+                    )
+                    safe_pq_lit = str(pq_path).replace("'", "''")
+                    rows = incr_result["rows"]
+                    size = pq_path.stat().st_size if pq_path.exists() else 0
+                    conn.execute(
+                        f'CREATE OR REPLACE VIEW "{table_name}" AS '
+                        f"SELECT * FROM read_parquet('{safe_pq_lit}')"
+                    )
+                    conn.execute(
+                        "INSERT INTO _meta VALUES (?, ?, ?, ?, ?, 'local')",
+                        [table_name, tc.get("description", ""), rows, size, now],
+                    )
+                    stats["tables_extracted"] += 1
+                    logger.info(
+                        "Incremental %s: %d rows (%d delta), changedSince=%s",
+                        table_name, rows, incr_result["delta_rows"],
+                        incr_result["changed_since_used"],
+                    )
+                except Exception as e:
+                    logger.error("Incremental extract failed for %s: %s", table_name, e)
+                    stats["tables_failed"] += 1
+                    stats["errors"].append({"table": table_name, "error": str(e)})
+                continue
+
+            if sync_strategy == "partitioned":
+                try:
+                    partition_dir = data_dir / table_name
+                    partition_dir.mkdir(exist_ok=True)
+                    last_sync = _read_last_sync_for_tc(tc)
+                    from connectors.keboola.partitioned import extract_partitioned
+                    part_result = extract_partitioned(
+                        table_config=tc,
+                        output_dir=partition_dir,
+                        last_sync=last_sync,
+                        keboola_url=keboola_url,
+                        keboola_token=keboola_token,
+                    )
+                    glob_lit = str(partition_dir / "*.parquet").replace("'", "''")
+                    rows = part_result["rows"]
+                    size = sum(p.stat().st_size for p in partition_dir.glob("*.parquet"))
+                    conn.execute(
+                        f'CREATE OR REPLACE VIEW "{table_name}" AS '
+                        f"SELECT * FROM read_parquet('{glob_lit}')"
+                    )
+                    conn.execute(
+                        "INSERT INTO _meta VALUES (?, ?, ?, ?, ?, 'local')",
+                        [table_name, tc.get("description", ""), rows, size, now],
+                    )
+                    stats["tables_extracted"] += 1
+                    logger.info(
+                        "Partitioned %s: %d rows across %d partition file(s)",
+                        table_name, rows,
+                        part_result.get("partitions_touched",
+                                        part_result.get("partitions_written", 0)),
+                    )
+                except Exception as e:
+                    logger.error("Partitioned extract failed for %s: %s", table_name, e)
+                    stats["tables_failed"] += 1
+                    stats["errors"].append({"table": table_name, "error": str(e)})
+                continue
+
+            # full_refresh fall-through: existing extension/legacy logic.
+            # When where_filters are set we MUST force the legacy path
+            # (extension lacks whereFilters support).
             try:
                 pq_path = str(data_dir / f"{table_name}.parquet")
 
-                if use_extension:
+                if resolved_filters:
+                    _extract_via_legacy(
+                        tc, pq_path, keboola_url, keboola_token,
+                        where_filters=resolved_filters,
+                    )
+                elif use_extension:
                     try:
                         _extract_via_extension(conn, tc, pq_path)
                     except Exception as ext_err:
@@ -595,8 +758,14 @@ def _legacy_worker(tc_pq, keboola_url: str, keboola_token: str):
         return (tc_, pq_, str(exc))
 
 
-def _extract_via_legacy(tc: Dict[str, Any], pq_path: str, keboola_url: str, keboola_token: str) -> None:
-    """Per-table extract via the Storage API export-async path.
+def _extract_via_legacy(
+    tc: Dict[str, Any],
+    pq_path: str,
+    keboola_url: str,
+    keboola_token: str,
+    where_filters: Optional[List[Dict[str, Any]]] = None,
+) -> None:
+    """Per-table extract via the Storage API export-async path with typed parquet.
 
     Despite the name (kept for caller compatibility with `_legacy_worker`),
     this no longer goes through the `kbcstorage` SDK — it talks to the
@@ -605,16 +774,59 @@ def _extract_via_legacy(tc: Dict[str, Any], pq_path: str, keboola_url: str, kebo
     execution; the direct path uses per-call temp directories and signed-URL
     downloads, so threads / processes don't trip on each other.
 
-    Same surface as before — `(tc, pq_path, url, token) → writes parquet at
-    pq_path` — so callers (including the parallel `_legacy_worker`) don't
-    need to change.
+    `where_filters` (v27) — when present, builds an `ExportFilter` so the
+    Storage API applies the row filter server-side before signing the
+    parquet/CSV file. Caller has already resolved any date placeholders
+    (see `connectors/keboola/where_filters.py:resolve_placeholders`). The
+    DuckDB Keboola extension does not expose whereFilters, so any v27
+    filter row forces this path.
+
+    The CSV → parquet conversion uses `connectors/keboola/parquet_io.csv_to_parquet`
+    with the PyArrow schema + pandas dtypes pulled from Keboola column metadata
+    (provider cascade `user > ai-metadata-enrichment > keboola.snowflake-transformation`).
+    Falls back to string-typed parquet only when the metadata API is unreachable.
+    Pre-v27 this path used `read_csv(all_varchar=true)` which flattened every
+    column to VARCHAR.
     """
     import tempfile
-    from connectors.keboola.storage_api import KeboolaStorageClient, get_temp_root
+    from connectors.keboola.client import KeboolaClient
+    from connectors.keboola.parquet_io import csv_to_parquet
+    from connectors.keboola.storage_api import (
+        ExportFilter, KeboolaStorageClient, get_temp_root,
+    )
 
     bucket = tc.get("bucket", "")
     source_table = tc.get("source_table", tc["name"])
     table_id = f"{bucket}.{source_table}" if bucket else tc.get("id", tc["name"])
+
+    # Pull column-level metadata for typed parquet (v27 typed-parquet fix).
+    # `KeboolaClient` (kbcstorage SDK) is the only source of provider-cascade
+    # PyArrow schema; storage_api.KeboolaStorageClient handles the export
+    # path. Both are kept side by side intentionally.
+    metadata_client = KeboolaClient(token=keboola_token, url=keboola_url)
+    try:
+        pyarrow_schema = metadata_client.get_pyarrow_schema(table_id)
+    except Exception as e:
+        logger.warning(
+            "Keboola schema unavailable for %s (%s); writing string-typed parquet",
+            table_id, e,
+        )
+        pyarrow_schema = None
+    try:
+        dtypes = metadata_client.get_pandas_dtypes(table_id) if pyarrow_schema else {}
+    except Exception:
+        dtypes = {}
+    try:
+        date_columns = metadata_client.get_date_columns(table_id) if pyarrow_schema else []
+    except Exception:
+        date_columns = []
+
+    export_filter = None
+    if where_filters:
+        # ExportFilter validates shape (column/operator/values keys) on
+        # to_export_params(); raises ValueError on malformed entries which
+        # the worker wrapper turns into a per-table error.
+        export_filter = ExportFilter(where_filters=list(where_filters))
 
     with tempfile.TemporaryDirectory(
         prefix=f"kbc-export-{tc['name']}-",
@@ -623,7 +835,7 @@ def _extract_via_legacy(tc: Dict[str, Any], pq_path: str, keboola_url: str, kebo
     ) as tmpdir:
         csv_path = Path(tmpdir) / f"{tc['name']}.csv"
         client = KeboolaStorageClient(url=keboola_url, token=keboola_token)
-        client.export_table_to_csv(table_id, csv_path)
+        client.export_table_to_csv(table_id, csv_path, export_filter=export_filter)
 
         if not csv_path.exists() or csv_path.stat().st_size == 0:
             # Storage API succeeded but produced no rows. Emit an empty
@@ -634,22 +846,17 @@ def _extract_via_legacy(tc: Dict[str, Any], pq_path: str, keboola_url: str, kebo
             ).close()
             return
 
-        # all_varchar=true preserves the source's exact character data —
-        # matches what the kbcstorage path used to do, prevents DuckDB
-        # type inference from rewriting numeric-looking strings as NULL.
-        # max_line_size=64MB overrides DuckDB's 2MB default; matches the
-        # materialize_query path. See comment there for rationale.
-        safe_csv = str(csv_path).replace("'", "''")
-        safe_pq = pq_path.replace("'", "''")
-        conv = duckdb.connect()
-        try:
-            conv.execute(
-                f"COPY (SELECT * FROM read_csv('{safe_csv}', "
-                f"all_varchar=true, max_line_size=67108864)) "
-                f"TO '{safe_pq}' (FORMAT PARQUET)"
-            )
-        finally:
-            conv.close()
+        # v27 typed-parquet path: use csv_to_parquet with PyArrow schema
+        # from Keboola metadata. Falls through to string typing when
+        # pyarrow_schema is None (metadata API unreachable).
+        csv_to_parquet(
+            csv_path=csv_path,
+            parquet_path=Path(pq_path),
+            dtypes=dtypes,
+            date_columns=date_columns,
+            pyarrow_schema=pyarrow_schema,
+            table_id=table_id,
+        )
 
 
 def compute_exit_code(stats: Dict[str, Any], total: int) -> int:

@@ -2,7 +2,6 @@
 
 import json
 import os
-import re
 import sys
 from pathlib import Path
 from typing import List, Optional
@@ -79,26 +78,6 @@ def _query_local(sql: str, fmt: str, limit: int):
         _output(columns, result, fmt)
     except Exception as e:
         typer.echo(f"Query error: {e}", err=True)
-        # DuckDB's "Did you mean <similar materialized view>" suggestion is
-        # misleading when the unresolvable identifier is actually a
-        # `query_mode='remote'` table — those have no local view by design.
-        # Append a friendly hint pointing the user at `agnes catalog`,
-        # `agnes schema`, and `agnes query --remote`. We don't verify against
-        # the remote registry here (this command is offline-friendly), so the
-        # hint is conditional ("might be") — safe even when the name was just
-        # a typo.
-        m = re.search(r"Table with name ([A-Za-z_][A-Za-z0-9_]*) does not exist", str(e))
-        if m:
-            typer.echo("", err=True)
-            typer.echo(
-                f"Note: `{m.group(1)}` might be a `query_mode='remote'` table. Local "
-                "DuckDB only holds views for `local` and `materialized` tables — "
-                "`remote` ones live on BigQuery and are not synced.\n"
-                "  - List all registered tables:    agnes catalog\n"
-                "  - Inspect column schema:         agnes schema <name>\n"
-                "  - Run a query against BigQuery:  agnes query --remote \"<SQL>\"",
-                err=True,
-            )
         raise typer.Exit(1)
     finally:
         conn.close()

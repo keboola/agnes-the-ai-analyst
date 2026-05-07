@@ -1227,13 +1227,17 @@ class RegisterTableRequest(BaseModel):
     folder: Optional[str] = None
     sync_strategy: str = Field(
         default="full_refresh",
-        deprecated=True,
         description=(
-            "DEPRECATED: catalog/profiler metadata only. No extractor reads "
-            "this field; every sync is a full overwrite regardless of value. "
-            "profiler.is_partitioned() consumes it for parquet-layout "
-            "detection. Field stays for back-compat; will be removed in a "
-            "future major release."
+            "Per-table extraction strategy. v26+: drives the Keboola "
+            "extractor's dispatcher in connectors/keboola/extractor.py. "
+            "Allowed values: 'full_refresh' (default; full table dump on "
+            "each sync), 'incremental' (Storage API changedSince + "
+            "primary-key dedup merge), 'partitioned' (per-partition "
+            "parquet files keyed by partition_by column, per-partition "
+            "merge for daily updates, chunked initial load). "
+            "Pre-v26 this field was inert; existing rows default to "
+            "'full_refresh' so behavior is unchanged unless an admin "
+            "opts a table in to incremental/partitioned."
         ),
     )
     # Composite primary keys are real (session-grain MSA tables key on
@@ -1261,6 +1265,17 @@ class RegisterTableRequest(BaseModel):
             "table; this flag has no effect. Field stays for back-compat."
         ),
     )
+    # v26 — Keboola sync-strategy support fields. All optional; meaningful
+    # only when paired with the matching sync_strategy. Per-strategy
+    # required-field rules + conflict policy enforced in the model_validator
+    # below.
+    incremental_window_days: Optional[int] = None
+    max_history_days: Optional[int] = None
+    incremental_column: Optional[str] = None
+    where_filters: Optional[List[Dict[str, Any]]] = None
+    partition_by: Optional[str] = None
+    partition_granularity: Optional[str] = None
+    initial_load_chunk_days: Optional[int] = None
 
     @model_validator(mode="after")
     def _check_mode_query_coherence(self):
@@ -1345,6 +1360,124 @@ class RegisterTableRequest(BaseModel):
                 f"'daily HH:MM[,HH:MM,...]', got {v!r}"
             )
         return v
+
+    @field_validator("sync_strategy", mode="before")
+    @classmethod
+    def _validate_sync_strategy(cls, v):
+        """v26: enforce the strategy enum. NULL/empty → 'full_refresh' default.
+
+        Pre-v26 the column accepted any string (catalog/profiler metadata
+        only). Now the extractor dispatches off this value, so unknown
+        strings would silently fall through to the default branch and
+        confuse operators.
+        """
+        if v in (None, ""):
+            return "full_refresh"
+        allowed = {"full_refresh", "incremental", "partitioned"}
+        if v not in allowed:
+            raise ValueError(
+                f"sync_strategy must be one of {sorted(allowed)}, got {v!r}"
+            )
+        return v
+
+    @field_validator("partition_granularity", mode="before")
+    @classmethod
+    def _validate_partition_granularity(cls, v):
+        if v in (None, ""):
+            return v
+        allowed = {"day", "month", "year"}
+        if v not in allowed:
+            raise ValueError(
+                f"partition_granularity must be one of {sorted(allowed)}, got {v!r}"
+            )
+        return v
+
+    @field_validator("where_filters", mode="before")
+    @classmethod
+    def _validate_where_filters(cls, v):
+        """Validate filter shape via parse_filters from the keboola module.
+
+        Accepts None / empty list, a JSON string, or a pre-parsed list.
+        Returns the canonical list-of-dicts form for storage. Raises
+        ValueError(InvalidFilterError message) on malformed shape so
+        FastAPI returns 422 with a useful body. Placeholders are NOT
+        resolved here — they're resolved at sync time so a misspelled
+        token is caught when the next sync runs (admin can register a
+        rolling-window filter today and the sync next month uses the
+        same filter shape with a fresh date)."""
+        if v in (None, "", []):
+            return None
+        from connectors.keboola.where_filters import parse_filters, InvalidFilterError
+        try:
+            return parse_filters(v)
+        except InvalidFilterError as e:
+            raise ValueError(str(e))
+
+    @model_validator(mode="after")
+    def _check_strategy_invariants(self):
+        """v27 conflict policy + per-strategy required-field rules.
+
+        Reject combinations that are silently broken at the extractor
+        layer rather than letting the row land in the registry and
+        confuse operators when the next sync misbehaves.
+
+        - partitioned ⇒ partition_by required, query_mode='local' only.
+          partition_granularity defaults to 'month' if omitted.
+        - incremental + where_filters → 400. changedSince already does
+          temporal filtering; layering server-side row filters on top is
+          not supported by the extractor (legacy repo silently drops
+          filters in this combination — match the rejection here).
+        - partitioned + where_filters → 400. extract_partitioned does
+          not thread where_filters through to its chunked downloads;
+          accepting the pair would persist a filter that gets silently
+          ignored at sync time (Devin Review concern). Reject explicitly
+          until threading lands.
+        - query_mode='remote' + where_filters → 400. _extract_via_extension
+          (the remote/extension path) doesn't take a filters argument;
+          accepting would silently drop them.
+        """
+        if self.sync_strategy == "partitioned":
+            if not self.partition_by:
+                raise ValueError(
+                    "sync_strategy='partitioned' requires partition_by to be set"
+                )
+            if self.query_mode == "remote":
+                raise ValueError(
+                    "sync_strategy='partitioned' is incompatible with query_mode='remote' "
+                    "— partitioned writes per-partition parquet files locally"
+                )
+            if self.where_filters:
+                raise ValueError(
+                    "sync_strategy='partitioned' is incompatible with where_filters "
+                    "in v27 — extract_partitioned does not thread where_filters "
+                    "through its chunked downloads; the filter would be silently "
+                    "ignored. Use 'full_refresh' for filter+full-overwrite, or "
+                    "wait for partitioned + where_filters wiring in a future PR."
+                )
+            if not self.partition_granularity:
+                self.partition_granularity = "month"
+
+        if self.sync_strategy == "incremental" and self.where_filters:
+            raise ValueError(
+                "sync_strategy='incremental' is incompatible with where_filters "
+                "— changedSince already filters temporally; layering whereFilters "
+                "on top is silently dropped by the extractor (use 'full_refresh' "
+                "for filter+full-overwrite)"
+            )
+
+        # query_mode='remote' + where_filters: the DuckDB Keboola extension
+        # path does not consume whereFilters. Accepting would silently drop
+        # them at sync time. Caller must use query_mode='local' (Direct
+        # extract) to apply filters.
+        if self.query_mode == "remote" and self.where_filters:
+            raise ValueError(
+                "query_mode='remote' is incompatible with where_filters "
+                "— the DuckDB Keboola extension does not expose whereFilters. "
+                "Use query_mode='local' (Direct extract) to apply server-side "
+                "row filters."
+            )
+
+        return self
 
 
 def _generate_materialized_source_query(
@@ -1625,10 +1758,9 @@ class UpdateTableRequest(BaseModel):
     name: Optional[str] = None
     sync_strategy: Optional[str] = Field(
         default=None,
-        deprecated=True,
         description=(
-            "DEPRECATED: catalog/profiler metadata only. See "
-            "RegisterTableRequest.sync_strategy."
+            "v26+: drives the Keboola extractor dispatcher. PUT-shape "
+            "requires a value if sent. See RegisterTableRequest.sync_strategy."
         ),
     )
     primary_key: Optional[List[str]] = None
@@ -1647,6 +1779,52 @@ class UpdateTableRequest(BaseModel):
             "RegisterTableRequest.profile_after_sync."
         ),
     )
+    # v26 — same fields as RegisterTableRequest, all optional. The PUT
+    # handler overlays the body on the existing row and re-runs the
+    # synthetic RegisterTableRequest validator on the merged record, so
+    # cross-field invariants are checked against the post-update state.
+    incremental_window_days: Optional[int] = None
+    max_history_days: Optional[int] = None
+    incremental_column: Optional[str] = None
+    where_filters: Optional[List[Dict[str, Any]]] = None
+    partition_by: Optional[str] = None
+    partition_granularity: Optional[str] = None
+    initial_load_chunk_days: Optional[int] = None
+
+    @field_validator("sync_strategy", mode="before")
+    @classmethod
+    def _validate_sync_strategy(cls, v):
+        if v in (None, ""):
+            return v
+        allowed = {"full_refresh", "incremental", "partitioned"}
+        if v not in allowed:
+            raise ValueError(
+                f"sync_strategy must be one of {sorted(allowed)}, got {v!r}"
+            )
+        return v
+
+    @field_validator("partition_granularity", mode="before")
+    @classmethod
+    def _validate_partition_granularity(cls, v):
+        if v in (None, ""):
+            return v
+        allowed = {"day", "month", "year"}
+        if v not in allowed:
+            raise ValueError(
+                f"partition_granularity must be one of {sorted(allowed)}, got {v!r}"
+            )
+        return v
+
+    @field_validator("where_filters", mode="before")
+    @classmethod
+    def _validate_where_filters(cls, v):
+        if v in (None, "", []):
+            return None
+        from connectors.keboola.where_filters import parse_filters, InvalidFilterError
+        try:
+            return parse_filters(v)
+        except InvalidFilterError as e:
+            raise ValueError(str(e))
 
     @model_validator(mode="after")
     def _check_mode_query_coherence(self):
@@ -2169,6 +2347,15 @@ def register_table(
         source_query=request.source_query,
         query_mode=request.query_mode,
         sync_schedule=request.sync_schedule,
+        # v26 sync-strategy support fields. None for non-Keboola or
+        # full_refresh tables; persisted as NULL.
+        incremental_window_days=request.incremental_window_days,
+        max_history_days=request.max_history_days,
+        incremental_column=request.incremental_column,
+        where_filters=request.where_filters,
+        partition_by=request.partition_by,
+        partition_granularity=request.partition_granularity,
+        initial_load_chunk_days=request.initial_load_chunk_days,
     )
 
     # Audit entry — masked params; description kept raw (it's documentation).
@@ -2422,7 +2609,26 @@ async def update_table(
     if not existing:
         raise HTTPException(status_code=404, detail="Table not found")
 
-    updates = {k: v for k, v in request.model_dump().items() if v is not None}
+    # `exclude_unset=True` honors the PUT-shape distinction between
+    # "field omitted from body" (keep existing) vs "field sent as null"
+    # (clear to NULL). Pre-v26 the handler used `model_dump()` filtered by
+    # `if v is not None`, which collapsed both cases to "omitted" — meaning
+    # an admin couldn't clear a field via PUT. v26 needs the clear path so
+    # the Edit modal can switch a partitioned row back to full_refresh and
+    # have the stale partition_by / partition_granularity / max_history_days
+    # actually go away (without this fix, those fields linger and either
+    # confuse the dispatcher or trip the v26 conflict-policy validator on
+    # the next edit).
+    #
+    # Contract change (Devin Review finding 0001): callers that previously
+    # sent explicit `null` to mean "no-op, keep existing" will now have the
+    # field cleared. In practice this is fine — the only known caller is
+    # the Edit modal, which pre-populates form fields from the existing row
+    # and JSON-encodes the populated (non-null) value back. CLI register-table
+    # only POSTs new rows, never PUTs nulls. If a future client needs the
+    # old "null = no-op" semantics for some field, it should omit the field
+    # from the body instead of sending null — that's the canonical PUT shape.
+    updates = request.model_dump(exclude_unset=True)
     # Run BQ-shape validation BEFORE persisting whenever the merged record
     # would be a bigquery row (existing was BQ, or the patch flips it to BQ,
     # or the patch touches BQ-relevant fields on an already-BQ row). Without
