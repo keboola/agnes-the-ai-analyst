@@ -302,41 +302,112 @@ def _fetch_partition_cluster(bq, req: MetadataRequest) -> dict | None:
 def _fetch_rows_and_size(bq, req: MetadataRequest) -> dict | None:
     """Return {rows, size_bytes} for a BQ table, or None on failure.
 
-    *** EXACT INFORMATION_SCHEMA VIEW IS A PRE-IMPLEMENTATION OPEN
-    QUESTION (see Open Questions §1). Live BQ verification before
-    implementation freezes. ***
-
-    Candidates:
-
-    - **`<project>.<dataset>.INFORMATION_SCHEMA.TABLE_STORAGE`** —
-      preferred per Google's region-portable docs; reports
-      `total_rows` + `active_logical_bytes` + `long_term_logical_bytes`
-      + partition info. Works for BASE TABLE, VIEW (returns NULL bytes),
-      MATERIALIZED_VIEW. Region-qualified path is also legal as
-      `<project>.region-<region>.INFORMATION_SCHEMA.TABLE_STORAGE` and
-      may be needed for multi-region datasets. Requires
-      `bigquery.tables.get` on the table OR
-      `roles/bigquery.metadataViewer` on the dataset.
-    - `<project>.<dataset>.__TABLES__` (legacy) — has `row_count` +
-      `size_bytes` directly but is **per-dataset only**, doesn't
-      surface region-specific data, and is rumoured to be deprecated
-      in favour of TABLE_STORAGE. Avoid unless TABLE_STORAGE is
-      unavailable on the target instance.
-    - `__TABLES_SUMMARY__` — a SEPARATE legacy view (NOT the alias of
-      `__TABLES__` — distinct columns, common confusion). Don't use.
-
-    Implementation will hard-code one path; the open question is
-    *which*, decided by a one-day live test on the target BQ project.
+    Uses INFORMATION_SCHEMA.TABLE_STORAGE at REGION scope (the only
+    valid scope per live verification on prj-grp-foundryai-dev-7c37
+    2026-05-07 — see Open Question §1 in the spec). Falls back to
+    legacy __TABLES__ when region resolution fails.
     """
-    raise NotImplementedError("see Open Questions §1 — verify on live BQ first")
+    location = _resolve_bq_location(bq, req)
+    if location:
+        return _fetch_via_table_storage(bq, req, location)
+    # No region known and dataset.get() failed — last-resort fallback.
+    # Same row + size numbers, but loses multi-region portability.
+    return _fetch_via_legacy_tables(bq, req)
+
+
+def _resolve_bq_location(bq, req: MetadataRequest) -> str | None:
+    """Return the BQ region (e.g. "us-central1") for the dataset, or None.
+
+    Resolution order:
+      1. instance.yaml `data_source.bigquery.location` (the common case;
+         operators with a single-region BQ deployment set this once).
+      2. google-cloud-bigquery REST: `client.get_dataset(dataset_id).location`.
+         Cached at the dispatcher (TBD — likely a small TTL dict on
+         `(project, dataset) → location`).
+      3. None → caller falls back to legacy __TABLES__.
+    """
+    # Implementation detail; see app.instance_config.get_value lookup.
+    from app.instance_config import get_value
+    cfg_location = (get_value("data_source.bigquery.location") or "").strip()
+    if cfg_location:
+        return cfg_location
+    try:
+        ds = bq.bigquery_client().get_dataset(
+            f"{bq.projects.data}.{req.bucket}"
+        )
+        return ds.location
+    except Exception as e:
+        logger.warning(
+            "BQ dataset.get failed for %s.%s — falling back to __TABLES__: %s",
+            bq.projects.data, req.bucket, e,
+        )
+        return None
+
+
+def _fetch_via_table_storage(bq, req: MetadataRequest, location: str) -> dict | None:
+    """Region-scoped INFORMATION_SCHEMA.TABLE_STORAGE — preferred path."""
+    if not validate_quoted_identifier(location, "BQ region"):
+        return None
+    try:
+        bq_sql = (
+            f"SELECT total_rows, active_logical_bytes "
+            f"FROM `{bq.projects.data}.region-{location}.INFORMATION_SCHEMA.TABLE_STORAGE` "
+            f"WHERE table_schema = ? AND table_name = ?"
+        )
+        with bq.duckdb_session() as conn:
+            row = conn.execute(
+                "SELECT * FROM bigquery_query(?, ?, ?, ?)",
+                [bq.projects.billing, bq_sql, req.bucket, req.source_table],
+            ).fetchone()
+    except Exception as e:
+        logger.warning(
+            "BQ TABLE_STORAGE fetch failed for %s.%s.%s: %s",
+            bq.projects.data, req.bucket, req.source_table, e,
+        )
+        return None
+    if row is None:
+        return None
+    rows_, size_bytes = row
+    return {
+        "rows": int(rows_) if rows_ is not None else None,
+        "size_bytes": int(size_bytes) if size_bytes is not None else None,
+    }
+
+
+def _fetch_via_legacy_tables(bq, req: MetadataRequest) -> dict | None:
+    """Last-resort dataset-scoped __TABLES__ — works without region."""
+    try:
+        bq_sql = (
+            f"SELECT row_count, size_bytes "
+            f"FROM `{bq.projects.data}.{req.bucket}.__TABLES__` "
+            f"WHERE table_id = ?"
+        )
+        with bq.duckdb_session() as conn:
+            row = conn.execute(
+                "SELECT * FROM bigquery_query(?, ?, ?)",
+                [bq.projects.billing, bq_sql, req.source_table],
+            ).fetchone()
+    except Exception as e:
+        logger.warning(
+            "BQ __TABLES__ fetch failed for %s.%s.%s: %s",
+            bq.projects.data, req.bucket, req.source_table, e,
+        )
+        return None
+    if row is None:
+        return None
+    rows_, size_bytes = row
+    return {
+        "rows": int(rows_) if rows_ is not None else None,
+        "size_bytes": int(size_bytes) if size_bytes is not None else None,
+    }
 ```
 
 Notes:
 
-- **Two queries, not one CTE.** Half the savings of a combined query (zero, since both round-trip the BQ jobs API at similar latency) for double the syntactic risk. Mirroring two well-tested patterns is the more conservative move on a metadata path.
+- **Two queries, not one CTE.** Forced by BQ schema: TABLE_STORAGE is region-scoped, COLUMNS is dataset-scoped, they live at different fully-qualified paths and cannot share a query. Live-verified 2026-05-07 (Open Question §1).
 - **`bq.projects.billing` first arg, `bq.projects.data` in the SQL path.** Same as v2_schema. The billing project is who-pays-for-the-query; the data project is whose-tables-we-read.
 - **Partition/cluster path is verbatim copy of `_fetch_bq_table_options`:115-126.** If a follow-up PR consolidates the duplication into `app/api/_bq_helpers.py`, the consolidation can drop in without touching the provider's contract.
-- **Size/rows path is deliberately blocked** on the live-BQ open question so the implementer doesn't choose `__TABLES__` by default and ship the EU multi-region footgun.
+- **Region resolution prefers config over discovery.** `instance.yaml.data_source.bigquery.location` is already a documented knob; reading it from `app.instance_config.get_value` avoids a per-dataset round-trip in the common case (single-region deployments). The `bq_client.get_dataset(...)` fallback handles the rare multi-region or unset-config case; the `__TABLES__` fallback handles the rarer SA-can-query-but-not-`bigquery.datasets.get` case.
 
 ### Keboola provider implementation sketch
 
@@ -546,41 +617,49 @@ The new tests sit alongside `test_v2_catalog.py` (existing), `test_diagnose_bill
 
 ## Open questions
 
-### 1. Which BigQuery view exposes row count + size? **(Blocks implementation; needs live BQ verification.)**
+### 1. Which BigQuery view exposes row count + size? **RESOLVED — verified live on `prj-grp-foundryai-dev-7c37` 2026-05-07.**
 
-Three candidates surveyed; one needs a live test on the target instance to lock in:
+Three candidates were surveyed and tested against `audrius_test.product_inventory` (25-row table in us-central1). Outcome:
 
-| View | Pros | Cons |
+| View | Status | Notes |
 |---|---|---|
-| `<project>.<dataset>.INFORMATION_SCHEMA.TABLE_STORAGE` | Region-portable; reports `total_rows` + `active_logical_bytes` + `long_term_logical_bytes` separately; partition-aware; works on BASE TABLE / VIEW (NULL bytes for views) / MATERIALIZED_VIEW | Requires `bigquery.tables.get` on the table OR `roles/bigquery.metadataViewer` on the dataset; per-region path may be needed for multi-region datasets (`<project>.region-<region>.INFORMATION_SCHEMA.TABLE_STORAGE`) |
-| `<project>.<dataset>.__TABLES__` (legacy) | Per-dataset, single query, zero cost | Doesn't surface region-specific data; rumoured to be deprecated; same IAM as `INFORMATION_SCHEMA.TABLES`; not partition-aware |
-| `__TABLES_SUMMARY__` | n/a | A SEPARATE legacy view with its own column set — frequently confused with `__TABLES__` (the previous spec called it an alias, **wrong**). Don't use. |
+| **`<project>.region-<region>.INFORMATION_SCHEMA.TABLE_STORAGE`** | ✅ **chosen** | Returns `total_rows`, `active_logical_bytes`, `long_term_logical_bytes`, `active_physical_bytes`, `long_term_physical_bytes`. Filter via `WHERE table_schema='<dataset>' AND table_name='<table>'`. Confirmed `active_logical_bytes` matches legacy `__TABLES__.size_bytes` byte-for-byte (2407 == 2407). |
+| `<project>.<dataset>.INFORMATION_SCHEMA.TABLE_STORAGE` | ❌ doesn't exist | `bq query` returns "Not found: Dataset prj-grp-foundryai-dev-7c37:audrius_test.INFORMATION_SCHEMA was not found in location us-central1". TABLE_STORAGE is region-scoped only. |
+| `<project>.<dataset>.__TABLES__` (legacy) | ⚠️ fallback only | Works (`row_count=25, size_bytes=2407`), but per-dataset (no multi-region) and rumoured to be deprecated. Use only if region resolution fails. |
+| `__TABLES_SUMMARY__` | n/a | Separate legacy view, distinct columns. **Not** an alias of `__TABLES__` (the original spec was wrong on this). Don't use. |
 
-**Verification protocol:** the live-BQ test runs all three on a real registered table on a target instance, captures the actual columns + values, and the spec's implementation step 0 records the chosen view + path before any code lands. Test SQL stubs:
+**Locked SQL for the BQ provider:**
 
 ```sql
--- Candidate A — region-qualified TABLE_STORAGE
-SELECT total_rows, active_logical_bytes, long_term_logical_bytes,
-       active_physical_bytes, long_term_physical_bytes
-FROM `<proj>.region-<region>.INFORMATION_SCHEMA.TABLE_STORAGE`
-WHERE table_schema = '<dataset>' AND table_name = '<table>';
-
--- Candidate B — dataset-qualified TABLE_STORAGE
-SELECT total_rows, active_logical_bytes, long_term_logical_bytes
-FROM `<proj>.<dataset>.INFORMATION_SCHEMA.TABLE_STORAGE`
-WHERE table_name = '<table>';
-
--- Candidate C — legacy __TABLES__
-SELECT row_count, size_bytes
-FROM `<proj>.<dataset>.__TABLES__`
-WHERE table_id = '<table>';
+SELECT total_rows, active_logical_bytes
+FROM `<project>.region-<location>.INFORMATION_SCHEMA.TABLE_STORAGE`
+WHERE table_schema = ? AND table_name = ?
 ```
 
-Lock the choice before implementation step 1 begins. Document the outcome in this section before the spec ships.
+Mapped to `TableMetadata` as `rows = total_rows`, `size_bytes = active_logical_bytes`. The `long_term_*` and `physical_bytes` variants are deliberately NOT exposed — they're storage-billing concepts the analyst doesn't act on; collapsing to a single number keeps the catalog response simple.
+
+### 1a. Where does `<region>` come from?
+
+**Primary:** `data_source.bigquery.location` in `instance.yaml` (already a documented config knob — see `config/instance.yaml.example:116`). Operators with a single-region BQ deployment (the common case) set this once; provider reads it.
+
+**Fallback:** if `location` is unset and the dataset's region can't be inferred, the provider tries `bq_client.get_dataset(dataset_id).location` via the existing google-cloud-bigquery REST client (one cached round-trip per dataset). If that also fails (e.g. the SA lacks `bigquery.datasets.get`), the provider falls back to legacy `__TABLES__` which is dataset-scoped and doesn't need region knowledge — at the cost of losing the region-portable property.
+
+The dispatch order is: **`instance.yaml.location` → `bq_client.get_dataset` → legacy `__TABLES__`**. Most deployments hit the first; the rest have a graceful path.
+
+### 1b. Why two queries, not one CTE
+
+The original spec proposed a single combined CTE. After live verification this is **architecturally impossible**: TABLE_STORAGE lives at *region* scope (`<project>.region-<region>.INFORMATION_SCHEMA.TABLE_STORAGE`); COLUMNS lives at *dataset* scope (`<project>.<dataset>.INFORMATION_SCHEMA.COLUMNS`). They cannot be joined inside a single `bigquery_query()` call — different fully-qualified paths require separate queries. Two round-trips is forced, not a preference.
 
 ### 2. Ingestion-time partitioning pseudo-columns
 
-For tables partitioned by ingestion time (BQ's `_PARTITIONTIME` / `_PARTITIONDATE` pseudo-columns), `INFORMATION_SCHEMA.COLUMNS` may or may not surface them as `is_partitioning_column='YES'` rows — Google's docs are unclear and the answer differs by region. **Verify in the same live BQ test.** If the pseudo-column appears: provider returns `partition_by="_PARTITIONTIME"`; analyst Claude can use that in `--where`. If it doesn't appear: provider returns `partition_by=None` and the analyst falls back to scan-byte cap-guard (existing behavior). Both branches need a unit test.
+**RESOLVED — defer to existing v2_schema behavior, no new code.**
+
+The original concern: for tables partitioned by ingestion time (BQ's `_PARTITIONTIME` / `_PARTITIONDATE` pseudo-columns), `INFORMATION_SCHEMA.COLUMNS` may or may not surface them as `is_partitioning_column='YES'`. Live verification could not be completed — the SA on `prj-grp-foundryai-dev-7c37` doesn't have visibility into a partitioned table that's also reachable for testing. But this is **not a blocker** because:
+
+1. The new BQ provider's partition/cluster path is a **verbatim copy** of `v2_schema._fetch_bq_table_options:115-126`, which has been running in production for months. Whatever its behavior is on ingestion-time-partitioned tables, the metadata provider will produce identical output — and the `/api/v2/schema` endpoint already serves that output to analysts today without complaints.
+2. The fallback contract is well-defined: provider returns `partition_by=None` if no row matches `is_partitioning_column='YES'`. Analyst Claude treats `null` as "no usable partition pruning" and falls back to the BQ cap-guard. No corruption mode.
+
+If a follow-up issue surfaces with ingestion-time partitioning specifically, the fix is one-line in v2_schema and the metadata provider inherits it.
 
 ### 3. Cache key shape
 
@@ -604,7 +683,7 @@ Reviewer flagged: when `bq_config` info-tier reports "BigQuery project not confi
 
 When this spec converts to a plan in `docs/superpowers/plans/`:
 
-0. **Live BigQuery verification.** *Before any code.* Run the three Open Question §1 candidate queries against a real registered remote table on a target instance. Capture actual column names, value ranges, IAM behavior, and ingestion-time partitioning pseudo-column presence (Open Question §2). Update Open Question §1 + §2 in this spec with the outcomes; lock the chosen view + path. Without this step the BQ provider is half-blind. Estimated: 30 min with credentials in hand.
+0. ~~**Live BigQuery verification.**~~ ✅ Done 2026-05-07. Verified on `prj-grp-foundryai-dev-7c37` (us-central1) against `audrius_test.product_inventory`. Outcome locked in Open Question §1 + §1a + §1b. Chosen path: `<project>.region-<location>.INFORMATION_SCHEMA.TABLE_STORAGE`, region from `data_source.bigquery.location` with two fallback layers. Partition/cluster path inherits v2_schema's existing tested behavior (§2).
 1. **Shared models** — `app/api/_metadata_models.py` with `MetadataRequest` + `TableMetadata`. Pure dataclass module, no behavior. One commit, no tests beyond construction.
 2. **`KeboolaStorageClient.get_table_info` thin wrapper** — single function added to existing module + a unit test mocking the underlying `_get`. One commit.
 3. **Provider scaffold + dispatcher** — `app/api/v2_catalog.py:_metadata_provider_for` + `_build_metadata_request`. Stub providers in `connectors/<source>/metadata.py` returning `None`. Tests verify: dispatch returns the right callable per source_type; `_build_metadata_request` rejects bad identifiers; unknown source_type returns `None` callable.
