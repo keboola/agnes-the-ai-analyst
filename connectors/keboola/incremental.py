@@ -108,11 +108,36 @@ def merge_parquet(
                 try:
                     delta_df[col] = _convert_column(delta_df[col], dtype, col_name=col)
                 except Exception as e:
+                    # Devin Review finding 0004: a primary_key column whose
+                    # dtype conversion fails leaves delta_df[col] as object
+                    # (string) while existing_df has it typed (e.g. int64).
+                    # `pd.concat` then produces an object column for that PK,
+                    # and `drop_duplicates` compares int `1` against string
+                    # `'1'` as unequal — silent dedup failure. Fail loudly
+                    # for PK columns instead of warn-and-continue, since PK
+                    # integrity is load-bearing for the merge contract.
+                    if primary_key and col in primary_key:
+                        raise RuntimeError(
+                            f"merge: PK column {col!r} dtype conversion failed "
+                            f"({e}); refusing to silently dedup with mixed "
+                            f"int/string types. Fix the upstream Keboola "
+                            f"data quality issue or change sync_strategy "
+                            f"to full_refresh."
+                        ) from e
                     logger.warning("merge: failed to apply dtype %s to %r: %s", dtype, col, e)
 
     combined = pd.concat([existing_df, delta_df], ignore_index=True)
 
     if primary_key:
+        # Defensive coercion: if the concat produced an object-dtype PK column
+        # (existing typed + delta string), drop_duplicates would compare
+        # heterogeneous values via Python equality which doesn't bridge
+        # int↔string. Coerce both sides to string for the dedup comparison
+        # so the result is deterministic; the post-dedup pa.Table.from_pandas
+        # + apply_schema_to_table cast restores the canonical type.
+        for pk in primary_key:
+            if pk in combined.columns and combined[pk].dtype == object:
+                combined[pk] = combined[pk].astype(str)
         combined = combined.drop_duplicates(subset=primary_key, keep="last")
         logger.info(
             "merge: %s, %d existing + %d delta rows → %d after dedup on %s",

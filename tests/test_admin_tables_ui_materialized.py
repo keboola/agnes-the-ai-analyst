@@ -148,16 +148,18 @@ def test_edit_modal_has_bq_parity_fields(seeded_app, bq_instance):
     assert 'list="editBqTableList"' in html
 
 
-def test_keboola_register_form_has_two_question_radio(seeded_app, monkeypatch):
-    """Phase F: Keboola tab Register form mirrors BQ's two-question
-    radio model, but Q1 (access mode) is forced to 'synced' (no Live
-    mode for Keboola), so visually only Q2 (sync mode = whole | custom)
-    is exposed.
+def test_keboola_register_form_has_three_question_radio(seeded_app, monkeypatch):
+    """Phase G (v26): Keboola tab Register form gains a third radio option
+    'Direct extract (Storage API)' alongside the existing 'whole' and
+    'custom' modes.
 
-    Q2.whole → query_mode='materialized' with auto SELECT * FROM kbc.bucket.table
-    Q2.custom → query_mode='materialized' with admin SELECT
-    Both create materialized rows; the legacy 'local' mode is no longer
-    user-selectable (it would be exactly equivalent to whole)."""
+    - whole / custom → query_mode='materialized' (DuckDB Keboola extension)
+    - direct → query_mode='local' + v26 sync_strategy panel
+      (incremental / partitioned / full_refresh + where_filters)
+
+    Phase F asserted `kbStrategy` was removed; v26 re-adds it inside the
+    Direct-extract panel (visible only when 'direct' is selected).
+    """
     fake_cfg = {"data_source": {"type": "keboola", "keboola": {}}}
     monkeypatch.setattr(
         "app.instance_config.load_instance_config",
@@ -173,23 +175,26 @@ def test_keboola_register_form_has_two_question_radio(seeded_app, monkeypatch):
         kb_tab = html[html.index('id="tab-content-keboola"'):]
         kb_tab = kb_tab[:kb_tab.index('</section>')]
 
-        # Q2 radio — Whole vs Custom.
+        # All three radios present.
         assert 'name="kbSyncMode"' in kb_tab
         assert 'value="whole"' in kb_tab
         assert 'value="custom"' in kb_tab
+        assert 'value="direct"' in kb_tab
 
-        # Bucket + source-table inputs reused for whole mode.
+        # Bucket + source-table inputs reused for whole + direct modes.
         assert 'id="kbBucket"' in kb_tab
         assert 'id="kbSourceTable"' in kb_tab
         # Custom-SQL textarea + Use-table-as-base prefill button.
         assert 'id="kbSourceQuery"' in kb_tab
         assert 'kbPrefillFromTable' in html or "prefillFromKeboolaTable('kbSourceQuery')" in html
 
-        # Sync Schedule input — was missing from old Keboola form.
+        # Sync Schedule input.
         assert 'id="kbSyncSchedule"' in kb_tab
 
-        # Sync Strategy dropdown — gone from new Keboola form.
-        assert 'id="kbStrategy"' not in kb_tab
+        # v26: Sync Strategy dropdown re-added (inside the Direct-extract panel)
+        assert 'id="kbStrategy"' in kb_tab
+        assert 'class="form-group kb-direct-only"' in kb_tab or \
+               'kb-direct-only' in kb_tab
 
         # Primary Key — under <details>Advanced.
         assert 'id="kbPrimaryKey"' in kb_tab
@@ -234,8 +239,11 @@ def test_keboola_register_payload_maps_to_materialized(seeded_app, monkeypatch):
 
 
 def test_keboola_edit_modal_parity(seeded_app, monkeypatch):
-    """Phase F2: Edit modal mirrors Register's two-question structure
-    for Keboola rows."""
+    """Phase G (v26): Edit modal mirrors Register's three-question structure
+    (whole | direct | custom) for Keboola rows.
+
+    Phase F asserted `editKbStrategy` was removed; v26 re-adds it inside
+    the Direct-extract panel for the same reason as the Register form."""
     fake_cfg = {"data_source": {"type": "keboola", "keboola": {}}}
     monkeypatch.setattr(
         "app.instance_config.load_instance_config",
@@ -248,7 +256,7 @@ def test_keboola_edit_modal_parity(seeded_app, monkeypatch):
         token = seeded_app["admin_token"]
         r = c.get("/admin/tables", headers=_auth(token))
         html = r.text
-        # Q2 radio in edit.
+        # Q2 radio in edit (now three modes).
         assert 'name="editKbSyncMode"' in html
         assert 'id="editKbBucket"' in html
         assert 'id="editKbSourceTable"' in html
@@ -258,8 +266,9 @@ def test_keboola_edit_modal_parity(seeded_app, monkeypatch):
         assert "discoverKeboolaBuckets('editKbBucketList')" in html
         assert "discoverKeboolaTables('editKbBucket', 'editKbTableList')" in html
         assert "prefillFromKeboolaTable('editKbSourceQuery')" in html
-        # Strategy gone, PK under details.
-        assert 'id="editKbStrategy"' not in html
+        # v26: Strategy dropdown re-added inside Direct-extract panel
+        assert 'id="editKbStrategy"' in html
+        assert 'editkb-direct-only' in html
         assert 'id="editKbPrimaryKey"' in html
     finally:
         reset_cache()

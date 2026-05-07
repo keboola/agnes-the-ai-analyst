@@ -2577,6 +2577,15 @@ async def update_table(
     # actually go away (without this fix, those fields linger and either
     # confuse the dispatcher or trip the v26 conflict-policy validator on
     # the next edit).
+    #
+    # Contract change (Devin Review finding 0001): callers that previously
+    # sent explicit `null` to mean "no-op, keep existing" will now have the
+    # field cleared. In practice this is fine — the only known caller is
+    # the Edit modal, which pre-populates form fields from the existing row
+    # and JSON-encodes the populated (non-null) value back. CLI register-table
+    # only POSTs new rows, never PUTs nulls. If a future client needs the
+    # old "null = no-op" semantics for some field, it should omit the field
+    # from the body instead of sending null — that's the canonical PUT shape.
     updates = request.model_dump(exclude_unset=True)
     # Run BQ-shape validation BEFORE persisting whenever the merged record
     # would be a bigquery row (existing was BQ, or the patch flips it to BQ,

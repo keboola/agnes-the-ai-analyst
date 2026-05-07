@@ -113,6 +113,16 @@ def merge_partition(
         existing_df = pq.read_table(partition_path).to_pandas()
         combined = pd.concat([existing_df, delta_df], ignore_index=True)
         if primary_key:
+            # Mirror the dedup-safety coercion in incremental.merge_parquet —
+            # Devin Review finding 0004. When a PK column is object-dtype
+            # post-concat (existing typed + delta string from a failed
+            # _convert_column), drop_duplicates compares int `1` and string
+            # `'1'` as unequal. Coerce to string for the comparison so the
+            # dedup is deterministic; pa.Table.from_pandas + apply_schema_to_table
+            # restore the canonical type after.
+            for pk in primary_key:
+                if pk in combined.columns and combined[pk].dtype == object:
+                    combined[pk] = combined[pk].astype(str)
             combined = combined.drop_duplicates(subset=primary_key, keep="last")
     else:
         combined = delta_df
