@@ -40,13 +40,13 @@ def _seed_user(role: str = "admin"):
     conn = get_system_db()
     try:
         uid = str(uuid.uuid4())
-        UserRepository(conn).create(id=uid, email=f"{role}@test", name=role.title(), role=role)
+        UserRepository(conn).create(id=uid, email=f"{role}@test", name=role.title())
         if role == "admin":
             admin_gid = conn.execute(
                 "SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]
             ).fetchone()[0]
             UserGroupMembersRepository(conn).add_member(uid, admin_gid, source="system_seed")
-        return uid, create_access_token(user_id=uid, email=f"{role}@test", role=role)
+        return uid, create_access_token(user_id=uid, email=f"{role}@test")
     finally:
         conn.close()
 
