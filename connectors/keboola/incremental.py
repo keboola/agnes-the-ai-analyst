@@ -172,9 +172,16 @@ def extract_incremental(
     parquet_path = Path(parquet_path)
     parquet_path.parent.mkdir(parents=True, exist_ok=True)
 
-    table_id = table_config.get("id") or (
-        f"{table_config['bucket']}.{table_config['source_table']}"
-    )
+    # Build the Keboola Storage API table_id from bucket + source_table (the
+    # canonical KBC reference, e.g. `in.c-finance.circle`). Fall back to the
+    # registry's `id` only when bucket is empty — the registry id is the
+    # slugified agnes view name (e.g. `circle_inc`), NOT a valid KBC ref.
+    bucket = table_config.get("bucket", "")
+    source_table = table_config.get("source_table") or table_config.get("name")
+    if bucket and source_table:
+        table_id = f"{bucket}.{source_table}"
+    else:
+        table_id = table_config.get("id") or table_config.get("name")
     primary_key = table_config.get("primary_key") or []
     if isinstance(primary_key, str):
         primary_key = [primary_key]

@@ -345,6 +345,26 @@ def _run_sync(tables: Optional[List[str]] = None):
         import sys as _sys
 
         if run_extractor_subprocess:
+            # v26: incremental + partitioned strategies need last_sync from
+            # sync_state to compute changedSince. The subprocess MUST NOT
+            # reopen system.duckdb (parent holds the lock — see contract at
+            # the top of this function), so the parent reads watermarks
+            # here and injects them into each table_config under the key
+            # `__last_sync__`. extractor.run() picks them up via
+            # _read_last_sync's first-check-config-then-fall-back pattern.
+            ws_conn = get_system_db()
+            try:
+                ws_repo = SyncStateRepository(ws_conn)
+                for tc in table_configs:
+                    if tc.get("sync_strategy") in ("incremental", "partitioned"):
+                        state = ws_repo.get_table_state(tc.get("id") or tc.get("name"))
+                        if state and state.get("status") != "error":
+                            ls = state.get("last_sync")
+                            if ls is not None:
+                                tc["__last_sync__"] = ls
+            finally:
+                ws_conn.close()
+
             # Serialize configs — strip non-serializable fields
             serializable = []
             for tc in table_configs:

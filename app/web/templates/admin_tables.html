@@ -1933,20 +1933,27 @@
         return el ? el.value : 'full_refresh';
     }
 
+    function _kbStrategyVisibility(el, s) {
+        // Single-pass visibility check that handles elements tagged with
+        // multiple strategy classes (e.g. window_days has both
+        // kb-strategy-incremental + kb-strategy-partitioned because the
+        // field is shared). Using two separate forEach loops would race —
+        // the second loop hiding what the first showed.
+        if (el.classList.contains('kb-strategy-not-incremental')) {
+            return s !== 'incremental';
+        }
+        // Element is visible if its class list mentions the active strategy
+        return el.classList.contains('kb-strategy-' + s);
+    }
+
     function onKbStrategyChange() {
-        // Show/hide per-strategy field groups inside the Direct-extract panel.
         var s = _getKbStrategy();
-        document.querySelectorAll('.kb-strategy-incremental').forEach(function(el) {
-            el.style.display = (s === 'incremental') ? '' : 'none';
-        });
-        document.querySelectorAll('.kb-strategy-partitioned').forEach(function(el) {
-            // partitioned shares window_days + max_history fields with incremental
-            el.style.display = (s === 'partitioned') ? '' : 'none';
-        });
-        // where_filters: visible for full_refresh + partitioned; the API rejects
-        // incremental + where_filters (changedSince already filters temporally).
-        document.querySelectorAll('.kb-strategy-not-incremental').forEach(function(el) {
-            el.style.display = (s !== 'incremental') ? '' : 'none';
+        document.querySelectorAll(
+            '.kb-direct-only .kb-strategy-incremental, ' +
+            '.kb-direct-only .kb-strategy-partitioned, ' +
+            '.kb-direct-only .kb-strategy-not-incremental'
+        ).forEach(function(el) {
+            el.style.display = _kbStrategyVisibility(el, s) ? '' : 'none';
         });
     }
 
@@ -2188,16 +2195,21 @@
         return el ? el.value : 'full_refresh';
     }
 
+    function _editKbStrategyVisibility(el, s) {
+        if (el.classList.contains('editkb-strategy-not-incremental')) {
+            return s !== 'incremental';
+        }
+        return el.classList.contains('editkb-strategy-' + s);
+    }
+
     function onEditKbStrategyChange() {
         var s = _getEditKbStrategy();
-        document.querySelectorAll('.editkb-strategy-incremental').forEach(function(el) {
-            el.style.display = (s === 'incremental') ? '' : 'none';
-        });
-        document.querySelectorAll('.editkb-strategy-partitioned').forEach(function(el) {
-            el.style.display = (s === 'partitioned') ? '' : 'none';
-        });
-        document.querySelectorAll('.editkb-strategy-not-incremental').forEach(function(el) {
-            el.style.display = (s !== 'incremental') ? '' : 'none';
+        document.querySelectorAll(
+            '.editkb-direct-only .editkb-strategy-incremental, ' +
+            '.editkb-direct-only .editkb-strategy-partitioned, ' +
+            '.editkb-direct-only .editkb-strategy-not-incremental'
+        ).forEach(function(el) {
+            el.style.display = _editKbStrategyVisibility(el, s) ? '' : 'none';
         });
     }
 

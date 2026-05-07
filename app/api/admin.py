@@ -2567,7 +2567,17 @@ async def update_table(
     if not existing:
         raise HTTPException(status_code=404, detail="Table not found")
 
-    updates = {k: v for k, v in request.model_dump().items() if v is not None}
+    # `exclude_unset=True` honors the PUT-shape distinction between
+    # "field omitted from body" (keep existing) vs "field sent as null"
+    # (clear to NULL). Pre-v26 the handler used `model_dump()` filtered by
+    # `if v is not None`, which collapsed both cases to "omitted" — meaning
+    # an admin couldn't clear a field via PUT. v26 needs the clear path so
+    # the Edit modal can switch a partitioned row back to full_refresh and
+    # have the stale partition_by / partition_granularity / max_history_days
+    # actually go away (without this fix, those fields linger and either
+    # confuse the dispatcher or trip the v26 conflict-policy validator on
+    # the next edit).
+    updates = request.model_dump(exclude_unset=True)
     # Run BQ-shape validation BEFORE persisting whenever the merged record
     # would be a bigquery row (existing was BQ, or the patch flips it to BQ,
     # or the patch touches BQ-relevant fields on an already-BQ row). Without

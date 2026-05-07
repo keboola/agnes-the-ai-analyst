@@ -284,9 +284,15 @@ def extract_partitioned(
     if not partition_by:
         raise InvalidPartitionConfigError("partition_by must be set for partitioned strategy")
 
-    table_id = table_config.get("id") or (
-        f"{table_config['bucket']}.{table_config['source_table']}"
-    )
+    # Mirror extract_incremental's table_id resolution — bucket + source_table
+    # is the Keboola Storage API reference, NOT the agnes registry id (which
+    # is the slugified view name).
+    bucket = table_config.get("bucket", "")
+    source_table = table_config.get("source_table") or table_config.get("name")
+    if bucket and source_table:
+        table_id = f"{bucket}.{source_table}"
+    else:
+        table_id = table_config.get("id") or table_config.get("name")
     primary_key = table_config.get("primary_key") or []
     if isinstance(primary_key, str):
         primary_key = [primary_key]

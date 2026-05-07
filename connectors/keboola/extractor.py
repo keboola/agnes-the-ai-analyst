@@ -95,29 +95,61 @@ def materialize_query(
     }
 
 
-def _read_last_sync(table_id: str):
-    """Read the last successful sync timestamp from sync_state for incremental
-    and partitioned dispatch.
+def _read_last_sync_for_tc(tc: Dict[str, Any]):
+    """Resolve last_sync for an incremental/partitioned table_config.
 
-    Returns None when no row exists or status is 'error' (treat error
-    state as never-synced so the next attempt redownloads from
-    max_history_days, not a stale watermark from a half-finished run).
+    Two paths, in order of preference:
+    1. `__last_sync__` injected by the parent server before subprocess
+       spawn (see app/api/sync.py:_run_sync) — this is the canonical
+       path because the subprocess holds no DuckDB lock.
+    2. Direct sync_state read — only safe in same-process callers
+       (tests, in-process sync). The subprocess path errors out with
+       "Conflicting lock is held" because the web server keeps an
+       open write handle on system.duckdb.
 
-    Caller uses the returned value as input to compute_changed_since.
-    Tests stub this directly (`monkeypatch.setattr(extractor, "_read_last_sync", ...)`).
+    Returns None when no prior sync (treat error state as never-synced
+    so the next attempt redownloads from max_history_days, not a stale
+    watermark from a half-finished run).
+
+    Tests stub this directly (`monkeypatch.setattr(extractor, "_read_last_sync_for_tc", ...)`).
+    Pre-v26 fallback name `_read_last_sync` retained for monkeypatching tests.
     """
-    from src.db import get_system_db
-    from src.repositories.sync_state import SyncStateRepository
+    injected = tc.get("__last_sync__")
+    if injected is not None:
+        if isinstance(injected, str):
+            from datetime import datetime
+            try:
+                return datetime.fromisoformat(injected)
+            except ValueError:
+                return None
+        return injected
 
-    conn = get_system_db()
+    # Direct DB read — same-process fallback only.
     try:
-        repo = SyncStateRepository(conn)
-        state = repo.get_table_state(table_id)
-        if not state or state.get("status") == "error":
-            return None
-        return state.get("last_sync")
-    finally:
-        conn.close()
+        from src.db import get_system_db
+        from src.repositories.sync_state import SyncStateRepository
+
+        conn = get_system_db()
+        try:
+            repo = SyncStateRepository(conn)
+            state = repo.get_table_state(tc.get("id") or tc.get("name"))
+            if not state or state.get("status") == "error":
+                return None
+            return state.get("last_sync")
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning(
+            "_read_last_sync_for_tc fallback failed for %s (%s); "
+            "treating as first sync",
+            tc.get("id") or tc.get("name"), e,
+        )
+        return None
+
+
+# Back-compat alias for tests written against the pre-v26 name.
+def _read_last_sync(table_id: str):
+    return _read_last_sync_for_tc({"id": table_id})
 
 
 def _create_meta_table(conn: duckdb.DuckDBPyConnection) -> None:
@@ -286,7 +318,7 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
             if sync_strategy == "incremental":
                 try:
                     pq_path = data_dir / f"{table_name}.parquet"
-                    last_sync = _read_last_sync(tc.get("id") or table_name)
+                    last_sync = _read_last_sync_for_tc(tc)
                     from connectors.keboola.incremental import extract_incremental
                     incr_result = extract_incremental(
                         table_config=tc,
@@ -322,7 +354,7 @@ def run(output_dir: str, table_configs: List[Dict[str, Any]], keboola_url: str, 
                 try:
                     partition_dir = data_dir / table_name
                     partition_dir.mkdir(exist_ok=True)
-                    last_sync = _read_last_sync(tc.get("id") or table_name)
+                    last_sync = _read_last_sync_for_tc(tc)
                     from connectors.keboola.partitioned import extract_partitioned
                     part_result = extract_partitioned(
                         table_config=tc,
