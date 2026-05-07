@@ -610,6 +610,67 @@ class BqAccess:
             yield conn
 
 
+def _fetch_bq_columns_full_impl(bq, dataset: str, table: str) -> list[dict]:
+    """Implementation that raises on BQ errors. Returns the column list
+    or raises the original BQ exception. Validates identifiers; raises
+    ``ValueError`` on bad shape. Sentinel-config (``bq.projects.data == ""``)
+    surfaces via ``bq.client()`` raising ``BqAccessError(not_configured)``.
+
+    Used by callers that need typed exceptions for HTTP status
+    classification — currently only ``app/api/v2_schema._fetch_bq_schema``
+    via ``translate_bq_error``.
+    """
+    from src.identifier_validation import validate_quoted_identifier
+
+    if not bq.projects.data:
+        bq.client()  # raises BqAccessError(not_configured)
+
+    if not (validate_quoted_identifier(bq.projects.data, "BQ project")
+            and validate_quoted_identifier(dataset, "BQ dataset")
+            and validate_quoted_identifier(table, "BQ source_table")):
+        raise ValueError("unsafe BQ identifier in registry — refusing to query")
+
+    bq_sql = (
+        f"SELECT column_name, data_type, is_nullable, "
+        f"       is_partitioning_column, clustering_ordinal_position "
+        f"FROM `{bq.projects.data}.{dataset}.INFORMATION_SCHEMA.COLUMNS` "
+        f"WHERE table_name = ? ORDER BY ordinal_position"
+    )
+    with bq.duckdb_session() as conn:
+        rows = conn.execute(
+            "SELECT * FROM bigquery_query(?, ?, ?)",
+            [bq.projects.billing, bq_sql, table],
+        ).fetchall()
+
+    return [
+        {
+            "name": r[0],
+            "type": r[1],
+            "nullable": r[2] == "YES",
+            "is_partitioning_column": r[3] == "YES",
+            "clustering_ordinal_position": r[4],
+        }
+        for r in rows
+    ]
+
+
+def fetch_bq_columns_full(bq, dataset: str, table: str) -> list[dict] | None:
+    """Best-effort wrapper around ``_fetch_bq_columns_full_impl`` — returns
+    ``None`` on any failure (sentinel-unconfigured, unsafe identifier, BQ
+    query exception). Does NOT raise. For callers that don't need typed
+    exceptions (the metadata provider; the partition/cluster path of
+    v2_schema).
+    """
+    try:
+        return _fetch_bq_columns_full_impl(bq, dataset, table)
+    except Exception as e:
+        logger.warning(
+            "BQ COLUMNS fetch failed for %s.%s.%s: %s",
+            bq.projects.data, dataset, table, e,
+        )
+        return None
+
+
 @functools.cache
 def get_bq_access() -> BqAccess:
     """Module-level FastAPI Depends target. Resolves projects from config and returns

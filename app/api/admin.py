@@ -2179,6 +2179,9 @@ def register_table(
         params=_sanitize_for_audit(request.model_dump()),
     )
 
+    from app.api.v2_catalog import invalidate_for_table
+    invalidate_for_table(table_id)
+
     if not is_bigquery:
         # Keboola / Jira / local rows are insert-only here. 201 Created — the
         # decorator no longer carries a default status, so each branch is
@@ -2512,6 +2515,9 @@ async def update_table(
     if after.get("source_type") == "bigquery":
         background.add_task(_materialize_bigquery_extract_bg)
 
+    from app.api.v2_catalog import invalidate_for_table
+    invalidate_for_table(table_id)
+
     return {"id": table_id, "updated": list(updates.keys())}
 
 
@@ -2606,6 +2612,9 @@ async def unregister_table(
             "source_table": existing.get("source_table"),
         }),
     )
+
+    from app.api.v2_catalog import invalidate_for_table
+    invalidate_for_table(table_id)
 
     if was_bigquery:
         background.add_task(_materialize_bigquery_extract_bg)

@@ -31,51 +31,34 @@ _BQ_DIALECT_HINTS = {
 
 
 def _fetch_bq_schema(bq, dataset: str, table: str) -> list[dict]:
-    """Fetch column list via INFORMATION_SCHEMA.COLUMNS using DuckDB BQ extension.
+    """Fetch column list via the shared ``_fetch_bq_columns_full_impl`` helper.
 
-    `bq.duckdb_session()` provides a DuckDB conn with the bigquery extension
-    loaded + auth secret installed. SQL here is server-constructed (queries
-    INFORMATION_SCHEMA.COLUMNS with validated identifiers, no user-derived
-    fragments), so a BQ BadRequest means registry corruption, not user input
-    → surfaces as `bq_upstream_error` (HTTP 502), same as `/sample`, opposite
-    of `/scan*`.
+    Pre-#155 this had its own INFORMATION_SCHEMA.COLUMNS query; consolidating
+    with ``_fetch_bq_table_options`` (now also delegating to the same shared
+    SQL) halves the BQ job count on cache miss. Returns the schema-endpoint
+    column shape: name / type / nullable / description.
+
+    Calls the raising variant so BQ exceptions reach ``translate_bq_error``
+    with their original type (Forbidden → 502, BadRequest → 400, etc.).
     """
-    from connectors.bigquery.access import translate_bq_error
-    from src.identifier_validation import validate_quoted_identifier
+    from connectors.bigquery.access import _fetch_bq_columns_full_impl, translate_bq_error, BqAccessError
 
-    # Surface "BQ not configured" as the structured 500 BqAccessError(not_configured)
-    # with hint, not the misleading 400 unsafe_identifier the empty-string sentinel
-    # would otherwise trigger from validate_quoted_identifier below. Devin BUG_0002.
-    if not bq.projects.data:
-        bq.client()  # raises BqAccessError(not_configured); endpoint catches it
+    try:
+        rows = _fetch_bq_columns_full_impl(bq, dataset, table)
+    except (ValueError, BqAccessError):
+        # ValueError ("unsafe identifier") and BqAccessError propagate
+        # unchanged — the endpoint's existing handlers expect those types.
+        raise
+    except Exception as e:
+        # Any other BQ-side exception goes through translate_bq_error so
+        # the response status is classified correctly.
+        raise translate_bq_error(e, bq.projects, bad_request_status="upstream_error")
 
-    # Defense in depth (cf. v2_sample) — registry already validates these,
-    # but the v2 endpoints are downstream of admin REST writes that could
-    # bypass that gate. A backtick in `dataset` would otherwise break out
-    # of `…` quoting and execute arbitrary BQ SQL.
-    if not (validate_quoted_identifier(bq.projects.data, "BQ project")
-            and validate_quoted_identifier(dataset, "BQ dataset")
-            and validate_quoted_identifier(table, "BQ source_table")):
-        raise ValueError("unsafe BQ identifier in registry — refusing to query")
-
-    bq_sql = (
-        f"SELECT column_name, data_type, is_nullable "
-        f"FROM `{bq.projects.data}.{dataset}.INFORMATION_SCHEMA.COLUMNS` "
-        f"WHERE table_name = ? ORDER BY ordinal_position"
-    )
-    with bq.duckdb_session() as conn:
-        try:
-            rows = conn.execute(
-                "SELECT * FROM bigquery_query(?, ?, ?)",
-                [bq.projects.billing, bq_sql, table],
-            ).fetchall()
-        except Exception as e:
-            raise translate_bq_error(e, bq.projects, bad_request_status="upstream_error")
     return [
         {
-            "name": r[0],
-            "type": r[1],
-            "nullable": r[2] == "YES",
+            "name": r["name"],
+            "type": r["type"],
+            "nullable": r["nullable"],
             "description": "",
         }
         for r in rows
@@ -83,61 +66,27 @@ def _fetch_bq_schema(bq, dataset: str, table: str) -> list[dict]:
 
 
 def _fetch_bq_table_options(bq, dataset: str, table: str) -> dict:
-    """Best-effort fetch of partition/cluster info from INFORMATION_SCHEMA.COLUMNS.
+    """Best-effort fetch of partition/cluster info via the shared
+    `fetch_bq_columns_full` helper.
 
-    BigQuery exposes partition + cluster metadata as per-column flags:
-      - `is_partitioning_column` ('YES' / 'NO') — at most one column per table
-      - `clustering_ordinal_position` (INT64, null for non-clustered columns;
-        otherwise 1, 2, ... in cluster-key order)
-
-    Returns `{}` on ANY failure (best-effort). The outer
-    `try/except Exception → return {}` is a load-bearing contract: the
-    /schema endpoint must keep returning 200 with empty partition info even
-    when this query fails (e.g. on permissioned tables, on cross-project
-    misconfigurations). DO NOT route this through `translate_bq_error` —
-    that would convert errors to BqAccessError which the endpoint would 502
-    on. See tests/test_v2_schema.py::test_schema_returns_200_with_empty_…
+    Returns ``{}`` on ANY failure (best-effort). Same load-bearing
+    contract as before: the /schema endpoint must keep returning 200
+    with empty partition info when this fails.
     """
-    from src.identifier_validation import validate_quoted_identifier
+    from connectors.bigquery.access import fetch_bq_columns_full
 
-    # Best-effort path: if BQ isn't configured (sentinel BqAccess), return
-    # empty partition info silently — operator gets schema (200) without
-    # failing on the missing config. The strict /schema path (_fetch_bq_schema)
-    # surfaces the not_configured error separately.
-    if not bq.projects.data:
+    rows = fetch_bq_columns_full(bq, dataset, table)
+    if not rows:
         return {}
 
-    if not (validate_quoted_identifier(bq.projects.data, "BQ project")
-            and validate_quoted_identifier(dataset, "BQ dataset")
-            and validate_quoted_identifier(table, "BQ source_table")):
-        return {}  # Best-effort; refuse to query unsafe identifiers.
-
-    try:
-        with bq.duckdb_session() as conn:
-            bq_sql = (
-                f"SELECT column_name, is_partitioning_column, clustering_ordinal_position "
-                f"FROM `{bq.projects.data}.{dataset}.INFORMATION_SCHEMA.COLUMNS` "
-                f"WHERE table_name = ? "
-                f"ORDER BY clustering_ordinal_position NULLS LAST"
-            )
-            rows = conn.execute(
-                "SELECT * FROM bigquery_query(?, ?, ?)",
-                [bq.projects.billing, bq_sql, table],
-            ).fetchall()
-        if not rows:
-            return {}
-        partition_by = next(
-            (r[0] for r in rows if (r[1] or "").upper() == "YES"),
-            None,
-        )
-        clustered_by = [r[0] for r in rows if r[2] is not None]
-        return {"partition_by": partition_by, "clustered_by": clustered_by}
-    except Exception as e:
-        logger.warning(
-            "BQ table options fetch failed for %s.%s.%s: %s",
-            bq.projects.data, dataset, table, e,
-        )
-        return {}
+    partition_by = next(
+        (r["name"] for r in rows if r["is_partitioning_column"]),
+        None,
+    )
+    clustered_rows = [r for r in rows if r["clustering_ordinal_position"] is not None]
+    clustered_rows.sort(key=lambda r: r["clustering_ordinal_position"])
+    clustered_by = [r["name"] for r in clustered_rows]
+    return {"partition_by": partition_by, "clustered_by": clustered_by}
 
 
 def build_schema(
@@ -157,10 +106,34 @@ def build_schema(
     if not can_access_table(user, table_id, conn):
         raise PermissionError(table_id)
 
-    cache_key = f"{table_id}"
-    cached = _schema_cache.get(cache_key)
+    cached = _schema_cache.get(table_id)
     if cached is not None:
         return cached
+
+    return build_schema_uncached(conn, table_id, bq=bq, row=row)
+
+
+def build_schema_uncached(
+    conn: duckdb.DuckDBPyConnection,
+    table_id: str,
+    *,
+    bq: BqAccess,
+    row: dict | None = None,
+) -> dict:
+    """Build the schema response and populate `_schema_cache`. **Skips
+    RBAC and cache-hit short-circuit** — call only from contexts where
+    those are unnecessary (warmup) or already enforced upstream
+    (`build_schema`).
+
+    Pass `row` from the upstream caller's `repo.get(table_id)` to avoid
+    a redundant DB round-trip; if not provided, `build_schema_uncached`
+    fetches it itself (the warmup-direct call site).
+    """
+    if row is None:
+        repo = TableRegistryRepository(conn)
+        row = repo.get(table_id)
+        if not row:
+            raise NotFound(table_id)
 
     source_type = row.get("source_type") or ""
     if source_type == "bigquery":
@@ -179,7 +152,6 @@ def build_schema(
         }
     else:
         # Local source — read schema from the parquet via DuckDB
-        from pathlib import Path
         from app.utils import get_data_dir
         parquet = (
             get_data_dir() / "extracts" / source_type / "data" / f"{table_id}.parquet"
@@ -204,7 +176,7 @@ def build_schema(
             "where_dialect_hints": {},
         }
 
-    _schema_cache.set(cache_key, payload)
+    _schema_cache.set(table_id, payload)
     return payload
 
 

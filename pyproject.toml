@@ -1,6 +1,6 @@
 [project]
 name = "agnes-the-ai-analyst"
-version = "0.46.5"
+version = "0.47.0"
 description = "Agnes — AI Data Analyst platform for AI analytical systems"
 requires-python = ">=3.11,<3.14"
 license = "MIT"
@@ -76,6 +76,7 @@ dependencies = [
     # directly via `requests` — no SDK dependency on the data-path side. The
     # SDK stays for the metadata reads.
     "kbcstorage>=0.9.0",
+    "sse-starlette>=2.0",
 ]
 
 [project.optional-dependencies]

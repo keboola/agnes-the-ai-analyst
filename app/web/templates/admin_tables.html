@@ -871,6 +871,25 @@
     <!-- ═══════════════ CONTENT ═══════════════ -->
     <div class="content">
 
+        <section id="cacheWarmupCard" class="card" style="margin-bottom: 20px;">
+            <header class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+                <h2>Cache freshness</h2>
+                <button class="btn btn-secondary" id="cacheWarmupRunBtn" onclick="cacheWarmupRun()">
+                    Re-warm all
+                </button>
+            </header>
+            <div class="card-body">
+                <div id="cacheWarmupProgress" style="margin-bottom: 8px;">
+                    <span id="cacheWarmupSummary">Loading…</span>
+                </div>
+                <progress id="cacheWarmupBar" max="100" value="0" style="width: 100%; display: none;"></progress>
+                <details style="margin-top: 8px;">
+                    <summary style="cursor: pointer; user-select: none;">Show log</summary>
+                    <pre id="cacheWarmupLog" style="background: #0a0a0a; color: #dcdcdc; font-family: ui-monospace, Menlo, monospace; font-size: 12px; padding: 8px; max-height: 240px; overflow-y: auto; margin-top: 8px; border-radius: 4px;"></pre>
+                </details>
+            </div>
+        </section>
+
         {# Phase D: tab-split scaffold. Per-connector tabs (BigQuery /
            Keboola / Jira) replace the single mixed form. Each tab has its
            own Register button + listing div + (later) form modals. The
@@ -1080,7 +1099,9 @@
                         </div>
 
                         <div class="form-group">
-                            <label class="form-label">How should analysts access this data?</label>
+                            <label class="form-label">How should analysts access this data?
+                                <a href="docs/admin/query-modes.md" target="_blank" title="When to use which mode" style="margin-left: 6px; text-decoration: none; cursor: help;">?</a>
+                            </label>
                             <div style="display:flex; gap:12px; margin-top:6px;">
                                 <label style="flex:1; padding:10px; border:1px solid var(--border); border-radius:8px; cursor:pointer;">
                                     <input type="radio" name="editBqAccessMode" value="live" onchange="onEditBqAccessModeChange()">
@@ -2879,6 +2900,175 @@
     // ── Initialize ──────────────────────────────────────────────
 
     loadRegistry();
+
+    // ── Cache warmup toolbar (issue #155 / #156) ────────────────
+    let cacheWarmupSource = null;
+
+    function _cacheWarmupClearPollFallback() {
+        if (window._cacheWarmupPollInterval) {
+            clearInterval(window._cacheWarmupPollInterval);
+            window._cacheWarmupPollInterval = null;
+        }
+    }
+
+    function cacheWarmupInit() {
+        cacheWarmupRefreshSnapshot();
+        cacheWarmupOpenStream();
+    }
+
+    function cacheWarmupRefreshSnapshot() {
+        fetch('/api/admin/cache-warmup/status')
+            .then(function(r) { return r.json(); })
+            .then(function(state) { cacheWarmupRender(state); })
+            .catch(function() { /* silent */ });
+    }
+
+    function cacheWarmupOpenStream() {
+        try {
+            cacheWarmupSource = new EventSource('/api/admin/cache-warmup/stream');
+            cacheWarmupSource.addEventListener('start', cacheWarmupOnStart);
+            cacheWarmupSource.addEventListener('row', cacheWarmupOnRow);
+            cacheWarmupSource.addEventListener('complete', cacheWarmupOnComplete);
+            cacheWarmupSource.addEventListener('snapshot', function(e) {
+                _cacheWarmupClearPollFallback();
+                cacheWarmupRender(JSON.parse(e.data));
+            });
+            cacheWarmupSource.onerror = function() {
+                if (cacheWarmupSource) {
+                    cacheWarmupSource.close();
+                    cacheWarmupSource = null;
+                }
+                // Continuous polling fallback. Try to re-open SSE every 30 s in
+                // case the proxy / network heals. Only one polling interval at a
+                // time (prevent stacking on repeated errors).
+                if (!window._cacheWarmupPollInterval) {
+                    window._cacheWarmupPollInterval = setInterval(
+                        cacheWarmupRefreshSnapshot, 3000
+                    );
+                    setTimeout(function tryReconnect() {
+                        if (cacheWarmupSource) return;  // already reconnected
+                        try {
+                            clearInterval(window._cacheWarmupPollInterval);
+                            window._cacheWarmupPollInterval = null;
+                            cacheWarmupOpenStream();  // recursive — onerror retries again
+                        } catch (e) {
+                            window._cacheWarmupPollInterval = setInterval(
+                                cacheWarmupRefreshSnapshot, 3000
+                            );
+                            setTimeout(tryReconnect, 30000);
+                        }
+                    }, 30000);
+                }
+            };
+        } catch (e) {
+            setInterval(cacheWarmupRefreshSnapshot, 3000);
+        }
+    }
+
+    function cacheWarmupRender(state) {
+        var summary = document.getElementById('cacheWarmupSummary');
+        var bar = document.getElementById('cacheWarmupBar');
+        var btn = document.getElementById('cacheWarmupRunBtn');
+        if (!summary) return;
+
+        if (!state || state.state === 'never_run') {
+            summary.textContent = 'No cache warmup yet — click Re-warm all to start.';
+            bar.style.display = 'none';
+            btn.disabled = false;
+            return;
+        }
+        var inProgress = state.completed_at === null || state.completed_at === undefined;
+        var pct = state.total > 0 ? Math.round((state.completed * 100) / state.total) : 0;
+        summary.textContent = inProgress
+            ? state.completed + ' / ' + state.total + ' fresh — running…'
+            : 'Last run: ' + state.completed + ' ok, ' + state.failed + ' errors';
+        bar.style.display = 'block';
+        bar.value = pct;
+        btn.disabled = inProgress;
+
+        if (state.rows) {
+            for (var tid in state.rows) {
+                cacheWarmupSetRowBadge(tid, state.rows[tid]);
+            }
+        }
+    }
+
+    function cacheWarmupOnStart(e) {
+        _cacheWarmupClearPollFallback();
+        var data = JSON.parse(e.data);
+        var log = document.getElementById('cacheWarmupLog');
+        log.textContent = '';
+        cacheWarmupAppendLog(
+            '[' + nowHHMMSS() + '] start  trigger=' + data.trigger + ' total=' + data.total
+        );
+        cacheWarmupRefreshSnapshot();
+    }
+
+    function cacheWarmupOnRow(e) {
+        _cacheWarmupClearPollFallback();
+        var rs = JSON.parse(e.data);
+        cacheWarmupAppendLog(
+            '[' + nowHHMMSS() + '] ' + rs.status.padEnd(7) + ' ' + rs.table_id +
+            (rs.duration_ms ? '  (' + (rs.duration_ms / 1000).toFixed(1) + ' s)' : '') +
+            (rs.error ? '  ' + rs.error : '')
+        );
+        cacheWarmupSetRowBadge(rs.table_id, rs);
+        cacheWarmupRefreshSnapshot();
+    }
+
+    function cacheWarmupOnComplete(e) {
+        _cacheWarmupClearPollFallback();
+        var data = JSON.parse(e.data);
+        cacheWarmupAppendLog(
+            '[' + nowHHMMSS() + '] complete total=' + data.total +
+            ' ok=' + data.completed + ' fail=' + data.failed
+        );
+        cacheWarmupRefreshSnapshot();
+    }
+
+    function cacheWarmupAppendLog(line) {
+        var log = document.getElementById('cacheWarmupLog');
+        if (!log) return;
+        log.textContent += line + '\n';
+        log.scrollTop = log.scrollHeight;
+    }
+
+    function cacheWarmupSetRowBadge(tableId, rs) {
+        document.querySelectorAll('tr').forEach(function(tr) {
+            var idCell = tr.querySelector('td.col-id');
+            if (!idCell || idCell.textContent.trim() !== tableId) return;
+            var statusCell = tr.querySelector('td.col-status');
+            if (!statusCell) return;
+            var color = {fresh: '#10B77F', warming: '#0073D1', pending: '#9CA3AF', error: '#EA580C'}[rs.status] || '#9CA3AF';
+            var label = rs.status === 'fresh' ? 'fresh' : rs.status;
+            // Build via DOM API so rs.error escapes safely into the title
+            // attribute (XSS guard — rs.error is server-derived, may contain
+            // quotes / angle brackets).
+            var span = document.createElement('span');
+            span.style.cssText =
+                'display:inline-block;padding:2px 6px;border-radius:3px;' +
+                'font-size:11px;background:' + color + ';color:white;';
+            if (rs.error) span.setAttribute('title', rs.error);
+            span.textContent = label;
+            statusCell.replaceChildren(span);
+        });
+    }
+
+    function nowHHMMSS() {
+        var d = new Date();
+        return d.toTimeString().slice(0, 8);
+    }
+
+    function cacheWarmupRun() {
+        var btn = document.getElementById('cacheWarmupRunBtn');
+        btn.disabled = true;
+        fetch('/api/admin/cache-warmup/run', {method: 'POST'})
+            .then(function(r) { return r.json(); })
+            .then(function() { /* SSE stream picks up the new run */ })
+            .catch(function() { btn.disabled = false; });
+    }
+
+    document.addEventListener('DOMContentLoaded', cacheWarmupInit);
 
     </script>
     {% include "_version_badge.html" %}
