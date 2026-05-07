@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- `/admin/users/{id}` — "Add to group" dropdown explains itself when empty instead of leaving the admin staring at a silent `— Pick a group —` placeholder. Three cases now surface a hint below the picker: (a) user is already in every group, (b) every remaining group is Google-Workspace-managed and Agnes can't grant manually (POST would 409 — link to `/admin/groups` to create a custom group), (c) no groups exist at all. Pre-fix on FoundryAI deployments where `Admin` + `Everyone` are mapped via `AGNES_GROUP_{ADMIN,EVERYONE}_EMAIL` and no custom groups exist, the picker was empty with zero indication that the operator needed to create a custom group first.
+
 ### Internal
 
 - `infra/modules/customer-instance` (tag `infra-v1.7.0`): `google_compute_instance.vm` now sets `allow_stopping_for_update = true`. Without it, changing `machine_type` (or any other field GCP will only mutate on a stopped VM) caused Terraform to fall back to a destroy + recreate, churning VM-local state for what should be an in-place resize. Consumers do not need to update — the field is provider-side only — but bumping the module ref to `infra-v1.7.0` enables in-place machine-type bumps.
