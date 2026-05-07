@@ -12,6 +12,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+- `AGNES_TEMP_DIR` env var (default in `docker-compose.yml`: `/data/tmp`) routes per-call extractor tempdirs (Snowflake-UNLOAD slice staging, CSV→parquet intermediates) off the container's overlayfs `/tmp` onto the data volume. Boot-disk overlayfs filled to 100% on agnes-dev during a multi-GiB sliced parquet export; the dedicated data disk had 15 GiB free at the time. Helper `connectors/keboola/storage_api.py:get_temp_root` mkdirs the target on first use; unset / empty / unwritable falls back to system `/tmp` for compat with OSS users on a single-disk host.
 - `POST /api/admin/discover-and-register?dry_run=true` returns the planned mutations without writing — lists `would_register`, `drift` (existing rows whose registry coordinates differ from what discovery would write), and `invalid` ids. Useful for auditing before re-running auto-discovery on a registry that's already had admin overrides applied.
 - `GET /api/sync/status` returns `{"locked": bool}` — public, no auth. Consumed by the host-side `agnes-auto-upgrade.sh` cron to decide whether to defer `docker compose up -d` until the running sync finishes. Cheap (single Lock check), no sensitive data.
 

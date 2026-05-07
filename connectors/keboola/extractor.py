@@ -118,10 +118,16 @@ def materialize_query(
     # disk-full / permission errors from masking the original
     # exception, and prevents a half-cleaned dir from sitting around
     # forever (a 12 GiB stale slice tree was seen after a worker died
-    # mid-write on a saturated boot disk).
+    # mid-write on a saturated boot disk). ``dir=get_temp_root()``
+    # routes to ``AGNES_TEMP_DIR`` when the operator has steered
+    # tempfiles off the overlayfs (e.g. onto the data disk) — see
+    # storage_api.get_temp_root for the rationale.
     import tempfile
+    from connectors.keboola.storage_api import get_temp_root
     with tempfile.TemporaryDirectory(
-        prefix=f"kbc-export-{table_id}-", ignore_cleanup_errors=True,
+        prefix=f"kbc-export-{table_id}-",
+        dir=get_temp_root(),
+        ignore_cleanup_errors=True,
     ) as tmpdir:
         full_table_id = f"{bucket}.{source_table}"
 
@@ -604,13 +610,17 @@ def _extract_via_legacy(tc: Dict[str, Any], pq_path: str, keboola_url: str, kebo
     need to change.
     """
     import tempfile
-    from connectors.keboola.storage_api import KeboolaStorageClient
+    from connectors.keboola.storage_api import KeboolaStorageClient, get_temp_root
 
     bucket = tc.get("bucket", "")
     source_table = tc.get("source_table", tc["name"])
     table_id = f"{bucket}.{source_table}" if bucket else tc.get("id", tc["name"])
 
-    with tempfile.TemporaryDirectory(prefix=f"kbc-export-{tc['name']}-") as tmpdir:
+    with tempfile.TemporaryDirectory(
+        prefix=f"kbc-export-{tc['name']}-",
+        dir=get_temp_root(),
+        ignore_cleanup_errors=True,
+    ) as tmpdir:
         csv_path = Path(tmpdir) / f"{tc['name']}.csv"
         client = KeboolaStorageClient(url=keboola_url, token=keboola_token)
         client.export_table_to_csv(table_id, csv_path)

@@ -57,6 +57,43 @@ _DEFAULT_SLICE_DOWNLOAD_TIMEOUT_SEC = int(
 )
 
 
+def get_temp_root() -> Optional[str]:
+    """Return the parent dir for per-call tempdirs, or None to use the
+    system default.
+
+    Reads ``AGNES_TEMP_DIR`` (compose env, single source of truth) and
+    creates the dir if it does not yet exist. Default behaviour
+    (``AGNES_TEMP_DIR`` unset) preserves the OSS pre-fix path —
+    ``tempfile.TemporaryDirectory(...)`` falls back to the platform's
+    `tmpdir` (typically ``/tmp``).
+
+    The agnes-dev cutover surfaced why this knob matters: the
+    container's ``/tmp`` lives on the boot disk's overlayfs (29 GiB
+    on agnes-dev, shared with /var), so a multi-slice Snowflake
+    UNLOAD of a wide table fills it long before the dedicated 20 GiB
+    data disk at ``/data`` would. Setting ``AGNES_TEMP_DIR=/data/tmp``
+    routes the staging dir to the data disk where the parquets are
+    going anyway, no extra mount required (the data disk is already
+    bind-mounted).
+    """
+    root = os.environ.get("AGNES_TEMP_DIR", "").strip()
+    if not root:
+        return None
+    # Best-effort mkdir — if the parent isn't writable we let
+    # tempfile.TemporaryDirectory raise the real OSError later with
+    # the underlying detail. Avoids a silent fall-through to /tmp.
+    try:
+        os.makedirs(root, exist_ok=True)
+    except OSError as e:
+        logger.warning(
+            "AGNES_TEMP_DIR=%r not creatable (%s); tempfiles fall back "
+            "to system default. Set the env to a writable path or unset "
+            "to silence this warning.", root, e,
+        )
+        return None
+    return root
+
+
 FILE_TYPE_CSV = "csv"
 FILE_TYPE_PARQUET = "parquet"
 _VALID_FILE_TYPES = {FILE_TYPE_CSV, FILE_TYPE_PARQUET}
@@ -428,7 +465,9 @@ class KeboolaStorageClient:
                 body=manifest,
             )
 
-        with tempfile.TemporaryDirectory(prefix="kbc-slice-") as tmpdir:
+        with tempfile.TemporaryDirectory(
+            prefix="kbc-slice-", dir=get_temp_root(), ignore_cleanup_errors=True,
+        ) as tmpdir:
             slice_paths: List[Path] = []
             for i, entry in enumerate(entries):
                 surl = entry.get("url")

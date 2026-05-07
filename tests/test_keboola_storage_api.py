@@ -22,6 +22,7 @@ from connectors.keboola.storage_api import (
     ExportFilter,
     KeboolaStorageClient,
     StorageApiError,
+    get_temp_root,
 )
 
 
@@ -453,6 +454,46 @@ class TestParquetPath:
             c.download_file_slices(
                 {"url": "https://x", "isSliced": False}, Path("/tmp/x"),
             )
+
+    def test_get_temp_root_unset_returns_none(self, monkeypatch):
+        """No env var → None → tempfile falls back to system default
+        (typically /tmp). Preserves OSS-pre-fix behaviour for users
+        who haven't set AGNES_TEMP_DIR."""
+        monkeypatch.delenv("AGNES_TEMP_DIR", raising=False)
+        assert get_temp_root() is None
+
+    def test_get_temp_root_creates_dir_when_missing(self, monkeypatch, tmp_path):
+        """First-time use: target dir doesn't yet exist; helper mkdirs
+        it (non-recursive parents handled by exist_ok). Returns the
+        absolute path so tempfile uses it as the parent for staging."""
+        target = tmp_path / "agnes-tmp-fresh"
+        assert not target.exists()
+        monkeypatch.setenv("AGNES_TEMP_DIR", str(target))
+        assert get_temp_root() == str(target)
+        assert target.is_dir()
+
+    def test_get_temp_root_existing_dir_reused(self, monkeypatch, tmp_path):
+        target = tmp_path / "agnes-tmp-existing"
+        target.mkdir()
+        monkeypatch.setenv("AGNES_TEMP_DIR", str(target))
+        assert get_temp_root() == str(target)
+
+    def test_get_temp_root_unwritable_falls_back(self, monkeypatch, tmp_path, caplog):
+        """Sandboxes / read-only mounts make the target uncreatable; the
+        helper logs a warning and returns None so tempfile falls back
+        to the system default rather than blowing up the sync run."""
+        # Point at a path under a read-only parent that doesn't exist.
+        unwritable = "/nonexistent/forbidden/agnes-tmp"
+        monkeypatch.setenv("AGNES_TEMP_DIR", unwritable)
+        with caplog.at_level("WARNING"):
+            assert get_temp_root() is None
+        assert any("AGNES_TEMP_DIR" in r.message for r in caplog.records)
+
+    def test_get_temp_root_empty_string_treated_as_unset(self, monkeypatch):
+        # Operator who left ``AGNES_TEMP_DIR=`` (empty) in .env doesn't
+        # get an mkdir of "" — same as unset.
+        monkeypatch.setenv("AGNES_TEMP_DIR", "")
+        assert get_temp_root() is None
 
     def test_parquet_download_does_not_gunzip_plain_parquet(self, tmp_path):
         """Regression: previous heuristic flagged any unencrypted file as
