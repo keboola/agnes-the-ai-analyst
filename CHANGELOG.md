@@ -10,6 +10,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.47.3] — 2026-05-07
+
+### Fixed
+
+- `agnes self-upgrade` (without `--force`) previously read the local 24h `update_check.json` cache to decide whether an upgrade was needed — meaning that for up to 24 hours after a server-side version bump, the explicit `agnes self-upgrade` command exited silently as a no-op even though a newer wheel was available. Cache is now always invalidated for the explicit command (the cache still gates the implicit warning loop in the root callback to avoid hammering `/cli/latest` on every `agnes <anything>` invocation). Surfaced when a server bump 0.47.1 → 0.47.2 didn't trigger client-side upgrade.
+
 ## [0.47.2] — 2026-05-07
 
 ### Fixed

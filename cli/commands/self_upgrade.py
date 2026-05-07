@@ -175,8 +175,13 @@ def _resolve_info(force: bool) -> Union[UpdateInfo, _Unreachable, None]:
       _UNREACHABLE — --force specified, server probe failed
       None        — nothing to do (current, or offline without --force)
     """
-    if force:
-        _invalidate_update_cache()
+    # Always invalidate the cache — an explicit `agnes self-upgrade` is
+    # the user asking "is there a newer version RIGHT NOW", not "use the
+    # 24h cached answer". The cache exists to keep the implicit warning
+    # loop in the root callback (`agnes <anything>`) from re-probing
+    # `/cli/latest` on every invocation; it has no place gating the
+    # explicit upgrade command.
+    _invalidate_update_cache()
     info = check(get_server_url(), bypass_disabled=True)
     if info is None:
         return _UNREACHABLE if force else None
