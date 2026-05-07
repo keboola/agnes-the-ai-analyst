@@ -113,9 +113,8 @@ def refresh_marketplace(
         _emit_hook_message(events)
     elif not quiet and (events["installed"] or events["updated"]):
         typer.echo(
-            "\nRestart Claude Code (`/exit`, then `claude`) to load the "
-            "new/updated plugins — they're on disk now but Claude only "
-            "picks them up on session start."
+            "\nRun `/reload-plugins` in Claude Code to load the "
+            "new/updated plugins into the running session — no restart needed."
         )
 
 
